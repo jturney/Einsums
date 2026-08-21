@@ -6,8 +6,9 @@ All three methods are complete and validated against psi4 two ways: DLPNO-MP2, D
 DLPNO fits deferred execution unusually well: it is thousands of small dense operations whose shapes and dependency pattern are fixed for a whole calculation and change only in their values, which is exactly the capture-once, replay-many shape.
 Every contraction is captured into a graph once and replayed, so the per-iteration Python cost is a few `execute()` calls however many GEMMs they stand for; the LMP2 iteration itself runs as a single graph with a loop node and DIIS as its predicate.
 
-The coupled-cluster layers are validated and measured, and at one thread the port now BEATS psi4's native C++ on the full DLPNO-CCSD(T) cascade on both benchmark geometries: 189.0 s against 216.3 s on ethanol/cc-pVTZ (0.87x) and 17.6 s against 18.7 s on the six-monomer water chain (0.94x).
-At ten threads ethanol stands at 1.12x, with the remaining gap concentrated in the semicanonical triples (`LCCSD(T0)`, 1.5x) rather than spread across the cascade; the small chain geometry threads worse (2.3x), for the reasons its table's discussion gives.
+The coupled-cluster layers are validated and measured, and at one thread the port BEATS psi4's native C++ on the full DLPNO-CCSD(T) cascade on both benchmark geometries: 188.4 s against 215.0 s on ethanol/cc-pVTZ (0.88x) and 15.7 s against 18.7 s on the six-monomer water chain (0.84x).
+At ten threads ethanol is at PARITY: 59.9 s against 57.7 s (1.04x, inside that cell's documented spread), with the former `LCCSD(T0)` gap row closed to 1.0x.
+The small chain geometry still threads worse (2.0x), for the reasons its table's discussion gives.
 The MP2 port's standing (measured 2026-08-10) is faster than psi4 on three of its four configurations, the exception being the chain at ten threads.
 Current numbers and their provenance are in [Performance against psi4](#performance-against-psi4); `bench_vs_psi4.py` reproduces them on your machine, phase against phase.
 
@@ -181,7 +182,7 @@ The two backends of a stage agree bit for bit, because both emit the same einsum
 
 ## Performance against psi4
 
-Measured 2026-08-20 (Apple M-series, 4 performance and 6 efficiency cores, on mains power, one run per cell on an otherwise idle machine) with `bench_vs_psi4.py`, which runs psi4's native C++ DLPNO in a subprocess and this port in process, same thread count, same converged reference, SCF excluded from both.
+Measured 2026-08-21 (Apple M-series, 4 performance and 6 efficiency cores, on mains power, one run per cell on an otherwise idle machine) with `bench_vs_psi4.py`, which runs psi4's native C++ DLPNO in a subprocess and this port in process, same thread count, same converged reference, SCF excluded from both.
 psi4's column doubles as the in-run drift control; it has historically reproduced to about 3% on most cells, with the ten-thread ethanol cell known to spread to about 15%, and those are the tolerances to read the numbers at.
 The port runs its hybrid configuration automatically - the three compiled stage backends are built with the main build and selected whenever `dlpno_stages` is importable - and the coupled-cluster rows use the dense integral source by construction, which is the `DF Ints` handicap the header describes.
 Every phase either side times appears in the tables, and the difference between the rows and the total prints as `other`, so a phase cannot silently go missing.
@@ -191,81 +192,93 @@ The one-time LCCSD graph build (allocate, capture, optimize - a cost psi4 has no
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| Setup Orbitals | **0.004** | 0.055 | **0.005** | 0.038 |
-| Sparsity | **0.017** | 0.039 | **0.018** | 0.042 |
-| DF Ints | **0.321** | 0.541 | **0.097** | 0.512 |
-| Initial Prescreening | 0.539 | **0.349** | **0.095** | 0.288 |
-| PNO Transform | 0.330 | **0.236** | **0.061** | 0.101 |
-| PNO-LMP2 iterations | **0.440** | 0.554 | **0.173** | 0.256 |
-| Compute PNOs (CCSD) | 0.174 | **0.083** | **0.033** | 0.079 |
-| PNO Integrals | 2.375 | **2.163** | **0.411** | 0.481 |
-| PNO Overlaps | **0.116** | 0.116 | **0.022** | 0.077 |
-| LCCSD iterations | 5.484 | **4.487** | **1.438** | 2.337 |
-| Triples Sparsity | **0.006** | 0.015 | **0.006** | 0.016 |
-| TNO transform | 1.002 | **0.524** | **0.212** | 0.292 |
-| LCCSD(T0) | **4.965** | 5.274 | **1.060** | 2.924 |
-| LCCSD(T) iterations | **2.600** | 3.055 | **0.533** | 2.501 |
-| Overlap + Dipole Ints | 0.060 | - | 0.028 | - |
-| other | 0.276 | **0.091** | 0.105 | **0.099** |
-| **total** | 18.709 | **17.581** | **4.297** | 10.044 |
-| LCCSD graph build (excluded) | - | 0.407 | - | 1.037 |
+| Setup Orbitals | **0.006** | 0.057 | **0.005** | 0.036 |
+| Sparsity | **0.017** | 0.040 | **0.017** | 0.040 |
+| DF Ints | **0.329** | 0.534 | **0.100** | 0.481 |
+| Initial Prescreening | 0.556 | **0.356** | **0.095** | 0.270 |
+| PNO Transform | 0.332 | **0.220** | **0.060** | 0.094 |
+| PNO-LMP2 iterations | **0.433** | 0.546 | **0.173** | 0.256 |
+| Compute PNOs (CCSD) | 0.186 | **0.082** | **0.032** | 0.078 |
+| PNO Integrals | 2.258 | **1.879** | 0.418 | **0.402** |
+| PNO Overlaps | 0.116 | **0.111** | **0.021** | 0.073 |
+| LCCSD iterations | 5.575 | **4.163** | **1.416** | 1.702 |
+| Triples Sparsity | **0.006** | 0.015 | **0.006** | 0.015 |
+| TNO transform | 1.019 | **0.514** | **0.182** | 0.267 |
+| LCCSD(T0) | 4.877 | **3.976** | **0.906** | 1.749 |
+| LCCSD(T) iterations | **2.679** | 3.082 | **0.526** | 2.451 |
+| Overlap + Dipole Ints | 0.065 | - | 0.028 | - |
+| other | 0.276 | **0.090** | 0.102 | **0.089** |
+| **total** | 18.730 | **15.666** | **4.087** | 8.004 |
+| LCCSD graph build (excluded) | - | 0.394 | - | 1.032 |
 
-Correlation energies agree to 1.6e-08 (1 thread) and 2.4e-09 (10 threads), so the two sides are solving the same problem.
+Correlation energies agree to 1.6e-08 (1 thread) and 8.3e-08 (10 threads), so the two sides are solving the same problem.
 Both iterative-(T) levers are ON, which is their default: the table is the port as it runs out of the box.
 
-**Serially the port wins the chain outright, 17.6 s against 18.7 s (0.94x)**, taking the four largest phases: `LCCSD iterations` at 0.8x, `PNO Integrals` at 0.9x, `TNO transform` at 0.5x and `Initial Prescreening` at 0.6x; the triples rows are the ones still behind, `LCCSD(T0)` at 1.1x and the (T) iterations at 1.2x on 9 Jacobi passes against psi4's 6 in-place.
+**Serially the port wins the chain outright, 15.7 s against 18.7 s (0.84x)**, and now takes the triples with it: `LCCSD(T0)` at 0.8x joins `LCCSD iterations` (0.7x), `PNO Integrals` (0.8x), `TNO transform` (0.5x) and `Initial Prescreening` (0.6x).
+The one substantial row behind is the (T) iterations at 1.2x, where the port is FASTER per pass (0.6x) but runs 9 Jacobi passes against psi4's 6 in-place.
 
-**At ten threads the chain is 2.3x, and the shape of that gap is smallness, not any single defect.**
+**At ten threads the chain is 2.0x, and the shape of that gap is smallness, not any single defect.**
 At this geometry a pair carries 18 PNOs, psi4's phases shrink to tens of milliseconds, and every port phase keeps a floor the replays cannot shrink: graph submission, region entry, the per-replay bookkeeping of five-thousand-node graphs.
-The three rows that matter are the triples - `LCCSD(T) iterations` at 4.7x (2.2x per pass, times 9 passes against 6) and `LCCSD(T0)` at 2.8x - and the residual at 1.6x.
+The two rows that matter are the triples - `LCCSD(T) iterations` at 4.7x (2.2x per pass, times 9 passes against 6) and `LCCSD(T0)` at 1.9x.
 The small geometry still cannot substitute for the large one: a defect that is quadratic in the PNO count is invisible here and glaring at ethanol/cc-pVTZ, so any conclusion drawn from this table needs the larger basis to confirm it.
 
 **Ethanol/cc-pVTZ.** 316 triplets, 39.0 PNOs per pair average, and the configuration the chain cannot substitute for.
 
 | phase | psi4, 1 thread | port | psi4, 10 threads | port |
 | --- | --- | --- | --- | --- |
-| Setup Orbitals | **0.004** | 0.032 | **0.004** | 0.024 |
-| Sparsity | **0.018** | 0.071 | **0.015** | 0.045 |
-| DF Ints | **0.454** | 0.479 | **0.112** | 0.485 |
-| Initial Prescreening | 0.906 | **0.213** | 0.163 | **0.139** |
-| PNO Transform | 1.413 | **0.627** | 0.253 | **0.234** |
-| PNO-LMP2 iterations | 2.482 | **2.477** | **0.752** | 0.907 |
-| Compute PNOs (CCSD) | 0.763 | **0.130** | 0.139 | **0.097** |
-| PNO Integrals | 11.527 | **9.380** | **2.206** | 2.920 |
-| PNO Overlaps | 0.550 | **0.162** | 0.100 | **0.076** |
-| LCCSD iterations | 22.811 | **16.102** | **4.916** | 6.494 |
-| Triples Sparsity | **0.005** | 0.017 | **0.005** | 0.025 |
-| TNO transform | 9.990 | **2.411** | 2.172 | **0.803** |
-| LCCSD(T0) | 80.016 | **61.359** | **19.849** | 30.450 |
-| LCCSD(T) iterations | **84.893** | 95.453 | 36.786 | **33.054** |
-| Overlap + Dipole Ints | 0.109 | - | 0.133 | - |
-| other | 0.326 | **0.090** | 0.119 | **0.104** |
-| **total** | 216.267 | **189.002** | **67.724** | 75.856 |
-| LCCSD graph build (excluded) | - | 0.293 | - | 0.754 |
+| Setup Orbitals | **0.005** | 0.033 | **0.004** | 0.024 |
+| Sparsity | **0.015** | 0.071 | **0.016** | 0.042 |
+| DF Ints | **0.403** | 0.471 | **0.109** | 0.446 |
+| Initial Prescreening | 0.810 | **0.214** | 0.155 | **0.135** |
+| PNO Transform | 1.292 | **0.624** | 0.243 | **0.205** |
+| PNO-LMP2 iterations | **2.387** | 2.476 | **0.732** | 0.838 |
+| Compute PNOs (CCSD) | 0.707 | **0.130** | 0.134 | **0.086** |
+| PNO Integrals | 10.762 | **9.654** | **2.074** | 2.527 |
+| PNO Overlaps | 0.503 | **0.161** | 0.095 | **0.072** |
+| LCCSD iterations | 22.242 | **16.022** | **4.895** | 5.541 |
+| Triples Sparsity | **0.005** | 0.019 | **0.005** | 0.023 |
+| TNO transform | 9.800 | **2.365** | 2.114 | **0.781** |
+| LCCSD(T0) | 81.193 | **63.899** | **18.419** | 18.655 |
+| LCCSD(T) iterations | **84.458** | 92.193 | **28.404** | 30.472 |
+| Overlap + Dipole Ints | 0.097 | - | 0.140 | - |
+| other | 0.297 | **0.081** | 0.112 | **0.080** |
+| **total** | 214.976 | **188.412** | **57.651** | 59.928 |
+| LCCSD graph build (excluded) | - | 0.274 | - | 0.760 |
 
-Correlation energies agree to 2.1e-08 and 1.3e-08. Both iterative-(T) levers are on, which is their default.
+Correlation energies agree to 2.1e-08 and 1.6e-08. Both iterative-(T) levers are on, which is their default.
 
-**At one thread the port beats psi4 on the full cascade by 13%: 189.0 s against 216.3 s.**
-It wins eleven of the fourteen phases outright, including every heavy one: `LCCSD iterations` **0.7x**, `LCCSD(T0)` **0.8x**, `PNO Integrals` **0.8x**, `TNO transform` **0.2x**, `PNO Transform` **0.4x**.
-The one substantial row behind is `LCCSD(T) iterations` at 1.1x, and even there the port is faster per pass - 11.7 s against 14.1 - on 8 Jacobi passes against psi4's 6 in-place.
+**At one thread the port beats psi4 on the full cascade by 12%: 188.4 s against 215.0 s.**
+It wins ten of the fourteen phases outright, including every heavy one: `LCCSD iterations` **0.7x**, `LCCSD(T0)` **0.8x**, `PNO Integrals` **0.9x**, `TNO transform` **0.2x**, `PNO Transform` **0.5x**.
+The one substantial row behind is `LCCSD(T) iterations` at 1.1x, and even there the port is faster per pass - 11.2 s against 14.1 - on 8 Jacobi passes against psi4's 6 in-place.
 
-**At ten threads ethanol is 1.12x, and the remaining gap is nearly one row.**
-`LCCSD(T0)` at 1.5x is 10.6 s of the 8.1 s total difference - more than the whole of it, since the port WINS the biggest row, `LCCSD(T) iterations`, at 0.9x.
-Behind it come the residual (`LCCSD iterations`, 1.3x, 1.6 s), `PNO Integrals` (1.3x, 0.7 s) and `DF Ints` (4.3x, 0.4 s, the dense-source handicap).
-The residual's own per-iteration figure is 1.4x against psi4's, softened in the row because the port converges in 17 iterations to psi4's 19.
+**At ten threads ethanol is at parity: 59.9 s against 57.7 s (1.04x).**
+`LCCSD(T0)`, the row that carried the whole gap at 1.5x one campaign ago, is 1.0x - 18.7 s against 18.4 - and no row differs by more than about 2 s in either direction.
+What remains is small and spread: the (T) iterations (1.1x, 2.1 s, on 8 passes against 6), the residual (`LCCSD iterations`, 1.1x, 0.6 s), `PNO Integrals` (1.2x, 0.5 s) and `DF Ints` (4.1x, 0.3 s, the dense-source handicap).
 
 **Provenance.**
-One run per cell rather than the earlier best-of-three, leaning on the in-run psi4 control; the four cells ran back to back on an idle machine on mains power.
-psi4's ten-thread ethanol figure landed at 67.7 s, inside its historically noisy 57.8 to 67.5 s band, so that cell's ratio carries the wider tolerance noted above.
+One run per cell, leaning on the in-run psi4 control; the four cells ran back to back on mains power with the machine otherwise quiet.
+psi4's ten-thread ethanol figure landed at 57.7 s, at the fast end of its historically noisy 57.8 to 67.5 s band, so that cell's parity is measured against psi4 at its best, not its average.
 
 ### How the gap closed, in brief
 
-The ethanol ten-thread CCSD(T) cascade has gone 1.8x (2026-08-10), then through the 2026-08-19/20 campaign to 1.12x; the full record lives in the git history of this directory and of `libs/Einsums/ComputeGraph`.
+The ethanol ten-thread CCSD(T) cascade has gone 1.8x (2026-08-10), through the 2026-08-19/20 campaign to 1.12x, and through the 2026-08-20/21 memory campaign to parity; the full record lives in the git history of this directory and of `libs/Einsums/ComputeGraph`.
 What follows is the conclusions, because each one changed how the next problem was approached.
 
 * **A measured plan beats a modeled one only when the measurement is clean, and it never is.**
   A chain of cost-model defects ended at a structural one: a re-plan computed from timings taken under the previous plan can only ever narrow it, because co-run contention inflates the area bound past the critical path.
   The re-plan is now a timed TRIAL - the candidate widths must beat the incumbent on the wall clock of one replay - so a polluted measurement cannot undo a good plan.
+
+* **The allocator was never the cost, and "uninitialized" was never uninitialized.**
+  The (T0) phase spent seconds per run constructing scratch tensors, and every hypothesis about malloc died by measurement: the real cost was `std::vector` value-initialization writing every page of every multi-megabyte tensor before the caller saw it, at hundreds of microseconds each.
+  Tensors carved from a memory pool are placed, not constructed, and arrive genuinely untouched; the write-before-read contracts that makes binding are now exercised by the tests instead of being silently absorbed by a hidden zero-fill.
+
+* **Scratch that dies on first read must never be materialized, because its footprint is a second cost.**
+  The gather graph's per-triplet `(Q|u v)` blocks were half the chunk budget, dead the moment the first rotation consumed them, and their high water pushed the OS into memory reclaim for a further multi-second penalty on a 32 GB machine.
+  One grouped node that streams the source through cache-sized tiles and writes only the final rotated block deleted the copies, the footprint, and the reclaim penalty together - and the smaller footprint let the chunker run whole passes as single chunks, which shrank every per-chunk cost behind it.
+
+* **Attribute before optimizing, at the granularity of the thing being blamed.**
+  Two plausible villains - a serializing thread fence, a slow gather kernel - were each exonerated by a direct experiment before any code changed, and the real costs (rotation FLOPs, value-init, OS reclaim) were only visible once the phase was timed per graph and per chunk with bytes and FLOP rates alongside.
+  Every optimization in this campaign was preceded by a measurement that named it, and two were cancelled by one.
 * **The PNO integral build took psi4's own shape.**
   Five staged phases with barriers became one cost-sorted parallel pass over pairs, each pair's gathers consumed cache-warm; the phase went from 4x psi4 threaded to about parity, and the compiled stage backends that carry it are now built and selected automatically.
 * **The residual's heaviest term is a sandwich, and its dressed factor never needs to exist.**
