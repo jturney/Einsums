@@ -54,19 +54,19 @@ and the cache is charged to the memory budget alongside the retained stores
 because it is alive while every chunk runs. Everything else here still dies with
 its chunk.
 
-**Nothing is shared between triplets.** The two buffers carrying an auxiliary
-index alongside the raw PAO domain - the gathered ``(Q|u v)`` block and its half
-transform - are by a wide margin the largest things here and are dead as soon as
-``(Q|a b)`` exists, so one of each per CHUNK is the obvious economy, and it is
-what this module did first. One buffer per triplet costs memory instead, which
-is what the chunk budget is for: both are counted in
-:meth:`LCCSDT0._triplet_bytes`, so a molecule large enough for them to matter
-simply gets more chunks.
+**Nothing is shared between triplets.** The two buffers that used to carry an
+auxiliary index alongside the raw PAO domain - the gathered ``(Q|u v)`` block
+and its half transform - were by a wide margin the largest things here, and
+neither exists any more: :meth:`LCCSDT0._emit_gather` emits one
+:func:`~einsums.linalg.grouped_gather_rotate` node that streams ``(Q|u v)``
+through cache a block of auxiliary functions at a time and writes ``(Q|a b)``
+straight out. Every remaining per-triplet buffer is small enough that one per
+triplet is what the chunk budget was written to hold.
 
-That is now a performance trade rather than a correctness one, and it was the
-other way round for a while. Shared, this phase returned wrong answers that
-changed from run to run - the water dimer's (T0) landed anywhere between -0.038
-and -0.082 against a true -0.006037088212 - because ``Graph::resolve_alias``
+Sharing them was a performance trade by the end, and a correctness one before
+that. Shared, this phase returned wrong answers that changed from run to run -
+the water dimer's (T0) landed anywhere between -0.038 and -0.082 against a true
+-0.006037088212 - because ``Graph::resolve_alias``
 gave up after a fixed 32 hops and ``link_alias_storage`` chained same-span
 handles one to the next, so past the 32nd triplet two accesses to one buffer
 resolved to different owners, the hazard scan saw no conflict, and the OpenMP
@@ -266,10 +266,10 @@ class LCCSDT0:
 
         The dominant term is the seven ``n_tno^3`` tensors - the three
         ``(x a | b d)`` integrals, ``W``, ``V``, the denominator and one scratch
-        that becomes the amplitudes - until the PAO domain grows, at which point
-        the gathered ``(Q | u v)`` block overtakes them. Both are counted,
-        because which one dominates depends on the basis set and the chunk
-        budget has to hold either way.
+        that becomes the amplitudes. The gathered ``(Q | u v)`` block used to
+        overtake them as soon as the PAO domain grew, and is absent here because
+        it is absent from the phase: :meth:`_emit_gather` streams it through
+        cache rather than allocating it.
 
         ``bridge_elements`` is the one term the plan has to supply rather than
         derive from the four domain sizes: the half-transformed ``S^T t`` blocks
@@ -285,7 +285,6 @@ class LCCSDT0:
         """
         nq, nl, nu, nt = r["nq"], r["nl"], r["nu"], r["nt"]
         return 8 * (8 * nt ** 3                    # K_xvvv x3, W, V, D, scratch, bracket
-                    + nq * nu * nu + nq * nt * nu  # (Q|u v) and its half transform
                     + nq * nt * nt                 # (Q | a b)
                     + 3 * nt * nt * max(nl, 1)     # the t_xl stacks
                     + 6 * nt * nt                  # the six t_kj
@@ -608,10 +607,9 @@ class LCCSDT0:
         for slot, r in enumerate(chunk):
             nq, nl, nu, nt = r["nq"], r["nl"], r["nu"], r["nt"]
             per = {}
-            # Per triplet, not per chunk. Sharing these is a measured data race
-            # under the OpenMP executor; see the module docstring.
-            per["uv"] = ten.pool_empty(pool, "(Q|u v) raw", [nq, nu, nu])
-            per["half"] = ten.pool_empty(pool, "(Q|a v) half", [nq, nt, nu])
+            # Per triplet, not per chunk, for every buffer below. Sharing one
+            # between triplets is a measured data race under the OpenMP
+            # executor; see the module docstring.
             per["q_vv"] = ten.pool_empty(pool, "(Q|a b)", [nq, nt, nt])
             per["q_vv_flat"] = self._keep(
                 state, per["q_vv"].reshape_view([nq, nt * nt]))
@@ -755,16 +753,31 @@ class LCCSDT0:
         """Gather the three-index blocks, and rotate ``(Q|u v)`` to TNOs.
 
         ``(Q | a b)`` is finished here and never fitted at all - see
-        :meth:`_emit_fit` for why - which is why the two-step rotation writes it
-        in this graph and nothing solves against it in the next.
+        :meth:`_emit_fit` for why - which is why the rotation writes it in this
+        graph and nothing solves against it in the next.
+
+        **The rotation is one grouped node for the whole chunk.** Written out,
+        ``X^T (Q|u v) X`` is a gather of the whole domain block and two
+        contractions through a half-transformed copy of it, and both transformed
+        indices are interior axes of a rank-3 block, so neither contraction is a
+        merged-axis GEMM. That form materializes the two largest tensors this
+        phase ever holds and streams them four times over to produce a result an
+        order smaller, which measured as the (T0) row's single dominant cost.
+        :func:`~einsums.linalg.grouped_gather_rotate` does the same arithmetic
+        with the gather fused into the rotation, a cache-resident block of
+        auxiliary functions at a time: ``(Q|u v)`` is read once out of the parent
+        and neither intermediate is ever allocated. It is not the trap
+        :mod:`dlpno.cc_integrals` records either - that is the form with one
+        pair of operations per AUXILIARY FUNCTION, 2 naux of them per triplet
+        and each building a view; this is one operation for the whole chunk.
         """
         cc = self.cc
+        rot_c, rot_q, rot_u, rot_x = [], [], [], []
         for r, per in zip(chunk, state["per"]):
             ijk, nl = r["ijk"], r["nl"]
             qs = [int(q) for q in cc.lmotriplet_to_ribfs[ijk]]
             ms = [int(m) for m in r["lmos"]]
             us = [int(u) for u in cc.lmotriplet_to_paos[ijk]]
-            X = cc.X_tno[ijk]
 
             for x, lmo in enumerate(r["labels"]):
                 la.gather(per["raw_v"][x], cc.q_ia, [qs, [int(lmo)], us])
@@ -772,14 +785,12 @@ class LCCSDT0:
                     la.gather(per["raw_o"][x], cc.q_ij, [qs, [int(lmo)], ms])
                     la.axpby(1.0, per["raw_o_flat"][x], 0.0, per["q_xo"][x])
 
-            # X^T (Q | u v) X, in two passes through the shared buffers. Both
-            # transformed indices are interior axes of a rank-3 block, so
-            # neither is a merged-axis GEMM; the per-auxiliary-function form is
-            # the trap cc_integrals records - 2 naux operations per triplet, and
-            # each one builds a view.
-            la.gather(per["uv"], cc.q_ab, [qs, us, us])
-            einsums.einsum("Qav <- Quv ; ua", per["half"], per["uv"], X)
-            einsums.einsum("Qab <- Qav ; vb", per["q_vv"], per["half"], X)
+            rot_c.append(per["q_vv"])
+            rot_q.append(qs)
+            rot_u.append(us)
+            rot_x.append(cc.X_tno[ijk])
+        if rot_c:
+            la.grouped_gather_rotate(rot_c, cc.q_ab, rot_q, rot_u, rot_x)
 
     def _emit_rotate(self, chunk, state, overlaps):
         """``(Q | x u) X -> (Q | x a)``, one batch for the whole chunk.
