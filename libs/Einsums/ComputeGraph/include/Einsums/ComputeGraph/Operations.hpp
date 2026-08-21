@@ -12,6 +12,7 @@
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeElementwise.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/LuPivots.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
@@ -5572,6 +5573,168 @@ APIARY_INSTANTIATE_AS("gesv", einsums::GeneralRuntimeTensor<std::complex<double>
         std::ignore = linear_algebra::gesv(static_cast<AType *>(a_slot->ptr), static_cast<BType *>(b_slot->ptr));
     };
     ctx.record(OpKind::Gesv, "gesv", {a_id, b_id}, {a_id, b_id}, std::move(executor));
+
+    return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// getrf / getrs: factor once, solve many
+//
+// The pivots are not a tensor - a BLAS integer array is none of the dtypes an
+// operand may carry - so they ride outside the dataflow in a LuPivots handle
+// whose buffer both executors bake in at capture time. What orders a
+// factorization against its solves is therefore the factorization TENSOR:
+// getrf writes it, getrs reads it, and the hazard scan serializes that pair on
+// its own. A getrs whose handle was filled by a getrf against a DIFFERENT
+// tensor has no edge holding the two together.
+// ─────────────────────────────────────────────────────────────────────────────
+
+template <MatrixConcept AType>
+auto getrf(AType *A, LuPivots *pivots) -> int {
+    auto &ctx    = CaptureContext::current();
+    auto  buffer = pivots->buffer();
+
+    if (!ctx.is_capturing()) {
+        LabeledSection("getrf eager");
+        return linear_algebra::getrf(A, buffer.get());
+    }
+
+    LabeledSection("getrf capture");
+    auto [a_id, a_slot] = ctx.get_slot(*A);
+
+    auto executor = [a_slot, buffer]() {
+        LabeledSection("getrf execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
+        std::ignore = linear_algebra::getrf(static_cast<AType *>(a_slot->ptr), buffer.get());
+    };
+    ctx.record(OpKind::Getrf, "getrf", {a_id}, {a_id}, std::move(executor));
+
+    return 0; // Return value not meaningful during capture
+}
+
+/// LU-factorize ``A`` in place, recording the row interchanges in ``pivots``.
+///
+/// On return ``A`` holds ``L`` and ``U`` in the LAPACK packing (the unit
+/// diagonal of ``L`` is not stored) and ``pivots`` holds the interchanges,
+/// sized to the order of ``A``. Unlike ``gesv``, the factorization survives
+/// every solve made against it, so one ``getrf`` feeds any number of
+/// ``getrs`` calls. Returns the LAPACK info code: 0 on success, positive
+/// ``i`` if ``U(i,i)`` is exactly zero - the factorization is still complete,
+/// but a solve against it is meaningless.
+///
+/// The same ``pivots`` object must be handed to the matching ``getrs``, and
+/// ordering rides on ``A`` rather than on the pivots.
+template <RuntimeRankTensorConcept AType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("getrf", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+APIARY_INSTANTIATE_AS("getrf", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+APIARY_INSTANTIATE_AS("getrf", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("getrf", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    auto getrf(AType *A, LuPivots *pivots) -> int {
+    if (A->rank() != 2) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::getrf requires a rank-2 tensor; got rank {}.", A->rank());
+    }
+
+    auto &ctx    = CaptureContext::current();
+    auto  buffer = pivots->buffer();
+
+    if (!ctx.is_capturing()) {
+        LabeledSection("getrf eager");
+        return linear_algebra::getrf(A, buffer.get());
+    }
+
+    LabeledSection("getrf capture");
+    auto [a_id, a_slot] = ctx.get_slot(*A);
+
+    auto executor = [a_slot, buffer]() {
+        LabeledSection("getrf execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
+        std::ignore = linear_algebra::getrf(static_cast<AType *>(a_slot->ptr), buffer.get());
+    };
+    ctx.record(OpKind::Getrf, "getrf", {a_id}, {a_id}, std::move(executor));
+
+    return 0;
+}
+
+template <MatrixConcept AType, TensorConcept BType>
+    requires requires {
+        requires SameUnderlying<AType, BType>;
+        requires MatrixConcept<BType> || VectorConcept<BType>;
+    }
+auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
+    auto &ctx    = CaptureContext::current();
+    auto  buffer = pivots.buffer();
+
+    if (!ctx.is_capturing()) {
+        LabeledSection("getrs eager");
+        return linear_algebra::getrs(A, *buffer, B);
+    }
+
+    LabeledSection("getrs capture");
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [b_id, b_slot] = ctx.get_slot(*B);
+
+    auto executor = [a_slot, b_slot, buffer]() {
+        LabeledSection("getrs execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
+        std::ignore = linear_algebra::getrs(*static_cast<AType const *>(a_slot->ptr), *buffer, static_cast<BType *>(b_slot->ptr));
+    };
+    ctx.record(OpKind::Getrs, "getrs", {a_id, b_id}, {b_id}, std::move(executor));
+
+    return 0; // Return value not meaningful during capture
+}
+
+/// Solve ``A * X = B`` in place against a factorization ``getrf`` produced.
+///
+/// ``A`` is the LU factorization and ``pivots`` the interchanges the matching
+/// ``getrf`` left; both are READ, so the pair serves any number of
+/// right-hand sides and any number of replays. ``B`` may be rank 1 (a single
+/// right-hand side) or rank 2 (one per column), and on return holds ``X``.
+/// Returns the LAPACK info code, which is 0 unless an argument was invalid.
+template <RuntimeRankTensorConcept AType, RuntimeRankTensorConcept BType>
+    requires SameUnderlying<AType, BType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::GeneralRuntimeTensor<float,                std::allocator<float>>)
+APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
+APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<float,                std::allocator<float>>,                einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
+    if (A.rank() != 2 || (B->rank() != 1 && B->rank() != 2)) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::getrs requires A rank-2 and B rank-1 or rank-2; got {}, {}.", A.rank(), B->rank());
+    }
+
+    auto &ctx    = CaptureContext::current();
+    auto  buffer = pivots.buffer();
+
+    if (!ctx.is_capturing()) {
+        LabeledSection("getrs eager");
+        return linear_algebra::getrs(A, *buffer, B);
+    }
+
+    LabeledSection("getrs capture");
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [b_id, b_slot] = ctx.get_slot(*B);
+
+    auto executor = [a_slot, b_slot, buffer]() {
+        LabeledSection("getrs execute");
+        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
+        std::ignore = linear_algebra::getrs(*static_cast<AType const *>(a_slot->ptr), *buffer, static_cast<BType *>(b_slot->ptr));
+    };
+    ctx.record(OpKind::Getrs, "getrs", {a_id, b_id}, {b_id}, std::move(executor));
 
     return 0;
 }

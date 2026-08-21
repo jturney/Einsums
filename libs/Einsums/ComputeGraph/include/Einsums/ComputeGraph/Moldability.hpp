@@ -111,6 +111,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
     case OpKind::TruncatedSyev:
     case OpKind::Gesv:
     case OpKind::Getrf:
+    case OpKind::Getrs:
     case OpKind::Getri:
     case OpKind::Invert:
     case OpKind::Pseudoinverse:

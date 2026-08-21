@@ -40,6 +40,7 @@ set(ComputeGraphTests
     GraphRegistry.cpp
     CostModel.cpp
     LoopOptimizationCorrectness.cpp
+    LuFactorization.cpp
     MemoryNodes.cpp
     MetadataBoundary.cpp
     MixedOps.cpp
@@ -165,6 +166,7 @@ set(ComputeGraphTests
     test_lapack_python.py
     test_linalg_new_python.py
     test_loop_python.py
+    test_lu_factorization_python.py
     test_mixed_ops_python.py
     test_mp2_python.py
     test_outer_sum_python.py

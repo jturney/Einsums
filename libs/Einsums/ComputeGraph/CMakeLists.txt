@@ -15,6 +15,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Error.hpp
     Einsums/ComputeGraph/ABILayout.hpp
     Einsums/ComputeGraph/Graph.hpp
+    Einsums/ComputeGraph/LuPivots.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/CostModel.hpp
     Einsums/ComputeGraph/Moldability.hpp

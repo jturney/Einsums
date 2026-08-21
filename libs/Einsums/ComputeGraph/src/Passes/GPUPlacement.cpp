@@ -51,6 +51,7 @@ bool is_gpu_capable_op(OpKind kind) {
     case OpKind::Heev:
     case OpKind::Gesv:
     case OpKind::Getrf:
+    case OpKind::Getrs:
     case OpKind::Getri:
     case OpKind::Invert:
     case OpKind::SVD:

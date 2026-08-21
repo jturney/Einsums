@@ -23,7 +23,7 @@ namespace APIARY_MODULE("graph") compute_graph {
  * Categories:
  * - **TensorAlgebra**: Einsum, Permute, Transpose, ElementTransform, KhatriRao
  * - **BLAS-level**: Gemm, Gemv, Ger, Dot, Scale, Axpby, DirectProduct
- * - **LAPACK-level**: SVD, QR, Syev, Heev, Geev, Gesv, Invert, Det, Pow, etc.
+ * - **LAPACK-level**: SVD, QR, Syev, Heev, Geev, Gesv, Getrf, Getrs, Invert, Det, Pow, etc.
  * - **Other**: HPTTPermute, Custom
  */
 enum class APIARY_EXPOSE OpKind : std::uint8_t {
@@ -60,6 +60,7 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     TruncatedSyev, ///< Truncated symmetric eigendecomposition
     Gesv,          ///< General linear system solver (AX = B)
     Getrf,         ///< LU factorization
+    Getrs,         ///< Solve against an LU factorization
     Getri,         ///< Inverse from LU factorization
     Invert,        ///< Matrix inverse
     Pseudoinverse, ///< Moore-Penrose pseudoinverse
@@ -224,6 +225,8 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "Gesv";
     case OpKind::Getrf:
         return "Getrf";
+    case OpKind::Getrs:
+        return "Getrs";
     case OpKind::Getri:
         return "Getri";
     case OpKind::Invert:
