@@ -4641,10 +4641,14 @@ APIARY_MODULE("linalg")
 // The combinations the DLPNO iteration actually emits (owning stores for the
 // factors and accumulators, a view of the packed amplitudes for S), plus the
 // all-owning and all-view forms for tests and for callers that stage
-// differently. Extend with more APIARY_INSTANTIATE_AS lines as needed.
+// differently. The mixed owning-C/owning-P with viewed A, M and S form is what
+// a caller whose three-index factors are reshaped slabs rather than owning
+// stores produces; only the double spelling exists because no float caller
+// stages that way. Extend with more APIARY_INSTANTIATE_AS lines as needed.
 APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
 APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
