@@ -1090,7 +1090,7 @@ APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<dou
         }
     }
     std::vector<bool> reduced(N, false);
-    for (size_t ax : axes)
+    for (size_t const ax : axes)
         reduced[ax] = true;
     std::vector<size_t> kept;
     for (size_t k = 0; k < N; ++k)
@@ -4512,6 +4512,415 @@ APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<std::complex<d
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// grouped_permute / grouped_direct_product / grouped_direct_division:
+// many independent ELEMENT-WISE members as ONE node
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+
+/// Reject a run in which two members would write the same destination tensor.
+///
+/// These forms thread over their members, so a shared destination is a data
+/// race with no ordering to fall back on - the contract
+/// @ref grouped_batched_gemm states, for the same reason. Like that check this
+/// compares the operand handles, so two DISTINCT views of one buffer pass it;
+/// splitting a tensor across members is the caller's promise either way.
+template <typename CType>
+void require_distinct_destinations(std::vector<CType *> const &c_list, char const *who) {
+    std::vector<CType const *> seen(c_list.begin(), c_list.end());
+    std::sort(seen.begin(), seen.end());
+    if (std::adjacent_find(seen.begin(), seen.end()) != seen.end()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "{}: two members share a destination tensor. Members run concurrently, so they would "
+                                "race; split them into separate calls",
+                                who);
+    }
+}
+
+/// Run @p member over every index as one OpenMP team, carrying the first
+/// exception out by hand: one may not cross a region boundary.
+template <typename F>
+void run_grouped_members(size_t count, F &&member) {
+    // A run of one IS the call the grouped form replaces, and forking a team
+    // for it costs more than the member does. Worth the branch because a gated
+    // capture is full of them: a conditional over one entity still wants the
+    // grouped spelling, so that the ungated capture beside it can be the same
+    // emitter with a longer list.
+    if (count == 1) {
+        member(size_t{0});
+        return;
+    }
+    std::exception_ptr first;
+    EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
+    for (size_t i = 0; i < count; i++) {
+        try {
+            member(i);
+        } catch (...) {
+            EINSUMS_OMP_PRAGMA(critical(grouped_elementwise_failure))
+            if (!first) {
+                first = std::current_exception();
+            }
+        }
+    }
+    if (first) {
+        std::rethrow_exception(first);
+    }
+}
+
+} // namespace detail
+
+/// @brief One node holding many independent permutes:
+/// ``C_i = c_pfs[i] * C_i + a_pfs[i] * permute(A_i)`` for every member, all of
+/// them under one spec.
+///
+/// The grouped counterpart of @ref string_permute, for the shape a
+/// local-correlation phase produces: one small reorder per pair or per triplet,
+/// hundreds of them, every one a node of its own. The arithmetic is unchanged
+/// and the dispatch is paid once.
+///
+/// **Members run CONCURRENTLY and that costs nothing in reproducibility.** A
+/// permute is element-wise - every output element is one input element scaled
+/// and added to what was there - so no member's result depends on how the run
+/// was divided, and each member writes only its own destination. The last bit
+/// of every member is therefore the last bit the single call would have
+/// written, whatever the schedule. That is why this one threads where
+/// @ref grouped_dot and @ref grouped_axpby do not: theirs is a REDUCTION whose
+/// order a schedule would decide.
+///
+/// One spec for the whole run, because a batch drawn at one emission site has
+/// one. Per-member prefactors, because that is the difference between members
+/// worth merging: a term-by-term accumulation disagrees on its coefficients and
+/// on whether it is the first term (``c_pf`` zero) or a later one.
+///
+/// Destinations must be distinct, for the concurrency above.
+///
+/// Outside capture this executes immediately, so the same call works eagerly.
+///
+/// @param spec   The permutation, e.g. ``"abc <- acb"``, shared by every member.
+/// @param c_list Destinations, one per member. Must be distinct.
+/// @param a_list Sources, same length as @p c_list.
+/// @param c_pfs  Per-member prefactor on the destination. A non-zero entry
+///               means the member reads C as well as writing it, which the node
+///               records as a dependency.
+/// @param a_pfs  Per-member prefactor on the source.
+template <CoreBasicTensorConcept AType, CoreBasicTensorConcept CType>
+    requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+// The 4 owning/view combinations per dtype: a per-entity block is an owning
+// store and a slice of a padded one is a view, and a run may mix them.
+//
+// float
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<double>,                           einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<double>,                           einsums::RuntimeTensorView<double>)
+// complex<float>
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<std::complex<float>>,                                        einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<std::complex<float>>,                                        einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void grouped_permute(std::string const &spec, std::vector<CType *> c_list, std::vector<AType const *> a_list, std::vector<double> c_pfs,
+                         std::vector<double> a_pfs) {
+    using T = typename CType::ValueType;
+
+    size_t const count = c_list.size();
+    if (count == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_permute: the run is empty");
+    }
+    if (a_list.size() != count || c_pfs.size() != count || a_pfs.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "cg::grouped_permute: the C, A, c_pf and a_pf lists must be the same length; got {}, {}, {}, {}", count,
+                                a_list.size(), c_pfs.size(), a_pfs.size());
+    }
+
+    auto parse_result = parse_permute_spec(std::string_view{spec});
+    if (!parse_result) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parse_result.error().message);
+    }
+    auto parsed = parse_result.value();
+
+    for (size_t i = 0; i < count; i++) {
+        if (c_list[i] == nullptr || a_list[i] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_permute: member {} has a null operand", i);
+        }
+        if (detail::tensor_rank(*a_list[i]) != parsed.a_indices.size() || detail::tensor_rank(*c_list[i]) != parsed.c_indices.size()) {
+            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_permute: member {} has ranks ({}, {}) where the spec wants ({}, {})", i,
+                                    detail::tensor_rank(*c_list[i]), detail::tensor_rank(*a_list[i]), parsed.c_indices.size(),
+                                    parsed.a_indices.size());
+        }
+    }
+    detail::require_distinct_destinations(c_list, "cg::grouped_permute");
+
+    std::vector<T> c_typed(count), a_typed(count);
+    for (size_t i = 0; i < count; i++) {
+        c_typed[i] = static_cast<T>(c_pfs[i]);
+        a_typed[i] = static_cast<T>(a_pfs[i]);
+    }
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("grouped_permute eager");
+        detail::run_grouped_members(
+            count, [&](size_t i) { dispatch::string_permute<AType, CType>(parsed, c_typed[i], c_list[i], a_typed[i], *a_list[i]); });
+        return;
+    }
+
+    LabeledSection("grouped_permute capture");
+    std::vector<TensorId>     inputs, outputs;
+    std::vector<TensorSlot *> c_slots, a_slots;
+    inputs.reserve(2 * count);
+    outputs.reserve(count);
+    c_slots.reserve(count);
+    a_slots.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
+        auto [c_id, c_slot] = ctx.get_slot(*c_list[i]);
+        inputs.push_back(a_id);
+        // A non-zero c_pf reads the destination before writing it, so the RAW
+        // edge from whoever produced C must survive.
+        if (c_typed[i] != T{0}) {
+            inputs.push_back(c_id);
+        }
+        outputs.push_back(c_id);
+        a_slots.push_back(a_slot);
+        c_slots.push_back(c_slot);
+    }
+
+    auto executor = [parsed, c_typed, a_typed, c_slots = std::move(c_slots), a_slots = std::move(a_slots)]() {
+        LabeledSection("grouped_permute execute");
+        detail::run_grouped_members(c_slots.size(), [&](size_t i) {
+            dispatch::string_permute<AType, CType>(parsed, c_typed[i], static_cast<CType *>(c_slots[i]->ptr), a_typed[i],
+                                                   *static_cast<AType const *>(a_slots[i]->ptr));
+        });
+    };
+
+    GroupedElementwiseDescriptor d;
+    d.total = static_cast<int>(count);
+    d.alphas.reserve(count);
+    d.betas.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        d.alphas.emplace_back(a_typed[i]);
+        d.betas.emplace_back(c_typed[i]);
+    }
+    ctx.record(OpKind::GroupedPermute,
+               fmt::format("permute x{}: C[{}] = A[{}]", count, fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ",")),
+               std::move(inputs), std::move(outputs), std::move(executor), std::move(d));
+}
+
+namespace detail {
+
+/// The body @ref grouped_direct_product and @ref grouped_direct_division share:
+/// a run of independent ``C_i = alpha_i * (A_i op B_i) + beta_i * C_i``
+/// members, threaded, recorded as one node of @p kind.
+///
+/// @p kernel is the single-tensor entry point the member calls, which is what
+/// makes a member's bits the bits the ungrouped emission wrote: the grouped
+/// form adds a loop and nothing else.
+template <typename T, typename AType, typename BType, typename CType, typename Kernel>
+void grouped_binary_elementwise(char const *who, OpKind kind, char const *label, Kernel kernel, std::vector<T> const &alphas,
+                                std::vector<AType const *> const &a_list, std::vector<BType const *> const &b_list,
+                                std::vector<T> const &betas, std::vector<CType *> const &c_list) {
+    size_t const count = c_list.size();
+    if (count == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: the run is empty", who);
+    }
+    if (alphas.size() != count || a_list.size() != count || b_list.size() != count || betas.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "{}: the alpha, A, B, beta and C lists must be the same length; got {}, {}, {}, {}, {}", who, alphas.size(),
+                                a_list.size(), b_list.size(), betas.size(), count);
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if (a_list[i] == nullptr || b_list[i] == nullptr || c_list[i] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: member {} has a null operand", who, i);
+        }
+        if (tensor_rank(*a_list[i]) != tensor_rank(*b_list[i]) || tensor_rank(*a_list[i]) != tensor_rank(*c_list[i])) {
+            EINSUMS_THROW_EXCEPTION(rank_error, "{}: member {}'s operands disagree on rank ({}, {} and {})", who, i,
+                                    tensor_rank(*a_list[i]), tensor_rank(*b_list[i]), tensor_rank(*c_list[i]));
+        }
+        if (tensor_dims(*a_list[i]) != tensor_dims(*b_list[i]) || tensor_dims(*a_list[i]) != tensor_dims(*c_list[i])) {
+            EINSUMS_THROW_EXCEPTION(dimension_error, "{}: member {}'s operands disagree on shape", who, i);
+        }
+    }
+    require_distinct_destinations(c_list, who);
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        run_grouped_members(count, [&](size_t i) { kernel(alphas[i], a_list[i], b_list[i], betas[i], c_list[i]); });
+        return;
+    }
+
+    std::vector<TensorId>     inputs, outputs;
+    std::vector<TensorSlot *> a_slots, b_slots, c_slots;
+    inputs.reserve(3 * count);
+    outputs.reserve(count);
+    a_slots.reserve(count);
+    b_slots.reserve(count);
+    c_slots.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
+        auto [b_id, b_slot] = ctx.get_slot(*b_list[i]);
+        auto [c_id, c_slot] = ctx.get_slot(*c_list[i]);
+        inputs.push_back(a_id);
+        inputs.push_back(b_id);
+        // A non-zero beta reads the destination before writing it.
+        if (betas[i] != T{0}) {
+            inputs.push_back(c_id);
+        }
+        outputs.push_back(c_id);
+        a_slots.push_back(a_slot);
+        b_slots.push_back(b_slot);
+        c_slots.push_back(c_slot);
+    }
+
+    auto executor = [kernel, alphas, betas, a_slots = std::move(a_slots), b_slots = std::move(b_slots), c_slots = std::move(c_slots)]() {
+        run_grouped_members(c_slots.size(), [&](size_t i) {
+            kernel(alphas[i], static_cast<AType const *>(a_slots[i]->ptr), static_cast<BType const *>(b_slots[i]->ptr), betas[i],
+                   static_cast<CType *>(c_slots[i]->ptr));
+        });
+    };
+
+    GroupedElementwiseDescriptor d;
+    d.total = static_cast<int>(count);
+    d.alphas.reserve(count);
+    d.betas.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        d.alphas.emplace_back(alphas[i]);
+        d.betas.emplace_back(betas[i]);
+    }
+    ctx.record(kind, fmt::format("{} x{}", label, count), std::move(inputs), std::move(outputs), std::move(executor), std::move(d));
+}
+
+} // namespace detail
+
+/// @brief One node holding many independent element-wise products:
+/// ``C_i = alphas[i] * (A_i ⊙ B_i) + betas[i] * C_i`` for every member.
+///
+/// The grouped counterpart of @ref direct_product, and the shape a
+/// local-correlation residual reaches it in: one Hadamard product per entity
+/// against that entity's own denominator or weight block, hundreds of them.
+///
+/// Members run CONCURRENTLY, which an element-wise kernel can afford: no
+/// member's result depends on how the run was divided, so every member writes
+/// the bits the single call would have written whatever the schedule. Each
+/// member calls the same @ref linear_algebra::direct_product a single
+/// @ref direct_product node calls, so the grouped form adds a loop and nothing
+/// else. Destinations must be distinct.
+///
+/// Outside capture this executes immediately, so the same call works eagerly.
+template <typename T, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
+    requires requires {
+        requires std::is_same_v<typename AType::ValueType, T>;
+        requires std::is_same_v<typename BType::ValueType, T>;
+        requires std::is_same_v<typename CType::ValueType, T>;
+    }
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+// The same 8 owning/view combinations per dtype the single form carries.
+//
+// float
+APIARY_INSTANTIATE_AS("grouped_direct_product", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", float, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", float, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", float, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", float, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+APIARY_INSTANTIATE_AS("grouped_direct_product", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                           einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                           einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", double, einsums::RuntimeTensorView<double>,                           einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", double, einsums::RuntimeTensorView<double>,                           einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", double, einsums::RuntimeTensorView<double>,                           einsums::RuntimeTensorView<double>,                           einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", double, einsums::RuntimeTensorView<double>,                           einsums::RuntimeTensorView<double>,                           einsums::RuntimeTensorView<double>)
+// complex<float>
+APIARY_INSTANTIATE_AS("grouped_direct_product", std::complex<float>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", std::complex<float>, einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+APIARY_INSTANTIATE_AS("grouped_direct_product", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_direct_product", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void grouped_direct_product(std::vector<T> alphas, std::vector<AType const *> a_list, std::vector<BType const *> b_list,
+                                std::vector<T> betas, std::vector<CType *> c_list) {
+    LabeledSection("grouped_direct_product");
+    detail::grouped_binary_elementwise<T, AType, BType, CType>(
+        "cg::grouped_direct_product", OpKind::GroupedDirectProduct, "direct_product",
+        [](T alpha, AType const *a, BType const *b, T beta, CType *c) { linear_algebra::direct_product(alpha, *a, *b, beta, c); }, alphas,
+        a_list, b_list, betas, c_list);
+}
+
+/// @brief One node holding many independent element-wise quotients:
+/// ``C_i = alphas[i] * (A_i ⊘ B_i) + betas[i] * C_i`` for every member.
+///
+/// The grouped counterpart of @ref direct_division, and the shape an amplitude
+/// update reaches it in: one residual divided by its own denominator block per
+/// entity. Everything @ref grouped_direct_product says about concurrency,
+/// bit-identity and distinct destinations holds here unchanged.
+///
+/// Outside capture this executes immediately, so the same call works eagerly.
+template <typename T, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
+    requires requires {
+        requires std::is_same_v<typename AType::ValueType, T>;
+        requires std::is_same_v<typename BType::ValueType, T>;
+        requires std::is_same_v<typename CType::ValueType, T>;
+    }
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+// The same 8 owning/view combinations per dtype the single form carries.
+//
+// float
+APIARY_INSTANTIATE_AS("grouped_direct_division", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", float, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", float, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", float, einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", float, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", float, einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>,                          einsums::RuntimeTensorView<float>)
+// double
+APIARY_INSTANTIATE_AS("grouped_direct_division", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                           einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", double, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>,                           einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", double, einsums::RuntimeTensorView<double>,                           einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", double, einsums::RuntimeTensorView<double>,                           einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", double, einsums::RuntimeTensorView<double>,                           einsums::RuntimeTensorView<double>,                           einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", double, einsums::RuntimeTensorView<double>,                           einsums::RuntimeTensorView<double>,                           einsums::RuntimeTensorView<double>)
+// complex<float>
+APIARY_INSTANTIATE_AS("grouped_direct_division", std::complex<float>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", std::complex<float>, einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>, einsums::RuntimeTensorView<std::complex<float>>)
+// complex<double>
+APIARY_INSTANTIATE_AS("grouped_direct_division", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("grouped_direct_division", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
+    // clang-format on
+    void grouped_direct_division(std::vector<T> alphas, std::vector<AType const *> a_list, std::vector<BType const *> b_list,
+                                 std::vector<T> betas, std::vector<CType *> c_list) {
+    LabeledSection("grouped_direct_division");
+    detail::grouped_binary_elementwise<T, AType, BType, CType>(
+        "cg::grouped_direct_division", OpKind::GroupedDirectDivision, "direct_division",
+        [](T alpha, AType const *a, BType const *b, T beta, CType *c) { linear_algebra::direct_division(alpha, *a, *b, beta, c); }, alphas,
+        a_list, b_list, betas, c_list);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // grouped_sandwich: q-tiled dressed sandwich accumulations as ONE node
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -5967,8 +6376,8 @@ APIARY_INSTANTIATE_AS("gesv", einsums::GeneralRuntimeTensor<std::complex<double>
 
 template <MatrixConcept AType>
 auto getrf(AType *A, LuPivots *pivots) -> int {
-    auto &ctx    = CaptureContext::current();
-    auto  buffer = pivots->buffer();
+    auto       &ctx    = CaptureContext::current();
+    auto const &buffer = pivots->buffer();
 
     if (!ctx.is_capturing()) {
         LabeledSection("getrf eager");
@@ -6018,8 +6427,8 @@ APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<std::complex<double>>)
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::getrf requires a rank-2 tensor; got rank {}.", A->rank());
     }
 
-    auto &ctx    = CaptureContext::current();
-    auto  buffer = pivots->buffer();
+    auto       &ctx    = CaptureContext::current();
+    auto const &buffer = pivots->buffer();
 
     if (!ctx.is_capturing()) {
         LabeledSection("getrf eager");
@@ -6045,8 +6454,8 @@ template <MatrixConcept AType, TensorConcept BType>
         requires MatrixConcept<BType> || VectorConcept<BType>;
     }
 auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
-    auto &ctx    = CaptureContext::current();
-    auto  buffer = pivots.buffer();
+    auto       &ctx    = CaptureContext::current();
+    auto const &buffer = pivots.buffer();
 
     if (!ctx.is_capturing()) {
         LabeledSection("getrs eager");
@@ -6093,8 +6502,8 @@ APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<std::complex<double
         EINSUMS_THROW_EXCEPTION(rank_error, "cg::getrs requires A rank-2 and B rank-1 or rank-2; got {}, {}.", A.rank(), B->rank());
     }
 
-    auto &ctx    = CaptureContext::current();
-    auto  buffer = pivots.buffer();
+    auto       &ctx    = CaptureContext::current();
+    auto const &buffer = pivots.buffer();
 
     if (!ctx.is_capturing()) {
         LabeledSection("getrs eager");

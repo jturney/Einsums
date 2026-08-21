@@ -59,9 +59,25 @@ phase is captured twice and each pass picks: gated per :attr:`LCCSDT.block`
 where something has settled, and ungated over every triplet where nothing has,
 which is every pass until the first triplet settles. The second is a
 substitution rather than an approximation, and :meth:`LCCSDT.iterate` says why.
-At methanol/cc-pVDZ that is 16482 nodes a pass becoming 360 on the passes that
+At methanol/cc-pVDZ that is 16482 nodes a pass becoming 104 on the passes that
 cost anything and 8499 on the rest, with the energies and the pass count
 unmoved to the last bit.
+
+**The couplings were never most of the node count, though - the rest of the
+pass was.** Eq. 111's prefix ``R = W + T D``, Eq. 112's step, the transposed
+copies and Eq. 53's energy bracket are all per-triplet ELEMENT-WISE work, and
+emitted a node at a time they outnumbered the coupling calls several to one: at
+methanol/cc-pVDZ, 903 nodes to produce 129 energies and 258 to prepare 129
+residuals, against 102 grouped GEMM calls for every coupling in the plan. All
+of them are grouped now too, through :func:`~einsums.linalg.grouped_permute`,
+:func:`~einsums.linalg.grouped_direct_product`,
+:func:`~einsums.linalg.grouped_direct_division` and the two grouped forms that
+already existed, and it is legitimate for a simpler reason than the batches
+are: element-wise work holds no reduction for a schedule to reorder, and each
+member writes only its own block, so a member's last bit is the last bit its
+own node wrote whatever order the members ran in. A pass over every triplet is
+114 dispatches where it was 1779, and the energy phase is seven nodes whatever
+the triplet count.
 """
 
 import time
@@ -245,9 +261,9 @@ class LCCSDT:
         #: block  gated nodes   passes  (T) energy drift
         #: =====  ============  ======  =======================
         #: 1      8499          9       0 (bit-identical)
-        #: 4      2581          9       1.4e-9
-        #: 8      1534          10      2.4e-9
-        #: 16     980           10      2.9e-9
+        #: 4      2529          9       1.4e-9
+        #: 8      1404          10      2.4e-9
+        #: 16     786           10      2.9e-9
         #: =====  ============  ======  =======================
         #:
         #: The drift is not error introduced here. A settled triplet sharing a
@@ -502,18 +518,33 @@ class LCCSDT:
         A partner is read by triplets in every block, so a copy written inside
         one block's conditional and read inside another's would want an edge
         between two conditionals in both directions.
+
+        ONE node for every copy, because a permute is element-wise: no member's
+        output element depends on another's, so the members may run at once and
+        each still lands on the bits its own node wrote.
         """
-        for ijk, out in self.Tprime.items():
-            einsums.permute("abc <- acb", out, self.t0.T[ijk])
+        ijks = list(self.Tprime)
+        la.grouped_permute("abc <- acb", [self.Tprime[ijk] for ijk in ijks],
+                           [self.t0.T[ijk] for ijk in ijks],
+                           [0.0] * len(ijks), [1.0] * len(ijks))
 
     def _emit_prep(self, records):
-        """``R = W + T D``, the part of Eq. 111 that is not a coupling."""
-        for r in records:
-            ijk = r["ijk"]
-            R = self.R[ijk]
-            la.axpby(1.0, self.t0.W[ijk], 0.0, R)
-            einsums.einsum("abc <- abc ; abc", R, self.t0.T[ijk], self.D[ijk],
-                           c_pf=1.0)
+        """``R = W + T D``, the part of Eq. 111 that is not a coupling.
+
+        Two nodes for the whole block rather than two per triplet. Each member
+        calls the same kernel the per-triplet emission called, on the same
+        operands, writing its own ``R``; the merge adds a loop and nothing
+        else, and an element-wise kernel has no reduction for a schedule to
+        reorder. The einsum the second of these was spelled as resolved to
+        ``direct_product`` at every dispatch; the grouped form makes that call
+        directly.
+        """
+        ones = [1.0] * len(records)
+        R = [self.R[r["ijk"]] for r in records]
+        la.grouped_axpby(ones, [self.t0.W[r["ijk"]] for r in records],
+                         [0.0] * len(records), R)
+        la.grouped_direct_product(ones, [self.t0.T[r["ijk"]] for r in records],
+                                  [self.D[r["ijk"]] for r in records], ones, R)
 
     def _emit_couplings(self, records):
         """Eq. 111's coupling sums, as three grouped GEMMs per coupling slot.
@@ -574,12 +605,19 @@ class LCCSDT:
         read for the convergence norm by the time this graph replays, so no
         tensor is added and no value is needed after it is overwritten. The
         arithmetic is unchanged and elementwise, so the energies do not move.
+
+        Two nodes for the whole run, on the same terms as :meth:`_emit_prep`:
+        one member per triplet, each on its own ``R`` and its own ``T``, each
+        calling the kernel the per-triplet emission called.
         """
-        for r in (records if records is not None else self._plan):
-            ijk = r["ijk"]
-            la.direct_division(-1.0, self.R[ijk], self.D[ijk], 0.0,
-                               self.R[ijk])
-            la.axpby(1.0, self.R[ijk], 1.0, self.t0.T[ijk])
+        records = self._plan if records is None else records
+        count = len(records)
+        R = [self.R[r["ijk"]] for r in records]
+        la.grouped_direct_division([-1.0] * count, R,
+                                   [self.D[r["ijk"]] for r in records],
+                                   [0.0] * count, R)
+        la.grouped_axpby([1.0] * count, R, [1.0] * count,
+                         [self.t0.T[r["ijk"]] for r in records])
 
     def _emit_energy(self):
         """Eq. 53 again, at the current amplitudes.
@@ -588,17 +626,30 @@ class LCCSDT:
         that now solve the coupled equation rather than the diagonal one. psi4
         re-derives it in ``compute_t_iteration_energy``; here the coefficients
         are the ones ``lccsd_t0`` already resolved.
+
+        **Seven nodes for the whole phase, whatever the triplet count**, where
+        the per-triplet emission spent seven per number: one grouped permute
+        per bracket term and one grouped dot at the end.
+
+        Grouping by TERM rather than by triplet is what keeps the sum in place.
+        Each triplet's bracket is still accumulated over the six terms in
+        :data:`~dlpno.lccsd_t0._ENERGY_TERMS` order, because the six nodes
+        chain through that bracket; all that the merge changes is which triplet
+        a thread reaches first, and a permute's arithmetic cannot see that. The
+        closing dot is a reduction, so its members stay sequential - that is
+        :func:`~einsums.linalg.grouped_dot`'s own contract.
         """
         from .lccsd_t0 import _ENERGY_TERMS
 
-        for r in self._plan:
-            ijk, nt = r["ijk"], r["nt"]
-            bracket = self._bracket[ijk]
-            for term, (coefficient, order) in enumerate(_ENERGY_TERMS):
-                einsums.permute(f"abc <- {order}", bracket, self.t0.V[ijk],
-                                c_pf=0.0 if term == 0 else 1.0,
-                                a_pf=coefficient * r["prefactor"])
-            la.dot(self._e_view[ijk], bracket, self.t0.T[ijk])
+        count = len(self._plan)
+        brackets = [self._bracket[r["ijk"]] for r in self._plan]
+        for term, (coefficient, order) in enumerate(_ENERGY_TERMS):
+            la.grouped_permute(f"abc <- {order}", brackets,
+                               [self.t0.V[r["ijk"]] for r in self._plan],
+                               [0.0 if term == 0 else 1.0] * count,
+                               [coefficient * r["prefactor"] for r in self._plan])
+        la.grouped_dot([self._e_view[r["ijk"]] for r in self._plan], brackets,
+                       [self.t0.T[r["ijk"]] for r in self._plan])
 
     # -- the solve -----------------------------------------------------------
 
@@ -642,6 +693,39 @@ class LCCSDT:
             self._bracket[r["ijk"]] = ten.zeros("bracket", [nt, nt, nt])
             self._e_view[r["ijk"]] = e_all[slot:slot + 1]
             self._keep.append(self._e_view[r["ijk"]])
+
+        # The convergence norm's operands, built once. ``ten.rms`` is
+        # sqrt(dot(A, A) / n): the dot is what has to cross the binding and the
+        # rest is arithmetic on a host float, so the sweep is one grouped dot
+        # and a Python max rather than a call per triplet. Eager, not captured,
+        # because the norm is read BETWEEN two graphs - the residual has to be
+        # complete and the step must not have run - and because a grouped dot
+        # is sequential by contract either way.
+        rms_all = ten.zeros("R . R (triplet)", [len(self._plan)])
+        rms_dst = [rms_all[slot:slot + 1] for slot in range(len(self._plan))]
+        rms_src = [self.R[r["ijk"]] for r in self._plan]
+        rms_size = [r["nt"] ** 3 for r in self._plan]
+        rms_view = ten.view(rms_all)
+        self._keep += rms_dst
+        slot_of = {r["ijk"]: slot for slot, r in enumerate(self._plan)}
+        plan_ijk = np.array([r["ijk"] for r in self._plan], dtype=int)
+
+        def _max_rms(slots):
+            """``max(ten.rms(R))`` over the triplets at ``slots``.
+
+            Skipped triplets contribute nothing, exactly as psi4's
+            zero-initialized ``R_iajbkc_rms`` does, so they are left out of the
+            batch rather than computed and discarded.
+            """
+            if not slots:
+                return 0.0
+            if len(slots) == len(self._plan):
+                la.grouped_dot(rms_dst, rms_src, rms_src)
+            else:
+                src = [rms_src[slot] for slot in slots]
+                la.grouped_dot([rms_dst[slot] for slot in slots], src, src)
+            return max(float(np.sqrt(rms_view[slot] / rms_size[slot]))
+                       for slot in slots)
 
         # The energy is captured whole either way. psi4 skips only the residual
         # and the amplitude update - `compute_t_iteration_energy` runs over
@@ -694,7 +778,7 @@ class LCCSDT:
 
         g_residual = cg.Graph("lccsd(t): Eq. 111 residual")
         g_step = cg.Graph("lccsd(t): Eq. 112 step")
-        g_every = None
+        g_every = g_step_every = None
         self.n_batched_nodes = 0
         gated, stepped = 0, 0
         if skipping:
@@ -704,7 +788,9 @@ class LCCSDT:
                 with cg.capture(branch):
                     self._emit_residual(block)
                 gated += branch.num_nodes()
-                self.n_batched_nodes += branch.num_nodes() - 2 * len(block)
+                # Two of a block's nodes are its prep, whatever the block width:
+                # the prep is grouped over the block's triplets.
+                self.n_batched_nodes += branch.num_nodes() - 2
                 branch, _ = g_step.add_conditional(f"step [{index}]", gate)
                 with cg.capture(branch):
                     self._emit_update(block)
@@ -737,12 +823,22 @@ class LCCSDT:
                     self._emit_residual(self._plan)
                 self.n_nodes += g_every.num_nodes()
                 self.nodes_by_phase["residual (wide)"] = g_every.num_nodes()
+                # The step gets the same treatment, and it is the same
+                # equivalence: a pass in which every gate is open steps every
+                # triplet either way, each one reading and writing only its own
+                # blocks, so the two spellings differ in how many members a
+                # grouped call carries and in nothing else.
+                g_step_every = cg.Graph("lccsd(t): Eq. 112 step (every triplet)")
+                with cg.capture(g_step_every):
+                    self._emit_update(self._plan)
+                self.n_nodes += g_step_every.num_nodes()
+                self.nodes_by_phase["step (wide)"] = g_step_every.num_nodes()
         else:
             with cg.capture(g_residual):
                 self._emit_residual(self._plan)
             with cg.capture(g_step):
                 self._emit_update()
-            self.n_batched_nodes = g_residual.num_nodes() - 2 * len(self._plan)
+            self.n_batched_nodes = g_residual.num_nodes() - 2
             self.nodes_by_phase["residual (wide)"] = g_residual.num_nodes()
         self.n_nodes += g_residual.num_nodes() + g_step.num_nodes()
         # What a pass costs in dispatches. A gated phase is charged with the work
@@ -770,7 +866,8 @@ class LCCSDT:
         # is simply always used and the cutoff is gone.
         if self.use_executor:
             for name, g in (("residual", g_residual), ("step", g_step),
-                            ("T'", g_prime), ("residual (wide)", g_every)):
+                            ("T'", g_prime), ("residual (wide)", g_every),
+                            ("step (wide)", g_step_every)):
                 if g is not None:
                     self.moldable[name] = plan_widths(g)
 
@@ -846,15 +943,14 @@ class LCCSDT:
                     self._active[ijk] = ijk in live
                 if g_prime is not None:
                     g_prime.execute()
-                if g_every is not None and len(live) == len(self._plan):
+                wide = g_every is not None and len(live) == len(self._plan)
+                if wide:
                     self.n_wide_passes += 1
                     g_every.execute()
                 else:
                     g_residual.execute()
-                # Skipped triplets contribute nothing to the norm, exactly as
-                # psi4's zero-initialized R_iajbkc_rms does.
-                rms = max((ten.rms(self.R[r["ijk"]]) for r in active), default=0.0)
-                g_step.execute()
+                rms = _max_rms([slot_of[r["ijk"]] for r in active])
+                (g_step_every if wide else g_step).execute()
                 if self._diis is not None:
                     # A skipped triplet took no step, and DIIS has to be told
                     # so. Its R still holds the step from whichever pass last
@@ -874,17 +970,17 @@ class LCCSDT:
                 # One block, no gate: this graph IS the wide one.
                 self.n_wide_passes += 1
                 g_residual.execute()
-                rms = max((ten.rms(self.R[r["ijk"]]) for r in self._plan),
-                          default=0.0)
+                rms = _max_rms(list(range(len(self._plan))))
                 g_step.execute()
             if self._diis is not None:
                 self._diis.step()
             g_energy.execute()
 
-            energies = ten.view(e_all)
             e_ijk_old = self.e_ijk.copy()
-            for slot, r in enumerate(self._plan):
-                self.e_ijk[r["ijk"]] = float(energies[slot])
+            # Scattered in one numpy store rather than a Python loop over the
+            # triplets: the graph wrote the whole vector, and where each entry
+            # belongs is the plan's, which does not change between passes.
+            self.e_ijk[plan_ijk] = ten.view(e_all)
             e_curr = float(np.sum(self.e_ijk))
 
             self._print(f"    {iteration:>4}  {e_curr:>18.12f} "

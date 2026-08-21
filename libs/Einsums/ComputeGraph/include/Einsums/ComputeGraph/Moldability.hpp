@@ -86,6 +86,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
     case OpKind::GroupedBatchedGemm:
     case OpKind::GroupedSandwich:
     case OpKind::GroupedGatherRotate:
+    // The grouped element-wise kinds are the same shape again: their own
+    // OpenMP loop over members, each member's kernel nested-serial inside it.
+    case OpKind::GroupedPermute:
+    case OpKind::GroupedDirectProduct:
+    case OpKind::GroupedDirectDivision:
         return true;
 
     // Kernels that are a vendor call, or that lower to one often enough that

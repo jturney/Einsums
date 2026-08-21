@@ -154,6 +154,32 @@ struct GroupedAxpbyDescriptor {
 };
 
 /**
+ * @brief Metadata for the grouped element-wise kinds: @ref
+ * OpKind::GroupedPermute, @ref OpKind::GroupedDirectProduct and @ref
+ * OpKind::GroupedDirectDivision.
+ *
+ * One type for the three because the cost model prices them the same way -
+ * every member touches its operands once, so the node's serial time is the
+ * traffic the parent @ref Node's operand lists already describe. What is
+ * recorded here is what those lists cannot carry: how many members there are
+ * and the per-member prefactors, so a pass can read the node instead of
+ * re-deriving it from the closure.
+ *
+ * Deliberately distinct from @ref GroupedAxpbyDescriptor even though the two
+ * hold the same fields. A pass that probes ``get_if<GroupedAxpbyDescriptor>``
+ * without checking the node kind would otherwise find a permute and reason
+ * about it as an AXPBY over one buffer.
+ *
+ * The parent @ref Node carries the inputs interleaved per member and the
+ * outputs in member order.
+ */
+struct GroupedElementwiseDescriptor {
+    int                          total{0}; ///< How many members the node holds.
+    std::vector<PrefactorScalar> alphas;   ///< Per-member prefactor on the sources.
+    std::vector<PrefactorScalar> betas;    ///< Per-member prefactor on the destination.
+};
+
+/**
  * @brief Metadata for @ref OpKind::GroupedSandwich nodes.
  *
  * A grouped sandwich is a run of independent
@@ -430,11 +456,12 @@ inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, 
  * for use by optimization passes. Nodes with no special metadata use
  * std::monostate.
  */
-using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
-                            AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor,
-                            BatchedGemmDescriptor, GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor,
-                            GroupedDotDescriptor, GroupedAxpbyDescriptor, GroupedSandwichDescriptor, GroupedGatherRotateDescriptor,
-                            TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
+using OpData =
+    std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
+                 AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor, BatchedGemmDescriptor,
+                 GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, GroupedDotDescriptor,
+                 GroupedAxpbyDescriptor, GroupedElementwiseDescriptor, GroupedSandwichDescriptor, GroupedGatherRotateDescriptor,
+                 TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.

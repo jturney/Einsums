@@ -91,6 +91,7 @@ set(ComputeGraphTests
     GroupedBatchedGemm.cpp
     GroupedSandwich.cpp
     GroupedGatherRotate.cpp
+    GroupedElementwise.cpp
     GroupedScalarOps.cpp
     StringEinsum.cpp
     TensorLifetime.cpp

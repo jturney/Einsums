@@ -30,25 +30,28 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     // TensorAlgebra operations
     Einsum,           ///< Tensor contraction via tensor_algebra::einsum()
     Permute,          ///< Index reordering via tensor_algebra::permute()
+    GroupedPermute,   ///< Many independent index reorderings, one per member
     Transpose,        ///< 2D transpose via tensor_algebra::transpose()
     ElementTransform, ///< Element-wise unary transform
     KhatriRao,        ///< Khatri-Rao product
 
     // LinearAlgebra - BLAS level
-    BatchedGemm,         ///< Many independent GEMMs in one `gemm_batch` call
-    GroupedBatchedGemm,  ///< Many independent GEMMs of DIFFERING shape in one `gemm_batch_grouped` call
-    Gemm,                ///< General matrix-matrix multiply (BLAS Level 3)
-    Gemv,                ///< General matrix-vector multiply (BLAS Level 2)
-    Ger,                 ///< Rank-1 update (BLAS Level 2)
-    Dot,                 ///< Dot product (returns scalar)
-    GroupedDot,          ///< Many independent dot products, one per entry, in one node
-    Scale,               ///< Scalar multiplication of entire tensor
-    Axpby,               ///< Y = alpha * X + beta * Y
-    GroupedAxpby,        ///< Many independent `Y = alpha*X + beta*Y`, one per entry, in one node
-    GroupedSandwich,     ///< Many independent q-tiled dressed sandwich accumulations, one per entry
-    GroupedGatherRotate, ///< Many independent q-tiled gather-and-rotate blocks, one per entry
-    DirectProduct,       ///< Element-wise (Hadamard) product
-    DirectDivision,      ///< Element-wise (Hadamard) quotient
+    BatchedGemm,           ///< Many independent GEMMs in one `gemm_batch` call
+    GroupedBatchedGemm,    ///< Many independent GEMMs of DIFFERING shape in one `gemm_batch_grouped` call
+    Gemm,                  ///< General matrix-matrix multiply (BLAS Level 3)
+    Gemv,                  ///< General matrix-vector multiply (BLAS Level 2)
+    Ger,                   ///< Rank-1 update (BLAS Level 2)
+    Dot,                   ///< Dot product (returns scalar)
+    GroupedDot,            ///< Many independent dot products, one per entry, in one node
+    Scale,                 ///< Scalar multiplication of entire tensor
+    Axpby,                 ///< Y = alpha * X + beta * Y
+    GroupedAxpby,          ///< Many independent `Y = alpha*X + beta*Y`, one per entry, in one node
+    GroupedSandwich,       ///< Many independent q-tiled dressed sandwich accumulations, one per entry
+    GroupedGatherRotate,   ///< Many independent q-tiled gather-and-rotate blocks, one per entry
+    DirectProduct,         ///< Element-wise (Hadamard) product
+    DirectDivision,        ///< Element-wise (Hadamard) quotient
+    GroupedDirectProduct,  ///< Many independent element-wise products, one per member
+    GroupedDirectDivision, ///< Many independent element-wise quotients, one per member
 
     // LinearAlgebra - LAPACK level
     SVD,           ///< Singular value decomposition
@@ -177,6 +180,8 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "Einsum";
     case OpKind::Permute:
         return "Permute";
+    case OpKind::GroupedPermute:
+        return "GroupedPermute";
     case OpKind::Transpose:
         return "Transpose";
     case OpKind::ElementTransform:
@@ -211,6 +216,10 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "DirectProduct";
     case OpKind::DirectDivision:
         return "DirectDivision";
+    case OpKind::GroupedDirectProduct:
+        return "GroupedDirectProduct";
+    case OpKind::GroupedDirectDivision:
+        return "GroupedDirectDivision";
     case OpKind::SVD:
         return "SVD";
     case OpKind::SVD_DD:

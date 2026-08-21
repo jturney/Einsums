@@ -59,6 +59,7 @@ KernelFamily family_for(Node const &node, std::size_t bytes, DeviceProfile const
         return KernelFamily::BatchedGemm;
 
     case OpKind::Permute:
+    case OpKind::GroupedPermute:
     case OpKind::Transpose:
     case OpKind::HPTTPermute:
     case OpKind::TileGather:
@@ -468,6 +469,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
                 break;
 
             case OpKind::Permute:
+            case OpKind::GroupedPermute:
             case OpKind::Transpose:
             case OpKind::HPTTPermute: {
                 auto const &map  = graph.tensors_map();
