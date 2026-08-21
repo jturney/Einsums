@@ -115,9 +115,9 @@ compute_pno_integrals(einsums::RuntimeTensor<double> const &q_ij, einsums::Runti
     // threads that shape spent 3.1 s of its 5.6 s in the first four phases,
     // against 2.0 s for psi4's WHOLE phase, and the difference was traffic,
     // not kernels: the raw gathers are the widest thing the phase touches
-    // (`uv_blk` alone is `nq * nu^2` per pair, gigabytes over a chunk), and
-    // the staged shape wrote all of them to memory in one phase and read them
-    // all back in the next.
+    // (the `(Q|u v)` block alone was `nq * nu^2` per pair, gigabytes over a
+    // chunk), and the staged shape wrote all of them to memory in one phase
+    // and read them all back in the next.
     //
     // So the port now has psi4's own shape (dlpno/ccsd.cc,
     // DLPNOCCSD::compute_pno_integrals): every pair runs its whole chain -
@@ -128,13 +128,18 @@ compute_pno_integrals(einsums::RuntimeTensor<double> const &q_ij, einsums::Runti
     // them is live rather than a chunk's worth. The barriers go with them: no
     // pair waits for every other pair's gathers.
     //
-    // The arithmetic is untouched: each pair issues the SAME einsums
-    // operations on the SAME values in the same per-pair order as the staged
-    // shape and as the Python backend - eagerly instead of via a captured
-    // graph, which dispatches to the same kernels. Pairs share no data (every
-    // cross-pair input, `rot_X`/`rot_paos`, is a read-only argument), so the
-    // fusion moves no bit; the differential test asserts that against the
-    // Python backend.
+    // The one exception is the `(Q|u v)` rotation, which is a single grouped
+    // node for the whole chunk ahead of the loop rather than a gather and two
+    // contractions inside it - see that call for why, and for why hoisting it
+    // is what the node requires.
+    //
+    // Everything else issues the SAME einsums operations on the SAME values in
+    // the same per-pair order as the staged shape - eagerly instead of via a
+    // captured graph, which dispatches to the same kernels. Pairs share no
+    // data (every cross-pair input, `rot_X`/`rot_paos`, is a read-only
+    // argument), so the fusion moves no bit. The Python backend emits the same
+    // grouped node for the same rotation, so the two backends agree bit for
+    // bit; the differential test asserts that.
 
     // ── Outputs and per-pair homes, allocated up front ─────────────────────
     //
@@ -296,6 +301,51 @@ compute_pno_integrals(einsums::RuntimeTensor<double> const &q_ij, einsums::Runti
         }
     };
 
+    // ── (Q | u v) gathered and rotated, one node for the whole chunk ───────
+    //
+    // The one piece of a pair's chain that does not run inside the fused loop
+    // below, because it is better served by a run over every pair at once.
+    // Written out, `X^T (Q|u v) X` is a gather of the whole domain block plus
+    // two contractions through a half transform of the same leading extent,
+    // which allocates the two widest tensors this phase would ever hold
+    // (`nq * nu^2` per pair, an order above any block the phase produces) and
+    // streams them four times over to build a result an order smaller. The
+    // grouped node does the same arithmetic a cache-resident block of
+    // auxiliary functions at a time, reading `(Q|u v)` once out of the parent,
+    // so neither intermediate is allocated at all.
+    //
+    // Hoisted rather than called per pair: the node runs its own OpenMP team
+    // over its members, so it has to be issued from outside the team below -
+    // which is also why this stays eager. Nothing here is capture-recording;
+    // the whole stage computes eagerly.
+    //
+    // Symmetric by contract: ONE index list and ONE transform serve both
+    // rotated axes, which is what this rotation is. The extended-domain
+    // rotation further down is not - it selects two different PAO domains and
+    // rotates only one of them - and stays on the gather-plus-einsum path.
+    //
+    // Members are listed most-expensive-first for the same reason the loop
+    // below takes its pairs that way: the node schedules them dynamically, so
+    // whatever is claimed last is the tail.
+    {
+        std::vector<einsums::RuntimeTensor<double> *>       rot_c;
+        std::vector<einsums::RuntimeTensor<double> const *> rot_x;
+        std::vector<std::vector<std::size_t>>               rot_q, rot_u;
+        rot_c.reserve(n_pairs);
+        rot_x.reserve(n_pairs);
+        rot_q.reserve(n_pairs);
+        rot_u.reserve(n_pairs);
+        for (auto const p : order) {
+            rot_c.push_back(raw[p].q_vv);
+            rot_x.push_back(&X_pno[p]);
+            rot_q.push_back(as_sizes(ribfs[p]));
+            rot_u.push_back(as_sizes(paos[p]));
+        }
+        if (!rot_c.empty()) {
+            cg::grouped_gather_rotate(rot_c, q_ab, rot_q, rot_u, rot_x);
+        }
+    }
+
     // ── The fused pass ─────────────────────────────────────────────────────
     //
     // Every pair is independent, its gathers and right-hand sides are
@@ -322,9 +372,10 @@ compute_pno_integrals(einsums::RuntimeTensor<double> const &q_ij, einsums::Runti
         // The gathers land in rank-3 blocks whose views the transforms read; a
         // single-LMO selection leaves a length-1 axis, which costs nothing in
         // column major and saves a host copy. They are locals of this scope so
-        // that `uv_blk` - `nq * nu^2`, an order above any block the phase
-        // produces - is dropped the moment its last transform has run, while
-        // still cache-warm from being written.
+        // that the widest of them - `mu_blk`, `nq * nk * nu`, now that the
+        // `(Q|u v)` block is streamed rather than gathered - is dropped the
+        // moment its last transform has run, while still cache-warm from being
+        // written.
         {
             std::vector<std::size_t> const i{static_cast<std::size_t>(i_lmo[p])};
             std::vector<std::size_t> const j{static_cast<std::size_t>(j_lmo[p])};
@@ -341,8 +392,6 @@ compute_pno_integrals(einsums::RuntimeTensor<double> const &q_ij, einsums::Runti
             cg::gather(&ju_blk, q_ia, {qs, j, us});
             auto mu_blk = zeros("(Q|m u) raw", {nq, nk, nu});
             cg::gather(&mu_blk, q_ia, {qs, ms, us});
-            auto uv_blk = zeros("(Q|u v) raw", {nq, nu, nu});
-            cg::gather(&uv_blk, q_ab, {qs, us, us});
 
             auto const &X = X_pno[p];
 
@@ -358,11 +407,8 @@ compute_pno_integrals(einsums::RuntimeTensor<double> const &q_ij, einsums::Runti
             // lead, so the whole block is one GEMM through a merged view.
             auto q_ov_2d = r.q_ov->reshape_view({nq * nk, na});
             cg::gemm(1.0, mu_blk.reshape_view({nq * nk, nu}), X, 0.0, &q_ov_2d);
-            // X^T (Q | u v) X, as two einsums rather than a GEMM pair per
-            // auxiliary function - see the Python for why that shape is a trap.
-            auto half = zeros("(Q|a v) half", {nq, na, nu});
-            cg::einsum("Qav <- Quv ; ua", &half, uv_blk, X);
-            cg::einsum("Qab <- Qav ; vb", r.q_vv, half, X);
+            // `(Q | a b)` is not built here: it is the grouped node above,
+            // already written for every pair before this loop starts.
         }
 
         // ── The fit, at the two metric powers psi4 uses ────────────────────
@@ -452,11 +498,11 @@ compute_pno_integrals(einsums::RuntimeTensor<double> const &q_ij, einsums::Runti
 
         // ── The non-projected families ─────────────────────────────────────
         //
-        // The extended-domain gathers are the widest thing this phase touches,
-        // wider even than `uv_blk`. As iteration locals they are live for one
-        // pair per thread, which is what lets the caller's memory budget charge
-        // a chunk for the largest of them ONCE rather than for the sum over
-        // its members.
+        // The extended-domain gathers are the widest thing this phase
+        // allocates, now that the `(Q|u v)` rotation streams its own block. As
+        // iteration locals they are live for one pair per thread, which is what
+        // lets the caller's memory budget charge a chunk for the largest of
+        // them ONCE rather than for the sum over its members.
         if (strong[p]) {
             auto const es = as_sizes(extended[p]);
             auto const ne = es.size();

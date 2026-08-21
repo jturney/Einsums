@@ -365,12 +365,13 @@ def _pair_bytes(cc, ij):
             + 2 * nq * (nk + na)    # the four full-inverse copies from _fit
             + nq * nq)              # _fit's domain metric, which it builds for
                                     # every pair in the chunk before solving any
+    # The (Q|u v) gather and its half transform used to dominate this and are
+    # absent because they are absent from the phase: both backends stream that
+    # block through cache rather than allocating it.
     gathered = (nq                  # (Q|i j) raw
                 + 2 * nq * nk       # (Q|i m), (Q|j m) raw
                 + 2 * nq * nu       # (Q|i u), (Q|j u) raw
-                + nq * nk * nu      # (Q|m u) raw
-                + nq * nu * nu      # (Q|u v) raw, the largest block by far
-                + nq * na * nu)     # the (Q|a v) half transform
+                + nq * nk * nu)     # (Q|m u) raw, the largest block left
     return 8 * (kept + gathered)
 
 
@@ -399,13 +400,16 @@ def _pair_transient_bytes(cc, ij):
 def _chunks(cc, upper):
     """Split the pairs into runs whose working set fits the memory budget.
 
-    The blocks a pair is BUILT from are an order larger than the blocks it
-    produces: ``(Q | u v)`` over the pair's own domains is ``nq * nu^2``
-    against the ``nq * na^2`` it becomes, and the PAO domain is several times
-    the PNO count. Building every pair before fitting any of them therefore
-    peaks at something no store reflects - 10.9 GiB at ethanol/cc-pVTZ against
-    the 0.6 GiB of integrals the phase returns, which is most of what stood
-    between that configuration and a completed run.
+    The blocks a pair is BUILT from are larger than the blocks it produces:
+    every raw gather carries a PAO index where the fitted block carries a PNO
+    one, and the PAO domain is several times the PNO count. Building every pair
+    before fitting any of them therefore peaks at something no store reflects -
+    10.9 GiB at ethanol/cc-pVTZ against the 0.6 GiB of integrals the phase
+    returns, which is most of what stood between that configuration and a
+    completed run. That measurement had ``(Q | u v)`` materialized per pair at
+    ``nq * nu^2``; both backends stream it now, so the widest single block left
+    is the extended-domain gather :func:`_non_projected` builds one pair at a
+    time.
 
     In-core with a measured failure, per design decision 10: a pair too large
     to build alone reports its own requirement and its domain sizes, because
@@ -425,8 +429,9 @@ def _chunks(cc, upper):
                 f"PNOs, {len(ribfs)} auxiliary functions, {len(paos)} PAOs "
                 f"widened to {len(extended)}, {len(lmos)} neighbours) against "
                 f"a budget of {budget / 2**20:.0f} MiB. The largest single "
-                f"block is the (Q|u v) gather at "
-                f"{8 * len(ribfs) * len(paos) ** 2 / 2**20:.0f} MiB. There is "
+                f"block is the extended-domain (Q|u v_ext) gather at "
+                f"{8 * len(ribfs) * len(paos) * len(extended) / 2**20:.0f} "
+                "MiB. There is "
                 "no disk path (design decision 10), so the options are: raise "
                 "Thresholds.in_core_memory if the machine has the memory, or "
                 "tighten t_cut_do to shrink the PAO domains.")
@@ -461,13 +466,16 @@ def _domains(cc, ij):
 def _raw_blocks(q_ij, q_ia, q_ab, X_pno, i_lmo, j_lmo, n_pno, ribfs, paos, lmos):
     """The seven three-index blocks, gathered and half-transformed per pair.
 
-    All seven are slices of the same three full tensors, so they are captured
-    into one graph and replayed as an OpenMP team over the pairs.
+    Six are slices of the three full tensors, so they are captured into one
+    graph and replayed as an OpenMP team over the pairs. The seventh,
+    ``(Q | a b)``, is gathered and rotated by a single grouped node for the
+    whole chunk and never passes through a stored ``(Q | u v)`` block at all.
     """
     raw = []
     for p in range(len(i_lmo)):
         nq, nu, nk = len(ribfs[p]), len(paos[p]), len(lmos[p])
         na = n_pno[p]
+        q_vv = ten.zeros("(Q|a b)", [nq, na * na])
         raw.append(dict(
             nq=nq, nu=nu, nk=nk, na=na,
             q_pair=ten.zeros("(Q|i j)", [nq, 1]),
@@ -476,17 +484,24 @@ def _raw_blocks(q_ij, q_ia, q_ab, X_pno, i_lmo, j_lmo, n_pno, ribfs, paos, lmos)
             q_iv=ten.zeros("(Q|i a)", [nq, na]),
             q_jv=ten.zeros("(Q|j a)", [nq, na]),
             q_ov=ten.zeros("(Q|m a)", [nq, nk * na]),
-            q_vv=ten.zeros("(Q|a b)", [nq, na * na]),
+            q_vv=q_vv,
+            # The rotation writes (Q, a, b) and the fit reads (Q, a*b), so the
+            # store is the flat one - a numpy reshape of a rank-3 column-major
+            # view would transpose the pair of virtual axes - and the rank-3
+            # spelling is a view of it, built once because both the rotation
+            # and the ``Qab`` output hold it.
+            q_vv_block=q_vv.reshape_view([nq, na, na]),
         ))
 
     # The gathers, into rank-3 blocks whose views the contractions read. A
     # single-LMO selection leaves a length-1 axis, which costs nothing in column
     # major and saves the host copy that dropping it in numpy would be.
     scratch = []
+    rot_c, rot_q, rot_u, rot_x = [], [], [], []
     g = cg.Graph("CC integrals: gather")
     with cg.capture(g):
         for p, r in enumerate(raw):
-            nq, nu, nk, na = r["nq"], r["nu"], r["nk"], r["na"]
+            nq, nu, nk = r["nq"], r["nu"], r["nk"]
             qs, us, ms = ribfs[p], paos[p], lmos[p]
             i, j = i_lmo[p], j_lmo[p]
 
@@ -504,8 +519,29 @@ def _raw_blocks(q_ij, q_ia, q_ab, X_pno, i_lmo, j_lmo, n_pno, ribfs, paos, lmos)
             la.gather(s["ju_blk"], q_ia, [qs, [j], us])
             s["mu_blk"] = ten.zeros("(Q|m u) raw", [nq, nk, nu])
             la.gather(s["mu_blk"], q_ia, [qs, ms, us])
-            s["uv_blk"] = ten.zeros("(Q|u v) raw", [nq, nu, nu])
-            la.gather(s["uv_blk"], q_ab, [qs, us, us])
+
+            rot_c.append(r["q_vv_block"])
+            rot_q.append(qs)
+            rot_u.append(us)
+            rot_x.append(X_pno[p])
+
+        # X^T (Q | u v) X for every pair in the chunk, as ONE node. Both
+        # transformed indices are interior axes of a rank-3 block, so neither is
+        # a merged-axis GEMM, and the obvious spellings are both traps: a GEMM
+        # pair per auxiliary function is 2 * naux operations per pair - around
+        # 100,000 at ethanol/cc-pVTZ - each building a view, which exhausts
+        # einsums' small-buffer pool long before it finishes; a gather of the
+        # whole domain block followed by two contractions instead materializes
+        # the two widest tensors the phase holds and streams them four times
+        # over to produce a result an order smaller. The grouped node does the
+        # same arithmetic a cache-resident block of auxiliary functions at a
+        # time, reading ``(Q|u v)`` once out of the parent, so neither the
+        # gathered block nor the half transform is ever allocated.
+        #
+        # Symmetric by contract: one index list and one transform serve both
+        # rotated axes, which is what this rotation is.
+        if rot_c:
+            la.grouped_gather_rotate(rot_c, q_ab, rot_q, rot_u, rot_x)
     _run_setup_graph(g)
 
     # The PAO -> PNO half transforms. Separate graph because they consume the
@@ -529,24 +565,14 @@ def _raw_blocks(q_ij, q_ia, q_ab, X_pno, i_lmo, j_lmo, n_pno, ribfs, paos, lmos)
             # lead, so the whole block is one GEMM through a merged view.
             la.gemm(1.0, s["mu_blk"].reshape_view([nq * nk, nu]), X, 0.0,
                     r["q_ov"].reshape_view([nq * nk, na]))
-            # X^T (Q | u v) X. Both transformed indices are interior axes of a
-            # rank-3 block, so neither is a merged-axis GEMM; the obvious form
-            # is a GEMM pair per auxiliary function, and that is a trap. It is
-            # 2 * naux operations per pair - around 100,000 at ethanol/cc-pVTZ
-            # against 254 this way - and each one builds a view, which exhausts
-            # einsums' small-buffer pool long before it finishes.
-            s["half"] = ten.zeros("(Q|a v) half", [nq, na, nu])
-            einsums.einsum("Qav <- Quv ; ua", s["half"], s["uv_blk"], X)
-            einsums.einsum("Qab <- Qav ; vb", r["q_vv"].reshape_view([nq, na, na]),
-                           s["half"], X)
     _run_setup_graph(g2)
 
-    # And now the gathers are dead. They are the largest thing this phase ever
-    # holds - ``uv_blk`` alone is ``nq * nu^2`` per pair, an order above any
-    # block it produces - and they exist only to feed the two graphs above, so
-    # the scratch is dropped here rather than travelling with ``raw``. It used
-    # to, which cost 10 GiB of resident memory at ethanol/cc-pVTZ against the
-    # 0.6 GiB of integrals the phase actually returns; nothing ever read it.
+    # And now the gathers are dead. They carry a PAO index where the blocks
+    # they become carry a PNO one, and the PAO domain is several times the PNO
+    # count, so they exist only to feed the two graphs above and the scratch is
+    # dropped here rather than travelling with ``raw``. It used to, which cost
+    # 10 GiB of resident memory at ethanol/cc-pVTZ against the 0.6 GiB of
+    # integrals the phase actually returns; nothing ever read it.
     scratch.clear()
     return raw
 
@@ -683,8 +709,7 @@ def _contract(raw, i_lmo, j_lmo, strong):
         # Per auxiliary function, which is the axis every consumer loops over.
         blocks["Qma"].append(r["q_ov"].reshape_view([nq, nk, na])
                              if strong[p] else _absent())
-        blocks["Qab"].append(r["q_vv"].reshape_view([nq, na, na])
-                             if strong[p] else _absent())
+        blocks["Qab"].append(r["q_vv_block"] if strong[p] else _absent())
     return blocks
 
 

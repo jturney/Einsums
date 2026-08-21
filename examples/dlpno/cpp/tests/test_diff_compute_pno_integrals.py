@@ -109,8 +109,12 @@ def test_compute_pno_integrals_backends_agree(stage_module):
         for u, (a, b) in enumerate(zip(exp, act)):
             a, b = np.asarray(a), np.asarray(b)
             assert a.shape == b.shape, f"{field}[{u}]: {a.shape} against {b.shape}"
-            # The contract promises `close`; both backends emit the same
-            # operations on the same values and in practice agree bit for bit,
-            # which is what check_backends.py asserts on the energies.
+            # The contract promises `close`, and the two backends do NOT emit
+            # the same operations: the python side captures a graph where the
+            # cpp side runs an OpenMP team eagerly. What they share is every
+            # operation's arithmetic - the same kernels, the same values, the
+            # same per-pair order, and the same grouped node for the (Q|u v)
+            # rotation - so in practice they agree bit for bit, which is what
+            # check_backends.py asserts on the energies.
             np.testing.assert_allclose(b, a, rtol=1e-12, atol=1e-13,
                                        err_msg=f"{field}[{u}]")
