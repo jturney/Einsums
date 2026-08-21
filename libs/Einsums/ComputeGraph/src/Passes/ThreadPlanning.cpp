@@ -55,6 +55,7 @@ KernelFamily family_for(Node const &node, std::size_t bytes, DeviceProfile const
     case OpKind::BatchedGemm:
     case OpKind::GroupedBatchedGemm:
     case OpKind::GroupedSandwich:
+    case OpKind::GroupedGatherRotate:
         return KernelFamily::BatchedGemm;
 
     case OpKind::Permute:
@@ -125,6 +126,33 @@ struct GemmShape {
 /// leaves it below the fork floor and so at width 1 - the same "do not guess"
 /// behaviour the default branch has.
 double batched_gemm_us(Node const &node, DeviceProfile const &profile) {
+    if (auto const *gr = std::get_if<GroupedGatherRotateDescriptor>(&node.op_data); gr != nullptr) {
+        // The only member of this family that is not arithmetic alone. Per
+        // member the rotation is 2 nq nu^2 nt for the first contraction and
+        // 2 nq nu nt^2 for the second, and the gather ahead of them streams
+        // nq nu^2 elements out of the shared parent. Those two happen in
+        // series inside the kernel - stage a tile, then rotate it - so they
+        // add rather than max, and leaving the streaming term out would price
+        // the node the way its predecessor emission was priced: as arithmetic
+        // that happened to touch memory, when the traffic is the reason the
+        // node exists.
+        double work = 0.0;
+        for (int i = 0; i < gr->total; i++) {
+            auto const idx = static_cast<std::size_t>(i);
+            auto const nq  = static_cast<double>(gr->nq[idx]);
+            auto const nu  = static_cast<double>(gr->nu[idx]);
+            auto const nt  = static_cast<double>(gr->nt[idx]);
+            if (nq <= 0.0 || nu <= 0.0 || nt <= 0.0) {
+                continue;
+            }
+            double const flops = 2.0 * nq * nu * nt * (nu + nt);
+            double const gflops =
+                profile.estimate_gemm_gflops(static_cast<std::size_t>(nt), static_cast<std::size_t>(nu), static_cast<std::size_t>(nu));
+            work += flops / (gflops * 1e3);
+            work += profile.estimate_memory_time_us(static_cast<std::size_t>(nq * nu * nu * static_cast<double>(gr->elem_bytes)), 1);
+        }
+        return work > 0.0 ? work + profile.kernel_launch_overhead_us : 0.0;
+    }
     if (auto const *sw = std::get_if<GroupedSandwichDescriptor>(&node.op_data); sw != nullptr) {
         // Per member: the dress (2 nq nk na^2) plus the two sandwich GEMMs
         // (4 nq na^3), priced as one batched call the way the descriptor's
@@ -421,6 +449,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
             case OpKind::BatchedGemm:
             case OpKind::GroupedBatchedGemm:
             case OpKind::GroupedSandwich:
+            case OpKind::GroupedGatherRotate:
                 // A batch is arithmetic, not traffic. Without these two cases
                 // both fell to the default below and were priced as the bytes
                 // they move, which is the wrong dimension entirely: the flops

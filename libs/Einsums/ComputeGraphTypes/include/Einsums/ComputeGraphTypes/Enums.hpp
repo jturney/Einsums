@@ -35,19 +35,20 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     KhatriRao,        ///< Khatri-Rao product
 
     // LinearAlgebra - BLAS level
-    BatchedGemm,        ///< Many independent GEMMs in one `gemm_batch` call
-    GroupedBatchedGemm, ///< Many independent GEMMs of DIFFERING shape in one `gemm_batch_grouped` call
-    Gemm,               ///< General matrix-matrix multiply (BLAS Level 3)
-    Gemv,               ///< General matrix-vector multiply (BLAS Level 2)
-    Ger,                ///< Rank-1 update (BLAS Level 2)
-    Dot,                ///< Dot product (returns scalar)
-    GroupedDot,         ///< Many independent dot products, one per entry, in one node
-    Scale,              ///< Scalar multiplication of entire tensor
-    Axpby,              ///< Y = alpha * X + beta * Y
-    GroupedAxpby,       ///< Many independent `Y = alpha*X + beta*Y`, one per entry, in one node
-    GroupedSandwich,    ///< Many independent q-tiled dressed sandwich accumulations, one per entry
-    DirectProduct,      ///< Element-wise (Hadamard) product
-    DirectDivision,     ///< Element-wise (Hadamard) quotient
+    BatchedGemm,         ///< Many independent GEMMs in one `gemm_batch` call
+    GroupedBatchedGemm,  ///< Many independent GEMMs of DIFFERING shape in one `gemm_batch_grouped` call
+    Gemm,                ///< General matrix-matrix multiply (BLAS Level 3)
+    Gemv,                ///< General matrix-vector multiply (BLAS Level 2)
+    Ger,                 ///< Rank-1 update (BLAS Level 2)
+    Dot,                 ///< Dot product (returns scalar)
+    GroupedDot,          ///< Many independent dot products, one per entry, in one node
+    Scale,               ///< Scalar multiplication of entire tensor
+    Axpby,               ///< Y = alpha * X + beta * Y
+    GroupedAxpby,        ///< Many independent `Y = alpha*X + beta*Y`, one per entry, in one node
+    GroupedSandwich,     ///< Many independent q-tiled dressed sandwich accumulations, one per entry
+    GroupedGatherRotate, ///< Many independent q-tiled gather-and-rotate blocks, one per entry
+    DirectProduct,       ///< Element-wise (Hadamard) product
+    DirectDivision,      ///< Element-wise (Hadamard) quotient
 
     // LinearAlgebra - LAPACK level
     SVD,           ///< Singular value decomposition
@@ -201,6 +202,8 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "GroupedAxpby";
     case OpKind::GroupedSandwich:
         return "GroupedSandwich";
+    case OpKind::GroupedGatherRotate:
+        return "GroupedGatherRotate";
     case OpKind::DirectProduct:
         return "DirectProduct";
     case OpKind::DirectDivision:

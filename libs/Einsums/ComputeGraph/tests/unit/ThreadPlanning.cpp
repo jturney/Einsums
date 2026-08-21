@@ -236,6 +236,55 @@ TEST_CASE("ThreadPlanning - the grouped scalar ops are width 1 by contract", "[C
     REQUIRE(plan_one(cg::OpKind::Custom) > 1);
 }
 
+TEST_CASE("ThreadPlanning - a grouped gather-rotate is priced from its descriptor", "[ComputeGraph][ThreadPlanning]") {
+    unsigned const p = machine_threads();
+
+    // The node's OPERANDS are thin, because they are index lists and small
+    // transforms - the work is in the selection they describe, which only the
+    // descriptor knows. Priced as the bytes its operands hold, this node is
+    // nothing; priced as the run it is, it is the phase's dominant kernel. That
+    // gap is the one the batched kinds already fell into once, so what is
+    // asserted here is the SERIAL PRICE rather than the width the curve then
+    // buys with it.
+    auto price_one = [p](bool with_descriptor) {
+        cg::Graph  graph(fmt::format("gather_rotate_{}", with_descriptor));
+        auto const in   = shell(graph, "in", kThinExtent);
+        auto const out  = shell(graph, "out", kThinExtent);
+        auto       node = work_node("node", in, out, cg::OpKind::GroupedGatherRotate);
+        if (with_descriptor) {
+            cg::GroupedGatherRotateDescriptor d;
+            d.total      = 8;
+            d.elem_bytes = static_cast<std::int64_t>(sizeof(double));
+            for (int i = 0; i < d.total; i++) {
+                d.nq.push_back(400);
+                d.nu.push_back(120);
+                d.nt.push_back(40);
+            }
+            node.op_data = std::move(d);
+        }
+        graph.add_node(std::move(node));
+
+        cg::passes::ThreadPlanning planner(p);
+        planner.run(graph);
+        return planner.makespan_before_us();
+    };
+
+    REQUIRE(price_one(true) > cg::passes::ThreadPlanning::serial_floor_us());
+    // Without one the model has nothing to read, and the planner declines to
+    // guess rather than pricing the run as its operand bytes.
+    REQUIRE(price_one(false) < cg::passes::ThreadPlanning::serial_floor_us());
+
+    // And the kernel is einsums-threaded, so a width above 1 is one it would
+    // actually see.
+    {
+        cg::Graph  graph("moldable");
+        auto const in  = shell(graph, "in", kThinExtent);
+        auto const out = shell(graph, "out", kThinExtent);
+        graph.add_node(work_node("node", in, out, cg::OpKind::GroupedGatherRotate));
+        REQUIRE(cg::kernel_moldability(graph.nodes()[0]));
+    }
+}
+
 TEST_CASE("ThreadPlanning - a BLAS route follows the vendor's moldability", "[ComputeGraph][ThreadPlanning]") {
     unsigned const p = machine_threads();
     if (p < 4) {

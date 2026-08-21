@@ -175,6 +175,32 @@ struct GroupedSandwichDescriptor {
 };
 
 /**
+ * @brief Metadata for @ref OpKind::GroupedGatherRotate nodes.
+ *
+ * A grouped gather-rotate is a run of independent
+ * ``C_i[q, a, b] = sum_uv src[Q_i[q], U_i[u], U_i[v]] X_i[u, a] X_i[v, b]``
+ * blocks, one entry per (triplet, pair) member, with the gathered block
+ * existing only one q tile at a time.
+ *
+ * The per-member extents are recorded so the cost model can price the node
+ * without re-deriving them from the index lists, which the node does not
+ * carry. Unlike its sibling kinds this one is not arithmetic alone: it also
+ * streams ``nq * nu * nu`` elements out of the shared parent, and that traffic
+ * is the reason the node exists, so @ref elem_bytes is here to let the model
+ * charge for it.
+ *
+ * The parent @ref Node carries the shared source first and then the per-entry
+ * transforms as inputs, and the destinations in entry order as outputs.
+ */
+struct GroupedGatherRotateDescriptor {
+    int                       total{0};      ///< How many gather-rotate blocks the node holds.
+    std::vector<std::int64_t> nq;            ///< Per-entry auxiliary extent.
+    std::vector<std::int64_t> nu;            ///< Per-entry source (PAO) extent.
+    std::vector<std::int64_t> nt;            ///< Per-entry rotated (TNO/PNO) extent.
+    std::int64_t              elem_bytes{0}; ///< Size of one element, for the streaming term.
+};
+
+/**
  * @brief Metadata for a TILED einsum node.
  *
  * A tiled contraction records as ``OpKind::Custom`` and executes per tile through
@@ -407,8 +433,8 @@ inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, 
 using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
                             AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor,
                             BatchedGemmDescriptor, GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor,
-                            GroupedDotDescriptor, GroupedAxpbyDescriptor, GroupedSandwichDescriptor, TiledEinsumDescriptor,
-                            TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
+                            GroupedDotDescriptor, GroupedAxpbyDescriptor, GroupedSandwichDescriptor, GroupedGatherRotateDescriptor,
+                            TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.

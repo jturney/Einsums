@@ -89,6 +89,7 @@ set(ComputeGraphTests
     StridedBatchedGemm.cpp
     GroupedBatchedGemm.cpp
     GroupedSandwich.cpp
+    GroupedGatherRotate.cpp
     GroupedScalarOps.cpp
     StringEinsum.cpp
     TensorLifetime.cpp
@@ -110,6 +111,7 @@ set(ComputeGraphTests
     test_batched_views_python.py
     test_blas_python.py
     test_gather_python.py
+    test_grouped_gather_rotate_python.py
     test_block_copy_python.py
     test_capture_parity_gaps_python.py
     test_capture_python.py

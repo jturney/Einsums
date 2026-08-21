@@ -78,12 +78,14 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 [[nodiscard]] inline bool kernel_moldability(Node const &node) {
     switch (node.kind) {
     // Contractions and batched GEMMs: einsums-threaded, see above. The
-    // grouped sandwich is the same shape as the batched-GEMM kinds - its own
-    // OpenMP loop over members, the vendor nested-serial inside.
+    // grouped sandwich and the grouped gather-rotate are the same shape as the
+    // batched-GEMM kinds - their own OpenMP loop over members, the vendor
+    // nested-serial inside.
     case OpKind::Einsum:
     case OpKind::BatchedGemm:
     case OpKind::GroupedBatchedGemm:
     case OpKind::GroupedSandwich:
+    case OpKind::GroupedGatherRotate:
         return true;
 
     // Kernels that are a vendor call, or that lower to one often enough that

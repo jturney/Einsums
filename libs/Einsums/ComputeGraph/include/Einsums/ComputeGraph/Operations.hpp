@@ -4800,6 +4800,377 @@ APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::RuntimeTensorView<float>, ein
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// grouped_gather_rotate: q-tiled gather plus two-sided rotation as ONE node
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace detail {
+
+/// One member of a grouped gather-rotate:
+/// ``C[q, a, b] = sum_uv src[Q[q], U[u], U[v]] X[u, a] X[v, b]``, with the
+/// gathered ``(q, u, v)`` block built one cache-resident q tile at a time and
+/// never materialized whole.
+///
+/// The emission this replaces is a gather of the whole ``(Q|u v)`` domain block
+/// followed by two contractions through a half-transformed block of the same
+/// leading extent, which is four full streams of the largest thing the phase
+/// holds where one suffices. Here the source block streams once, and the half
+/// product exists only for the tile in flight.
+///
+/// Constraints, all checked by the caller and relied on here:
+/// - ``src`` is rank 3 and shared by every member; ``Q`` selects its axis 0,
+///   ``U`` selects axes 1 and 2 SYMMETRICALLY (one list, because one ``X``
+///   rotates both).
+/// - ``X`` is ``(nu, nt)`` and column-contiguous, so it is a legal GEMM operand
+///   at ``lda = ldx``.
+/// - ``C`` is ``(nq, nt, nt)`` and ASSIGNED, not accumulated: every element is
+///   written, so the destination may be uninitialized on entry.
+/// - Offsets arrive premultiplied by the source strides, so the staging loop
+///   adds rather than multiplies.
+///
+/// Bitwise reproducible, and independent of the tiling: q indexes no sum, so
+/// each output element is one GEMM's reduction over the FULL ``u`` (then ``v``)
+/// range whatever the tile size. That is a stronger contract than the grouped
+/// sandwich's - there is no accumulation to reassociate - and it is why the
+/// node needs no fixed-order argument. It is not bitwise agreement with the
+/// gather-plus-two-einsums form it replaces, which blocks its reductions
+/// differently; that agreement is to roundoff.
+template <typename T>
+void gather_rotate_member(T const *src, std::size_t sq, std::size_t const *qoff, std::size_t nq, std::size_t const *uoff,
+                          std::size_t const *voff, std::size_t nu, T const *X, std::size_t ldx, std::size_t nt, T *C, std::size_t scq,
+                          std::size_t sca, std::size_t scb) {
+    if (nq == 0 || nt == 0) {
+        return; // nothing to write
+    }
+    if (nu == 0) {
+        // An empty sum, and the operation ASSIGNS, so the zeros are the answer
+        // and have to be written rather than left as whatever was allocated.
+        for (std::size_t b = 0; b < nt; b++) {
+            for (std::size_t a = 0; a < nt; a++) {
+                T *to = C + a * sca + b * scb;
+                for (std::size_t q = 0; q < nq; q++) {
+                    to[q * scq] = T{0};
+                }
+            }
+        }
+        return;
+    }
+
+    std::size_t const slice  = nu * nu;
+    std::size_t const hslice = nt * nu;
+    std::size_t const oslice = nt * nt;
+    // Slices per tile: enough to amortize the gather and to give the first GEMM
+    // a wide right-hand side, small enough that the staged block, the half
+    // product and the result stay inside a per-core L2 share.
+    std::size_t tq = std::max<std::size_t>(4, (512UL * 1024) / (sizeof(T) * (slice + hslice + oslice)));
+    tq             = std::min(tq, nq);
+
+    // Plain heap scratch, deliberately not BufferVector: the metered buffer pool
+    // is sized for contraction workspace, and a team of these members running at
+    // once would exhaust it - and a throw out of the pool inside this node's
+    // OpenMP region is not recoverable.
+    std::vector<T> blk(tq * slice);
+    std::vector<T> half(tq * hslice);
+    std::vector<T> out(tq * oslice);
+
+    for (std::size_t q0 = 0; q0 < nq; q0 += tq) {
+        std::size_t const tt = std::min(tq, nq - q0);
+
+        // Whether this tile's auxiliary selection is one ascending run, which is
+        // the common case: a domain is a sorted list of functions and the shells
+        // behind it are contiguous. A run turns the gather into a strided walk
+        // of the source, which is what the fastest axis wants.
+        bool run = true;
+        for (std::size_t t = 1; run && t < tt; t++) {
+            run = qoff[q0 + t] == qoff[q0] + t * sq;
+        }
+
+        // Stage the tile slice-major, u fastest. The source walks are along the
+        // FASTEST source axis, so memory is read in order; the strided writes
+        // land inside the cache-resident tile. The layout is exactly the
+        // ``(nu) x (nu * tt)`` matrix the first GEMM wants, which is why the
+        // rotation below is one call and not one per slice.
+        for (std::size_t b = 0; b < nu; b++) {
+            for (std::size_t a = 0; a < nu; a++) {
+                T const *from = src + uoff[a] + voff[b];
+                T       *to   = blk.data() + a + nu * b;
+                if (run) {
+                    T const *base = from + qoff[q0];
+                    for (std::size_t t = 0; t < tt; t++) {
+                        to[t * slice] = base[t * sq];
+                    }
+                } else {
+                    for (std::size_t t = 0; t < tt; t++) {
+                        to[t * slice] = from[qoff[q0 + t]];
+                    }
+                }
+            }
+        }
+
+        // half[a, v, t] = sum_u X[u, a] blk[u, v, t]: one GEMM for the whole
+        // tile, because (v, t) is a single merged axis in this layout.
+        blas::gemm('T', 'N', static_cast<blas::int_t>(nt), static_cast<blas::int_t>(nu * tt), static_cast<blas::int_t>(nu), T{1}, X,
+                   static_cast<blas::int_t>(ldx), blk.data(), static_cast<blas::int_t>(nu), T{0}, half.data(),
+                   static_cast<blas::int_t>(nt));
+        // out[a, b, t] = sum_v half[a, v, t] X[v, b]: per slice, because the
+        // contracted index is interior once the tile is laid out this way.
+        for (std::size_t t = 0; t < tt; t++) {
+            blas::gemm('N', 'N', static_cast<blas::int_t>(nt), static_cast<blas::int_t>(nt), static_cast<blas::int_t>(nu), T{1},
+                       half.data() + t * hslice, static_cast<blas::int_t>(nt), X, static_cast<blas::int_t>(ldx), T{0},
+                       out.data() + t * oslice, static_cast<blas::int_t>(nt));
+        }
+
+        // Scatter the tile out. The destination's auxiliary axis is the one
+        // being walked, so a unit q stride - what an owning (nq, nt, nt) store
+        // has - makes every one of these a contiguous run.
+        for (std::size_t b = 0; b < nt; b++) {
+            for (std::size_t a = 0; a < nt; a++) {
+                T const *from = out.data() + a + nt * b;
+                T       *to   = C + q0 * scq + a * sca + b * scb;
+                if (scq == 1) {
+                    for (std::size_t t = 0; t < tt; t++) {
+                        to[t] = from[t * oslice];
+                    }
+                } else {
+                    for (std::size_t t = 0; t < tt; t++) {
+                        to[t * scq] = from[t * oslice];
+                    }
+                }
+            }
+        }
+    }
+}
+
+} // namespace detail
+
+/// @brief Emit one node holding many independent gather-and-rotate blocks:
+/// ``C_i[q, a, b] = sum_uv src[Q_i[q], U_i[u], U_i[v]] X_i[u, a] X_i[v, b]``,
+/// the whole run under one OpenMP region.
+///
+/// The shape this exists for is the DLPNO-(T0) three-external block, which the
+/// naive emission spells as a @ref gather of the whole ``(Q|u v)`` domain block
+/// followed by two contractions - the gathered block and a half-transformed one
+/// of the same leading extent, both of them the largest tensors the phase ever
+/// holds, streamed four times over where one pass suffices. Here every member
+/// streams its selection of @p src once and keeps the rotation in cache; see
+/// @ref detail::gather_rotate_member for the tiling.
+///
+/// One source for the whole run, because that is what makes the streaming claim
+/// true: the members are domain-restricted selections of ONE parent, and giving
+/// each its own would only let a caller take the traffic back.
+///
+/// Both source axes are selected by the same index list and rotated by the same
+/// transform. The operation is the symmetric two-sided rotation
+/// ``X^T (Q|u v) X``, which is the only form the callers have; an asymmetric one
+/// would need a second list and a second transform and is not this operation.
+///
+/// Every member is independent - destinations are distinct and each is ASSIGNED
+/// by one thread - so replays are deterministic whatever the schedule, and the
+/// result does not depend on the tiling at all (the tiled axis indexes no sum).
+/// Agreement with the gather-plus-two-contractions form it replaces is to
+/// roundoff rather than bitwise, because the two block their reductions
+/// differently.
+///
+/// Operand shapes per member, all column-major: @p src is ``(NQ, NU, NU)`` with
+/// the auxiliary axis fastest, ``X_i`` is ``(nu_i, nt_i)`` and column-contiguous,
+/// and ``C_i`` is ``(nq_i, nt_i, nt_i)`` where ``nq_i`` and ``nu_i`` are the
+/// lengths of the member's index lists. A member with any extent zero is a quick
+/// return, except that an empty ``u`` selection writes its destination's zeros.
+///
+/// Outside capture this executes immediately, so the same call works eagerly.
+template <CoreBasicTensorConcept CType, CoreBasicTensorConcept SrcType, CoreBasicTensorConcept XType>
+    requires(std::is_same_v<typename CType::ValueType, typename SrcType::ValueType> &&
+             std::is_same_v<typename CType::ValueType, typename XType::ValueType> && std::is_floating_point_v<typename CType::ValueType>)
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+// The combination the DLPNO emission uses is all-owning; the view forms are
+// there for callers that stage their destinations inside a larger store.
+// Extend with more APIARY_INSTANTIATE_AS lines as needed.
+APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>, einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
+    // clang-format on
+    void grouped_gather_rotate(std::vector<CType *> c_list, SrcType const &src, std::vector<std::vector<size_t>> const &q_list,
+                               std::vector<std::vector<size_t>> const &u_list, std::vector<XType const *> x_list) {
+    using T            = typename CType::ValueType;
+    size_t const count = c_list.size();
+    if (count == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_gather_rotate: the run is empty");
+    }
+    if (q_list.size() != count || u_list.size() != count || x_list.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "cg::grouped_gather_rotate: the C, Q, U and X lists must be the same length; got {}, {}, {}, {}", count,
+                                q_list.size(), u_list.size(), x_list.size());
+    }
+    if (detail::tensor_rank(src) != 3) {
+        EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_gather_rotate: the source must be rank 3, got {}", detail::tensor_rank(src));
+    }
+    size_t const NQ = src.dim(0), NU1 = src.dim(1), NU2 = src.dim(2);
+
+    for (size_t i = 0; i < count; i++) {
+        if (c_list[i] == nullptr || x_list[i] == nullptr) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_gather_rotate: entry {} has a null operand", i);
+        }
+        auto const  &ci = c_list[i]->impl();
+        auto const  &xi = x_list[i]->impl();
+        size_t const nq = q_list[i].size(), nu = u_list[i].size();
+        if (ci.rank() != 3 || xi.rank() != 2) {
+            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_gather_rotate: entry {} wants ranks (C, X) = (3, 2); got ({}, {})", i,
+                                    ci.rank(), xi.rank());
+        }
+        size_t const nt = xi.dim(1);
+        if (xi.dim(0) != nu || ci.dim(0) != nq || ci.dim(1) != nt || ci.dim(2) != nt) {
+            EINSUMS_THROW_EXCEPTION(dimension_error,
+                                    "cg::grouped_gather_rotate: entry {}'s shapes disagree: {} q indices, {} u indices, X ({}, {}), "
+                                    "C ({}, {}, {})",
+                                    i, nq, nu, xi.dim(0), xi.dim(1), ci.dim(0), ci.dim(1), ci.dim(2));
+        }
+        if (nu != 0 && nt != 0 && xi.stride(0) != 1) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::grouped_gather_rotate: entry {}'s X must be column-contiguous (stride 0 == 1)", i);
+        }
+        for (size_t p : q_list[i]) {
+            if (p >= NQ) {
+                EINSUMS_THROW_EXCEPTION(std::out_of_range,
+                                        "cg::grouped_gather_rotate: entry {} selects auxiliary index {} from a source of extent {}", i, p,
+                                        NQ);
+            }
+        }
+        for (size_t p : u_list[i]) {
+            if (p >= NU1 || p >= NU2) {
+                EINSUMS_THROW_EXCEPTION(std::out_of_range,
+                                        "cg::grouped_gather_rotate: entry {} selects index {} from source axes of extent ({}, {})", i, p,
+                                        NU1, NU2);
+            }
+        }
+    }
+
+    // Two members sharing a destination race, because the run gives no ordering
+    // between them - the same contract @ref grouped_batched_gemm carries, and
+    // the same reason: this entry point exists to MERGE calls that used to be
+    // separate.
+    {
+        std::vector<CType const *> seen(c_list.begin(), c_list.end());
+        std::sort(seen.begin(), seen.end());
+        if (std::adjacent_find(seen.begin(), seen.end()) != seen.end()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::grouped_gather_rotate: two members share a destination tensor. The run gives no ordering "
+                                    "between members, so they would race; split them into separate calls");
+        }
+    }
+
+    auto run_member = [](CType *c, SrcType const *s, XType const *x, std::vector<size_t> const &qs, std::vector<size_t> const &us) {
+        auto const  &si = s->impl();
+        auto const  &xi = x->impl();
+        auto        &ci = c->impl();
+        size_t const nq = qs.size(), nu = us.size(), nt = xi.dim(1);
+
+        // Strides are read here rather than baked at capture: a slot may point
+        // at a different tensor object on a later replay.
+        size_t const        sq = si.stride(0);
+        std::vector<size_t> qoff(nq), uoff(nu), voff(nu);
+        for (size_t t = 0; t < nq; t++) {
+            qoff[t] = qs[t] * sq;
+        }
+        for (size_t a = 0; a < nu; a++) {
+            uoff[a] = us[a] * si.stride(1);
+            voff[a] = us[a] * si.stride(2);
+        }
+        detail::gather_rotate_member(si.data(), sq, qoff.data(), nq, uoff.data(), voff.data(), nu, xi.data(), nu != 0 ? xi.stride(1) : 1,
+                                     nt, ci.data(), ci.stride(0), ci.stride(1), ci.stride(2));
+    };
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("grouped_gather_rotate eager");
+        // Members are independent (distinct destinations, each assigned by one
+        // thread), and the whole run is one parallel region - an OpenMP team,
+        // never a caller-created thread pool. An exception may not cross the
+        // region boundary (that terminates, and takes a libomp worker with it),
+        // so the first one is carried out by hand.
+        std::exception_ptr first;
+        EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
+        for (size_t i = 0; i < count; i++) {
+            try {
+                run_member(c_list[i], &src, x_list[i], q_list[i], u_list[i]);
+            } catch (...) {
+                EINSUMS_OMP_PRAGMA(critical(grouped_gather_rotate_failure))
+                if (!first) {
+                    first = std::current_exception();
+                }
+            }
+        }
+        if (first) {
+            std::rethrow_exception(first);
+        }
+        return;
+    }
+
+    LabeledSection("grouped_gather_rotate capture");
+    std::vector<TensorId>     inputs, outputs;
+    std::vector<TensorSlot *> c_slots, x_slots;
+    inputs.reserve(count + 1);
+    outputs.reserve(count);
+    c_slots.reserve(count);
+    x_slots.reserve(count);
+    auto [s_id, s_binding] = ctx.get_slot(src);
+    // Copied out of the structured binding: a lambda that opens an OpenMP
+    // region may not capture one.
+    TensorSlot *const s_slot = s_binding;
+    inputs.push_back(s_id);
+    for (size_t i = 0; i < count; i++) {
+        auto [x_id, x_slot] = ctx.get_slot(*x_list[i]);
+        auto [c_id, c_slot] = ctx.get_slot(*c_list[i]);
+        inputs.push_back(x_id);
+        // The destination is ASSIGNED, not accumulated, so it is an output only:
+        // unlike the grouped sandwich there is no read of C to keep an edge for.
+        outputs.push_back(c_id);
+        x_slots.push_back(x_slot);
+        c_slots.push_back(c_slot);
+    }
+
+    // The index lists are copied into the executor rather than referenced: a
+    // captured node outlives the call, and every replay reads them again.
+    auto executor = [run_member, s_slot, c_slots = std::move(c_slots), x_slots = std::move(x_slots), q_list, u_list]() {
+        LabeledSection("grouped_gather_rotate execute");
+        size_t const       n = c_slots.size();
+        std::exception_ptr first;
+        EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
+        for (size_t i = 0; i < n; i++) {
+            try {
+                run_member(static_cast<CType *>(c_slots[i]->ptr), static_cast<SrcType const *>(s_slot->ptr),
+                           static_cast<XType const *>(x_slots[i]->ptr), q_list[i], u_list[i]);
+            } catch (...) {
+                EINSUMS_OMP_PRAGMA(critical(grouped_gather_rotate_failure))
+                if (!first) {
+                    first = std::current_exception();
+                }
+            }
+        }
+        if (first) {
+            std::rethrow_exception(first);
+        }
+    };
+
+    GroupedGatherRotateDescriptor d;
+    d.total      = static_cast<int>(count);
+    d.elem_bytes = static_cast<std::int64_t>(sizeof(T));
+    d.nq.reserve(count);
+    d.nu.reserve(count);
+    d.nt.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        d.nq.push_back(static_cast<std::int64_t>(q_list[i].size()));
+        d.nu.push_back(static_cast<std::int64_t>(u_list[i].size()));
+        d.nt.push_back(static_cast<std::int64_t>(x_list[i]->impl().dim(1)));
+    }
+    ctx.record(OpKind::GroupedGatherRotate, fmt::format("gather_rotate x{}", count), std::move(inputs), std::move(outputs),
+               std::move(executor), std::move(d));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // norm
 // ─────────────────────────────────────────────────────────────────────────────
 
