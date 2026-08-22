@@ -43,7 +43,9 @@ dependencies:
   - hdf5
   - zlib
   - numpy
-  - mimalloc
+  # 3.4.0/3.4.1 put mimalloc's macOS TLS slots where the destructor is the system free, aborting every
+  # thread that allocated (upstream #1333, fixed in 3.4.2). Ceiling is one minor above the newest tested.
+  - mimalloc >=3.3,<3.6,!=3.4.0,!=3.4.1
   # Python stuff
   #
   # Pin the interpreter to the regular (GIL) CPython ABI. Without an explicit

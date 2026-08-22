@@ -5,6 +5,16 @@
 
 include(FetchContent)
 
+# The spdlog Einsums compiles against, named once. Two things read it: the tag
+# fetched below, and the version an out-of-tree consumer is required to match in
+# EinsumsConfig.cmake. Keeping one source for both is what stops the exported
+# package from asking for a spdlog the library was never built with.
+#
+# Pinned rather than tracking the v1.x BRANCH it used to follow: a branch makes
+# the headers folded into libEinsums a function of the day the worktree was
+# configured, so two developers a month apart get different ones.
+set(EINSUMS_SPDLOG_VERSION 1.17.0)
+
 set(SPDLOG_INSTALL TRUE)
 set(SPDLOG_FMT_EXTERNAL TRUE)
 
@@ -46,10 +56,19 @@ block()
     set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
   endif()
 
+  # SYSTEM: spdlog's headers are compiled here, not merely consumed, so without
+  # it they are held to einsums_private_flags' warning level and every
+  # translation unit that reaches Logging.hpp reports spdlog's own diagnostics
+  # as if they were ours. fmt 12.2 deprecated the string_view conversion that
+  # spdlog 1.17's logger::log goes through, which is several warnings per TU
+  # across most of the tree, for a line no Einsums change can affect. Upstream
+  # has already replaced that call with fmt.get() on the v1.x branch; the fix
+  # is simply not in a release yet.
   fetchcontent_declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG v1.x
+    GIT_TAG v${EINSUMS_SPDLOG_VERSION}
+    SYSTEM
   )
   fetchcontent_makeavailable(spdlog)
 endblock()

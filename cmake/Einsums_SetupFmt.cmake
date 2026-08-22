@@ -19,6 +19,10 @@ fetchcontent_declare(
   # this external fmt (see Einsums_SetupSpdlog), because conda has no
   # fmt-12-compatible spdlog. fmt ships an AnyNewerVersion config, so the range
   # is bounded on both sides to stay on 12.x.
+  # SYSTEM for the same reason as spdlog: when this falls back to a source
+  # build, fmt's headers would otherwise be compiled at Einsums' warning level.
+  # An fmt found through find_package is an imported target and already system.
+  SYSTEM
   FIND_PACKAGE_ARGS
   12...<13
 )

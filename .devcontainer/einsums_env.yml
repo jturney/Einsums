@@ -33,13 +33,16 @@ dependencies:
  - apiary >=1,<2
  - catch2
  - fftw
- - fmt
- - spdlog
+ # clang 22 / macOS libc++ needs fmt 12 (11.0.x fails consteval, 11.1+ fails the malloc allocator)
+ - fmt >=12,<13
+ # No spdlog: Einsums builds it from source against fmt 12 (Einsums_SetupSpdlog), because conda has
+ # none that is fmt-12-compatible. Installing one anyway is actively harmful - the conda compiler
+ # wrapper puts $PREFIX/include on the search path, so its headers shadow the ones Einsums vendored.
  # HDF5
  # * zlib brings headers; hdf5 package only bring libzlib
  - hdf5
  - zlib
- - mimalloc
+ - mimalloc >=3.3,<3.6,!=3.4.0,!=3.4.1
  # Python
  - pybind11
  - pytest

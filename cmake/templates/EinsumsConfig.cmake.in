@@ -97,14 +97,41 @@ set(EINSUMS_CXX_COMPILER_VERSION
     CACHE STRING "CXX compiler version for einsums" FORCE
 )
 
-einsums_find_package(fmt 11 REQUIRED)
-einsums_find_package(spdlog 1 REQUIRED)
+# Bounded on both sides, and matching Einsums_SetupFmt exactly. The old floor of
+# 11 admitted the two releases that setup file exists to avoid: fmt 11.0.x trips
+# a consteval FMT_STRING error under clang 22, and 11.1-11.2 call a bare
+# malloc/free that macOS libc++ no longer exposes through <cstdlib>.
+einsums_find_package(fmt 12...<13 REQUIRED)
+
+# spdlog is VENDORED, not a system dependency. Einsums builds it from source and
+# folds the static archive into libEinsums (see Einsums_SetupSpdlog), but
+# Einsums/Logging.hpp is a PUBLIC header that includes <spdlog/...>, so a
+# consumer compiles spdlog calls of its own - and those have to be compiled
+# against the same headers that are already inside the library. Any other 1.x
+# answering this find_package changes the layout of spdlog::logger under the
+# consumer's feet, which is silent UB when it is not an outright compile error.
+#
+# So say where ours is and demand that exact version. spdlog_ROOT is searched
+# ahead of CMAKE_PREFIX_PATH (CMP0074), which is what keeps a spdlog that
+# happens to sit in the surrounding conda prefix from answering first.
+#
+# In an install tree SPDLOG_INSTALL puts it under the Einsums root; in a build
+# tree it is off in FetchContent's _deps, so the build-tree variant of this file
+# substitutes that path and the install-tree variant leaves it empty.
+set(_einsums_vendored_spdlog_dir "@EINSUMS_BUILD_TREE_SPDLOG_DIR@")
+if(_einsums_vendored_spdlog_dir)
+  set(spdlog_ROOT "${_einsums_vendored_spdlog_dir}")
+else()
+  set(spdlog_ROOT "${_einsums_root_dir}")
+endif()
+unset(_einsums_vendored_spdlog_dir)
+einsums_find_package(spdlog @EINSUMS_SPDLOG_VERSION@ EXACT REQUIRED)
 # apiary::annotations is a usage requirement of einsums_public_flags, which every
 # Einsums target links: Einsums/Python/Annotations.hpp is a shim over
 # <apiary/Annotations.hpp>, and it is reached transitively from Logging.hpp. So
 # this is needed even by a consumer that never touches Python. Header-only, and
 # satisfied by an Apiary installed without the codegen tool.
-einsums_find_package(Apiary 1 REQUIRED CONFIG)
+einsums_find_package(Apiary 1...<2 REQUIRED CONFIG)
 einsums_find_package(ZLIB REQUIRED)
 einsums_find_package(TargetHDF5 REQUIRED)
 einsums_find_package(OpenMP MODULE COMPONENTS CXX)

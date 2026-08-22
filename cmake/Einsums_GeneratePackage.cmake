@@ -57,12 +57,19 @@ install(
   COMPONENT cmake
 )
 
-# Install dir
+# Install dir - SPDLOG_INSTALL lands the vendored spdlog under the Einsums root,
+# which EinsumsConfig locates relative to itself so the tree stays relocatable.
+set(EINSUMS_BUILD_TREE_SPDLOG_DIR "")
 configure_file(
   cmake/templates/EinsumsConfig.cmake.in
   "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/EinsumsConfig.cmake" ESCAPE_QUOTES @ONLY
 )
-# Build dir
+# ... and the build dir, where that same spdlog is off in FetchContent's _deps
+# instead. Nothing puts _deps on a consumer's search path, so without this the
+# build-tree export falls through to whatever spdlog the surrounding environment
+# ships - which is how an out-of-tree stage module ends up compiling against a
+# different spdlog than the one already inside the libEinsums it links.
+set(EINSUMS_BUILD_TREE_SPDLOG_DIR "${spdlog_BINARY_DIR}")
 configure_file(
   cmake/templates/EinsumsConfig.cmake.in
   "${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/${EINSUMS_PACKAGE_NAME}/EinsumsConfig.cmake" ESCAPE_QUOTES
