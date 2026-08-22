@@ -92,8 +92,11 @@ following at instantiation time:
    * Vendor BLAS if the pattern matches a pure ``gemm``,
      ``gemv``, ``ger``, ``syrk``, etc.
    * :ref:`PackedGemm <modules_Einsums_PackedGemm>` for arbitrary-rank
-     contractions that don't fit a stock BLAS call. Packs ``A`` and
-     ``B`` into BLIS-style tiles and calls vendor ``gemm`` per tile.
+     contractions that don't fit a stock BLAS call. It either hands the
+     whole contraction to a vendor ``gemm`` whose strides happen to fit,
+     or runs its own BLIS-style packed loops over a register-blocked
+     micro-kernel. It may also decline, in which case the generic loop
+     takes the contraction.
    * A generic nested loop as the last resort.
 
 4. The matching backend is instantiated for this specific contraction
@@ -105,16 +108,122 @@ pure ``dgemm``. The emitted code is one ``cblas_dgemm`` call plus the
 strided-data setup with no extra abstraction overhead.
 
 When the dispatcher can't match a stock BLAS shape, for example
-``ijl = ik * kjl``, it falls back to PackedGemm. PackedGemm's
-:code:`PackingPlan` records the strides of each ``M / N / K / batch``
-group, packs the inputs into contiguous ``MC × KC`` and ``KC × NC``
-tiles tuned to the local cache hierarchy, and calls vendor ``gemm`` per
-tile. The user wrote one expression, which was then optimized away by the
-compiler before runtime.
+``ijl = ik * kjl``, it falls back to PackedGemm. The user wrote one
+expression, and the choice to route it here was made by the compiler; what
+happens next is decided at run time, from the plan and the machine.
 
-If you want to see the dispatch decision for a specific call, raise the
-log level to INFO (``--einsums:log:level 2``) and PackedGemm prints
-either the chosen plan or the reason it rejected the contraction.
+Planning
+--------
+
+:code:`try_packed_gemm` builds a :code:`ContractionSpec` from the index
+letters and derives a :code:`PackingPlan`, which records the ``M / N / K
+/ batch`` dimension groups and each group's stride in each tensor. Plans
+are memoized in a process-wide :code:`PackingPlanCache` keyed by a
+:code:`ContractionKey`; a repeated call on a graph node can go further and
+carry a :code:`ContractionSite`, which caches the resolved plan on the node
+so a hit skips the key build and the cache lookup entirely.
+
+PackedGemm can also decline, and a decline is memoized like any other
+outcome so later identical calls turn away immediately. The cases:
+
+* the packing topology doesn't fit the contraction pattern at all;
+* an outer-product-shaped contraction below roughly 4096 ``M × N``
+  elements, where the generic loop measures faster;
+* a scatter-layout shape where the caller has a TTGT (Sort+GEMM) fallback
+  and this CPU's kernel does not beat it, which includes every batched
+  scatter shape.
+
+Execution
+---------
+
+Once a plan is accepted, :code:`blis_contraction` runs it by one of four
+routes, named by :code:`packed_gemm::last_contraction_route()`:
+
+``gemm_batch``
+    A batched shape whose per-slice strides map onto a stock GEMM. Builds
+    the pointer arrays and makes a single :code:`blas::gemm_batch` call.
+
+``flatten_gemm``
+    Multi-``K`` with a non-scatter ``C``. Flattens ``A`` and ``B`` into
+    contiguous ``M × K`` and ``K × N`` buffers and calls vendor ``gemm``.
+
+``single_k_gemm``
+    A single-``K`` slice whose strides already describe a GEMM. Called
+    directly, with no packing at all.
+
+``packed``
+    The engine's own loops. Packs ``A`` and ``B`` into cache-blocked
+    panels, ``MC × KC`` and ``KC × NC``, sized by :code:`compute_blocking`
+    from the detected L1, L2, and L3 (one column of packed ``A`` in L1, the
+    ``A`` panel in half the L2, the ``B`` panel in half the L3), then
+    contracts each block one of two ways depending on the resolved kernel's
+    :code:`MicroKernelShape::block_gemm`: either the rung's own ``MR × NR``
+    register-blocked micro-kernel, or one vendor ``gemm`` per cache block
+    into a contiguous temporary followed by a scatter into ``C``. The
+    second wins where the vendor library reaches matrix hardware the tile
+    kernel cannot, such as Accelerate's AMX; the first wins where the
+    tile kernel is the better path, such as the SME rung's FMOPA tiles.
+
+The first three routes hand the whole contraction to the vendor. That is
+usually what you want, but not always: a caller holding a node-scoped
+thread width has its vendor calls clamped to one thread, so those routes
+would run the node serially while the packed loops would fork from the
+same ICV the width raised. :code:`blis_contraction` checks
+:code:`blas::vendor_call_is_fenced()` and prefers the packed loops when it
+is set. ``gemm_batch`` is exempt, since its vendor entry point is Einsums'
+own OpenMP loop over serial GEMMs and carries no fence.
+
+Micro-kernels and SIMD rungs
+----------------------------
+
+The micro-kernel bodies are compiled once per instruction-set rung by
+:code:`einsums_add_simd_dispatch_sources()`, each copy in its own
+namespace, and the rung is chosen at run time in
+:code:`MicroKernelDispatch.cpp` by walking the ladder (baseline or native,
+V2, V3, V4, SME) down from :code:`simd::selected_arch()`. The result is
+cached per element type. :code:`micro_kernel_entry<T>()` and
+:code:`micro_kernel_shape<T>()` resolve through the *same* ladder, which is
+what keeps the packing geometry matched to the kernel that will consume
+it: the NEON and AVX rungs pack to :code:`cpu_config()`'s vector blocking,
+while the SME rung packs to ZA-tile blocking and raises ``KC`` so its
+accumulators hold the ``C`` block across the whole ``K`` loop.
+
+Complex types reuse the real kernels rather than needing their own. On the
+tile path that is Van Zee's 1m method, where ``A`` packs in expanded ``1e``
+form and ``B`` packs real and imaginary parts as adjacent ``K`` rows so the
+real kernel writes interleaved-complex output directly. On the block-GEMM
+path it is the 3m (Karatsuba) method, three real GEMMs per block instead
+of one complex GEMM, which is 25% fewer flops and reaches real-only matrix
+hardware, at the cost of mildly weaker error bounds than conventional
+complex multiplication.
+
+Inspecting a decision
+---------------------
+
+Raising the log level to INFO (``--einsums:log:level 2``) reports the
+declines described above, not the accepted plans. To see what actually ran,
+ask for it directly. Every eager :code:`einsum` overload takes an optional
+trailing :code:`detail::AlgorithmChoice *`, which is written with the
+backend that took the call: ``GEMM``, ``GEMV``, ``GER``, ``DOT``,
+``DIRECT``, ``PACKED_GEMM``, ``SORT_GEMM``, or ``GENERIC``.
+
+.. code-block:: cpp
+
+   using einsums::tensor_algebra::detail::AlgorithmChoice;
+
+   AlgorithmChoice chosen{};
+   einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B, &chosen);
+   // chosen == AlgorithmChoice::GEMM
+
+One level down, :code:`packed_gemm::last_contraction_route()` names which
+of the four routes above PackedGemm took, and for string-spec einsums
+:code:`compute_graph::dispatch::last_dispatch_route()` names the route the
+last :code:`string_einsum` selected. Both are thread-local and exist for
+test introspection, not for steering execution; the test suite asserts on
+them so that a silent fall back to the generic loop cannot pass unnoticed.
+
+Every decision is also annotated into the profile, under ``packed_gemm_skip``
+for a decline and ``packed_gemm_path`` for an accepted plan.
 
 The ComputeGraph layer
 ======================

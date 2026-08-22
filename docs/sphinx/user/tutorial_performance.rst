@@ -190,15 +190,24 @@ warning to the log, for example:
     [warning] einsum dispatch: GENERIC fallback for "C"("i") = "A"("i", "j") * "B"("j", "i")
               (ranks 1/2/2).  This contraction is not accelerated by BLAS.
 
-If ``try_packed_gemm`` rejects a contraction, an INFO-level log explains why:
+If ``try_packed_gemm`` declines a contraction, an INFO-level log explains why:
 
 .. code-block:: text
 
-    [info] PackedGemm: skipping -- no N-dims (all C indices come from A).
-           Consider rewriting as GEMV or transposing.
+    [info] PackedGemm: skipping — packing topology invalid for this contraction pattern.
+
+    [info] PackedGemm: declining — scatter-path shape, the caller has a TTGT
+           fallback, and this rung's kernel does not beat it for this shape.
 
 Set ``--einsums:log:level 2`` (INFO) to see the PackedGemm reasons, or
 ``--einsums:log:level 3`` (WARN) to see only the final GENERIC fallback.
+
+Not every decline is logged. PackedGemm also defers small outer-product
+shapes to the generic loop, which is recorded only as a profile annotation.
+Every decision, logged or not, is annotated into the profile under the
+``packed_gemm_skip`` and ``packed_gemm_path`` keys, and
+``packed_gemm::last_contraction_route()`` names the kernel route the last
+call took.
 
 Understanding PackedGemm
 =========================
@@ -208,14 +217,22 @@ simple GEMM. It works by:
 
 1. Classifying the contraction into M (output dims from A), N (output dims
    from B), K (link dims), and batch dims
-2. Packing A and B into cache-friendly contiguous buffers
-3. Calling BLAS GEMM on packed tiles
+2. Taking a vendor GEMM directly when the strides already describe one,
+   either per batch slice, over flattened multi-K buffers, or as a single
+   ``gemm_batch`` call
+3. Otherwise packing A and B into cache-friendly contiguous buffers and
+   contracting each block with either its own register-blocked micro-kernel
+   or one vendor GEMM per block, whichever is faster on this CPU
 
 This is much faster than the generic nested-loop algorithm because:
 
 - Data is laid out for optimal cache reuse through L1/L2/L3 blocking.
-- BLAS GEMM is heavily optimized by the vendor with SIMD and loop unrolling.
-- Packing cost is amortized over the GEMM computation.
+- The inner kernel is either the vendor's, or a per-instruction-set
+  micro-kernel selected at run time, both heavily vectorized.
+- Packing cost is amortized over the contraction.
+
+See :ref:`the architecture overview <architecture>` for the full route list
+and how the micro-kernel rung is chosen.
 
 PackedGemm handles:
 
