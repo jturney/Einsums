@@ -260,6 +260,49 @@ What remains is small and spread: `LCCSD(T0)` (1.1x, 2.1 s), `PNO Integrals` (1.
 One run per cell, leaning on the in-run psi4 control; the cells ran back to back on mains power with the machine otherwise quiet, the ten-thread chain reported from the median of three consecutive runs.
 psi4's ten-thread ethanol figure landed at 55.2 s, at the fast end of its historically noisy band, so that cell's parity is measured against psi4 at its best, not its average.
 
+### Reproducing these numbers on your machine
+
+The tables are machine-specific; the RESULT is the ratio column, which the in-run psi4 control makes portable.
+To reproduce on another box (the numbers above are an Apple M-series with 4 performance and 6 efficiency cores; an x86 machine will land elsewhere in absolute time):
+
+1. Environment and build, from the repository root:
+
+   ```bash
+   conda env create -f devtools/conda-envs/conda.yml   # creates einsums-dev
+   conda activate einsums-dev
+   cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DEINSUMS_BUILD_PYTHON=ON
+   cmake --build build
+   ```
+
+   Activate the environment BEFORE the first configure: without it the configure caches the wrong BLAS and the OpenMP detection fails.
+   The compiled stage backends build with the tree and are selected automatically.
+
+2. psi4, importable on `PYTHONPATH`.
+   Any psi4 works for these tables - the coupled-cluster comparison uses the `dense` integral source by construction (the `DF Ints` handicap the header describes), so none of the patched entry points are required.
+
+3. The four cells, run back to back:
+
+   ```bash
+   export PYTHONPATH=/path/to/Einsums/build/lib:/path/to/psi4/stage/lib
+
+   python examples/dlpno/bench_vs_psi4.py --method "ccsd(t)" --molecule chain6  --basis cc-pvdz --threads 1
+   python examples/dlpno/bench_vs_psi4.py --method "ccsd(t)" --molecule chain6  --basis cc-pvdz --threads 10
+   python examples/dlpno/bench_vs_psi4.py --method "ccsd(t)" --molecule ethanol --basis cc-pvtz --threads 1
+   python examples/dlpno/bench_vs_psi4.py --method "ccsd(t)" --molecule ethanol --basis cc-pvtz --threads 10
+   ```
+
+   Set `--threads` to your machine's PHYSICAL core count; on a hyperthreaded x86 box, oversubscribing onto SMT siblings mostly adds noise to the small cells.
+   Each run prints the full phase table, the correlation-energy agreement, and the ratio column the tables above are built from.
+
+4. Protocol, or the numbers will lie to you:
+   mains power (performance cores park on battery), a machine that is otherwise idle, and a settle before starting - a previous build's page cache, a search indexer, or a browser can move psi4's own column by 15% on the noisy cells.
+   One run per cell is the standard here because psi4 rides inside the same run as the control; for a noisy cell, take the median of three consecutive runs rather than the best.
+   Never run two of these concurrently, and never against a build directory that is still compiling.
+
+Two portability notes for x86.
+The thread-planning cost model's parallel-efficiency constants were measured on this machine's asymmetric cores (the batched-GEMM fit especially); on a symmetric x86 machine the planner's width choices will be conservative rather than wrong, and the determinism guarantees hold regardless - kernel routes are pinned per node, so the bits do not depend on what the planner picks.
+With MKL instead of OpenBLAS the vendor supports per-call thread control, which changes which nodes the planner considers moldable; the comparison stays valid because psi4 runs against the same BLAS in the same process environment.
+
 ### How the gap closed, in brief
 
 The ethanol ten-thread CCSD(T) cascade has gone 1.8x (2026-08-10), through the 2026-08-19/20 campaign to 1.12x, and through the 2026-08-20/21 memory campaign to parity, where the 2026-08-21/22 determinism campaign held it while making every number bit-reproducible; the full record lives in the git history of this directory and of `libs/Einsums/ComputeGraph`.
