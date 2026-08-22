@@ -79,6 +79,32 @@ TEST_CASE("Thread axis - default curve is monotone", "[ComputeGraph][CostModel]"
     }
 }
 
+TEST_CASE("Thread axis - the batched-GEMM ceiling reproduces its measured sweep", "[ComputeGraph][CostModel]") {
+    auto const p = pinned_profile();
+    REQUIRE(p.thread_efficiency.empty());
+
+    // The sweep the family's parallel fraction was fitted to: the DLPNO-(T)
+    // residual's grouped batched GEMMs over 326 triplets on a 10-core machine.
+    // The fit is a fit, not an interpolation, so the tolerance is what a fit
+    // earns - one point of efficiency at every width it was taken at.
+    struct Point {
+        unsigned width;
+        double   efficiency;
+    };
+    for (auto const [width, efficiency] : {Point{1, 1.00}, Point{2, 0.88}, Point{4, 0.70}, Point{8, 0.52}, Point{10, 0.44}}) {
+        double const modeled = p.parallel_efficiency(cg::KernelFamily::BatchedGemm, kStreamingBytes, width);
+        INFO("width " << width);
+        CHECK(std::abs(modeled - efficiency) < 0.015);
+    }
+
+    // Still ordered against its neighbours: a batch of GEMMs scales worse than
+    // one large GEMM and better than a permute.
+    CHECK(p.parallel_speedup(cg::KernelFamily::BatchedGemm, kStreamingBytes, 8) <
+          p.parallel_speedup(cg::KernelFamily::GemmLarge, kStreamingBytes, 8));
+    CHECK(p.parallel_speedup(cg::KernelFamily::BatchedGemm, kStreamingBytes, 8) >
+          p.parallel_speedup(cg::KernelFamily::Permute, kStreamingBytes, 8));
+}
+
 TEST_CASE("Thread axis - default curve is worse for smaller working sets", "[ComputeGraph][CostModel]") {
     auto const p = pinned_profile();
 

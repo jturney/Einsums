@@ -36,6 +36,7 @@ set(ComputeGraphTests
     Executor.cpp
     GEMMBatching.cpp
     GPUPasses.cpp
+    GateFlags.cpp
     GraphCapture.cpp
     GraphFeatures.cpp
     GraphRegistry.cpp
@@ -112,6 +113,7 @@ set(ComputeGraphTests
     test_axpy_axpby_views_python.py
     test_batched_views_python.py
     test_blas_python.py
+    test_gate_flags_python.py
     test_gather_python.py
     test_grouped_gather_rotate_python.py
     test_block_copy_python.py

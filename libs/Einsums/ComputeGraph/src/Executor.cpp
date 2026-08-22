@@ -406,8 +406,24 @@ void DataflowExecutor::Scaffold::reset(Graph &graph, size_t node_count) {
     mem_current.store(0, std::memory_order_relaxed);
     deferred.clear();
 
-    widths_active = any_wide;
-    if (any_wide) {
+    // A PLAN switches widths on as surely as a width above one does, and a
+    // planner that looked at every node and gave each of them ONE thread has
+    // still decided something: that this graph's parallelism is the count of
+    // its nodes rather than any node's width, which is exactly the shape a
+    // graph of many independent chains has. Reading that plan as "unplanned"
+    // ran every one of those nodes with the whole machine's worth of vendor
+    // threads while several of them ran at once - oversubscription against the
+    // one invariant WidthBudget exists to hold - and left the thread count a
+    // kernel saw depending on what else happened to be running, which is a
+    // kernel's summation order. Measured on the DLPNO-(T) residual, one replay
+    // in eight came back with a different last bit.
+    //
+    // A hand-set width still counts on its own: planned_thread_count() is
+    // nonzero only after plan_threads(), and a caller that writes a width
+    // directly never calls it. The staleness check below handles a plan made
+    // for a different machine.
+    widths_active = any_wide || graph.planned_thread_count() != 0;
+    if (widths_active) {
         auto &width_budget = task_pool::WidthBudget::get_singleton();
         // Asked before anything is admitted and from the thread that starts the
         // run, which is the only one that can see the machine (see

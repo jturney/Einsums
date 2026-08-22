@@ -12,6 +12,7 @@
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/Executor.hpp>
+#include <Einsums/ComputeGraph/GateFlags.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
@@ -919,6 +920,26 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     APIARY_EXPOSE APIARY_RVP(reference_internal) std::tuple<Graph &, Graph &> add_conditional(std::string           label,
                                                                                               std::function<bool()> predicate);
+
+    /**
+     * @brief Add a conditional whose predicate is one flag of a @ref GateFlags array.
+     *
+     * The same node @ref add_conditional builds, with the predicate replaced by a load from a
+     * shared buffer. Use it when the answers are known before the replay starts and there are many
+     * of them: a @c std::function bound to a Python callable takes the GIL every time it is
+     * evaluated, and a graph whose conditionals run on several threads serializes on that.
+     *
+     * The array is shared, not copied, so the caller may keep writing to it between replays; a
+     * copy of the @c shared_ptr is baked into the node, so the flags outlive the handle. An index
+     * past the end of the array reads false.
+     *
+     * @param[in] label Human-readable label for profiling.
+     * @param[in] flags The array to read.
+     * @param[in] index Which flag in it selects this node's branch.
+     * @return Tuple of references: (then_branch_graph, else_branch_graph).
+     */
+    APIARY_EXPOSE APIARY_RVP(reference_internal) std::tuple<Graph &, Graph &> add_conditional_flag(std::string      label,
+                                                                                                   GateFlags const &flags, size_t index);
 
     /**
      * @brief Add a conditional node with lambda-captured branches.

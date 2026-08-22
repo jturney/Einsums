@@ -447,8 +447,10 @@ struct DeviceProfile {
      * how much is fixed cost: a large BLAS GEMM parallelizes nearly perfectly,
      * a batch of them slightly less, HPTT less again, and a bandwidth-bound
      * elementwise loop least because it saturates the bus before it saturates
-     * the cores. These are conservative placeholders. Calibrate rather than
-     * lean on them: @ref measure_thread_efficiency replaces them wholesale.
+     * the cores. All of them are conservative placeholders except the batched
+     * one, which is fitted to a measured sweep; see the case below. Calibrate
+     * rather than lean on them: @ref measure_thread_efficiency replaces them
+     * wholesale.
      */
     [[nodiscard]] static double default_parallel_fraction(KernelFamily family, SizeClass size_class) {
         double base = 0.0;
@@ -460,7 +462,19 @@ struct DeviceProfile {
             base = 0.95;
             break;
         case KernelFamily::BatchedGemm:
-            base = 0.90;
+            // The one ceiling here that is a FIT rather than a placeholder. The others are ordered
+            // guesses; this one is least squares against a measured sweep of the DLPNO-(T)
+            // residual's grouped batched GEMMs - 125 nodes over 326 triplets, on a 10-core machine
+            // - whose efficiencies came out 97, 88, 70, 52 and 44 percent at widths 1, 2, 4, 8 and
+            // 10. Amdahl at p = 0.862 reproduces all five to within a point of efficiency, so the
+            // saturating form the model already uses is the right shape and only the constant was
+            // wrong: at 0.90 it promised 5.26x at width 10 where the kernel delivers 4.41x, and a
+            // planner that over-credits width buys the machine at a discount and then spends it.
+            //
+            // One family on one machine, so it is a better constant and not a calibration; @ref
+            // measure_thread_efficiency still replaces the whole table with measurements when a
+            // caller sweeps.
+            base = 0.862;
             break;
         case KernelFamily::Permute:
             base = 0.80;

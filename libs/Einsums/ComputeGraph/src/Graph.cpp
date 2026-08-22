@@ -2152,6 +2152,16 @@ std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, std::func
     return {*then_graph, *else_graph};
 }
 
+std::tuple<Graph &, Graph &> Graph::add_conditional_flag(std::string label, GateFlags const &flags, size_t index) {
+    // The buffer, not the handle: the node has to keep reading the same array after the caller's
+    // GateFlags goes out of scope, and a shared_ptr copy is what makes that true.
+    return add_conditional(std::move(label), [buffer = flags.buffer(), index]() {
+        // Past the end reads false. A conditional cannot report an error usefully from inside a
+        // replay, and skipping a branch is the conservative answer.
+        return index < buffer->size() && (*buffer)[index] != 0;
+    });
+}
+
 Graph &Graph::add_loop(std::string label, size_t max_iterations, std::function<bool(size_t)> condition) {
     auto body_graph = std::make_shared<Graph>(label + "/body");
 

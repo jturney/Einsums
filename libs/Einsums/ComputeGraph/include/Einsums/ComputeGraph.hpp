@@ -84,6 +84,7 @@
 #include <Einsums/ComputeGraph/Diis.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Executor.hpp>
+#include <Einsums/ComputeGraph/GateFlags.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/LuPivots.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>

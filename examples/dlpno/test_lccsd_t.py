@@ -36,7 +36,8 @@ import einsums
 import einsums.graph as cg
 from dlpno import tensors as ten
 from dlpno.lccsd_t import (_ACCUMULATE_FLAGS, _DIRECTION, _ROTATE_FLAGS,
-                           LCCSDT, chain_of, permuter_spec, rotation_stages)
+                           LCCSDT, chain_of, permuter_spec, rotation_stages,
+                           sub_batches)
 from dlpno.reference_io import load_reference
 from dlpno.thresholds import Thresholds
 from dlpno.triples import DLPNOCCSDT
@@ -280,6 +281,86 @@ def test_the_block_width_moves_the_energy_only_within_convergence(monkeypatch):
     # One batch over every triplet is the widest the phase gets, and the pass
     # count stays within one of the per-triplet gate's.
     assert abs(passes[0] - passes[1]) <= 1
+
+
+def test_the_sub_batch_partition_covers_every_triplet_once():
+    """``sub_batches`` deals, so the slices have to be a partition too.
+
+    Same stake as the block partition: a triplet in two slices accumulates its
+    residual twice, a triplet in none never gets one. And the deal is what makes
+    the slices equal, so it is pinned as well - one of the fattest triplets in
+    each slice, not all of them in the first.
+    """
+    plan = [dict(ijk=n, entries=[0] * (n % 7)) for n in range(23)]
+    slices = sub_batches(plan, 5)
+    assert sorted(r["ijk"] for s in slices for r in s) == list(range(23))
+    assert [len(s) for s in slices] == [5, 5, 5, 4, 4]
+    # Round-robin over a coupling-count-descending order: every slice leads with
+    # a six-coupling triplet, so no slice carries the fat end alone.
+    assert [len(s[0]["entries"]) for s in slices] == [6, 6, 6, 5, 5]
+    # A count of one is the whole plan, which is what the un-split capture was.
+    assert len(sub_batches(plan, 1)) == 1
+    # More slices than triplets yields one triplet each and no empty slice.
+    assert [len(s) for s in sub_batches(plan, 100)] == [1] * 23
+
+
+def test_the_sub_batched_residual_is_bit_identical_to_one_batch():
+    """Sub-batching changes which node a triplet's work lives in, nothing else.
+
+    The residual over a slice of the plan calls the same kernels on the same
+    operands in the same per-triplet order as the residual over all of it; what
+    changes is how many members each grouped call carries. That is the same
+    equivalence the gated capture already rests on - a block of one reproduces
+    one batch of everything - and it is what lets the wide capture be split at
+    all, so it is worth asserting on the arithmetic directly rather than
+    inferring it from a converged energy.
+
+    Bit-identical and not a tolerance: the claim is that no bit moves, and a
+    tolerance would pass on exactly the drift this is about. Both graphs are
+    replayed under the same executor at the same thread count, because a thread
+    count fixes a kernel's internal partition and this is not a test about that.
+    """
+    reference, _ = load_reference(WATER)
+    cut = replace(Thresholds.preset("NORMAL", method="cc"),
+                  t0_approximation=False)
+    cc = DLPNOCCSDT(reference, cut, verbose=False)
+    cc.compute_energy(method="ccsd(t)")
+    solver = cc.lccsd_t
+    plan = solver._plan
+
+    amplitudes = {r["ijk"]: np.array(ten.view(solver.t0.T[r["ijk"]]), copy=True)
+                  for r in plan}
+
+    keep = []
+
+    def replay(count):
+        for ijk, block in amplitudes.items():
+            ten.view(solver.t0.T[ijk])[...] = block
+        for r in plan:
+            ten.view(solver.R[r["ijk"]])[...] = np.nan
+        graph = cg.Graph(f"residual x{count}")
+        if count <= 1:
+            with cg.capture(graph):
+                solver._emit_residual(plan)
+        else:
+            flags = cg.GateFlags(count, True)
+            for index, slice_ in enumerate(sub_batches(plan, count)):
+                branch, _ = graph.add_conditional_flag(f"r [{index}]", flags,
+                                                       index)
+                with cg.capture(branch):
+                    solver._emit_residual(slice_)
+            keep.append(flags)
+        graph.set_executor(cg.SequentialExecutor())
+        graph.execute()
+        return {r["ijk"]: np.array(ten.view(solver.R[r["ijk"]]), copy=True)
+                for r in plan}
+
+    one = replay(1)
+    for count in (3, 8, len(plan)):
+        split = replay(count)
+        for ijk, block in one.items():
+            assert np.array_equal(block, split[ijk]), (
+                f"{count} sub-batches moved a bit of triplet {ijk}'s residual")
 
 
 # => the wide replay and the thread plan <= #

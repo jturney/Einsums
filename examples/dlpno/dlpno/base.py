@@ -36,7 +36,7 @@ from .thresholds import Thresholds
 __all__ = ["DLPNOBase", "plan_widths"]
 
 
-def plan_widths(graph):
+def plan_widths(graph, dataflow=False):
     """Give a solver graph's nodes thread widths, and bind the executor that
     honors them.
 
@@ -61,13 +61,23 @@ def plan_widths(graph):
     over nodes is the parallelism there is. So the graph is either moldable or
     it is what it already was, and never silently serial.
 
-    Returns whether any node was given a width above one.
+    Pass ``dataflow`` to take the dataflow executor even on a declined graph.
+    That is the right choice for a graph whose parallelism is the COUNT of its
+    nodes rather than any node's width - many independent chains, each one
+    narrow - and it is not merely a preference for speed. The solo-level rule
+    the fallback relies on decides a kernel's thread count from what else shares
+    its level, so a declined graph of many nodes under the OpenMP team gets a
+    thread count that moves with scheduling, and a reduction's thread count is
+    its summation order. The dataflow executor honors the plan's width of one on
+    every node instead, which pins the arithmetic.
+
+    Returns whether any node was given a width above one, whichever executor was
+    bound.
     """
-    if graph.plan_threads():
-        graph.set_executor(cg.DataflowExecutor())
-        return True
-    graph.set_executor(cg.OpenMPExecutor())
-    return False
+    widened = graph.plan_threads()
+    graph.set_executor(cg.DataflowExecutor() if widened or dataflow
+                       else cg.OpenMPExecutor())
+    return widened
 
 
 class DLPNOBase:

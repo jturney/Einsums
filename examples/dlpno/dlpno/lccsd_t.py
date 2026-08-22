@@ -56,12 +56,20 @@ amplitudes.
 coupling**, and the two are separated by however many triplets a call spans. A
 call cannot span a triplet whose work is behind its own conditional, so the
 phase is captured twice and each pass picks: gated per :attr:`LCCSDT.block`
-where something has settled, and ungated over every triplet where nothing has,
-which is every pass until the first triplet settles. The second is a
-substitution rather than an approximation, and :meth:`LCCSDT.iterate` says why.
-At methanol/cc-pVDZ that is 16482 nodes a pass becoming 104 on the passes that
-cost anything and 8499 on the rest, with the energies and the pass count
-unmoved to the last bit.
+where something has settled, and over every triplet where nothing has, which is
+every pass until the first triplet settles. The second is a substitution rather
+than an approximation, and :meth:`LCCSDT.iterate` says why.
+
+**How wide a call in that second capture spans is a separate question from
+whether it is gated, and the answer is not "everything".** One batch over every
+triplet is a CHAIN - at chain6/cc-pVDZ, 125 grouped nodes with 1.4 of them ready
+at a time - so all the parallelism has to come from inside a kernel, and a
+grouped batched GEMM measured 44 percent of ten threads there. The capture is
+therefore emitted in :data:`_SUB_BATCHES_PER_THREAD` slices per thread, each one
+an independent chain behind its own container, which turns the phase into a set
+of tasks whose COUNT keeps the machine busy. It is the same equivalence the
+gated capture rests on, at a block width between one and everything, and the
+residual pass goes 92.8 ms to 65.3 ms for it.
 
 **The couplings were never most of the node count, though - the rest of the
 pass was.** Eq. 111's prefix ``R = W + T D``, Eq. 112's step, the transposed
@@ -76,8 +84,8 @@ already existed, and it is legitimate for a simpler reason than the batches
 are: element-wise work holds no reduction for a schedule to reorder, and each
 member writes only its own block, so a member's last bit is the last bit its
 own node wrote whatever order the members ran in. A pass over every triplet is
-114 dispatches where it was 1779, and the energy phase is seven nodes whatever
-the triplet count.
+114 dispatches per slice where it was 1779 for the pass, and the energy phase
+is seven nodes whatever the triplet count.
 """
 
 import time
@@ -92,7 +100,65 @@ from . import tensors as ten
 from .base import DLPNOBase, plan_widths
 from .cc_overlaps import build_overlaps
 
-__all__ = ["LCCSDT", "permuter_spec", "chain_of", "rotation_stages"]
+__all__ = ["LCCSDT", "permuter_spec", "chain_of", "rotation_stages",
+           "sub_batches"]
+
+#: Sub-batches per thread in a capture that spans every triplet.
+#:
+#: A sub-batch replays as ONE task, so this is the number of tasks the phase
+#: offers a machine of ``P`` threads, in units of ``P``. It trades two things
+#: against each other. Too few and the tail is exposed: with equal-work tasks
+#: greedily scheduled the makespan runs over the ideal by at most one task,
+#: which is ``P / (k P) = 1 / k`` of it, so ``k`` sub-batches per thread bound
+#: the tail at ``1 / k``. Too many and each task stops amortizing anything -
+#: its grouped calls carry fewer members and its gate and container are paid
+#: over less work.
+#:
+#: Eight, measured on chain6/cc-pVDZ at NORMAL over 326 triplets and 10
+#: threads, where the residual pass runs (median of 41 interleaved replays):
+#:
+#: =========  ========  =============
+#: k          tasks     residual pass
+#: =========  ========  =============
+#: one batch  1         92.8 ms
+#: 2          20        71.3 ms
+#: 4          40        66.6 ms
+#: 6          60        65.4 ms
+#: 8          80        65.3 ms
+#: 12         120       64.7 ms
+#: 16         163       65.0 ms
+#: 32         326       67.2 ms
+#: =========  ========  =============
+#:
+#: The curve is flat from 4 to 16 and turns over at 32, so eight sits in the
+#: middle of the plateau rather than on either edge of it.
+_SUB_BATCHES_PER_THREAD = 8
+
+
+def sub_batches(records, count):
+    """``count`` mutually independent slices of a triplet list.
+
+    Dealt round-robin over the same work-sorted order
+    :meth:`LCCSDT._make_blocks` sorts by, so each slice holds about the same
+    number of couplings - and therefore about the same amount of work, which is
+    what a schedule over the slices needs - and the partition is a function of
+    the plan alone.
+
+    Dealing rather than slicing is what makes them equal. Contiguous chunks of
+    the same order put every fat triplet in the first slice and every thin one
+    in the last, and measured that way the residual pass is 70.3 ms against
+    61.7 ms dealt: the chunked partition emits fewer calls, because a slice of
+    similar triplets runs out of couplings at the same slot, and loses more
+    than that to the imbalance.
+    """
+    if count <= 1:
+        return [list(records)]
+    order = sorted(records, key=lambda r: (-len(r["entries"]), r["ijk"]))
+    out = [[] for _ in range(count)]
+    for at, r in enumerate(order):
+        out[at % count].append(r)
+    return [slice_ for slice_ in out if slice_]
+
 
 _run_setup_graph = DLPNOBase._run
 
@@ -619,7 +685,7 @@ class LCCSDT:
         la.grouped_axpby([1.0] * count, R, [1.0] * count,
                          [self.t0.T[r["ijk"]] for r in records])
 
-    def _emit_energy(self):
+    def _emit_energy(self, records=None):
         """Eq. 53 again, at the current amplitudes.
 
         The same bracket the semicanonical pass evaluates, against amplitudes
@@ -628,8 +694,8 @@ class LCCSDT:
         are the ones ``lccsd_t0`` already resolved.
 
         **Seven nodes for the whole phase, whatever the triplet count**, where
-        the per-triplet emission spent seven per number: one grouped permute
-        per bracket term and one grouped dot at the end.
+        the per-triplet emission spent seven per number: one grouped permute per
+        bracket term and one grouped dot at the end.
 
         Grouping by TERM rather than by triplet is what keeps the sum in place.
         Each triplet's bracket is still accumulated over the six terms in
@@ -638,18 +704,26 @@ class LCCSDT:
         a thread reaches first, and a permute's arithmetic cannot see that. The
         closing dot is a reduction, so its members stay sequential - that is
         :func:`~einsums.linalg.grouped_dot`'s own contract.
+
+        ``records`` restricts the emission to a slice of the plan, which is
+        legitimate for the same reason the sub-batched residual is: a slice
+        writes only its own triplets' brackets and its own entries of the energy
+        vector, and both are per-triplet - ``_bracket`` is a tensor per triplet
+        and ``_e_view`` a one-element view of a distinct slot of ``e_all``.
+        :meth:`iterate` says why the phase is nonetheless emitted whole.
         """
         from .lccsd_t0 import _ENERGY_TERMS
 
-        count = len(self._plan)
-        brackets = [self._bracket[r["ijk"]] for r in self._plan]
+        records = self._plan if records is None else records
+        count = len(records)
+        brackets = [self._bracket[r["ijk"]] for r in records]
         for term, (coefficient, order) in enumerate(_ENERGY_TERMS):
             la.grouped_permute(f"abc <- {order}", brackets,
-                               [self.t0.V[r["ijk"]] for r in self._plan],
+                               [self.t0.V[r["ijk"]] for r in records],
                                [0.0 if term == 0 else 1.0] * count,
-                               [coefficient * r["prefactor"] for r in self._plan])
-        la.grouped_dot([self._e_view[r["ijk"]] for r in self._plan], brackets,
-                       [self.t0.T[r["ijk"]] for r in self._plan])
+                               [coefficient * r["prefactor"] for r in records])
+        la.grouped_dot([self._e_view[r["ijk"]] for r in records], brackets,
+                       [self.t0.T[r["ijk"]] for r in records])
 
     # -- the solve -----------------------------------------------------------
 
@@ -727,10 +801,47 @@ class LCCSDT:
             return max(float(np.sqrt(rms_view[slot] / rms_size[slot]))
                        for slot in slots)
 
+        # Every capture that spans the whole plan is emitted as this many
+        # mutually independent sub-batches, each behind its own container, so
+        # that the phase offers the machine that many tasks instead of one
+        # chain. See :data:`_SUB_BATCHES_PER_THREAD`.
+        n_sub = min(len(self._plan),
+                    _SUB_BATCHES_PER_THREAD * max(1, int(einsums.hardware.get_max_threads())))
+
+        # A container is a conditional, because a conditional is how this graph
+        # spells "these nodes replay as one task": its body is a subgraph that
+        # runs start to finish on the thread that took the node. The gates of a
+        # capture that spans every triplet are pinned open at capture and never
+        # written - such a capture is only ever replayed on a pass where every
+        # triplet is live, which is exactly the condition that would open them.
+        self._open = cg.GateFlags(n_sub, True)
+
+        def _emit_in_blocks(graph, blocks, flags, label, emit):
+            """``emit`` over each block, behind that block's gate. Leaf nodes."""
+            leaves = 0
+            for index, block in enumerate(blocks):
+                branch, _ = graph.add_conditional_flag(f"{label} [{index}]",
+                                                       flags, index)
+                with cg.capture(branch):
+                    emit(block)
+                leaves += branch.num_nodes()
+            return leaves
+
         # The energy is captured whole either way. psi4 skips only the residual
         # and the amplitude update - `compute_t_iteration_energy` runs over
         # every triplet each pass - and it is right to: the energy is an n^3
         # contraction against the n^4 rotations the skip is there to avoid.
+        # NOT sub-batched, and the reason is a last bit rather than a
+        # measurement. Splitting this phase over the machine is worth 8.3 ms a
+        # pass against 4.6 ms at chain6/cc-pVDZ, and the emission is bit-exact
+        # under it - but the phase can only USE the machine through an executor,
+        # and binding one changes how many threads reach the bracket's grouped
+        # dot. A dot is a reduction, so its thread count fixes its summation
+        # order: the same emission gives -0.007780136830002726 at the ambient
+        # count and ...728 under an executor on water/cc-pVTZ. The residual and
+        # the step have no such term - every one of their kernels is
+        # element-wise or a per-member GEMM - which is why they are split and
+        # this is not.
         g_energy = cg.Graph("lccsd(t): Eq. 53 energy")
         with cg.capture(g_energy):
             self._emit_energy()
@@ -760,10 +871,20 @@ class LCCSDT:
         # executor's view of every triplet and lets it spread them over cores.
         #
         # A block rather than a triplet because a batch cannot sit inside a
-        # per-triplet conditional; see :attr:`block`. The gate is the same
-        # object for the residual and the step, so a block that recomputed a
-        # settled member also steps it, and `self._active` is promoted to whole
-        # blocks below before anything reads it.
+        # per-triplet conditional; see :attr:`block`. The gate is the same flag
+        # for the residual and the step, so a block that recomputed a settled
+        # member also steps it, and `self._active` is promoted to whole blocks
+        # below before anything reads it.
+        #
+        # The gates are FLAGS and not Python callables, and at this count that
+        # is not a detail. A `std::function` bound to a Python lambda takes the
+        # GIL every time it is evaluated, so several hundred conditionals
+        # replayed across a thread team serialize on it: measured on
+        # chain6/cc-pVDZ, the step's 326 gates cost 13 us each of GIL-serialized
+        # evaluation against a 4.2 ms pass, which is the whole pass. A
+        # :class:`~einsums.graph.GateFlags` slot is a load and a compare, and
+        # the solver writes the whole array once per pass instead of a dict
+        # entry per triplet.
         #
         # Residual and step stay SEPARATE graphs, and that separation is what
         # makes the threading legal rather than merely convenient. Inside the
@@ -772,9 +893,9 @@ class LCCSDT:
         # graph would write T while another triplet's residual was reading it.
         # Jacobi is what buys the parallelism, and only across a phase
         # boundary.
-        def _gate(block):
-            names = [r["ijk"] for r in block]
-            return lambda: any(self._active[ijk] for ijk in names)
+        # One flag per gated block, read by that block's residual conditional
+        # and by its step conditional. Written once a pass, before the replay.
+        self._live = cg.GateFlags(len(blocks), True)
 
         g_residual = cg.Graph("lccsd(t): Eq. 111 residual")
         g_step = cg.Graph("lccsd(t): Eq. 112 step")
@@ -782,19 +903,13 @@ class LCCSDT:
         self.n_batched_nodes = 0
         gated, stepped = 0, 0
         if skipping:
-            for index, block in enumerate(blocks):
-                gate = _gate(block)
-                branch, _ = g_residual.add_conditional(f"residual [{index}]", gate)
-                with cg.capture(branch):
-                    self._emit_residual(block)
-                gated += branch.num_nodes()
-                # Two of a block's nodes are its prep, whatever the block width:
-                # the prep is grouped over the block's triplets.
-                self.n_batched_nodes += branch.num_nodes() - 2
-                branch, _ = g_step.add_conditional(f"step [{index}]", gate)
-                with cg.capture(branch):
-                    self._emit_update(block)
-                stepped += branch.num_nodes()
+            gated = _emit_in_blocks(g_residual, blocks, self._live, "residual",
+                                    self._emit_residual)
+            stepped = _emit_in_blocks(g_step, blocks, self._live, "step",
+                                      self._emit_update)
+            # Two of a block's nodes are its prep, whatever the block width: the
+            # prep is grouped over the block's triplets.
+            self.n_batched_nodes = gated - 2 * len(blocks)
             self.n_nodes += gated + stepped
 
             # The same residual a second time, ungated and batched over every
@@ -810,36 +925,49 @@ class LCCSDT:
             # gates would have let everything through - which is every pass until
             # the first triplet settles, and those are the expensive ones.
             #
-            # It is also the shape whose nodes are worth widening. A grouped
-            # call over every triplet is one fat node the planner can give
-            # several threads to; the same work inside a per-block conditional
-            # is many thin ones it will leave at one. So this graph is replayed
-            # whenever it is eligible - every gate open - and the gated one only
-            # once something has settled, which is when the skip is the point
-            # and the batches are small anyway.
+            # It is also the shape that carries the parallelism, and the reason
+            # is not the batch width but the SUB-BATCH count. A pass over every
+            # triplet as one batch is a chain: 125 grouped nodes with an average
+            # of 1.4 of them ready at a time, so the only parallelism available
+            # is inside a kernel, and a grouped batched GEMM measured 44% of ten
+            # threads. Split into :data:`_SUB_BATCHES_PER_THREAD` slices per
+            # thread the same work is that many independent chains, each one a
+            # task, and the machine is kept busy by the count of them rather
+            # than by any one kernel's scaling. Measured on chain6/cc-pVDZ the
+            # residual pass goes 92.8 ms to 65.3 ms and the step 2.6 ms to
+            # 1.9 ms.
+            #
+            # It is the same equivalence as the gated capture, at a different
+            # block width, and it is the emission the gated capture already
+            # proves: a block of one reproduces one batch of everything bit for
+            # bit, so any partition in between does too.
+            wide_blocks = sub_batches(self._plan, n_sub)
             if len(blocks) > 1:
                 g_every = cg.Graph("lccsd(t): Eq. 111 residual (every triplet)")
-                with cg.capture(g_every):
-                    self._emit_residual(self._plan)
-                self.n_nodes += g_every.num_nodes()
-                self.nodes_by_phase["residual (wide)"] = g_every.num_nodes()
+                leaves = _emit_in_blocks(g_every, wide_blocks, self._open, "residual",
+                                         self._emit_residual)
+                self.n_nodes += g_every.num_nodes() + leaves
+                self.nodes_by_phase["residual (wide)"] = g_every.num_nodes() + leaves
                 # The step gets the same treatment, and it is the same
                 # equivalence: a pass in which every gate is open steps every
                 # triplet either way, each one reading and writing only its own
                 # blocks, so the two spellings differ in how many members a
                 # grouped call carries and in nothing else.
                 g_step_every = cg.Graph("lccsd(t): Eq. 112 step (every triplet)")
-                with cg.capture(g_step_every):
-                    self._emit_update(self._plan)
-                self.n_nodes += g_step_every.num_nodes()
-                self.nodes_by_phase["step (wide)"] = g_step_every.num_nodes()
+                leaves = _emit_in_blocks(g_step_every, wide_blocks, self._open, "step",
+                                         self._emit_update)
+                self.n_nodes += g_step_every.num_nodes() + leaves
+                self.nodes_by_phase["step (wide)"] = g_step_every.num_nodes() + leaves
         else:
-            with cg.capture(g_residual):
-                self._emit_residual(self._plan)
-            with cg.capture(g_step):
-                self._emit_update()
-            self.n_batched_nodes = g_residual.num_nodes() - 2
-            self.nodes_by_phase["residual (wide)"] = g_residual.num_nodes()
+            wide_blocks = sub_batches(self._plan, n_sub)
+            leaves = _emit_in_blocks(g_residual, wide_blocks, self._open, "residual",
+                                     self._emit_residual)
+            self.n_batched_nodes = leaves - 2 * len(wide_blocks)
+            self.nodes_by_phase["residual (wide)"] = g_residual.num_nodes() + leaves
+            self.n_nodes += leaves
+            leaves = _emit_in_blocks(g_step, wide_blocks, self._open, "step",
+                                     self._emit_update)
+            self.n_nodes += leaves
         self.n_nodes += g_residual.num_nodes() + g_step.num_nodes()
         # What a pass costs in dispatches. A gated phase is charged with the work
         # inside its conditionals plus the gates themselves, since that is what a
@@ -865,11 +993,21 @@ class LCCSDT:
         # the same choice made per node from a cost model, so the wide capture
         # is simply always used and the cutoff is gone.
         if self.use_executor:
-            for name, g in (("residual", g_residual), ("step", g_step),
-                            ("T'", g_prime), ("residual (wide)", g_every),
-                            ("step (wide)", g_step_every)):
+            # The sub-batched captures take the dataflow executor whether or
+            # not the planner found a width worth having, because their
+            # parallelism IS the sub-batch count: each one is an independent
+            # chain and there are several per thread, so a plan of all ones is
+            # the right plan and the executor's job is to honor it. Under the
+            # OpenMP team instead, whether a node shares its execution level
+            # decides how many threads its kernel gets, and at chain6 that made
+            # one replay in eight return a different last bit.
+            for name, g, dataflow in (("residual", g_residual, not skipping),
+                                      ("step", g_step, not skipping),
+                                      ("T'", g_prime, False),
+                                      ("residual (wide)", g_every, True),
+                                      ("step (wide)", g_step_every, True)):
                 if g is not None:
-                    self.moldable[name] = plan_widths(g)
+                    self.moldable[name] = plan_widths(g, dataflow=dataflow)
 
         self._print(f"\n  ==> Local CCSD(T) <==\n")
         self._print(f"    plan:     {len(self._plan)} triplets, "
@@ -938,9 +1076,15 @@ class LCCSDT:
                 active = [r for r in self._plan if r["ijk"] in live]
                 self.n_skipped += len(self._plan) - len(active)
                 # The gates the conditionals read. Set before the replay, so
-                # one graph execution does exactly the active blocks.
+                # one graph execution does exactly the active blocks. One bulk
+                # write of the whole flag array, not a call per block: a block
+                # is live when any of its members is, and `live` is already
+                # promoted to whole blocks above, so the block's first member
+                # answers for it.
                 for ijk in self._active:
                     self._active[ijk] = ijk in live
+                self._live.assign([1 if block[0]["ijk"] in live else 0
+                                   for block in blocks])
                 if g_prime is not None:
                     g_prime.execute()
                 wide = g_every is not None and len(live) == len(self._plan)
