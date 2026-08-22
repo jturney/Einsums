@@ -102,7 +102,7 @@ struct CodedError : ErrorClass {
      *
      * @versionadded{1.0.0}
      */
-    constexpr int get_code() const { return ErrorCode; }
+    [[nodiscard]] constexpr int get_code() const { return ErrorCode; }
 };
 
 /**
