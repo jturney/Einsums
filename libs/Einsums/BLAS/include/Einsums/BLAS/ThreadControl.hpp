@@ -159,4 +159,40 @@ EINSUMS_EXPORT bool moldable_width_scope();
  */
 EINSUMS_EXPORT bool vendor_call_is_fenced();
 
+/**
+ * @brief Present ONE thread to the vendor, and to anything einsums forks from the OpenMP ICV, for as long as it exists.
+ *
+ * Fixes the summation order of every reduction run inside it. A threaded @c dot sums per-thread partials, so its last bits are a
+ * function of how many threads the vendor happened to use as well as of the operands; measured on an OpenMP-built OpenBLAS a
+ * 13,824-element @c ddot differs between one thread and ten. At width one there is a single partial and the order is the operands' own,
+ * so the result becomes a function of the inputs alone. Element-wise kernels have no such dependence - each output element is one
+ * expression over its own inputs - so pinning the width changes nothing for them.
+ *
+ * Width one is also the one value a caller may always present whatever other threads are doing: the vendor's global thread-count sync
+ * early-returns for it, which is the invariant @ref set_moldable_width_scope documents. So this narrows nothing another thread depends
+ * on and needs no coordination.
+ *
+ * It is not only a correctness knob. Every BLAS level-1 call over at most a few tens of thousands of elements loses outright on a vendor
+ * that opens a thread team per call: the fork and join cost several times the arithmetic.
+ *
+ * Affects the calling thread only, and restores both counts on destruction. Nesting is safe: an inner scope reads the one already in
+ * force and restores it.
+ *
+ * @versionadded{2.0.0}
+ */
+class EINSUMS_EXPORT SerialVendorScope {
+  public:
+    SerialVendorScope();
+    ~SerialVendorScope();
+
+    SerialVendorScope(SerialVendorScope const &)            = delete;
+    SerialVendorScope &operator=(SerialVendorScope const &) = delete;
+    SerialVendorScope(SerialVendorScope &&)                 = delete;
+    SerialVendorScope &operator=(SerialVendorScope &&)      = delete;
+
+  private:
+    int _prior_vendor{0};
+    int _prior_omp{1};
+};
+
 EINSUMS_NAMESPACE_END(blas)

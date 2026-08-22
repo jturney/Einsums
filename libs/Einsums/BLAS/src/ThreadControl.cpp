@@ -107,4 +107,30 @@ bool vendor_call_is_fenced() {
 #endif
 }
 
+SerialVendorScope::SerialVendorScope() {
+    // Read both counts before writing either: a vendor count that tracks the OpenMP ICV reads back the value just written otherwise, and
+    // the restore would then pin the thread to it.
+    _prior_vendor = get_num_threads_this_thread();
+#ifdef _OPENMP
+    _prior_omp = omp_get_max_threads();
+    if (_prior_omp > 1) {
+        omp_set_num_threads(1);
+    }
+#endif
+    if (_prior_vendor > 1) {
+        set_num_threads_this_thread(1);
+    }
+}
+
+SerialVendorScope::~SerialVendorScope() {
+#ifdef _OPENMP
+    if (_prior_omp > 1) {
+        omp_set_num_threads(_prior_omp);
+    }
+#endif
+    if (_prior_vendor > 1) {
+        set_num_threads_this_thread(_prior_vendor);
+    }
+}
+
 EINSUMS_NAMESPACE_END(blas)

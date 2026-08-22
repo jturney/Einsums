@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/BLAS.hpp>
+#include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Detail/BatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
@@ -2496,6 +2497,9 @@ APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,  
     auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
     detail::reject_if_capturing("cg::dot(A, B) returning scalar cannot be used during graph capture. "
                                 "Use cg::einsum(\" <- i ; i\", &result, A, B) instead.");
+    // A reduction's summation order is its thread count's, so an unfenced dot is a function of the machine as well as of
+    // the operands. See @ref blas::SerialVendorScope.
+    blas::SerialVendorScope const serial;
     return linear_algebra::dot(A, B);
 }
 
@@ -2513,6 +2517,8 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("dot eager");
+        // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
+        blas::SerialVendorScope const serial;
         *result = linear_algebra::dot(A, B);
         return;
     }
@@ -2524,6 +2530,7 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
 
     auto executor = [result, a_slot, b_slot]() {
         LabeledSection("dot execute");
+        blas::SerialVendorScope const serial;
         *result = linear_algebra::dot(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
     };
 
@@ -2600,6 +2607,8 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>,
 
     // Tiled operands compose per-tile dots; dense delegate to linear_algebra.
     auto compute = [](AType const &a, BType const &b) -> T {
+        // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
+        blas::SerialVendorScope const serial;
         if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
             return detail::tiled_dot<T>(a, b);
         } else {
@@ -2701,6 +2710,8 @@ APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<double>
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dotc: result tensor must have at least one element");
     }
     auto compute = [](AType const &a, BType const &b) -> T {
+        // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
+        blas::SerialVendorScope const serial;
         if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
             return detail::tiled_dotc<T>(a, b);
         } else {
@@ -4235,6 +4246,17 @@ std::vector<size_t> tensor_dims(TensorType const &t) {
 /// block sizes local-correlation methods produce is the whole cost: a DLPNO-CCSD
 /// iteration reached ~1,700 of these, one node each.
 ///
+/// Each entry's own reduction runs at VENDOR WIDTH ONE, under
+/// @ref blas::SerialVendorScope, and that is part of the contract rather than a
+/// tuning choice. A threaded dot sums per-thread partials, so its last bits are
+/// a function of how many threads the caller happened to present - and this node
+/// is reached at whatever width its context has: eagerly from the main thread,
+/// from an executor worker, from inside a node-scoped width. Pinning the width
+/// makes every entry a function of its operands alone, so the same inputs give
+/// the same bits whatever is running around them. The entries may be dispatched
+/// from anywhere; it is each entry's INTERNAL reduction that is fixed, and the
+/// entries themselves are already ordered by the caller's list.
+///
 /// Because the entries are sequential, repeating a destination is well defined
 /// and means what the loop means - the last entry writing it wins. Unlike
 /// @ref grouped_batched_gemm there is therefore nothing to reject.
@@ -4329,6 +4351,7 @@ APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<dou
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("grouped_dot eager");
+        blas::SerialVendorScope const serial;
         for (size_t i = 0; i < count; i++) {
             results[i]->data()[0] = linear_algebra::dot(*a_list[i], *b_list[i]);
         }
@@ -4361,6 +4384,7 @@ APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<dou
 
     auto executor = [r_slots = std::move(r_slots), a_slots = std::move(a_slots), b_slots = std::move(b_slots)]() {
         LabeledSection("grouped_dot execute");
+        blas::SerialVendorScope const serial;
         for (size_t i = 0; i < r_slots.size(); i++) {
             static_cast<ResultType *>(r_slots[i]->ptr)->data()[0] =
                 linear_algebra::dot(*static_cast<AType const *>(a_slots[i]->ptr), *static_cast<BType const *>(b_slots[i]->ptr));
@@ -5599,6 +5623,9 @@ APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<std::complex<double>
     // clang-format on
     auto norm(linear_algebra::Norm norm_type, AType const &A) -> RemoveComplexT<typename AType::ValueType> {
     detail::reject_if_capturing("cg::norm() returning scalar cannot be used during graph capture.");
+    // A reduction's summation order is its thread count's, so an unfenced norm is a function of the machine as well as of
+    // the operands. See @ref blas::SerialVendorScope.
+    blas::SerialVendorScope const serial;
     return linear_algebra::norm(norm_type, A);
 }
 
@@ -5608,6 +5635,8 @@ void norm(RemoveComplexT<typename AType::ValueType> *result, linear_algebra::Nor
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("norm eager");
+        // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
+        blas::SerialVendorScope const serial;
         *result = linear_algebra::norm(norm_type, A);
         return;
     }
@@ -5618,6 +5647,7 @@ void norm(RemoveComplexT<typename AType::ValueType> *result, linear_algebra::Nor
 
     auto executor = [result, norm_type, a_slot]() {
         LabeledSection("norm execute");
+        blas::SerialVendorScope const serial;
         *result = linear_algebra::norm(norm_type, *static_cast<AType const *>(a_slot->ptr));
     };
 
@@ -5674,6 +5704,8 @@ APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocat
     }
 
     auto compute = [](linear_algebra::Norm nt, AType const &a) -> R {
+        // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
+        blas::SerialVendorScope const serial;
         if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
             return detail::tiled_norm<typename AType::ValueType>(nt, a);
         } else {

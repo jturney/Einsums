@@ -363,6 +363,65 @@ def test_the_sub_batched_residual_is_bit_identical_to_one_batch():
                 f"{count} sub-batches moved a bit of triplet {ijk}'s residual")
 
 
+def test_the_sub_batched_energy_is_bit_identical_to_one_batch():
+    """The Eq. 53 emission over a slice is the emission over all of it.
+
+    Held out until the closing grouped dot became width-deterministic, and for
+    a reason worth recording: the split is only useful under an executor, and
+    an executor changes how many threads reach that dot. A reduction's
+    summation order is its thread count's, so the same emission gave two
+    different last bits depending on which spelling ran it. The dot now reduces
+    each member at vendor width one whatever is around it, so the emission is a
+    function of the amplitudes alone and the two spellings can be compared as
+    the arithmetic claims they should be.
+
+    Bit-identical and not a tolerance, on the same terms as the residual's
+    differential: the claim is that no bit moves, and a tolerance would pass on
+    exactly the drift this is about. Every executor, because the point is that
+    the answer no longer depends on which one replays it.
+    """
+    reference, _ = load_reference(WATER)
+    cut = replace(Thresholds.preset("NORMAL", method="cc"),
+                  t0_approximation=False)
+    cc = DLPNOCCSDT(reference, cut, verbose=False)
+    cc.compute_energy(method="ccsd(t)")
+    solver = cc.lccsd_t
+    plan = solver._plan
+
+    keep = []
+
+    def replay(count, executor):
+        for r in plan:
+            ten.view(solver._bracket[r["ijk"]])[...] = np.nan
+            ten.view(solver._e_view[r["ijk"]])[...] = np.nan
+        graph = cg.Graph(f"energy x{count}")
+        if count <= 1:
+            with cg.capture(graph):
+                solver._emit_energy(plan)
+        else:
+            flags = cg.GateFlags(count, True)
+            for index, slice_ in enumerate(sub_batches(plan, count)):
+                branch, _ = graph.add_conditional_flag(f"e [{index}]", flags,
+                                                       index)
+                with cg.capture(branch):
+                    solver._emit_energy(slice_)
+            keep.append(flags)
+        graph.set_executor(executor())
+        graph.execute()
+        return {r["ijk"]: float(ten.view(solver._e_view[r["ijk"]])[0])
+                for r in plan}
+
+    one = replay(1, cg.SequentialExecutor)
+    for executor in (cg.SequentialExecutor, cg.OpenMPExecutor,
+                     cg.DataflowExecutor):
+        for count in (3, 8, len(plan)):
+            split = replay(count, executor)
+            for ijk, value in one.items():
+                assert split[ijk] == value, (
+                    f"{count} sub-batches under {executor.__name__} moved a "
+                    f"bit of triplet {ijk}'s energy")
+
+
 # => the wide replay and the thread plan <= #
 
 

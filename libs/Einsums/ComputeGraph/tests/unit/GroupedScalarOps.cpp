@@ -21,6 +21,11 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <limits>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -159,6 +164,90 @@ TEST_CASE("grouped_dot: the node declares every read and every write", "[Compute
     REQUIRE(d != nullptr);
     REQUIRE(d->total == static_cast<int>(run.size()));
 }
+
+#ifdef _OPENMP
+TEST_CASE("grouped_dot: the same operands give the same bits at every width and under every executor", "[ComputeGraph][GroupedScalarOps]") {
+    // The property the operation promises and the reason it fences the vendor:
+    // a threaded dot sums per-thread partials, so an unfenced reduction's last
+    // bits are a function of the ambient thread count as well as of the
+    // operands. The entries here are past the width at which the vendor starts
+    // threading a dot, which is the only size where the difference is visible
+    // at all - a run of small entries would agree whatever the node did.
+    //
+    // Widths AND executors, because they are two different ways to reach the
+    // node at a width it did not choose: an ambient count set by the caller,
+    // and a worker thread the executor pinned.
+    int const available = omp_get_max_threads();
+    if (available < 2) {
+        SUCCEED("one thread available, nothing to compare against");
+        return;
+    }
+
+    constexpr size_t m = 200, n = 120; // 24,000 elements an entry
+
+    std::vector<DotEntry<double>> run;
+    for (int seed = 0; seed < 4; seed++) {
+        run.push_back(make_dot_entry<double>(m, n, 100 + seed));
+    }
+    auto l = dot_lists(run);
+
+    auto results = [&]() {
+        std::vector<double> out;
+        out.reserve(run.size());
+        for (auto const &e : run) {
+            out.push_back(e.r.data()[0]);
+        }
+        return out;
+    };
+
+    // `executor == nullptr` means the eager call rather than a replay, which is
+    // the third way in and the one the solver's convergence norm takes.
+    auto at = [&](int width, std::shared_ptr<cg::Executor> executor) {
+        int const prior = omp_get_max_threads();
+        omp_set_num_threads(width);
+        for (auto &e : run) {
+            e.r.data()[0] = std::numeric_limits<double>::quiet_NaN();
+        }
+        if (executor == nullptr) {
+            cg::grouped_dot(l.r, l.a, l.b);
+        } else {
+            cg::Graph graph("grouped_dot_width");
+            {
+                cg::CaptureGuard const guard(graph);
+                cg::grouped_dot(l.r, l.a, l.b);
+            }
+            graph.set_executor(std::move(executor));
+            graph.execute();
+        }
+        omp_set_num_threads(prior);
+        return results();
+    };
+
+    auto const reference = at(1, nullptr);
+
+    struct Case {
+        int         width;
+        char const *what;
+    };
+    // Ten as well as the machine's own count: the width a caller presents is
+    // not bounded by the cores it has, and the vendor's partition is a function
+    // of the number it is given.
+    for (Case const &c :
+         {Case{1, "eager, width 1"}, Case{2, "eager, width 2"}, Case{10, "eager, width 10"}, Case{available, "eager, every thread"}}) {
+        INFO(c.what);
+        REQUIRE(at(c.width, nullptr) == reference);
+    }
+
+    for (Case const &c : {Case{1, "width 1"}, Case{2, "width 2"}, Case{10, "width 10"}, Case{available, "every thread"}}) {
+        INFO(std::string("SequentialExecutor, ") + c.what);
+        REQUIRE(at(c.width, std::make_shared<cg::SequentialExecutor>()) == reference);
+        INFO(std::string("OpenMPExecutor, ") + c.what);
+        REQUIRE(at(c.width, std::make_shared<cg::OpenMPExecutor>()) == reference);
+        INFO(std::string("DataflowExecutor, ") + c.what);
+        REQUIRE(at(c.width, std::make_shared<cg::DataflowExecutor>()) == reference);
+    }
+}
+#endif
 
 TEST_CASE("grouped_dot: survives a rebind", "[ComputeGraph][GroupedScalarOps][Rebind]") {
     // The one test a node that baked its pointers in would fail.

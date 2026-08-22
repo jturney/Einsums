@@ -16,10 +16,6 @@
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
-#ifdef _OPENMP
-#    include <omp.h>
-#endif
-
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -124,7 +120,11 @@ APIARY_INSTANTIATE_AS("DiisAcceleratorZ", DiisAccelerator<std::complex<double>>)
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "DiisAccelerator::step: no (amplitude, step) pairs were registered");
         }
 
-        SerialVendorScope const serial;
+        // Every kernel a step runs is BLAS level 1 over at most a few tens of thousands of elements, which a vendor that opens a thread
+        // team per call loses on outright - at (T) scale that measured eight times the cost of the same calls made serially - and the
+        // fence also fixes the reduction order of the B entries, so the coefficients are a function of the inputs rather than of the
+        // inputs and the machine's thread count.
+        blas::SerialVendorScope const serial;
         snapshot();
         extrapolate();
     }
@@ -151,58 +151,6 @@ APIARY_INSTANTIATE_AS("DiisAcceleratorZ", DiisAccelerator<std::complex<double>>)
     [[nodiscard]] std::vector<std::function<TensorId()>> const &step_ids() const { return _step_ids; }
 
   private:
-    /// Present ONE thread to the vendor for as long as it exists.
-    ///
-    /// Every kernel a step runs is BLAS level 1 over at most a few tens of thousands of elements, which a vendor that opens a thread team
-    /// per call loses on outright: an OpenMP-threaded OpenBLAS forks and joins around each of the several thousand calls a (T)-scale step
-    /// makes, and once the operands cross its threading threshold that measured eight times the cost of the same calls made serially.
-    /// Width one is also the one value a caller may always present whatever other threads are doing - the vendor's global thread-count
-    /// sync early-returns for it, which is the invariant @ref blas::set_moldable_width_scope documents - so this narrows nothing another
-    /// thread depends on and needs no coordination.
-    ///
-    /// It also FIXES the reduction order of the B entries. A threaded @c dot sums per-thread partials, so its last bits depend on how
-    /// many threads the vendor happened to use; measured on this machine a 13,824-element @c ddot differs between one thread and ten.
-    /// The elementwise kernels here (@c copy, @c axpy) have no such dependence - each output element is one expression over its own
-    /// inputs - so pinning the width changes nothing for them. For the dots it makes the accelerator's coefficients a function of the
-    /// inputs alone, where before they were a function of the inputs and the machine's thread count.
-    class SerialVendorScope {
-      public:
-        SerialVendorScope() {
-            // Read both counts before writing either, for the reason the executor's width guard gives: a vendor count that tracks the
-            // OpenMP ICV reads back the value just written otherwise, and the restore would then pin the thread to it.
-            _prior_vendor = blas::get_num_threads_this_thread();
-#ifdef _OPENMP
-            _prior_omp = omp_get_max_threads();
-            if (_prior_omp > 1) {
-                omp_set_num_threads(1);
-            }
-#endif
-            if (_prior_vendor > 1) {
-                blas::set_num_threads_this_thread(1);
-            }
-        }
-
-        ~SerialVendorScope() {
-#ifdef _OPENMP
-            if (_prior_omp > 1) {
-                omp_set_num_threads(_prior_omp);
-            }
-#endif
-            if (_prior_vendor > 1) {
-                blas::set_num_threads_this_thread(_prior_vendor);
-            }
-        }
-
-        SerialVendorScope(SerialVendorScope const &)            = delete;
-        SerialVendorScope &operator=(SerialVendorScope const &) = delete;
-
-      private:
-        int _prior_vendor{0};
-#ifdef _OPENMP
-        int _prior_omp{1};
-#endif
-    };
-
     /// What the hot path needs to reach a registered operand without asking the tensor layer again.
     ///
     /// @c flat means the whole tensor is one unit-stride run, which is what lets a BLAS call or a @c memcpy stand in for a tensor
