@@ -200,6 +200,13 @@ einsums_option(
 )
 
 einsums_option(
+  EINSUMS_WITH_DOCS_IN_ALL BOOL
+  "Build the documentation as part of the default target rather than only on request (default OFF)."
+  OFF
+  CATEGORY "Build Targets" ADVANCED
+)
+
+einsums_option(
   EINSUMS_WITH_BINARY_DIR
   PATH
   "Root directory for libraries and executables for the build. This does not affect the installed location of libraries and executables."

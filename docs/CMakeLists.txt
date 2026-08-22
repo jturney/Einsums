@@ -423,6 +423,16 @@ add_custom_command(
   COMMAND ${SPHINX_DOCS_BUILD_COMMAND}
 )
 
-add_custom_target(docs-html-file ALL DEPENDS ${SPHINX_DOCS_OUTPUT_FILE})
+# Out of ALL by default. The sphinx build is nitpicky and warnings-are-errors,
+# and its inputs are the per-module apiary codegen stamps, so ANY header edit
+# re-runs the whole documentation build as part of an ordinary source-code
+# rebuild. EINSUMS_WITH_DOCS_IN_ALL=ON restores that; otherwise the gate is
+# reached by naming the target, which is what the docs workflow already does
+# (`cmake --build <dir> --target docs`, and `docs-html` is the same build).
+if(EINSUMS_WITH_DOCS_IN_ALL)
+  add_custom_target(docs-html-file ALL DEPENDS ${SPHINX_DOCS_OUTPUT_FILE})
+else()
+  add_custom_target(docs-html-file DEPENDS ${SPHINX_DOCS_OUTPUT_FILE})
+endif()
 add_dependencies(docs-html docs-html-file)
 add_dependencies(docs docs-html)

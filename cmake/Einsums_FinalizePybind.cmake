@@ -24,6 +24,28 @@
 # custom-command outputs from a target's source list otherwise.
 
 
+# ``einsums_defines_header(<target> <out>)`` maps a module target name to
+# its file. The targets are spelled ``<basename>_<module>`` and the file
+# path is a function of the same two parts, which is what makes the mapping
+# exact rather than a guess.
+function(einsums_defines_header _target _out)
+    string(FIND "${_target}" "_" _split)
+    if(_split LESS 0)
+        set(${_out} "" PARENT_SCOPE)
+        return()
+    endif()
+    string(SUBSTRING "${_target}" 0 ${_split} _base)
+    math(EXPR _rest "${_split} + 1")
+    string(SUBSTRING "${_target}" ${_rest} -1 _name)
+    set(_path
+        "${PROJECT_BINARY_DIR}/libs/${_base}/${_name}/include/${_base}/${_name}/Defines.hpp")
+    if(EXISTS "${_path}")
+        set(${_out} "${_path}" PARENT_SCOPE)
+    else()
+        set(${_out} "" PARENT_SCOPE)
+    endif()
+endfunction()
+
 function(einsums_finalize_pybind)
     if(NOT EINSUMS_BUILD_PYTHON)
         return()
@@ -38,17 +60,32 @@ function(einsums_finalize_pybind)
     endif()
 
 
-    # Configure-time-generated Defines.hpp files. Adding them to every
-    # codegen edge's DEPENDS makes the codegen re-fire when configure
-    # toggles a flag (EINSUMS_WITH_GPU=ON, ...); the regenerated
-    # Defines.hpp changes mtime, so any annotated header that uses
-    # ``#if defined(EINSUMS_HAVE_GPU)`` produces fresh output. Each
-    # module writes its own ``${BUILD}/libs/<Lib>/<Mod>/include/<Lib>/<Mod>/Defines.hpp``
-    # via einsums_write_config_defines_file, so a recursive glob picks
-    # them all up.
-    file(GLOB_RECURSE _all_defines_headers
-        "${PROJECT_BINARY_DIR}/libs/*/Defines.hpp"
-    )
+    # Configure-time-generated Defines.hpp files. Listing one on a codegen
+    # edge's DEPENDS makes the codegen re-fire when configure toggles a flag
+    # (EINSUMS_WITH_GPU=ON, ...); the regenerated Defines.hpp changes mtime, so
+    # an annotated header that uses ``#if defined(EINSUMS_HAVE_GPU)`` produces
+    # fresh output. Each module writes its own under
+    # ``${BUILD}/libs/<Lib>/<Mod>/include/<Lib>/<Mod>/Defines.hpp`` via
+    # einsums_write_config_defines_file.
+    #
+    # Listed PER MODULE, not globbed. Every module's file on every module's
+    # codegen made one Defines.hpp edit re-run every codegen in the tree, and a
+    # codegen is a full libclang parse of the module's annotated headers.
+    #
+    # Every annotated header reaches these two whatever else it includes:
+    # ``<Einsums/Config.hpp>`` is where the global EINSUMS_HAVE_* toggles land,
+    # and Preprocessor is what Config itself is built on. They go on every
+    # codegen edge, the module's own and its declared dependencies' on top.
+    set(_base_defines_headers "")
+    foreach(_always IN ITEMS Einsums_Config Einsums_Preprocessor)
+        # Populated via PARENT_SCOPE; pre-declared so the static cmake-audit
+        # check sees it defined.
+        set(_always_file "")
+        einsums_defines_header("${_always}" _always_file)
+        if(_always_file)
+            list(APPEND _base_defines_headers "${_always_file}")
+        endif()
+    endforeach()
 
     # spdlog is built from source (FetchContent) because conda ships no
     # fmt-12-compatible spdlog, so its headers live in the build tree rather
@@ -84,6 +121,25 @@ function(einsums_finalize_pybind)
           set(_num_tu_arg NUM_TU ${_num_tu})
         endif()
 
+        # This module's own Defines.hpp plus its declared module dependencies'.
+        # The declared dependencies are what carry the include directories the
+        # annotated headers may reach at all, so a header of this module can
+        # only be preprocessed against these files.
+        set(_mod_defines_headers ${_base_defines_headers})
+        set(_own_defines "")
+        einsums_defines_header("${_libname}_${_mod}" _own_defines)
+        if(_own_defines)
+            list(APPEND _mod_defines_headers "${_own_defines}")
+        endif()
+        foreach(_dep IN LISTS _deps)
+            set(_dep_defines "")
+            einsums_defines_header("${_dep}" _dep_defines)
+            if(_dep_defines)
+                list(APPEND _mod_defines_headers "${_dep_defines}")
+            endif()
+        endforeach()
+        list(REMOVE_DUPLICATES _mod_defines_headers)
+
         # apiary_add_bindings populates these via OUT_* (PARENT_SCOPE);
         # pre-declare so the static cmake-audit check sees them defined.
         set(_out "")
@@ -111,7 +167,7 @@ function(einsums_finalize_pybind)
                 "-I${CMAKE_SOURCE_DIR}/libs/Einsums/Python/include"
                 "-I${EINSUMS_APIARY_INCLUDE_DIR}"
                 ${_apiary_spdlog_flags}
-            EXTRA_DEPENDS ${_all_defines_headers}
+            EXTRA_DEPENDS ${_mod_defines_headers}
             OUT_BINDING _out OUT_STUB _stub_out OUT_DOCS_JSON _docs_json
         )
         list(APPEND _generated_tus   "${_out}")
@@ -182,6 +238,11 @@ function(einsums_finalize_pybind)
         string(REGEX REPLACE "^.*/include/" "" _rel "${_h}")
         list(APPEND _option_rel_headers "${_rel}")
     endforeach()
+
+    # This edge alone takes the whole set, and honestly so: its HEADERS are every
+    # module's Options.hpp, so it is the one codegen whose inputs really do span
+    # the tree.
+    file(GLOB_RECURSE _all_defines_headers "${PROJECT_BINARY_DIR}/libs/*/Defines.hpp")
 
     set(_options_docs_json "")
     apiary_add_bindings(
