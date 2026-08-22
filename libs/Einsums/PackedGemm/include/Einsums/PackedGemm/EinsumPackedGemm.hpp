@@ -303,6 +303,42 @@ inline char const *&last_contraction_route() {
     return route;
 }
 
+/// The route pin the most recent route decision on this thread read.
+///
+/// Test introspection ONLY, alongside @ref last_contraction_route: that one
+/// names which kernel ran, this one whether a pin or the thread regime chose
+/// it. Adaptive means the decision came from @ref
+/// einsums::blas::vendor_call_is_fenced, which is what an eager caller and an
+/// unplanned graph get.
+inline KernelRoute &last_route_pin() {
+    thread_local KernelRoute pin = KernelRoute::Adaptive;
+    return pin;
+}
+
+/// @brief Whether this contraction is to be packed rather than handed to one
+///        vendor GEMM.
+///
+/// A pinned site answers from the pin, at every width including 1. Everything
+/// else - an eager caller, an unplanned graph, any caller that passes no site -
+/// answers from the thread regime exactly as before pinning existed: a caller
+/// holding a node-scoped width has its vendor calls clamped to one thread (@ref
+/// einsums::blas::vendor_call_is_fenced), so the deferring fast paths would run
+/// the node serially while the packed loops, which fork from the same ICV the
+/// width raised, get all of it.
+[[nodiscard]] inline bool prefer_packed_route(ContractionSite const *site) {
+    KernelRoute const pin = site != nullptr ? site->route : KernelRoute::Adaptive;
+    last_route_pin()      = pin;
+    switch (pin) {
+    case KernelRoute::Packed:
+        return true;
+    case KernelRoute::Vendor:
+        return false;
+    case KernelRoute::Adaptive:
+    default:
+        return einsums::blas::vendor_call_is_fenced();
+    }
+}
+
 /// @brief Execute a tensor contraction via Pack-A / Pack-B + BLAS GEMM tiles (BLIS-style).
 ///
 /// For multi-K contractions (rank-3+), flattens A and B into contiguous M*K / K*N buffers
@@ -310,7 +346,7 @@ inline char const *&last_contraction_route() {
 /// GEMM per tile.
 template <typename ValueType, einsums::BasicTensorConcept CType, einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType>
 void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType const &B, ValueType alpha, ValueType beta,
-                      bool conj_a = false, bool conj_b = false) {
+                      bool conj_a = false, bool conj_b = false, bool prefer_packed = false) {
     LabeledSection0();
 
     // Resolve the SIMD-dispatch rung's tile kernel and its register-block
@@ -324,20 +360,18 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
     int const                      MR         = shape.mr;
     int const                      NR         = shape.nr;
 
-    // Whether to keep the whole contraction rather than hand it to one vendor
-    // GEMM. A caller holding a node-scoped width has its vendor calls clamped to
-    // one thread (@ref einsums::blas::vendor_call_is_fenced), so the deferring
-    // fast paths below would run the node serially while the packed loops, which
-    // fork from the same ICV the width raised, get all of it. The gemm_batch
-    // path is exempt: its vendor entry point is einsums' own OpenMP loop over
-    // serial GEMMs, it forks from the ICV too, and its wrapper carries no fence.
+    // `prefer_packed` says to keep the whole contraction rather than hand it to
+    // one vendor GEMM. It is decided by the caller - see @ref
+    // prefer_packed_route - and arrives here already resolved, so the two fast
+    // paths below and the packed loops are picked from one answer per call. The
+    // gemm_batch path is exempt: its vendor entry point is einsums' own OpenMP
+    // loop over serial GEMMs, it forks from the ICV too, and its wrapper carries
+    // no fence.
     //
-    // Read once per call and deliberately not stored anywhere: the plan cache
-    // and the caller's ContractionSite are shared across nodes and across
-    // widths, and a route chosen for one width is not a fact about the
-    // contraction. Every lookup that reaches this function has already happened,
-    // so the caches stay width-neutral.
-    bool const prefer_packed = einsums::blas::vendor_call_is_fenced();
+    // Still not stored anywhere here. The plan cache is shared across nodes and
+    // a route is not a property of a packing plan; where a route IS a settled
+    // fact it is a fact about the NODE, and it lives on that node's
+    // ContractionSite (@ref KernelRoute), which is what the caller read.
 
     // Cache-aware blocking: tile sizes adapt to sizeof(ValueType) and CPU cache hierarchy.
     auto const blk = compute_blocking(static_cast<int64_t>(sizeof(ValueType)));
@@ -1391,7 +1425,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 ///        contraction (a graph node). See @ref ContractionSite: a hit skips
 ///        assembling the spec, the key and its stride vectors, hashing them,
 ///        and the plan-cache lookup, none of which can change between two
-///        calls that the key compares equal for.
+///        calls that the key compares equal for. It also carries the site's
+///        @ref KernelRoute pin, which decides vendor-versus-packed here instead
+///        of the thread regime when it is set.
 template <einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType, einsums::BasicTensorConcept CType>
 bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> C_prefactor, CType *C,
                      einsums::BiggestTypeT<typename AType::ValueType, typename BType::ValueType> AB_prefactor, AType const &A,
@@ -1413,28 +1449,45 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         return false;
     }
 
+    // Which kernel this contraction is to be spent through. Resolved once, here,
+    // and carried to every decision below that used to read the thread regime
+    // for itself: the deferral to a direct vendor GEMM, and the two fast paths
+    // inside blis_contraction.
+    bool const prefer_packed = prefer_packed_route(site);
+
     // Memo hit: this caller already resolved this exact contraction, under the
-    // same policy, against operands with this layout and these sizes.
-    if (site != nullptr && site->resolved && site->allow_scatter == allow_scatter && site_key_matches(site->key, spec_in, st, A, B, *C)) {
+    // same policy and the same route, against operands with this layout and
+    // these sizes.
+    //
+    // The route is only part of the test for a DECLINE. A stored plan is a
+    // packing topology and stays valid whichever way the contraction is spent,
+    // but a decline is the engine standing aside for a vendor GEMM, which is
+    // only right while the vendor is the route - so a decline recorded in one
+    // regime must never turn a call away in the other.
+    if (site != nullptr && site->resolved && site->allow_scatter == allow_scatter &&
+        (site->plan != nullptr || site->declined_packed == prefer_packed) && site_key_matches(site->key, spec_in, st, A, B, *C)) {
         if (site->plan == nullptr) {
             ProfileAnnotate("packed_gemm_skip", "site_declined");
             return false;
         }
         ProfileAnnotate("packed_gemm_plan", "site");
         blis_contraction<ValueType>(*site->plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor),
-                                    spec_in.conj_a, spec_in.conj_b);
+                                    spec_in.conj_a, spec_in.conj_b, prefer_packed);
         return true;
     }
 
     // Records what this call resolved to, so the next one can skip straight to
     // it. A null plan means "declined": that is a property of the key too, and
-    // re-deriving it costs the same as finding a plan would.
-    auto remember = [site, allow_scatter](ContractionKey const &k, PackingPlan const *p) {
+    // re-deriving it costs the same as finding a plan would. A decline also
+    // records the route it was made under, which is what the reuse test above
+    // re-checks.
+    auto remember = [site, allow_scatter, prefer_packed](ContractionKey const &k, PackingPlan const *p) {
         if (site != nullptr) {
-            site->key           = k;
-            site->plan          = p;
-            site->allow_scatter = allow_scatter;
-            site->resolved      = true;
+            site->key             = k;
+            site->plan            = p;
+            site->allow_scatter   = allow_scatter;
+            site->declined_packed = prefer_packed;
+            site->resolved        = true;
         }
     };
 
@@ -1521,15 +1574,13 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         }
         // Skip contractions that BLAS GEMM can handle directly (no batch, single M/N/K).
         //
-        // Not under a fenced width: the direct GEMM this defers to would be
-        // clamped to one thread, and the packed loops are what can still use the
-        // node's width. The decline recorded here stays width-neutral because
-        // the only caller that hands in a site (the ComputeGraph string
-        // dispatch) reaches this function for such a shape ONLY when the fence
-        // is in force - its own rank-2 gemm_direct route takes the shape first
-        // otherwise - so a memo written in one regime is never read in the other.
+        // Not when the packed route is preferred: the direct GEMM this defers to
+        // would be clamped to one thread under a node-scoped width, and on a
+        // pinned node it is the side whose last bit moves with the thread count.
+        // The decline recorded here carries the route it was made under, so a
+        // memo written in one regime is never read in the other.
         if (m_count == 1 && n_count == 1 && link.size() == 1 && !spec.conj_a && !spec.conj_b && m_count + n_count == target.size() &&
-            !einsums::blas::vendor_call_is_fenced()) {
+            !prefer_packed) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_direct_gemm");
             remember(key, nullptr);
             return false; // Deferred to direct BLAS GEMM, not a rejection.
@@ -1838,7 +1889,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             remember(key, cached);
         }
         blis_contraction<ValueType>(plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor), spec.conj_a,
-                                    spec.conj_b);
+                                    spec.conj_b, prefer_packed);
         return true;
     } else {
         ProfileAnnotate("packed_gemm_skip", "invalid_topology");

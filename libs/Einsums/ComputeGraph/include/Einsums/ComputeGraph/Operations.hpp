@@ -7613,6 +7613,10 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
                                 params->conj_b, &indices->link_indices, pg_site.get());
     };
 
+    // The same site the executor lambda holds, so a plan-time pass can pin this
+    // node's kernel route where the dispatch will read it.
+    desc.site = pg_site;
+
     ctx.record(OpKind::Einsum, std::move(label), {a_id, b_id}, {c_id}, std::move(executor), std::move(desc));
 }
 

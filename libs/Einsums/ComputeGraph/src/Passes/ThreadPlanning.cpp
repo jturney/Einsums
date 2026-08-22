@@ -254,6 +254,33 @@ bool policy_forbids_width(Node const &node) {
     return !kernel_moldability(node);
 }
 
+/// The kernel route a node's contraction is to be settled on, or Adaptive for
+/// "leave the dispatch's own per-call choice alone".
+///
+/// Read off the node and nothing else - no timing, no width, no measurement -
+/// so two plans of one graph pin the same routes whatever the machine was doing
+/// when they ran.
+///
+/// Only a contraction has a route to settle: the vendor-versus-packed choice
+/// lives in the string dispatch and the packed engine, which is where an
+/// OpKind::Einsum node's work goes and nowhere else. A contraction the search
+/// may widen is pinned to the packed loops, the side whose last bit does not
+/// move with the thread count. One the search may NOT widen keeps the vendor,
+/// which is what it runs today and will keep running, since its width cannot
+/// change either.
+///
+/// Pinning the packed side is inert for every contraction the engine does not
+/// have two ways to spend: the shapes where the route is read at all are the
+/// plain single-M/N/K GEMM the engine would otherwise stand aside for, and the
+/// multi-K and single-K flatten paths inside the packed engine, all of which
+/// PackedGemm can form by construction.
+packed_gemm::KernelRoute route_pin_for(Node const &node) {
+    if (node.kind != OpKind::Einsum) {
+        return packed_gemm::KernelRoute::Adaptive;
+    }
+    return policy_forbids_width(node) ? packed_gemm::KernelRoute::Vendor : packed_gemm::KernelRoute::Packed;
+}
+
 /// The next rung above @p width, or 0 when there is none.
 unsigned next_rung(std::vector<unsigned> const &rungs, unsigned width) {
     for (unsigned const rung : rungs) {
@@ -282,6 +309,7 @@ void ThreadPlanning::reset_stats() {
     _max_width              = 1;
     _num_from_timings       = 0;
     _num_from_model         = 0;
+    _num_route_pinned       = 0;
     _makespan_before_us     = 0.0;
     _makespan_after_us      = 0.0;
     _critical_path_after_us = 0.0;
@@ -323,6 +351,10 @@ bool ThreadPlanning::run(Graph &graph) {
     report(1, fmt::format("critical path {:.1f} -> {:.1f} us, area {:.1f} -> {:.1f} us, serial sum {:.1f} us "
                           "({} node(s) measured, {} from the model)",
                           top.cp_before_us, top.cp_us, top.area_before_us, top.area_us, top.serial_us, _num_from_timings, _num_from_model));
+
+    if (_num_route_pinned > 0) {
+        report(1, fmt::format("pinned the kernel route of {} contraction node(s), so widths move without moving bits", _num_route_pinned));
+    }
 
     if (_num_widened == 0) {
         report(1, fmt::format("no node earned a width above 1 on {} thread(s)", p));
@@ -500,6 +532,26 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         // will price its widening. Level 3 because it is one line per node.
         report(3, fmt::format("node '{}' [{}] t1 {:.1f} us {} ({}, {} bytes)", node.label, op_kind_name(node.kind), c.t1_us,
                               measured ? "measured" : "model", to_string(c.family), c.bytes));
+
+        // Settle the route before the widths, and only where a width could have
+        // moved it. On one thread nothing widens, so nothing here would change a
+        // decision - and a pin that changes no decision would only change an
+        // answer, so a serial plan leaves the dispatch exactly as it found it.
+        if (p > 1) {
+            packed_gemm::KernelRoute const pin = route_pin_for(node);
+            if (auto *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+                pin != packed_gemm::KernelRoute::Adaptive && desc != nullptr && desc->site) {
+                desc->site->route = pin;
+                _num_route_pinned++;
+                report(3, fmt::format("node '{}' pinned to the {} kernel route", node.label,
+                                      pin == packed_gemm::KernelRoute::Packed ? "packed" : "vendor"));
+            }
+            // The vendor route is only deterministic at a width that cannot
+            // move, so pinning it and freezing the width are one decision.
+            if (pin == packed_gemm::KernelRoute::Vendor) {
+                c.frozen = true;
+            }
+        }
 
         if (policy_forbids_width(node)) {
             c.frozen = true;

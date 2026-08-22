@@ -110,6 +110,32 @@ struct ContractionKey {
     }
 };
 
+/// @brief Which kernel a contraction is to be run through.
+///
+/// The engine has two ways to spend a GEMM-shaped contraction: hand the whole
+/// thing to one vendor GEMM, or pack it and run the tiled loops. The two agree
+/// to within rounding and disagree in the last bit on multi-K and tall-K
+/// shapes, so WHICH of them runs is part of the answer, not just of its speed.
+///
+/// Left to itself the choice reads the caller's thread regime (@ref
+/// einsums::blas::vendor_call_is_fenced), which makes the last bit a function of
+/// how many threads a node was planned at. A caller that re-plans widths
+/// between replays - a graph whose thread plan is being timed - would then move
+/// bits by re-planning. Pinning is how such a caller says the route is settled:
+/// the width may still vary, the route may not.
+enum class KernelRoute : std::uint8_t {
+    /// Choose per call from the thread regime. Eager callers and unplanned
+    /// graphs, whose widths never move, keep exactly this.
+    Adaptive,
+    /// Always pack, at every width including 1. The width-stable side: the
+    /// packed loops give the same bits whatever they are forked at.
+    Packed,
+    /// Always hand the shape to the vendor. Only sound for a caller whose width
+    /// is ALSO pinned - a threaded vendor GEMM is not bit-stable across its own
+    /// thread counts on every shape.
+    Vendor,
+};
+
 /// @brief Per-call-site memo for a contraction that repeats.
 ///
 /// The plan cache makes PREPARING a packing plan free on a repeat; this makes
@@ -131,6 +157,21 @@ struct ContractionSite {
     PackingPlan const *plan{nullptr};       ///< cache-owned and stable, or null for "declined"
     bool               resolved{false};     ///< @c key and @c plan are filled
     bool               allow_scatter{true}; ///< the policy the resolution was made under
+
+    /// The route this site's contraction is pinned to, or Adaptive for "read
+    /// the thread regime per call". Written once by whoever plans the site's
+    /// owner and read on every call; never written by the engine.
+    KernelRoute route{KernelRoute::Adaptive};
+
+    /// The effective route the memo above was recorded under.
+    ///
+    /// A DECLINE is regime-dependent: the engine turns a plain single-M/N/K
+    /// GEMM away so the vendor can take it, and only when the vendor is free to
+    /// spread. A stored PLAN is not - it is a packing topology, valid whichever
+    /// way the contraction is later spent. So a memo is re-derived when the
+    /// effective route has moved since it was written, which keeps a decline
+    /// recorded in one regime from turning calls away in the other.
+    bool declined_packed{false};
 };
 
 /// @brief Whether @p spec already describes this contraction's topology.

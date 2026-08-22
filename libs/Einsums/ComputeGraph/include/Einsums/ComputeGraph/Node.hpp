@@ -99,6 +99,15 @@ struct EinsumDescriptor {
     /// BLAS-level batching hint; non-null only for 2D×2D→2D contractions
     /// with one link index. Read by the GEMMBatching pass.
     std::shared_ptr<GemmHint> gemm_hint;
+
+    /// This node's packed-GEMM memo, the same object the executor lambda holds -
+    /// the `indices`/`params` pattern again, and shared for the same reason.
+    ///
+    /// A plan-time pass needs somewhere to write the node's kernel route (@ref
+    /// packed_gemm::KernelRoute), and the site is where the dispatch already
+    /// looks. One site per node, so writing a route through this handle settles
+    /// it for this node and no other.
+    std::shared_ptr<packed_gemm::ContractionSite> site;
 };
 
 /// Live-mutable scalar state for axpby (Y = alpha*X + beta*Y), shared with the

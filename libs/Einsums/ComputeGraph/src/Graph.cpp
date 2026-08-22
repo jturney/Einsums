@@ -2637,6 +2637,10 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
         });
     };
 
+    // The same site the executor lambda holds, so a plan-time pass can pin this
+    // node's kernel route where the dispatch will read it.
+    desc.site = pg_site;
+
     node.op_data = std::move(desc);
     return node;
 }

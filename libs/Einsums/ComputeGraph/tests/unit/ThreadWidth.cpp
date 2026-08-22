@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -420,4 +421,251 @@ TEST_CASE("ThreadWidth - a rank-2 GEMM under a width leaves the vendor route", "
 
     cg::einsum("ik;kj->ij", &eager, A, B);
     REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct");
+}
+
+// ── Kernel route pins ───────────────────────────────────────────────────────
+// A width decides how fast a contraction runs. Left to itself it also decides
+// WHICH kernel runs it, and the vendor GEMM and the packed loops disagree in
+// the last bit, so a plan that re-picks widths from wall-clock measurements
+// re-picks the last digit of the answer with them. A pin settles the route on
+// the node, deterministically, before any width is chosen.
+
+namespace {
+
+/// The site the node's dispatch reads, or null for a node that has none.
+packed_gemm::ContractionSite *site_of(cg::Node &node) {
+    auto *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    return desc != nullptr ? desc->site.get() : nullptr;
+}
+
+/// Pin every contraction in @p graph, as a plan-time chooser would.
+size_t pin_every_contraction(cg::Graph &graph, packed_gemm::KernelRoute route) {
+    size_t pinned = 0;
+    for (auto &node : graph.nodes()) {
+        if (auto *site = site_of(node); site != nullptr) {
+            site->route = route;
+            pinned++;
+        }
+    }
+    return pinned;
+}
+
+} // namespace
+
+TEST_CASE("ThreadWidth - a pinned route decides the kernel, not the width", "[ComputeGraph][Executor][ThreadWidth][RoutePin]") {
+    // Run on the calling thread, through the sequential executor, so the
+    // dispatch's thread-local route names are the ones this thread reads back.
+    // That executor also ignores widths, so nothing here is fenced: whatever
+    // route fires, the pin is the only thing that could have chosen it.
+    constexpr size_t n = 48;
+    auto             K = create_random_tensor<double>("K_xvvv", n, n, n);
+    auto             t = create_random_tensor<double>("t_kj", n, n);
+    auto             C = create_zero_tensor<double>("C", n, n, n);
+
+    cg::Graph graph("route_pin_single_k");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("abd;cd->abc", &C, K, t);
+    }
+    REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Packed) == 1);
+
+    cg::SequentialExecutor seq;
+    graph.execute(seq);
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "packed_gemm");
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
+    REQUIRE(packed_gemm::last_route_pin() == packed_gemm::KernelRoute::Packed);
+
+    // Unpinned, the same node at the same width takes the deferring fast path
+    // again - so the pin is what moved it, and removing the pin restores
+    // exactly what the node did before pins existed.
+    REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Adaptive) == 1);
+    graph.execute(seq);
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
+    REQUIRE(packed_gemm::last_route_pin() == packed_gemm::KernelRoute::Adaptive);
+}
+
+TEST_CASE("ThreadWidth - a pinned rank-2 GEMM leaves the string dispatch's vendor route",
+          "[ComputeGraph][Executor][ThreadWidth][RoutePin]") {
+    // The gate one level up: a matrix times a matrix never reaches PackedGemm,
+    // because the string dispatch's own gemm_direct route takes it first. That
+    // gate has to read the same pin, or the shape would take one route here and
+    // the other inside the engine.
+    constexpr size_t n = 96;
+    auto             A = create_random_tensor<double>("A", n, n);
+    auto             B = create_random_tensor<double>("B", n, n);
+    auto             C = create_zero_tensor<double>("C", n, n);
+
+    cg::Graph graph("route_pin_gemm");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+
+    cg::SequentialExecutor seq;
+
+    REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Packed) == 1);
+    graph.execute(seq);
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "packed_gemm");
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
+
+    REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Vendor) == 1);
+    graph.execute(seq);
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct");
+    REQUIRE(packed_gemm::last_route_pin() == packed_gemm::KernelRoute::Vendor);
+
+    REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Adaptive) == 1);
+    graph.execute(seq);
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct");
+}
+
+TEST_CASE("ThreadWidth - a pin survives the decline memo it contradicts", "[ComputeGraph][Executor][ThreadWidth][RoutePin]") {
+    // A plain single-M/N/K GEMM is the one shape the engine deliberately turns
+    // away, so the vendor can have it - and it MEMOIZES the refusal on the site.
+    // A memo that ignored the route would answer "declined" to a pinned-packed
+    // call and hand the shape straight back to the vendor, silently undoing the
+    // pin from the second replay onward.
+    constexpr size_t n = 64;
+    auto             A = create_random_tensor<double>("A", n, n, n);
+    auto             B = create_random_tensor<double>("B", n, n);
+    auto             C = create_zero_tensor<double>("C", n, n, n);
+
+    cg::Graph graph("route_pin_memo");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("abd;cd->abc", &C, A, B);
+    }
+    cg::SequentialExecutor seq;
+
+    // Two unpinned replays: the first records the decline, the second reads it.
+    REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Adaptive) == 1);
+    graph.execute(seq);
+    graph.execute(seq);
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
+
+    // Now pin, with that decline sitting on the site.
+    REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Packed) == 1);
+    graph.execute(seq);
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
+    graph.execute(seq);
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
+
+    // And back: the memo written under the pin must not answer for the
+    // unpinned regime either.
+    REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Adaptive) == 1);
+    graph.execute(seq);
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
+}
+
+TEST_CASE("ThreadWidth - pinned routes make widths bit-identical", "[ComputeGraph][Executor][ThreadWidth][RoutePin]") {
+    if (!openmp_ceiling_is_settable()) {
+        SKIP("build has no OpenMP runtime, so there is no thread ceiling to plan");
+    }
+
+    // Two link indices, so the engine's multi-K flatten path is in play: that
+    // is the shape where the vendor GEMM and the packed loops were measured to
+    // disagree in the last bit. Compared with ==, not a tolerance - a tolerance
+    // is what this whole campaign is trying to stop accepting.
+    constexpr size_t n      = 40;
+    auto             A      = create_random_tensor<double>("A", n, n, n);
+    auto             B      = create_random_tensor<double>("B", n, n, n);
+    auto             narrow = create_zero_tensor<double>("narrow", n, n);
+    auto             wide   = create_zero_tensor<double>("wide", n, n);
+
+    auto build = [&](cg::Graph &graph, Tensor<double, 2> *out) {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("acd;bcd->ab", out, A, B);
+    };
+
+    cg::Graph narrow_graph("route_pin_narrow");
+    build(narrow_graph, &narrow);
+    cg::Graph wide_graph("route_pin_wide");
+    build(wide_graph, &wide);
+
+    REQUIRE(pin_every_contraction(narrow_graph, packed_gemm::KernelRoute::Packed) == 1);
+    REQUIRE(pin_every_contraction(wide_graph, packed_gemm::KernelRoute::Packed) == 1);
+
+    // The two width plans the trial could land on for the same node.
+    for (auto &node : narrow_graph.nodes()) {
+        node.thread_width = 1;
+    }
+    std::uint16_t const w = distinct_width(hardware::get_max_threads());
+    for (auto &node : wide_graph.nodes()) {
+        node.thread_width = w;
+    }
+
+    cg::DataflowExecutor df;
+    narrow_graph.execute(df);
+    wide_graph.execute(df);
+
+    for (size_t e = 0; e < narrow.size(); e++) {
+        REQUIRE(narrow.data()[e] == wide.data()[e]);
+    }
+
+    // The pins are exactly where they were put: replaying does not touch them.
+    for (auto &node : narrow_graph.nodes()) {
+        if (auto *site = site_of(node); site != nullptr) {
+            REQUIRE(site->route == packed_gemm::KernelRoute::Packed);
+        }
+    }
+    for (auto &node : wide_graph.nodes()) {
+        if (auto *site = site_of(node); site != nullptr) {
+            REQUIRE(site->route == packed_gemm::KernelRoute::Packed);
+        }
+    }
+}
+
+TEST_CASE("ThreadWidth - the planner pins every contraction it may widen", "[ComputeGraph][Executor][ThreadWidth][RoutePin]") {
+    if (hardware::get_max_threads() < 2) {
+        SKIP("a plan that cannot widen anything pins nothing, by design");
+    }
+
+    constexpr size_t n = 40;
+    auto             A = create_random_tensor<double>("A", n, n, n);
+    auto             B = create_random_tensor<double>("B", n, n, n);
+    auto             C = create_zero_tensor<double>("C", n, n);
+
+    cg::Graph graph("route_pin_planner");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("acd;bcd->ab", &C, A, B);
+    }
+
+    // Nothing is pinned until something plans.
+    for (auto &node : graph.nodes()) {
+        if (auto *site = site_of(node); site != nullptr) {
+            REQUIRE(site->route == packed_gemm::KernelRoute::Adaptive);
+        }
+    }
+
+    graph.plan_threads();
+    size_t pinned = 0;
+    for (auto &node : graph.nodes()) {
+        if (auto *site = site_of(node); site != nullptr) {
+            REQUIRE(site->route == packed_gemm::KernelRoute::Packed);
+            pinned++;
+        }
+    }
+    REQUIRE(pinned == 1);
+
+    // Re-planning is what the timed width trial does between replays. It may
+    // move widths; it may not move a route.
+    graph.plan_threads();
+    for (auto &node : graph.nodes()) {
+        if (auto *site = site_of(node); site != nullptr) {
+            REQUIRE(site->route == packed_gemm::KernelRoute::Packed);
+        }
+    }
+}
+
+TEST_CASE("ThreadWidth - an eager contraction is never pinned", "[ComputeGraph][Executor][ThreadWidth][RoutePin]") {
+    // Eager callers pass no site, so there is nowhere for a pin to live and the
+    // route comes from the thread regime exactly as it always did.
+    constexpr size_t n = 48;
+    auto             K = create_random_tensor<double>("K_xvvv", n, n, n);
+    auto             t = create_random_tensor<double>("t_kj", n, n);
+    auto             C = create_zero_tensor<double>("C", n, n, n);
+
+    cg::einsum("abd;cd->abc", &C, K, t);
+    REQUIRE(packed_gemm::last_route_pin() == packed_gemm::KernelRoute::Adaptive);
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
 }

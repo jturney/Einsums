@@ -590,12 +590,17 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // The two rank-2 GEMM routes are the exception: a matrix times a matrix is
     // the one shape here that a thread's node width could have spread, and a
     // vendor GEMM issued under such a width is clamped to one thread by the BLAS
-    // wrappers' fence. When that is in force they stand aside and PackedGemm
-    // takes the shape, whose packed loops fork from the ICV the width raised.
-    // Read per call, never cached: see the same predicate's use in
-    // try_packed_gemm.
+    // wrappers' fence. When PackedGemm is the preferred route they stand aside
+    // and it takes the shape, whose packed loops fork from the ICV the width
+    // raised.
+    //
+    // Same answer the packed engine reaches, from the same call site's pin (@ref
+    // packed_gemm::prefer_packed_route): a caller whose node has a pinned route
+    // gets it here too, so the shape cannot take one route at this gate and the
+    // other inside try_packed_gemm. A caller with no site - eager, or an
+    // unplanned graph - reads the thread regime exactly as before.
     if (!conj_a && !conj_b) {
-        [[maybe_unused]] bool const gemm_is_fenced = einsums::blas::vendor_call_is_fenced();
+        [[maybe_unused]] bool const route_prefers_packed = packed_gemm::prefer_packed_route(pg_site);
         if constexpr (HasCompileTimeRank<AType> && HasCompileTimeRank<BType> && HasCompileTimeRank<CType>) {
             constexpr size_t a_rank = std::remove_cvref_t<AType>::Rank;
             constexpr size_t b_rank = std::remove_cvref_t<BType>::Rank;
@@ -657,7 +662,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 
             // ── GEMM: matrix × matrix → matrix ──────────────────────────────
             if constexpr (a_rank == 2 && b_rank == 2 && c_rank == 2) {
-                if (links.size() == 1 && !gemm_is_fenced) {
+                if (links.size() == 1 && !route_prefers_packed) {
                     ProfileAnnotate("dispatch", "gemm_direct");
                     last_dispatch_route() = "gemm_direct";
                     string_gemm(parsed, links[0], c_pf, C, ab_pf, A, B);
@@ -781,7 +786,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 
             // ── GEMM: matrix × matrix → matrix ───────────────────────────
             if (a_rank == 2 && b_rank == 2 && c_rank == 2) {
-                if (links.size() == 1 && !gemm_is_fenced) {
+                if (links.size() == 1 && !route_prefers_packed) {
                     ProfileAnnotate("dispatch", "gemm_direct_runtime");
                     last_dispatch_route() = "gemm_direct_runtime";
                     auto av               = upcast(A, std::integral_constant<std::size_t, 2>{});

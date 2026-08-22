@@ -69,6 +69,23 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   forever. Forking a team costs tens of microseconds; below the floor the
  *   fork is most of the node.
  *
+ * @par Kernel routes
+ * A contraction has two kernels that agree to within rounding and disagree in
+ * the last bit - one vendor GEMM, or the packed loops - and left to itself the
+ * dispatch picks between them by asking whether the caller holds a node width.
+ * That makes the last bit a function of the width, and this pass hands out
+ * widths from wall-clock measurements, so two runs of one graph would not agree
+ * digit for digit. So the route is settled here, before any width is: every
+ * contraction the search may widen is pinned to the packed loops (@ref
+ * packed_gemm::KernelRoute), which give the same bits at every width, and the
+ * search then moves widths WITHIN pinned routes. A node pinned to the vendor
+ * instead is frozen at width 1 in the same breath, because a threaded vendor
+ * GEMM is not bit-stable across its own thread counts either.
+ *
+ * Nothing is pinned when the plan cannot widen anything - one thread to plan
+ * for - since no width can move a route there, and a pin that changes no
+ * decision would only change an answer.
+ *
  * @par Not in the default pipeline
  * Widths are a tuning artifact of one machine and one process, in the sense of
  * the pass-phase rule: they are re-derived per process and never serialized.
@@ -155,6 +172,10 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
     /// area bound the search enforces is that this never exceeds the makespan.
     [[nodiscard]] double area_after_us() const { return _area_after_us; }
 
+    /// Contraction nodes whose kernel route this run pinned, over the whole
+    /// subgraph tree.
+    [[nodiscard]] std::size_t num_route_pinned() const { return _num_route_pinned; }
+
   private:
     /// One graph's plan. Recursion returns the body's serial cost so the
     /// container node can be priced by what it will actually run.
@@ -178,6 +199,7 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
     unsigned    _max_width{1};
     std::size_t _num_from_timings{0};
     std::size_t _num_from_model{0};
+    std::size_t _num_route_pinned{0};
     double      _makespan_before_us{0.0};
     double      _makespan_after_us{0.0};
     double      _critical_path_after_us{0.0};
