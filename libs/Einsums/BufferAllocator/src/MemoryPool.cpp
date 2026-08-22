@@ -146,14 +146,21 @@ void *reserve_region(size_t bytes, size_t alignment) {
 ///
 /// mi_manage_os_memory_ex silently SHRINKS a region whose base is not
 /// mi_arena_min_alignment()-aligned, hence the aligned reservation.
+///
+/// The alignment constrains the BASE only, so the size is deliberately not
+/// rounded up to it. That distinction was invisible while the alignment was
+/// 64 KiB and a size already rounded to 4 MiB satisfied it for free; mimalloc
+/// 3.5 raised it to 256 MiB, and rounding the size to match turned every pool,
+/// however small, into a quarter-gigabyte reservation that counts in full
+/// against einsums:max-memory. A 32 MiB arena placed on a 256 MiB boundary is
+/// accepted just as readily, and is what reserve_region already produces.
 size_t arena_size_for(size_t bytes) {
     size_t const min_arena = mi_arena_min_size();
-    size_t const alignment = mi_arena_min_alignment();
     size_t       size      = round_up(with_headroom(bytes), 4u << 20);
     if (size < min_arena) {
         size = min_arena;
     }
-    return round_up(size, alignment);
+    return size;
 }
 
 /// Arena bytes counted against einsums:max-memory: every live pool, plus
