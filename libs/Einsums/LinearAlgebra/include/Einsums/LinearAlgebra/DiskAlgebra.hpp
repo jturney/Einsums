@@ -100,7 +100,7 @@ auto dot_base(AType const &A, BType const &B) -> BiggestTypeT<typename AType::Va
 
     for (int i = 0; i < Rank; i++) {
         if (A.dim(i) != B.dim(i)) {
-            EINSUMS_THROW_EXCEPTION(einsums::tensor_compat_error, "The tensors passed into the dot product must have the same dimensions!");
+            EINSUMS_THROW_EXCEPTION(einsums::TensorCompatError, "The tensors passed into the dot product must have the same dimensions!");
         }
     }
 
@@ -217,7 +217,7 @@ void direct_product(U alpha, AType const &A, BType const &B, U beta, CType *C) {
 
     for (int i = 0; i < Rank; i++) {
         if (A.dim(i) != B.dim(i) || A.dim(i) != C->dim(i)) {
-            EINSUMS_THROW_EXCEPTION(einsums::tensor_compat_error,
+            EINSUMS_THROW_EXCEPTION(einsums::TensorCompatError,
                                     "The tensors passed into the direct product must have the same dimensions!");
         }
     }
@@ -323,7 +323,7 @@ void gemm(char transA, char transB, U alpha, AType const &A, BType const &B, U b
     size_t B_n = (tB) ? B.dim(0) : B.dim(1);
 
     if (A_m != C_m || A_k != B_k || C_n != B_n) {
-        EINSUMS_THROW_EXCEPTION(einsums::dimension_error, "The tensors passed to gemm need to be the same size!");
+        EINSUMS_THROW_EXCEPTION(einsums::DimensionError, "The tensors passed to gemm need to be the same size!");
     }
 
     // We are assuming that we have done some Strassen iterations before, so we need to find the least of these.

@@ -48,7 +48,7 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::tuple<CIndices.
 
     einsums::for_sequence<ARank>([&](auto n) {
         if (C->dim((size_t)n) < A.dim(std::get<2 * (size_t)n + 1>(target_position_in_A))) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "The {} dimension of the output tensor is smaller than the input tensor!",
+            EINSUMS_THROW_EXCEPTION(DimensionError, "The {} dimension of the output tensor is smaller than the input tensor!",
                                     print::ordinal((size_t)n));
         }
 
@@ -177,7 +177,7 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
     // Error check:  If there are any remaining indices then we cannot perform a permute
     auto check = difference(A_indices, C_indices);
     if (check.size() != 0) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The number of unique indices needs to be the same on the input and output for permute!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The number of unique indices needs to be the same on the input and output for permute!");
     }
 
     // Calculate reversed indices.
@@ -369,7 +369,7 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
 
     einsums::for_sequence<ARank>([&](auto n) {
         if (C->dim((size_t)n) < A.dim(std::get<2 * (size_t)n + 1>(target_position_in_A))) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "The {} dimension of the output tensor is smaller than the input tensor!",
+            EINSUMS_THROW_EXCEPTION(DimensionError, "The {} dimension of the output tensor is smaller than the input tensor!",
                                     print::ordinal((size_t)n));
         }
 

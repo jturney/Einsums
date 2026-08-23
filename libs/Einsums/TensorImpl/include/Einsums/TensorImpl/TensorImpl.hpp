@@ -329,9 +329,9 @@ struct TensorImpl final {
         requires(std::is_integral_v<std::remove_cvref_t<MultiIndex>> && ... && true)
     [[nodiscard]] constexpr pointer data(MultiIndex &&...index) {
         if (sizeof...(MultiIndex) < _rank) {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to data!");
         } else if (sizeof...(MultiIndex) > _rank) {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to data!");
         }
 
         if (_ptr == nullptr) {
@@ -352,9 +352,9 @@ struct TensorImpl final {
         requires(std::is_integral_v<std::remove_cvref_t<MultiIndex>> && ... && true)
     [[nodiscard]] constexpr const_pointer data(MultiIndex &&...index) const {
         if (sizeof...(MultiIndex) < _rank) {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to data!");
         } else if (sizeof...(MultiIndex) > _rank) {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to data!");
         }
 
         if (_ptr == nullptr) {
@@ -376,9 +376,9 @@ struct TensorImpl final {
         requires(std::is_integral_v<std::remove_cvref_t<MultiIndex>> && ... && true)
     [[nodiscard]] constexpr pointer data_no_check(MultiIndex &&...index) {
         if (sizeof...(MultiIndex) < _rank) {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to data!");
         } else if (sizeof...(MultiIndex) > _rank) {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to data!");
         }
 
         if (_ptr == nullptr) {
@@ -400,9 +400,9 @@ struct TensorImpl final {
         requires(std::is_integral_v<std::remove_cvref_t<MultiIndex>> && ... && true)
     [[nodiscard]] constexpr const_pointer data_no_check(MultiIndex &&...index) const {
         if (sizeof...(MultiIndex) < _rank) {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to data!");
         } else if (sizeof...(MultiIndex) > _rank) {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to data!");
         }
 
         if (_ptr == nullptr) {
@@ -423,9 +423,9 @@ struct TensorImpl final {
         requires(!std::is_same_v<Range, Index>)
     [[nodiscard]] constexpr pointer data(Index const &index) {
         if (index.size() < _rank) {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to data!");
         } else if (index.size() > _rank) {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to data!");
         }
 
         if (_ptr == nullptr) {
@@ -446,9 +446,9 @@ struct TensorImpl final {
         requires(!std::is_same_v<Range, Index>)
     [[nodiscard]] constexpr const_pointer data(Index const &index) const {
         if (index.size() < _rank) {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to data!");
         } else if (index.size() > _rank) {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to data!");
         }
 
         if (_ptr == nullptr) {
@@ -470,9 +470,9 @@ struct TensorImpl final {
         requires(!std::is_same_v<Range, Index>)
     [[nodiscard]] constexpr pointer data_no_check(Index const &index) {
         if (index.size() < _rank) {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to data!");
         } else if (index.size() > _rank) {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to data!");
         }
 
         if (_ptr == nullptr) {
@@ -494,9 +494,9 @@ struct TensorImpl final {
         requires(!std::is_same_v<Range, Index>)
     [[nodiscard]] constexpr const_pointer data_no_check(Index const &index) const {
         if (index.size() < _rank) {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to data!");
         } else if (index.size() > _rank) {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to data!");
         }
 
         if (_ptr == nullptr) {
@@ -516,9 +516,9 @@ struct TensorImpl final {
     template <std::integral IntType>
     [[nodiscard]] constexpr pointer data(std::initializer_list<IntType> const &index) {
         if (index.size() < _rank) {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to data!");
         } else if (index.size() > _rank) {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to data!");
         }
 
         if (_ptr == nullptr) {
@@ -538,9 +538,9 @@ struct TensorImpl final {
     template <std::integral IntType>
     [[nodiscard]] constexpr const_pointer data(std::initializer_list<IntType> const &index) const {
         if (index.size() < _rank) {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to data!");
         } else if (index.size() > _rank) {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to data!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to data!");
         }
 
         if (_ptr == nullptr) {
@@ -767,7 +767,7 @@ struct TensorImpl final {
      */
     [[nodiscard]] constexpr size_t get_lda() const {
         if (_rank != 2) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "Can not get the leading dimension of a tensor whose rank is not 2!");
+            EINSUMS_THROW_EXCEPTION(RankError, "Can not get the leading dimension of a tensor whose rank is not 2!");
         } else {
             return std::max(stride(0), stride(1));
         }
@@ -1527,8 +1527,8 @@ struct TensorImpl final {
     /**
      * @brief Create a reshaped view sharing this tensor's storage.
      *
-     * Throws @ref dimension_error when the new shape does not have the same
-     * number of elements, and @ref tensor_compat_error when it does but cannot
+     * Throws @ref DimensionError when the new shape does not have the same
+     * number of elements, and @ref TensorCompatError when it does but cannot
      * be addressed over this tensor's strides - which is the case worth knowing
      * about, because it is the difference between a free reinterpretation and a
      * copy. See @ref reshape_strides for the rule.
@@ -1827,9 +1827,9 @@ struct TensorImpl final {
     [[noreturn]] void throw_reshape_failure(std::vector<size_t> const &new_dims) const {
         size_t const new_size = std::accumulate(new_dims.begin(), new_dims.end(), size_t{1}, std::multiplies<>());
         if (new_size != _size) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "reshape_view: {} elements requested, tensor holds {}", new_size, _size);
+            EINSUMS_THROW_EXCEPTION(DimensionError, "reshape_view: {} elements requested, tensor holds {}", new_size, _size);
         }
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error,
+        EINSUMS_THROW_EXCEPTION(TensorCompatError,
                                 "reshape_view: shape {} has the right size but cannot be addressed over strides {} of dims {} - the axes "
                                 "being merged are not adjacent in memory. Copy with linalg::reshape instead.",
                                 new_dims, _strides, _dims);

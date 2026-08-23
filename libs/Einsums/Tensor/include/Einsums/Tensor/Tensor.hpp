@@ -342,7 +342,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
                 }
             }
             if (size > existingTensor.size()) {
-                EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Size of new tensor is larger than the parent tensor.");
+                EINSUMS_THROW_EXCEPTION(TensorCompatError, "Size of new tensor is larger than the parent tensor.");
             }
             _dims[location] = existingTensor.size() / size;
         }
@@ -356,7 +356,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
         // Check size
         if (_storage->owned.size() != _impl.size()) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Provided dims to not match size of parent tensor");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Provided dims to not match size of parent tensor");
         }
     }
 
@@ -2429,7 +2429,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
             return *this;
         } else {
             if (std::min(_impl.stride(0), _impl.stride(-1)) != 1) {
-                EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Creating a Rank-1 TensorView for this Tensor(View) is not supported.");
+                EINSUMS_THROW_EXCEPTION(TensorCompatError, "Creating a Rank-1 TensorView for this Tensor(View) is not supported.");
             }
             size_t size = Rank == 0 ? 0 : std::max(stride(0) * dim(0), stride(-1) * dim(-1));
             Dim<1> dim{size};
@@ -2577,7 +2577,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         }
 
         if (nfound == 1 && Rank > 1) {
-            EINSUMS_THROW_EXCEPTION(todo_error, "Haven't coded up this case yet.");
+            EINSUMS_THROW_EXCEPTION(TodoError, "Haven't coded up this case yet.");
         }
 
         // If the Ranks are the same then use "other"s stride information
@@ -2593,7 +2593,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
                 // Stride information cannot be automatically deduced.  It must be provided.
                 default_strides = arguments::get(error_strides, args...);
                 if (default_strides[0] == static_cast<size_t>(-1)) {
-                    EINSUMS_THROW_EXCEPTION(bad_logic, "Unable to automatically deduce stride information. Stride must be passed in.");
+                    EINSUMS_THROW_EXCEPTION(BadLogic, "Unable to automatically deduce stride information. Stride must be passed in.");
                 }
             }
         }
@@ -2634,7 +2634,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
                         tensor_index++;
                     }
                     if (_source_dims[i] == 0) {
-                        EINSUMS_THROW_EXCEPTION(bad_logic,
+                        EINSUMS_THROW_EXCEPTION(BadLogic,
                                                 "Unable to deduce source dimensions. Stride does not follow source tensor dimensions.");
                     }
                 }
@@ -2655,7 +2655,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
                         tensor_index++;
                     }
                     if (_source_dims[i] == 0) {
-                        EINSUMS_THROW_EXCEPTION(bad_logic,
+                        EINSUMS_THROW_EXCEPTION(BadLogic,
                                                 "Unable to deduce source dimensions. Stride does not follow source tensor dimensions.");
                     }
                 }

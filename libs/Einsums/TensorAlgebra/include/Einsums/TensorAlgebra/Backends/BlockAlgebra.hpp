@@ -27,12 +27,12 @@ auto einsum_special_dispatch(typename CType::ValueType const C_prefactor, std::t
 
     // Check compatibility.
     if (A.num_blocks() != B.num_blocks() || A.num_blocks() != C->num_blocks()) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Block tensors need to have the same number of blocks.");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "Block tensors need to have the same number of blocks.");
     }
 
     for (int i = 0; i < A.num_blocks(); i++) {
         if (A.block_dim(i) != B.block_dim(i) || A.block_dim(i) != C->block_dim(i)) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Block tensors need to have the same block sizes.");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Block tensors need to have the same block sizes.");
         }
     }
 
@@ -61,12 +61,12 @@ auto einsum_special_dispatch(typename CType::ValueType const C_prefactor, std::t
 
     // Check compatibility.
     if (A.num_blocks() != B.num_blocks()) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Block tensors need to have the same number of blocks.");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "Block tensors need to have the same number of blocks.");
     }
 
     for (int i = 0; i < A.num_blocks(); i++) {
         if (A.block_dim(i) != B.block_dim(i)) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Block tensors need to have the same block sizes.");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Block tensors need to have the same block sizes.");
         }
     }
 
@@ -112,12 +112,12 @@ auto einsum_special_dispatch(ValueTypeT<CType> const C_prefactor, std::tuple<CIn
 
     // Check compatibility.
     if (A.num_blocks() != B.num_blocks()) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Block tensors need to have the same number of blocks.");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "Block tensors need to have the same number of blocks.");
     }
 
     for (int i = 0; i < A.num_blocks(); i++) {
         if (A.block_dim(i) != B.block_dim(i)) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Block tensors need to have the same block sizes.");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Block tensors need to have the same block sizes.");
         }
     }
 
@@ -152,12 +152,12 @@ auto einsum_special_dispatch(typename CType::ValueType const C_prefactor, std::t
 
     // Check compatibility.
     if (B.num_blocks() != C->num_blocks()) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Block tensors need to have the same number of blocks.");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "Block tensors need to have the same number of blocks.");
     }
 
     for (int i = 0; i < B.num_blocks(); i++) {
         if (B.block_dim(i) != C->block_dim(i)) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Block tensors need to have the same block sizes.");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Block tensors need to have the same block sizes.");
         }
     }
 
@@ -243,12 +243,12 @@ auto einsum_special_dispatch(typename CType::ValueType const C_prefactor, std::t
 
     // Check compatibility.
     if (A.num_blocks() != C->num_blocks()) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Block tensors need to have the same number of blocks.");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "Block tensors need to have the same number of blocks.");
     }
 
     for (int i = 0; i < A.num_blocks(); i++) {
         if (A.block_dim(i) != C->block_dim(i)) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Block tensors need to have the same block sizes.");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Block tensors need to have the same block sizes.");
         }
     }
 

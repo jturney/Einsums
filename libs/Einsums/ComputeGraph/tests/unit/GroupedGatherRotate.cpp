@@ -274,7 +274,7 @@ TEST_CASE("GroupedGatherRotate - rejects the shapes it cannot compute", "[Comput
     REQUIRE_THROWS_AS(cg::grouped_gather_rotate(c_list, src, {std::vector<std::size_t>{0, 1, 2, NQ}}, {us}, x_list), std::out_of_range);
     REQUIRE_THROWS_AS(cg::grouped_gather_rotate(c_list, src, {qs}, {std::vector<std::size_t>{0, 1, NU}}, x_list), std::out_of_range);
     // A destination whose extents do not follow from the lists.
-    REQUIRE_THROWS_AS(cg::grouped_gather_rotate(c_list, src, {std::vector<std::size_t>{0, 1, 2}}, {us}, x_list), dimension_error);
+    REQUIRE_THROWS_AS(cg::grouped_gather_rotate(c_list, src, {std::vector<std::size_t>{0, 1, 2}}, {us}, x_list), DimensionError);
     // Two members writing one destination would race.
     {
         std::vector<RuntimeTensor<double> *>       both_c{&C, &C};
@@ -284,6 +284,6 @@ TEST_CASE("GroupedGatherRotate - rejects the shapes it cannot compute", "[Comput
     // A rank-2 source is not a (Q|u v) block.
     {
         auto flat = randt("flat", {NQ, NU}, gen);
-        REQUIRE_THROWS_AS(cg::grouped_gather_rotate(c_list, flat, {qs}, {us}, x_list), rank_error);
+        REQUIRE_THROWS_AS(cg::grouped_gather_rotate(c_list, flat, {qs}, {us}, x_list), RankError);
     }
 }

@@ -43,7 +43,7 @@ auto create_random_definite(std::string const &name, int rows, int cols, RemoveC
     using Real = RemoveComplexT<T>;
 
     if (rows != cols) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can only make square positive definite matrices.");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can only make square positive definite matrices.");
     }
     Tensor<T, 2> Evecs("name", rows, cols);
 

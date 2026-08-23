@@ -40,7 +40,7 @@ from _fuzz_diff_common import *  # shared fuzz/differential harness
 # DF's rewrite used to build the "sum of non-shared operands" accumulator with
 # Graph::create_tensor_dynamic(), a COMPILE-TIME Tensor<T,Rank>; on a Python graph
 # whose tensors are GeneralRuntimeTensor<T> the axpy chain then added a runtime
-# source into a fixed-rank destination and threw rank_error. DF now builds a
+# source into a fixed-rank destination and threw RankError. DF now builds a
 # RUNTIME accumulator (create_zero_runtime_tensor_dynamic) when its operands are
 # runtime, and dispatch_binary/dispatch_unary cast runtime handles correctly, so
 # the rewrite executes on runtime tensors and is fuzzed with full execution below.
@@ -295,7 +295,7 @@ def test_distributive_factoring_executes_on_runtime_tensor():
     when its operands are runtime tensors, so a DF-rewritten Python graph executes
     and matches the numpy oracle. Same (4,3)*(3,5)->(4,5) shape the C++ unit test
     uses. (Previously the axpy chain added a runtime source into a compile-time
-    Tensor<T,Rank> accumulator and threw rank_error at execute.)"""
+    Tensor<T,Rank> accumulator and threw RankError at execute.)"""
     rng = np.random.default_rng(0)
     A0 = rng.standard_normal((4, 3))
     B1_0 = rng.standard_normal((3, 5))

@@ -207,7 +207,7 @@ def test_pow_throws_during_capture():
 def test_pow_throws_on_rank_mismatch():
     """``cg::pow`` rank check rejects non-rank-2 inputs."""
     x = einsums.create_random_tensor("x", [5])
-    # pybind11 maps einsums::rank_error to ValueError.
+    # pybind11 maps einsums::RankError to ValueError.
     with pytest.raises(ValueError):
         einsums.linalg.pow(x, 2.0)
 

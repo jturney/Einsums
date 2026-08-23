@@ -104,8 +104,8 @@ void sum_square(AType const &a, RemoveComplexT<typename AType::ValueType> *scale
  * @param[in] beta Scaling factor for the output tensor C
  * @param[inout] C Output tensor
  *
- * @throws rank_error If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
- * @throws tensor_compat_error If the tensors have incompatible dimensions.
+ * @throws RankError If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
+ * @throws TensorCompatError If the tensors have incompatible dimensions.
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
@@ -164,8 +164,8 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C)
  * @param[inout] C Output tensor
  * @tparam T the underlying data type
  *
- * @throws rank_error If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
- * @throws tensor_compat_error If the tensors have incompatible dimensions.
+ * @throws RankError If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
+ * @throws TensorCompatError If the tensors have incompatible dimensions.
  * @throws std::invalid_argument If the transpose characters are invalid.
  *
  * @versionadded{2.0.0}
@@ -182,7 +182,7 @@ void gemm(char transA, char transB, U const alpha, AType const &A, BType const &
 // Runtime-rank overloads. These accept tensors whose rank is known only at
 // runtime (RuntimeTensor / RuntimeTensorView) by routing directly through
 // the TensorImpl-level kernel, which performs a runtime rank-2 check and
-// throws ``rank_error`` on mismatch. Distinguished from the static-rank
+// throws ``RankError`` on mismatch. Distinguished from the static-rank
 // overloads above by requiring at least one operand to be dynamic-rank;
 // concept overload resolution disambiguates the calls.
 template <bool TransA, bool TransB, BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType, typename U>
@@ -232,8 +232,8 @@ void gemm(char transA, char transB, U const alpha, AType const &A, BType const &
  * @param[in] B Second input tensor
  * @returns resulting tensor
  *
- * @throws rank_error If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
- * @throws tensor_compat_error If the tensors have incompatible dimensions.
+ * @throws RankError If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
+ * @throws TensorCompatError If the tensors have incompatible dimensions.
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
@@ -271,8 +271,8 @@ template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, ty
  * @param[in] B The outer tensor.
  * @param[out] C The output tensor.
  *
- * @throws rank_error If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
- * @throws tensor_compat_error If the tensors have incompatible dimensions.
+ * @throws RankError If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
+ * @throws TensorCompatError If the tensors have incompatible dimensions.
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
@@ -303,7 +303,7 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
     LabeledSection0();
 
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
 
     size_t const temp_rows = TransA ? A.dim(1) : A.dim(0);
@@ -345,7 +345,7 @@ void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
     LabeledSection0();
 
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "hermitian_symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(),
+        EINSUMS_THROW_EXCEPTION(RankError, "hermitian_symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(),
                                 C->rank());
     }
 
@@ -397,8 +397,8 @@ void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
  * @param[in] beta Scaling factor for the output vector y
  * @param[out] y Output vector y
  *
- * @throws rank_error If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
- * @throws tensor_compat_error If the tensors have incompatible dimensions.
+ * @throws RankError If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
+ * @throws TensorCompatError If the tensors have incompatible dimensions.
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
@@ -436,8 +436,8 @@ void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y)
  * @param[in] beta Scaling factor for the output vector y
  * @param[out] y Output vector y
  *
- * @throws rank_error If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
- * @throws tensor_compat_error If the tensors have incompatible dimensions.
+ * @throws RankError If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
+ * @throws TensorCompatError If the tensors have incompatible dimensions.
  * @throws std::invalid_argument If the transpose character is invalid.
  *
  * @versionadded{2.0.0}
@@ -511,9 +511,9 @@ void gemv(char transA, U const alpha, AType const &A, XType const &z, U const be
  *   Any data previously stored in A is destroyed.
  * @param[out] W On exit, the eigenvalues in ascending order.
  *
- * @throws rank_error If the inputs have the wrong ranks. The A tensor needs to be rank-2 and the W tensor needs to be rank-1.
- * @throws dimension_error If the matrix input is not square.
- * @throws tensor_compat_error If the length of the eigenvalue vector does not have the same size as the number of rows in the matrix.
+ * @throws RankError If the inputs have the wrong ranks. The A tensor needs to be rank-2 and the W tensor needs to be rank-1.
+ * @throws DimensionError If the matrix input is not square.
+ * @throws TensorCompatError If the length of the eigenvalue vector does not have the same size as the number of rows in the matrix.
  * @throws std::invalid_argument If values passed to internal functions were invalid. This is often due to passing uninitialized or
  * zero-size tensors.
  * @throws std::runtime_error If the eigenvalue algorithm fails to converge.
@@ -571,9 +571,9 @@ void syev(AType *A, WType *W) {
  * @param[out] lvecs The left eigenvectors. If null, then these will not be computed.
  * @param[out] rvecs The right eigenvectors. If null, then these will not be computed.
  *
- * @throws rank_error If the inputs have the wrong ranks. The A tensor needs to be rank-2 and the W tensor needs to be rank-1.
- * @throws dimension_error If the matrix input is not square.
- * @throws tensor_compat_error If the length of the eigenvalue vector does not have the same size as the number of rows in the matrix,
+ * @throws RankError If the inputs have the wrong ranks. The A tensor needs to be rank-2 and the W tensor needs to be rank-1.
+ * @throws DimensionError If the matrix input is not square.
+ * @throws TensorCompatError If the length of the eigenvalue vector does not have the same size as the number of rows in the matrix,
  * or the eigenvector outputs, if not null, do not have the same dimensions as the input.
  * @throws std::invalid_argument If values passed to internal functions were invalid. This is often due to passing uninitialized or
  * zero-size tensors.
@@ -639,9 +639,9 @@ void geev(AType *A, WType *W, LVecPtr lvecs, RVecPtr rvecs) {
  *   Any data previously stored in A is destroyed.
  * @param[out] W On exit, the eigenvalues in ascending order.
  *
- * @throws rank_error If the inputs have the wrong ranks. The A tensor needs to be rank-2 and the W tensor needs to be rank-1.
- * @throws dimension_error If the matrix input is not square.
- * @throws tensor_compat_error If the length of the eigenvalue vector does not have the same size as the number of rows in the matrix.
+ * @throws RankError If the inputs have the wrong ranks. The A tensor needs to be rank-2 and the W tensor needs to be rank-1.
+ * @throws DimensionError If the matrix input is not square.
+ * @throws TensorCompatError If the length of the eigenvalue vector does not have the same size as the number of rows in the matrix.
  * @throws std::invalid_argument If values passed to internal functions were invalid. This is often due to passing uninitialized or
  * zero-size tensors.
  * @throws std::runtime_error If the eigenvalue algorithm fails to converge.
@@ -697,8 +697,8 @@ void heev(AType *A, WType *W) {
  * to be solved. If negative, then one of the parameters in the underlying LAPACK call was invalid. The absolute value gives which parameter
  * was invalid.
  *
- * @throws rank_error If the coefficient matrix is not rank-2 or the result matrix is not rank-1 or rank-2.
- * @throws dimension_error If the coefficient matrix is not square, or the number of rows of the result matrix is not the same as the number
+ * @throws RankError If the coefficient matrix is not rank-2 or the result matrix is not rank-1 or rank-2.
+ * @throws DimensionError If the coefficient matrix is not square, or the number of rows of the result matrix is not the same as the number
  * of rows of the coefficient matrix.
  *
  * @versionadded{1.0.0}
@@ -752,9 +752,9 @@ template <BasicTensorConcept AType, BasicTensorConcept BType>
  * @param[in] A The symmetric matrix A in the leading N-by-N upper triangular part of A.
  * @return std::tuple<Tensor<T, 2>, Tensor<T, 1>> The eigenvectors and eigenvalues.
  *
- * @throws rank_error If the inputs have the wrong ranks. The A tensor needs to be rank-2 and the W tensor needs to be rank-1.
- * @throws dimension_error If the matrix input is not square.
- * @throws tensor_compat_error If the length of the eigenvalue vector does not have the same size as the number of rows in the matrix.
+ * @throws RankError If the inputs have the wrong ranks. The A tensor needs to be rank-2 and the W tensor needs to be rank-1.
+ * @throws DimensionError If the matrix input is not square.
+ * @throws TensorCompatError If the length of the eigenvalue vector does not have the same size as the number of rows in the matrix.
  * @throws std::invalid_argument If values passed to internal functions were invalid. This is often due to passing uninitialized or
  * zero-size tensors.
  * @throws std::runtime_error If the eigenvalue algorithm fails to converge.
@@ -824,7 +824,7 @@ void scale(typename AType::ValueType scale, AType *A) {
  * @param[inout] A The tensor to scale.
  *
  * @throws std::out_of_range If the row is outside of what the input matrix stores.
- * @throws rank_error If the input matrix is not rank-2.
+ * @throws RankError If the input matrix is not rank-2.
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
@@ -855,7 +855,7 @@ void scale_row(size_t row, typename AType::ValueType scale, AType *A) {
  * @param[inout] A The tensor to scale.
  *
  * @throws std::out_of_range If the row is outside of what the input matrix stores.
- * @throws rank_error If the input matrix is not rank-2.
+ * @throws RankError If the input matrix is not rank-2.
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
@@ -885,8 +885,8 @@ void scale_column(size_t col, typename AType::ValueType scale, AType *A) {
  * @warning If any of the eigenvalues when exponentiated gives a non-finite or complex value, that eigenvalue will be set to zero. This may
  * cause numerical imprecisions.
  *
- * @throws rank_error If the inputs have the wrong ranks. The A tensor needs to be rank-2.
- * @throws dimension_error If the matrix input is not square.
+ * @throws RankError If the inputs have the wrong ranks. The A tensor needs to be rank-2.
+ * @throws DimensionError If the matrix input is not square.
  * @throws std::invalid_argument If values passed to internal functions were invalid. This is often due to passing uninitialized or
  * zero-size tensors.
  * @throws std::runtime_error If the eigenvalue algorithm fails to converge.
@@ -915,8 +915,8 @@ template <MatrixConcept AType>
  *
  * @return The dot product of the tensors.
  *
- * @throws rank_error If the input tensors do not have the same rank.
- * @throws dimension_error If the input tensors do not have the same shape.
+ * @throws RankError If the input tensors do not have the same rank.
+ * @throws DimensionError If the input tensors do not have the same shape.
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
@@ -947,8 +947,8 @@ template <TensorConcept AType, TensorConcept BType>
  *
  * @return The dot product between two tensors.
  *
- * @throws rank_error If the input tensors do not have the same rank.
- * @throws dimension_error If the input tensors do not have the same shape.
+ * @throws RankError If the input tensors do not have the same rank.
+ * @throws DimensionError If the input tensors do not have the same shape.
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
@@ -977,8 +977,8 @@ template <TensorConcept AType, TensorConcept BType>
  *
  * @return The triple dot product.
  *
- * @throws rank_error If the input tensors do not have the same rank.
- * @throws dimension_error If the input tensors do not have the same shape.
+ * @throws RankError If the input tensors do not have the same rank.
+ * @throws DimensionError If the input tensors do not have the same shape.
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
@@ -1009,8 +1009,8 @@ template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
  * @param[in] X The input tensor.
  * @param[inout] Y The output tensor.
  *
- * @throws rank_error If the input tensors do not have the same rank.
- * @throws dimension_error If the input tensors do not have the same shape.
+ * @throws RankError If the input tensors do not have the same rank.
+ * @throws DimensionError If the input tensors do not have the same shape.
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
@@ -1041,8 +1041,8 @@ void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
  * @param[in] beta The scale factor for the output.
  * @param[inout] Y The output tensor.
  *
- * @throws rank_error If the input tensors do not have the same rank.
- * @throws dimension_error If the input tensors do not have the same shape.
+ * @throws RankError If the input tensors do not have the same rank.
+ * @throws DimensionError If the input tensors do not have the same shape.
  *
  * @versionadded{1.0.0}
  * @versionchangeddesc{2.0.0}
@@ -1074,8 +1074,8 @@ void axpby(typename XType::ValueType alpha, XType const &X, typename XType::Valu
  * @param[in] Y The right vector.
  * @param[inout] A The output matrix.
  *
- * @throws rank_error If the X and Y tensors are not rank-1 or the A tensor is not rank-2.
- * @throws tensor_compat_error If the number of elements in the X vector is not the same as the number of rows in A, or the number of
+ * @throws RankError If the X and Y tensors are not rank-1 or the A tensor is not rank-2.
+ * @throws TensorCompatError If the number of elements in the X vector is not the same as the number of rows in A, or the number of
  * elements in the Y vector is not the same as the number of columns of A.
  *
  * @versionadded{1.0.0}
@@ -1117,8 +1117,8 @@ void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType 
  * @param[in] Y The right vector.
  * @param[inout] A The output matrix.
  *
- * @throws rank_error If the X and Y tensors are not rank-1 or the A tensor is not rank-2.
- * @throws tensor_compat_error If the number of elements in the X vector is not the same as the number of rows in A, or the number of
+ * @throws RankError If the X and Y tensors are not rank-1 or the A tensor is not rank-2.
+ * @throws TensorCompatError If the number of elements in the X vector is not the same as the number of rows in A, or the number of
  * elements in the Y vector is not the same as the number of columns of A.
  *
  * @versionadded{2.0.0}
@@ -1165,7 +1165,7 @@ void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType
  *
  * @warning Do not ignore the return value. It tells you if your matrix is singular.
  *
- * @throws rank_error If the tensor input is not rank-2.
+ * @throws RankError If the tensor input is not rank-2.
  * @throws std::invalid_argument If one of the values passed to the internal call was invalid.
  * @throws std::length_error If the pivot buffer type can not be resized and does not have enough space for the pivots.
  *
@@ -1241,8 +1241,8 @@ template <BasicTensorConcept TensorType, typename Pivots>
  * @return 0 on success. If negative, one of the parameters in the underlying LAPACK call was invalid, and the absolute value
  * gives which one.
  *
- * @throws rank_error If the factored matrix is not rank-2 or the right-hand side is neither rank-1 nor rank-2.
- * @throws tensor_compat_error If the factored matrix is not square, or its order differs from the number of rows of the
+ * @throws RankError If the factored matrix is not rank-2 or the right-hand side is neither rank-1 nor rank-2.
+ * @throws TensorCompatError If the factored matrix is not square, or its order differs from the number of rows of the
  * right-hand side.
  * @throws std::length_error If the pivot array is shorter than the order of @p A.
  *
@@ -1273,8 +1273,8 @@ template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, typename P
  * @param[inout] A The matrix to invert after being processed by getrf.
  * @param[in] pivot The pivot vector from getrf.
  *
- * @throws rank_error If the input tensor is not a matrix.
- * @throws dimension_error If the input matrix is not square.
+ * @throws RankError If the input tensor is not a matrix.
+ * @throws DimensionError If the input matrix is not square.
  * @throws std::invalid_argument If an invalid argument got passed to the internal call. This likely means that the tensor is not
  * initialized.
  * @throws std::runtime_error If the matrix passed in is singular. This means that the return value from getrf was ignored.
@@ -1318,8 +1318,8 @@ void getri(TensorType *A, Pivots const &pivot) {
  * @param[inout] A Matrix to invert. On exit, the inverse of A, assuming it is non-singular. If it is singular, it may be overwritten by the
  * LU decomposition.
  *
- * @throws rank_error If the input is not a matrix.
- * @throws dimension_error If the matrix is not square.
+ * @throws RankError If the input is not a matrix.
+ * @throws DimensionError If the matrix is not square.
  * @throws std::runtime_error If the matrix is singular.
  *
  * @versionadded{1.0.0}
@@ -1396,8 +1396,8 @@ enum class APIARY_EXPOSE APIARY_MODULE("linalg") Transpose : char{
  * @param[in] a The matrix to compute the norm of.
  * @return The requested norm of the matrix.
  *
- * @throws rank_error If the input is neither a matrix or vector.
- * @throws enum_error If an invalid enum value is passed.
+ * @throws RankError If the input is neither a matrix or vector.
+ * @throws EnumError If an invalid enum value is passed.
  *
  * @versionaddeddesc{1.0.0}
  *      There is a bug in this version where, due to a difference in memory layout,
@@ -1486,7 +1486,7 @@ enum class APIARY_EXPOSE APIARY_MODULE("linalg") Vectors : char{
  *
  * @return A tuple containing the U matrix, singular value vector, and the transpose of the V matrix.
  *
- * @throws rank_error If the tensor being decomposed is not rank-2.
+ * @throws RankError If the tensor being decomposed is not rank-2.
  * @throws std::invalid_argument If one of the parameters passed to the internal functions is invalid.
  * @throws std::runtime_error If the decomposition algorithm did not converge.
  *
@@ -1594,7 +1594,7 @@ auto svd_nullspace(AType const &_A) -> Tensor<typename AType::ValueType, 2> {
  *
  * @return A tuple containing the U matrix, singular value vector, and the transpose of the V matrix.
  *
- * @throws rank_error If the tensor being decomposed is not rank-2.
+ * @throws RankError If the tensor being decomposed is not rank-2.
  * @throws std::invalid_argument If one of the parameters passed to the internal functions is invalid.
  * @throws std::runtime_error If the decomposition algorithm did not converge.
  *
@@ -2069,7 +2069,7 @@ template <MatrixConcept AType>
  *
  * @return The pseudoinverse of a matrix.
  *
- * @throws rank_error If the tensor being decomposed is not rank-2.
+ * @throws RankError If the tensor being decomposed is not rank-2.
  * @throws std::invalid_argument If one of the parameters passed to the internal functions is invalid.
  * @throws std::runtime_error If the SVD algorithm did not converge.
  *
@@ -2119,8 +2119,8 @@ inline auto pseudoinverse(AType const &A, T tol) -> Tensor<T, 2> {
  *
  * @return The solution to the equation.
  *
- * @throws dimension_error If the input matrices are not square.
- * @throws tensor_compat_error If the input matrices do not have the same size.
+ * @throws DimensionError If the input matrices are not square.
+ * @throws TensorCompatError If the input matrices do not have the same size.
  *
  * @versionadded{1.0.0}
  */
@@ -2135,13 +2135,13 @@ inline auto solve_continuous_lyapunov(AType const &A, QType const &Q) -> Tensor<
     LabeledSection0();
 
     if (A.dim(0) != A.dim(1)) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "solve_continuous_lyapunov: Dimensions of A ({} x {}), do not match", A.dim(0), A.dim(1));
+        EINSUMS_THROW_EXCEPTION(DimensionError, "solve_continuous_lyapunov: Dimensions of A ({} x {}), do not match", A.dim(0), A.dim(1));
     }
     if (Q.dim(0) != Q.dim(1)) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "solve_continuous_lyapunov: Dimensions of Q ({} x {}), do not match", Q.dim(0), Q.dim(1));
+        EINSUMS_THROW_EXCEPTION(DimensionError, "solve_continuous_lyapunov: Dimensions of Q ({} x {}), do not match", Q.dim(0), Q.dim(1));
     }
     if (A.dim(0) != Q.dim(0)) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "solve_continuous_lyapunov: Dimensions of A ({} x {}) and Q ({} x {}), do not match",
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "solve_continuous_lyapunov: Dimensions of A ({} x {}) and Q ({} x {}), do not match",
                                 A.dim(0), A.dim(1), Q.dim(0), Q.dim(1));
     }
 
@@ -2268,7 +2268,7 @@ void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) 
  *
  * @return The determinant of the matrix.
  *
- * @throws dimension_error If the input matrix is not square.
+ * @throws DimensionError If the input matrix is not square.
  *
  * @versionadded{1.0.0}
  */
@@ -2276,7 +2276,7 @@ template <MatrixConcept AType>
 typename AType::ValueType det(AType const &A) {
     using T = typename AType::ValueType;
     if (A.dim(0) != A.dim(1)) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can only take the determinant of a square matrix.");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can only take the determinant of a square matrix.");
     }
 
     RemoveViewT<AType> temp = A;

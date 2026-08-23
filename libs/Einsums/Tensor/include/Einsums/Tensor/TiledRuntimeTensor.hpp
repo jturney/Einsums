@@ -407,7 +407,7 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     /// bounds-check against the grid.
     [[nodiscard]] std::vector<int> normalize(std::vector<int> const &coord) const {
         if (coord.size() != _tile_sizes.size()) {
-            EINSUMS_THROW_EXCEPTION(num_argument_error, "TiledRuntimeTensor: tile coordinate rank does not match tensor rank");
+            EINSUMS_THROW_EXCEPTION(NumArgumentError, "TiledRuntimeTensor: tile coordinate rank does not match tensor rank");
         }
         std::vector<int> out(coord);
         for (size_t i = 0; i < out.size(); ++i) {

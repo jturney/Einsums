@@ -233,5 +233,5 @@ TEST_CASE("GroupedElementwise - rejects the runs it cannot compute", "[ComputeGr
     std::vector<RuntimeTensor<double> *>       mixed_c{&y};
     REQUIRE_THROWS_AS((cg::grouped_direct_product<double, RuntimeTensor<double>, RuntimeTensor<double>, RuntimeTensor<double>>(
                           {1.0}, mixed_a, mixed_b, {0.0}, mixed_c)),
-                      dimension_error);
+                      DimensionError);
 }

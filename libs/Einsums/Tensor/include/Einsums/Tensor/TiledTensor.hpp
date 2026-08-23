@@ -142,7 +142,7 @@ struct TiledTensor : public TiledTensorNoExtra, design_pats::Lockable<std::recur
     TiledTensor(std::string name, ContainerType const &sizes)
         : _name(std::move(name)), _tile_offsets(), _tile_sizes(), _tiles(), _size(0), _dims{} {
         if (sizes.size() != rank) {
-            EINSUMS_THROW_EXCEPTION(num_argument_error, "Wrong number of grid sizes passed to TiledTensor constructor!");
+            EINSUMS_THROW_EXCEPTION(NumArgumentError, "Wrong number of grid sizes passed to TiledTensor constructor!");
         }
         for (int i = 0; i < rank; i++) {
             _tile_sizes[i] = std::vector<int>(sizes[i].size());
@@ -607,9 +607,9 @@ struct TiledTensor : public TiledTensorNoExtra, design_pats::Lockable<std::recur
         }
     T &operator()(ContainerType const &index) {
         if (index.size() < rank) {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to Tensor!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to Tensor!");
         } else if (index.size() > rank) {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to Tensor!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to Tensor!");
         }
         auto coords = tile_of(index);
 
@@ -847,7 +847,7 @@ struct TiledTensor : public TiledTensorNoExtra, design_pats::Lockable<std::recur
      */
     TiledTensor &operator+=(TiledTensor const &other) {
         if (_tile_sizes != other._tile_sizes) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Tiled tensors do not have the same layouts.");
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "Tiled tensors do not have the same layouts.");
         }
 
         for (auto const &tile : other._tiles) {
@@ -869,7 +869,7 @@ struct TiledTensor : public TiledTensorNoExtra, design_pats::Lockable<std::recur
      */
     TiledTensor &operator-=(TiledTensor const &other) {
         if (_tile_sizes != other._tile_sizes) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Tiled tensors do not have the same layouts.");
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "Tiled tensors do not have the same layouts.");
         }
 
         for (auto const &tile : other._tiles) {
@@ -892,7 +892,7 @@ struct TiledTensor : public TiledTensorNoExtra, design_pats::Lockable<std::recur
      */
     TiledTensor &operator*=(TiledTensor const &other) {
         if (_tile_sizes != other._tile_sizes) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Tiled tensors do not have the same layouts.");
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "Tiled tensors do not have the same layouts.");
         }
 
         for (auto const &tile : _tiles) {
@@ -916,7 +916,7 @@ struct TiledTensor : public TiledTensorNoExtra, design_pats::Lockable<std::recur
      */
     TiledTensor &operator/=(TiledTensor const &other) {
         if (_tile_sizes != other._tile_sizes) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Tiled tensors do not have the same layouts.");
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "Tiled tensors do not have the same layouts.");
         }
 
         for (auto const &tile : _tiles) {

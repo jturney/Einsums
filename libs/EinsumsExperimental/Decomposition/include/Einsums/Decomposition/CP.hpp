@@ -33,7 +33,7 @@ auto weight_tensor(TTensor const &tensor, WTensor const &weights) -> Tensor<Valu
     LabeledSection0();
 
     if (tensor.dim(0) != weights.dim(0)) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "The first dimension of the tensor and the dimension of the weight DO NOT match");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "The first dimension of the tensor and the dimension of the weight DO NOT match");
     }
 
     auto weighted_tensor = create_tensor_like(tensor);

@@ -309,7 +309,7 @@ TEST_CASE("grouped_dot: rejects malformed runs", "[ComputeGraph][GroupedScalarOp
         auto wrong = create_random_tensor<double>("wrong", 3, 5);
         auto bad   = l.b;
         bad[1]     = &wrong;
-        REQUIRE_THROWS_AS(cg::grouped_dot(l.r, l.a, bad), dimension_error);
+        REQUIRE_THROWS_AS(cg::grouped_dot(l.r, l.a, bad), DimensionError);
     }
 }
 
@@ -465,7 +465,7 @@ TEST_CASE("grouped_axpby: rejects malformed runs", "[ComputeGraph][GroupedScalar
     SECTION("an entry whose operands do not agree on shape") {
         auto                                         wrong = create_random_tensor<double>("wrong", 2, 4);
         std::vector<Tensor<double, 2> const *> const bad{&wrong};
-        REQUIRE_THROWS_AS(cg::grouped_axpby({1.0}, bad, {0.0}, y_list), dimension_error);
+        REQUIRE_THROWS_AS(cg::grouped_axpby({1.0}, bad, {0.0}, y_list), DimensionError);
     }
 }
 

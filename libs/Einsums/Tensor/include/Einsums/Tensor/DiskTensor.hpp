@@ -1105,7 +1105,7 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
      */
     auto operator=(T const *other) -> DiskView & {
         if (_readOnly) {
-            EINSUMS_THROW_EXCEPTION(access_denied, "Attempting to write data to a read only disk view.");
+            EINSUMS_THROW_EXCEPTION(AccessDenied, "Attempting to write data to a read only disk view.");
         }
 
         (void)get();
@@ -1122,13 +1122,13 @@ struct DiskView final : tensor_base::DiskTensor, design_pats::Lockable<std::recu
         requires SameUnderlyingAndRank<TType, DiskView>
     auto operator=(TType const &other) -> DiskView & {
         if (_readOnly) {
-            EINSUMS_THROW_EXCEPTION(access_denied, "Attempting to write data to a read only disk view.");
+            EINSUMS_THROW_EXCEPTION(AccessDenied, "Attempting to write data to a read only disk view.");
         }
 
         // Check dims
         for (int i = 0; i < rank; i++) {
             if (_dims[i] != other.dim(i)) {
-                EINSUMS_THROW_EXCEPTION(dimension_error, "dims do not match (i {} dim {} other {})", i, _dims[i], other.dim(i));
+                EINSUMS_THROW_EXCEPTION(DimensionError, "dims do not match (i {} dim {} other {})", i, _dims[i], other.dim(i));
             }
         }
 

@@ -49,13 +49,13 @@
 /**
  * @def EINSUMS_THROW_NOT_IMPLEMENTED
  *
- * This will throw a not_implemented exception.
+ * This will throw a NotImplemented exception.
  *
  * @versionadded{1.0.0}
  */
 #define EINSUMS_THROW_NOT_IMPLEMENTED                                                                                                      \
-    throw not_implemented(                                                                                                                 \
-        einsums::detail::make_error_message(einsums::type_name<not_implemented>(), "", std::source_location::current())) /**/
+    throw einsums::NotImplemented(                                                                                                         \
+        einsums::detail::make_error_message(einsums::type_name<einsums::NotImplemented>(), "", std::source_location::current())) /**/
 
 /**
  * @def EINSUMS_THROW_NESTED

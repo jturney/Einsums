@@ -229,7 +229,7 @@ TEST_CASE("Graph - getrs refuses a mismatched factorization", "[ComputeGraph][LU
     std::vector<blas::int_t> pivots(4);
     REQUIRE(linear_algebra::getrf(&A, &pivots) == 0);
 
-    REQUIRE_THROWS_AS(std::ignore = linear_algebra::getrs(A, pivots, &B), tensor_compat_error);
+    REQUIRE_THROWS_AS(std::ignore = linear_algebra::getrs(A, pivots, &B), TensorCompatError);
 }
 
 TEST_CASE("Graph - getrs refuses a pivot array too short for the order", "[ComputeGraph][LU]") {

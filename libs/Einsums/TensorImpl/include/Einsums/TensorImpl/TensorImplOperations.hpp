@@ -86,11 +86,11 @@ void impl_real(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     LabeledSection0();
 
     if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can not copy two tensors of different ranks!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
     }
 
     if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can not copy two tensors with different sizes!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
     }
 
     // Lock-step vectorized paths require identical memory layouts; equal
@@ -205,11 +205,11 @@ void impl_imag(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     LabeledSection0();
 
     if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can not copy two tensors of different ranks!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
     }
 
     if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can not copy two tensors with different sizes!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
     }
 
     // Lock-step vectorized paths require identical memory layouts; equal
@@ -314,11 +314,11 @@ void impl_abs(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     LabeledSection0();
 
     if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can not copy two tensors of different ranks!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
     }
 
     if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can not copy two tensors with different sizes!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
     }
 
     // Lock-step vectorized paths require identical memory layouts; equal
@@ -458,7 +458,7 @@ void impl_axpy_contiguous(T alpha, TensorImpl<TOther> const &in, TensorImpl<T> &
     if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>> && blas::IsBlasableV<T>) {
         blas::axpy(in.size(), alpha, in.data(), in.get_incx(), out.data(), out.get_incx());
     } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         TOther const *in_data  = in.data();
@@ -478,7 +478,7 @@ void impl_axpy_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
         if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>> && blas::IsBlasableV<T>) {
             blas::axpy(easy_size, alpha, in, inc_in, out, inc_out);
         } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-            EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+            EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                     "Can not convert complex to real! Please extract the components you want to use before operating.");
         } else {
             EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
@@ -498,7 +498,7 @@ template <typename T, typename TOther, Container Dims, Container InStrides, Cont
 void impl_axpy_noncontiguous(int depth, int rank, T alpha, Dims const &dims, TOther const *in, InStrides const &in_strides, T *out,
                              OutStrides const &out_strides) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (depth == rank) {
@@ -517,11 +517,11 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     LabeledSection0();
 
     if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can not add two tensors of different ranks!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not add two tensors of different ranks!");
     }
 
     if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can not add two tensors with different sizes!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not add two tensors with different sizes!");
     }
 
     if (in.strides() != out.strides()) {
@@ -602,7 +602,7 @@ void impl_scal_contiguous(TOther alpha, TensorImpl<T> &out) {
                   !(IsComplexV<TOther> && !IsComplexV<T>)) {
         blas::scal(out.size(), alpha, out.data(), out.get_incx());
     } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         T           *out_data = out.data();
@@ -623,7 +623,7 @@ void impl_scal_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
                       !(IsComplexV<TOther> && !IsComplexV<T>)) {
             blas::scal(easy_size, alpha, out, inc_out);
         } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-            EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+            EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                     "Can not convert complex to real! Please extract the components you want to use before operating.");
         } else {
             EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
@@ -697,7 +697,7 @@ void impl_div_scalar_contiguous(TOther alpha, TensorImpl<T> &out) {
                   !(IsComplexV<TOther> && !IsComplexV<T>)&&blas::IsBlasableV<T>) {
         blas::rscl(out.size(), alpha, out.data(), out.get_incx());
     } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         T           *out_data = out.data();
@@ -718,7 +718,7 @@ void impl_div_scalar_noncontiguous_vectorable(int depth, int hard_rank, size_t e
                       !(IsComplexV<TOther> && !IsComplexV<T>)&&blas::IsBlasableV<T>) {
             blas::rscl(easy_size, alpha, out, inc_out);
         } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-            EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+            EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                     "Can not convert complex to real! Please extract the components you want to use before operating.");
         } else {
             EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
@@ -776,7 +776,7 @@ void impl_div_scalar(U alpha, TensorImpl<T> &out) {
 template <typename T, typename TOther>
 void impl_mult_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         TOther const *in_data  = in.data();
@@ -793,7 +793,7 @@ template <typename T, typename TOther, Container HardDims, Container InStrides, 
 void impl_mult_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, TOther const *in,
                                         InStrides const &in_strides, size_t inc_in, T *out, OutStrides const &out_strides, size_t inc_out) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (depth == hard_rank) {
@@ -814,7 +814,7 @@ template <typename T, typename TOther, Container Dims, Container InStrides, Cont
 void impl_mult_noncontiguous(int depth, int rank, Dims const &dims, TOther const *in, InStrides const &in_strides, T *out,
                              OutStrides const &out_strides) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (depth == rank) {
@@ -833,11 +833,11 @@ void impl_mult(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     LabeledSection0();
 
     if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can not multiply two tensors of different ranks!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not multiply two tensors of different ranks!");
     }
 
     if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can not multiply two tensors with different sizes!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not multiply two tensors with different sizes!");
     }
 
     // Lock-step vectorized paths require identical memory layouts; equal
@@ -899,7 +899,7 @@ void impl_mult(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 template <typename T, typename TOther>
 void impl_div_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         TOther const *in_data  = in.data();
@@ -916,7 +916,7 @@ template <typename T, typename TOther, Container HardDims, Container InStrides, 
 void impl_div_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_size, HardDims const &dims, TOther const *in,
                                        InStrides const &in_strides, size_t inc_in, T *out, OutStrides const &out_strides, size_t inc_out) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (depth == hard_rank) {
@@ -937,7 +937,7 @@ template <typename T, typename TOther, Container Dims, Container InStrides, Cont
 void impl_div_noncontiguous(int depth, int rank, Dims const &dims, TOther const *in, InStrides const &in_strides, T *out,
                             OutStrides const &out_strides) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (depth == rank) {
@@ -956,11 +956,11 @@ void impl_div(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     LabeledSection0();
 
     if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can not divide two tensors of different ranks!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not divide two tensors of different ranks!");
     }
 
     if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can not divide two tensors with different sizes!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not divide two tensors with different sizes!");
     }
 
     // Lock-step vectorized paths require identical memory layouts; equal
@@ -1024,7 +1024,7 @@ void impl_copy_contiguous(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>> && blas::IsBlasableV<T>) {
         blas::copy(in.size(), in.data(), in.get_incx(), out.data(), out.get_incx());
     } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         TOther const *in_data  = in.data();
@@ -1044,7 +1044,7 @@ void impl_copy_noncontiguous_vectorable(int depth, int hard_rank, size_t easy_si
         if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>> && blas::IsBlasableV<T>) {
             blas::copy(easy_size, in, inc_in, out, inc_out);
         } else if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-            EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+            EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                     "Can not convert complex to real! Please extract the components you want to use before operating.");
         } else {
             EINSUMS_OMP_PARALLEL_FOR_SIMD_IF(easy_size >= ::einsums::hardware::omp_min_parallel_elements())
@@ -1064,7 +1064,7 @@ template <typename T, typename TOther, Container Dims, Container InStrides, Cont
 void impl_copy_noncontiguous(int depth, int rank, Dims const &dims, TOther const *in, InStrides const &in_strides, T *out,
                              OutStrides const &out_strides) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (depth == rank) {
@@ -1083,11 +1083,11 @@ void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     LabeledSection0();
 
     if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can not copy two tensors of different ranks!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not copy two tensors of different ranks!");
     }
 
     if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can not copy two tensors with different sizes!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
     }
 
     // Lock-step vectorized paths require identical memory layouts; equal
@@ -1186,7 +1186,7 @@ void impl_scalar_add_noncontiguous_vectorable(int depth, int hard_rank, size_t e
 template <typename T, typename U>
 void impl_scalar_add(U alpha, TensorImpl<T> &out) {
     if constexpr (IsComplexV<U> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         LabeledSection0();
@@ -1267,7 +1267,7 @@ void impl_scalar_copy_noncontiguous_vectorable(int depth, int hard_rank, size_t 
 template <typename T, typename U>
 void impl_scalar_copy(U alpha, TensorImpl<T> &out) {
     if constexpr (IsComplexV<U> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         LabeledSection0();
@@ -1317,7 +1317,7 @@ void impl_scalar_copy(U alpha, TensorImpl<T> &out) {
 template <typename T, typename TOther>
 void add_assign(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (in.rank() == 0) {
@@ -1341,7 +1341,7 @@ void add_assign(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 template <typename T, typename TOther>
 void sub_assign(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (in.rank() == 0) {
@@ -1365,7 +1365,7 @@ void sub_assign(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 template <typename T, typename TOther>
 void mult_assign(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (in.rank() == 0) {
@@ -1389,7 +1389,7 @@ void mult_assign(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 template <typename T, typename TOther>
 void div_assign(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (in.rank() == 0) {
@@ -1413,7 +1413,7 @@ void div_assign(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 template <typename T, typename TOther>
 void copy_to(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<TOther> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (in.rank() == 0) {
@@ -1437,7 +1437,7 @@ void copy_to(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 template <typename T, typename U>
 void add_assign(U in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<U> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (out.rank() == 0) {
@@ -1457,7 +1457,7 @@ void add_assign(U in, TensorImpl<T> &out) {
 template <typename T, typename U>
 void sub_assign(U in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<U> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (out.rank() == 0) {
@@ -1477,7 +1477,7 @@ void sub_assign(U in, TensorImpl<T> &out) {
 template <typename T, typename U>
 void mult_assign(U in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<U> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (out.rank() == 0) {
@@ -1497,7 +1497,7 @@ void mult_assign(U in, TensorImpl<T> &out) {
 template <typename T, typename U>
 void div_assign(U in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<U> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (out.rank() == 0) {
@@ -1517,7 +1517,7 @@ void div_assign(U in, TensorImpl<T> &out) {
 template <typename T, typename U>
 void copy_to(U in, TensorImpl<T> &out) {
     if constexpr (IsComplexV<U> && !IsComplexV<T>) {
-        EINSUMS_THROW_EXCEPTION(complex_conversion_error,
+        EINSUMS_THROW_EXCEPTION(ComplexConversionError,
                                 "Can not convert complex to real! Please extract the components you want to use before operating.");
     } else {
         if (out.rank() == 0) {

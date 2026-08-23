@@ -383,7 +383,7 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
      *
      * @param[in] value The tensor to push.
      *
-     * @throws dimension_error if the tensor being pushed is not square.
+     * @throws DimensionError if the tensor being pushed is not square.
      *
      * @versionadded{1.0.0}
      */
@@ -391,7 +391,7 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (value.dim(i) != value.dim(0)) {
                 EINSUMS_THROW_EXCEPTION(
-                    dimension_error, "Can only push square/hypersquare tensors to a block tensor. Make sure all dimensions are the same.");
+                    DimensionError, "Can only push square/hypersquare tensors to a block tensor. Make sure all dimensions are the same.");
             }
         }
         _blocks.push_back(value);
@@ -404,7 +404,7 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
      * @param[in] pos The position to insert at.
      * @param[in] value The tensor to insert.
      *
-     * @throws dimension_error if the tensor being pushed is not square.
+     * @throws DimensionError if the tensor being pushed is not square.
      *
      * @versionadded{1.0.0}
      */
@@ -412,7 +412,7 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (value.dim(i) != value.dim(0)) {
                 EINSUMS_THROW_EXCEPTION(
-                    dimension_error, "Can only push square/hypersquare tensors to a block tensor. Make sure all dimensions are the same.");
+                    DimensionError, "Can only push square/hypersquare tensors to a block tensor. Make sure all dimensions are the same.");
             }
         }
         // Add the block.
@@ -427,7 +427,7 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
      * @param[in] pos The position to insert at.
      * @param[in] args The arguments for the constructor.
      *
-     * @throws dimension_error if the tensor is not square.
+     * @throws DimensionError if the tensor is not square.
      *
      * @versionadded{1.0.0}
      */
@@ -438,7 +438,7 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
         for (int i = 0; std::cmp_less(i, Rank); i++) {
             if (tensor.dim(i) != tensor.dim(0)) {
                 EINSUMS_THROW_EXCEPTION(
-                    dimension_error, "Can only push square/hypersquare tensors to a block tensor. Make sure all dimensions are the same.");
+                    DimensionError, "Can only push square/hypersquare tensors to a block tensor. Make sure all dimensions are the same.");
             }
         }
 
@@ -597,8 +597,8 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
      * @param[in] index The explicit desired index into the tensor. Elements must be castable to std::int64_t.
      * @return T& A reference to the value at that index.
      *
-     * @throws not_enough_args Throws this if the container doesn't have enough indices.
-     * @throws too_many_args Throws this if the container has too many indices.
+     * @throws NotEnoughArgs Throws this if the container doesn't have enough indices.
+     * @throws TooManyArgs Throws this if the container has too many indices.
      *
      * @versionadded{1.0.0}
      */
@@ -612,9 +612,9 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
         }
     T &operator()(Container const &index) {
         if (index.size() < Rank) [[unlikely]] {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to Tensor!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to Tensor!");
         } else if (index.size() > Rank) [[unlikely]] {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to Tensor!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to Tensor!");
         }
 
         std::array<std::int64_t, Rank> index_list{};
@@ -665,9 +665,9 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
         }
     T const &operator()(Container const &index) const {
         if (index.size() < Rank) [[unlikely]] {
-            EINSUMS_THROW_EXCEPTION(not_enough_args, "Not enough indices passed to Tensor!");
+            EINSUMS_THROW_EXCEPTION(NotEnoughArgs, "Not enough indices passed to Tensor!");
         } else if (index.size() > Rank) [[unlikely]] {
-            EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices passed to Tensor!");
+            EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices passed to Tensor!");
         }
 
         std::array<std::int64_t, Rank> index_list{};
@@ -809,11 +809,11 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
                                                                                                                                            \
     auto operator OP(const BlockTensor<T, Rank, TensorType> &b)->BlockTensor<T, Rank, TensorType> & {                                      \
         if (_blocks.size() != b._blocks.size()) {                                                                                          \
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "tensors differ in number of blocks : {} {}", _blocks.size(), b._blocks.size());  \
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "tensors differ in number of blocks : {} {}", _blocks.size(), b._blocks.size());    \
         }                                                                                                                                  \
         for (int i = 0; i < _blocks.size(); i++) {                                                                                         \
             if (_blocks[i].size() != b._blocks[i].size()) {                                                                                \
-                EINSUMS_THROW_EXCEPTION(dimension_error, "tensor blocks differ in size : {} {}", _blocks[i].size(), b._blocks[i].size());  \
+                EINSUMS_THROW_EXCEPTION(DimensionError, "tensor blocks differ in size : {} {}", _blocks[i].size(), b._blocks[i].size());   \
             }                                                                                                                              \
         }                                                                                                                                  \
         EINSUMS_OMP_PARALLEL_FOR                                                                                                           \

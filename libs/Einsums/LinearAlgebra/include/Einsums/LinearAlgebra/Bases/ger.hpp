@@ -14,10 +14,10 @@ template <typename T>
 void impl_ger(T alpha, einsums::detail::TensorImpl<T> const &x, einsums::detail::TensorImpl<T> const &y,
               einsums::detail::TensorImpl<T> &a) {
     if (a.rank() != 2 || x.rank() != 1 || y.rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The inputs to ger need to be rank-1 tensors and the output needs to be a rank-2 tensor.");
+        EINSUMS_THROW_EXCEPTION(RankError, "The inputs to ger need to be rank-1 tensors and the output needs to be a rank-2 tensor.");
     }
     if (x.dim(0) != a.dim(0) || y.dim(0) != a.dim(1)) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The dimensions of the tensors passed to ger are incompatible!");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the tensors passed to ger are incompatible!");
     }
 
     if (a.is_gemmable()) {
@@ -56,10 +56,10 @@ template <typename T>
 void impl_gerc(T alpha, einsums::detail::TensorImpl<T> const &x, einsums::detail::TensorImpl<T> const &y,
                einsums::detail::TensorImpl<T> &a) {
     if (a.rank() != 2 || x.rank() != 1 || y.rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The inputs to ger need to be rank-1 tensors and the output needs to be a rank-2 tensor.");
+        EINSUMS_THROW_EXCEPTION(RankError, "The inputs to ger need to be rank-1 tensors and the output needs to be a rank-2 tensor.");
     }
     if (x.dim(0) != a.dim(0) || y.dim(0) != a.dim(1)) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The dimensions of the tensors passed to ger are incompatible!");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the tensors passed to ger are incompatible!");
     }
 
     if (a.is_gemmable()) {

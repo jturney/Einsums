@@ -32,7 +32,7 @@ EINSUMS_NAMESPACE_BEGIN()
 template <NotComplex T>
 auto arange(T start, T stop, T step = T{1}) -> Tensor<T, 1> {
     if (stop < start) {
-        EINSUMS_THROW_EXCEPTION(bad_logic, "arange: stop ({}) < start ({})", stop, start);
+        EINSUMS_THROW_EXCEPTION(BadLogic, "arange: stop ({}) < start ({})", stop, start);
     }
 
     int nelem = static_cast<int>((stop - start) / step);

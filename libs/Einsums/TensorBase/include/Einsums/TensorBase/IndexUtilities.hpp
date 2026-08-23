@@ -656,7 +656,7 @@ inline size_t indices_to_sentinel_negative_check(StorageType1 const &unique_stri
     size_t out = 0;
 
     if (inds.size() > unique_strides.size() || inds.size() > unique_dims.size()) {
-        EINSUMS_THROW_EXCEPTION(too_many_args, "Too many indices supplied!");
+        EINSUMS_THROW_EXCEPTION(TooManyArgs, "Too many indices supplied!");
     }
 
     auto ind_iter    = inds.begin();

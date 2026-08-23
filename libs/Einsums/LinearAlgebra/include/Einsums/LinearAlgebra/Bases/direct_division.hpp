@@ -84,11 +84,11 @@ void impl_direct_division(CType alpha, einsums::detail::TensorImpl<AType> const 
     LabeledSection0();
 
     if (A.rank() != B.rank() || A.rank() != C->rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can not combine tensors of different ranks!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not combine tensors of different ranks!");
     }
 
     if (A.dims() != B.dims() || A.dims() != C->dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can not combine tensors with different sizes!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not combine tensors with different sizes!");
     }
 
     // Lock-step vectorized paths require all three operands to map logical

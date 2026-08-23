@@ -9,11 +9,11 @@
 #include <Einsums/Testing.hpp>
 
 [[noreturn]] static void thrower() {
-    EINSUMS_THROW_EXCEPTION(einsums::dimension_error, "Test error.");
+    EINSUMS_THROW_EXCEPTION(einsums::DimensionError, "Test error.");
 }
 
 [[noreturn]] static void thrower2() {
-    throw einsums::dimension_error("Test error2.");
+    throw einsums::DimensionError("Test error2.");
 }
 
 [[noreturn]] static void thrower3() {
@@ -25,7 +25,7 @@ TEST_CASE("Test catching 1", "[error]") {
     try {
         INFO("Throwing...");
         thrower();
-    } catch (einsums::dimension_error const &e) {
+    } catch (einsums::DimensionError const &e) {
         INFO("Caught exception!");
         REQUIRE(true);
     } catch (...) {
@@ -33,7 +33,7 @@ TEST_CASE("Test catching 1", "[error]") {
     }
     INFO("Finished handling exception.");
 
-    REQUIRE_THROWS_AS(thrower(), einsums::dimension_error);
+    REQUIRE_THROWS_AS(thrower(), einsums::DimensionError);
 }
 
 TEST_CASE("Test catching 2", "[error]") {
@@ -41,7 +41,7 @@ TEST_CASE("Test catching 2", "[error]") {
     try {
         INFO("Throwing...");
         thrower2();
-    } catch (einsums::dimension_error const &e) {
+    } catch (einsums::DimensionError const &e) {
         INFO("Caught exception!");
         REQUIRE(true);
     } catch (...) {
@@ -49,7 +49,7 @@ TEST_CASE("Test catching 2", "[error]") {
     }
     INFO("Finished handling exception.");
 
-    REQUIRE_THROWS_AS(thrower2(), einsums::dimension_error);
+    REQUIRE_THROWS_AS(thrower2(), einsums::DimensionError);
 }
 
 TEST_CASE("Test catching 3", "[error]") {

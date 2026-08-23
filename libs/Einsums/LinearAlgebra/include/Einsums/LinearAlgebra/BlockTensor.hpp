@@ -42,7 +42,7 @@ template <BlockTensorConcept AType, BlockTensorConcept BType, BlockTensorConcept
     }
 void gemm(char transA, char transB, U const alpha, AType const &A, BType const &B, U const beta, CType *C) {
     if (A.num_blocks() != B.num_blocks() || A.num_blocks() != C->num_blocks() || B.num_blocks() != C->num_blocks()) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "gemm: Tensors need the same number of blocks.");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "gemm: Tensors need the same number of blocks.");
     }
 
     using T = typename AType::ValueType;
@@ -193,7 +193,7 @@ template <BlockTensorConcept AType, BlockTensorConcept BType>
     }
 auto gesv(AType *A, BType *B) -> int {
     if (A->num_blocks() != B->num_blocks()) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "gesv: Tensors need the same number of blocks.");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "gesv: Tensors need the same number of blocks.");
     }
 
     int info_out = 0;
@@ -223,7 +223,7 @@ template <BlockTensorConcept AType, MatrixConcept BType>
 auto gesv(AType *A, BType *B) -> int {
 
     if (A->dim(0) != B->dim(0)) {
-        EINSUMS_THROW_EXCEPTION(dimension_error,
+        EINSUMS_THROW_EXCEPTION(DimensionError,
                                 "The result matrix for gesv needs to have the same number of rows as the coefficient matrix.");
     }
 
@@ -254,7 +254,7 @@ template <BlockTensorConcept AType, VectorConcept BType>
 auto gesv(AType *A, BType *B) -> int {
 
     if (A->dim(0) != B->dim(0)) {
-        EINSUMS_THROW_EXCEPTION(dimension_error,
+        EINSUMS_THROW_EXCEPTION(DimensionError,
                                 "The result matrix for gesv needs to have the same number of rows as the coefficient matrix.");
     }
 
@@ -411,11 +411,11 @@ template <BlockTensorConcept XType, BlockTensorConcept YType>
 void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
 
     if (X.num_blocks() != Y->num_blocks()) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "axpy: Tensors need to have the same number of blocks.");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "axpy: Tensors need to have the same number of blocks.");
     }
 
     if (X.ranges() != Y->ranges()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "axpy: Tensor blocks need to be compatible.");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "axpy: Tensor blocks need to be compatible.");
     }
 
     EINSUMS_OMP_PARALLEL_FOR
@@ -433,11 +433,11 @@ template <BlockTensorConcept XType, BlockTensorConcept YType>
 void axpby(typename XType::ValueType alpha, XType const &X, typename YType::ValueType beta, YType *Y) {
 
     if (X.num_blocks() != Y->num_blocks()) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "axpby: Tensors need to have the same number of blocks.");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "axpby: Tensors need to have the same number of blocks.");
     }
 
     if (X.ranges() != Y->ranges()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "axpby: Tensor blocks need to be compatible.");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "axpby: Tensor blocks need to be compatible.");
     }
 
     EINSUMS_OMP_PARALLEL_FOR

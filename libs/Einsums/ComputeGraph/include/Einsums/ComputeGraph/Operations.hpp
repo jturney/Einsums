@@ -613,7 +613,7 @@ APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<doub
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::block_copy: extents must be non-empty");
     }
     if (dst->rank() != N || src.rank() != N) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::block_copy: rank mismatch — dst rank={}, src rank={}, extents.size()={}", dst->rank(),
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::block_copy: rank mismatch — dst rank={}, src rank={}, extents.size()={}", dst->rank(),
                                 src.rank(), N);
     }
     if (dst_offsets.size() != N || src_offsets.size() != N) {
@@ -760,7 +760,7 @@ APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>
     size_t const dst_rank = detail::tensor_rank(*dst);
     size_t const src_rank = detail::tensor_rank(src);
     if (dst_rank != N || src_rank != N) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::gather: rank mismatch - dst rank={}, src rank={}, indices.size()={}", dst_rank, src_rank,
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::gather: rank mismatch - dst rank={}, src rank={}, indices.size()={}", dst_rank, src_rank,
                                 N);
     }
 
@@ -899,7 +899,7 @@ APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<double>
     size_t const dst_rank = detail::tensor_rank(*dst);
     size_t const src_rank = detail::tensor_rank(src);
     if (dst_rank != N || src_rank != N) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::scatter: rank mismatch - dst rank={}, src rank={}, indices.size()={}", dst_rank, src_rank,
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::scatter: rank mismatch - dst rank={}, src rank={}, indices.size()={}", dst_rank, src_rank,
                                 N);
     }
 
@@ -993,13 +993,13 @@ APIARY_INSTANTIATE_AS("sqrt", einsums::GeneralRuntimeTensor<double, std::allocat
     using T = typename ResultType::ValueType;
     static_assert(!IsComplexV<T>, "cg::sqrt is real-only; complex needs a branch choice the caller must make");
     if (detail::tensor_rank(*out) != detail::tensor_rank(A)) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::sqrt: rank mismatch - out rank={}, A rank={}", detail::tensor_rank(*out),
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::sqrt: rank mismatch - out rank={}, A rank={}", detail::tensor_rank(*out),
                                 detail::tensor_rank(A));
     }
     size_t const N = detail::tensor_rank(A);
     for (size_t k = 0; k < N; ++k) {
         if (out->dim(k) != A.dim(k)) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "cg::sqrt: axis {} - out dim {} does not match A dim {}", k, out->dim(k), A.dim(k));
+            EINSUMS_THROW_EXCEPTION(DimensionError, "cg::sqrt: axis {} - out dim {} does not match A dim {}", k, out->dim(k), A.dim(k));
         }
     }
 
@@ -1098,13 +1098,12 @@ APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<dou
         if (!reduced[k])
             kept.push_back(k);
     if (detail::tensor_rank(*out) != kept.size()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::sum_axes: out rank {} should be {} after summing {} of {} axes", detail::tensor_rank(*out),
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::sum_axes: out rank {} should be {} after summing {} of {} axes", detail::tensor_rank(*out),
                                 kept.size(), axes.size(), N);
     }
     for (size_t k = 0; k < kept.size(); ++k) {
         if (out->dim(k) != A.dim(kept[k])) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "cg::sum_axes: out axis {} has extent {}, expected {}", k, out->dim(k),
-                                    A.dim(kept[k]));
+            EINSUMS_THROW_EXCEPTION(DimensionError, "cg::sum_axes: out axis {} has extent {}, expected {}", k, out->dim(k), A.dim(kept[k]));
         }
     }
 
@@ -1209,7 +1208,7 @@ APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<std::complex<doub
     for (size_t k = 0; k < o_rank; ++k)
         o_total *= out->dim(k);
     if (a_total != o_total) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "cg::reshape: {} elements cannot be reshaped into {}", a_total, o_total);
+        EINSUMS_THROW_EXCEPTION(DimensionError, "cg::reshape: {} elements cannot be reshaped into {}", a_total, o_total);
     }
 
     auto apply = [a_rank, o_rank, a_total, row_major](ResultType *o, AType const *a) {
@@ -1294,14 +1293,14 @@ APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<std::complex<dou
     // clang-format on
     void diagonal(ResultType *out, AType const &A) {
     if (detail::tensor_rank(A) != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::diagonal: A must be rank 2, got rank {}", detail::tensor_rank(A));
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::diagonal: A must be rank 2, got rank {}", detail::tensor_rank(A));
     }
     if (detail::tensor_rank(*out) != 1) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::diagonal: out must be rank 1, got rank {}", detail::tensor_rank(*out));
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::diagonal: out must be rank 1, got rank {}", detail::tensor_rank(*out));
     }
     size_t const n = std::min(A.dim(0), A.dim(1));
     if (out->dim(0) != n) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "cg::diagonal: out has extent {}, expected {}", out->dim(0), n);
+        EINSUMS_THROW_EXCEPTION(DimensionError, "cg::diagonal: out has extent {}, expected {}", out->dim(0), n);
     }
 
     auto apply = [n](ResultType *o, AType const *a) {
@@ -1360,7 +1359,7 @@ APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::scatter_add: indices must be non-empty");
     }
     if (detail::tensor_rank(*dst) != N || detail::tensor_rank(src) != N) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::scatter_add: rank mismatch - dst rank={}, src rank={}, indices.size()={}",
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::scatter_add: rank mismatch - dst rank={}, src rank={}, indices.size()={}",
                                 detail::tensor_rank(*dst), detail::tensor_rank(src), N);
     }
     std::vector<size_t> extents(N);
@@ -1891,7 +1890,7 @@ void gemm(U const alpha, T const &A, T const &B, U const beta, T *C) {
 ///
 /// ``trans_a`` and ``trans_b`` (Python kwargs, default ``False``) request
 /// the transpose of the corresponding matrix. All three tensors must be
-/// rank 2; a clear ``rank_error`` is raised up front otherwise rather
+/// rank 2; a clear ``RankError`` is raised up front otherwise rather
 /// than letting the BLAS kernel fail mid-pipeline.
 ///
 /// A, B, C may be any combination of owning ``RuntimeTensor`` and
@@ -1950,7 +1949,7 @@ APIARY_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>
     // clang-format on
     void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C) {
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
 
     auto &ctx = CaptureContext::current();
@@ -2044,7 +2043,7 @@ APIARY_INSTANTIATE_AS("gemm", einsums::RuntimeTensorView<std::complex<double>>, 
               linear_algebra::Transpose trans_a = linear_algebra::Transpose::N,
               linear_algebra::Transpose trans_b = linear_algebra::Transpose::N) {
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
     char const ta = static_cast<char>(trans_a), tb = static_cast<char>(trans_b);
 
@@ -2119,7 +2118,7 @@ void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y)
 /// Graph-aware GEMV: ``y = alpha * op(A) * z + beta * y``.
 ///
 /// ``trans_a`` (Python kwarg, default ``False``) transposes A. A must be
-/// rank 2 and z, y must be rank 1; a ``rank_error`` is raised otherwise.
+/// rank 2 and z, y must be rank 1; a ``RankError`` is raised otherwise.
 template <bool TransA, RuntimeRankTensorConcept AType, RuntimeRankTensorConcept XType, RuntimeRankTensorConcept YType, typename U>
     requires(SameUnderlying<AType, XType, YType> && std::convertible_to<U, typename AType::ValueType>)
 // clang-format off
@@ -2168,7 +2167,7 @@ APIARY_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>
     // clang-format on
     void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
     if (A.rank() != 2 || z.rank() != 1 || y->rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::gemv requires A rank-2 and x/y rank-1; got {}, {}, {}.", A.rank(), z.rank(), y->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::gemv requires A rank-2 and x/y rank-1; got {}, {}, {}.", A.rank(), z.rank(), y->rank());
     }
 
     auto &ctx = CaptureContext::current();
@@ -2253,7 +2252,7 @@ APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<double>>, 
     void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y,
               linear_algebra::Transpose trans_a = linear_algebra::Transpose::N) {
     if (A.rank() != 2 || z.rank() != 1 || y->rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::gemv requires A rank-2 and x/y rank-1; got {}, {}, {}.", A.rank(), z.rank(), y->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::gemv requires A rank-2 and x/y rank-1; got {}, {}, {}.", A.rank(), z.rank(), y->rank());
     }
     char const ta = static_cast<char>(trans_a);
 
@@ -2367,7 +2366,7 @@ APIARY_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,  
     // clang-format on
     void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
     if (X.rank() != 1 || Y.rank() != 1 || A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::ger requires X/Y rank-1 and A rank-2; got {}, {}, {}.", X.rank(), Y.rank(), A->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::ger requires X/Y rank-1 and A rank-2; got {}, {}, {}.", X.rank(), Y.rank(), A->rank());
     }
 
     auto &ctx = CaptureContext::current();
@@ -2427,7 +2426,7 @@ APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<double>>, 
     // clang-format on
     void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
     if (X.rank() != 1 || Y.rank() != 1 || A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::gerc requires X/Y rank-1 and A rank-2; got {}, {}, {}.", X.rank(), Y.rank(), A->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::gerc requires X/Y rank-1 and A rank-2; got {}, {}, {}.", X.rank(), Y.rank(), A->rank());
     }
 
     auto &ctx = CaptureContext::current();
@@ -3128,7 +3127,7 @@ APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<doubl
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: must provide at least one vector");
     }
     if (result->rank() != N) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::outer_sum: result rank ({}) must equal number of vectors ({})", result->rank(), N);
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::outer_sum: result rank ({}) must equal number of vectors ({})", result->rank(), N);
     }
     // Capture-time checks: only rank and null. Dim matching is deferred to
     // execute time because views report their parent's dims at capture time,
@@ -3138,7 +3137,7 @@ APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<doubl
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: vector[{}] is null", k);
         }
         if (vectors[k]->rank() != 1) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "cg::outer_sum: vector[{}] must be rank-1; got rank {}", k, vectors[k]->rank());
+            EINSUMS_THROW_EXCEPTION(RankError, "cg::outer_sum: vector[{}] must be rank-1; got rank {}", k, vectors[k]->rank());
         }
     }
 
@@ -3350,7 +3349,7 @@ APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<do
         // tensor_rank, not rank(): statically-ranked tensors carry Rank as a
         // constant and have no rank() member.
         if (detail::tensor_rank(*a_list[i]) != 2 || detail::tensor_rank(*b_list[i]) != 2 || detail::tensor_rank(*c_list[i]) != 2) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "cg::batched_gemm: member {} is not rank 2 (got {}, {}, {})", i,
+            EINSUMS_THROW_EXCEPTION(RankError, "cg::batched_gemm: member {} is not rank 2 (got {}, {}, {})", i,
                                     detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]), detail::tensor_rank(*c_list[i]));
         }
     }
@@ -3536,7 +3535,7 @@ APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::co
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::batched_gemm_blocked: c_base is null");
     }
     if (detail::tensor_rank(*c_base) != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::batched_gemm_blocked: c_base is not rank 2 (got {})", detail::tensor_rank(*c_base));
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::batched_gemm_blocked: c_base is not rank 2 (got {})", detail::tensor_rank(*c_base));
     }
     if (c_rows == 0 || c_cols == 0) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::batched_gemm_blocked: block shape is {}x{}; neither may be zero", c_rows,
@@ -3565,7 +3564,7 @@ APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::co
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::batched_gemm_blocked: member {} has a null operand", i);
         }
         if (detail::tensor_rank(*a_list[i]) != 2 || detail::tensor_rank(*b_list[i]) != 2) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "cg::batched_gemm_blocked: member {} is not rank 2 (got {}, {})", i,
+            EINSUMS_THROW_EXCEPTION(RankError, "cg::batched_gemm_blocked: member {} is not rank 2 (got {}, {})", i,
                                     detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]));
         }
     }
@@ -3800,7 +3799,7 @@ APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::co
         // tensor_rank, not rank(): statically-ranked tensors carry Rank as a
         // constant and have no rank() member.
         if (detail::tensor_rank(*a_list[i]) != 2 || detail::tensor_rank(*b_list[i]) != 2 || detail::tensor_rank(*c_list[i]) != 2) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_batched_gemm: member {} is not rank 2 (got {}, {}, {})", i,
+            EINSUMS_THROW_EXCEPTION(RankError, "cg::grouped_batched_gemm: member {} is not rank 2 (got {}, {}, {})", i,
                                     detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]), detail::tensor_rank(*c_list[i]));
         }
 
@@ -4015,7 +4014,7 @@ APIARY_MODULE("graph")
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_batched_gemm_blocked: member {} has a null operand", i);
         }
         if (detail::tensor_rank(*a_list[i]) != 2 || detail::tensor_rank(*b_list[i]) != 2 || detail::tensor_rank(*c_bases[i]) != 2) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_batched_gemm_blocked: member {} is not rank 2 (got {}, {}, {})", i,
+            EINSUMS_THROW_EXCEPTION(RankError, "cg::grouped_batched_gemm_blocked: member {} is not rank 2 (got {}, {}, {})", i,
                                     detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]), detail::tensor_rank(*c_bases[i]));
         }
 
@@ -4340,11 +4339,11 @@ APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<dou
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_dot: entry {}'s result tensor must have at least one element", i);
         }
         if (detail::tensor_rank(*a_list[i]) != detail::tensor_rank(*b_list[i])) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_dot: entry {}'s operands disagree on rank ({} and {})", i,
+            EINSUMS_THROW_EXCEPTION(RankError, "cg::grouped_dot: entry {}'s operands disagree on rank ({} and {})", i,
                                     detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]));
         }
         if (detail::tensor_dims(*a_list[i]) != detail::tensor_dims(*b_list[i])) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "cg::grouped_dot: entry {}'s operands disagree on shape", i);
+            EINSUMS_THROW_EXCEPTION(DimensionError, "cg::grouped_dot: entry {}'s operands disagree on shape", i);
         }
     }
 
@@ -4471,11 +4470,11 @@ APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<std::complex<d
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_axpby: entry {} has a null operand", i);
         }
         if (detail::tensor_rank(*x_list[i]) != detail::tensor_rank(*y_list[i])) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_axpby: entry {}'s operands disagree on rank ({} and {})", i,
+            EINSUMS_THROW_EXCEPTION(RankError, "cg::grouped_axpby: entry {}'s operands disagree on rank ({} and {})", i,
                                     detail::tensor_rank(*x_list[i]), detail::tensor_rank(*y_list[i]));
         }
         if (detail::tensor_dims(*x_list[i]) != detail::tensor_dims(*y_list[i])) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "cg::grouped_axpby: entry {}'s operands disagree on shape", i);
+            EINSUMS_THROW_EXCEPTION(DimensionError, "cg::grouped_axpby: entry {}'s operands disagree on shape", i);
         }
     }
 
@@ -4681,7 +4680,7 @@ APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<std::complex
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_permute: member {} has a null operand", i);
         }
         if (detail::tensor_rank(*a_list[i]) != parsed.a_indices.size() || detail::tensor_rank(*c_list[i]) != parsed.c_indices.size()) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_permute: member {} has ranks ({}, {}) where the spec wants ({}, {})", i,
+            EINSUMS_THROW_EXCEPTION(RankError, "cg::grouped_permute: member {} has ranks ({}, {}) where the spec wants ({}, {})", i,
                                     detail::tensor_rank(*c_list[i]), detail::tensor_rank(*a_list[i]), parsed.c_indices.size(),
                                     parsed.a_indices.size());
         }
@@ -4772,11 +4771,11 @@ void grouped_binary_elementwise(char const *who, OpKind kind, char const *label,
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: member {} has a null operand", who, i);
         }
         if (tensor_rank(*a_list[i]) != tensor_rank(*b_list[i]) || tensor_rank(*a_list[i]) != tensor_rank(*c_list[i])) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "{}: member {}'s operands disagree on rank ({}, {} and {})", who, i,
-                                    tensor_rank(*a_list[i]), tensor_rank(*b_list[i]), tensor_rank(*c_list[i]));
+            EINSUMS_THROW_EXCEPTION(RankError, "{}: member {}'s operands disagree on rank ({}, {} and {})", who, i, tensor_rank(*a_list[i]),
+                                    tensor_rank(*b_list[i]), tensor_rank(*c_list[i]));
         }
         if (tensor_dims(*a_list[i]) != tensor_dims(*b_list[i]) || tensor_dims(*a_list[i]) != tensor_dims(*c_list[i])) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "{}: member {}'s operands disagree on shape", who, i);
+            EINSUMS_THROW_EXCEPTION(DimensionError, "{}: member {}'s operands disagree on shape", who, i);
         }
     }
     require_distinct_destinations(c_list, who);
@@ -5110,7 +5109,7 @@ APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::RuntimeTensorView<float>, ein
         auto const &si = s_list[i]->impl();
         auto const &ci = c_list[i]->impl();
         if (ai.rank() != 3 || mi.rank() != 3 || pi.rank() != 2 || si.rank() != 2 || ci.rank() != 2) {
-            EINSUMS_THROW_EXCEPTION(rank_error,
+            EINSUMS_THROW_EXCEPTION(RankError,
                                     "cg::grouped_sandwich: entry {} wants ranks (A, M, P, S, C) = (3, 3, 2, 2, 2); got "
                                     "({}, {}, {}, {}, {})",
                                     i, ai.rank(), mi.rank(), pi.rank(), si.rank(), ci.rank());
@@ -5118,7 +5117,7 @@ APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::RuntimeTensorView<float>, ein
         size_t const nq = ai.dim(0), na = ai.dim(1), nk = mi.dim(1);
         if (ai.dim(2) != na || mi.dim(0) != nq || mi.dim(2) != na || si.dim(0) != na || si.dim(1) != na || ci.dim(0) != na ||
             ci.dim(1) != na || (nk != 0 && (pi.dim(0) != nk || pi.dim(1) != na))) {
-            EINSUMS_THROW_EXCEPTION(dimension_error,
+            EINSUMS_THROW_EXCEPTION(DimensionError,
                                     "cg::grouped_sandwich: entry {}'s shapes disagree: A ({}, {}, {}), M ({}, {}, {}), P ({}, {}), "
                                     "S ({}, {}), C ({}, {})",
                                     i, ai.dim(0), ai.dim(1), ai.dim(2), mi.dim(0), mi.dim(1), mi.dim(2), pi.dim(0), pi.dim(1), si.dim(0),
@@ -5444,7 +5443,7 @@ APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<float>
                                 q_list.size(), u_list.size(), x_list.size());
     }
     if (detail::tensor_rank(src) != 3) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_gather_rotate: the source must be rank 3, got {}", detail::tensor_rank(src));
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::grouped_gather_rotate: the source must be rank 3, got {}", detail::tensor_rank(src));
     }
     size_t const NQ = src.dim(0), NU1 = src.dim(1), NU2 = src.dim(2);
 
@@ -5456,12 +5455,12 @@ APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<float>
         auto const  &xi = x_list[i]->impl();
         size_t const nq = q_list[i].size(), nu = u_list[i].size();
         if (ci.rank() != 3 || xi.rank() != 2) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "cg::grouped_gather_rotate: entry {} wants ranks (C, X) = (3, 2); got ({}, {})", i,
+            EINSUMS_THROW_EXCEPTION(RankError, "cg::grouped_gather_rotate: entry {} wants ranks (C, X) = (3, 2); got ({}, {})", i,
                                     ci.rank(), xi.rank());
         }
         size_t const nt = xi.dim(1);
         if (xi.dim(0) != nu || ci.dim(0) != nq || ci.dim(1) != nt || ci.dim(2) != nt) {
-            EINSUMS_THROW_EXCEPTION(dimension_error,
+            EINSUMS_THROW_EXCEPTION(DimensionError,
                                     "cg::grouped_gather_rotate: entry {}'s shapes disagree: {} q indices, {} u indices, X ({}, {}), "
                                     "C ({}, {}, {})",
                                     i, nq, nu, xi.dim(0), xi.dim(1), ci.dim(0), ci.dim(1), ci.dim(2));
@@ -5780,7 +5779,7 @@ APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double
     detail::reject_if_capturing("cg::trace(A) returning scalar cannot be used during graph capture. "
                                 "Use cg::trace(&result, A) instead.");
     if (A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::trace: input must be rank-2; got rank {}.", A.rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::trace: input must be rank-2; got rank {}.", A.rank());
     }
     if (A.dim(0) != A.dim(1)) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
@@ -5877,7 +5876,7 @@ APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: result tensor must have at least one element");
     }
     if (A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::trace: input must be rank-2; got rank {}.", A.rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::trace: input must be rank-2; got rank {}.", A.rank());
     }
     if (A.dim(0) != A.dim(1)) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
@@ -5970,7 +5969,7 @@ APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<do
     // clang-format on
     void symm_gemm(AType const &A, BType const &B, CType *C, bool conjugate = false) {
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
     // conjugate=true computes the Hermitian congruence op(B)^H op(A) op(B); the
     // default is the bilinear op(B)^T op(A) op(B). For real dtypes they coincide.
@@ -6090,7 +6089,7 @@ APIARY_INSTANTIATE_BOOLS("syev", einsums::RuntimeTensorView<double>, einsums::Ge
     // clang-format on
     void syev(AType *A, WType *W) {
     if (A->rank() != 2 || W->rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::syev requires A rank-2 and W rank-1; got {}, {}.", A->rank(), W->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::syev requires A rank-2 and W rank-1; got {}, {}.", A->rank(), W->rank());
     }
 
     auto &ctx = CaptureContext::current();
@@ -6147,7 +6146,7 @@ APIARY_INSTANTIATE_BOOLS("syev_eig", einsums::GeneralRuntimeTensor<double, std::
     detail::reject_if_capturing("cg::syev(A) returning form cannot be used during graph capture. "
                                 "Use the in-place form cg::syev(&A, &W) instead.");
     if (A.rank() != 2 || A.dim(0) != A.dim(1)) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::syev requires square rank-2 input; got dims ({}, {}).", A.rank() >= 1 ? A.dim(0) : 0,
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::syev requires square rank-2 input; got dims ({}, {}).", A.rank() >= 1 ? A.dim(0) : 0,
                                 A.rank() >= 2 ? A.dim(1) : 0);
     }
 
@@ -6210,7 +6209,7 @@ APIARY_INSTANTIATE_BOOLS("heev", einsums::RuntimeTensorView<std::complex<double>
     // clang-format on
     void heev(AType *A, WType *W) {
     if (A->rank() != 2 || W->rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::heev requires A rank-2 and W rank-1; got {}, {}.", A->rank(), W->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::heev requires A rank-2 and W rank-1; got {}, {}.", A->rank(), W->rank());
     }
 
     auto &ctx = CaptureContext::current();
@@ -6370,7 +6369,7 @@ APIARY_INSTANTIATE_AS("gesv", einsums::GeneralRuntimeTensor<std::complex<double>
     // clang-format on
     auto gesv(AType *A, BType *B) -> int {
     if (A->rank() != 2 || (B->rank() != 1 && B->rank() != 2)) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::gesv requires A rank-2 and B rank-1 or rank-2; got {}, {}.", A->rank(), B->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::gesv requires A rank-2 and B rank-1 or rank-2; got {}, {}.", A->rank(), B->rank());
     }
 
     auto &ctx = CaptureContext::current();
@@ -6456,7 +6455,7 @@ APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     auto getrf(AType *A, LuPivots *pivots) -> int {
     if (A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::getrf requires a rank-2 tensor; got rank {}.", A->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::getrf requires a rank-2 tensor; got rank {}.", A->rank());
     }
 
     auto       &ctx    = CaptureContext::current();
@@ -6531,7 +6530,7 @@ APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<std::complex<double
     // clang-format on
     auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
     if (A.rank() != 2 || (B->rank() != 1 && B->rank() != 2)) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::getrs requires A rank-2 and B rank-1 or rank-2; got {}, {}.", A.rank(), B->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::getrs requires A rank-2 and B rank-1 or rank-2; got {}, {}.", A.rank(), B->rank());
     }
 
     auto       &ctx    = CaptureContext::current();
@@ -6705,7 +6704,7 @@ void invert(AType *A) {
 /// In-place matrix inverse: ``A := A^-1``.
 ///
 /// ``A`` must be rank 2 and square. Internally calls ``getrf`` followed
-/// by ``getri``; raises ``rank_error`` if the input rank is wrong and
+/// by ``getri``; raises ``RankError`` if the input rank is wrong and
 /// the LAPACK kernel raises if ``A`` is singular.
 template <RuntimeRankTensorConcept AType>
 // clang-format off
@@ -6718,7 +6717,7 @@ APIARY_INSTANTIATE_AS("invert", einsums::GeneralRuntimeTensor<std::complex<doubl
     // clang-format on
     void invert(AType *A) {
     if (A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::invert requires rank-2 tensor; got rank {}.", A->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::invert requires rank-2 tensor; got rank {}.", A->rank());
     }
 
     auto &ctx = CaptureContext::current();
@@ -6770,7 +6769,7 @@ APIARY_INSTANTIATE_AS("svd", einsums::GeneralRuntimeTensor<std::complex<double>,
         einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
     detail::reject_if_capturing("cg::svd(A) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::svd requires rank-2 input; got rank {}.", A.rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::svd requires rank-2 input; got rank {}.", A.rank());
     }
 
     using T  = typename AType::ValueType;
@@ -6820,7 +6819,7 @@ APIARY_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<std::complex<doubl
         einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
     detail::reject_if_capturing("cg::svd_dd(A) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::svd_dd requires rank-2 input; got rank {}.", A.rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::svd_dd requires rank-2 input; got rank {}.", A.rank());
     }
 
     using T  = typename AType::ValueType;
@@ -6874,7 +6873,7 @@ APIARY_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<std::comple
         einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
     detail::reject_if_capturing("cg::truncated_svd(A, k) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::truncated_svd requires rank-2 input; got rank {}.", A.rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::truncated_svd requires rank-2 input; got rank {}.", A.rank());
     }
 
     using T  = typename AType::ValueType;
@@ -6926,7 +6925,7 @@ APIARY_INSTANTIATE_AS("truncated_syev", einsums::GeneralRuntimeTensor<double, st
                       einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
     detail::reject_if_capturing("cg::truncated_syev(A, k) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::truncated_syev requires rank-2 input; got rank {}.", A.rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::truncated_syev requires rank-2 input; got rank {}.", A.rank());
     }
 
     using T  = typename AType::ValueType;
@@ -6968,7 +6967,7 @@ APIARY_INSTANTIATE_AS("qr", einsums::GeneralRuntimeTensor<std::complex<double>, 
                       einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
     detail::reject_if_capturing("cg::qr(A) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::qr requires rank-2 input; got rank {}.", A.rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::qr requires rank-2 input; got rank {}.", A.rank());
     }
 
     using T  = typename AType::ValueType;
@@ -7012,7 +7011,7 @@ APIARY_INSTANTIATE_AS("pow", einsums::GeneralRuntimeTensor<double, std::allocato
         -> einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>> {
     detail::reject_if_capturing("cg::pow(A, alpha) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::pow requires rank-2 input; got rank {}.", A.rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::pow requires rank-2 input; got rank {}.", A.rank());
     }
 
     using T  = typename AType::ValueType;
@@ -7052,7 +7051,7 @@ APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<std::complex<double>,
     auto det(AType const &A) -> typename AType::ValueType {
     detail::reject_if_capturing("cg::det(A) returning scalar cannot be used during graph capture.");
     if (A.rank() != 2 || A.dim(0) != A.dim(1)) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::det requires square rank-2 input; got rank {}.", A.rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::det requires square rank-2 input; got rank {}.", A.rank());
     }
 
     using T                        = typename AType::ValueType;

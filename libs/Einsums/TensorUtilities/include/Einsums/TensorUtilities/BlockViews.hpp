@@ -35,7 +35,7 @@ EINSUMS_NAMESPACE_BEGIN()
 template <CoreBlockTensorConcept TensorType, ContainerOf<Range> Spec>
 auto apply_view(TensorType const &tensor, Spec const &spec) {
     if (spec.size() > tensor.num_blocks()) {
-        EINSUMS_THROW_EXCEPTION(num_argument_error, "Can not apply view specification to block tensor. Incorrect number of indices given.");
+        EINSUMS_THROW_EXCEPTION(NumArgumentError, "Can not apply view specification to block tensor. Incorrect number of indices given.");
     }
 
     BufferVector<int64_t> sizes(spec.size());
@@ -98,7 +98,7 @@ template <CoreBlockTensorConcept TensorType, ContainerOf<Range>... ViewSpec>
     }
 auto apply_view(TensorType const &tensor, ViewSpec &&...spec) {
     if (((spec.size() > tensor.num_blocks()) || ...)) {
-        EINSUMS_THROW_EXCEPTION(num_argument_error, "Can not apply view specification to block tensor. Incorrect number of indices given.");
+        EINSUMS_THROW_EXCEPTION(NumArgumentError, "Can not apply view specification to block tensor. Incorrect number of indices given.");
     }
 
     auto spec_array = std::array{std::forward<ViewSpec>(spec)...};
@@ -174,7 +174,7 @@ auto apply_view(TensorType const &tensor, ViewSpec &&...spec) {
 
     for (int i = 0; i < TensorType::Rank; i++) {
         if (spec_array[i].size() > tensor.grid_size(i)) {
-            EINSUMS_THROW_EXCEPTION(num_argument_error,
+            EINSUMS_THROW_EXCEPTION(NumArgumentError,
                                     "Can not apply view specification to tiled tensor. Incorrect number of indices given.");
         }
     }

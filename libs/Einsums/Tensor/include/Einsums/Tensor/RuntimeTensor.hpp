@@ -1940,8 +1940,7 @@ struct APIARY_EXPOSE
     template <size_t Rank>
     operator TensorView<T, Rank>() {
         if (rank() != Rank) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Can not convert a rank-{} RuntimeTensorView into a rank-{} TensorView!", rank(),
-                                    Rank);
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Can not convert a rank-{} RuntimeTensorView into a rank-{} TensorView!", rank(), Rank);
         }
 
         return TensorView<T, Rank>(_impl, _storage_ref);
@@ -1950,8 +1949,7 @@ struct APIARY_EXPOSE
     template <size_t Rank>
     operator TensorView<T, Rank>() const {
         if (rank() != Rank) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Can not convert a rank-{} RuntimeTensorView into a rank-{} TensorView!", rank(),
-                                    Rank);
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Can not convert a rank-{} RuntimeTensorView into a rank-{} TensorView!", rank(), Rank);
         }
 
         return TensorView<T, Rank>(_impl, _storage_ref);
@@ -1960,8 +1958,7 @@ struct APIARY_EXPOSE
     template <size_t Rank, typename Alloc>
     operator GeneralTensor<T, Rank, Alloc>() const {
         if (rank() != Rank) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Can not convert a rank-{} RuntimeTensorView into a rank-{} TensorView!", rank(),
-                                    Rank);
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Can not convert a rank-{} RuntimeTensorView into a rank-{} TensorView!", rank(), Rank);
         }
 
         return TensorView<T, Rank>(_impl, _storage_ref);

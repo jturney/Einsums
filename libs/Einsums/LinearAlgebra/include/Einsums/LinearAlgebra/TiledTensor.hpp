@@ -38,7 +38,7 @@ void sum_square(AType const &A, T *scale, T *sumsq) {
 template <typename T>
 [[nodiscard]] T dot(TiledRuntimeTensor<T> const &A, TiledRuntimeTensor<T> const &B) {
     if (A.dims() != B.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "dot: tiled tensors have different dimensions");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "dot: tiled tensors have different dimensions");
     }
 
     T out{0};
@@ -63,7 +63,7 @@ auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueTy
 
     for (int i = 0; i < Rank; i++) {
         if (A.grid_size(i) != B.grid_size(i)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Tiled tensors have incompatible tiles.");
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "Tiled tensors have incompatible tiles.");
         }
 
         strides[Rank - 1 - i] = prod;
@@ -101,7 +101,7 @@ auto true_dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::Va
 
     for (int i = 0; i < Rank; i++) {
         if (A.grid_size(i) != B.grid_size(i)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Tiled tensors have incompatible tiles.");
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "Tiled tensors have incompatible tiles.");
         }
 
         strides[Rank - 1 - i] = prod;
@@ -144,24 +144,24 @@ void gemm(char transA, char transB, U const alpha, AType const &A, BType const &
     }
     // Check for compatibility.
     if (C->grid_size(0) != A.grid_size(tA ? 1 : 0) || C->grid_size(1) != B.grid_size(tB ? 0 : 1)) {
-        EINSUMS_THROW_CODED_EXCEPTION(tensor_compat_error, 0, "Output tensor needs to have a compatible tile grid with the inputs.");
+        EINSUMS_THROW_CODED_EXCEPTION(TensorCompatError, 0, "Output tensor needs to have a compatible tile grid with the inputs.");
     }
     if (A.grid_size(tA ? 0 : 1) != B.grid_size(tB ? 1 : 0)) {
-        EINSUMS_THROW_CODED_EXCEPTION(tensor_compat_error, 1, "Input tensors need to have compatible tile grids.");
+        EINSUMS_THROW_CODED_EXCEPTION(TensorCompatError, 1, "Input tensors need to have compatible tile grids.");
     }
     for (int i = 0; i < C->grid_size(0); i++) {
         if (C->tile_size(0)[i] != A.tile_size(tA ? 1 : 0)[i]) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Tile sizes need to match between all three tensors.");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Tile sizes need to match between all three tensors.");
         }
     }
     for (int i = 0; i < C->grid_size(1); i++) {
         if (C->tile_size(1)[i] != B.tile_size(tB ? 0 : 1)[i]) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Tile sizes need to match between all three tensors.");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Tile sizes need to match between all three tensors.");
         }
     }
     for (int i = 0; i < A.grid_size(tA ? 0 : 1); i++) {
         if (A.tile_size(tA ? 0 : 1)[i] != B.tile_size(tB ? 1 : 0)[i]) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "Tile sizes need to match between all three tensors.");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "Tile sizes need to match between all three tensors.");
         }
     }
     int x_size = C->grid_size(0), y_size = C->grid_size(1), z_size = A.grid_size(tA ? 0 : 1);
@@ -262,22 +262,22 @@ void gemv(char transA, U const alpha, AType const &A, XType const &z, U const be
     if constexpr (IsTiledTensorV<XType>) {
         if (transA) {
             if (A.tile_sizes(0) != z.tile_sizes(0)) {
-                EINSUMS_THROW_CODED_EXCEPTION(tensor_compat_error, 0, "Tiled tensors need to have compatible tile sizes.");
+                EINSUMS_THROW_CODED_EXCEPTION(TensorCompatError, 0, "Tiled tensors need to have compatible tile sizes.");
             }
         } else {
             if (A.tile_sizes(1) != z.tile_sizes(0)) {
-                EINSUMS_THROW_CODED_EXCEPTION(tensor_compat_error, 0, "Tiled tensors need to have compatible tile sizes.");
+                EINSUMS_THROW_CODED_EXCEPTION(TensorCompatError, 0, "Tiled tensors need to have compatible tile sizes.");
             }
         }
     }
     if constexpr (IsTiledTensorV<YType>) {
         if (trans) {
             if (A.tile_sizes(1) != y->tile_sizes(0)) {
-                EINSUMS_THROW_CODED_EXCEPTION(tensor_compat_error, 1, "Tiled tensors need to have compatible tile sizes.");
+                EINSUMS_THROW_CODED_EXCEPTION(TensorCompatError, 1, "Tiled tensors need to have compatible tile sizes.");
             }
         } else {
             if (A.tile_sizes(0) != y->tile_sizes(0)) {
-                EINSUMS_THROW_CODED_EXCEPTION(tensor_compat_error, 1, "Tiled tensors need to have compatible tile sizes.");
+                EINSUMS_THROW_CODED_EXCEPTION(TensorCompatError, 1, "Tiled tensors need to have compatible tile sizes.");
             }
         }
     }
@@ -407,7 +407,7 @@ template <TiledTensorConcept AType, TiledTensorConcept XYType>
     }
 void ger(typename AType::ValueType alpha, XYType const &X, XYType const &Y, AType *A) {
     if (A->grid_size(0) != X.grid_size(0) && A->grid_size(1) != Y.grid_size(0)) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Tiled tensors have incompatible grids!");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "Tiled tensors have incompatible grids!");
     }
 
 #pragma omp parallel for collapse(2)
@@ -433,7 +433,7 @@ template <TiledTensorConcept AType, TiledTensorConcept XYType>
     }
 void gerc(typename AType::ValueType alpha, XYType const &X, XYType const &Y, AType *A) {
     if (A->grid_size(0) != X.grid_size(0) && A->grid_size(1) != Y.grid_size(0)) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "Tiled tensors have incompatible grids!");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "Tiled tensors have incompatible grids!");
     }
 
 #pragma omp parallel for collapse(2)

@@ -42,7 +42,7 @@ void check_size(Tensor<T, 1> const &a, Tensor<std::complex<T>, 1> const *result)
     if (result->dim(0) >= a.dim(0) / 2 + 1)
         return;
 
-    EINSUMS_THROW_EXCEPTION(dimension_error, "fft called with too small result tensor size\nsize of \"{}\" is {}\nsize of \"{}\" is {}",
+    EINSUMS_THROW_EXCEPTION(DimensionError, "fft called with too small result tensor size\nsize of \"{}\" is {}\nsize of \"{}\" is {}",
                             a.name(), a.dim(0), result->name(), result->dim(0));
 }
 
@@ -51,7 +51,7 @@ void icheck_size(Tensor<std::complex<T>, 1> const &a, Tensor<T, 1> const *result
     if (a.dim(0) >= result->dim(0) / 2 + 1)
         return;
 
-    EINSUMS_THROW_EXCEPTION(dimension_error, "fft called with too small result tensor size\nsize of \"{}\" is {}\nsize of \"{}\" is {}",
+    EINSUMS_THROW_EXCEPTION(DimensionError, "fft called with too small result tensor size\nsize of \"{}\" is {}\nsize of \"{}\" is {}",
                             a.name(), a.dim(0), result->name(), result->dim(0));
 }
 
@@ -60,7 +60,7 @@ void check_size(Tensor<std::complex<T>, 1> const &a, Tensor<std::complex<T>, 1> 
     if (result->dim(0) >= a.dim(0))
         return;
 
-    EINSUMS_THROW_EXCEPTION(dimension_error, "fft called with too small result tensor size\nsize of \"{}\" is {}\nsize of \"{}\" is {}",
+    EINSUMS_THROW_EXCEPTION(DimensionError, "fft called with too small result tensor size\nsize of \"{}\" is {}\nsize of \"{}\" is {}",
                             a.name(), a.dim(0), result->name(), result->dim(0));
 }
 
@@ -69,7 +69,7 @@ void icheck_size(Tensor<std::complex<T>, 1> const &a, Tensor<std::complex<T>, 1>
     if (a.dim(0) >= result->dim(0))
         return;
 
-    EINSUMS_THROW_EXCEPTION(dimension_error, "fft called with too small result tensor size\nsize of \"{}\" is {}\nsize of \"{}\" is {}",
+    EINSUMS_THROW_EXCEPTION(DimensionError, "fft called with too small result tensor size\nsize of \"{}\" is {}\nsize of \"{}\" is {}",
                             a.name(), a.dim(0), result->name(), result->dim(0));
 }
 } // namespace

@@ -76,5 +76,5 @@ TEST_CASE("RuntimeTensor gemv — rank-error on non-matrix A", "[linear-algebra]
     RuntimeTensor<double> x("x", {3});
     RuntimeTensor<double> y("y", {3});
 
-    REQUIRE_THROWS_AS((linear_algebra::gemv<false>(1.0, A, x, 0.0, &y)), einsums::rank_error);
+    REQUIRE_THROWS_AS((linear_algebra::gemv<false>(1.0, A, x, 0.0, &y)), einsums::RankError);
 }

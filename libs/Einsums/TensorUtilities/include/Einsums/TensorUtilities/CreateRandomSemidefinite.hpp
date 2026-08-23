@@ -42,7 +42,7 @@ auto create_random_semidefinite(std::string const &name, int rows, int cols, Rem
                                 int force_zeros = 1) -> Tensor<T, 2> {
     using Real = RemoveComplexT<T>;
     if (rows != cols) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can only make square positive definite matrices.");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can only make square positive definite matrices.");
     }
     Tensor<T, 2> Evecs("name", rows, cols);
 

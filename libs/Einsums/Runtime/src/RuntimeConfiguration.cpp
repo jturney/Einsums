@@ -57,7 +57,7 @@ std::string get_executable_filename() {
 #if defined(EINSUMS_WINDOWS)
     char exe_path[MAX_PATH + 1] = {'\0'};
     if (!GetModuleFileNameA(nullptr, exe_path, sizeof(exe_path))) {
-        EINSUMS_THROW_EXCEPTION(system_error, "unable to find executable filename");
+        EINSUMS_THROW_EXCEPTION(SystemError, "unable to find executable filename");
     }
     r = exe_path;
 #elif defined(__linux) || defined(linux) || defined(__linux__)
@@ -71,7 +71,7 @@ std::string get_executable_filename() {
     std::uint32_t len = sizeof(exe_path) / sizeof(exe_path[0]);
 
     if (0 != _NSGetExecutablePath(exe_path, &len)) {
-        EINSUMS_THROW_EXCEPTION(system_error, "unable to find executable filename");
+        EINSUMS_THROW_EXCEPTION(SystemError, "unable to find executable filename");
     }
     exe_path[len - 1] = '\0';
     r                 = exe_path;

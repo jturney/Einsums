@@ -129,7 +129,7 @@ TEST_CASE("gather rejects mismatched shapes and bad indices", "[compute-graph][g
 
     SECTION("rank mismatch") {
         auto out = create_zero_tensor<double>("out", size_t{2});
-        REQUIRE_THROWS_AS(compute_graph::gather(&out, A, {std::vector<size_t>{0, 1}, whole(4)}), rank_error);
+        REQUIRE_THROWS_AS(compute_graph::gather(&out, A, {std::vector<size_t>{0, 1}, whole(4)}), RankError);
     }
 
     SECTION("empty indices") {
@@ -313,7 +313,7 @@ TEST_CASE("reshape order is explicit, and the two differ", "[compute-graph][gath
 
     SECTION("element count must be preserved") {
         auto bad = create_zero_tensor<double>("bad", 4, 2);
-        REQUIRE_THROWS_AS(compute_graph::reshape(&bad, A, true), dimension_error);
+        REQUIRE_THROWS_AS(compute_graph::reshape(&bad, A, true), DimensionError);
     }
 }
 

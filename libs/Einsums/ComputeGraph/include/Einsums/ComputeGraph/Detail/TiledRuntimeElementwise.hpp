@@ -268,7 +268,7 @@ T tiled_dotc(TiledRuntimeTensor<T> const &A, TiledRuntimeTensor<T> const &B) {
 template <typename T>
 T tiled_trace(TiledRuntimeTensor<T> const &A) {
     if (A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "cg::trace (tiled): input must be rank-2; got rank {}.", A.rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::trace (tiled): input must be rank-2; got rank {}.", A.rank());
     }
     if (A.tile_sizes()[0] != A.tile_sizes()[1]) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace (tiled): the two axes must share the same tile partition (square grid)");
@@ -322,7 +322,7 @@ RemoveComplexT<T> tiled_norm(linear_algebra::Norm norm_type, TiledRuntimeTensor<
 template <typename T, typename WT, typename BlockOp>
 void tiled_eig_impl(TiledRuntimeTensor<T> *A, TiledRuntimeTensor<WT> *W, BlockOp block_op, char const *name) {
     if (A->rank() != 2 || W->rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "{}: A must be rank-2 and W rank-1; got {}, {}.", name, A->rank(), W->rank());
+        EINSUMS_THROW_EXCEPTION(RankError, "{}: A must be rank-2 and W rank-1; got {}, {}.", name, A->rank(), W->rank());
     }
     if (A->tile_sizes()[0] != A->tile_sizes()[1]) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: the two axes must share the same tile partition (square grid)", name);

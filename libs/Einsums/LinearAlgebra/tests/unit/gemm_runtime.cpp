@@ -132,5 +132,5 @@ TEST_CASE("RuntimeTensor gemm — rank mismatch surfaces a clean error", "[linea
     RuntimeTensor<double> B("B", {3, 3});
     RuntimeTensor<double> C("C", {3, 3});
 
-    REQUIRE_THROWS_AS((linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C)), einsums::rank_error);
+    REQUIRE_THROWS_AS((linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C)), einsums::RankError);
 }

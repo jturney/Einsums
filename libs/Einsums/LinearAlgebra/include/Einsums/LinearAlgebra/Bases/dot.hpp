@@ -124,11 +124,11 @@ BiggestTypeT<T, TOther> impl_dot(einsums::detail::TensorImpl<T> const &in, einsu
     LabeledSection0();
 
     if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can not dot two tensors of different ranks!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not dot two tensors of different ranks!");
     }
 
     if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can not add two tensors with different sizes!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not add two tensors with different sizes!");
     }
 
     // Lock-step traversal needs identical memory layouts; the is_column_major()
@@ -255,11 +255,11 @@ BiggestTypeT<T, TOther> impl_true_dot(einsums::detail::TensorImpl<T> const &in, 
     LabeledSection0();
 
     if (in.rank() != out.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can not dot two tensors of different ranks!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not dot two tensors of different ranks!");
     }
 
     if (in.dims() != out.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can not add two tensors with different sizes!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not add two tensors with different sizes!");
     }
 
     // Lock-step traversal needs identical memory layouts; the is_column_major()
@@ -395,11 +395,11 @@ BiggestTypeT<A, B, C> impl_dot(einsums::detail::TensorImpl<A> const &a, einsums:
     LabeledSection0();
 
     if (a.rank() != b.rank() || a.rank() != c.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can not dot three tensors of different ranks!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can not dot three tensors of different ranks!");
     }
 
     if (a.dims() != b.dims() || a.dims() != c.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can not add three tensors with different sizes!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can not add three tensors with different sizes!");
     }
 
     // Lock-step traversal needs identical memory layouts; flags are too coarse

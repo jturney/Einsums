@@ -124,7 +124,7 @@ void einsum_runtime_check(ValueTypeT<CType> const C_prefactor, std::tuple<CIndic
     });
 
     if (runtime_indices_abort) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Inconsistent dimensions found!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Inconsistent dimensions found!");
     }
 }
 
@@ -1779,7 +1779,7 @@ void einsum(CPrefactorType const C_prefactor, std::tuple<CIndices...> const &C_i
             std::tuple<AIndices...> const &A_indices, AType const &A_list, std::tuple<BIndices...> const &B_indices, BType const &B_list,
             detail::AlgorithmChoice *algorithm_choice) {
     if (C_list->size() != A_list.size() || C_list->size() != B_list.size()) {
-        EINSUMS_THROW_EXCEPTION(bad_logic, "Lists passed to batched einsum call do not have the same size!");
+        EINSUMS_THROW_EXCEPTION(BadLogic, "Lists passed to batched einsum call do not have the same size!");
     }
 
     if (C_list->size() == 0) {

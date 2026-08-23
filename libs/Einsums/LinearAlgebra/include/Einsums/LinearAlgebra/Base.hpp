@@ -53,7 +53,7 @@ void gemm(char transA, char transB, AlphaType const alpha, einsums::detail::Tens
     char const tA = std::tolower(transA), tB = std::tolower(transB);
     // Check for gemmability.
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The inputs to gemm need to be matrices! Got ranks {}, {}, and {}.", A.rank(), B.rank(),
+        EINSUMS_THROW_EXCEPTION(RankError, "The inputs to gemm need to be matrices! Got ranks {}, {}, and {}.", A.rank(), B.rank(),
                                 C->rank());
     }
 
@@ -64,51 +64,51 @@ void gemm(char transA, char transB, AlphaType const alpha, einsums::detail::Tens
     }
     if (tA == 'n' && tB == 'n') {
         if (A.dim(1) != B.dim(0)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The link dimensions do not match! Got {} and {}.", A.dim(1), B.dim(0));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The link dimensions do not match! Got {} and {}.", A.dim(1), B.dim(0));
         }
 
         if (A.dim(0) != C->dim(0)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The first target dimensions do not match! Got {} and {}.", A.dim(0), C->dim(0));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The first target dimensions do not match! Got {} and {}.", A.dim(0), C->dim(0));
         }
 
         if (B.dim(1) != C->dim(1)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The second target dimensions do not match! Got {} and {}.", B.dim(1), C->dim(1));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The second target dimensions do not match! Got {} and {}.", B.dim(1), C->dim(1));
         }
     } else if (tA != 'n' && tB == 'n') {
         if (A.dim(0) != B.dim(0)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The link dimensions do not match! Got {} and {}.", A.dim(0), B.dim(0));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The link dimensions do not match! Got {} and {}.", A.dim(0), B.dim(0));
         }
 
         if (A.dim(1) != C->dim(0)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The first target dimensions do not match! Got {} and {}.", A.dim(1), C->dim(0));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The first target dimensions do not match! Got {} and {}.", A.dim(1), C->dim(0));
         }
 
         if (B.dim(1) != C->dim(1)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The second target dimensions do not match! Got {} and {}.", B.dim(1), C->dim(1));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The second target dimensions do not match! Got {} and {}.", B.dim(1), C->dim(1));
         }
     } else if (tA == 'n' && tB != 'n') {
         if (A.dim(1) != B.dim(1)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The link dimensions do not match! Got {} and {}.", A.dim(1), B.dim(1));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The link dimensions do not match! Got {} and {}.", A.dim(1), B.dim(1));
         }
 
         if (A.dim(0) != C->dim(0)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The first target dimensions do not match! Got {} and {}.", A.dim(0), C->dim(0));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The first target dimensions do not match! Got {} and {}.", A.dim(0), C->dim(0));
         }
 
         if (B.dim(0) != C->dim(1)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The second target dimensions do not match! Got {} and {}.", B.dim(0), C->dim(1));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The second target dimensions do not match! Got {} and {}.", B.dim(0), C->dim(1));
         }
     } else if (tA != 'n' && tB != 'n') {
         if (A.dim(0) != B.dim(1)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The link dimensions do not match! Got {} and {}.", A.dim(0), B.dim(1));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The link dimensions do not match! Got {} and {}.", A.dim(0), B.dim(1));
         }
 
         if (A.dim(1) != C->dim(0)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The first target dimensions do not match! Got {} and {}.", A.dim(1), C->dim(0));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The first target dimensions do not match! Got {} and {}.", A.dim(1), C->dim(0));
         }
 
         if (B.dim(0) != C->dim(1)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The second target dimensions do not match! Got {} and {}.", B.dim(0), C->dim(1));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The second target dimensions do not match! Got {} and {}.", B.dim(0), C->dim(1));
         }
     }
 
@@ -162,7 +162,7 @@ void gemv(char transA, AlphaType alpha, einsums::detail::TensorImpl<AType> const
           BetaType beta, einsums::detail::TensorImpl<YType> *Y) {
     if (A.rank() != 2 || X.rank() != 1 || Y->rank() != 1) {
         EINSUMS_THROW_EXCEPTION(
-            rank_error, "The ranks of the tensors passed to gemv are incompatible! Requires a matrix and to vectors. Got {}, {}, and {}.",
+            RankError, "The ranks of the tensors passed to gemv are incompatible! Requires a matrix and to vectors. Got {}, {}, and {}.",
             A.rank(), X.rank(), Y->rank());
     }
     if (!std::strchr("cntCNT", transA)) {
@@ -171,22 +171,20 @@ void gemv(char transA, AlphaType alpha, einsums::detail::TensorImpl<AType> const
     }
     if (std::tolower(transA) == 'n') {
         if (A.dim(0) != Y->dim(0)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error,
-                                    "The dimensions of the input matrix and output tensor do not match! Got {} and {}.", A.dim(1),
-                                    Y->dim(0));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the input matrix and output tensor do not match! Got {} and {}.",
+                                    A.dim(1), Y->dim(0));
         }
         if (A.dim(1) != X.dim(0)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The dimensions of the input matrix and input tensor do not match! Got {} and {}.",
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the input matrix and input tensor do not match! Got {} and {}.",
                                     A.dim(0), X.dim(0));
         }
     } else {
         if (A.dim(1) != Y->dim(0)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error,
-                                    "The dimensions of the input matrix and output tensor do not match! Got {} and {}.", A.dim(0),
-                                    Y->dim(0));
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the input matrix and output tensor do not match! Got {} and {}.",
+                                    A.dim(0), Y->dim(0));
         }
         if (A.dim(0) != X.dim(0)) {
-            EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The dimensions of the input matrix and input tensor do not match! Got {} and {}.",
+            EINSUMS_THROW_EXCEPTION(TensorCompatError, "The dimensions of the input matrix and input tensor do not match! Got {} and {}.",
                                     A.dim(1), X.dim(0));
         }
     }
@@ -231,17 +229,17 @@ void gemv(char transA, U const alpha, AType const &A, XType const &z, U const be
 template <bool ComputeEigenvectors = true, typename AType>
 void syev(einsums::detail::TensorImpl<AType> *A, einsums::detail::TensorImpl<RemoveComplexT<AType>> *W) {
     if (A->rank() != 2 || W->rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(rank_error,
+        EINSUMS_THROW_EXCEPTION(RankError,
                                 "The inputs to syev/heev need to be a pointer to a matrix and a pointer to a vector. Got ranks {} and {}.",
                                 A->rank(), W->rank());
     }
 
     if (A->dim(0) != A->dim(1)) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "The input matrix to syev/heev needs to be square and symmetric.");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "The input matrix to syev/heev needs to be square and symmetric.");
     }
 
     if (A->dim(0) != W->dim(0)) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The input and output to syev/heev have incompatible dimensions.");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "The input and output to syev/heev have incompatible dimensions.");
     }
 
     if (A->dim(0) == 0) {
@@ -467,34 +465,34 @@ void geev(einsums::detail::TensorImpl<T> *A, einsums::detail::TensorImpl<AddComp
 #endif
 
     if (A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The input tensor needs to be a matrix!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The input tensor needs to be a matrix!");
     }
 
     if (W->rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The eigenvalue output needs to be a vector!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The eigenvalue output needs to be a vector!");
     }
 
     if (A->dim(0) != A->dim(1)) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "The input matrix needs to be square!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "The input matrix needs to be square!");
     }
 
     if (A->dim(0) > W->dim(0)) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The eigenvalue does not have enough space to hold the eigenvalues!");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "The eigenvalue does not have enough space to hold the eigenvalues!");
     }
 
     if (lvecs != nullptr) {
         jobvl = 'v';
 
         if (lvecs->rank() != 2) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "The left eigenvector output needs to be a matrix or nullpointer!");
+            EINSUMS_THROW_EXCEPTION(RankError, "The left eigenvector output needs to be a matrix or nullpointer!");
         }
 
         if (lvecs->dim(0) != lvecs->dim(1)) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "The left eigenvector output needs to be a square matrix!");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "The left eigenvector output needs to be a square matrix!");
         }
 
         if (lvecs->dim(0) != A->dim(0)) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "The left eigenvectors needs to have the same shape as the input matrix.");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "The left eigenvectors needs to have the same shape as the input matrix.");
         }
     }
 
@@ -502,15 +500,15 @@ void geev(einsums::detail::TensorImpl<T> *A, einsums::detail::TensorImpl<AddComp
         jobvr = 'v';
 
         if (rvecs->rank() != 2) {
-            EINSUMS_THROW_EXCEPTION(rank_error, "The right eigenvector output needs to be a matrix or nullpointer!");
+            EINSUMS_THROW_EXCEPTION(RankError, "The right eigenvector output needs to be a matrix or nullpointer!");
         }
 
         if (rvecs->dim(0) != rvecs->dim(1)) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "The right eigenvector output needs to be a square matrix!");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "The right eigenvector output needs to be a square matrix!");
         }
 
         if (rvecs->dim(0) != A->dim(0)) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "The right eigenvectors needs to have the same shape as the input matrix.");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "The right eigenvectors needs to have the same shape as the input matrix.");
         }
     }
 
@@ -684,14 +682,14 @@ void heev(AType *A, WType *W) {
 template <typename T>
 [[nodiscard]] auto gesv(einsums::detail::TensorImpl<T> *A, einsums::detail::TensorImpl<T> *B) -> int {
     if (A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The coefficient matrix needs to be rank-2!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The coefficient matrix needs to be rank-2!");
     }
     if (B->rank() > 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The output matrix needs to be rank 1 or 2!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The output matrix needs to be rank 1 or 2!");
     }
 
     if (A->dim(0) != A->dim(1) || A->dim(0) != B->dim(0)) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error,
+        EINSUMS_THROW_EXCEPTION(TensorCompatError,
                                 "The coefficient matrix needs to be square and the number of rows of the result matrix needs to match! A "
                                 "dims: ({}, {}), B dim: {}.",
                                 A->dim(0), A->dim(1), B->dim(0));
@@ -783,7 +781,7 @@ void scale(typename AType::ValueType scale, AType *A) {
 template <typename T>
 void scale_row(ptrdiff_t row, T scale, einsums::detail::TensorImpl<T> *A) {
     if (A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The input to scale_row needs to be a rank-2 tensor!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The input to scale_row needs to be a rank-2 tensor!");
     }
     blas::scal(A->dim(1), scale, A->data(row, 0), A->stride(1));
 }
@@ -797,7 +795,7 @@ void scale_row(ptrdiff_t row, typename AType::ValueType scale, AType *A) {
 template <typename T>
 void scale_column(ptrdiff_t col, T scale, einsums::detail::TensorImpl<T> *A) {
     if (A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The input to scale_column needs to be a rank-2 tensor!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The input to scale_column needs to be a rank-2 tensor!");
     }
     blas::scal(A->dim(0), scale, A->data(0, col), A->stride(0));
 }
@@ -810,11 +808,11 @@ void scale_column(ptrdiff_t col, typename AType::ValueType scale, AType *A) {
 template <typename T, typename TOther>
 BiggestTypeT<T, TOther> dot(einsums::detail::TensorImpl<T> const &A, einsums::detail::TensorImpl<TOther> const &B) {
     if (A.rank() != B.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The ranks of the tensors passed to dot must be the same!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The ranks of the tensors passed to dot must be the same!");
     }
 
     if (A.dims() != B.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "The dimensions of the tensors passed to dot must be the same!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "The dimensions of the tensors passed to dot must be the same!");
     }
 
     return impl_dot(A, B);
@@ -829,11 +827,11 @@ template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
 template <typename T>
 T true_dot(einsums::detail::TensorImpl<T> const &A, einsums::detail::TensorImpl<T> const &B) {
     if (A.rank() != B.rank()) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The ranks of the tensors passed to true_dot must be the same!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The ranks of the tensors passed to true_dot must be the same!");
     }
 
     if (A.dims() != B.dims()) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "The dimensions of the tensors passed to true_dot must be the same!");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "The dimensions of the tensors passed to true_dot must be the same!");
     }
 
     return impl_true_dot(A, B);
@@ -940,7 +938,7 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
     }
 
     if (!shape_test) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The shapes of the input and output tensors are incompatible!");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "The shapes of the input and output tensors are incompatible!");
     }
 
     if constexpr (TransA) {
@@ -984,7 +982,7 @@ void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
         shape_test = B.dim(1) == A.dim(1) && A.dim(0) == B.dim(1) && C->dim(0) == B.dim(0) && C->dim(1) == B.dim(0);
     }
     if (!shape_test) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "The shapes of the input and output tensors are incompatible!");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "The shapes of the input and output tensors are incompatible!");
     }
 
     if constexpr (TransA) {
@@ -1117,7 +1115,7 @@ template <typename T, typename Pivots, bool is_resizable = requires(Pivots c, ty
     LabeledSection0();
 
     if (A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can only decompose rank-2 tensors!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can only decompose rank-2 tensors!");
     }
 
     if (A->dim(0) == 0 || A->dim(1) == 0) {
@@ -1210,14 +1208,14 @@ template <typename T, typename Pivots>
     LabeledSection0();
 
     if (A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The factored matrix needs to be rank-2!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The factored matrix needs to be rank-2!");
     }
     if (B->rank() != 1 && B->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The right-hand side needs to be rank 1 or 2!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The right-hand side needs to be rank 1 or 2!");
     }
 
     if (A.dim(0) != A.dim(1) || A.dim(0) != B->dim(0)) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error,
+        EINSUMS_THROW_EXCEPTION(TensorCompatError,
                                 "The factored matrix needs to be square and the number of rows of the right-hand side needs to match! A "
                                 "dims: ({}, {}), B dim: {}.",
                                 A.dim(0), A.dim(1), B->dim(0));
@@ -1296,11 +1294,11 @@ void getri(einsums::detail::TensorImpl<T> *A, Pivots const &pivot) {
     LabeledSection0();
 
     if (A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can only compute the inverses of matrices.");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can only compute the inverses of matrices.");
     }
 
     if (A->dim(0) != A->dim(1)) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can only compute the inverses of square matrices.");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can only compute the inverses of square matrices.");
     }
 
     int result;
@@ -1352,11 +1350,11 @@ void invert(einsums::detail::TensorImpl<T> *A) {
     LabeledSection0();
 
     if (A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can only compute the inverses of matrices.");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can only compute the inverses of matrices.");
     }
 
     if (A->dim(0) != A->dim(1)) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "Can only compute the inverses of square matrices.");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "Can only compute the inverses of square matrices.");
     }
 
     BufferVector<blas::int_t> pivot(A->dim(0));
@@ -1418,7 +1416,7 @@ template <typename T>
     using option = std::optional<Tensor<T, 2>>;
 
     if (_A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "Can only decompose matrices!");
+        EINSUMS_THROW_EXCEPTION(RankError, "Can only decompose matrices!");
     }
 
     // Calling svd will destroy the original data. Make a copy of it.
@@ -1498,7 +1496,7 @@ template <typename T>
     LabeledSection0();
 
     if (a.rank() > 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "A norm can only be taken on a matrix or vector!");
+        EINSUMS_THROW_EXCEPTION(RankError, "A norm can only be taken on a matrix or vector!");
     }
 
     if constexpr (blas::IsBlasableV<T>) {
@@ -1550,7 +1548,7 @@ template <typename T>
                 return std::get<1>(result)(0);
             }
         default:
-            EINSUMS_THROW_EXCEPTION(enum_error, "The norm type passed to norm is not valid!");
+            EINSUMS_THROW_EXCEPTION(EnumError, "The norm type passed to norm is not valid!");
         }
     } else {
         switch (norm_type) {
@@ -1573,11 +1571,11 @@ template <typename T>
             if (a.rank() == 1) {
                 return impl_frobenius_norm(a);
             } else {
-                EINSUMS_THROW_EXCEPTION(not_implemented, "We haven't implemented the spectral norm for matrices that don't have a LAPACK-"
-                                                         "compatible type. If you need this, reach out to us so we can implement it.");
+                EINSUMS_THROW_EXCEPTION(NotImplemented, "We haven't implemented the spectral norm for matrices that don't have a LAPACK-"
+                                                        "compatible type. If you need this, reach out to us so we can implement it.");
             }
         default:
-            EINSUMS_THROW_EXCEPTION(enum_error, "The norm type passed to norm is not valid!");
+            EINSUMS_THROW_EXCEPTION(EnumError, "The norm type passed to norm is not valid!");
         }
     }
 }
@@ -1612,7 +1610,7 @@ template <typename T>
     //    DisableOMPThreads const nothreads;
 
     if (_A.rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(rank_error, "The input tensor to svd_dd needs to be rank-2!");
+        EINSUMS_THROW_EXCEPTION(RankError, "The input tensor to svd_dd needs to be rank-2!");
     }
 
     // Calling svd will destroy the original data. Make a copy of it.

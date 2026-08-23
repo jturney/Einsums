@@ -62,11 +62,11 @@ template <BlockTensorConcept CType, typename MultiOperator, BlockTensorConcept..
     }
 auto element(MultiOperator multi_opt, CType *C, MultiTensors &...tensors) {
     if (((C->num_blocks() != tensors.num_blocks()) || ...)) {
-        EINSUMS_THROW_EXCEPTION(tensor_compat_error, "element: All tensors need to have the same number of blocks.");
+        EINSUMS_THROW_EXCEPTION(TensorCompatError, "element: All tensors need to have the same number of blocks.");
     }
     for (int i = 0; i < C->num_blocks; i++) {
         if (((C->block_dim(i) != tensors.block_dim(i)) || ...)) {
-            EINSUMS_THROW_EXCEPTION(dimension_error, "element: All tensor blocks need to have the same size.");
+            EINSUMS_THROW_EXCEPTION(DimensionError, "element: All tensor blocks need to have the same size.");
         }
     }
 
@@ -85,7 +85,7 @@ auto element(MultiOperator multi_opt, CType *C, MultiTensors &...tensors) {
 
     // Ensure the various tensors passed in are the same dimensionality
     if (((C->dims() != tensors.dims()) || ...)) {
-        EINSUMS_THROW_EXCEPTION(dimension_error, "element: at least one tensor does not have same dimensionality as destination");
+        EINSUMS_THROW_EXCEPTION(DimensionError, "element: at least one tensor does not have same dimensionality as destination");
     }
 
     Stride<Rank> index_strides;

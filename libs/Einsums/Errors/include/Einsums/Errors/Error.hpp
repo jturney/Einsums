@@ -61,8 +61,8 @@ std::string make_error_message(StringLiteral<N> const type_name, std::string con
  * handle all errors with a similar cause together, or gain more fine-grained control
  * if needed.
  *
- * As an example, in some specializations of the gemm call, multiple tensor_compat_error s
- * can be thrown. For the TiledTensor version, for instance, a tensor_compat_error can be
+ * As an example, in some specializations of the gemm call, multiple TensorCompatError s
+ * can be thrown. For the TiledTensor version, for instance, a TensorCompatError can be
  * thrown if either the output tensor's grid doesn't match what the input tensors require,
  * or if the inner input tensor dimension's grid doesn't match what is required. If you
  * wanted to catch both of these at once, you can use something like the following.
@@ -71,7 +71,7 @@ std::string make_error_message(StringLiteral<N> const type_name, std::string con
  * TiledTensor<double, 2> A, B, C;
  * try {
  *     gemm<false, false>(1.0, A, B, 0.0, &C);
- * } catch(tensor_compat_error &exc) {
+ * } catch(TensorCompatError &exc) {
  *     // Handle both errors.
  * }
  * @endcode
@@ -81,9 +81,9 @@ std::string make_error_message(StringLiteral<N> const type_name, std::string con
  * @code
  * try {
  *     gemm<false, false>(1.0, A, B, 0.0, &C);
- * } catch(CodedError<tensor_compat_error, 0> &exc) {
+ * } catch(CodedError<TensorCompatError, 0> &exc) {
  *     // Output doesn't have a compatible grid, so fix that.
- * } catch(CodedError<tensor_compat_error, 1> &exc) {
+ * } catch(CodedError<TensorCompatError, 1> &exc) {
  *     // Input doesn't have a compatible grid, so fix that.
  * }
  * @endcode
@@ -106,18 +106,18 @@ struct CodedError : ErrorClass {
 };
 
 /**
- * @struct rank_error
+ * @struct RankError
  *
  * Indicates that the rank of some tensor arguments are not compatible with the given operation.
  *
  * @versionadded{1.1.0}
  */
-struct EINSUMS_EXPORT rank_error : std::invalid_argument {
+struct EINSUMS_EXPORT RankError : std::invalid_argument {
     using std::invalid_argument::invalid_argument;
 };
 
 /**
- * @struct dimension_error
+ * @struct DimensionError
  *
  * Indicates that the dimensions of some tensor arguments are not compatible with the given operation.
  * For instance, you can only take the determinant of a square matrix, so passing a matrix that is not
@@ -125,12 +125,12 @@ struct EINSUMS_EXPORT rank_error : std::invalid_argument {
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT dimension_error : std::invalid_argument {
+struct EINSUMS_EXPORT DimensionError : std::invalid_argument {
     using std::invalid_argument::invalid_argument;
 };
 
 /**
- * @struct tensor_compat_error
+ * @struct TensorCompatError
  *
  * Indicates that two or more tensors are not compatible with each other for the requested operation.
  *
@@ -144,52 +144,52 @@ struct EINSUMS_EXPORT dimension_error : std::invalid_argument {
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT tensor_compat_error : std::logic_error {
+struct EINSUMS_EXPORT TensorCompatError : std::logic_error {
     using std::logic_error::logic_error;
 };
 
 /**
- * @struct num_argument_error
+ * @struct NumArgumentError
  *
  * Indicates that a function that can receive a variable number of arguments did not receive the
  * right number of arguments.
  *
  * This is especially used in the RuntimeTensor subscript functions,
  * where the number of indices needed is not known at compile time, so compile-time checks can't
- * be made. This exception has two specializations, not_enough_args and too_many_args , for not
+ * be made. This exception has two specializations, NotEnoughArgs and TooManyArgs , for not
  * enough and too many arguments. It is also thrown when a function takes an array of values that
  * are treated as individual arguments, but the array is too small or too big.
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT num_argument_error : std::invalid_argument {
+struct EINSUMS_EXPORT NumArgumentError : std::invalid_argument {
     using std::invalid_argument::invalid_argument;
 };
 
 /**
- * @struct not_enough_args
+ * @struct NotEnoughArgs
  *
- * Indicates that a function did not receive enough arguments. Child of num_argument_error .
- *
- * @versionadded{1.0.0}
- */
-struct EINSUMS_EXPORT not_enough_args : num_argument_error {
-    using num_argument_error::num_argument_error;
-};
-
-/**
- * @struct too_many_args
- *
- * Indicates that a function received too many arguments. Child of num_argument_error .
+ * Indicates that a function did not receive enough arguments. Child of NumArgumentError .
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT too_many_args : num_argument_error {
-    using num_argument_error::num_argument_error;
+struct EINSUMS_EXPORT NotEnoughArgs : NumArgumentError {
+    using NumArgumentError::NumArgumentError;
 };
 
 /**
- * @struct access_denied
+ * @struct TooManyArgs
+ *
+ * Indicates that a function received too many arguments. Child of NumArgumentError .
+ *
+ * @versionadded{1.0.0}
+ */
+struct EINSUMS_EXPORT TooManyArgs : NumArgumentError {
+    using NumArgumentError::NumArgumentError;
+};
+
+/**
+ * @struct AccessDenied
  *
  * Indicates that an operation was stopped due to access restrictions. This exception is mostly
  * thrown by the HDF5 compatibility code, where it indicates an illegal action on a file object,
@@ -197,17 +197,17 @@ struct EINSUMS_EXPORT too_many_args : num_argument_error {
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT access_denied : std::logic_error {
+struct EINSUMS_EXPORT AccessDenied : std::logic_error {
     using std::logic_error::logic_error;
 };
 
 /**
- * @struct todo_error
+ * @struct TodoError
  *
  * Indicates that a certain code path is not yet finished.
  *
  * This exception, along with
- * not_implemented , indicates that the action you requested is not yet implemented. If you get
+ * NotImplemented , indicates that the action you requested is not yet implemented. If you get
  * this error, come tell us `on our issue tracker <https://github.com/Einsums/Einsums/issues>`_
  * or `our Discord server <https://discord.gg/8GvtkyWZUv>`_, and we will try to focus some energy
  * to filling it out. If you are an experienced C++ programmer, we would appreciate your
@@ -215,12 +215,12 @@ struct EINSUMS_EXPORT access_denied : std::logic_error {
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT todo_error : std::logic_error {
+struct EINSUMS_EXPORT TodoError : std::logic_error {
     using std::logic_error::logic_error;
 };
 
 /**
- * @struct not_implemented
+ * @struct NotImplemented
  *
  * Indicates that a certain code path is not implemented.
  *
@@ -234,12 +234,12 @@ struct EINSUMS_EXPORT todo_error : std::logic_error {
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT not_implemented : std::logic_error {
+struct EINSUMS_EXPORT NotImplemented : std::logic_error {
     using std::logic_error::logic_error;
 };
 
 /**
- * @struct bad_logic
+ * @struct BadLogic
  *
  * Indicates that an error occurred for some unspecified reason.
  *
@@ -250,47 +250,47 @@ struct EINSUMS_EXPORT not_implemented : std::logic_error {
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT bad_logic : std::logic_error {
+struct EINSUMS_EXPORT BadLogic : std::logic_error {
     using std::logic_error::logic_error;
 };
 
 /**
- * @struct uninitialized_error
+ * @struct UninitializedError
  *
  * Indicates that the code is handling data that is uninitialized. This is usually thrown when
  * Einsums was not initialized.
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT uninitialized_error : std::runtime_error {
+struct EINSUMS_EXPORT UninitializedError : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
 /**
- * @struct system_error
+ * @struct SystemError
  *
  * Indicates that an error happened when making a system call, or that some system utility
  * failed. For instance, it can be thrown when trying to find a file that doesn't exist.
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT system_error : std::runtime_error {
+struct EINSUMS_EXPORT SystemError : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
 /**
- * @struct enum_error
+ * @struct EnumError
  *
  * Indicates that an invalid enum value was passed to a function.
  *
  * @versionadded{1.0.0}
  */
-struct EINSUMS_EXPORT enum_error : std::domain_error {
+struct EINSUMS_EXPORT EnumError : std::domain_error {
     using std::domain_error::domain_error;
 };
 
 /**
- * @struct complex_conversion_error
+ * @struct ComplexConversionError
  *
  * Thrown when trying to convert a complex number to a real number. Instead, the input
  * data should be transformed into a real value in a way that makes sense for the operation
@@ -298,7 +298,7 @@ struct EINSUMS_EXPORT enum_error : std::domain_error {
  *
  * @versionadded{2.0.0}
  */
-struct EINSUMS_EXPORT complex_conversion_error : std::logic_error {
+struct EINSUMS_EXPORT ComplexConversionError : std::logic_error {
     using std::logic_error::logic_error;
 };
 

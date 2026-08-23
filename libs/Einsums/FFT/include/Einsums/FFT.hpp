@@ -51,7 +51,7 @@ auto EINSUMS_EXPORT fftfreq(int n, double d = 1.0) -> Tensor<double, 1>;
  * @param[in] a The input tensor.
  * @param[out] result The output tensor.
  *
- * @throws dimension_error When the sizes of the input and output are invalid. The output needs to have
+ * @throws DimensionError When the sizes of the input and output are invalid. The output needs to have
  * more than half the size of the input.
  *
  * @versionadded{1.0.0}
@@ -66,7 +66,7 @@ inline void fft(Tensor<float, 1> const &a, Tensor<std::complex<float>, 1> *resul
  * @param[in] a The input tensor.
  * @param[out] result The output tensor.
  *
- * @throws dimension_error When the sizes of the input and output are invalid. The output needs to be
+ * @throws DimensionError When the sizes of the input and output are invalid. The output needs to be
  * at least as large as the input.
  *
  * @versionadded{1.0.0}
@@ -85,7 +85,7 @@ inline void fft(Tensor<std::complex<float>, 1> const &a, Tensor<std::complex<flo
  * @param[in] a The input tensor.
  * @param[out] result The output tensor.
  *
- * @throws dimension_error When the sizes of the input and output are invalid. The output needs to have
+ * @throws DimensionError When the sizes of the input and output are invalid. The output needs to have
  * more than half the size of the input.
  *
  * @versionadded{1.0.0}
@@ -100,7 +100,7 @@ inline void fft(Tensor<double, 1> const &a, Tensor<std::complex<double>, 1> *res
  * @param[in] a The input tensor.
  * @param[out] result The output tensor.
  *
- * @throws dimension_error When the sizes of the input and output are invalid. The output needs to be
+ * @throws DimensionError When the sizes of the input and output are invalid. The output needs to be
  * at least as large as the input.
  *
  * @versionadded{1.0.0}
@@ -119,7 +119,7 @@ inline void fft(Tensor<std::complex<double>, 1> const &a, Tensor<std::complex<do
  * @param[in] a The input tensor.
  * @param[out] result The output tensor.
  *
- * @throws dimension_error When the sizes of the input and output are invalid. The input needs to have
+ * @throws DimensionError When the sizes of the input and output are invalid. The input needs to have
  * more than half the size of the output.
  *
  * @versionadded{1.0.0}
@@ -134,7 +134,7 @@ inline void ifft(Tensor<std::complex<float>, 1> const &a, Tensor<float, 1> *resu
  * @param[in] a The input tensor.
  * @param[out] result The output tensor.
  *
- * @throws dimension_error When the sizes of the input and output are invalid. The input needs to have
+ * @throws DimensionError When the sizes of the input and output are invalid. The input needs to have
  * more than half the size of the output.
  *
  * @versionadded{1.0.0}
@@ -149,7 +149,7 @@ inline void ifft(Tensor<std::complex<double>, 1> const &a, Tensor<double, 1> *re
  * @param[in] a The input tensor.
  * @param[out] result The output tensor.
  *
- * @throws dimension_error When the sizes of the input and output are invalid. The input needs to be
+ * @throws DimensionError When the sizes of the input and output are invalid. The input needs to be
  * at least as large as the output.
  *
  * @versionadded{1.0.0}
@@ -168,7 +168,7 @@ inline void ifft(Tensor<std::complex<float>, 1> const &a, Tensor<std::complex<fl
  * @param[in] a The input tensor.
  * @param[out] result The output tensor.
  *
- * @throws dimension_error When the sizes of the input and output are invalid. The input needs to be
+ * @throws DimensionError When the sizes of the input and output are invalid. The input needs to be
  * at least as large as the output.
  *
  * @versionadded{1.0.0}
