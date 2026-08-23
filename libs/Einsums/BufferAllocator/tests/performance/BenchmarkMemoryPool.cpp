@@ -14,8 +14,8 @@
 //
 // Three configurations, same sizes and counts:
 //
-//   system    posix_memalign / free, the allocation path einsums used before
-//             mimalloc became required
+//   system    the platform's own aligned allocator, the allocation path
+//             einsums used before mimalloc became required
 //   mimalloc  einsums::memory::aligned_alloc, the current Layer 0, which is
 //             mimalloc's default heap
 //   pool      MemoryPool, an exclusive mimalloc arena reserved up front
@@ -25,6 +25,10 @@
 // hand back memory whose first write faults.
 
 #include <Einsums/BufferAllocator/MemoryPool.hpp>
+
+#if defined(EINSUMS_WINDOWS)
+#    include <malloc.h>
+#endif
 
 #include <chrono>
 #include <cstdio>
@@ -39,6 +43,13 @@ using namespace einsums;
 namespace {
 
 constexpr size_t kMiB = 1024ULL * 1024ULL;
+
+/// How the platform's own aligned allocator is spelled in the report.
+#if defined(EINSUMS_WINDOWS)
+constexpr char const *kSystemLabel = "system (_aligned_malloc)";
+#else
+constexpr char const *kSystemLabel = "system (posix_memalign)";
+#endif
 
 /// Page size used for the first-touch sweep. Deliberately the smallest common
 /// page (4 KiB) so the sweep touches every page on every platform.
@@ -106,21 +117,34 @@ void report(char const *label, size_t count, size_t bytes, Timing const &t) {
     (void)bytes;
 }
 
+// The platform's own aligned allocator, which is what einsums called before
+// mimalloc became required. Windows has no posix_memalign, and its aligned
+// blocks must go back through _aligned_free rather than free().
 void *system_alloc(size_t bytes) {
+#if defined(EINSUMS_WINDOWS)
+    return _aligned_malloc(bytes, 64);
+#else
     void *p = nullptr;
     if (posix_memalign(&p, 64, bytes) != 0) {
         return nullptr;
     }
     return p;
+#endif
+}
+
+void system_free(void *p) {
+#if defined(EINSUMS_WINDOWS)
+    _aligned_free(p);
+#else
+    std::free(p);
+#endif
 }
 
 void run_regime(size_t count, size_t bytes, bool do_touch) {
     std::printf("\n%zu blocks x %zu MiB (%zu MiB live)%s\n", count, bytes / kMiB, count * bytes / kMiB,
                 do_touch ? ", with first touch" : "");
 
-    report("system (posix_memalign)", count, bytes,
-           fill(
-               count, bytes, system_alloc, [](void *p) { std::free(p); }, do_touch));
+    report(kSystemLabel, count, bytes, fill(count, bytes, system_alloc, system_free, do_touch));
 
     report("mimalloc (default heap)", count, bytes,
            fill(

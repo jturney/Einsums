@@ -33,7 +33,7 @@ EINSUMS_NAMESPACE_END(memory)
 
 EINSUMS_NAMESPACE_BEGIN(detail)
 
-std::string max_memory_provider() {
+std::string default_max_memory() {
     size_t physical = 0;
 #if defined(__APPLE__)
     size_t len = sizeof(physical);

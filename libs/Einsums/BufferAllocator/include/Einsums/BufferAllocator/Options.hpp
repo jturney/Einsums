@@ -21,7 +21,19 @@ EINSUMS_NAMESPACE_BEGIN(detail)
 /// Default for einsums:max-memory: 80% of the machine's physical RAM,
 /// rendered as a memory string. Defined in BufferAllocator.cpp, where the
 /// platform probes live.
-EINSUMS_EXPORT std::string max_memory_provider();
+EINSUMS_EXPORT std::string default_max_memory();
+
+/*
+ * The descriptor below stores the address of its provider, and a descriptor is
+ * constant-initialized. An exported function's address resolves through the
+ * import table on Windows and so is not known until the loader runs, which
+ * leaves it unusable as a constant initializer in anything that consumes the
+ * library. This forwards to the exported definition from whatever binary
+ * includes this header, where the address is an ordinary link-time constant.
+ */
+inline std::string max_memory_provider() {
+    return default_max_memory();
+}
 
 EINSUMS_NAMESPACE_END(detail)
 
