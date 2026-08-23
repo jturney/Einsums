@@ -11,9 +11,14 @@
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLAS/ThreadControl.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <thread>
 #include <vector>
+
+#ifdef _OPENMP
+#    include <omp.h>
+#endif
 
 #include <Einsums/Testing.hpp>
 
@@ -110,3 +115,56 @@ TEST_CASE("blas thread control only affects the calling thread", "[blas][threads
         REQUIRE_THAT(value, Catch::Matchers::WithinAbs(2.0 * n, 1.0e-12));
     }
 }
+
+#ifdef _OPENMP
+TEST_CASE("a vendor call inside our own parallel region is bit-reproducible", "[blas][threads]") {
+    // The regression this pins: a vendor carrying its OWN OpenMP runtime - MKL
+    // - cannot see a region einsums opened, so its nested check never fires and
+    // every member of our team forks a full vendor team. The widths then differ
+    // per call, and on a tall-K shape the vendor splits K across whatever team
+    // it happened to get, so the sum comes back in a different order and the
+    // last bits move. That reached DLPNO as a residual that changed between two
+    // evaluations at identical amplitudes, and a solve that diverged from it.
+    //
+    // Tall and thin on purpose: K is the only axis worth splitting here, so a
+    // width that varies IS a summation order that varies. Values that are not
+    // exactly representable, so a reordered sum actually lands somewhere else.
+    constexpr int    m       = 4;
+    constexpr int    n       = 4;
+    constexpr int    k       = 300000;
+    constexpr size_t a_elems = static_cast<size_t>(m) * k;
+    constexpr size_t b_elems = static_cast<size_t>(k) * n;
+    constexpr size_t c_elems = static_cast<size_t>(m) * n;
+
+    std::vector<double> a(a_elems), b(b_elems);
+    for (size_t i = 0; i < a_elems; i++) {
+        a[i] = 1.0 / static_cast<double>(i + 3);
+    }
+    for (size_t i = 0; i < b_elems; i++) {
+        b[i] = 1.0 / static_cast<double>(i + 7);
+    }
+
+    // The reference is taken on the main thread, outside any region, which is
+    // the regime every vendor supports and where a wide GEMM is still wanted.
+    std::vector<double> reference(c_elems, 0.0);
+    einsums::blas::gemm('N', 'N', m, n, k, 1.0, a.data(), m, b.data(), k, 0.0, reference.data(), m);
+
+    int const                        teams = std::max(2, std::min(8, omp_get_max_threads()));
+    std::vector<std::vector<double>> results(static_cast<size_t>(teams), std::vector<double>(c_elems, 0.0));
+
+#    pragma omp parallel for num_threads(teams) schedule(static)
+    for (int t = 0; t < teams; t++) {
+        einsums::blas::gemm('N', 'N', m, n, k, 1.0, a.data(), m, b.data(), k, 0.0, results[static_cast<size_t>(t)].data(), m);
+    }
+
+    for (int t = 0; t < teams; t++) {
+        INFO("team member " << t);
+        for (size_t i = 0; i < c_elems; i++) {
+            INFO("element " << i);
+            // Bit-identical, not close: a tolerance here would pass on exactly
+            // the nondeterminism this exists to catch.
+            REQUIRE(results[static_cast<size_t>(t)][i] == reference[i]);
+        }
+    }
+}
+#endif

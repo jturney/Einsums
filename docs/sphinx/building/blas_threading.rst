@@ -208,3 +208,35 @@ build produced a different (wrong) answer on every run.
 
 MKL is safe to call from caller-created threads and needs none of this, if it is
 an option for your platform.
+It has a different problem instead, described next.
+
+MKL inside Einsums' own OpenMP regions
+======================================
+
+The OpenBLAS hazard above is about *caller-created* threads.
+MKL's is the mirror image: it is fine on those, and unsafe inside a parallel
+region Einsums opened.
+
+MKL carries its own OpenMP runtime, normally ``libiomp5``, while Einsums is
+built against the compiler's, normally ``libgomp``.
+The two do not share ICVs, and MKL's nested check asks *its* runtime whether a
+region is active.
+Inside a ``libgomp`` region that check answers no, so MKL does not take its
+nested-serial path: every member of Einsums' team forks a full MKL team of its
+own.
+The result is not merely oversubscribed.
+The calls disagree about how wide they are, and the answers come back
+nondeterministic: on a water dimer, one DLPNO-CCSD residual evaluated twice at
+identical amplitudes differed in 18 of 82 doubles blocks by up to 2.8e-14, and
+the solve that consumed those residuals diverged.
+Pinning either side to one thread removed both effects and reproduced the
+serial energy exactly.
+
+Einsums handles this itself, and no environment variable is needed.
+``VendorWidthFence``, on every BLAS wrapper that forwards to the vendor, clamps
+a vendor that exposes a per-thread thread count to one thread whenever
+``omp_in_parallel()`` is true, and restores the caller's count afterwards.
+OpenBLAS needs nothing there because it reads Einsums' own ICV and takes its
+nested-serial path unaided.
+Removing the clamp is what the DLPNO chunk-invariance and dimer LCCSD tests
+detect, so it is a gate rather than a tuning knob.

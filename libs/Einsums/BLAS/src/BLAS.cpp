@@ -16,8 +16,12 @@
 EINSUMS_NAMESPACE_BEGIN(blas::detail)
 
 namespace {
-/// Clamp the OpenMP ICV to one thread for a vendor call made under a
-/// node-scoped width, and restore it after.
+/// Present a width of one to a vendor call that einsums is already
+/// threading around, and restore the caller's width after.
+///
+/// Two regimes need it, and they are clamped through different knobs because
+/// the vendors expose different ones. Both are handled in the constructor
+/// below, in the order written there.
 ///
 /// The width a moldable executor grants a task is for the kernels einsums
 /// threads itself. An OpenMP-built OpenBLAS reads the same ICV but does not
@@ -33,24 +37,44 @@ namespace {
 /// syev thread inside OpenBLAS just as a gemm does. The only exemptions are
 /// the gemm_batch families: their vendor entry points are einsums' own
 /// OpenMP loops over raw serial GEMMs, so clamping at the wrapper would
-/// serialize einsums' parallelism while buying nothing - the inner calls
-/// already run inside an active region, where the vendor's own
-/// omp_in_parallel check takes the serial path without touching its global.
-/// That same nested check is why the flag not being visible to threads of a
-/// team the KERNEL forks is harmless: those team members are inside an
-/// active region too.
+/// serialize einsums' parallelism while buying nothing - the inner calls go
+/// through the wrappers below and are clamped there, one level down, where
+/// the serialization is the point. That the moldable flag is not visible to
+/// threads of a team the KERNEL forks is harmless for the same reason: those
+/// team members are inside an active region, which the second clamp keys on
+/// directly.
 struct [[maybe_unused]] VendorWidthFence {
 #ifdef _OPENMP
     int prior{0};
+    int prior_vendor{0};
 
     VendorWidthFence() {
         if (moldable_width_scope() && threads_with_openmp() && omp_get_max_threads() > 1) {
             prior = omp_get_max_threads();
             omp_set_num_threads(1);
         }
+        // A vendor on its OWN OpenMP runtime - MKL is the one that matters -
+        // cannot see the region einsums opened, so its nested check never
+        // fires and it forks a full team from every team member of ours. That
+        // is the regime the vendor does not support: the calls disagree about
+        // the width, and the results come back both oversubscribed and
+        // NONDETERMINISTIC, which is a wrong answer and not merely a slow one.
+        // OpenBLAS needs nothing here - it reads our ICV and takes its own
+        // nested-serial path - so the clamp is asked of the vendors that
+        // expose a per-thread count instead.
+        if (has_per_thread_control() && omp_in_parallel()) {
+            int const vendor_width = get_num_threads_this_thread();
+            if (vendor_width > 1) {
+                prior_vendor = vendor_width;
+                set_num_threads_this_thread(1);
+            }
+        }
     }
 
     ~VendorWidthFence() {
+        if (prior_vendor > 1) {
+            set_num_threads_this_thread(prior_vendor);
+        }
         if (prior > 1) {
             omp_set_num_threads(prior);
         }
