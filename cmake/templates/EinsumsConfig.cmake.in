@@ -132,6 +132,29 @@ einsums_find_package(spdlog @EINSUMS_SPDLOG_VERSION@ EXACT REQUIRED)
 # this is needed even by a consumer that never touches Python. Header-only, and
 # satisfied by an Apiary installed without the codegen tool.
 einsums_find_package(Apiary 1...<2 REQUIRED CONFIG)
+# mimalloc is a hard requirement of the allocation layer, and the exported
+# internal targets name its target directly. Nothing here defines that target -
+# a consumer never runs Einsums_SetupAllocator - so without this find_package
+# the name stays a PLAIN library name and the link line asks for a bare
+# "mimalloc" carrying no directory. A Unix link path resolves that by accident
+# out of the surrounding prefix, which is why it went unnoticed; the Windows
+# linker resolves it not at all, and an out-of-tree stage module is where that
+# first shows up.
+#
+# No version request: mimalloc's installed config predates version-range
+# support and reports a two-component version, so the rule Einsums enforces
+# cannot be expressed here. Einsums_SetupAllocator already checked the header
+# at build time, and a consumer linking the same install gets the same library.
+einsums_find_package(mimalloc REQUIRED CONFIG)
+if(NOT TARGET @EINSUMS_MIMALLOC_TARGET@)
+  message(
+    FATAL_ERROR
+      "Einsums was built against the '@EINSUMS_MIMALLOC_TARGET@' mimalloc target, which the mimalloc "
+      "package found at '${mimalloc_DIR}' does not define. A source-built mimalloc supplies both "
+      "'mimalloc' and 'mimalloc-static'; an installed one may supply only the shared target. Install a "
+      "mimalloc that carries it, or rebuild Einsums against the one this environment has."
+  )
+endif()
 einsums_find_package(ZLIB REQUIRED)
 einsums_find_package(TargetHDF5 REQUIRED)
 einsums_find_package(OpenMP MODULE COMPONENTS CXX)

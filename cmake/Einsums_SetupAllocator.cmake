@@ -113,6 +113,15 @@ if(NOT TARGET einsums_dependencies_mimalloc)
     einsums_warn("Could not read MI_MALLOC_VERSION from the mimalloc headers; version compatibility is unchecked.")
   endif()
 
+  # Which target the exported interface will name, recorded for the package
+  # config: a consumer never runs this file, so EinsumsConfig has to re-find
+  # mimalloc and check that the SAME target comes back. See the mimalloc block
+  # in cmake/templates/EinsumsConfig.cmake.in.
+  set(EINSUMS_MIMALLOC_TARGET
+      "${EINSUMS_MIMALLOC_TARGET}"
+      CACHE INTERNAL "The mimalloc target the exported Einsums interface names" FORCE
+  )
+
   add_library(einsums_dependencies_mimalloc INTERFACE)
   target_link_libraries(einsums_dependencies_mimalloc INTERFACE ${EINSUMS_MIMALLOC_TARGET})
   if(MSVC)
