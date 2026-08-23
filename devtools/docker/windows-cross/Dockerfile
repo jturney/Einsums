@@ -42,6 +42,11 @@ RUN arch="$(uname -m)" \
 # env); exact versions matter less here than ABI plausibility - this sysroot
 # exists so find_package() and lld-link have something real to resolve
 # against.
+#
+# mimalloc is the exception: it is pinned to the 3.3 series through the flavor
+# filter, because the fetch takes the newest build and the newest is currently
+# 3.4.1 - one of the two releases Einsums_SetupAllocator refuses outright. A
+# sysroot resolving to a refused version fails this leg at configure time.
 COPY fetch-conda-win64.sh gen-implibs.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/fetch-conda-win64.sh /usr/local/bin/gen-implibs.sh \
     && fetch-conda-win64.sh /opt/winlibs \
@@ -55,6 +60,7 @@ RUN chmod +x /usr/local/bin/fetch-conda-win64.sh /usr/local/bin/gen-implibs.sh \
         fmt \
         spdlog \
         catch2 \
+        mimalloc:-3.3. \
     && gen-implibs.sh /opt/winlibs
 
 # clang lowers C99 _Complex multiplication to __mulsc3/__muldc3; real
