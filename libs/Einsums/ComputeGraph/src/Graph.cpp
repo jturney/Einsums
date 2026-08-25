@@ -12,6 +12,7 @@
 #include <Einsums/ComputeGraph/Optimizer.hpp> // For OptimizerPass and PassManager
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
+#include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -510,6 +511,7 @@ void Graph::adopt(std::function<void()> deleter) {
 
 void Graph::move_members_from(Graph &&other) noexcept {
     _name                  = std::move(other._name);
+    _space_registry        = other._space_registry;
     _pipeline_name         = std::move(other._pipeline_name);
     _workspace_name        = std::move(other._workspace_name);
     _stage_name            = std::move(other._stage_name);
@@ -1162,6 +1164,48 @@ TensorHandle const &Graph::tensor(TensorId id) const {
         EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no tensor with id {}", _name, id);
     }
     return it->second;
+}
+
+SpaceRegistry &Graph::space_registry() const noexcept {
+    return _space_registry != nullptr ? *_space_registry : global_space_registry();
+}
+
+void Graph::set_space_registry(SpaceRegistry &registry) noexcept {
+    _space_registry = &registry;
+}
+
+void Graph::annotate_spaces(TensorId id, std::vector<SpaceId> spaces) {
+    auto &handle = tensor(id);
+
+    if (!spaces.empty() && spaces.size() != handle.rank) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': annotate_spaces tensor '{}': got {} spaces for a rank-{} tensor", _name,
+                                handle.name, spaces.size(), handle.rank);
+    }
+
+    // Ids are validated against the registry the graph reads them back through, because a
+    // SpaceId is meaningless against any other registry and an id that silently fails to
+    // resolve later would surface as a missing annotation rather than as this mistake.
+    SpaceRegistry const &registry = space_registry();
+    std::size_t const    known    = registry.size();
+    for (std::size_t axis = 0; axis < spaces.size(); ++axis) {
+        SpaceId const space = spaces[axis];
+        if (!space.valid() || space.value() >= known) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "Graph '{}': annotate_spaces tensor '{}': axis {} names a space that does not resolve in this "
+                                    "graph's registry",
+                                    _name, handle.name, axis);
+        }
+    }
+
+    // A declaration is authoritative, so it also clears the inferred flag: whatever capture or the
+    // propagation pass guessed for these axes, the user has now said what they are, and nothing
+    // downstream may overwrite that.
+    handle.spaces          = std::move(spaces);
+    handle.spaces_inferred = false;
+}
+
+std::vector<SpaceId> const &Graph::tensor_spaces(TensorId id) const {
+    return tensor(id).spaces;
 }
 
 void Graph::for_each_subgraph(std::function<void(Graph &)> const &visitor) {
@@ -2500,6 +2544,12 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     auto desc    = detail::build_einsum_descriptor(spec, c_pf, ab_pf, conj_a, conj_b);
     desc.params  = params;
     desc.indices = indices;
+
+    // Same derivation the capture path uses, from the operand handles this node was handed. A
+    // pass that rebuilds a node must not drop its letter map, and re-deriving it (rather than
+    // copying the old node's) is what keeps the map right when the pass changed the operands.
+    desc.letter_spaces =
+        detail::bind_einsum_spaces(*this, a_id, b_id, c_id, spec.a_indices, spec.b_indices, spec.c_indices, "Graph::make_einsum_node");
 
     // BLAS batching hint, same gate and same derivation as the capture path in
     // Operations.hpp: three rank-2 operands, exactly one link index, and strides

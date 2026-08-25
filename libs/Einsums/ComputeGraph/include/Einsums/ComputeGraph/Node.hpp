@@ -12,7 +12,9 @@
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/ComputeGraphTypes/Spaces.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 
 #include <algorithm>
@@ -20,7 +22,12 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <span>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -108,6 +115,39 @@ struct EinsumDescriptor {
     /// looks. One site per node, so writing a route through this handle settles
     /// it for this node and no other.
     std::shared_ptr<packed_gemm::ContractionSite> site;
+
+    /// Index space bound to each index letter of THIS contraction, sorted by letter.
+    ///
+    /// Derived at capture (and rebuilt whenever a pass reconstructs the node) by walking every
+    /// operand's index letters against that operand's @ref TensorHandle::spaces. A space is a
+    /// property of a tensor SLOT, not of a letter globally, so the same letter may legitimately
+    /// range over different spaces in different contractions of one program; this field is the
+    /// per-node resolution of that, which is why it sits beside the index lists rather than in
+    /// @ref spec.
+    ///
+    /// Empty when no operand of the node carries an annotation, which is every node of an
+    /// unannotated program. A letter that only ever met unannotated slots gets no entry, so a
+    /// partially annotated program yields a partial map rather than a wrong one.
+    ///
+    /// Deliberately NOT part of @ref packed_gemm::ContractionSpec: that type's ``operator==`` is
+    /// a plan-cache key, and a semantic annotation must never split a cache entry.
+    ///
+    /// @see space_for_letter
+    std::vector<std::pair<std::string, SpaceId>> letter_spaces;
+
+    /**
+     * @brief The space bound to one index letter of this contraction.
+     * @param[in] letter The index letter to look up.
+     * @return The bound space, or an empty optional when the letter carries no annotation.
+     */
+    [[nodiscard]] std::optional<SpaceId> space_for_letter(std::string_view letter) const {
+        for (auto const &entry : letter_spaces) {
+            if (entry.first == letter) {
+                return entry.second;
+            }
+        }
+        return std::nullopt;
+    }
 };
 
 /// Live-mutable scalar state for axpby (Y = alpha*X + beta*Y), shared with the
@@ -454,6 +494,125 @@ inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, 
     desc.spec.all_indices    = desc.spec.target_indices;
     desc.spec.all_indices.insert(desc.spec.all_indices.end(), desc.spec.link_indices.begin(), desc.spec.link_indices.end());
     return desc;
+}
+
+/**
+ * @brief Name a space for a diagnostic, without trusting the id.
+ * @param[in] registry Registry the id is expected to come from. May be null.
+ * @param[in] id The id to name.
+ * @return The registered name, or a ``#<value>`` placeholder when the id cannot be resolved.
+ *
+ * An id that does not resolve is a caller error the conflict message still has to be able to
+ * print, so this never throws and never leaves the reader with nothing to go on.
+ */
+[[nodiscard]] inline std::string space_label(SpaceRegistry const *registry, SpaceId id) {
+    if (registry != nullptr && id.valid() && id.value() < registry->size()) {
+        return registry->space(id).name;
+    }
+    return "#" + std::to_string(id.value());
+}
+
+/**
+ * @brief One operand's contribution to a contraction's letter-to-space map.
+ *
+ * A plain pair of pointers rather than a copy: @ref build_letter_spaces reads both vectors and
+ * keeps neither, and a contraction has exactly three of these.
+ */
+struct LetterSpaceOperand {
+    char const                     *label{"A"};       ///< Operand name used in diagnostics.
+    std::vector<std::string> const *indices{nullptr}; ///< This operand's index letters, in slot order.
+    std::vector<SpaceId> const     *spaces{nullptr};  ///< This operand's per-slot annotation, possibly empty.
+};
+
+/**
+ * @brief Resolve the index letters of one contraction against its operands' slot annotations.
+ *
+ * Walks A, then B, then C, binding each letter to the space annotated on the slot it occupies.
+ * The rules are the strict ones of the design's section 1.3, and inheritance (writing a resolved
+ * space back onto an unannotated slot) is deliberately NOT one of them: that is a propagation
+ * pass's job, and doing it here would spread one wrong annotation silently.
+ *
+ * - A letter meeting only unannotated slots gets no entry at all.
+ * - A letter meeting one annotated and one unannotated slot takes the annotated side, for THIS
+ *   node's map only.
+ * - A letter meeting two DIFFERENT spaces is a capture-time error, whether the two slots sit on
+ *   different operands or are the two slots of a repeated (diagonal) letter within one operand.
+ *
+ * @param[in] operands The operands to walk, in the order their names should appear in a
+ *            diagnostic.
+ * @param[in] registry Registry the annotated ids belong to, used only to name spaces in the
+ *            error message. May be null.
+ * @param[in] context Caller name to prefix a diagnostic with, e.g. ``"cg::einsum"``.
+ * @return The letter-to-space bindings, sorted by letter. Empty when no operand is annotated.
+ * @throws std::invalid_argument when one letter binds two different spaces.
+ *
+ * An operand whose annotation is shorter than its index list (which a well-formed graph never
+ * produces, since annotation is validated against the tensor's rank) contributes only the slots
+ * it covers.
+ */
+[[nodiscard]] inline std::vector<std::pair<std::string, SpaceId>>
+build_letter_spaces(std::span<LetterSpaceOperand const> operands, SpaceRegistry const *registry, std::string_view context) {
+    std::vector<std::pair<std::string, SpaceId>> bound;
+    std::vector<char const *>                    origin; // parallel to `bound`: operand each entry came from
+
+    for (auto const &operand : operands) {
+        if (operand.indices == nullptr || operand.spaces == nullptr || operand.spaces->empty()) {
+            continue;
+        }
+        std::size_t const slots = std::min(operand.indices->size(), operand.spaces->size());
+        for (std::size_t slot = 0; slot < slots; ++slot) {
+            SpaceId const id = (*operand.spaces)[slot];
+            if (!id.valid()) {
+                continue; // a partially annotated tensor: this axis simply says nothing
+            }
+            std::string const &letter = (*operand.indices)[slot];
+
+            auto const existing = std::ranges::find_if(bound, [&letter](auto const &e) { return e.first == letter; });
+            if (existing == bound.end()) {
+                bound.emplace_back(letter, id);
+                origin.push_back(operand.label);
+                continue;
+            }
+            if (existing->second != id) {
+                std::size_t const at = static_cast<std::size_t>(existing - bound.begin());
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                        "{}: index letter '{}' binds space '{}' on operand {} and space '{}' on operand {} within one "
+                                        "contraction; a letter ranges over exactly one space per contraction",
+                                        context, letter, space_label(registry, existing->second), origin[at], space_label(registry, id),
+                                        operand.label);
+            }
+        }
+    }
+
+    std::ranges::sort(bound, [](auto const &lhs, auto const &rhs) { return lhs.first < rhs.first; });
+    return bound;
+}
+
+/**
+ * @brief Derive an output tensor's per-slot annotation from a contraction's letter map.
+ * @param[in] c_indices The output operand's index letters, in slot order.
+ * @param[in] letter_spaces The contraction's letter-to-space bindings.
+ * @return One space per output slot, or an EMPTY vector when any output letter is unbound.
+ *
+ * All-or-nothing on purpose: a half-filled annotation would be indistinguishable from a
+ * deliberately partial one, and the point of inferring here is that the result is as trustworthy
+ * as a declaration.
+ */
+[[nodiscard]] inline std::vector<SpaceId> spaces_from_letters(std::vector<std::string> const                     &c_indices,
+                                                              std::vector<std::pair<std::string, SpaceId>> const &letter_spaces) {
+    if (c_indices.empty() || letter_spaces.empty()) {
+        return {};
+    }
+    std::vector<SpaceId> out;
+    out.reserve(c_indices.size());
+    for (auto const &letter : c_indices) {
+        auto const found = std::ranges::find_if(letter_spaces, [&letter](auto const &e) { return e.first == letter; });
+        if (found == letter_spaces.end()) {
+            return {};
+        }
+        out.push_back(found->second);
+    }
+    return out;
 }
 
 } // namespace detail

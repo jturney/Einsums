@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/ComputeGraphTypes/Spaces.hpp>
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -201,6 +202,44 @@ struct TensorHandle {
     /// SymmetryPropagation pass so inferred symmetries take effect on the
     /// next ``graph.execute()`` through the rank-2 BLAS dispatch path.
     std::function<void(SymmetryDescriptor)> set_symmetry_fn;
+
+    /**
+     * @brief Per-axis index-space annotation, parallel to @ref dims.
+     *
+     * ``spaces[i]`` names the set axis ``i`` ranges over: occupied orbitals, virtuals, an
+     * auxiliary basis, a grid. It is what lets a pass reason about how a family of problems
+     * GROWS, where @ref dims only says how big this one instance is.
+     *
+     * Two states are legal and nothing else: EMPTY, meaning unannotated, which is the default
+     * and is exactly the behaviour that predates annotations; or exactly @ref rank entries.
+     * ``Graph::annotate_spaces`` is the only supported writer and it enforces that, so nothing
+     * on a hot path has to re-check the size.
+     *
+     * ``Graph::annotate_spaces`` rejects an invalid @ref SpaceId outright, so a populated
+     * annotation resolves end to end. A reader that encounters one anyway is to treat that axis
+     * as unannotated rather than to fail.
+     *
+     * @see Graph::annotate_spaces
+     * @see Graph::tensor_spaces
+     */
+    std::vector<SpaceId> spaces;
+
+    /**
+     * @brief Whether @ref spaces was inferred rather than declared.
+     *
+     * False for an annotation a user wrote with ``Graph::annotate_spaces``, and for the default
+     * (empty) state. True when the annotation was derived: by capture, from the letters of the
+     * contraction that first writes this intermediate, or by the ``SpacePropagation`` pass, from
+     * the annotations on a producing node's operands.
+     *
+     * A declaration is authoritative and an inference is only as good as the declarations it came
+     * from, which is exactly the distinction ``CrossSpaceValidation`` needs in order to report a
+     * weaker verdict on an inferred slot rather than an authoritative wrong one. It is also what
+     * lets propagation refine its own earlier guess while never overwriting a declaration.
+     *
+     * @see Graph::annotate_spaces
+     */
+    bool spaces_inferred{false};
 
     /**
      * @brief Swap the tensor's underlying data pointer with a new one.

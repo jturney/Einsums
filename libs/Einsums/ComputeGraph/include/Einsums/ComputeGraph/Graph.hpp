@@ -28,14 +28,17 @@
 
 #include <fmt/format.h>
 
+#include <array>
 #include <functional>
 #include <iosfwd>
 #include <memory>
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -197,6 +200,152 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     [[nodiscard]] TensorHandle       *find_tensor(TensorId id) noexcept;
     [[nodiscard]] TensorHandle const *find_tensor(TensorId id) const noexcept; ///< @overload
+
+    /**
+     * @brief The id registered for @p ptr, when that registration is still about the SAME tensor.
+     * @param[in] ptr Address of the caller's tensor.
+     * @param[in] token The caller's liveness token. An untracked token on either side matches,
+     *            which keeps tensor types that expose no token on the pre-existing behaviour.
+     * @return The id, or 0 when there is none, or when the cached one belongs to a tensor that
+     *         has since been destroyed.
+     *
+     * An address does not identify a tensor across a destruction: a wrapper freed while a graph
+     * is being built leaves its address free for the next allocation, and a tensor allocated on
+     * top of a dead one would inherit its @ref TensorId. Every by-object lookup on this class
+     * goes through here rather than through @ref find_tensor_id_by_ptr for that reason.
+     */
+    [[nodiscard]] TensorId live_tensor_id_by_ptr(void const *ptr, std::weak_ptr<void> const &token) const noexcept {
+        TensorId const id = find_tensor_id_by_ptr(ptr);
+        if (id == 0) {
+            return 0;
+        }
+        TensorHandle const *handle = find_tensor(id);
+        if (handle == nullptr || !detail::same_tensor(handle->caller_token, token)) {
+            return 0;
+        }
+        return id;
+    }
+
+    // ── Index spaces ────────────────────────────────────────────────────────
+
+    /**
+     * @brief The registry this graph resolves index spaces against.
+     * @return The registry set by @ref set_space_registry, or the process-global one.
+     *
+     * A graph annotated against one registry must be queried against the same one: a
+     * @ref SpaceId is a handle into the registry that issued it and means nothing anywhere else.
+     * The process-global registry is the default precisely so that the common case never has to
+     * think about it; a test (or a capture that wants an isolated set of spaces) overrides it.
+     */
+    APIARY_EXPOSE APIARY_RVP(reference) APIARY_GETTER("space_registry") [[nodiscard]] SpaceRegistry &space_registry() const noexcept;
+
+    /**
+     * @brief Resolve this graph's index spaces against @p registry instead of the global one.
+     * @param[in] registry The registry to use. It must outlive the graph.
+     *
+     * Set it BEFORE annotating anything. Ids already stored on this graph's handles were issued
+     * by the previous registry and are not translated.
+     */
+    APIARY_EXPOSE APIARY_KEEP_ALIVE(1, 2) void set_space_registry(SpaceRegistry &registry) noexcept;
+
+    /**
+     * @brief Annotate a registered tensor's axes with the index spaces they range over.
+     * @param[in] id The tensor to annotate.
+     * @param[in] spaces One space per axis, in axis order. Pass an empty vector to clear the
+     *            annotation.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @throws std::invalid_argument if the count differs from the tensor's rank, or if any id is
+     *         invalid or does not resolve in @ref space_registry.
+     *
+     * Annotation is a declaration, so it is checked here, once, rather than on any path that
+     * later reads it. Annotate before capturing the operations that use the tensor: capture
+     * reads the annotation off the handle to bind the letters of each contraction, and an
+     * annotation added afterwards does not reach nodes that are already recorded.
+     */
+    APIARY_EXPOSE void annotate_spaces(TensorId id, std::vector<SpaceId> spaces);
+
+    /**
+     * @brief Annotate a tensor's axes, addressing it by the caller's tensor object.
+     * @tparam TensorType The tensor type.
+     * @param[in] tensor The tensor to annotate.
+     * @param[in] spaces One space per axis, in axis order.
+     * @throws std::invalid_argument if the count differs from the tensor's rank, or if any id is
+     *         invalid or does not resolve in @ref space_registry.
+     *
+     * The by-object form of @ref annotate_spaces(TensorId, std::vector<SpaceId>), mirroring
+     * @ref rebind's pair of overloads. A tensor the graph has not seen yet is registered here,
+     * exactly the way capture would register it (storage adopted into a graph-owned stand-in,
+     * identity kept on the caller's wrapper), so annotating before the first capture that uses
+     * the tensor costs it none of the ownership guarantees capture would have given it.
+     */
+    template <GraphCapturableTensor TensorType>
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::RuntimeTensorView<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::RuntimeTensorView<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::TiledRuntimeTensor<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::TiledRuntimeTensor<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
+        // clang-format on
+        void annotate_spaces(TensorType const &tensor, std::vector<SpaceId> spaces) {
+        annotate_spaces(register_operand(tensor), std::move(spaces));
+    }
+
+    /**
+     * @brief The index spaces annotated on a registered tensor's axes.
+     * @param[in] id The tensor to read.
+     * @return One space per axis, or an empty vector when the tensor carries no annotation.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     */
+    [[nodiscard]] APIARY_EXPOSE std::vector<SpaceId> const &tensor_spaces(TensorId id) const;
+
+    /**
+     * @brief The index spaces annotated on a tensor's axes, addressing it by the caller's object.
+     * @tparam TensorType The tensor type.
+     * @param[in] tensor The tensor to read.
+     * @return One space per axis, or an empty vector when the tensor carries no annotation.
+     * @throws std::out_of_range if this graph has never seen that tensor.
+     *
+     * The read counterpart of @ref annotate_spaces(TensorType const &, std::vector<SpaceId>), and
+     * deliberately NOT its mirror image: reading is const and registers nothing. A tensor the
+     * graph does not know has no annotation to report and no handle to put one on, and saying so
+     * is more useful than silently adopting its storage on a read.
+     */
+    template <GraphCapturableTensor TensorType>
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::RuntimeTensorView<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::RuntimeTensorView<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::TiledRuntimeTensor<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::TiledRuntimeTensor<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
+        // clang-format on
+        [[nodiscard]] std::vector<SpaceId> const &tensor_spaces(TensorType const &tensor) const {
+        std::weak_ptr<void> token;
+        if constexpr (requires { tensor.liveness_token(); }) {
+            token = tensor.liveness_token();
+        }
+        TensorId const id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), token);
+        if (id == 0) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': tensor '{}' is not registered, so it carries no index spaces", _name,
+                                    tensor.name());
+        }
+        return tensor_spaces(id);
+    }
 
     /**
      * @brief The tensor object a node may legally dereference at EXECUTE time.
@@ -1811,6 +1960,51 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }
     }
 
+    /**
+     * @brief The id this graph uses for @p tensor, registering it if it has never seen it.
+     * @tparam TensorType The tensor type.
+     * @param[in] tensor The caller's tensor.
+     * @return The existing or newly assigned TensorId.
+     *
+     * The out-of-capture counterpart of ``CaptureContext::get_or_register``, and deliberately
+     * the same registration: storage adopted into a graph-owned stand-in via
+     * @ref adopt_operand, the handle's lambdas baked over that stand-in, and
+     * @ref TensorHandle::tensor_ptr left naming the caller's wrapper so every identity
+     * comparison against a user-held tensor still works. Capture then finds this handle by
+     * pointer and reuses it rather than registering a second one.
+     *
+     * For callers that need a handle to exist before any operation is captured. Metadata set on
+     * a tensor (its index spaces) has to have somewhere to live, and the graph's handle is that
+     * somewhere.
+     *
+     * The address cache is checked against the caller's liveness token, exactly as
+     * ``CaptureContext::get_or_register`` checks it and for the same reason: an address does not
+     * identify a tensor across a destruction. A tensor allocated on top of a dead one would
+     * otherwise inherit its id, and metadata set here would land on the wrong handle.
+     */
+    template <GraphCapturableTensor TensorType>
+    TensorId register_operand(TensorType const &tensor) {
+        void *ptr = const_cast<void *>(static_cast<void const *>(&tensor));
+
+        std::weak_ptr<void> token;
+        if constexpr (requires { tensor.liveness_token(); }) {
+            token = tensor.liveness_token();
+        }
+
+        if (TensorId const existing = live_tensor_id_by_ptr(ptr, token); existing != 0) {
+            return existing;
+        }
+
+        using Clean = std::remove_cvref_t<TensorType>;
+        auto  owner = adopt_operand(tensor);
+        auto &bound = owner ? *static_cast<Clean *>(owner.get()) : const_cast<Clean &>(tensor);
+
+        auto handle         = make_handle(bound, 0, ptr);
+        handle.owner        = std::move(owner);
+        handle.caller_token = token;
+        return register_tensor(std::move(handle));
+    }
+
     // ── Rebind support ──────────────────────────────────────────────────────
 
     /**
@@ -2056,7 +2250,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     int                                        _stage_index{-1}; ///< Order within pipeline
     std::vector<Node>                          _nodes;
     std::unordered_map<TensorId, TensorHandle> _tensors;
-    NodeId                                     _next_node_id{0};
+
+    /// Registry the @ref SpaceId values on this graph's handles were issued by. Null means the
+    /// process-global one, which is what @ref space_registry substitutes; a non-owning pointer
+    /// because a registry is a long-lived object the caller owns, and because Graph stays
+    /// movable.
+    SpaceRegistry *_space_registry{nullptr};
+    NodeId         _next_node_id{0};
     // Starts at 1: id 0 is reserved as the "no tensor" / "no alias" sentinel
     // (TensorHandle::aliases defaults to 0 and the codebase tests `aliases == 0`
     // for "not a view"). If a real tensor could be id 0, a view of it would have
@@ -2245,6 +2445,63 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     std::vector<std::shared_ptr<EinsumParams>>  _params_store;
     std::vector<std::shared_ptr<EinsumIndices>> _indices_store;
 };
+
+namespace detail {
+
+/**
+ * @brief Bind one contraction's index letters to the spaces annotated on its operands' slots.
+ * @param[in,out] graph The graph holding the operands. The output handle may be annotated.
+ * @param[in] a_id First input.
+ * @param[in] b_id Second input.
+ * @param[in] c_id Output.
+ * @param[in] a_indices Index letters of the first input, in slot order.
+ * @param[in] b_indices Index letters of the second input.
+ * @param[in] c_indices Index letters of the output.
+ * @param[in] context Caller name for a conflict diagnostic, e.g. ``"cg::einsum"``.
+ * @return The letter-to-space bindings for this node, empty when no operand is annotated.
+ * @throws std::invalid_argument when one letter binds two different spaces.
+ *
+ * The single derivation shared by every site that builds an @ref EinsumDescriptor, so a node a
+ * pass rebuilds carries the same map a captured one would.
+ *
+ * When the OUTPUT is a graph-owned intermediate that carries no annotation of its own and every
+ * one of its letters resolved, its handle is annotated from the map: the slot takes the space of
+ * the letter that produced it. That keeps annotation effort proportional to a program's INPUTS
+ * rather than to its node count, and it is sound here in a way a general inference is not,
+ * because at capture the intermediate is being written for the first time by this very node. A
+ * caller-owned output is left alone whatever its letters say; writing back to a tensor the user
+ * declared is the propagation pass's decision to make, not capture's.
+ *
+ * Such a write is marked @ref TensorHandle::spaces_inferred, so a later declaration replaces it and
+ * a validation pass can tell a derived annotation from one the user stands behind.
+ */
+[[nodiscard]] inline std::vector<std::pair<std::string, SpaceId>>
+bind_einsum_spaces(Graph &graph, TensorId a_id, TensorId b_id, TensorId c_id, std::vector<std::string> const &a_indices,
+                   std::vector<std::string> const &b_indices, std::vector<std::string> const &c_indices, std::string_view context) {
+    TensorHandle const *a = graph.find_tensor(a_id);
+    TensorHandle const *b = graph.find_tensor(b_id);
+    TensorHandle const *c = graph.find_tensor(c_id);
+
+    std::array<LetterSpaceOperand, 3> const operands{
+        LetterSpaceOperand{.label = "A", .indices = &a_indices, .spaces = a != nullptr ? &a->spaces : nullptr},
+        LetterSpaceOperand{.label = "B", .indices = &b_indices, .spaces = b != nullptr ? &b->spaces : nullptr},
+        LetterSpaceOperand{.label = "C", .indices = &c_indices, .spaces = c != nullptr ? &c->spaces : nullptr},
+    };
+
+    auto letters = build_letter_spaces(std::span<LetterSpaceOperand const>{operands}, &graph.space_registry(), context);
+
+    if (auto *output = graph.find_tensor(c_id); output != nullptr && output->is_intermediate && output->spaces.empty()) {
+        auto inferred = spaces_from_letters(c_indices, letters);
+        if (inferred.size() == output->rank) {
+            output->spaces          = std::move(inferred);
+            output->spaces_inferred = true;
+        }
+    }
+
+    return letters;
+}
+
+} // namespace detail
 
 // ── Global graph registry for profiler integration ─────────────────────────
 

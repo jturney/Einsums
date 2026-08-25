@@ -7227,6 +7227,16 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     desc.indices = indices;
     desc.params  = params;
 
+    // Index-space binding (design part 1.3). A space is a property of the SLOT
+    // an index occupies, not of the letter globally, so the letters of this one
+    // contraction are resolved against the operands' annotations here and the
+    // result is stored per node. Costs nothing for a program that annotates
+    // nothing: every operand's `spaces` is empty and the map comes back empty.
+    // Runs before the GEMM/batched fast paths below so that a node recorded
+    // through one of them still leaves the output's inferred annotation behind.
+    desc.letter_spaces =
+        detail::bind_einsum_spaces(*ctx.graph(), a_id, b_id, c_id, parsed.a_indices, parsed.b_indices, parsed.c_indices, "cg::einsum");
+
     // BLAS-level batching hint. Only populated when the contraction is
     // a pure 2D GEMM pattern (rank-2 inputs/output, one link index),
     // that's the shape `blas::gemm_batch` accepts. For other shapes the
