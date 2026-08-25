@@ -277,15 +277,14 @@ bool TiledExpansion::run(Graph &graph) {
                 });
             };
         }
-        // Only describe the scale when the factor is representable: a
-        // ScaleDescriptor carries a plain double, so a complex prefactor would be
-        // silently truncated and ScaleAbsorption would then fold a wrong value.
-        // Leaving op_data empty keeps the node opaque but honest.
-        if (is_real_valued(pf)) {
-            ScaleDescriptor sd;
-            sd.factor  = as_real<double>(pf);
-            sc.op_data = sd;
-        }
+        // A ScaleDescriptor now records the factor as a PrefactorScalar, so a
+        // complex prefactor is described exactly rather than being truncated to
+        // its real part (which used to force this node to stay opaque). No live
+        // params: this executor is hand-built above, not builder-built, so
+        // there is nothing shared for a pass to rewrite.
+        ScaleDescriptor sd;
+        sd.factor  = pf;
+        sc.op_data = sd;
         return sc;
     };
 

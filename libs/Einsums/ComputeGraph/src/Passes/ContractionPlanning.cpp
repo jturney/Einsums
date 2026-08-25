@@ -5,6 +5,7 @@
 
 #include <Einsums/Comm/Runtime.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/ContractionPlanning.hpp>
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <limits>
 #include <set>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -289,8 +291,9 @@ std::optional<std::vector<bool>> chain_leaf_orientations(std::vector<Contraction
             auto const a_pl = link_placement(desc->spec.a_indices, links);
             if (a_pl.split())
                 return std::nullopt;
-            // Prefer the reading that needs no transpose, matching what
-            // make_einsum_executor derives from the spec it is handed.
+            // Prefer the reading that needs no transpose. The same choice is
+            // recorded on the emitted node's GemmDescriptor, so the flag the
+            // analysis reasons about and the flag BLAS is handed are one value.
             transposed.push_back(!a_pl.suffix && a_pl.prefix);
         } else if (node.inputs.empty() || node.inputs[0] != chain[m - 1].output_tid) {
             return std::nullopt;
@@ -309,8 +312,10 @@ std::optional<std::vector<bool>> chain_leaf_orientations(std::vector<Contraction
 /// MemoryPlanning's arena manage its buffer like any other intermediate.
 /// Returns 0 if the dtype is unsupported.
 TensorId declare_chain_intermediate(Graph &graph, std::string name, packed_gemm::ScalarType dtype, size_t rows, size_t cols) {
-    // Typed Tensor<T,2>, not a runtime tensor: make_einsum_executor's rank-2
-    // fast path casts tensor_ptr to Tensor<T,2>*.
+    // A typed Tensor<T,2>. The executor reaches it rank-erased through its
+    // impl, so a runtime tensor would serve as well; the typed one is kept
+    // because passes downstream (DistributiveFactoring's slot-redirect trick)
+    // cast these back to Tensor<T,2>*.
     void const *ptr = nullptr;
     switch (dtype) {
     case packed_gemm::ScalarType::Float32:
@@ -406,23 +411,25 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
         }
     }
 
-    // Build GEMM/einsum node.
-    // The spec describes each operand as it is actually STORED, so
-    // make_einsum_executor derives gemm<transA, transB> from it: a transposed
-    // A is (k,m), a transposed B is (n,k). The result is always C[m,n].
-    ParsedEinsumSpec spec;
-    spec.c_indices = {"m", "n"};
-    spec.a_indices = trans_a ? std::vector<std::string>{"k", "m"} : std::vector<std::string>{"m", "k"};
-    spec.b_indices = trans_b ? std::vector<std::string>{"n", "k"} : std::vector<std::string>{"k", "n"};
-    spec.raw = fmt::format("{} <- {} ; {}", fmt::join(spec.c_indices, ","), fmt::join(spec.a_indices, ","), fmt::join(spec.b_indices, ","));
-
+    // Build the GEMM node. Every operand of a restructured chain is rank-2
+    // shaped (the caller's gate), so the node is a plain
+    // ``C = op(A) * op(B)`` and records as one: a GemmDescriptor plus the
+    // builder, which is what makes it reconstructible - and saveable - rather
+    // than the opaque closure ``make_einsum_executor`` hands back.
+    //
+    // The transpose flags describe each operand as it is actually STORED: a
+    // transposed A is (k,m), a transposed B is (n,k). The result is always
+    // C[m,n], which is how the intermediates are declared.
     Node node;
-    node.id              = graph.reserve_node_id();
-    node.kind            = OpKind::Gemm;
-    node.label           = fmt::format("cp_gemm{}{}({}x{}x{})", trans_a ? "T" : "N", trans_b ? "T" : "N", out_M, K_dim, out_N);
-    node.execute         = graph.make_einsum_executor(left_id, right_id, out_id, spec, 1.0, 0.0);
-    node.inputs          = {left_id, right_id};
-    node.outputs         = {out_id};
+    node.id      = graph.reserve_node_id();
+    node.kind    = OpKind::Gemm;
+    node.label   = fmt::format("cp_gemm{}{}({}x{}x{})", trans_a ? "T" : "N", trans_b ? "T" : "N", out_M, K_dim, out_N);
+    node.inputs  = {left_id, right_id};
+    node.outputs = {out_id};
+    node.op_data = GemmDescriptor{
+        .alpha = PrefactorScalar{1.0}, .beta = PrefactorScalar{0.0}, .trans_a = trans_a ? 't' : 'n', .trans_b = trans_b ? 't' : 'n'};
+    node.execute         = build_executor(OpKind::Gemm, dtype, 2, node.op_data, graph, std::span<TensorId const>{node.inputs},
+                                          std::span<TensorId const>{node.outputs});
     node.estimated_flops = 2 * out_M * K_dim * out_N;
     node.estimated_bytes = (out_M * K_dim + K_dim * out_N + out_M * out_N) * element_size;
 

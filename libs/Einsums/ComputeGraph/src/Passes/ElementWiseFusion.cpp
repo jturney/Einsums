@@ -52,6 +52,36 @@ AxpbyDescriptor const *fusable_axpby(Node const &nd) {
     return (desc != nullptr && desc->params != nullptr) ? desc : nullptr;
 }
 
+/// Compose two in-place scales of one tensor: `A *= f1` then `A *= f2` is
+/// `A *= f1*f2`.
+///
+/// Computed in the prefactors' own element type, which is what the executor
+/// will apply. The caller requires both to share an alternative, so the
+/// `as<T>` conversions are exact.
+PrefactorScalar compose_scale(PrefactorScalar const &f1, PrefactorScalar const &f2) {
+    return std::visit(
+        [&](auto proto) {
+            using T = decltype(proto);
+            return PrefactorScalar{static_cast<T>(as<T>(f1) * as<T>(f2))};
+        },
+        f1);
+}
+
+/// The scale descriptor, or null when @p nd is not a fusable scale.
+///
+/// Requires live shared params for the same reason @ref fusable_axpby does:
+/// the composed factor is written there, so the merged node applies ONE
+/// combined multiply. Until the scale executor read its scalar from the
+/// descriptor this pass had to chain the two executors instead, which removed
+/// a node but not a sweep.
+ScaleDescriptor *fusable_scale(Node &nd) {
+    if (nd.kind != OpKind::Scale || nd.outputs.size() != 1) {
+        return nullptr;
+    }
+    auto *desc = std::get_if<ScaleDescriptor>(&nd.op_data);
+    return (desc != nullptr && desc->params != nullptr) ? desc : nullptr;
+}
+
 } // namespace
 
 void ElementWiseFusion::reset_stats() {
@@ -138,13 +168,8 @@ bool ElementWiseFusion::run(Graph &graph) {
             continue;
 
         // Look for consecutive Scale ops on the same tensor
-        if (nodes[i].kind != OpKind::Scale)
-            continue;
-        if (nodes[i].outputs.size() != 1)
-            continue;
-
-        auto *desc_i = std::get_if<ScaleDescriptor>(&nodes[i].op_data);
-        if (!desc_i)
+        auto *desc_i = fusable_scale(nodes[i]);
+        if (desc_i == nullptr)
             continue;
 
         TensorId const target = nodes[i].outputs[0];
@@ -160,27 +185,31 @@ bool ElementWiseFusion::run(Graph &graph) {
             if (nodes[j].outputs.size() != 1 || nodes[j].outputs[0] != target)
                 break;
 
-            auto *desc_j = std::get_if<ScaleDescriptor>(&nodes[j].op_data);
-            if (!desc_j)
+            auto *desc_j = fusable_scale(nodes[j]);
+            if (desc_j == nullptr)
                 break;
 
-            // Fuse: multiply factors, compose executors
-            desc_i->factor *= desc_j->factor;
+            // Mixing prefactor alternatives would make the composition lossy;
+            // in practice both come from the same tensor's dtype.
+            if (desc_i->params->alpha.index() != desc_j->params->alpha.index())
+                break;
 
-            auto exec_i      = std::move(nodes[i].execute);
-            auto exec_j      = std::move(nodes[j].execute);
-            nodes[i].execute = [exec_i = std::move(exec_i), exec_j = std::move(exec_j)]() {
-                exec_i();
-                exec_j();
-            };
+            // Fuse for real: one multiply with the composed factor, written
+            // through the live params the executor reads.
+            PrefactorScalar const composed = compose_scale(desc_i->params->alpha, desc_j->params->alpha);
+            std::string const     was_i    = to_string(desc_i->params->alpha);
+            std::string const     was_j    = to_string(desc_j->params->alpha);
 
-            nodes[i].label = fmt::format("scale({}) [fused]", desc_i->factor);
+            desc_i->params->alpha = composed;
+            desc_i->factor        = composed;
+
+            nodes[i].label = fmt::format("scale({}) [fused]", to_string(composed));
 
             remove[j] = true;
             _num_fused++;
 
-            EINSUMS_LOG_INFO("ElementWiseFusion: merged scale({}) into scale({})", desc_j->factor, desc_i->factor);
-            report(2, fmt::format("merge scale({}) into scale({}) on the same tensor", desc_j->factor, desc_i->factor));
+            EINSUMS_LOG_INFO("ElementWiseFusion: merged scale({}) into scale({}) -> scale({})", was_j, was_i, to_string(composed));
+            report(2, fmt::format("merge scale({}) into scale({}) on the same tensor; composed to {}", was_j, was_i, to_string(composed)));
         }
     }
 

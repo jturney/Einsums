@@ -487,9 +487,17 @@ TEST_CASE("ThreadWidth - a pinned route decides the kernel, not the width", "[Co
 TEST_CASE("ThreadWidth - a pinned rank-2 GEMM leaves the string dispatch's vendor route",
           "[ComputeGraph][Executor][ThreadWidth][RoutePin]") {
     // The gate one level up: a matrix times a matrix never reaches PackedGemm,
-    // because the string dispatch's own gemm_direct route takes it first. That
+    // because the string dispatch's own vendor-GEMM route takes it first. That
     // gate has to read the same pin, or the shape would take one route here and
     // the other inside the engine.
+    //
+    // The route reads "gemm_direct_runtime" rather than "gemm_direct" because a
+    // REPLAYED node reaches the dispatch through rank-erased operands: since
+    // build_executor took over the einsum lowering, a graph node runs the same
+    // way whether its operands were declared as Tensor<T,2> or as runtime-rank
+    // ones. The two spellings name the same vendor GEMM - the runtime ladder
+    // upcasts to TensorView<T,2> and calls the same helper - and the EAGER form
+    // of this call, a few tests up, still reports "gemm_direct".
     constexpr size_t n = 96;
     auto             A = create_random_tensor<double>("A", n, n);
     auto             B = create_random_tensor<double>("B", n, n);
@@ -510,12 +518,12 @@ TEST_CASE("ThreadWidth - a pinned rank-2 GEMM leaves the string dispatch's vendo
 
     REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Vendor) == 1);
     graph.execute(seq);
-    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct");
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct_runtime");
     REQUIRE(packed_gemm::last_route_pin() == packed_gemm::KernelRoute::Vendor);
 
     REQUIRE(pin_every_contraction(graph, packed_gemm::KernelRoute::Adaptive) == 1);
     graph.execute(seq);
-    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct");
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct_runtime");
 }
 
 TEST_CASE("ThreadWidth - a pin survives the decline memo it contradicts", "[ComputeGraph][Executor][ThreadWidth][RoutePin]") {

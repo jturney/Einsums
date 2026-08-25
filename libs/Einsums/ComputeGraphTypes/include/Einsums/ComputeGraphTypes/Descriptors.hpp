@@ -25,40 +25,20 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 //   EinsumDescriptor      needs packed_gemm::ContractionSpec (PackedGemm)
 //   AxpbyDescriptor       needs PrefactorScalar, plus a shared_ptr<AxpbyParams>
 //                         handle into live execution state
+//   ScaleDescriptor       same: PrefactorScalar plus a live params handle
+//   PermuteDescriptor     same: a live params handle
+//   ElementwiseBinaryDescriptor  same (DirectProduct / DirectDivision)
 //   Loop/ConditionalDescriptor  hold shared_ptr<Graph> and std::function
 //   ViewDescriptor        needs ViewAxis
 //
 // So a descriptor missing from this file has probably not been written yet --
 // check Node.hpp before concluding it does not exist.
-
-/**
- * @brief Metadata for Scale nodes.
- *
- * Stores the scalar factor applied to the tensor: ``A *= factor``.
- * Used by ScaleAbsorption to detect scales a following overwrite makes dead.
- */
-struct ScaleDescriptor {
-    double factor{1.0}; ///< The scaling factor
-};
-
-/**
- * @brief Metadata for Permute nodes.
- *
- * Stores the alpha/beta prefactors: C = beta * C + alpha * permute(A).
- *
- * The scalars are @c std::complex<double> (the tier's widest concrete scalar,
- * as in @ref BatchedGemmDescriptor) so a complex permute records exactly what
- * its executor will apply. They were @c double, filled from @c alpha.real() at
- * capture, which made `alpha = 1+3i` read back as a plain `1.0`: PermuteFusion
- * saw a pure axis reorder and fused the permute away, dropping the imaginary
- * part, and CSE merged permutes that differ only in it.
- */
-struct PermuteDescriptor {
-    std::complex<double>     alpha{1.0, 0.0}; ///< Prefactor for the source tensor
-    std::complex<double>     beta{0.0, 0.0};  ///< Prefactor for the destination tensor (0 = overwrite)
-    std::vector<std::string> c_indices;       ///< Output index names (e.g., {"j","i"})
-    std::vector<std::string> a_indices;       ///< Input index names (e.g., {"i","j"})
-};
+//
+// ScaleDescriptor and PermuteDescriptor USED to live here, on concrete
+// `double` / `std::complex<double>` scalars. They moved when their executors
+// started reading their prefactors from a shared, pass-rewritable params block
+// (see ExecutorBuilder.hpp): that handle is a `shared_ptr` to a type holding
+// PrefactorScalar, which is exactly the "further up the stack" condition above.
 
 /**
  * @brief Data-type tag for BatchedGemmDescriptor.
@@ -222,6 +202,28 @@ struct CommDescriptor {
     size_t   size_bytes{0};   ///< Size of the data in bytes
     int      root{0};         ///< Root rank (for Broadcast/Scatter)
     bool     use_nccl{false}; ///< True if tensor is GPU-resident and NCCL available
+};
+
+/**
+ * @brief Metadata for @ref OpKind::ElementTransform nodes whose kernel is NAMED.
+ *
+ * A named element transform applies the kernel registered under @ref op_name to
+ * every element of its destination, which the parent @ref Node lists as its one
+ * output (and, since the operation is a read-modify-write, as its one input).
+ *
+ * The lambda-taking ``cg::element_transform`` overloads record the same kind
+ * with NO descriptor, because a closure is precisely what a descriptor cannot
+ * hold. Both remain fully legal; only the named form can be written to a file,
+ * and ``Graph::serializability_report`` names the anonymous ones individually
+ * with the fix in the message.
+ *
+ * A bare string, so it belongs in this tier: the registry the name resolves
+ * against lives further up the stack, but resolving it is the BUILDER's job and
+ * nothing about the recorded node needs to know the registry exists.
+ */
+struct ElementTransformDescriptor {
+    /// Name of the kernel in the process's element-op registry.
+    std::string op_name;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

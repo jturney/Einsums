@@ -39,6 +39,7 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -57,6 +58,30 @@ struct TensorSlot {
     size_t              element_size{0}; ///< Expected element size (for validation)
     std::vector<size_t> dims;            ///< Expected dimensions (for validation on rebind)
 
+    /// @brief Rank-erased geometry accessor for whatever @ref ptr currently
+    ///        addresses.
+    ///
+    /// Given @ref ptr, returns that tensor object's
+    /// ``einsums::detail::TensorImpl<T> *``, type-erased to ``void *``. Cast it
+    /// to ``TensorImpl<T> *`` once the element type is known (from
+    /// @ref TensorHandle::dtype).
+    ///
+    /// This is how a data-built executor (@ref build_executor) reaches the LIVE
+    /// data pointer, dims and strides of an operand. Going through the slot
+    /// rather than through ``TensorHandle::impl_fn`` is what makes such an
+    /// executor follow ``Graph::rebind`` and ``Graph::redirect_slot``, which is
+    /// the same guarantee a capture-baked lambda gets from casting @ref ptr to
+    /// its capture-time static type.
+    ///
+    /// A plain function pointer rather than a ``std::function``: it is
+    /// stateless, since the object arrives as the argument, so it costs the
+    /// slot one word and costs a replay one indirect call - no allocation, no
+    /// lookup.
+    ///
+    /// Null for tile-wise sparse tensors, which have no single impl, and for
+    /// slots created before the accessor existed. Gate on it.
+    void *(*impl_of)(void *){nullptr};
+
     /// Keeps whatever @ref ptr addresses alive for as long as the slot exists.
     ///
     /// Set to the graph's stand-in for a captured operand (see
@@ -67,6 +92,26 @@ struct TensorSlot {
     /// keeps the older "must outlive the graph" contract.
     std::shared_ptr<void> owner;
 };
+
+/**
+ * @brief The @ref TensorSlot::impl_of accessor for one static tensor type.
+ * @tparam TensorType The type the slot's @ref TensorSlot::ptr addresses.
+ * @return A stateless function pointer, or null for a type with no single
+ *         ``impl()`` (tile-wise sparse tensors).
+ *
+ * Kept here, beside the field it fills, so ``Graph::get_or_create_slot`` and
+ * ``Graph::rebind`` derive it the same way rather than each open-coding the
+ * ``if constexpr``.
+ */
+template <typename TensorType>
+[[nodiscard]] constexpr auto slot_impl_accessor() -> void *(*)(void *) {
+    using Clean = std::remove_cvref_t<TensorType>;
+    if constexpr (requires(Clean &t) { t.impl(); }) {
+        return [](void *object) -> void * { return static_cast<void *>(&static_cast<Clean *>(object)->impl()); };
+    } else {
+        return nullptr;
+    }
+}
 
 /**
  * @brief Mutable scalar parameters for einsum operations.

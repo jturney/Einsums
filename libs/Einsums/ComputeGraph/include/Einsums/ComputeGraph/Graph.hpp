@@ -12,6 +12,7 @@
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/Executor.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/GateFlags.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
@@ -705,6 +706,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     APIARY_EXPOSE [[nodiscard]] std::string to_json() const;
 
+    /**
+     * @brief The nodes that stand between this graph and being saved, with the reason for each.
+     *
+     * A graph can be written to a file only when every node can be rebuilt from
+     * ``(kind, dtype, rank, descriptor, operand ids)`` - see
+     * @ref build_executor. Conversion is per op kind and deliberately
+     * incremental, so "can this graph be saved" has an actionable answer rather
+     * than a boolean: this names each node that cannot, by id and label, and
+     * says what blocks it.
+     *
+     * @return One entry per blocking node, in node order. Empty means the graph
+     *         is fully reconstructible.
+     *
+     * @note Flat: it inspects THIS graph's nodes only. A ``Loop`` or
+     *       ``Conditional`` holds its body in a sub-graph, and both kinds are
+     *       already reported here (their predicates are closures), so the body
+     *       cannot be reachable-but-unreported.
+     *
+     * @see reconstruction_blocker for the per-node verdict.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::vector<SerializabilityBlocker> serializability_report() const;
+
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string const &name() const { return _name; } ///< Graph name.
 
     // Parent context for profiler hierarchy (Workspace > Pipeline > Graph)
@@ -1071,6 +1095,26 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                                                                                               std::function<bool()> predicate);
 
     /**
+     * @brief Add a conditional whose predicate is DATA rather than a closure.
+     *
+     * The same node the ``std::function`` overload builds -- that one wraps its
+     * argument in a @ref PredExpr callback arm and calls this. The difference is
+     * only what the node can then be: a comparison over @ref ParamTable entries,
+     * a gate-flag load or a literal rebuilds from the descriptor and can be
+     * written to a file, while a callback cannot.
+     *
+     * @param[in] label Human-readable label for profiling.
+     * @param[in] predicate The condition. See @ref PredExpr for the arms.
+     * @return Tuple of references: (then_branch_graph, else_branch_graph).
+     *
+     * @code
+     * auto [then_g, else_g] = graph.add_conditional(
+     *     "converged", cg::PredExpr::compare(cg::BoundExpr{"delta"}, cg::CmpOp::Lt, cg::BoundExpr{1}));
+     * @endcode
+     */
+    std::tuple<Graph &, Graph &> add_conditional(std::string label, PredExpr predicate);
+
+    /**
      * @brief Add a conditional whose predicate is one flag of a @ref GateFlags array.
      *
      * The same node @ref add_conditional builds, with the predicate replaced by a load from a
@@ -1126,6 +1170,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     APIARY_EXPOSE APIARY_RVP(reference_internal) Graph &add_loop(std::string label, size_t max_iterations,
                                                                  std::function<bool(size_t)> condition);
+
+    /**
+     * @brief Add a loop whose condition is DATA rather than a closure.
+     *
+     * The same node the ``std::function`` overload builds; see
+     * @ref add_conditional(std::string, PredExpr) for why the spelling matters.
+     * A @ref PredExpr::Iteration arm compares against the index of the iteration
+     * that just finished, which is how a loop expresses "stop after n" without a
+     * parameter table entry that would otherwise be visible graph-wide.
+     *
+     * @param[in] label Human-readable label for profiling.
+     * @param[in] max_iterations Maximum number of iterations (safety limit).
+     * @param[in] condition Evaluated after each iteration: true continues.
+     * @return Reference to the loop body Graph.
+     */
+    Graph &add_loop(std::string label, size_t max_iterations, PredExpr condition);
 
     /**
      * @brief Add a loop node with lambda-captured body.
@@ -1709,7 +1769,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @brief Create an executor lambda that performs C = alpha * A * B + beta * C.
      *
      * Uses runtime type dispatch. Only supports rank-2 tensors (matrices).
-     * Used by ContractionPlanning to build GEMM nodes for restructured chains.
+     *
+     * A thin forwarder onto @ref build_executor with a @ref GemmDescriptor: one
+     * kernel, one operand-resolution rule, one place that decides what a Gemm
+     * node computes. It used to be the second such place, and it was the worse
+     * one - it cast @ref TensorHandle::tensor_ptr straight to ``Tensor<T, 2> *``
+     * whatever the tensor actually was, and it read the handle rather than the
+     * slot, so a ``redirect_slot`` never reached it.
+     *
+     * A caller that wants the node as well as the callable should build the
+     * descriptor itself and record both, so the node it produces is
+     * reconstructible; this entry exists for the callable alone.
      *
      * @param[in] a_id   TensorId of left operand (M x K).
      * @param[in] b_id   TensorId of right operand (K x N).
@@ -1717,6 +1787,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] alpha  Scalar prefactor for the product.
      * @param[in] beta   Scalar prefactor for the accumulator (0 = overwrite).
      * @return A callable that performs the GEMM.
+     * @throws std::invalid_argument When an operand exposes no rank-erased geometry.
      */
     std::function<void()> make_gemm_executor(TensorId a_id, TensorId b_id, TensorId c_id, double alpha = 1.0, double beta = 0.0);
 
@@ -1749,26 +1820,32 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *   scale into ``ab_prefactor`` or rewrites the index lists therefore takes
      *   effect on the next execute, rather than being silently ignored the way a
      *   baked closure would ignore it (the desync class of bug-1002);
-     * - operands resolved by @ref TensorId at call time, so ``rebind()`` and
-     *   Materialization are honored, and the RMW input convention applied for you
-     *   (the output is declared as an input when @p c_pf is nonzero, the omission
-     *   that was bug-1009).
+     * - operands resolved through the graph's slots at call time, so ``rebind()``,
+     *   ``redirect_slot()`` and Materialization are honored, and the RMW input
+     *   convention applied for you (the output is declared as an input when
+     *   @p c_pf is nonzero, the omission that was bug-1009).
+     *
+     * The executor itself comes from @ref build_executor, the same lowering
+     * ``cg::einsum`` uses at capture, so a node this assembles is
+     * indistinguishable from a captured one and there is no second code path to
+     * drift (design part 3.2).
      *
      * @par Limits
      * One dtype across the three operands. Rank and static tensor type are NOT
      * restricted: each operand is re-viewed through its rank-erased
-     * ``TensorHandle::impl_fn``, which carries data, dims and strides as runtime
-     * values, so a statically typed ``Tensor<T, Rank>`` works alongside a runtime
-     * tensor and a single dtype dispatch covers every rank -- no static-rank cast,
-     * so none of the type confusion of bug-1015. Tile-wise sparse tensors have no
-     * single impl and are rejected; so is a dtype mismatch. Both throw, since a
-     * pass reaching here without gating has a bug.
+     * ``TensorImpl``, which carries data, dims and strides as runtime values, so a
+     * statically typed ``Tensor<T, Rank>`` works alongside a runtime tensor and a
+     * single dtype dispatch covers every rank -- no static-rank cast, so none of
+     * the type confusion of bug-1015. Tile-wise sparse tensors have no single impl
+     * and are rejected; so is a dtype mismatch. Both throw, since a pass reaching
+     * here without gating has a bug.
      *
      * A @ref GemmHint IS built when the shapes qualify (three rank-2 operands,
      * exactly one link index, strides agreeing with each declared layout), so
-     * GEMMBatching can batch these nodes. Its extractors resolve by @ref TensorId
-     * at call time, which follows ``rebind()`` and survives MemoryPlanning
-     * repointing storage via ``materialize_into``.
+     * GEMMBatching can batch these nodes. It records each operand's @ref TensorId
+     * and its leading dimension as DATA; resolution happens in the batched
+     * executor, which follows ``rebind()`` and survives MemoryPlanning repointing
+     * storage via ``materialize_into``. See @ref derive_gemm_hint.
      *
      * @param a_id  First operand.
      * @param b_id  Second operand. Must match @p spec.b_indices.
@@ -1861,7 +1938,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         if (to_slot == nullptr || from_slot == nullptr) {
             return;
         }
+        // The geometry accessor travels with the pointer. @p from's own
+        // accessor was baked for @p from's static type, and the object behind
+        // the redirect is @p to's, so keeping the old one would decode a
+        // different type's layout.
         from_slot->ptr        = to_slot->ptr;
+        from_slot->impl_of    = to_slot->impl_of;
         _slot_redirects[from] = to;
         _slots_validated      = false;
         // Anything already redirected to `from` now follows the same terminal.
@@ -1869,7 +1951,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
             if (t == from) {
                 t = to;
                 if (auto *fs = find_slot(f)) {
-                    fs->ptr = to_slot->ptr;
+                    fs->ptr     = to_slot->ptr;
+                    fs->impl_of = to_slot->impl_of;
                 }
             }
         }
@@ -2026,6 +2109,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }
         auto slot          = std::make_unique<TensorSlot>();
         slot->ptr          = const_cast<void *>(static_cast<void const *>(&tensor));
+        slot->impl_of      = slot_impl_accessor<TensorType>();
         slot->tensor_id    = tensor_id;
         slot->name         = tensor.name();
         slot->rank         = detail::tensor_rank(tensor);
@@ -2085,8 +2169,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
             }
         }
 
-        slot->ptr  = const_cast<void *>(static_cast<void const *>(&new_tensor));
-        slot->name = new_tensor.name();
+        slot->ptr     = const_cast<void *>(static_cast<void const *>(&new_tensor));
+        slot->impl_of = slot_impl_accessor<TensorType>();
+        slot->name    = new_tensor.name();
 
         // Tensor names feed the cached profiler annotations.
         _profile_strings_valid = false;
@@ -2102,7 +2187,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         for (auto const &[f, t] : _slot_redirects) {
             if (t == id) {
                 if (auto *fs = find_slot(f)) {
-                    fs->ptr = slot->ptr;
+                    fs->ptr     = slot->ptr;
+                    fs->impl_of = slot->impl_of;
                 }
             }
         }
@@ -2111,9 +2197,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         auto th_it = _tensors.find(id);
         if (th_it != _tensors.end()) {
             th_it->second.tensor_ptr = slot->ptr;
-            th_it->second.name       = new_tensor.name();
-            th_it->second.name_hash  = std::hash<std::string>{}(new_tensor.name());
-            th_it->second.validator  = [&new_tensor, hash = th_it->second.name_hash]() -> bool {
+            // ``impl_fn`` was baked over the OLD tensor object, so leaving it
+            // alone hands every pass-built executor that reads through it (see
+            // ``make_einsum_node``) a rebound node's PREVIOUS storage. It is
+            // rebuilt here for the same reason the slot's accessor is.
+            if constexpr (requires(std::remove_cvref_t<TensorType> &t) { t.impl(); }) {
+                auto *bound           = &new_tensor;
+                th_it->second.impl_fn = [bound]() -> void * { return static_cast<void *>(&bound->impl()); };
+            }
+            th_it->second.name      = new_tensor.name();
+            th_it->second.name_hash = std::hash<std::string>{}(new_tensor.name());
+            th_it->second.validator = [&new_tensor, hash = th_it->second.name_hash]() -> bool {
                 try {
                     return std::hash<std::string>{}(new_tensor.name()) == hash;
                 } catch (...) {

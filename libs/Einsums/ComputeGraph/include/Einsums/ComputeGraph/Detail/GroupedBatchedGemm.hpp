@@ -114,8 +114,8 @@ GroupedGemmPlan<T> make_grouped_gemm_plan(GroupedBatchedGemmDescriptor const &d)
  * OpenMP-built OpenBLAS gets miscomputed.
  */
 template <typename T>
-void extract_and_run_grouped(GroupedGemmPlan<T> const &p, BatchedGemmExtractors const &a_exs, BatchedGemmExtractors const &b_exs,
-                             BatchedGemmOutputExtractors const &c_exs, bool profile_groups) {
+void extract_and_run_grouped(GroupedGemmPlan<T> const &p, BatchedGemmOperands const &a_ops, BatchedGemmOperands const &b_ops,
+                             BatchedGemmOperands const &c_ops, bool profile_groups) {
     std::vector<T const *> a_arr(p.total);
     std::vector<T const *> b_arr(p.total);
     std::vector<T *>       c_arr(p.total);
@@ -124,9 +124,9 @@ void extract_and_run_grouped(GroupedGemmPlan<T> const &p, BatchedGemmExtractors 
 #    pragma omp parallel for schedule(static) if (!omp_in_parallel())
 #endif
     for (int i = 0; i < p.total; ++i) {
-        a_arr[i] = static_cast<T const *>(a_exs[i]().first);
-        b_arr[i] = static_cast<T const *>(b_exs[i]().first);
-        c_arr[i] = static_cast<T *>(c_exs[i]().first);
+        a_arr[i] = a_ops[i].data<T>();
+        b_arr[i] = b_ops[i].data<T>();
+        c_arr[i] = c_ops[i].data<T>();
     }
 
     if (!profile_groups) {
@@ -159,30 +159,30 @@ void extract_and_run_grouped(GroupedGemmPlan<T> const &p, BatchedGemmExtractors 
  * @brief Build the node executor for a @ref GroupedBatchedGemmDescriptor.
  *
  * @param d Per-group BLAS parameters and the element type.
- * @param a_exs,b_exs,c_exs Per-member extractors, flattened in group order so
+ * @param a_ops,b_ops,c_ops Per-member operands, flattened in group order so
  *          that @ref GemmGroup::first indexes them.
  */
-inline std::function<void()> make_grouped_batched_gemm_executor(GroupedBatchedGemmDescriptor const &d, BatchedGemmExtractors a_exs,
-                                                                BatchedGemmExtractors b_exs, BatchedGemmOutputExtractors c_exs) {
+inline std::function<void()> make_grouped_batched_gemm_executor(GroupedBatchedGemmDescriptor const &d, BatchedGemmOperands a_ops,
+                                                                BatchedGemmOperands b_ops, BatchedGemmOperands c_ops) {
     bool const profile = grouped_gemm_group_profiling();
 
     // The plan is typed, so it is built here, once, under the same switch the
     // uniform node does its dispatch with. Only the pointers move afterwards.
     switch (d.scalar) {
     case BlasScalar::Float:
-        return [p = make_grouped_gemm_plan<float>(d), a_exs = std::move(a_exs), b_exs = std::move(b_exs), c_exs = std::move(c_exs),
-                profile]() { extract_and_run_grouped<float>(p, a_exs, b_exs, c_exs, profile); };
+        return [p = make_grouped_gemm_plan<float>(d), a_ops = std::move(a_ops), b_ops = std::move(b_ops), c_ops = std::move(c_ops),
+                profile]() { extract_and_run_grouped<float>(p, a_ops, b_ops, c_ops, profile); };
     case BlasScalar::Double:
-        return [p = make_grouped_gemm_plan<double>(d), a_exs = std::move(a_exs), b_exs = std::move(b_exs), c_exs = std::move(c_exs),
-                profile]() { extract_and_run_grouped<double>(p, a_exs, b_exs, c_exs, profile); };
+        return [p = make_grouped_gemm_plan<double>(d), a_ops = std::move(a_ops), b_ops = std::move(b_ops), c_ops = std::move(c_ops),
+                profile]() { extract_and_run_grouped<double>(p, a_ops, b_ops, c_ops, profile); };
     case BlasScalar::ComplexFloat:
-        return [p = make_grouped_gemm_plan<std::complex<float>>(d), a_exs = std::move(a_exs), b_exs = std::move(b_exs),
-                c_exs = std::move(c_exs), profile]() { extract_and_run_grouped<std::complex<float>>(p, a_exs, b_exs, c_exs, profile); };
+        return [p = make_grouped_gemm_plan<std::complex<float>>(d), a_ops = std::move(a_ops), b_ops = std::move(b_ops),
+                c_ops = std::move(c_ops), profile]() { extract_and_run_grouped<std::complex<float>>(p, a_ops, b_ops, c_ops, profile); };
     case BlasScalar::ComplexDouble:
         break;
     }
-    return [p = make_grouped_gemm_plan<std::complex<double>>(d), a_exs = std::move(a_exs), b_exs = std::move(b_exs),
-            c_exs = std::move(c_exs), profile]() { extract_and_run_grouped<std::complex<double>>(p, a_exs, b_exs, c_exs, profile); };
+    return [p = make_grouped_gemm_plan<std::complex<double>>(d), a_ops = std::move(a_ops), b_ops = std::move(b_ops),
+            c_ops = std::move(c_ops), profile]() { extract_and_run_grouped<std::complex<double>>(p, a_ops, b_ops, c_ops, profile); };
 }
 
 /// Run a grouped batch straight from raw pointers, for the eager path.

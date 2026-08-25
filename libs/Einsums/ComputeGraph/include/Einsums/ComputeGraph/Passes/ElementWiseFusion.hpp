@@ -51,12 +51,13 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - **axpby chains**: `Y = a1·X + b1·Y` directly followed by `Y = a2·X + b2·Y` on the same pair becomes
  *   `Y = (a2 + b2·a1)·X + (b2·b1)·Y`. axpby reads its scalars from live shared params, so this is a real fusion - the result is
  *   ONE sweep over Y. If the composed `beta` is zero the node stops listing Y as an input, since it no longer reads it.
- * - **Scale-into-Scale** on the same tensor: the factors multiply.
+ * - **Scale-into-Scale** on the same tensor: the factors multiply. Also a real fusion - the composed factor is written to the
+ *   scale's live params and the merged node applies ONE multiply. It used to chain the two executors instead, removing a node but
+ *   not a sweep, because `ScaleDescriptor` carried a plain `double` that the executor did not read.
  *
  * @par Limitations
- * - The Scale fusion removes a node but not a sweep: `ScaleDescriptor` carries a plain `double` with no live params, so the
- *   merged node composes the two executors instead of applying one combined factor. Giving Scale live params (as
- *   EinsumParams/AxpbyParams do) would make it a real fusion, and would let ScaleAbsorption fold into it as well.
+ * - Both fusions need live shared params on every participant, so a Scale or Axpby some pass assembled by hand without them is
+ *   skipped rather than chained.
  * - Both fusions need the participants to be DIRECTLY consecutive; the scan breaks on any intervening node, so ops separated by
  *   another node do not fuse even when nothing in between touches the tensor.
  * - axpby fusion requires the same source X and the same destination Y. Two different sources are a three-operand update, which

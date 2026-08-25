@@ -15,6 +15,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Diis.hpp
     Einsums/ComputeGraph/ElementOps.hpp
     Einsums/ComputeGraph/Error.hpp
+    Einsums/ComputeGraph/ExecutorBuilder.hpp
     Einsums/ComputeGraph/ABILayout.hpp
     Einsums/ComputeGraph/GateFlags.hpp
     Einsums/ComputeGraph/Graph.hpp
@@ -84,6 +85,7 @@ set(ComputeGraphSources
     ElementOps.cpp
     Executor.cpp
     StringDispatch.cpp
+    ExecutorBuilder.cpp
     ABILayout.cpp
     Graph.cpp
     GroupedBatchedGemm.cpp

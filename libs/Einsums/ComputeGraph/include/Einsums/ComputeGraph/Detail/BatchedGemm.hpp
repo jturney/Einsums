@@ -6,10 +6,12 @@
 #pragma once
 
 #include <Einsums/BLAS.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include <complex>
+#include <cstddef>
 #include <functional>
 #include <utility>
 #include <vector>
@@ -72,12 +74,39 @@ void run_batched_gemm_complex(BatchedGemmDescriptor const &d, std::vector<void c
 }
 /// @}
 
-/// Per-slice pointer extractors, one entry per batch member.
-using BatchedGemmExtractors       = std::vector<std::function<std::pair<void const *, int>()>>;
-using BatchedGemmOutputExtractors = std::vector<std::function<std::pair<void *, int>()>>;
+/**
+ * @brief One batch member's operand: where to read it from, and how far in.
+ *
+ * Data, not a closure. The accessor reaches the operand's live geometry through
+ * the graph's slot, so ``Graph::rebind``, ``Graph::redirect_slot`` and the
+ * MemoryPlanning arena are all honored without the producer of the node having
+ * baked a pointer; @ref offset is how the *blocked* forms address one block of
+ * a shared destination without materializing a view per member.
+ *
+ * @see OperandAccessor
+ */
+struct BatchedGemmOperand {
+    OperandAccessor accessor;  ///< Resolves the operand's live @c TensorImpl.
+    std::ptrdiff_t  offset{0}; ///< Element offset into that impl's buffer; nonzero only for the blocked forms.
+
+    /// This member's live element pointer.
+    template <typename T>
+    [[nodiscard]] T *data() const {
+        return accessor.impl<T>()->data() + offset;
+    }
+
+    /// This member's live leading dimension.
+    template <typename T>
+    [[nodiscard]] int leading_dim() const {
+        return static_cast<int>(accessor.impl<T>()->get_lda());
+    }
+};
+
+/// Per-slice operands, one entry per batch member.
+using BatchedGemmOperands = std::vector<BatchedGemmOperand>;
 
 /**
- * @brief Extract every member's pointer and issue the batch, in one pass.
+ * @brief Resolve every member's pointer and issue the batch, in one pass.
  *
  * Each member's pointer is three dependent loads - slot, tensor, impl - over
  * tensors that are separate allocations, so a batch of a few thousand walks a
@@ -94,10 +123,28 @@ using BatchedGemmOutputExtractors = std::vector<std::function<std::pair<void *, 
  * And the pointers land in typed arrays directly. They used to be extracted into
  * `void const *` vectors and copied into typed ones, which is a second
  * allocation and a second pass over the batch for nothing.
+ *
+ * @par Leading dimensions come from the live operands
+ * The descriptor's @c lda / @c ldb / @c ldc were recorded when the node was
+ * built, and ``Graph::rebind`` accepts any tensor of matching rank and dims -
+ * a column slice of a larger store has the same shape and a different leading
+ * dimension. Reading them back off the live impls costs three loads for the
+ * whole batch and is what makes such a rebind compute the right answer instead
+ * of striding through the wrong rows. The descriptor's copies stay as the
+ * planning record every analysis reads; see @ref GemmOperand.
+ *
+ * A rebind that moves only SOME members to a different layout breaks the
+ * premise of the batch itself - one call carries one leading dimension - and
+ * nothing here can see it. Re-running the batching pass after such a rebind
+ * re-forms the groups against the new layouts.
  */
 template <typename T, typename Alpha>
-void extract_and_run(BatchedGemmDescriptor const &d, BatchedGemmExtractors const &a_exs, BatchedGemmExtractors const &b_exs,
-                     BatchedGemmOutputExtractors const &c_exs, Alpha alpha, Alpha beta) {
+void extract_and_run(BatchedGemmDescriptor const &d, BatchedGemmOperands const &a_ops, BatchedGemmOperands const &b_ops,
+                     BatchedGemmOperands const &c_ops, Alpha alpha, Alpha beta) {
+    if (d.batch_count <= 0) {
+        return;
+    }
+
     std::vector<T const *> a_arr(d.batch_count);
     std::vector<T const *> b_arr(d.batch_count);
     std::vector<T *>       c_arr(d.batch_count);
@@ -106,12 +153,16 @@ void extract_and_run(BatchedGemmDescriptor const &d, BatchedGemmExtractors const
 #    pragma omp parallel for schedule(static) if (!omp_in_parallel())
 #endif
     for (int i = 0; i < d.batch_count; ++i) {
-        a_arr[i] = static_cast<T const *>(a_exs[i]().first);
-        b_arr[i] = static_cast<T const *>(b_exs[i]().first);
-        c_arr[i] = static_cast<T *>(c_exs[i]().first);
+        a_arr[i] = a_ops[i].data<T>();
+        b_arr[i] = b_ops[i].data<T>();
+        c_arr[i] = c_ops[i].data<T>();
     }
 
-    blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, alpha, a_arr.data(), d.lda, b_arr.data(), d.ldb, beta, c_arr.data(), d.ldc,
+    int const lda = a_ops[0].leading_dim<T>();
+    int const ldb = b_ops[0].leading_dim<T>();
+    int const ldc = c_ops[0].leading_dim<T>();
+
+    blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, alpha, a_arr.data(), lda, b_arr.data(), ldb, beta, c_arr.data(), ldc,
                         d.batch_count);
 }
 
@@ -120,28 +171,28 @@ void extract_and_run(BatchedGemmDescriptor const &d, BatchedGemmExtractors const
  *
  * @param d Shared BLAS parameters (m/n/k, leading dims, trans flags, prefactors,
  *          batch count, element type).
- * @param a_exs,b_exs,c_exs Per-member extractors, ordered so index @c i of each
+ * @param a_ops,b_ops,c_ops Per-member operands, ordered so index @c i of each
  *          refers to the same contraction.
  */
-inline std::function<void()> make_batched_gemm_executor(BatchedGemmDescriptor d, BatchedGemmExtractors a_exs, BatchedGemmExtractors b_exs,
-                                                        BatchedGemmOutputExtractors c_exs) {
-    return [d, a_exs = std::move(a_exs), b_exs = std::move(b_exs), c_exs = std::move(c_exs)]() {
+inline std::function<void()> make_batched_gemm_executor(BatchedGemmDescriptor d, BatchedGemmOperands a_ops, BatchedGemmOperands b_ops,
+                                                        BatchedGemmOperands c_ops) {
+    return [d, a_ops = std::move(a_ops), b_ops = std::move(b_ops), c_ops = std::move(c_ops)]() {
         switch (d.scalar) {
         case BlasScalar::Float:
-            extract_and_run<float>(d, a_exs, b_exs, c_exs, static_cast<float>(d.alpha.real()), static_cast<float>(d.beta.real()));
+            extract_and_run<float>(d, a_ops, b_ops, c_ops, static_cast<float>(d.alpha.real()), static_cast<float>(d.beta.real()));
             break;
         case BlasScalar::Double:
-            extract_and_run<double>(d, a_exs, b_exs, c_exs, d.alpha.real(), d.beta.real());
+            extract_and_run<double>(d, a_ops, b_ops, c_ops, d.alpha.real(), d.beta.real());
             break;
         // The descriptor carries the full complex prefactor; preserve both
         // parts, a phase factor must not be truncated to its real part.
         case BlasScalar::ComplexFloat:
             extract_and_run<std::complex<float>>(
-                d, a_exs, b_exs, c_exs, std::complex<float>{static_cast<float>(d.alpha.real()), static_cast<float>(d.alpha.imag())},
+                d, a_ops, b_ops, c_ops, std::complex<float>{static_cast<float>(d.alpha.real()), static_cast<float>(d.alpha.imag())},
                 std::complex<float>{static_cast<float>(d.beta.real()), static_cast<float>(d.beta.imag())});
             break;
         case BlasScalar::ComplexDouble:
-            extract_and_run<std::complex<double>>(d, a_exs, b_exs, c_exs, d.alpha, d.beta);
+            extract_and_run<std::complex<double>>(d, a_ops, b_ops, c_ops, d.alpha, d.beta);
             break;
         }
     };

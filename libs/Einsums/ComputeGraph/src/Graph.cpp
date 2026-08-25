@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp> // For OptimizerPass and PassManager
 #include <Einsums/ComputeGraph/Options.hpp>
@@ -26,6 +27,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <complex>
 #include <cstdint>
@@ -35,6 +37,7 @@
 #include <ostream>
 #include <queue>
 #include <set>
+#include <span>
 #include <unordered_set>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -311,11 +314,17 @@ bool try_gpu_scale(Node const &node, std::unordered_map<TensorId, TensorHandle> 
 
     auto n = static_cast<int64_t>(handle.total_bytes() / handle.element_size);
 
+    // Only the real device kernels are wired up here, so a complex factor
+    // declines rather than being projected onto its real part: this path used
+    // to truncate silently, which is a wrong answer and not a slow one.
+    if (!is_real_valued(desc->factor)) {
+        return false;
+    }
     if (handle.dtype == packed_gemm::ScalarType::Float32) {
-        gpu::blas::scal<float>(n, static_cast<float>(desc->factor), static_cast<float *>(ptr), 1);
+        gpu::blas::scal<float>(n, as_real<float>(desc->factor), static_cast<float *>(ptr), 1);
         return true;
     } else if (handle.dtype == packed_gemm::ScalarType::Float64) {
-        gpu::blas::scal<double>(n, desc->factor, static_cast<double *>(ptr), 1);
+        gpu::blas::scal<double>(n, as_real<double>(desc->factor), static_cast<double *>(ptr), 1);
         return true;
     }
     return false;
@@ -2171,6 +2180,13 @@ void Graph::topological_sort() {
 }
 
 std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, std::function<bool()> predicate) {
+    // An EMPTY function is wrapped rather than turned into a literal, so a
+    // caller who passed one still gets the std::bad_function_call it has always
+    // got instead of silently taking a branch.
+    return add_conditional(std::move(label), PredExpr::callback(std::move(predicate)));
+}
+
+std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, PredExpr predicate) {
     auto then_graph = std::make_shared<Graph>(label + "/then");
     auto else_graph = std::make_shared<Graph>(label + "/else");
 
@@ -2179,17 +2195,16 @@ std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, std::func
     desc.then_branch = then_graph;
     desc.else_branch = else_graph;
 
+    // Dtype and rank are meaningless for a control-flow node, which has no
+    // tensor destination; the builder neither dispatches on nor validates them.
+    OpData op_data(std::move(desc));
+    auto   executor = build_executor(OpKind::Conditional, packed_gemm::ScalarType::Unknown, 0, op_data, *this, {}, {});
+
     Node node;
     node.kind    = OpKind::Conditional;
     node.label   = std::move(label);
-    node.execute = [d = desc]() {
-        if (d.predicate()) {
-            d.then_branch->execute();
-        } else if (d.else_branch && d.else_branch->num_nodes() > 0) {
-            d.else_branch->execute();
-        }
-    };
-    node.op_data = std::move(desc);
+    node.execute = std::move(executor);
+    node.op_data = std::move(op_data);
 
     add_node(std::move(node));
 
@@ -2198,36 +2213,37 @@ std::tuple<Graph &, Graph &> Graph::add_conditional(std::string label, std::func
 
 std::tuple<Graph &, Graph &> Graph::add_conditional_flag(std::string label, GateFlags const &flags, size_t index) {
     // The buffer, not the handle: the node has to keep reading the same array after the caller's
-    // GateFlags goes out of scope, and a shared_ptr copy is what makes that true.
-    return add_conditional(std::move(label), [buffer = flags.buffer(), index]() {
-        // Past the end reads false. A conditional cannot report an error usefully from inside a
-        // replay, and skipping a branch is the conservative answer.
-        return index < buffer->size() && (*buffer)[index] != 0;
-    });
+    // GateFlags goes out of scope, and a shared_ptr copy is what makes that true. This used to be
+    // a lambda closing over that buffer; PredExpr::FlagTest is the same load expressed as data,
+    // so the node is now saveable as well as GIL-free.
+    return add_conditional(std::move(label), PredExpr::flag(flags, index));
 }
 
 Graph &Graph::add_loop(std::string label, size_t max_iterations, std::function<bool(size_t)> condition) {
+    // An absent condition has always meant "run to max_iterations", and a
+    // default PredExpr is an unconditional true, which says exactly that.
+    return add_loop(std::move(label), max_iterations, condition ? PredExpr::callback(std::move(condition)) : PredExpr{});
+}
+
+Graph &Graph::add_loop(std::string label, size_t max_iterations, PredExpr condition) {
     auto body_graph = std::make_shared<Graph>(label + "/body");
 
     LoopDescriptor desc;
     desc.body           = body_graph;
     desc.max_iterations = max_iterations;
     desc.condition      = std::move(condition);
+    // Shared with the executor, so the iteration count the replay writes is
+    // observable on the node afterwards. See LoopDescriptor::last_iteration_count.
+    desc.state = std::make_shared<LoopState>();
+
+    OpData op_data(std::move(desc));
+    auto   executor = build_executor(OpKind::Loop, packed_gemm::ScalarType::Unknown, 0, op_data, *this, {}, {});
 
     Node node;
     node.kind    = OpKind::Loop;
     node.label   = std::move(label);
-    node.execute = [d = desc]() mutable {
-        d.last_iteration_count = 0;
-        for (size_t iter = 0; iter < d.max_iterations; iter++) {
-            d.body->execute();
-            d.last_iteration_count = iter + 1;
-            if (d.condition && !d.condition(iter)) {
-                break;
-            }
-        }
-    };
-    node.op_data = std::move(desc);
+    node.execute = std::move(executor);
+    node.op_data = std::move(op_data);
 
     add_node(std::move(node));
 
@@ -2484,25 +2500,11 @@ expected<std::pair<TensorId, void *>, GraphError> Graph::create_zero_runtime_ten
 }
 
 std::function<void()> Graph::make_gemm_executor(TensorId a_id, TensorId b_id, TensorId c_id, double alpha, double beta) {
-    return [this, a_id, b_id, c_id, alpha, beta]() {
-        auto const &a_h = tensor(a_id);
-        auto const &b_h = tensor(b_id);
-        auto       &c_h = tensor(c_id);
+    std::array<TensorId, 2> const inputs{a_id, b_id};
 
-        if (a_h.rank != 2 || b_h.rank != 2 || c_h.rank != 2) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "make_gemm_executor: all tensors must be rank 2");
-        }
+    OpData const op_data(GemmDescriptor{.alpha = PrefactorScalar{alpha}, .beta = PrefactorScalar{beta}, .trans_a = 'n', .trans_b = 'n'});
 
-        // Dispatch on dtype (all three must match)
-        auto go = [&]<typename T>(T /*tag*/) {
-            auto *A = static_cast<Tensor<T, 2> *>(a_h.tensor_ptr);
-            auto *B = static_cast<Tensor<T, 2> *>(b_h.tensor_ptr);
-            auto *C = static_cast<Tensor<T, 2> *>(c_h.tensor_ptr);
-            linear_algebra::gemm<false, false>(static_cast<T>(alpha), *A, *B, static_cast<T>(beta), C);
-        };
-
-        detail::dispatch_scalar_type(a_h.dtype, go);
-    };
+    return build_executor(OpKind::Gemm, tensor(a_id).dtype, 2, op_data, *this, inputs, std::span<TensorId const>{&c_id, 1});
 }
 
 Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, ParsedEinsumSpec const &spec, PrefactorScalar c_pf,
@@ -2551,103 +2553,17 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     desc.letter_spaces =
         detail::bind_einsum_spaces(*this, a_id, b_id, c_id, spec.a_indices, spec.b_indices, spec.c_indices, "Graph::make_einsum_node");
 
-    // BLAS batching hint, same gate and same derivation as the capture path in
-    // Operations.hpp: three rank-2 operands, exactly one link index, and strides
-    // that agree with each tensor's declared layout flag.
+    // BLAS batching hint. One derivation, shared with the capture path in
+    // Operations.hpp: the gate, the m/n/k arithmetic and the roles clause used
+    // to be duplicated here, and two copies of a rule whose failures are
+    // invisible until GEMMBatching forms a batch is one copy too many.
     //
     // Building this at pass time is no weaker than building it at capture. The
     // dims come from the same place either way, and GEMMBatching consumes the
     // hint BEFORE DistributionPlanning and Materialization run, so a captured
     // hint on graph-owned scratch is derived from the same shell geometry this
     // is. (A deferred shell carries valid dims and strides; only data() is null.)
-    // The extractors are strictly better than the capture path's: resolving by
-    // TensorId at call time follows rebind() and survives MemoryPlanning
-    // repointing storage through materialize_into, which is exactly why they read
-    // data() lazily instead of caching a pointer.
-    auto const layout_matches_flag = [](auto const &impl) {
-        bool const   row_major = impl.is_row_major();
-        size_t const rank      = impl.rank();
-        size_t       prev      = 0;
-        bool         first     = true;
-        for (size_t n = 0; n < rank; ++n) {
-            size_t const d = row_major ? rank - 1 - n : n;
-            if (impl.dim(d) <= 1) {
-                continue; // extent-1 axes are never traversed; ignore their strides
-            }
-            size_t const st = impl.stride(d);
-            if (!first && st < prev) {
-                return false;
-            }
-            prev  = st;
-            first = false;
-        }
-        return true;
-    };
-
-    // The batched form is C = op(A) * op(B), so C's FIRST index must be the one
-    // the einsum's A operand contributes and its SECOND the one B contributes.
-    // "ia <- ma ; mi" has them swapped -- i comes from B -- and m/n/k would then
-    // describe a matrix product this einsum does not perform. The generic kernel
-    // contracts correctly either way and never consults the hint, so a wrong hint
-    // stays invisible until GEMMBatching forms a batch and calls gemm_batch with
-    // it. Emit no hint rather than a wrong one.
-    auto const gemm_roles_match = [&]() {
-        if (spec.a_indices.size() != 2 || spec.b_indices.size() != 2 || spec.c_indices.size() != 2 || desc.spec.link_indices.size() != 1) {
-            return false;
-        }
-        auto const &lnk  = desc.spec.link_indices[0];
-        auto const  free = [&lnk](std::vector<std::string> const &idx) { return idx[0] == lnk ? idx[1] : idx[0]; };
-        return spec.c_indices[0] == free(spec.a_indices) && spec.c_indices[1] == free(spec.b_indices);
-    };
-
-    if (a_h.rank == 2 && b_h.rank == 2 && c_h.rank == 2 && spec.a_indices.size() == 2 && spec.b_indices.size() == 2 &&
-        spec.c_indices.size() == 2 && desc.spec.link_indices.size() == 1 && gemm_roles_match()) {
-        detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-            using Impl    = ::einsums::detail::TensorImpl<T>;
-            auto const *A = static_cast<Impl const *>(a_h.impl_fn());
-            auto const *B = static_cast<Impl const *>(b_h.impl_fn());
-            auto const *C = static_cast<Impl const *>(c_h.impl_fn());
-            if (A == nullptr || B == nullptr || C == nullptr) {
-                return;
-            }
-            if (!layout_matches_flag(*A) || !layout_matches_flag(*B) || !layout_matches_flag(*C)) {
-                return;
-            }
-
-            auto hint = std::make_shared<GemmHint>();
-            if constexpr (std::is_same_v<T, float>) {
-                hint->scalar = BlasScalar::Float;
-            } else if constexpr (std::is_same_v<T, double>) {
-                hint->scalar = BlasScalar::Double;
-            } else if constexpr (std::is_same_v<T, std::complex<float>>) {
-                hint->scalar = BlasScalar::ComplexFloat;
-            } else {
-                hint->scalar = BlasScalar::ComplexDouble;
-            }
-
-            std::string const &link = desc.spec.link_indices[0];
-            hint->trans_a           = (spec.a_indices[0] == link) ? 'T' : 'N';
-            hint->trans_b           = (spec.b_indices[1] == link) ? 'T' : 'N';
-            hint->m                 = static_cast<int>(C->dim(0));
-            hint->n                 = static_cast<int>(C->dim(1));
-            hint->k                 = static_cast<int>(hint->trans_a == 'N' ? A->dim(1) : A->dim(0));
-
-            Graph *g        = this;
-            hint->extract_a = [g, a_id]() -> std::pair<void const *, int> {
-                auto const *i = static_cast<Impl const *>(g->tensor(a_id).impl_fn());
-                return {static_cast<void const *>(i->data()), static_cast<int>(i->get_lda())};
-            };
-            hint->extract_b = [g, b_id]() -> std::pair<void const *, int> {
-                auto const *i = static_cast<Impl const *>(g->tensor(b_id).impl_fn());
-                return {static_cast<void const *>(i->data()), static_cast<int>(i->get_lda())};
-            };
-            hint->extract_c = [g, c_id]() -> std::pair<void *, int> {
-                auto *i = static_cast<Impl *>(g->tensor(c_id).impl_fn());
-                return {static_cast<void *>(i->data()), static_cast<int>(i->get_lda())};
-            };
-            desc.gemm_hint = std::move(hint);
-        });
-    }
+    desc.gemm_hint = derive_gemm_hint(dtype, desc.spec, *this, a_id, b_id, c_id);
 
     Node node;
     node.id    = reserve_node_id();
@@ -2665,33 +2581,21 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     // node, so per-tile nodes from a tiled expansion never share one and a
     // parallel executor needs no synchronization around it. Dtype-agnostic:
     // the key records the scalar type, so a rebind to another dtype misses.
-    auto pg_site = std::make_shared<packed_gemm::ContractionSite>();
+    // Set before the executor is built, because the builder adopts it from the
+    // descriptor: that is what lets a plan-time pass pin this node's kernel
+    // route where the dispatch will read it.
+    desc.site = std::make_shared<packed_gemm::ContractionSite>();
 
-    Graph *self  = this;
-    node.execute = [self, a_id, b_id, c_id, params, indices, dtype, pg_site]() {
-        detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-            using Impl = ::einsums::detail::TensorImpl<T>;
-            // Re-view each operand through its LIVE impl: aliasing, so writes to C
-            // land in the real tensor, and current, so rebind(), Materialization and
-            // the MemoryPlanning arena are all honored. Works for a typed
-            // Tensor<T, Rank> as well, since the impl is rank-erased.
-            RuntimeTensorView<T> const A{*static_cast<Impl *>(self->tensor(a_id).impl_fn())};
-            RuntimeTensorView<T> const B{*static_cast<Impl *>(self->tensor(b_id).impl_fn())};
-            RuntimeTensorView<T>       C{*static_cast<Impl *>(self->tensor(c_id).impl_fn())};
-            // The spec is passed BY REFERENCE, so an index rewrite (PermuteFusion)
-            // is honored without rebuilding it: the pass writes into this very
-            // object. Rebuilding it per call copied three vector<string> for
-            // nothing, which a per-tile expansion pays thousands of times a replay.
-            dispatch::string_einsum(indices->spec, as<T>(params->c_pf), &C, as<T>(params->ab_pf), A, B, params->conj_a, params->conj_b,
-                                    &indices->link_indices, pg_site.get());
-        });
-    };
-
-    // The same site the executor lambda holds, so a plan-time pass can pin this
-    // node's kernel route where the dispatch will read it.
-    desc.site = pg_site;
-
+    // One lowering, shared with capture and with a future loader: the executor
+    // is derived from (kind, dtype, rank, descriptor, operand ids) and nothing
+    // else (design part 3.2). It resolves operands through the graph's slots,
+    // so rebind() and redirect_slot() are honored, and reads the descriptor's
+    // live params and indices, so a pass that rewrites a prefactor or an index
+    // list takes effect on the next execute rather than being silently ignored
+    // (the desync class of bug-1002).
     node.op_data = std::move(desc);
+    node.execute = build_executor(OpKind::Einsum, dtype, c_h.rank, node.op_data, *this, std::span<TensorId const>{node.inputs},
+                                  std::span<TensorId const>{node.outputs});
     return node;
 }
 
@@ -3072,7 +2976,7 @@ void Graph::rebuild_profile_strings() {
                 text("b_indices", fmt::format("{}", fmt::join(desc->spec.b_indices, ",")));
             }
         } else if (auto const *sdesc = std::get_if<ScaleDescriptor>(&node.op_data)) {
-            entry.reals.emplace_back(profile::intern_string("scale_factor"), sdesc->factor);
+            entry.reals.emplace_back(profile::intern_string("scale_factor"), as_real<double>(sdesc->factor));
         } else if (auto const *cdesc = std::get_if<CommDescriptor>(&node.op_data)) {
             number("comm_bytes", static_cast<int64_t>(cdesc->size_bytes));
             number("comm_tensor", static_cast<int64_t>(cdesc->tensor_id));
@@ -3681,7 +3585,8 @@ std::string Graph::to_json() const {
             nd.conj_a       = desc->conj_a;
             nd.conj_b       = desc->conj_b;
         } else if (auto const *desc = std::get_if<ScaleDescriptor>(&node.op_data)) {
-            nd.scale_factor = desc->factor;
+            // Same viewer-facing projection as the einsum prefactors above.
+            nd.scale_factor = as_real<double>(desc->factor);
         } else if (auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data)) {
             // Same viewer-facing projection as the einsum prefactors above.
             nd.alpha     = desc->alpha.real();

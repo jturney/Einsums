@@ -7,6 +7,7 @@
 
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/PredExpr.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/TensorSlot.hpp>
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
@@ -27,6 +28,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -40,29 +42,63 @@ class Graph; // Forward declaration for ConditionalDescriptor/LoopDescriptor
 // and <Einsums/ComputeGraphTypes/Descriptors.hpp>.
 
 /**
+ * @brief One operand of a GEMM-shaped einsum, recorded as data.
+ *
+ * @par Why the leading dimension is only a hint
+ * @ref leading_dim is a SNAPSHOT, taken when the hint was derived. It exists
+ * so a planning pass can compare operand layouts across candidate nodes
+ * *before* anything executes, which is what @ref passes::GEMMBatching does to
+ * decide whether one ``gemm_batch`` call can address a whole group.
+ *
+ * It is never what the batch actually runs on. ``Graph::rebind`` accepts any
+ * tensor of matching rank and dims, so a rebind to a column slice of a larger
+ * store legitimately changes the leading dimension without changing anything
+ * the hint records; the batched executor therefore re-derives every leading
+ * dimension from the live @c TensorImpl at execute time and the snapshot is
+ * not consulted again. A rebind that changes an lda *after* a batch was formed
+ * consequently still computes correctly, because the group's descriptor is
+ * rebuilt from the live values on the next replay.
+ *
+ * The identity that survives a rebind is @ref id, which is why the operand is
+ * recorded as an id rather than as a pointer or a closure over one.
+ */
+struct GemmOperand {
+    TensorId id{0};          ///< The operand's tensor id. Resolution happens at execute, through the graph's slot.
+    int      leading_dim{0}; ///< Capture-time leading dimension. A PLANNING HINT; see the class note.
+};
+
+/**
  * @brief BLAS-level batching hint for 2D×2D→2D einsums.
  *
- * Populated at capture time when a contraction matches the GEMM
- * pattern (two rank-2 inputs, one rank-2 output, one link index). The
- * GEMMBatching pass reads this to decide which einsums can be
- * collapsed into a single `blas::gemm_batch` call. Non-GEMM
- * contractions leave `gemm_hint == nullptr`.
+ * Populated when a contraction matches the GEMM pattern (two rank-2 inputs,
+ * one rank-2 output, one link index, and strides agreeing with each operand's
+ * declared layout). The GEMMBatching pass reads this to decide which einsums
+ * can be collapsed into a single `blas::gemm_batch` call, and ThreadPlanning
+ * reads m/n/k to size a node. Non-GEMM contractions leave
+ * ``gemm_hint == nullptr``.
  *
- * The `extract_*` callbacks resolve the tensor's live pointer + leading
- * dimension at execute time (handles `graph.rebind()` correctly). Type
- * erasure: they return `void*` + `int`; the batched executor casts to
- * the concrete type based on the @ref BlasScalar tag.
+ * Every field is DATA. The operands used to be three ``std::function``s that
+ * resolved a live pointer plus leading dimension at call time; a closure
+ * cannot be written to a file, and it was the last thing standing between an
+ * einsum node and being reconstructible from its descriptor
+ * (@ref is_reconstructible). Resolution moved into the batched executor, which
+ * reaches the same live geometry through the graph's slots and therefore
+ * honors ``rebind`` and ``redirect_slot`` by construction rather than by each
+ * closure remembering to.
+ *
+ * @see derive_gemm_hint, the single derivation both capture and
+ *      @ref Graph::make_einsum_node use.
  */
 struct GemmHint {
-    BlasScalar                                    scalar;       ///< Element type for gemm_batch dispatch.
-    int                                           m{0};         ///< Rows of C (and A if trans_a=='N').
-    int                                           n{0};         ///< Cols of C (and B if trans_b=='N').
-    int                                           k{0};         ///< Link dimension.
-    char                                          trans_a{'N'}; ///< Transpose flag for A derived from its index order.
-    char                                          trans_b{'N'}; ///< Transpose flag for B.
-    std::function<std::pair<void const *, int>()> extract_a;    ///< Returns (data_ptr, lda) at call time.
-    std::function<std::pair<void const *, int>()> extract_b;    ///< Returns (data_ptr, ldb) at call time.
-    std::function<std::pair<void *, int>()>       extract_c;    ///< Returns (data_ptr, ldc) at call time.
+    BlasScalar  scalar;       ///< Element type for gemm_batch dispatch.
+    int         m{0};         ///< Rows of C (and A if trans_a=='N').
+    int         n{0};         ///< Cols of C (and B if trans_b=='N').
+    int         k{0};         ///< Link dimension.
+    char        trans_a{'N'}; ///< Transpose flag for A derived from its index order.
+    char        trans_b{'N'}; ///< Transpose flag for B.
+    GemmOperand a;            ///< Left input.
+    GemmOperand b;            ///< Right input.
+    GemmOperand c;            ///< Destination.
 };
 
 /**
@@ -168,6 +204,164 @@ struct AxpbyDescriptor {
     PrefactorScalar              alpha{double{1}}; ///< alpha snapshot (at-capture value)
     PrefactorScalar              beta{double{0}};  ///< beta snapshot (at-capture value)
     std::shared_ptr<AxpbyParams> params;           ///< live values the executor reads each call
+};
+
+/// Live-mutable scalars for the DENSE element-wise kinds - Scale, Permute,
+/// DirectProduct and DirectDivision - shared with the executor exactly as
+/// @ref AxpbyParams is with an axpby's.
+///
+/// The executor reads its prefactors from here on every call, so a pass that
+/// rewrites one writes it through this handle and the change takes effect on
+/// the next ``graph.execute()``. That is the whole point: the executors these
+/// kinds used to carry baked their scalars into a closure, so a descriptor
+/// rewrite was silently ignored at replay.
+///
+/// A descriptor also keeps an at-capture SNAPSHOT of the same scalars, which is
+/// what analysis passes read; a rewriter must write both, the rule
+/// @ref AxpbyDescriptor already states.
+///
+/// Scale uses @ref alpha only; @ref beta is meaningless for an in-place
+/// multiply and stays at its default there.
+struct ElementwiseParams {
+    PrefactorScalar alpha{double{1}}; ///< Prefactor on the source operand(s).
+    PrefactorScalar beta{double{0}};  ///< Prefactor on the destination (0 = pure overwrite).
+};
+
+/**
+ * @brief Metadata for @ref OpKind::Scale nodes: ``A *= factor``.
+ *
+ * Used by ScaleAbsorption to detect scales a following overwrite makes dead,
+ * and by ElementWiseFusion to merge consecutive scales of one tensor.
+ *
+ * @ref factor is a @ref PrefactorScalar rather than the plain @c double it was
+ * until the executor builder landed. Capture filled the old field from
+ * ``factor.real()``, so a complex scale read back as its real part: CSE merged
+ * scales differing only in the imaginary part, and ScaleAbsorption folded the
+ * truncated value into the following op. The variant records exactly what the
+ * executor applies.
+ *
+ * @ref params is null on nodes a pass built by hand rather than through
+ * @ref build_executor; readers must gate on it.
+ */
+struct ScaleDescriptor {
+    PrefactorScalar                    factor{double{1}}; ///< The scaling factor (at-capture snapshot).
+    std::shared_ptr<ElementwiseParams> params;            ///< Live value the executor reads each call (@ref ElementwiseParams::alpha).
+};
+
+/**
+ * @brief Metadata for @ref OpKind::Permute nodes.
+ *
+ * Stores the alpha/beta prefactors: C = beta * C + alpha * permute(A).
+ *
+ * The snapshot scalars are @c std::complex<double> (the widest concrete scalar,
+ * as in @ref BatchedGemmDescriptor) so a complex permute records exactly what
+ * its executor will apply. They were @c double, filled from @c alpha.real() at
+ * capture, which made `alpha = 1+3i` read back as a plain `1.0`: PermuteFusion
+ * saw a pure axis reorder and fused the permute away, dropping the imaginary
+ * part, and CSE merged permutes that differ only in it.
+ *
+ * The INDEX LISTS are deliberately not live-mutable. No pass rewrites them
+ * today, and a pass that wants to has a better move than mutating them under a
+ * running executor: rewrite the descriptor and call @ref build_executor again.
+ * The scalars are live because passes genuinely do rewrite those between
+ * replays.
+ */
+struct PermuteDescriptor {
+    std::complex<double>               alpha{1.0, 0.0}; ///< Prefactor for the source tensor (at-capture snapshot).
+    std::complex<double>               beta{0.0, 0.0};  ///< Prefactor for the destination tensor (0 = overwrite).
+    std::vector<std::string>           c_indices;       ///< Output index names (e.g., {"j","i"}).
+    std::vector<std::string>           a_indices;       ///< Input index names (e.g., {"i","j"}).
+    std::shared_ptr<ElementwiseParams> params;          ///< Live scalars the executor reads each call.
+};
+
+/**
+ * @brief Metadata for the DENSE element-wise binary kinds,
+ *        @ref OpKind::DirectProduct and @ref OpKind::DirectDivision.
+ *
+ * Both compute ``C = alpha * (A op B) + beta * C`` over three operands of one
+ * shape, differing only in the per-element operation, which @ref Node::kind
+ * already names. One descriptor for the two rather than a near-duplicate pair,
+ * for the same reason @ref GroupedElementwiseDescriptor serves three grouped
+ * kinds: there is nothing to record beyond the scalars, and a second type
+ * would only be a second thing to keep in step.
+ *
+ * The cost of sharing is the usual one: a pass that probes
+ * ``get_if<ElementwiseBinaryDescriptor>`` without also checking
+ * @ref Node::kind cannot tell a product from a quotient. Check the kind.
+ *
+ * The TILED direct division is a different node despite sharing the kind: it
+ * carries a @ref TiledElementwiseDescriptor, because its operands have no
+ * single contiguous buffer. @ref build_executor rejects it, and
+ * @ref Graph::serializability_report names it.
+ */
+struct ElementwiseBinaryDescriptor {
+    PrefactorScalar                    alpha{double{1}}; ///< Prefactor on the A-op-B product (at-capture snapshot).
+    PrefactorScalar                    beta{double{0}};  ///< Prefactor on the destination (0 = overwrite).
+    std::shared_ptr<ElementwiseParams> params;           ///< Live scalars the executor reads each call.
+};
+
+/**
+ * @brief Metadata for the DENSE @ref OpKind::Dot nodes.
+ *
+ * A dot reduces two same-shaped operands to one scalar. There is exactly one
+ * choice to record, and @ref conjugated is it: ``dot`` sums @f$A_i B_i@f$ while
+ * ``dotc`` sums @f$\overline{A_i} B_i@f$, which for a complex operand are
+ * different numbers and for a real one are the same. Neither form carries a
+ * prefactor -- there is no scalar to scale, since the destination is written
+ * rather than accumulated into -- so recording one would invent an operation
+ * the kernel does not perform.
+ *
+ * The TILED dot is a different node despite sharing the kind, exactly as the
+ * tiled direct division is: it carries a @ref TiledDotDescriptor, whose
+ * per-tile reduction has no builder entry. Check @ref Node::kind AND the
+ * alternative, or ask @ref reconstruction_blocker.
+ */
+struct DotDescriptor {
+    bool conjugated{false}; ///< true for ``dotc`` (sum conj(A)*B), false for the bilinear ``dot``.
+};
+
+/**
+ * @brief Metadata for the DENSE @ref OpKind::Trace nodes: ``result = sum_i A(i,i)``.
+ *
+ * Deliberately EMPTY, and present anyway. A trace is fully described by its
+ * kind, dtype and operand ids -- there is no prefactor, no index list and no
+ * variant of the operation to choose between -- so the type records nothing.
+ *
+ * What it buys is the per-node verdict. @ref OpKind::Trace also carries the
+ * TILED trace, which reduces over a grid rather than over one buffer and has no
+ * builder entry; without a descriptor to hold, "dense or tiled" would not be a
+ * question @ref reconstruction_blocker could answer from the node alone. The
+ * empty type is that answer, and it is the same argument @ref build_executor
+ * makes in reverse for @ref OpKind::Transpose, where the alternative that would
+ * be recorded already exists and would say something false.
+ */
+struct TraceDescriptor {};
+
+/**
+ * @brief Metadata for @ref OpKind::Gemm nodes: ``C = alpha*op(A)*op(B) + beta*C``.
+ *
+ * @ref trans_a and @ref trans_b are the BLAS transpose characters -- ``'n'``,
+ * ``'t'`` or ``'c'``, lower or upper case -- rather than the pair of bools two
+ * of the three capture overloads take, because the third overload accepts
+ * ``Transpose::C`` and a bool cannot spell a conjugate transpose. Recording
+ * chars loses nothing and lets one descriptor serve all three.
+ *
+ * The prefactors are SNAPSHOTS, with no live params block beside them, which is
+ * the one place this descriptor departs from @ref AxpbyDescriptor and
+ * @ref ElementwiseBinaryDescriptor. Nothing rewrites a gemm's prefactors today:
+ * ``ScaleAbsorption::fold_site`` folds into Einsum and Axpby only, and
+ * @ref Graph::update_prefactors refuses any node that is not an einsum. A
+ * shared block exists to be written between replays, and an unwritten one is
+ * only a second place for the same number to live. A pass that wants to fold
+ * into a gemm adds the block then, and the rule of ``ExecutorBuilder.hpp``
+ * applies until it does: rewrite these fields and call @ref build_executor
+ * again.
+ */
+struct GemmDescriptor {
+    PrefactorScalar alpha{double{1}}; ///< Prefactor on the matrix product (at-capture snapshot).
+    PrefactorScalar beta{double{0}};  ///< Prefactor on the destination (0 = overwrite).
+    char            trans_a{'n'};     ///< BLAS transpose character for A: 'n', 't' or 'c'.
+    char            trans_b{'n'};     ///< BLAS transpose character for B: 'n', 't' or 'c'.
 };
 
 /**
@@ -378,40 +572,75 @@ struct TiledElementwiseDescriptor {
 /**
  * @brief Metadata for conditional (if-then-else) nodes.
  *
- * Contains a predicate function and two subgraphs. The predicate is evaluated
- * at execution time; if true, the then_branch executes, otherwise else_branch.
- * The predicate can inspect tensor values and external state.
+ * Contains a predicate and two subgraphs. The predicate is evaluated at
+ * execution time; if true, the then_branch executes, otherwise else_branch.
+ *
+ * The predicate is a @ref PredExpr rather than a bare ``std::function``, which
+ * is what lets a conditional be data: a literal, a comparison over
+ * @ref ParamTable entries, or one slot of a @ref GateFlags array all rebuild
+ * from the descriptor, and only the callback arm does not. See
+ * @ref reconstruction_blocker, which reports that arm per node.
  *
  * @code
- * auto [then_graph, else_graph] = graph.add_conditional([&]() {
+ * auto [then_graph, else_graph] = graph.add_conditional("check", [&]() {
  *     return energy_diff < threshold;
  * });
  * @endcode
  */
 struct ConditionalDescriptor {
-    std::function<bool()>  predicate;   ///< Evaluated at runtime to select branch
-    std::shared_ptr<Graph> then_branch; ///< Executed if predicate() returns true
-    std::shared_ptr<Graph> else_branch; ///< Executed if predicate() returns false (may be empty)
+    PredExpr               predicate;   ///< Evaluated at runtime to select branch
+    std::shared_ptr<Graph> then_branch; ///< Executed if the predicate is true
+    std::shared_ptr<Graph> else_branch; ///< Executed if the predicate is false (may be empty)
+};
+
+/**
+ * @brief Live state a @ref LoopDescriptor shares with its executor.
+ *
+ * Separate from the descriptor for the reason ``ExecutorBuilder.hpp`` states
+ * once: nodes live in a ``std::vector`` that passes insert into, erase from and
+ * reorder, so an executor cannot hold a pointer into one. Everything a replay
+ * WRITES therefore lives in a shared block the executor holds by
+ * ``shared_ptr``, exactly as @ref EinsumParams and @ref AxpbyParams do for
+ * prefactors.
+ */
+struct LoopState {
+    /// How many iterations the most recent execute() ran.
+    size_t last_iteration_count{0};
 };
 
 /**
  * @brief Metadata for loop nodes.
  *
- * Contains a body subgraph executed repeatedly until the condition returns false
- * or max_iterations is reached. The condition is evaluated AFTER each iteration
+ * Contains a body subgraph executed repeatedly until the condition is false or
+ * max_iterations is reached. The condition is evaluated AFTER each iteration
  * and can inspect tensor values for convergence checking.
  *
  * @code
- * auto &body = graph.add_loop(100, [&](size_t iter) {
+ * auto &body = graph.add_loop("converge", 100, [&](size_t iter) {
  *     return std::abs(energy - energy_old) > 1e-8;
  * });
  * @endcode
  */
 struct LoopDescriptor {
-    std::shared_ptr<Graph>      body;                    ///< Subgraph to execute each iteration
-    size_t                      max_iterations{1000};    ///< Safety limit
-    std::function<bool(size_t)> condition;               ///< After each iter: true=continue, false=stop
-    size_t                      last_iteration_count{0}; ///< Set after execution
+    std::shared_ptr<Graph> body;                 ///< Subgraph to execute each iteration
+    size_t                 max_iterations{1000}; ///< Safety limit
+
+    /// After each iteration: true = continue, false = stop. A default-constructed
+    /// @ref PredExpr is an unconditional true, which is what an absent condition
+    /// has always meant: run to @ref max_iterations.
+    PredExpr condition;
+
+    /// Live loop state, shared with the executor. Null on a node some pass
+    /// assembled by hand; @ref build_executor then synthesizes a private block,
+    /// so the node still runs and simply reports no iteration count.
+    std::shared_ptr<LoopState> state;
+
+    /// @brief How many iterations the most recent execute() ran.
+    /// @return The count, or 0 when the node has never run or carries no live state.
+    ///
+    /// This used to be a plain field, and the executor wrote it into its own
+    /// COPY of the descriptor, so it was never observable on the node at all.
+    [[nodiscard]] size_t last_iteration_count() const noexcept { return state ? state->last_iteration_count : 0; }
 };
 
 /**
@@ -460,6 +689,81 @@ struct ViewDescriptor {
 };
 
 /**
+ * @brief The stored C++ type of a @c WriteParam node's source scalar.
+ *
+ * @c write_param accepts any arithmetic scalar and narrows it to the
+ * @c std::int64_t a @ref ParamTable holds, so an executor rebuilt from data has
+ * to be told the storage it is reading. One enumerator per arithmetic type
+ * rather than a (size, signedness) pair, because a saved graph writes the NAME
+ * and a name that spells the type is the one a reader can check against the
+ * tensor it binds.
+ */
+enum class ParamSourceType : std::uint8_t {
+    Bool,       ///< @c bool
+    Char,       ///< @c char, whose signedness is implementation-defined
+    SChar,      ///< @c signed char
+    UChar,      ///< @c unsigned char
+    Short,      ///< @c short
+    UShort,     ///< @c unsigned short
+    Int,        ///< @c int
+    UInt,       ///< @c unsigned int
+    Long,       ///< @c long
+    ULong,      ///< @c unsigned long
+    LongLong,   ///< @c long long
+    ULongLong,  ///< @c unsigned long long
+    Float,      ///< @c float
+    Double,     ///< @c double
+    LongDouble, ///< @c long double
+    /// The width-named spellings the graph itself uses. @c std::int64_t is one
+    /// of @c long / @c long long depending on the platform, so this is an alias
+    /// for whichever of those it is rather than a fifteenth distinct type.
+    Int64 = LongLong,
+};
+
+/**
+ * @brief The @ref ParamSourceType naming @p T.
+ * @tparam T An arithmetic type.
+ * @return Its enumerator.
+ */
+template <typename T>
+    requires std::is_arithmetic_v<T>
+constexpr ParamSourceType param_source_type() {
+    using U = std::remove_cv_t<T>;
+    if constexpr (std::is_same_v<U, bool>) {
+        return ParamSourceType::Bool;
+    } else if constexpr (std::is_same_v<U, char>) {
+        return ParamSourceType::Char;
+    } else if constexpr (std::is_same_v<U, signed char>) {
+        return ParamSourceType::SChar;
+    } else if constexpr (std::is_same_v<U, unsigned char>) {
+        return ParamSourceType::UChar;
+    } else if constexpr (std::is_same_v<U, short>) {
+        return ParamSourceType::Short;
+    } else if constexpr (std::is_same_v<U, unsigned short>) {
+        return ParamSourceType::UShort;
+    } else if constexpr (std::is_same_v<U, int>) {
+        return ParamSourceType::Int;
+    } else if constexpr (std::is_same_v<U, unsigned int>) {
+        return ParamSourceType::UInt;
+    } else if constexpr (std::is_same_v<U, long>) {
+        return ParamSourceType::Long;
+    } else if constexpr (std::is_same_v<U, unsigned long>) {
+        return ParamSourceType::ULong;
+    } else if constexpr (std::is_same_v<U, long long>) {
+        return ParamSourceType::LongLong;
+    } else if constexpr (std::is_same_v<U, unsigned long long>) {
+        return ParamSourceType::ULongLong;
+    } else if constexpr (std::is_same_v<U, float>) {
+        return ParamSourceType::Float;
+    } else if constexpr (std::is_same_v<U, double>) {
+        return ParamSourceType::Double;
+    } else {
+        static_assert(std::is_same_v<U, long double>, "param_source_type: unhandled arithmetic type");
+        return ParamSourceType::LongDouble;
+    }
+}
+
+/**
  * @brief Metadata for @c WriteParam nodes, explicit dataflow write into a Pipeline parameter.
  *
  * Reads a scalar tensor's value (or evaluates a callback) and stores the
@@ -468,9 +772,40 @@ struct ViewDescriptor {
  * parameter are correctly ordered.
  */
 struct WriteParamDescriptor {
-    std::string                   name;         ///< Parameter name to write.
-    TensorId                      source_id{0}; ///< Scalar tensor to read (0 if using @ref source_fn).
-    std::function<std::int64_t()> source_fn;    ///< Optional: compute the value directly.
+    std::string name; ///< Parameter name to write.
+
+    /// Scalar tensor to read (0 when using @ref source_expr).
+    ///
+    /// A structural record, not the operand the executor reads: execution
+    /// resolves the source through the node's own @ref Node::inputs, which is
+    /// what every pass rewrites. The two agree at capture and the dataflow list
+    /// is authoritative if they ever disagree.
+    TensorId source_id{0};
+
+    /// The C++ type of the scalar at @ref source_id.
+    ///
+    /// @ref TensorHandle::dtype cannot answer this: it names the four BLAS
+    /// element types and reports ``Unknown`` for every integral one, and a loop
+    /// bound written through @c write_param is an integer far more often than
+    /// it is a double. A rebuilt executor has to know the width and the
+    /// signedness of the storage it reads before it can narrow the value to the
+    /// @c std::int64_t a @ref ParamTable holds.
+    ///
+    /// Meaningless on the callback arm, where there is no storage to decode.
+    ParamSourceType source_type{ParamSourceType::Int64};
+
+    /// Optional: compute the value from an expression rather than from a tensor.
+    ///
+    /// Unset means the tensor arm above. Set means the value comes from a
+    /// @ref BoundExpr, which is a literal, a named @ref ParamTable entry, or a
+    /// callback. Only the callback arm blocks a save, and
+    /// @ref reconstruction_blocker inspects the arm to say so per node --
+    /// @ref OpKind::WriteParam is a reconstructible KIND either way.
+    ///
+    /// An ``optional`` rather than a bare @ref BoundExpr because a default
+    /// ``BoundExpr`` is the literal 0, which is a legitimate value and
+    /// therefore cannot double as "no expression here".
+    std::optional<BoundExpr> source_expr;
 };
 
 namespace detail {
@@ -624,12 +959,19 @@ build_letter_spaces(std::span<LetterSpaceOperand const> operands, SpaceRegistry 
  * for use by optimization passes. Nodes with no special metadata use
  * std::monostate.
  */
+/// New alternatives are APPENDED, never inserted. The variant index is not a
+/// serialized property today - the IR of the design's Part 3.8 writes
+/// descriptors by NAME, precisely so adding one in the middle cannot silently
+/// reinterpret an old file - but keeping the order append-only costs nothing
+/// and keeps every debug dump that prints ``op_data.index()`` comparable
+/// across builds.
 using OpData =
     std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
                  AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor, BatchedGemmDescriptor,
                  GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, GroupedDotDescriptor,
                  GroupedAxpbyDescriptor, GroupedElementwiseDescriptor, GroupedSandwichDescriptor, GroupedGatherRotateDescriptor,
-                 TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor>;
+                 TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor, ElementwiseBinaryDescriptor,
+                 DotDescriptor, TraceDescriptor, GemmDescriptor, ElementTransformDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.
@@ -774,25 +1116,38 @@ struct Node {
 ///        @ref Node::inputs.
 ///
 /// A @c View whose slice bounds name a parameter re-resolves them every time it
-/// executes, so it must stay ordered after whatever writes them. Callback-valued
-/// bounds are deliberately NOT reported here: they name nothing, so no edge can
-/// be derived. Use @ref has_runtime_view_bounds to ask the weaker question "does
-/// this slice move at all", which is what hoisting and folding need.
+/// executes, so it must stay ordered after whatever writes them. The same is
+/// true of a conditional or a loop whose predicate compares parameters, and of
+/// a @c WriteParam whose source is itself a named parameter.
+///
+/// Callback-valued bounds and callback predicates are deliberately NOT reported
+/// here: they name nothing, so no edge can be derived. Use
+/// @ref has_runtime_view_bounds to ask the weaker question "does this slice move
+/// at all", which is what hoisting and folding need. A @ref PredExpr::FlagTest
+/// names nothing either, by construction: its array rides outside the dataflow
+/// exactly as @ref LuPivots does.
 [[nodiscard]] inline std::vector<std::string> param_reads(Node const &node) {
     std::vector<std::string> names;
-    auto const              *vd = std::get_if<ViewDescriptor>(&node.op_data);
-    if (vd == nullptr) {
-        return names;
-    }
-    auto const add = [&names](BoundExpr const &bound) {
+    auto const               add = [&names](BoundExpr const &bound) {
         if (bound.is_param()) {
             names.push_back(bound.param_name());
         }
     };
-    for (auto const &ax : vd->axes) {
-        add(ax.lo);
-        if (ax.kind == ViewAxis::Kind::Range) {
-            add(ax.hi);
+
+    if (auto const *vd = std::get_if<ViewDescriptor>(&node.op_data)) {
+        for (auto const &ax : vd->axes) {
+            add(ax.lo);
+            if (ax.kind == ViewAxis::Kind::Range) {
+                add(ax.hi);
+            }
+        }
+    } else if (auto const *cd = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+        cd->predicate.collect_param_names(names);
+    } else if (auto const *ld = std::get_if<LoopDescriptor>(&node.op_data)) {
+        ld->condition.collect_param_names(names);
+    } else if (auto const *wd = std::get_if<WriteParamDescriptor>(&node.op_data)) {
+        if (wd->source_expr.has_value()) {
+            add(*wd->source_expr);
         }
     }
     return names;

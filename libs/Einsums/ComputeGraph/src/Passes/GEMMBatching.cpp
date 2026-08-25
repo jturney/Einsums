@@ -5,6 +5,7 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/ComputeGraph/Detail/BatchedGemm.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/GEMMBatching.hpp>
@@ -149,22 +150,24 @@ bool GEMMBatching::run(Graph &graph) {
         // Probe lda/ldb/ldc on the first member; reject the group if any
         // other member disagrees. Non-uniform strides can't share one
         // gemm_batch call.
+        //
+        // The recorded leading dimensions are what is read here, and that is
+        // the whole reason @ref GemmOperand records them: this runs BEFORE
+        // anything executes, so there is no live buffer to interrogate. They
+        // are a planning snapshot - a later rebind may change an operand's
+        // leading dimension without changing its rank or dims - which is why
+        // the batched executor re-derives them from the live impl instead of
+        // trusting these. A rebind that breaks a formed group's uniformity is
+        // a caller error the executor cannot see; re-running this pass after
+        // such a rebind re-forms the groups against the new layout.
         auto     *first_desc = std::get_if<EinsumDescriptor>(&nodes[group.front()].op_data);
-        auto      first_a    = first_desc->gemm_hint->extract_a();
-        auto      first_b    = first_desc->gemm_hint->extract_b();
-        auto      first_c    = first_desc->gemm_hint->extract_c();
-        int const lda = first_a.second, ldb = first_b.second, ldc = first_c.second;
+        int const lda = first_desc->gemm_hint->a.leading_dim, ldb = first_desc->gemm_hint->b.leading_dim,
+                  ldc = first_desc->gemm_hint->c.leading_dim;
 
         bool uniform = true;
         for (size_t idx = 1; idx < group.size(); ++idx) {
-            auto *d       = std::get_if<EinsumDescriptor>(&nodes[group[idx]].op_data);
-            auto [ap, la] = d->gemm_hint->extract_a();
-            auto [bp, lb] = d->gemm_hint->extract_b();
-            auto [cp, lc] = d->gemm_hint->extract_c();
-            (void)ap;
-            (void)bp;
-            (void)cp;
-            if (la != lda || lb != ldb || lc != ldc) {
+            auto const *d = std::get_if<EinsumDescriptor>(&nodes[group[idx]].op_data);
+            if (d->gemm_hint->a.leading_dim != lda || d->gemm_hint->b.leading_dim != ldb || d->gemm_hint->c.leading_dim != ldc) {
                 uniform = false;
                 break;
             }
@@ -252,12 +255,10 @@ bool GEMMBatching::run(Graph &graph) {
         // Collect the per-member extractors (ordered so a_array[i],
         // b_array[i], c_array[i] all reference the same original
         // contraction: preserves semantics when alpha*A*B+beta*C).
-        std::vector<std::function<std::pair<void const *, int>()>> a_exs;
-        std::vector<std::function<std::pair<void const *, int>()>> b_exs;
-        std::vector<std::function<std::pair<void *, int>()>>       c_exs;
-        a_exs.reserve(group.size());
-        b_exs.reserve(group.size());
-        c_exs.reserve(group.size());
+        detail::BatchedGemmOperands a_ops, b_ops, c_ops;
+        a_ops.reserve(group.size());
+        b_ops.reserve(group.size());
+        c_ops.reserve(group.size());
         std::vector<TensorId> batched_inputs;  // [A_0, B_0, A_1, B_1, …]
         std::vector<TensorId> batched_outputs; // [C_0, C_1, …]
         batched_inputs.reserve(2 * group.size());
@@ -265,9 +266,14 @@ bool GEMMBatching::run(Graph &graph) {
 
         for (size_t const idx : group) {
             auto *g_desc = std::get_if<EinsumDescriptor>(&nodes[idx].op_data);
-            a_exs.push_back(g_desc->gemm_hint->extract_a);
-            b_exs.push_back(g_desc->gemm_hint->extract_b);
-            c_exs.push_back(g_desc->gemm_hint->extract_c);
+            // Bound to the graph's slots, so the batch follows every later
+            // rebind() and redirect_slot() the way the member einsums did.
+            a_ops.push_back(
+                detail::BatchedGemmOperand{.accessor = resolve_operand(graph, g_desc->gemm_hint->a.id, "GEMMBatching", "A"), .offset = 0});
+            b_ops.push_back(
+                detail::BatchedGemmOperand{.accessor = resolve_operand(graph, g_desc->gemm_hint->b.id, "GEMMBatching", "B"), .offset = 0});
+            c_ops.push_back(
+                detail::BatchedGemmOperand{.accessor = resolve_operand(graph, g_desc->gemm_hint->c.id, "GEMMBatching", "C"), .offset = 0});
             batched_inputs.push_back(nodes[idx].inputs[0]);
             batched_inputs.push_back(nodes[idx].inputs[1]);
             batched_outputs.push_back(nodes[idx].outputs[0]);
@@ -287,7 +293,7 @@ bool GEMMBatching::run(Graph &graph) {
 
         // Shared with cg::batched_gemm so the two producers of a BatchedGemm
         // node cannot drift; see ComputeGraph/Detail/BatchedGemm.hpp.
-        auto executor = detail::make_batched_gemm_executor(d, std::move(a_exs), std::move(b_exs), std::move(c_exs));
+        auto executor = detail::make_batched_gemm_executor(d, std::move(a_ops), std::move(b_ops), std::move(c_ops));
 
         // Construct the new node and mark originals for removal.
         Node batched;

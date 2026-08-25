@@ -58,6 +58,39 @@ each iteration:
 
 The ``max_iterations`` parameter is a safety limit.
 
+Predicates as Data
+==================
+
+A ``std::function`` predicate is opaque: nothing can inspect it, and nothing can
+write it to a file.
+``PredExpr`` is the same condition expressed as data, and both ``add_conditional``
+and ``add_loop`` accept one wherever they accept a callable.
+
+.. code-block:: cpp
+
+   // A comparison over pipeline parameters.
+   auto [then_g, else_g] = graph.add_conditional(
+       "converged", cg::PredExpr::compare(cg::BoundExpr{"delta"}, cg::CmpOp::Lt, cg::BoundExpr{1}));
+
+   // A comparison against the index of the iteration that just finished.
+   auto &body = graph.add_loop("iter", 100, cg::PredExpr::iteration(cg::CmpOp::Lt, cg::BoundExpr{9}));
+
+   // One slot of a GateFlags array. This is what add_conditional_flag builds.
+   auto [gated, _] = graph.add_conditional("block", cg::PredExpr::flag(flags, block_index));
+
+The arms are a literal, a comparison over two ``BoundExpr`` operands, a
+comparison against the loop iteration index, a gate-flag load, and a callback.
+Only the callback arm holds a closure, and it is the only one that stops a node
+from being reconstructed from its descriptor alone; ``Graph::serializability_report()``
+names such a node individually.
+A conditional or a loop whose predicate names a parameter is ordered against
+whatever writes that parameter, the same way a view with parametric bounds is.
+
+The iteration index is deliberately NOT a reserved parameter name.
+A ``ParamTable`` is a flat namespace shared by the whole graph, so a loop-private
+counter placed in it would collide between nested loops and would be readable by
+nodes that have no business seeing it.
+
 Mixing Control Flow with Regular Operations
 ============================================
 

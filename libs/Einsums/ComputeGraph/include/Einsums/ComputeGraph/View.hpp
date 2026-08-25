@@ -7,6 +7,7 @@
 
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Pipeline.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
@@ -23,6 +24,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -885,50 +887,73 @@ void write_param(std::string name, T &source) {
     if (!ctx.is_capturing())
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::write_param called outside of capture");
 
-    TensorId const source_id  = ctx.get_or_register_scalar(&source, fmt::format("write_param_src({})", name));
-    auto           params_ptr = ctx.params_ptr();
+    TensorId const source_id = ctx.get_or_register_scalar(&source, fmt::format("write_param_src({})", name));
 
     WriteParamDescriptor desc;
-    desc.name      = name;
-    desc.source_id = source_id;
+    desc.name        = name;
+    desc.source_id   = source_id;
+    desc.source_type = param_source_type<T>();
 
     auto label = fmt::format("write_param: {} <- scalar", name);
 
-    auto executor = [name, &source, params_ptr]() {
-        if (!params_ptr)
-            EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::write_param executor: no ParamTable bound to graph");
-        params_ptr->set(name, static_cast<std::int64_t>(source));
-    };
+    // The executor no longer closes over ``source``. It reads the address the
+    // graph holds for that scalar on every call, so repointing the handle moves
+    // the read - which is the whole point of the source being a graph tensor
+    // rather than a captured reference.
+    //
+    // Rank is keyed on the destination, and this node's destination is a
+    // ParamTable entry that no tensor names: 0.
+    OpData op_data(std::move(desc));
+    auto   executor = build_executor(OpKind::WriteParam, packed_gemm::get_scalar_type<T>(), 0, op_data, *ctx.graph(),
+                                     std::span<TensorId const>{&source_id, 1}, {});
 
-    ctx.record(OpKind::WriteParam, std::move(label), {source_id}, {}, std::move(executor), std::move(desc));
+    ctx.record(OpKind::WriteParam, std::move(label), {source_id}, {}, std::move(executor), std::move(op_data));
 }
 
-/// Write a parameter from an arbitrary callback evaluated at execute time.
+/// Write a parameter from a runtime scalar EXPRESSION evaluated at execute time.
 ///
-/// No graph dependency is created; the callback is treated as opaque. Use
-/// the tensor-source form when the value is produced by upstream graph ops
-/// and you want correct scheduling.
-inline void write_param(std::string name, std::function<std::int64_t()> source_fn) {
+/// No graph dependency on a tensor is created. A @ref BoundExpr::Param source
+/// does create a parameter-ordering edge (see @ref param_reads), so a chain of
+/// parameter writes is scheduled correctly; a literal and a callback name
+/// nothing and are unordered against anything.
+///
+/// This is Part 3.3 of the design applied to the last of its four closures: a
+/// runtime scalar is a literal, a named parameter, or a callback, with only the
+/// last unserializable. @c OpKind::WriteParam is a reconstructible KIND either
+/// way, and @ref Graph::serializability_report names a callback-arm node
+/// individually.
+inline void write_param(std::string name, BoundExpr source) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing())
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::write_param called outside of capture");
 
-    auto params_ptr = ctx.params_ptr();
+    char const *arm = source.is_const() ? "const" : (source.is_param() ? "param" : "callback");
 
     WriteParamDescriptor desc;
-    desc.name      = name;
-    desc.source_id = 0;
-    desc.source_fn = source_fn;
+    desc.name        = name;
+    desc.source_id   = 0;
+    desc.source_expr = std::move(source);
 
-    auto label = fmt::format("write_param: {} <- callback", name);
+    auto label = fmt::format("write_param: {} <- {}", name, arm);
 
-    auto executor = [name, source_fn = std::move(source_fn), params_ptr]() {
-        if (!params_ptr)
-            EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::write_param executor: no ParamTable bound to graph");
-        params_ptr->set(name, source_fn());
-    };
+    // Rank is keyed on the destination, and this node's destination is a
+    // ParamTable entry that no tensor names: 0. The expression arm reads no
+    // operand at all, so there is no dtype either.
+    OpData op_data(std::move(desc));
+    auto   executor = build_executor(OpKind::WriteParam, packed_gemm::ScalarType::Unknown, 0, op_data, *ctx.graph(), {}, {});
 
-    ctx.record(OpKind::WriteParam, std::move(label), {}, {}, std::move(executor), std::move(desc));
+    ctx.record(OpKind::WriteParam, std::move(label), {}, {}, std::move(executor), std::move(op_data));
+}
+
+/// Write a parameter from an arbitrary callback evaluated at execute time.
+///
+/// A thin spelling of the @ref BoundExpr form above, kept because a bare lambda
+/// cannot reach a ``BoundExpr`` parameter implicitly (that would be two
+/// user-defined conversions). No graph dependency is created; the callback is
+/// treated as opaque. Use the tensor-source form when the value is produced by
+/// upstream graph ops and you want correct scheduling.
+inline void write_param(std::string name, std::function<std::int64_t()> source_fn) {
+    write_param(std::move(name), BoundExpr(std::move(source_fn)));
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)

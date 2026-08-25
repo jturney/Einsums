@@ -14,6 +14,8 @@
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeElementwise.hpp>
 #include <Einsums/ComputeGraph/Diis.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/ElementOps.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/LuPivots.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
@@ -40,9 +42,12 @@
 #endif
 
 #include <algorithm>
+#include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -134,30 +139,25 @@ APIARY_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<std::complex<double>>
         }
 
         LabeledSection("scale capture");
-        auto [a_id, a_slot] = ctx.get_slot(*A);
+        // The slot is created for its side effect: the executor the builder
+        // returns resolves this operand through it, which is what makes the
+        // node follow rebind() and redirect_slot().
+        TensorId const a_id = ctx.get_slot(*A).first;
 
+        // The factor is recorded in the tensor's own scalar type rather than
+        // projected onto a double, so a complex scale reads back exactly.
         ScaleDescriptor desc;
-        if constexpr (IsComplexV<typename AType::ValueType>) {
-            desc.factor = static_cast<double>(factor.real());
-        } else {
-            desc.factor = static_cast<double>(factor);
-        }
+        desc.factor        = PrefactorScalar{factor};
+        desc.params        = std::make_shared<ElementwiseParams>();
+        desc.params->alpha = desc.factor;
 
-        auto factor_str = [&]() -> std::string {
-            if constexpr (IsComplexV<typename AType::ValueType>) {
-                return fmt::format("({},{})", factor.real(), factor.imag());
-            } else {
-                return fmt::format("{}", factor);
-            }
-        }();
-        auto label    = fmt::format("scale({}, {})", factor_str, A->name());
-        auto executor = [factor, a_slot]() {
-            LabeledSection("scale execute");
-            auto *a_ptr = static_cast<AType *>(a_slot->ptr);
-            linear_algebra::scale(factor, a_ptr);
-        };
+        auto label = fmt::format("scale({}, {})", to_string(desc.factor), A->name());
 
-        ctx.record(OpKind::Scale, std::move(label), {a_id}, {a_id}, std::move(executor), std::move(desc));
+        OpData op_data(std::move(desc));
+        auto   executor = build_executor(OpKind::Scale, packed_gemm::get_scalar_type<typename AType::ValueType>(), detail::tensor_rank(*A),
+                                         op_data, *ctx.graph(), {}, std::span<TensorId const>{&a_id, 1});
+
+        ctx.record(OpKind::Scale, std::move(label), {a_id}, {a_id}, std::move(executor), std::move(op_data));
     }
 }
 
@@ -467,9 +467,9 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
         }
 
         LabeledSection("permute capture");
-        // Capture mode with slots
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [c_id, c_slot] = ctx.get_slot(*C);
+        // Capture mode with slots; the builder resolves both operands through them.
+        TensorId const a_id = ctx.get_slot(A).first;
+        TensorId const c_id = ctx.get_slot(*C).first;
 
         PermuteDescriptor desc;
         if constexpr (IsComplexV<T>) {
@@ -481,16 +481,20 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
         }
         desc.c_indices = parsed.c_indices;
         desc.a_indices = parsed.a_indices;
+        // Live scalars in the operands' own type, so a pass that rewrites a
+        // prefactor is obeyed on the next replay. The executor used to bake
+        // copies of these and ignore the descriptor entirely.
+        desc.params        = std::make_shared<ElementwiseParams>();
+        desc.params->alpha = PrefactorScalar{alpha};
+        desc.params->beta  = PrefactorScalar{beta};
 
         auto label = fmt::format("permute: C[{}] = A[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","));
 
-        auto executor = [parsed, beta, alpha, a_slot, c_slot]() {
-            LabeledSection("permute execute");
-            dispatch::string_permute<AType, CType>(parsed, static_cast<T>(beta), static_cast<CType *>(c_slot->ptr), static_cast<T>(alpha),
-                                                   *static_cast<AType const *>(a_slot->ptr));
-        };
+        OpData op_data(std::move(desc));
+        auto   executor = build_executor(OpKind::Permute, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*C), op_data, *ctx.graph(),
+                                         std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&c_id, 1});
 
-        ctx.record(OpKind::Permute, std::move(label), {a_id}, {c_id}, std::move(executor), std::move(desc));
+        ctx.record(OpKind::Permute, std::move(label), {a_id}, {c_id}, std::move(executor), std::move(op_data));
     }
 }
 
@@ -549,13 +553,14 @@ void transpose(CType *C, AType const &A) {
     }
 
     LabeledSection("transpose capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [c_id, c_slot] = ctx.get_slot(*C);
+    TensorId const a_id = ctx.get_slot(A).first;
+    TensorId const c_id = ctx.get_slot(*C).first;
 
-    auto executor = [c_slot, a_slot]() {
-        LabeledSection("transpose execute");
-        tensor_algebra::transpose(static_cast<CType *>(c_slot->ptr), *static_cast<AType const *>(a_slot->ptr));
-    };
+    // No descriptor, deliberately: a transpose is a fixed permutation with no
+    // scalars, so (kind, dtype, rank, operand ids) is its complete content and
+    // an empty descriptor alternative would record nothing. See build_executor.
+    auto executor = build_executor(OpKind::Transpose, packed_gemm::get_scalar_type<typename AType::ValueType>(), detail::tensor_rank(A),
+                                   OpData{}, *ctx.graph(), std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&c_id, 1});
 
     ctx.record(OpKind::Transpose, "transpose", {a_id}, {c_id}, std::move(executor));
 }
@@ -1419,10 +1424,18 @@ APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Graph-aware element_transform: apply unary operator element-wise.
+///
+/// The kernel is a closure, so a node this records carries NO descriptor and
+/// cannot be written to a file; @ref Graph::serializability_report names it
+/// with the fix. That is deliberate rather than a gap -- an anonymous lambda
+/// stays fully legal on every non-serialized path. The string-taking overload
+/// below is the saveable spelling, and the constraint here is what keeps a
+/// string from being deduced as a "unary operator".
 template <CoreTensorConcept CType, typename UnaryOperator>
     requires requires {
         requires BasicTensorConcept<CType>;
         requires RankTensorConcept<CType>;
+        requires !std::convertible_to<UnaryOperator, std::string_view>;
     }
 void element_transform(CType *C, UnaryOperator unary_op) {
     auto &ctx = CaptureContext::current();
@@ -1447,6 +1460,7 @@ void element_transform(CType *C, UnaryOperator unary_op) {
 /// overload requires BasicTensorConcept, which a tiled tensor no longer
 /// satisfies, so this is selected unambiguously for tiled operands.)
 template <TiledTensorConcept CType, typename UnaryOperator>
+    requires(!std::convertible_to<UnaryOperator, std::string_view>)
 void element_transform(CType *C, UnaryOperator unary_op) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -1461,6 +1475,56 @@ void element_transform(CType *C, UnaryOperator unary_op) {
         detail::tiled_element_transform(static_cast<CType *>(c_slot->ptr), unary_op);
     };
     ctx.record(OpKind::Custom, "tiled element_transform", {c_id}, {c_id}, std::move(executor));
+}
+
+/// Graph-aware element_transform whose kernel is looked up by NAME.
+///
+/// The saveable spelling of the overload above: the node records the name and
+/// @ref build_executor resolves it, so an @ref OpKind::ElementTransform node is
+/// data all the way down and a rebuilt executor runs the same kernel a capture
+/// did.
+///
+/// The lookup happens HERE, at capture, not at replay: an op this process has
+/// not registered is a caller error and the message names the op, rather than a
+/// surprise part-way through an execute(). Eager and captured runs go through
+/// the same rank-erased walk, so the two cannot diverge.
+///
+/// Accepts the runtime-rank tensors too, which the closure overload cannot: the
+/// walk is over the operand's ``TensorImpl``, so compile-time rank is not needed.
+/// A TILED destination is not accepted; a tiled transform stays anonymous, and
+/// it records under @ref OpKind::Custom in any case.
+///
+/// @param[in,out] C       The tensor to transform in place.
+/// @param[in]     op_name Name of the kernel in the process's element-op registry.
+/// @throws std::invalid_argument When no op of that name is registered, or when
+///         it is not defined for @p C 's element type.
+template <CoreBasicTensorConcept CType>
+void element_transform(CType *C, std::string_view op_name) {
+    using T = typename CType::ValueType;
+
+    auto kernel = element_ops::global_element_op_registry().kernel<T>(op_name);
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("element_transform eager");
+        element_ops::detail::apply_element_op<T>(kernel, &C->impl());
+        return;
+    }
+
+    LabeledSection("element_transform capture");
+    auto [c_id, c_slot] = ctx.get_slot(*C);
+
+    ElementTransformDescriptor desc;
+    desc.op_name = std::string(op_name);
+
+    OpData op_data(std::move(desc));
+    auto   executor = build_executor(OpKind::ElementTransform, packed_gemm::get_scalar_type<T>(), C->impl().rank(), op_data, *ctx.graph(),
+                                     std::span<TensorId const>{&c_id, 1}, std::span<TensorId const>{&c_id, 1});
+
+    // Both lists name C: the transform reads every element and writes it back,
+    // which is the read-modify-write convention scale and the closure overload
+    // already use.
+    ctx.record(OpKind::ElementTransform, "element_transform", {c_id}, {c_id}, std::move(executor), std::move(op_data));
 }
 
 /// Python-friendly element_transform wrapper.
@@ -1694,8 +1758,8 @@ APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<double>>,
         }
 
         LabeledSection("axpy capture");
-        auto [x_id, x_slot] = ctx.get_slot(X);
-        auto [y_id, y_slot] = ctx.get_slot(*Y);
+        TensorId const x_id = ctx.get_slot(X).first;
+        TensorId const y_id = ctx.get_slot(*Y).first;
 
         using T = typename XType::ValueType;
 
@@ -1717,33 +1781,28 @@ APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<double>>,
         params->beta  = PrefactorScalar{T{1}};
 
         auto label = fmt::format("axpy(alpha={}, {}, {})", alpha, X.name(), Y->name());
-        // Reads the scalars through the shared params, exactly as axpby does, so
-        // the descriptor is the single source of truth rather than a snapshot the
-        // executor can silently disagree with. A pass that rewrites beta away
-        // from 1 turns this into a genuine axpby, so honor that rather than
-        // ignoring the write - a baked beta would compute the wrong thing.
-        auto executor = [params, x_slot, y_slot]() {
-            LabeledSection("axpy execute");
-            auto const a = as<T>(params->alpha);
-            auto const b = as<T>(params->beta);
-            if (b == T{1}) {
-                linear_algebra::axpy(a, *static_cast<XType const *>(x_slot->ptr), static_cast<YType *>(y_slot->ptr));
-            } else {
-                linear_algebra::axpby(a, *static_cast<XType const *>(x_slot->ptr), b, static_cast<YType *>(y_slot->ptr));
-            }
-        };
 
         AxpbyDescriptor desc;
         desc.alpha  = params->alpha;
         desc.beta   = params->beta;
         desc.params = params;
 
+        // The built executor reads the scalars through the shared params, so
+        // the descriptor is the single source of truth rather than a snapshot
+        // the executor can silently disagree with. A pass that rewrites beta
+        // away from 1 turns this into a genuine axpby, and the executor honors
+        // that rather than ignoring the write.
+        std::array<TensorId, 2> const inputs{x_id, y_id};
+        OpData                        op_data(std::move(desc));
+        auto executor = build_executor(OpKind::Axpby, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*Y), op_data, *ctx.graph(),
+                                       inputs, std::span<TensorId const>{&y_id, 1});
+
         // Y += alpha*X reads its destination unconditionally (beta == 1); list it
         // as an input so dependency passes see the read (matches gemm's and
         // direct_product's out-tensor-as-input convention - without it,
         // LoopInvariantHoisting's reads-its-output guard is blind to the
         // accumulation and Reorder misses the WAR hazard on Y's old value).
-        ctx.record(OpKind::Axpby, std::move(label), {x_id, y_id}, {y_id}, std::move(executor), std::move(desc));
+        ctx.record(OpKind::Axpby, std::move(label), {x_id, y_id}, {y_id}, std::move(executor), std::move(op_data));
     }
 }
 
@@ -1809,8 +1868,8 @@ APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<std::complex<double>>
         }
 
         LabeledSection("axpby capture");
-        auto [x_id, x_slot] = ctx.get_slot(X);
-        auto [y_id, y_slot] = ctx.get_slot(*Y);
+        TensorId const x_id = ctx.get_slot(X).first;
+        TensorId const y_id = ctx.get_slot(*Y).first;
 
         using T = typename XType::ValueType;
 
@@ -1822,12 +1881,7 @@ APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<std::complex<double>>
         params->alpha = PrefactorScalar{alpha};
         params->beta  = PrefactorScalar{beta};
 
-        auto label    = fmt::format("axpby(alpha={}, beta={})", alpha, beta);
-        auto executor = [params, x_slot, y_slot]() {
-            LabeledSection("axpby execute");
-            linear_algebra::axpby(as<T>(params->alpha), *static_cast<XType const *>(x_slot->ptr), as<T>(params->beta),
-                                  static_cast<YType *>(y_slot->ptr));
-        };
+        auto label = fmt::format("axpby(alpha={}, beta={})", alpha, beta);
 
         AxpbyDescriptor desc;
         desc.alpha  = params->alpha;
@@ -1838,7 +1892,12 @@ APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<std::complex<double>>
         // out-tensor-as-input convention as gemm/direct_product (see axpy).
         std::vector<TensorId> axpby_inputs =
             (beta != typename XType::ValueType{0}) ? std::vector<TensorId>{x_id, y_id} : std::vector<TensorId>{x_id};
-        ctx.record(OpKind::Axpby, std::move(label), std::move(axpby_inputs), {y_id}, std::move(executor), std::move(desc));
+
+        OpData op_data(std::move(desc));
+        auto   executor = build_executor(OpKind::Axpby, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*Y), op_data, *ctx.graph(),
+                                         axpby_inputs, std::span<TensorId const>{&y_id, 1});
+
+        ctx.record(OpKind::Axpby, std::move(label), std::move(axpby_inputs), {y_id}, std::move(executor), std::move(op_data));
     }
 }
 
@@ -1861,17 +1920,7 @@ void gemm(U const alpha, T const &A, T const &B, U const beta, T *C) {
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
-    auto label    = fmt::format("gemm<{},{}>", TransA ? "T" : "N", TransB ? "T" : "N");
-    auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
-        LabeledSection("gemm execute");
-        ProfileAnnotate("trans", TransA ? (TransB ? "TT" : "TN") : (TransB ? "NT" : "NN"));
-        ProfileAnnotate("m", static_cast<int64_t>(static_cast<T *>(c_slot->ptr)->dim(0)));
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<T *>(c_slot->ptr)->dim(1)));
-        ProfileAnnotate(
-            "k", static_cast<int64_t>(TransA ? static_cast<T const *>(a_slot->ptr)->dim(0) : static_cast<T const *>(a_slot->ptr)->dim(1)));
-        linear_algebra::gemm<TransA, TransB>(alpha, *static_cast<T const *>(a_slot->ptr), *static_cast<T const *>(b_slot->ptr), beta,
-                                             static_cast<T *>(c_slot->ptr));
-    };
+    auto label = fmt::format("gemm<{},{}>", TransA ? "T" : "N", TransB ? "T" : "N");
 
     // When beta != 0 the gemm accumulates into C (``C = α·A·B + β·C``), so it
     // *reads* C as well as writing it. List C as an input in that case so the
@@ -1883,7 +1932,34 @@ void gemm(U const alpha, T const &A, T const &B, U const beta, T *C) {
     if (beta != U{}) {
         inputs.push_back(c_id);
     }
-    ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor));
+
+    // Dense operands only: MatrixConcept also admits a block or tiled matrix,
+    // whose gemm is a different kernel over per-block buffers.
+    if constexpr (CoreBasicTensorConcept<T>) {
+        using ValueT = typename T::ValueType;
+
+        OpData op_data(GemmDescriptor{.alpha   = PrefactorScalar{static_cast<ValueT>(alpha)},
+                                      .beta    = PrefactorScalar{static_cast<ValueT>(beta)},
+                                      .trans_a = TransA ? 't' : 'n',
+                                      .trans_b = TransB ? 't' : 'n'});
+        auto   executor = build_executor(OpKind::Gemm, packed_gemm::get_scalar_type<ValueT>(), 2, op_data, *ctx.graph(), inputs,
+                                         std::span<TensorId const>{&c_id, 1});
+
+        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor), std::move(op_data));
+    } else {
+        auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
+            LabeledSection("gemm execute");
+            ProfileAnnotate("trans", TransA ? (TransB ? "TT" : "TN") : (TransB ? "NT" : "NN"));
+            ProfileAnnotate("m", static_cast<int64_t>(static_cast<T *>(c_slot->ptr)->dim(0)));
+            ProfileAnnotate("n", static_cast<int64_t>(static_cast<T *>(c_slot->ptr)->dim(1)));
+            ProfileAnnotate("k", static_cast<int64_t>(TransA ? static_cast<T const *>(a_slot->ptr)->dim(0)
+                                                             : static_cast<T const *>(a_slot->ptr)->dim(1)));
+            linear_algebra::gemm<TransA, TransB>(alpha, *static_cast<T const *>(a_slot->ptr), *static_cast<T const *>(b_slot->ptr), beta,
+                                                 static_cast<T *>(c_slot->ptr));
+        };
+
+        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor));
+    }
 }
 
 /// Graph-aware GEMM: ``C = alpha * op(A) * op(B) + beta * C``.
@@ -1964,17 +2040,7 @@ APIARY_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
-    auto label    = fmt::format("gemm<{},{}>", TransA ? "T" : "N", TransB ? "T" : "N");
-    auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
-        LabeledSection("gemm execute");
-        ProfileAnnotate("trans", TransA ? (TransB ? "TT" : "TN") : (TransB ? "NT" : "NN"));
-        ProfileAnnotate("m", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->dim(0)));
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->dim(1)));
-        ProfileAnnotate("k", static_cast<int64_t>(TransA ? static_cast<AType const *>(a_slot->ptr)->dim(0)
-                                                         : static_cast<AType const *>(a_slot->ptr)->dim(1)));
-        linear_algebra::gemm<TransA, TransB>(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
-                                             beta, static_cast<CType *>(c_slot->ptr));
-    };
+    auto label = fmt::format("gemm<{},{}>", TransA ? "T" : "N", TransB ? "T" : "N");
 
     // beta != 0 → the gemm reads C as well as writing it (``C = α·A·B + β·C``);
     // list C as an input so loop-invariance and scheduling see the read. See the
@@ -1983,7 +2049,32 @@ APIARY_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>
     if (beta != U{}) {
         inputs.push_back(c_id);
     }
-    ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor));
+
+    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && CoreBasicTensorConcept<CType>) {
+        using ValueT = typename AType::ValueType;
+
+        OpData op_data(GemmDescriptor{.alpha   = PrefactorScalar{static_cast<ValueT>(alpha)},
+                                      .beta    = PrefactorScalar{static_cast<ValueT>(beta)},
+                                      .trans_a = TransA ? 't' : 'n',
+                                      .trans_b = TransB ? 't' : 'n'});
+        auto   executor = build_executor(OpKind::Gemm, packed_gemm::get_scalar_type<ValueT>(), 2, op_data, *ctx.graph(), inputs,
+                                         std::span<TensorId const>{&c_id, 1});
+
+        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor), std::move(op_data));
+    } else {
+        auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
+            LabeledSection("gemm execute");
+            ProfileAnnotate("trans", TransA ? (TransB ? "TT" : "TN") : (TransB ? "NT" : "NN"));
+            ProfileAnnotate("m", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->dim(0)));
+            ProfileAnnotate("n", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->dim(1)));
+            ProfileAnnotate("k", static_cast<int64_t>(TransA ? static_cast<AType const *>(a_slot->ptr)->dim(0)
+                                                             : static_cast<AType const *>(a_slot->ptr)->dim(1)));
+            linear_algebra::gemm<TransA, TransB>(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
+                                                 beta, static_cast<CType *>(c_slot->ptr));
+        };
+
+        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor));
+    }
 }
 
 /// Graph-aware GEMM with runtime ``Transpose`` op flags (N / T / C).
@@ -2059,19 +2150,37 @@ APIARY_INSTANTIATE_AS("gemm", einsums::RuntimeTensorView<std::complex<double>>, 
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
-    auto label    = fmt::format("gemm({},{})", static_cast<char>(trans_a), static_cast<char>(trans_b));
-    auto executor = [alpha, a_slot, b_slot, beta, c_slot, ta, tb]() {
-        LabeledSection("gemm execute");
-        linear_algebra::gemm(ta, tb, alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), beta,
-                             static_cast<CType *>(c_slot->ptr));
-    };
+    auto label = fmt::format("gemm({},{})", static_cast<char>(trans_a), static_cast<char>(trans_b));
 
     // beta != 0 → reads C as well as writing it; list C as input (see the bool overload's note).
     std::vector<TensorId> inputs = {a_id, b_id};
     if (beta != U{}) {
         inputs.push_back(c_id);
     }
-    ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor));
+
+    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && CoreBasicTensorConcept<CType>) {
+        using ValueT = typename AType::ValueType;
+
+        // The chars go in as given, conjugate transpose included: this is the
+        // overload that exists to reach BLAS 'c', and the descriptor records
+        // chars rather than bools so it can.
+        OpData op_data(GemmDescriptor{.alpha   = PrefactorScalar{static_cast<ValueT>(alpha)},
+                                      .beta    = PrefactorScalar{static_cast<ValueT>(beta)},
+                                      .trans_a = ta,
+                                      .trans_b = tb});
+        auto   executor = build_executor(OpKind::Gemm, packed_gemm::get_scalar_type<ValueT>(), 2, op_data, *ctx.graph(), inputs,
+                                         std::span<TensorId const>{&c_id, 1});
+
+        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor), std::move(op_data));
+    } else {
+        auto executor = [alpha, a_slot, b_slot, beta, c_slot, ta, tb]() {
+            LabeledSection("gemm execute");
+            linear_algebra::gemm(ta, tb, alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), beta,
+                                 static_cast<CType *>(c_slot->ptr));
+        };
+
+        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2527,13 +2636,30 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
     auto [b_id, b_slot] = ctx.get_slot(B);
     TensorId r_id       = ctx.get_or_register_scalar(result, "dot_result");
 
-    auto executor = [result, a_slot, b_slot]() {
-        LabeledSection("dot execute");
-        blas::SerialVendorScope const serial;
-        *result = linear_algebra::dot(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
-    };
+    // The builder reaches its operands through the rank-erased TensorImpl and
+    // dispatches on ONE dtype, so it covers the dense same-type case and only
+    // that. A block or disk operand has no single buffer, and a mixed-dtype dot
+    // (this overload's requires clause allows one) has no single dtype to key
+    // on; both keep the capture-baked closure and report as blockers.
+    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && std::is_same_v<typename AType::ValueType, ResultT> &&
+                  std::is_same_v<typename BType::ValueType, ResultT>) {
+        std::vector<TensorId> const inputs{a_id, b_id};
 
-    ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor));
+        OpData op_data(DotDescriptor{.conjugated = false});
+        // Rank is keyed on the destination, which is a registered scalar: 0.
+        auto executor = build_executor(OpKind::Dot, packed_gemm::get_scalar_type<ResultT>(), 0, op_data, *ctx.graph(), inputs,
+                                       std::span<TensorId const>{&r_id, 1});
+
+        ctx.record(OpKind::Dot, "dot", inputs, {r_id}, std::move(executor), std::move(op_data));
+    } else {
+        auto executor = [result, a_slot, b_slot]() {
+            LabeledSection("dot execute");
+            blas::SerialVendorScope const serial;
+            *result = linear_algebra::dot(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
+        };
+
+        ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor));
+    }
 }
 
 /// Python-friendly graph-aware dot: writes the result into ``result->data()[0]``.
@@ -2631,19 +2757,28 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>,
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [r_id, r_slot] = ctx.get_slot(*result);
 
-    auto executor = [a_slot, b_slot, r_slot, compute]() {
-        LabeledSection("dot_python execute");
-        auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
-        r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
-    };
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        auto executor = [a_slot, b_slot, r_slot, compute]() {
+            LabeledSection("dot_python execute");
+            auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
+            r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
+        };
         // The descriptor lets TiledExpansion lower this node onto per-tile
         // ids instead of stranding its whole-tensor tiled operands.
         TiledDotDescriptor td;
         td.conjugated = false;
         ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor), std::move(td));
     } else {
-        ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor));
+        // Same node the scalar-writing cg::dot records, differing only in what
+        // the destination is: a rank-1 tensor here rather than a bare scalar,
+        // which ScalarAccessor resolves to the same one address either way.
+        std::vector<TensorId> const inputs{a_id, b_id};
+
+        OpData op_data(DotDescriptor{.conjugated = false});
+        auto executor = build_executor(OpKind::Dot, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result), op_data, *ctx.graph(),
+                                       inputs, std::span<TensorId const>{&r_id, 1});
+
+        ctx.record(OpKind::Dot, "dot", inputs, {r_id}, std::move(executor), std::move(op_data));
     }
 }
 
@@ -2730,18 +2865,26 @@ APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<double>
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [r_id, r_slot] = ctx.get_slot(*result);
 
-    auto executor = [a_slot, b_slot, r_slot, compute]() {
-        LabeledSection("dotc_python execute");
-        auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
-        r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
-    };
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        auto executor = [a_slot, b_slot, r_slot, compute]() {
+            LabeledSection("dotc_python execute");
+            auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
+            r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
+        };
         // Same expansion hook as dot_python's, with the conjugation recorded.
         TiledDotDescriptor td;
         td.conjugated = true;
         ctx.record(OpKind::Dot, "dotc", {a_id, b_id}, {r_id}, std::move(executor), std::move(td));
     } else {
-        ctx.record(OpKind::Dot, "dotc", {a_id, b_id}, {r_id}, std::move(executor));
+        // The conjugation is the descriptor's one field, and it is the whole
+        // difference from dot_python: the builder picks true_dot over dot.
+        std::vector<TensorId> const inputs{a_id, b_id};
+
+        OpData op_data(DotDescriptor{.conjugated = true});
+        auto executor = build_executor(OpKind::Dot, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result), op_data, *ctx.graph(),
+                                       inputs, std::span<TensorId const>{&r_id, 1});
+
+        ctx.record(OpKind::Dot, "dotc", inputs, {r_id}, std::move(executor), std::move(op_data));
     }
 }
 
@@ -2929,16 +3072,18 @@ APIARY_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTe
     }
 
     LabeledSection("direct_product capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    auto [c_id, c_slot] = ctx.get_slot(*C);
+    TensorId const a_id = ctx.get_slot(A).first;
+    TensorId const b_id = ctx.get_slot(B).first;
+    TensorId const c_id = ctx.get_slot(*C).first;
 
-    auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
-        LabeledSection("direct_product execute");
-        ProfileAnnotate("size", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->size()));
-        linear_algebra::direct_product(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), beta,
-                                       static_cast<CType *>(c_slot->ptr));
-    };
+    // The scalars used to be baked into the executor with no descriptor at all,
+    // so the node was opaque to every pass that reasons about prefactors.
+    ElementwiseBinaryDescriptor desc;
+    desc.alpha         = PrefactorScalar{alpha};
+    desc.beta          = PrefactorScalar{beta};
+    desc.params        = std::make_shared<ElementwiseParams>();
+    desc.params->alpha = desc.alpha;
+    desc.params->beta  = desc.beta;
 
     // When beta != 0 the op reads its destination (C = alpha*A*B + beta*C), so C
     // is an input as well as the output. List it -- otherwise dependency-based
@@ -2946,7 +3091,12 @@ APIARY_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTe
     // hoist the accumulation out of a loop or reorder it past another writer of C.
     // (gemm already does this; matches the out-tensor-as-input convention.)
     std::vector<TensorId> dp_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, b_id, c_id} : std::vector<TensorId>{a_id, b_id};
-    ctx.record(OpKind::DirectProduct, "direct_product", std::move(dp_inputs), {c_id}, std::move(executor));
+
+    OpData op_data(std::move(desc));
+    auto   executor = build_executor(OpKind::DirectProduct, packed_gemm::get_scalar_type<typename CType::ValueType>(),
+                                     detail::tensor_rank(*C), op_data, *ctx.graph(), dp_inputs, std::span<TensorId const>{&c_id, 1});
+
+    ctx.record(OpKind::DirectProduct, "direct_product", std::move(dp_inputs), {c_id}, std::move(executor), std::move(op_data));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3044,21 +3194,27 @@ APIARY_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::TiledRun
         }
 
         LabeledSection("direct_division capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [b_id, b_slot] = ctx.get_slot(B);
-        auto [c_id, c_slot] = ctx.get_slot(*C);
+        TensorId const a_id = ctx.get_slot(A).first;
+        TensorId const b_id = ctx.get_slot(B).first;
+        TensorId const c_id = ctx.get_slot(*C).first;
 
-        auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
-            LabeledSection("direct_division execute");
-            ProfileAnnotate("size", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->size()));
-            linear_algebra::direct_division(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), beta,
-                                            static_cast<CType *>(c_slot->ptr));
-        };
+        // Same descriptor as the dense direct product; the kind distinguishes them.
+        ElementwiseBinaryDescriptor desc;
+        desc.alpha         = PrefactorScalar{alpha};
+        desc.beta          = PrefactorScalar{beta};
+        desc.params        = std::make_shared<ElementwiseParams>();
+        desc.params->alpha = desc.alpha;
+        desc.params->beta  = desc.beta;
 
         // beta != 0 reads the destination (C = alpha*A/B + beta*C) -- list C as an
         // input so dependency-based passes see the read (see direct_product).
         std::vector<TensorId> dd_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, b_id, c_id} : std::vector<TensorId>{a_id, b_id};
-        ctx.record(OpKind::DirectDivision, "direct_division", std::move(dd_inputs), {c_id}, std::move(executor));
+
+        OpData op_data(std::move(desc));
+        auto   executor = build_executor(OpKind::DirectDivision, packed_gemm::get_scalar_type<typename CType::ValueType>(),
+                                         detail::tensor_rank(*C), op_data, *ctx.graph(), dd_inputs, std::span<TensorId const>{&c_id, 1});
+
+        ctx.record(OpKind::DirectDivision, "direct_division", std::move(dd_inputs), {c_id}, std::move(executor), std::move(op_data));
     }
 }
 
@@ -3421,11 +3577,10 @@ APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<do
     }
 
     LabeledSection("batched_gemm capture");
-    detail::BatchedGemmExtractors       a_exs, b_exs;
-    detail::BatchedGemmOutputExtractors c_exs;
-    a_exs.reserve(count);
-    b_exs.reserve(count);
-    c_exs.reserve(count);
+    detail::BatchedGemmOperands a_ops, b_ops, c_ops;
+    a_ops.reserve(count);
+    b_ops.reserve(count);
+    c_ops.reserve(count);
     // Node I/O keeps the pass's convention: inputs interleaved A_0, B_0, A_1,
     // B_1, ... and outputs C_0, C_1, ... in batch order.
     std::vector<TensorId> inputs;
@@ -3441,18 +3596,9 @@ APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<do
         outputs.push_back(c_id);
         // Read through the slot, not the captured pointer: rebind() and the
         // MemoryPlanning arena can both move a tensor's storage.
-        a_exs.emplace_back([a_slot]() -> std::pair<void const *, int> {
-            auto const *t = static_cast<AType const *>(a_slot->ptr);
-            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
-        });
-        b_exs.emplace_back([b_slot]() -> std::pair<void const *, int> {
-            auto const *t = static_cast<BType const *>(b_slot->ptr);
-            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
-        });
-        c_exs.emplace_back([c_slot]() -> std::pair<void *, int> {
-            auto *t = static_cast<CType *>(c_slot->ptr);
-            return {static_cast<void *>(t->data()), static_cast<int>(t->impl().get_lda())};
-        });
+        a_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{a_slot}, .offset = 0});
+        b_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{b_slot}, .offset = 0});
+        c_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{c_slot}, .offset = 0});
     }
     // beta != 0 means gemm_batch reads every destination before writing it, so
     // the RAW edge from whoever produced each C must survive (bug-1009).
@@ -3460,7 +3606,7 @@ APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<do
         inputs.insert(inputs.end(), outputs.begin(), outputs.end());
     }
 
-    auto executor = detail::make_batched_gemm_executor(d, std::move(a_exs), std::move(b_exs), std::move(c_exs));
+    auto executor = detail::make_batched_gemm_executor(d, std::move(a_ops), std::move(b_ops), std::move(c_ops));
     ctx.record(OpKind::BatchedGemm,
                fmt::format("gemm_batch x{} ({}x{}x{}, trans={}{})", d.batch_count, d.m, d.k, d.n, d.trans_a, d.trans_b), std::move(inputs),
                std::move(outputs), std::move(executor), d);
@@ -3628,11 +3774,10 @@ APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::co
     }
 
     LabeledSection("batched_gemm_blocked capture");
-    detail::BatchedGemmExtractors       a_exs, b_exs;
-    detail::BatchedGemmOutputExtractors c_exs;
-    a_exs.reserve(count);
-    b_exs.reserve(count);
-    c_exs.reserve(count);
+    detail::BatchedGemmOperands a_ops, b_ops, c_ops;
+    a_ops.reserve(count);
+    b_ops.reserve(count);
+    c_ops.reserve(count);
     std::vector<TensorId> inputs;
     inputs.reserve(2 * count);
 
@@ -3645,21 +3790,12 @@ APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::co
         auto [b_id, b_slot] = ctx.get_slot(*b_list[i]);
         inputs.push_back(a_id);
         inputs.push_back(b_id);
-        a_exs.emplace_back([a_slot]() -> std::pair<void const *, int> {
-            auto const *t = static_cast<AType const *>(a_slot->ptr);
-            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
-        });
-        b_exs.emplace_back([b_slot]() -> std::pair<void const *, int> {
-            auto const *t = static_cast<BType const *>(b_slot->ptr);
-            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
-        });
+        a_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{a_slot}, .offset = 0});
+        b_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{b_slot}, .offset = 0});
         // Read the base through its slot and offset at execute time: rebind()
         // and the MemoryPlanning arena can both move the storage after capture.
-        size_t const off = c_offsets[i];
-        c_exs.emplace_back([c_slot, off]() -> std::pair<void *, int> {
-            auto *t = static_cast<CType *>(c_slot->ptr);
-            return {static_cast<void *>(t->data() + off), static_cast<int>(t->impl().get_lda())};
-        });
+        c_ops.push_back(
+            detail::BatchedGemmOperand{.accessor = OperandAccessor{c_slot}, .offset = static_cast<std::ptrdiff_t>(c_offsets[i])});
     }
 
     std::vector<TensorId> outputs{c_id};
@@ -3669,7 +3805,7 @@ APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::co
         inputs.push_back(c_id);
     }
 
-    auto executor = detail::make_batched_gemm_executor(d, std::move(a_exs), std::move(b_exs), std::move(c_exs));
+    auto executor = detail::make_batched_gemm_executor(d, std::move(a_ops), std::move(b_ops), std::move(c_ops));
     ctx.record(OpKind::BatchedGemm,
                fmt::format("gemm_batch x{} into blocks ({}x{}x{}, trans={}{})", d.batch_count, d.m, d.k, d.n, d.trans_a, d.trans_b),
                std::move(inputs), std::move(outputs), std::move(executor), d);
@@ -3912,11 +4048,10 @@ APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::co
     }
 
     LabeledSection("grouped_batched_gemm capture");
-    detail::BatchedGemmExtractors       a_exs, b_exs;
-    detail::BatchedGemmOutputExtractors c_exs;
-    a_exs.reserve(count);
-    b_exs.reserve(count);
-    c_exs.reserve(count);
+    detail::BatchedGemmOperands a_ops, b_ops, c_ops;
+    a_ops.reserve(count);
+    b_ops.reserve(count);
+    c_ops.reserve(count);
     // Node I/O keeps the batched form's convention, inputs interleaved
     // A_0, B_0, A_1, B_1, ... and outputs C_0, C_1, ..., in the FLATTENED
     // order, so a group's offset indexes the extractors and the node lists
@@ -3935,18 +4070,9 @@ APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::co
         outputs.push_back(c_id);
         // Read through the slot, not the captured pointer: rebind() and the
         // MemoryPlanning arena can both move a tensor's storage.
-        a_exs.emplace_back([a_slot]() -> std::pair<void const *, int> {
-            auto const *t = static_cast<AType const *>(a_slot->ptr);
-            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
-        });
-        b_exs.emplace_back([b_slot]() -> std::pair<void const *, int> {
-            auto const *t = static_cast<BType const *>(b_slot->ptr);
-            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
-        });
-        c_exs.emplace_back([c_slot]() -> std::pair<void *, int> {
-            auto *t = static_cast<CType *>(c_slot->ptr);
-            return {static_cast<void *>(t->data()), static_cast<int>(t->impl().get_lda())};
-        });
+        a_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{a_slot}, .offset = 0});
+        b_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{b_slot}, .offset = 0});
+        c_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{c_slot}, .offset = 0});
     }
     // beta != 0 means every destination is read before it is written, so the
     // RAW edge from whoever produced each C must survive (bug-1009).
@@ -3954,7 +4080,7 @@ APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::co
         inputs.insert(inputs.end(), outputs.begin(), outputs.end());
     }
 
-    auto executor = detail::make_grouped_batched_gemm_executor(d, std::move(a_exs), std::move(b_exs), std::move(c_exs));
+    auto executor = detail::make_grouped_batched_gemm_executor(d, std::move(a_ops), std::move(b_ops), std::move(c_ops));
     ctx.record(
         OpKind::GroupedBatchedGemm,
         fmt::format("gemm_batch_grouped x{} in {} shapes (trans={}{})", d.total, d.groups.size(), trans_a ? 'T' : 'N', trans_b ? 'T' : 'N'),
@@ -4154,11 +4280,10 @@ APIARY_MODULE("graph")
     }
 
     LabeledSection("grouped_batched_gemm_blocked capture");
-    detail::BatchedGemmExtractors       a_exs, b_exs;
-    detail::BatchedGemmOutputExtractors c_exs;
-    a_exs.reserve(count);
-    b_exs.reserve(count);
-    c_exs.reserve(count);
+    detail::BatchedGemmOperands a_ops, b_ops, c_ops;
+    a_ops.reserve(count);
+    b_ops.reserve(count);
+    c_ops.reserve(count);
     std::vector<TensorId> inputs;
     inputs.reserve(2 * count);
 
@@ -4180,22 +4305,13 @@ APIARY_MODULE("graph")
         auto [b_id, b_slot] = ctx.get_slot(*b_list[s]);
         inputs.push_back(a_id);
         inputs.push_back(b_id);
-        a_exs.emplace_back([a_slot]() -> std::pair<void const *, int> {
-            auto const *t = static_cast<AType const *>(a_slot->ptr);
-            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
-        });
-        b_exs.emplace_back([b_slot]() -> std::pair<void const *, int> {
-            auto const *t = static_cast<BType const *>(b_slot->ptr);
-            return {static_cast<void const *>(t->data()), static_cast<int>(t->impl().get_lda())};
-        });
+        a_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{a_slot}, .offset = 0});
+        b_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{b_slot}, .offset = 0});
         // Read the base through its slot and offset at execute time: rebind()
         // and the MemoryPlanning arena can both move the storage after capture.
-        auto const  *c_slot = base_slots.at(c_bases[s]).second;
-        size_t const off    = c_offsets[s];
-        c_exs.emplace_back([c_slot, off]() -> std::pair<void *, int> {
-            auto *t = static_cast<CType *>(c_slot->ptr);
-            return {static_cast<void *>(t->data() + off), static_cast<int>(t->impl().get_lda())};
-        });
+        auto *c_slot = base_slots.at(c_bases[s]).second;
+        c_ops.push_back(
+            detail::BatchedGemmOperand{.accessor = OperandAccessor{c_slot}, .offset = static_cast<std::ptrdiff_t>(c_offsets[s])});
     }
 
     // beta != 0 means every destination is read before it is written, so the
@@ -4204,7 +4320,7 @@ APIARY_MODULE("graph")
         inputs.insert(inputs.end(), outputs.begin(), outputs.end());
     }
 
-    auto executor = detail::make_grouped_batched_gemm_executor(d, std::move(a_exs), std::move(b_exs), std::move(c_exs));
+    auto executor = detail::make_grouped_batched_gemm_executor(d, std::move(a_ops), std::move(b_ops), std::move(c_ops));
     ctx.record(OpKind::GroupedBatchedGemm,
                fmt::format("gemm_batch_grouped x{} in {} shapes into blocks of {} (trans={}{})", d.total, d.groups.size(), outputs.size(),
                            trans_a ? 'T' : 'N', trans_b ? 'T' : 'N'),
@@ -5816,18 +5932,29 @@ void trace(typename AType::ValueType *result, AType const &A) {
     auto [a_id, a_slot] = ctx.get_slot(A);
     TensorId r_id       = ctx.get_or_register_scalar(result, "trace_result");
 
-    auto executor = [result, a_slot]() {
-        LabeledSection("trace execute");
-        auto const &a = *static_cast<AType const *>(a_slot->ptr);
-        if (a.dim(0) != a.dim(1))
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
-        T sum = T{};
-        for (size_t i = 0; i < a.dim(0); ++i)
-            sum += a(i, i);
-        *result = sum;
-    };
+    // Dense operands only: a block or tiled matrix has no single buffer for the
+    // rank-erased diagonal walk, and keeps the capture-baked closure.
+    if constexpr (CoreBasicTensorConcept<AType>) {
+        OpData op_data(TraceDescriptor{});
+        // Rank is keyed on the destination, which is a registered scalar: 0.
+        auto executor = build_executor(OpKind::Trace, packed_gemm::get_scalar_type<T>(), 0, op_data, *ctx.graph(),
+                                       std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&r_id, 1});
 
-    ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor));
+        ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor), std::move(op_data));
+    } else {
+        auto executor = [result, a_slot]() {
+            LabeledSection("trace execute");
+            auto const &a = *static_cast<AType const *>(a_slot->ptr);
+            if (a.dim(0) != a.dim(1))
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
+            T sum = T{};
+            for (size_t i = 0; i < a.dim(0); ++i)
+                sum += a(i, i);
+            *result = sum;
+        };
+
+        ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor));
+    }
 }
 
 /// Python-friendly graph-aware trace: writes the diagonal sum into
@@ -5904,13 +6031,24 @@ APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double
     auto [a_id, a_slot] = ctx.get_slot(A);
     auto [r_id, r_slot] = ctx.get_slot(*result);
 
-    auto executor = [a_slot, r_slot, compute]() {
-        LabeledSection("trace_python execute");
-        auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
-        r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr));
-    };
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        auto executor = [a_slot, r_slot, compute]() {
+            LabeledSection("trace_python execute");
+            auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
+            r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr));
+        };
 
-    ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor));
+        ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor));
+    } else {
+        // Same node the scalar-writing cg::trace records; the destination is a
+        // rank-1 tensor rather than a bare scalar and resolves to one address
+        // either way.
+        OpData op_data(TraceDescriptor{});
+        auto   executor = build_executor(OpKind::Trace, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result), op_data,
+                                         *ctx.graph(), std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&r_id, 1});
+
+        ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor), std::move(op_data));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7237,12 +7375,13 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     desc.letter_spaces =
         detail::bind_einsum_spaces(*ctx.graph(), a_id, b_id, c_id, parsed.a_indices, parsed.b_indices, parsed.c_indices, "cg::einsum");
 
-    // BLAS-level batching hint. Only populated when the contraction is
-    // a pure 2D GEMM pattern (rank-2 inputs/output, one link index),
-    // that's the shape `blas::gemm_batch` accepts. For other shapes the
-    // hint stays null and GEMMBatching falls through. `trans_a`/`trans_b`
-    // follow string_gemm's convention: 'T' when the link is the first
-    // index of A (resp. last index of B), 'N' otherwise.
+    // BLAS-level batching hint. Derived by @ref derive_gemm_hint, the one
+    // function capture and Graph::make_einsum_node share: the gate, the m/n/k
+    // arithmetic and the roles clause used to be duplicated here and there, and
+    // a hint describing a matrix product the einsum does not perform stays
+    // invisible until GEMMBatching forms a batch from it.
+    desc.gemm_hint = derive_gemm_hint(packed_gemm::get_scalar_type<T>(), desc.spec, *ctx.graph(), a_id, b_id, c_id);
+
     // A permute_view keeps the storage-order FLAG of its parent but presents
     // reordered strides, so is_row_major()/is_column_major() alone cannot
     // prove the canonical layout the fast paths below assume (found by the
@@ -7267,62 +7406,6 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
         }
         return true;
     };
-
-    if (detail::tensor_rank(A) == 2 && detail::tensor_rank(B) == 2 && detail::tensor_rank(*C) == 2) {
-        // C = op(A) * op(B) requires C's FIRST index to be the one A contributes
-        // and its SECOND the one B contributes. "ia <- ma ; mi" has them swapped,
-        // and the m/n/k below would describe a different matrix product. The
-        // generic kernel never reads the hint, so a wrong one only surfaces once
-        // GEMMBatching batches the node. See Graph::make_einsum_node, same gate.
-        auto const roles_match = [&]() {
-            if (parsed.a_indices.size() != 2 || parsed.b_indices.size() != 2 || parsed.c_indices.size() != 2 ||
-                desc.spec.link_indices.size() != 1) {
-                return false;
-            }
-            auto const &lnk  = desc.spec.link_indices[0];
-            auto const  free = [&lnk](std::vector<std::string> const &idx) { return idx[0] == lnk ? idx[1] : idx[0]; };
-            return parsed.c_indices[0] == free(parsed.a_indices) && parsed.c_indices[1] == free(parsed.b_indices);
-        };
-        if (parsed.a_indices.size() == 2 && parsed.b_indices.size() == 2 && parsed.c_indices.size() == 2 &&
-            desc.spec.link_indices.size() == 1 && roles_match() && layout_matches_flag(A.impl()) && layout_matches_flag(B.impl()) &&
-            layout_matches_flag(C->impl())) {
-            auto hint = std::make_shared<GemmHint>();
-            if constexpr (std::is_same_v<T, float>)
-                hint->scalar = BlasScalar::Float;
-            else if constexpr (std::is_same_v<T, double>)
-                hint->scalar = BlasScalar::Double;
-            else if constexpr (std::is_same_v<T, std::complex<float>>)
-                hint->scalar = BlasScalar::ComplexFloat;
-            else if constexpr (std::is_same_v<T, std::complex<double>>)
-                hint->scalar = BlasScalar::ComplexDouble;
-
-            std::string const &link = desc.spec.link_indices[0];
-            hint->trans_a           = (parsed.a_indices[0] == link) ? 'T' : 'N';
-            hint->trans_b           = (parsed.b_indices[1] == link) ? 'T' : 'N';
-            // m = rows of C, n = cols of C, k = link dim (taken from A)
-            hint->m = static_cast<int>(C->dim(0));
-            hint->n = static_cast<int>(C->dim(1));
-            hint->k = static_cast<int>(hint->trans_a == 'N' ? A.dim(1) : A.dim(0));
-
-            // Extractors capture AType/BType/CType so at call time they
-            // can read .data() + .impl().get_lda() off the live tensor
-            // (handles graph.rebind(), the slot's ptr points at the
-            // current tensor). get_lda is on TensorImpl, not GeneralTensor.
-            hint->extract_a = [a_slot]() -> std::pair<void const *, int> {
-                auto const &a_ref = *static_cast<AType const *>(a_slot->ptr);
-                return {static_cast<void const *>(a_ref.data()), static_cast<int>(a_ref.impl().get_lda())};
-            };
-            hint->extract_b = [b_slot]() -> std::pair<void const *, int> {
-                auto const &b_ref = *static_cast<BType const *>(b_slot->ptr);
-                return {static_cast<void const *>(b_ref.data()), static_cast<int>(b_ref.impl().get_lda())};
-            };
-            hint->extract_c = [c_slot]() -> std::pair<void *, int> {
-                auto *c_ptr = static_cast<CType *>(c_slot->ptr);
-                return {static_cast<void *>(c_ptr->data()), static_cast<int>(c_ptr->impl().get_lda())};
-            };
-            desc.gemm_hint = std::move(hint);
-        }
-    }
 
     // ────────────────────────────────────────────────────────────────────
     // Strided-batched GEMM fast path for 3D×3D→3D with a batch index.
@@ -7604,29 +7687,29 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     // contraction spec, the plan-cache key and its stride vectors, and the
     // lookup itself. Re-validated against the live indices and operand layout
     // on every call, so a pass rewriting either is honored (see
-    // packed_gemm::ContractionSite).
-    auto pg_site = std::make_shared<packed_gemm::ContractionSite>();
+    // packed_gemm::ContractionSite). Set on the descriptor BEFORE the executor
+    // is built, because the builder adopts it from there: one site per node,
+    // shared with the executor, is what lets a plan-time pass pin this node's
+    // kernel route where the dispatch will read it.
+    desc.site = std::make_shared<packed_gemm::ContractionSite>();
 
-    // Capture the shared indices + params by shared_ptr and hand the dispatch
-    // the LIVE spec by reference, so a pass that rewrites indices is honored
-    // without copying three vector<string> per call.
-    auto executor = [indices, params, a_slot, b_slot, c_slot, pg_site]() {
-        LabeledSection("einsum execute");
-        ProfileAnnotate("a_size", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->size()));
-        ProfileAnnotate("b_size", static_cast<int64_t>(static_cast<BType const *>(b_slot->ptr)->size()));
-        ProfileAnnotate("c_size", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->size()));
-        // link_indices was computed once at capture (sorted, same order the
-        // dispatch derives); passing it spares every replay three set builds.
-        dispatch::string_einsum(indices->spec, as<T>(params->c_pf), static_cast<CType *>(c_slot->ptr), as<T>(params->ab_pf),
-                                *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), params->conj_a,
-                                params->conj_b, &indices->link_indices, pg_site.get());
-    };
+    // The node's operand lists, in the order the builder reads them: A, B from
+    // the inputs and C from the outputs. Capture records the two inputs only;
+    // the RMW repeat of an accumulating destination is Graph::make_einsum_node's
+    // convention, and the builder ignores that trailing position either way.
+    std::vector<TensorId> const node_inputs{a_id, b_id};
+    std::vector<TensorId> const node_outputs{c_id};
 
-    // The same site the executor lambda holds, so a plan-time pass can pin this
-    // node's kernel route where the dispatch will read it.
-    desc.site = pg_site;
+    // The executor comes from build_executor, so capture, a pass that rewrites
+    // this node, and a future loader all reach one lowering (design part 3.2).
+    // The descriptor is handed over as the OpData the node will carry, so the
+    // live params/indices/site handles the builder reads are the very ones the
+    // node records.
+    OpData op_data{std::move(desc)};
+    auto   executor = build_executor(OpKind::Einsum, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*C), op_data, *ctx.graph(),
+                                     std::span<TensorId const>{node_inputs}, std::span<TensorId const>{node_outputs});
 
-    ctx.record(OpKind::Einsum, std::move(label), {a_id, b_id}, {c_id}, std::move(executor), std::move(desc));
+    ctx.record(OpKind::Einsum, std::move(label), node_inputs, node_outputs, std::move(executor), std::move(op_data));
 }
 
 /**

@@ -253,8 +253,15 @@ bool ScaleAbsorption::run(Graph &graph) {
         if (scale_desc == nullptr || scale_node.outputs.size() != 1) {
             continue;
         }
+        // The fold below moves a REAL scalar onto a following op. A complex
+        // factor is left alone rather than projected onto its real part: the
+        // descriptor used to be a plain double filled from `factor.real()`, so
+        // a complex scale folded a wrong value here with nothing to warn on.
+        if (!is_real_valued(scale_desc->factor)) {
+            continue;
+        }
         TensorId const scaled_tensor = scale_node.outputs[0];
-        double const   scale_factor  = scale_desc->factor;
+        auto const     scale_factor  = as_real<double>(scale_desc->factor);
 
         // Scan the window [sc+1, next-writer-of-scaled_tensor): who observes the
         // scaled value? A `scale` is IN-PLACE, so the tensor's own value is

@@ -788,14 +788,14 @@ TEST_CASE("make_einsum_node - builds a GemmHint when the shapes qualify", "[Comp
     CHECK(h.n == 2);
     CHECK(h.k == 4);
 
-    // Extractors resolve through the graph at call time, so they hand back the
-    // live buffer rather than a pointer cached at construction.
-    auto const [a_ptr, lda] = h.extract_a();
-    CHECK(a_ptr == static_cast<void const *>(A.data()));
-    CHECK(lda > 0);
-    auto const [c_ptr, ldc] = h.extract_c();
-    CHECK(c_ptr == static_cast<void *>(C.data()));
-    CHECK(ldc > 0);
+    // The operands are recorded as ids, so the batched executor can resolve
+    // them through the graph's slots at execute time; the leading dimensions
+    // beside them are the planning snapshot the batching pass groups on.
+    CHECK(h.a.id == a_id);
+    CHECK(h.b.id == b_id);
+    CHECK(h.c.id == c_id);
+    CHECK(h.a.leading_dim > 0);
+    CHECK(h.c.leading_dim > 0);
 }
 
 TEST_CASE("make_einsum_node - no GemmHint for a higher-rank contraction", "[ComputeGraph][Graph]") {
