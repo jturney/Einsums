@@ -62,6 +62,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/TransferInsertion.hpp
     Einsums/ComputeGraph/Pipeline.hpp
     Einsums/ComputeGraph/SpaceRegistryAccess.hpp
+    Einsums/ComputeGraph/SymbolicCost.hpp
     Einsums/ComputeGraph/EinsumSpec.hpp
     Einsums/ComputeGraph/Executor.hpp
     Einsums/ComputeGraph/StringDispatch.hpp
@@ -81,6 +82,7 @@ set(ComputeGraphSources
     GroupedBatchedGemm.cpp
     UsageAnalysis.cpp
     CostModel.cpp
+    SymbolicCost.cpp
     Node.cpp
     Optimizer.cpp
     Passes/CommunicationElimination.cpp

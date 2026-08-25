@@ -96,6 +96,7 @@ set(ComputeGraphTests
     GroupedScalarOps.cpp
     SpaceAnnotation.cpp
     SpaceRegistry.cpp
+    SymbolicCost.cpp
     StringEinsum.cpp
     TensorLifetime.cpp
     ThreadCostModel.cpp
