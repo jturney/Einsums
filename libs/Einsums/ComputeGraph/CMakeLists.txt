@@ -13,6 +13,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Options.hpp
     Einsums/ComputeGraph/DeviceShadowMap.hpp
     Einsums/ComputeGraph/Diis.hpp
+    Einsums/ComputeGraph/ElementOps.hpp
     Einsums/ComputeGraph/Error.hpp
     Einsums/ComputeGraph/ABILayout.hpp
     Einsums/ComputeGraph/GateFlags.hpp
@@ -64,6 +65,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/TransferElimination.hpp
     Einsums/ComputeGraph/Passes/TransferInsertion.hpp
     Einsums/ComputeGraph/Pipeline.hpp
+    Einsums/ComputeGraph/PredExpr.hpp
     Einsums/ComputeGraph/SpaceRegistryAccess.hpp
     Einsums/ComputeGraph/SymbolicCost.hpp
     Einsums/ComputeGraph/EinsumSpec.hpp
@@ -79,6 +81,7 @@ set(ComputeGraphSources
     CaptureContext.cpp
     Options.cpp
     EinsumSpec.cpp
+    ElementOps.cpp
     Executor.cpp
     StringDispatch.cpp
     ABILayout.cpp

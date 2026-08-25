@@ -83,6 +83,7 @@
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Diis.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/Executor.hpp>
 #include <Einsums/ComputeGraph/GateFlags.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
@@ -124,6 +125,7 @@
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
 #include <Einsums/ComputeGraph/Pipeline.hpp>
+#include <Einsums/ComputeGraph/PredExpr.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
 #include <Einsums/ComputeGraph/SymbolicCost.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
