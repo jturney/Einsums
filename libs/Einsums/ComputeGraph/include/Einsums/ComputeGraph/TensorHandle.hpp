@@ -49,6 +49,49 @@ inline bool same_tensor(std::weak_ptr<void> const &a, std::weak_ptr<void> const 
     return !a.owner_before(b) && !b.owner_before(a);
 }
 
+/**
+ * @brief Half-open BYTE span of a strided buffer.
+ *
+ * The one place the extent of a dense operand's storage is computed. Strides are
+ * unsigned, so every element the operand addresses lies at an offset in
+ * ``[0, sum (dim - 1) * stride]`` whatever its axis order and however its own axes
+ * overlap each other; the span is that range plus one element, in bytes.
+ *
+ * Shared on purpose. ``Graph::link_alias_storage`` reasons about containment between
+ * two such spans and ``Graph::bind`` rejects an undeclared OVERLAP between two of
+ * them, and the bug history of this module is two derivations of one relation
+ * disagreeing, so there is exactly one of these.
+ *
+ * @param[in]  data         Base address, or null when the operand has none (a deferred
+ *                          shell, a tile-wise sparse tensor).
+ * @param[in]  dims         Extents, one per axis.
+ * @param[in]  strides      Strides in ELEMENTS, one per axis, parallel to @p dims.
+ * @param[in]  element_size Size of one element in bytes.
+ * @param[out] lo           First byte of the span.
+ * @param[out] hi           One past the last byte.
+ * @return False, leaving @p lo and @p hi untouched, when the operand has no span that
+ *         can be reasoned about: no address, no axes, a zero extent (which addresses
+ *         nothing at all), a zero element size, or a strides/dims length disagreement.
+ *
+ * @versionadded{2.0.0}
+ */
+inline bool strided_byte_span(void const *data, std::span<std::size_t const> dims, std::span<std::size_t const> strides,
+                              std::size_t element_size, char const *&lo, char const *&hi) noexcept {
+    if (data == nullptr || element_size == 0 || dims.empty() || strides.size() != dims.size()) {
+        return false;
+    }
+    std::size_t last = 0;
+    for (std::size_t d = 0; d < dims.size(); ++d) {
+        if (dims[d] == 0) {
+            return false;
+        }
+        last += (dims[d] - 1) * strides[d];
+    }
+    lo = static_cast<char const *>(data);
+    hi = lo + (last + 1) * element_size;
+    return true;
+}
+
 } // namespace detail
 
 /**
@@ -112,11 +155,33 @@ struct TensorHandle {
     bool                    is_runtime{false}; ///< True if tensor_ptr points at a GeneralRuntimeTensor<T> (passes that cast tensor_ptr to a
                             ///< runtime-tensor type MUST gate on this: statically-typed Tensor<T, Rank> captures pass through
                             ///< the same handles, and a blind cast is type confusion)
-    bool       is_distributed{false};                 ///< True if this tensor is distributed across ranks
-    bool       is_replicated{true};                   ///< True if distributed tensor is replicated on all ranks
-    AllocState alloc_state{AllocState::Materialized}; ///< Whether data is allocated (Materialized) or deferred
-    InitKind   init_kind{InitKind::None};             ///< How to initialize after materialization
-    Residency  residency{Residency::Host};            ///< Where the tensor data currently lives (updated by GPU passes)
+    bool is_distributed{false}; ///< True if this tensor is distributed across ranks
+    bool is_replicated{true};   ///< True if distributed tensor is replicated on all ranks
+
+    /**
+     * @brief Which scope owns this tensor's storage.
+     *
+     * @ref TensorOwnership::Graph, the default, means "supplied to (or created by) this
+     * graph and scoped to it". @ref TensorOwnership::Pipeline means the tensor carries
+     * state between a pipeline's stages, and @ref TensorOwnership::Workspace means it
+     * outlives every pipeline over it. Written at the declaring site -
+     * ``Workspace::declare_*``, ``Pipeline::declare_*``, ``Graph::declare_tensor`` - and
+     * carried to a capturing graph's own handle through @ref Graph::add_scope_map.
+     *
+     * Orthogonal to @ref is_intermediate, but only in one direction: an intermediate is
+     * always graph-owned by construction, so ``is_intermediate == true`` implies
+     * ``ownership == Graph``, and such a handle never appears in @ref InterfaceManifest.
+     * The reverse does not hold - a graph-scoped operand a caller supplied is
+     * ``Graph``-owned and IS a manifest entry.
+     *
+     * Handles minted fresh inside a Loop body or a Conditional branch keep the default,
+     * as every other piece of handle metadata does at that boundary. See the
+     * MetadataBoundary contract.
+     */
+    TensorOwnership ownership{TensorOwnership::Graph};
+    AllocState      alloc_state{AllocState::Materialized}; ///< Whether data is allocated (Materialized) or deferred
+    InitKind        init_kind{InitKind::None};             ///< How to initialize after materialization
+    Residency       residency{Residency::Host};            ///< Where the tensor data currently lives (updated by GPU passes)
 
     /// Type-erased function to allocate backing storage for a deferred tensor.
     /// Called by MaterializationPass. Null for already-materialized tensors.
@@ -240,6 +305,43 @@ struct TensorHandle {
      * @see Graph::annotate_spaces
      */
     bool spaces_inferred{false};
+
+    /**
+     * @brief Per-axis symbolic extent declaration, parallel to @ref dims.
+     *
+     * What makes a captured graph valid for a FAMILY of problem sizes rather than for the
+     * one geometry it was captured at. @ref dims says how big this instance is;
+     * ``dim_symbols[i]`` says whether axis @c i is allowed to be a different size in the
+     * next problem, and which other axes have to move with it.
+     *
+     * Two states are legal and nothing else: EMPTY, meaning every axis is literal, which
+     * is the default and is exactly the behaviour that predates symbolic extents; or
+     * exactly @ref rank entries. ``Graph::annotate_dims`` is the only supported writer and
+     * it enforces that.
+     *
+     * Three spellings per entry, all NAME-based so they survive a save unchanged:
+     *
+     * - The empty string: a LITERAL axis. Its extent is part of the contract and
+     *   ``Graph::bind`` requires an exact match, as ``Graph::rebind`` always has.
+     * - Any other ordinary string: a SYMBOL. Every axis in the graph carrying that symbol
+     *   has one extent, solved from whatever a bind supplies and checked for agreement
+     *   across every slot that names it.
+     * - ``"ragged:<space>"``: a RAGGED axis, whose extent differs per instance of
+     *   @c \<space\> (a PNO domain has a different virtual extent per pair, so no single
+     *   symbol describes it). Such an axis constrains nothing across slots; the per-instance
+     *   extents arrive separately through ``Graph::bind_ragged_extents``. Use
+     *   @ref make_ragged_symbol rather than spelling the prefix by hand.
+     *
+     * A symbol may also be TIED to an index space, when the same axis carries a @ref spaces
+     * annotation. The tie is graph-level state, not handle state, because its purpose is to
+     * catch one symbol meaning two different spaces in two places; see
+     * ``Graph::symbol_spaces``.
+     *
+     * @see Graph::annotate_dims
+     * @see Graph::annotate_ragged_dim
+     * @see Graph::bind
+     */
+    std::vector<std::string> dim_symbols;
 
     /**
      * @brief Swap the tensor's underlying data pointer with a new one.

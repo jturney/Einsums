@@ -856,16 +856,47 @@ std::string reconstruction_blocker(Node const &node) {
     return "kind not yet reconstructible";
 }
 
+namespace {
+
+/// Append the blockers of @p graph and, recursively, of every Loop body and
+/// Conditional branch below it, tagging each with the path that reaches it.
+///
+/// Recursion is written out here rather than delegated to
+/// ``Graph::for_each_subgraph``, which visits one level and hands the visitor
+/// only the sub-graph: the path needs the control-flow NODE that owns the body,
+/// and that is exactly what the visitor cannot see.
+// NOLINTNEXTLINE(misc-no-recursion): control-flow bodies nest, so the walk over them does too.
+void collect_blockers(Graph const &graph, std::string const &path, std::vector<SerializabilityBlocker> &out) {
+    // NOLINTNEXTLINE(misc-no-recursion): see above.
+    auto descend = [&](Graph const *sub, std::string const &step) {
+        if (sub != nullptr) {
+            collect_blockers(*sub, path.empty() ? step : path + "/" + step, out);
+        }
+    };
+
+    for (auto const &node : graph.nodes()) {
+        if (std::string reason = reconstruction_blocker(node); !reason.empty()) {
+            out.push_back(SerializabilityBlocker{.node_id       = node.id,
+                                                 .label         = node.label,
+                                                 .kind_name     = std::string{op_kind_name(node.kind)},
+                                                 .reason        = std::move(reason),
+                                                 .subgraph_path = path});
+        }
+
+        if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+            descend(loop->body.get(), fmt::format("loop({})", node.label));
+        } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+            descend(cond->then_branch.get(), fmt::format("then({})", node.label));
+            descend(cond->else_branch.get(), fmt::format("else({})", node.label));
+        }
+    }
+}
+
+} // namespace
+
 std::vector<SerializabilityBlocker> Graph::serializability_report() const {
     std::vector<SerializabilityBlocker> blockers;
-    for (auto const &node : _nodes) {
-        std::string reason = reconstruction_blocker(node);
-        if (reason.empty()) {
-            continue;
-        }
-        blockers.push_back(SerializabilityBlocker{
-            .node_id = node.id, .label = node.label, .kind_name = std::string{op_kind_name(node.kind)}, .reason = std::move(reason)});
-    }
+    collect_blockers(*this, std::string{}, blockers);
     return blockers;
 }
 

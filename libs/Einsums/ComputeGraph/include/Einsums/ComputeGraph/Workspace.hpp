@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/ComputeGraph/InterfaceManifest.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
@@ -105,6 +106,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
             }
         };
         _handles.push_back(std::move(handle));
+        note_workspace_scope(ptr);
 
         return *ptr;
     }
@@ -176,6 +178,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
             }
         };
         _handles.push_back(std::move(handle));
+        note_workspace_scope(ptr);
 
         return *ptr;
     }
@@ -206,6 +209,24 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
         t.set_pending_init(PendingInit::Random);
         return t;
     }
+
+    /**
+     * @brief The ownership scopes of the tensors this workspace declares.
+     *
+     * Published so a @ref Graph that captures one of these tensors - and builds its own
+     * fresh handle for it, which is what @ref make_handle does - can still report the
+     * tensor as workspace-scoped in its @ref InterfaceManifest. @ref Pipeline attaches this
+     * to every stage graph when a workspace is associated.
+     *
+     * Shared, deliberately: a tensor declared after a stage was added still has to reach
+     * that stage.
+     *
+     * @return The table. Never null.
+     *
+     * @see Graph::add_scope_map
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] TensorScopeMapPtr const &scope_map() const noexcept { return _scopes; }
 
     /// Access all declared tensor handles (for passes to inspect).
     [[nodiscard]] std::vector<TensorHandle> const &tensor_handles() const { return _handles; }
@@ -240,9 +261,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
     }
 
   private:
+    /// Stamp the just-declared handle and the shared table with workspace scope.
+    /// One place, so a new declare_* spelling cannot forget half of it.
+    void note_workspace_scope(void const *ptr) {
+        _handles.back().ownership = TensorOwnership::Workspace;
+        _scopes->insert_or_assign(ptr, TensorOwnership::Workspace);
+    }
+
     std::string                                          _name;
     std::vector<std::unique_ptr<void, void (*)(void *)>> _owned_tensors;
     std::vector<TensorHandle>                            _handles;
+
+    /// Scope table published to capturing graphs. @see scope_map
+    TensorScopeMapPtr _scopes{std::make_shared<TensorScopeMap>()};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

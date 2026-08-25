@@ -66,6 +66,9 @@ Data-dependent branching is covered by the dedicated SCF/MP2 tests.
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 import numpy as np
 import pytest
 
@@ -176,6 +179,19 @@ ETRANSFORM_FNS = [
 #   ("vscale", a, M, r0, r1, c0, c1)        m[M][r0:r1, c0:c1] *= a
 #   ("vaxpy",  a, src, M, r0, r1, c0, c1)   m[M][r0:r1, c0:c1] += a*m[src]
 #   ("loop",   n, body) / ("cond", flag, then, els)
+#
+# Opt-in (``rich_views=True`` on the generators only; existing shards draw
+# neither, so their corpora are untouched):
+#
+#   ("vvscale", a, M, r0, r1, c0, c1, ir0, ir1, ic0, ic1)
+#         a sub-block of a SUB-BLOCK: m[M][r0:r1, c0:c1][ir0:ir1, ic0:ic1] *= a
+#   ("tvscale", a, M, r0, r1, c0, c1)
+#         a sub-block of the TRANSPOSED view: m[M].T[r0:r1, c0:c1] *= a
+#
+# Both express an alias relation the graph can only describe by COMPOSING a
+# chain of ``View`` descriptors (and, for tvscale, by mapping the box through a
+# permutation). They exist for the alias-derivation equivalence shard, which
+# needs a corpus where those two compositions actually occur.
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -208,25 +224,58 @@ def _fallback(rng):
     return ("scale", _scalar(rng), int(rng.integers(0, len(MAT_SHAPES))))
 
 
-def _gen_block(rng, depth, max_stmts):
+def _gen_block(rng, depth, max_stmts, rich_views=False):
     stmts = []
     n = int(rng.integers(1, max_stmts + 1))
     for _ in range(n):
         roll = rng.random()
         if depth > 0 and roll < 0.18:
             cnt = int(rng.integers(1, 4))
-            stmts.append(("loop", cnt, _gen_block(rng, depth - 1, max_stmts)))
+            stmts.append(("loop", cnt, _gen_block(rng, depth - 1, max_stmts, rich_views)))
         elif depth > 0 and roll < 0.30:
             flag = bool(rng.integers(0, 2))
-            then = _gen_block(rng, depth - 1, max_stmts)
-            els = _gen_block(rng, depth - 1, max_stmts)
+            then = _gen_block(rng, depth - 1, max_stmts, rich_views)
+            els = _gen_block(rng, depth - 1, max_stmts, rich_views)
             stmts.append(("cond", flag, then, els))
         else:
-            stmts.append(_gen_primitive(rng))
+            stmts.append(_gen_primitive(rng, rich_views))
     return stmts
 
 
-def _gen_primitive(rng):
+def _gen_chained_view(rng):
+    """A sub-block of a sub-block, or a sub-block of a transpose.
+
+    Drawn only when a caller asks for ``rich_views``. Every existing shard's
+    corpus is defined by its seed, so adding these to the common roll would
+    renumber every program the whole suite has ever generated.
+    """
+    M = int(rng.integers(0, len(MAT_SHAPES)))
+    R, C = MAT_SHAPES[M]
+    a = _scalar(rng)
+    if rng.random() < 0.5:
+        # Outer block, then a block of it. The inner extents are relative to the
+        # outer window, which is exactly the composition the derivation has to
+        # get right.
+        sr = int(rng.integers(1, R + 1))
+        sc = int(rng.integers(1, C + 1))
+        r0 = int(rng.integers(0, R - sr + 1))
+        c0 = int(rng.integers(0, C - sc + 1))
+        isr = int(rng.integers(1, sr + 1))
+        isc = int(rng.integers(1, sc + 1))
+        ir0 = int(rng.integers(0, sr - isr + 1))
+        ic0 = int(rng.integers(0, sc - isc + 1))
+        return ("vvscale", a, M, r0, r0 + sr, c0, c0 + sc, ir0, ir0 + isr, ic0, ic0 + isc)
+    # The transpose has shape (C, R), so the block bounds swap roles.
+    sr = int(rng.integers(1, C + 1))
+    sc = int(rng.integers(1, R + 1))
+    r0 = int(rng.integers(0, C - sr + 1))
+    c0 = int(rng.integers(0, R - sc + 1))
+    return ("tvscale", a, M, r0, r0 + sr, c0, c0 + sc)
+
+
+def _gen_primitive(rng, rich_views=False):
+    if rich_views and rng.random() < 0.25:
+        return _gen_chained_view(rng)
     op = int(rng.integers(0, 14))
     a = _scalar(rng)
     if op == 13:  # gemm whose A operand is a *view* block of a larger matrix
@@ -403,6 +452,14 @@ def interp_np(stmts, m, v, t, dt=None):
         elif k == "vaxpy":
             _, a, src, M, r0, r1, c0, c1 = s
             m[M][r0:r1, c0:c1] = m[M][r0:r1, c0:c1] + a * m[src]
+        elif k == "vvscale":
+            _, a, M, r0, r1, c0, c1, ir0, ir1, ic0, ic1 = s
+            block = m[M][r0:r1, c0:c1]
+            block[ir0:ir1, ic0:ic1] = block[ir0:ir1, ic0:ic1] * a
+            m[M][r0:r1, c0:c1] = block
+        elif k == "tvscale":
+            _, a, M, r0, r1, c0, c1 = s
+            m[M][c0:c1, r0:r1] = m[M][c0:c1, r0:r1] * a
         elif k == "loop":
             _, n, body = s
             for _ in range(n):
@@ -468,6 +525,13 @@ def _emit_primitive(s, m, v, t):
     elif k == "vaxpy":
         _, a, src, M, r0, r1, c0, c1 = s
         einsums.linalg.axpy(a, m[src], cg.view(m[M], [(r0, r1), (c0, c1)]))
+    elif k == "vvscale":
+        _, a, M, r0, r1, c0, c1, ir0, ir1, ic0, ic1 = s
+        outer = cg.view(m[M], [(r0, r1), (c0, c1)])
+        einsums.linalg.scale(a, cg.view(outer, [(ir0, ir1), (ic0, ic1)]))
+    elif k == "tvscale":
+        _, a, M, r0, r1, c0, c1 = s
+        einsums.linalg.scale(a, cg.view(cg.permute_view(m[M], [1, 0]), [(r0, r1), (c0, c1)]))
     else:  # pragma: no cover
         raise AssertionError(f"not a primitive: {k!r}")
 
@@ -673,6 +737,87 @@ _SAFE_PASSES = [
     "SymmetryPropagation", "MemoryPlanning", "InplaceOptimization", "Reorder",
 ]
 
+# ──────────────────────────────────────────────────────────────────────────
+# Save / load round trip
+#
+# The differential above asks "does the graph agree with numpy". This one asks
+# a narrower question that no other shard covers: does a program SURVIVE being
+# written to a file and read back, with its answer unchanged?
+#
+# The skip rule mirrors _usable's. A random program routinely holds something
+# the IR cannot yet carry - a View node, a gemv, an anonymous element
+# transform - and `Graph.serializability_report` is what names those; a save
+# refuses exactly that set, so the refusal IS the skip signal and there is no
+# second list to keep in step. `_ROUNDTRIP_STATS` counts what actually round
+# tripped so a shard can assert the corpus has not quietly degraded to all
+# skips.
+# ──────────────────────────────────────────────────────────────────────────
+
+_ROUNDTRIP_STATS = {"attempted": 0, "round_tripped": 0}
+
+
+def _run_program_roundtrip(prog, m_arrays, v_arrays, t_arrays, name):
+    """Build, save, load, bind by manifest name, execute.
+
+    Returns the loaded run's pools, or None when the program holds something a
+    file cannot carry (the save refuses it)."""
+    _ROUNDTRIP_STATS["attempted"] += 1
+
+    mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, name)
+    g = cg.Graph(name)
+    build_cg(prog, g, mats, vecs, r3s, name)
+
+    with tempfile.TemporaryDirectory() as scratch:
+        path = os.path.join(scratch, f"{name}.eig.json")
+        try:
+            cg.save_graph(g, path)
+        except Exception:
+            return None
+        loaded = cg.load_graph(path)
+
+    # A SECOND pool under the same names, seeded identically. Same names because
+    # the manifest binds by name and `_make_pool` derives a tensor's name from
+    # the pool's; a different prefix would leave every slot unbound.
+    b_mats, b_vecs, b_r3s = _make_pool(m_arrays, v_arrays, t_arrays, name)
+    by_name = {}
+    for prefix, pool in (("m", b_mats), ("v", b_vecs), ("t", b_r3s)):
+        for idx, tensor in enumerate(pool):
+            by_name[f"{name}_{prefix}{idx}"] = tensor
+
+    for key in loaded.manifest_names():
+        if key not in by_name:
+            # A slot the pool cannot supply would silently execute against the
+            # loader's placeholder storage, which is a green test that proved
+            # nothing. Refuse the trial instead.
+            return None
+        loaded.bind(key, by_name[key])
+
+    loaded.execute()
+    _ROUNDTRIP_STATS["round_tripped"] += 1
+    return ([np.asarray(x).copy() for x in b_mats],
+            [np.asarray(x).copy() for x in b_vecs],
+            [np.asarray(x).copy() for x in b_r3s])
+
+
+def check_program_roundtrip(prog, m_arrays, v_arrays, t_arrays, label, dtype="float64"):
+    """A saved-and-reloaded program computes what the original computed."""
+    cap = _DTYPE_CAP[dtype]
+    dt = np.dtype(dtype)
+    om = [a.copy() for a in m_arrays]
+    ov = [a.copy() for a in v_arrays]
+    ot = [a.copy() for a in t_arrays]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        interp_np(prog, om, ov, ot, dt)
+    if not _usable(om, ov, ot, cap=cap):
+        pytest.skip("oracle overflowed - numerically degenerate program")
+
+    got = _run_program_roundtrip(prog, m_arrays, v_arrays, t_arrays, f"{label}_rt")
+    if got is None:
+        pytest.skip("program holds a node the IR cannot carry yet")
+
+    _assert_pools(got, (om, ov, ot), prog, "ROUND-TRIPPED")
+
+
 def _oracle(prog, m, v, t, runs=1):
     om = [a.copy() for a in m]
     ov = [a.copy() for a in v]
@@ -732,6 +877,7 @@ __all__ = [
     '_fallback',
     '_gen_block',
     '_gen_primitive',
+    '_gen_chained_view',
     'interp_np',
     '_emit_primitive',
     'build_cg',
@@ -742,6 +888,9 @@ __all__ = [
     '_CROSS_EXECUTORS',
     '_run_program_exec',
     'check_program_cross_executor',
+    '_ROUNDTRIP_STATS',
+    '_run_program_roundtrip',
+    'check_program_roundtrip',
     '_seed_arrays',
     '_square_seed_arrays',
     '_SQ',

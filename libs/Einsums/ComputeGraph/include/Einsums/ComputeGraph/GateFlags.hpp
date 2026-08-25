@@ -95,6 +95,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") GateFlags {
     /// The shared buffer, for a node to bake in at capture time.
     [[nodiscard]] std::shared_ptr<std::vector<std::uint8_t>> const &buffer() const { return _flags; }
 
+    /**
+     * @brief Wrap an existing shared buffer rather than allocating one.
+     *
+     * @param[in] buffer The array to share. Null is treated as an empty array,
+     *            so the object is always usable.
+     * @return A handle onto @p buffer.
+     *
+     * For a caller that was handed the buffer rather than the handle:
+     * @ref Graph::gate_flags recreates a loaded graph's named arrays this way,
+     * so a caller can set the gates of a graph it did not capture. Sharing
+     * rather than copying is the whole point - the nodes already hold this
+     * ``shared_ptr``, so a write through the returned handle is what the next
+     * replay reads.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] static GateFlags adopt(std::shared_ptr<std::vector<std::uint8_t>> buffer) {
+        GateFlags out;
+        if (buffer != nullptr) {
+            out._flags = std::move(buffer);
+        }
+        return out;
+    }
+
   private:
     std::shared_ptr<std::vector<std::uint8_t>> _flags;
 };

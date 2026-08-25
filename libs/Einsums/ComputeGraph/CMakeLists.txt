@@ -19,6 +19,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/ABILayout.hpp
     Einsums/ComputeGraph/GateFlags.hpp
     Einsums/ComputeGraph/Graph.hpp
+    Einsums/ComputeGraph/InterfaceManifest.hpp
     Einsums/ComputeGraph/LuPivots.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/CostModel.hpp
@@ -88,6 +89,8 @@ set(ComputeGraphSources
     ExecutorBuilder.cpp
     ABILayout.cpp
     Graph.cpp
+    InterfaceManifest.cpp
+    SymbolicExtents.cpp
     GroupedBatchedGemm.cpp
     UsageAnalysis.cpp
     CostModel.cpp

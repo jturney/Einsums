@@ -48,6 +48,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -89,6 +90,24 @@ enum class CmpOp : std::uint8_t {
         return "ge";
     }
     return "eq";
+}
+
+/**
+ * @brief The @ref CmpOp spelled @p name, if there is one.
+ * @param[in] name A spelling @ref cmp_op_name produces.
+ * @return The operator, or an empty optional when nothing is spelled that way.
+ *
+ * The reverse of @ref cmp_op_name, for the IR's by-name rule: a saved predicate
+ * writes "lt", never the enumerator's numeric value.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline std::optional<CmpOp> cmp_op_from_name(std::string_view name) noexcept {
+    for (auto const op : {CmpOp::Eq, CmpOp::Ne, CmpOp::Lt, CmpOp::Le, CmpOp::Gt, CmpOp::Ge}) {
+        if (cmp_op_name(op) == name) {
+            return op;
+        }
+    }
+    return std::nullopt;
 }
 
 /**

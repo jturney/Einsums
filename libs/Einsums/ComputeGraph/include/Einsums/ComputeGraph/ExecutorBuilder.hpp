@@ -414,6 +414,18 @@ struct SerializabilityBlocker {
     std::string label;      ///< Its human-readable label, so the report names something a user recognises.
     std::string kind_name;  ///< @ref op_kind_name of its kind.
     std::string reason;     ///< What blocks it, e.g. "kind not yet reconstructible".
+
+    /// Where the node lives relative to the graph the report was asked of.
+    ///
+    /// Empty for a node of that graph itself. Otherwise a ``/``-separated path of the
+    /// control-flow nodes descended through, each named by its label and, for a
+    /// ``Conditional``, by which branch was taken: ``loop(scf_iter)/then(converged)``.
+    ///
+    /// A NodeId is graph-local, so ``node_id`` alone does not locate a node inside a body.
+    /// This is what makes the pair addressable.
+    ///
+    /// @versionadded{2.0.0}
+    std::string subgraph_path;
 };
 
 /**

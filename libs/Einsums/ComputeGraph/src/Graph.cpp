@@ -36,9 +36,11 @@
 #include <optional>
 #include <ostream>
 #include <queue>
+#include <ranges>
 #include <set>
 #include <span>
 #include <unordered_set>
+#include <utility>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -518,25 +520,60 @@ void Graph::adopt(std::function<void()> deleter) {
         _adopted_cleanups.push_back(std::move(deleter));
 }
 
+/// @note This function and ``GraphIR.cpp``'s member walk are the two places a
+///       newly added Graph member has to be considered, and they ask different
+///       questions of it. Here the question is "does the member travel with a
+///       move", and the answer is yes for everything that is not a fresh
+///       per-object resource (the content mutex). There the question is "is the
+///       member STRUCTURE, and therefore part of what a saved file carries and a
+///       content hash covers", and the answer is deliberately no for most of it:
+///       thread widths, admission priorities, stream ids, timings, estimated
+///       flops and bytes, and the planned thread count are all tuning artifacts
+///       of one machine, which is the design's Part 3.6 rule made concrete.
+///       ``GraphIR.cpp`` states the verdict member by member; keep the two in
+///       step when adding one.
 void Graph::move_members_from(Graph &&other) noexcept {
-    _name                  = std::move(other._name);
-    _space_registry        = other._space_registry;
-    _pipeline_name         = std::move(other._pipeline_name);
-    _workspace_name        = std::move(other._workspace_name);
-    _stage_name            = std::move(other._stage_name);
-    _stage_type            = std::move(other._stage_type);
-    _stage_index           = other._stage_index;
-    _nodes                 = std::move(other._nodes);
-    _tensors               = std::move(other._tensors);
-    _next_node_id          = other._next_node_id;
-    _next_tensor_id        = other._next_tensor_id;
-    _sorted                = other._sorted;
-    _executed              = other._executed;
-    _deps                  = std::move(other._deps);
-    _owned_tensors         = std::move(other._owned_tensors);
-    _adopted_cleanups      = std::move(other._adopted_cleanups);
-    _params                = std::move(other._params);
-    _slot_map              = std::move(other._slot_map);
+    _name             = std::move(other._name);
+    _space_registry   = other._space_registry;
+    _pipeline_name    = std::move(other._pipeline_name);
+    _workspace_name   = std::move(other._workspace_name);
+    _stage_name       = std::move(other._stage_name);
+    _stage_type       = std::move(other._stage_type);
+    _stage_index      = other._stage_index;
+    _nodes            = std::move(other._nodes);
+    _tensors          = std::move(other._tensors);
+    _next_node_id     = other._next_node_id;
+    _next_tensor_id   = other._next_tensor_id;
+    _sorted           = other._sorted;
+    _executed         = other._executed;
+    _deps             = std::move(other._deps);
+    _owned_tensors    = std::move(other._owned_tensors);
+    _adopted_cleanups = std::move(other._adopted_cleanups);
+    _params           = std::move(other._params);
+    _scope_maps       = std::move(other._scope_maps);
+    _bound_operands   = std::move(other._bound_operands);
+    _declared_aliases = std::move(other._declared_aliases);
+    _interface_names  = std::move(other._interface_names);
+    _symbol_spaces    = std::move(other._symbol_spaces);
+    _ragged_extents   = std::move(other._ragged_extents);
+    _named_gate_flags = std::move(other._named_gate_flags);
+    _slot_map         = std::move(other._slot_map);
+    // Seven members that used to be dropped by a move. Each is state a moved-to
+    // graph genuinely needs, and the omission was latent only because nothing
+    // moved a graph and then used it: `load_graph` returns one by value, so
+    // every load exercises this path.
+    //
+    // `_aliases_linked` is the sharpest of them. Its default is TRUE, meaning
+    // "the relation is up to date", so a graph moved out of a state that needed
+    // relinking arrived claiming it did not - a silently incomplete alias
+    // relation, which is the shape of both alias bugs this module has had.
+    _ptr_index             = std::move(other._ptr_index);
+    _owned_tensor_ptrs     = std::move(other._owned_tensor_ptrs);
+    _indices_store         = std::move(other._indices_store);
+    _device_shadows        = std::move(other._device_shadows);
+    _executor              = std::move(other._executor);
+    _aliases_linked        = other._aliases_linked;
+    _slots_validated       = other._slots_validated;
     _timing_samples        = std::move(other._timing_samples);
     _timing_report         = std::move(other._timing_report);
     _timing_report_valid   = other._timing_report_valid;
@@ -549,6 +586,7 @@ void Graph::move_members_from(Graph &&other) noexcept {
     _exec_zone_id          = other._exec_zone_id;
     _last_optimize_report  = std::move(other._last_optimize_report);
     _analysis_version      = other._analysis_version;
+    _structure_version     = other._structure_version;
     _usage_version         = other._usage_version;
     _usage                 = std::move(other._usage);
     // The widths themselves ride along inside _nodes, so the count they were
@@ -597,6 +635,7 @@ NodeId Graph::add_node(Node node) {
     _profile_strings_valid = false;
     _executed              = false;
     _analysis_version++;
+    _structure_version++;
     return id;
 }
 
@@ -613,6 +652,9 @@ size_t Graph::erase_nodes(std::vector<bool> const &remove) {
         filtered.push_back(std::move(_nodes[i]));
     }
     _nodes = std::move(filtered);
+    if (removed != 0) {
+        _structure_version++;
+    }
     return removed;
 }
 
@@ -640,6 +682,7 @@ void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<No
         if (nodes.empty()) {
             continue;
         }
+        _structure_version++;
         _nodes.insert(_nodes.begin() + static_cast<std::ptrdiff_t>(at), std::make_move_iterator(nodes.begin()),
                       std::make_move_iterator(nodes.end()));
     }
@@ -650,20 +693,14 @@ namespace {
 
 /// Half-open byte span of a handle's storage, or false when it has none that
 /// can be reasoned about (deferred allocation, tiled layout, zero extent).
+///
+/// A tiled handle has no single buffer, so it is refused here rather than in the
+/// shared span helper, which knows only about one strided allocation.
 bool handle_byte_span(TensorHandle const &h, char const *&lo, char const *&hi) {
-    if (h.data_ptr == nullptr || h.is_tiled || h.element_size == 0 || h.dims.empty() || h.strides.size() != h.dims.size()) {
+    if (h.is_tiled) {
         return false;
     }
-    size_t last = 0;
-    for (size_t d = 0; d < h.dims.size(); ++d) {
-        if (h.dims[d] == 0) {
-            return false;
-        }
-        last += (h.dims[d] - 1) * h.strides[d];
-    }
-    lo = static_cast<char const *>(h.data_ptr);
-    hi = lo + (last + 1) * h.element_size;
-    return true;
+    return detail::strided_byte_span(h.data_ptr, h.dims, h.strides, h.element_size, lo, hi);
 }
 
 /// How well a handle's strides describe a lattice, which is what decides
@@ -924,13 +961,426 @@ bool derive_alias_box(TensorHandle const &parent, TensorHandle const &child, std
     return true;
 }
 
+/// Per-axis half-open interval list, the representation both derivations speak.
+using AliasBox = std::vector<std::pair<std::int64_t, std::int64_t>>;
+
+/// True when @p box is every element of a parent with extents @p dims, which is
+/// the shape `derive_alias_box` normalizes away. See its comment for why: a
+/// full-cover BOX is not recognized as dominating anything, so the writer list
+/// grows without bound, while the same statement spelled as NO box retires
+/// every writer it covers.
+bool whole_cover(AliasBox const &box, std::vector<size_t> const &dims) {
+    if (box.size() != dims.size()) {
+        return false;
+    }
+    for (size_t d = 0; d < box.size(); ++d) {
+        if (box[d].first != 0 || !std::cmp_equal(box[d].second, dims[d])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// What a structural walk knows about one tensor's relation to its alias root.
+///
+/// @ref box and @ref axis_map are only meaningful under their respective flags;
+/// @ref root is always meaningful, because a walk that cannot describe a region
+/// still knows which buffer the tensor is part of, and that is the half whose
+/// absence races.
+struct StructuralAlias {
+    /// The tensor at the end of the alias chain. Equal to the tensor itself when
+    /// it owns its storage.
+    TensorId root{0};
+    /// The region the tensor covers, in @ref root's axis space. Valid only when
+    /// @ref box_known.
+    AliasBox box;
+    /// This tensor's axis @c r maps onto @ref root's axis ``axis_map[r]``. One
+    /// entry per axis of THIS tensor, so a Drop axis contributes none. Valid only
+    /// when @ref map_known, and needed by a child that composes through it.
+    std::vector<size_t> axis_map;
+    bool                box_known{false}; ///< Whether @ref box describes the region.
+    bool                map_known{false}; ///< Whether @ref axis_map describes the axis correspondence.
+};
+
+/// Alias discovery with NO addresses: the relation `(root, region)` derived from
+/// ``View`` nodes, their @ref ViewDescriptor axes, and the alias links already on
+/// the handles, with no data pointer consulted anywhere.
+///
+/// This is the counterpart of the pointer-derived containment search in
+/// @ref Graph::link_alias_storage and it is what a loaded graph has instead of
+/// one, because a graph read from a file has allocated nothing and the tensors
+/// bound to it afterwards are not the tensors that were captured. It is also
+/// STRICTLY more general than the View-node scan the hazard pass used to run
+/// inline, which refused a permuted view and a view of a view; both compose here.
+///
+/// **Composition.** A view's descriptor gives, per parent axis, the interval that
+/// axis is restricted to (a whole axis, a constant Range, or the single index a
+/// Drop pins), and its permutation says which parent axis each RESULT axis reads.
+/// Composing a chain is therefore: take the parent's own region in the root's
+/// axis space, and place the child's per-parent-axis intervals inside it by
+/// offsetting each one by where the parent's corresponding axis starts. The axis
+/// map is what makes that placement possible past one hop, and it is why a view
+/// of a permuted view is describable at all.
+///
+/// **Where it declines.** A non-constant bound (a Param or a Callback, whose
+/// value is not known until execute) yields no box, which reads as the whole
+/// parent - the same conservative answer the pointer path gives for a region it
+/// cannot prove. So does a root whose own strides are not injective: such a
+/// layout reaches one element through more than one index tuple, so two boxes
+/// that share no index can still name the same memory, and trusting the axis
+/// space there would DROP a real hazard edge. That fence is checked against the
+/// root's registration-time strides when it has them; a loaded graph carries
+/// none yet, and its axis space is trusted because nothing else can be.
+class StructuralAliasResolver {
+  public:
+    /// Index the graph's ``View`` nodes. One pass; the walk itself is memoized.
+    explicit StructuralAliasResolver(Graph const &graph) : _graph(&graph) {
+        for (auto const &nd : graph.nodes()) {
+            if (nd.kind != OpKind::View || nd.outputs.size() != 1) {
+                continue;
+            }
+            auto const *vd = std::get_if<ViewDescriptor>(&nd.op_data);
+            if (vd == nullptr) {
+                continue;
+            }
+            // First View node writing a tensor wins. A second one would be a
+            // re-description of the same slice; taking the first keeps the
+            // derivation independent of node order.
+            _views.emplace(nd.outputs[0], vd);
+        }
+    }
+
+    /// Whether @p id is the output of a ``View`` node, i.e. whether this
+    /// derivation has anything to say about it that the handle does not.
+    [[nodiscard]] bool is_view(TensorId id) const { return _views.contains(id); }
+
+    /// @return The relation, memoized.
+    ///
+    /// Walks UP the view chain collecting what this answer depends on, then
+    /// composes back DOWN. Iterative rather than recursive on purpose: a chain
+    /// is bounded only by the tensor count (DLPNO-MP2 registers ~13k), and a
+    /// stack frame per hop is the wrong thing to bound it with. It also makes
+    /// the cycle case a plain visited-set test rather than a depth guard - a
+    /// cycle is not constructible today, and if one ever is, the tensor is
+    /// reported conservatively instead of looped on.
+    StructuralAlias const &resolve(TensorId id) {
+        if (auto const it = _memo.find(id); it != _memo.end()) {
+            return it->second;
+        }
+
+        std::vector<TensorId>        chain;
+        std::unordered_set<TensorId> on_chain;
+        for (TensorId current = id;;) {
+            if (_memo.contains(current)) {
+                break; // an answer already exists to compose against
+            }
+            auto const vit = _views.find(current);
+            if (vit == _views.end()) {
+                _memo.emplace(current, self(current)); // chain ends at a tensor no View node describes
+                break;
+            }
+            if (!on_chain.insert(current).second) {
+                _memo.emplace(current, StructuralAlias{.root = current}); // cycle: conservative
+                break;
+            }
+            chain.push_back(current);
+            TensorId const parent = vit->second->parent_id;
+            if (parent == current || _graph->find_tensor(parent) == nullptr) {
+                chain.pop_back();
+                _memo.emplace(current, self(current)); // a View node naming nothing usable
+                break;
+            }
+            current = parent;
+        }
+
+        // Compose downward: every entry's parent is already answered.
+        for (TensorId const tid : std::views::reverse(chain)) {
+            _memo.emplace(tid, compose(tid));
+        }
+        return _memo.at(id);
+    }
+
+  private:
+    /// The answer for a tensor that no ``View`` node describes: it owns its
+    /// storage, or its handle already names an alias parent whose axis space
+    /// this derivation cannot recover (a pointer-linked slice, a manifest
+    /// declaration). Either way the ROOT is known and the region is not.
+    [[nodiscard]] StructuralAlias self(TensorId id) const {
+        StructuralAlias res;
+        res.root                   = id;
+        TensorHandle const *handle = _graph->find_tensor(id);
+        if (handle == nullptr) {
+            return res;
+        }
+        if (handle->aliases != 0) {
+            // resolve_alias throws only on a cycle, which every writer of
+            // ``aliases`` makes unconstructible; a conservative catch here would
+            // hide exactly the corruption it is there to report.
+            res.root = _graph->resolve_alias(handle->aliases);
+            return res; // region unknown: a box on the handle lives in a space this walk did not build
+        }
+        if (handle->is_tiled) {
+            return res; // no single axis space to place a region in
+        }
+        // The injectivity fence. Only checked when the root carries the strides
+        // to check it with; see the class comment.
+        if (handle->strides.size() == handle->dims.size() && !handle->strides.empty()) {
+            std::vector<size_t> order;
+            size_t              total = 0;
+            if (layout_axis_order(*handle, order, total) == LayoutFit::None) {
+                return res;
+            }
+        }
+        res.box.reserve(handle->dims.size());
+        res.axis_map.reserve(handle->dims.size());
+        for (size_t d = 0; d < handle->dims.size(); ++d) {
+            res.box.emplace_back(0, static_cast<std::int64_t>(handle->dims[d]));
+            res.axis_map.push_back(d);
+        }
+        res.box_known = true;
+        res.map_known = true;
+        return res;
+    }
+
+    /// Place @p id's own slice inside the region its parent already occupies.
+    /// Only called by @ref resolve, and only once the parent is answered.
+    [[nodiscard]] StructuralAlias compose(TensorId id) const {
+        ViewDescriptor const  *vd     = _views.at(id);
+        TensorHandle const    *ph     = _graph->find_tensor(vd->parent_id);
+        StructuralAlias const &parent = _memo.at(vd->parent_id);
+        StructuralAlias        res;
+        res.root = parent.root;
+        if (ph == nullptr) {
+            return res;
+        }
+
+        size_t const prank = ph->dims.size();
+        if (!parent.box_known || !parent.map_known || parent.axis_map.size() != prank || vd->axes.size() != prank) {
+            return res; // the parent's own region is not placeable, so neither is this one
+        }
+
+        // The child's region in the PARENT's axis space, plus which parent axis
+        // each of the child's own axes reads.
+        AliasBox            local(prank, {0, 0});
+        std::vector<size_t> local_map;
+        std::vector<bool>   touched(prank, false);
+        local_map.reserve(prank);
+        for (size_t i = 0; i < prank; ++i) {
+            // Result axis i slices parent axis p. Empty permutation is identity;
+            // a permutation is a bijection of [0, prank), so every parent axis is
+            // named exactly once and the box has no hole.
+            size_t const p = vd->permutation.empty() ? i : vd->permutation[i];
+            if (p >= prank || touched[p]) {
+                return res;
+            }
+            touched[p]          = true;
+            ViewAxis const &ax  = vd->axes[i];
+            auto const      dim = static_cast<std::int64_t>(ph->dims[p]);
+            switch (ax.kind) {
+            case ViewAxis::Kind::Full:
+                local[p] = {0, dim};
+                local_map.push_back(p);
+                break;
+            case ViewAxis::Kind::Range:
+                if (!ax.lo.is_const() || !ax.hi.is_const()) {
+                    return res; // a runtime bound conflicts as the whole parent
+                }
+                local[p] = {ax.lo.const_value(), ax.hi.const_value()};
+                local_map.push_back(p);
+                break;
+            case ViewAxis::Kind::Drop:
+                if (!ax.lo.is_const()) {
+                    return res;
+                }
+                local[p] = {ax.lo.const_value(), ax.lo.const_value() + 1};
+                break; // a dropped axis contributes its collapsed index and no result axis
+            }
+            if (local[p].first < 0 || local[p].first > local[p].second || local[p].second > dim) {
+                return res; // out of the parent, so not describable in its axes
+            }
+        }
+
+        // Place the local intervals inside the parent's own region: parent axis p
+        // is root axis q, and its index 0 sits at the root index the parent's box
+        // starts at.
+        res.box = parent.box;
+        for (size_t p = 0; p < prank; ++p) {
+            size_t const q = parent.axis_map[p];
+            if (q >= res.box.size()) {
+                return {.root = parent.root};
+            }
+            std::int64_t const base = parent.box[q].first;
+            res.box[q]              = {base + local[p].first, base + local[p].second};
+            if (res.box[q].second > parent.box[q].second) {
+                return {.root = parent.root};
+            }
+        }
+        res.axis_map.reserve(local_map.size());
+        for (size_t const p : local_map) {
+            res.axis_map.push_back(parent.axis_map[p]);
+        }
+        res.box_known = true;
+        res.map_known = true;
+        return res;
+    }
+
+    Graph const                                         *_graph;
+    std::unordered_map<TensorId, ViewDescriptor const *> _views;
+    std::unordered_map<TensorId, StructuralAlias>        _memo;
+};
+
 } // namespace
+
+void Graph::declare_alias(TensorId child, TensorId parent) {
+    if (child == 0 || parent == 0 || child == parent) {
+        return;
+    }
+    auto const child_it = _tensors.find(child);
+    if (child_it == _tensors.end() || !_tensors.contains(parent)) {
+        return;
+    }
+    // A cycle would turn every later resolve_alias into a throw, and the message
+    // there is about a corrupt link rather than about the declaration that made
+    // it. Refuse here, where the two names are still in hand: a saved graph
+    // claiming A is part of B and B part of A describes nothing.
+    for (TensorId walk = parent, hops = 0; walk != 0 && hops <= _tensors.size(); ++hops) {
+        if (walk == child) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "Graph '{}': declare_alias({}, {}) would make the two tensors each other's alias parent; an "
+                                    "alias declaration has to name a containing buffer, and containment is not symmetric",
+                                    _name, child, parent);
+        }
+        auto const it = _tensors.find(walk);
+        if (it == _tensors.end()) {
+            break;
+        }
+        walk = it->second.aliases;
+    }
+    _declared_aliases.insert_or_assign(child, parent);
+    child_it->second.aliases = parent;
+    // A declaration says WHICH buffer, never WHICH REGION - the manifest schema
+    // carries no box - so the declared alias conflicts as the whole parent.
+    child_it->second.alias_box.clear();
+    // The hazard relation just changed, so anything derived from it is stale.
+    _deps_valid = false;
+}
+
+void Graph::clear_alias_links() noexcept {
+    for (auto &[id, handle] : _tensors) {
+        handle.aliases = 0;
+        handle.alias_box.clear();
+    }
+    _aliases_linked = false;
+    _deps_valid     = false;
+}
+
+void Graph::apply_declared_aliases() {
+    for (auto const &[child, parent] : _declared_aliases) {
+        auto const it = _tensors.find(child);
+        if (it == _tensors.end() || child == parent || !_tensors.contains(parent)) {
+            continue;
+        }
+        it->second.aliases = parent;
+        it->second.alias_box.clear();
+    }
+}
+
+void Graph::link_alias_structural() {
+    // Declarations first, and they are what the pointer path cannot see: two
+    // caller-supplied tensors that happen to share storage have no View node
+    // recording it, and in a loaded graph they have no addresses to compare
+    // either. Applying them first also means a view OF a declared alias
+    // composes down onto the declared root below.
+    apply_declared_aliases();
+
+    StructuralAliasResolver resolver(*this);
+
+    // Derive first, write second. The walk reads ``aliases`` for the handles no
+    // View node describes, so rewriting a handle mid-walk would let a later
+    // tensor resolve against a half-updated relation.
+    struct Update {
+        TensorId tid;
+        TensorId root;
+        AliasBox box;
+    };
+    std::vector<Update> updates;
+    for (auto const &[id, handle] : _tensors) {
+        if (!resolver.is_view(id)) {
+            continue;
+        }
+        StructuralAlias const &res = resolver.resolve(id);
+        if (res.root == 0 || res.root == id) {
+            continue;
+        }
+        AliasBox box;
+        if (res.box_known) {
+            TensorHandle const *root = find_tensor(res.root);
+            // A box covering the whole root is reported as NO box, exactly as
+            // the pointer path's derive_alias_box does and for the same
+            // dominance reason. Keeping the two normalizations identical is
+            // what makes the derivations comparable at all.
+            if (root != nullptr && !whole_cover(res.box, root->dims)) {
+                box = res.box;
+            }
+        }
+        updates.push_back({.tid = id, .root = res.root, .box = std::move(box)});
+    }
+    for (auto &update : updates) {
+        auto const it = _tensors.find(update.tid);
+        if (it == _tensors.end()) {
+            continue;
+        }
+        it->second.aliases   = update.root;
+        it->second.alias_box = std::move(update.box);
+    }
+
+    // Deliberately NOT marking the pointer derivation as done. Structural adds
+    // what the ``View`` nodes and the declarations say and claims nothing about
+    // the relations only an address can reveal, so a graph that HAS addresses
+    // still gets its containment search - which is also what makes "run one, then
+    // the other, and nothing moves" an invariant every scheduling test enforces
+    // for free rather than a property one test remembers to check.
+    // Graph::link_alias_storage sets the flag itself before delegating here, so
+    // the loaded-graph path does not re-enter.
+
+    // A Loop body and a Conditional branch are separate graphs with their own
+    // handles, and fourteen passes rewrite them; a body left unlinked answers
+    // "this view aliases nothing" and its hazard edges vanish. The pointer path
+    // is recursed by Graph::apply for that reason, and this recurses itself so
+    // a direct call (the loader's, and the tests') gets the same tree.
+    for_each_subgraph([](Graph &sub) { sub.link_alias_structural(); });
+}
 
 void Graph::link_alias_storage() {
     if (_aliases_linked) {
         return;
     }
     _aliases_linked = true;
+
+    // A declaration is authoritative and an address coincidence is not, so
+    // declarations go on first and the containment search below leaves them
+    // alone (it skips any handle that already names a parent).
+    apply_declared_aliases();
+
+    // The loaded-graph state: structure was read from a file, nothing is
+    // allocated, and no handle has an address to compare. Linking nothing here
+    // is not a safe default - it is the exact shape of the full-cover alias bug,
+    // a silently incomplete relation that surfaces as a race - so the derivation
+    // switches to the structural one, which needs no addresses at all.
+    //
+    // MIXED graphs are the ordinary case, not an error: a deferred shell has no
+    // address until it is materialized, and TensorHandle::data_ptr is a
+    // registration-time snapshot nothing refreshes. Refusing to mix would refuse
+    // most real graphs. The rule is therefore the honest one - the pointer
+    // derivation runs whenever ANY handle carries an address, unchanged from
+    // before, and it simply cannot see a null-address handle; the structural
+    // derivation takes the whole graph only when NO handle carries one. What
+    // spans the two modes is the declaration, which is applied above in both and
+    // is the only way an alias between two address-less operands is expressible.
+    if (!_tensors.empty() && std::ranges::none_of(_tensors, [](auto const &kv) { return kv.second.data_ptr != nullptr; })) {
+        link_alias_structural();
+        return;
+    }
 
     struct Entry {
         char const *lo;
@@ -1123,7 +1573,14 @@ TensorId Graph::register_tensor(TensorHandle handle) {
     std::scoped_lock const lock(*_content_mutex);
     TensorId               id = _next_tensor_id++;
     handle.id                 = id;
-    auto const &stored        = _tensors.emplace(id, std::move(handle)).first->second;
+    // A tensor another scope declared arrives here as a fresh, default handle
+    // (make_handle knows nothing about workspaces), so the scope tables the
+    // declaring Workspace/Pipeline published are what recover its ownership.
+    // An intermediate is graph-owned by construction and is never looked up.
+    if (!handle.is_intermediate && !_scope_maps.empty()) {
+        handle.ownership = scope_for_ptr(handle.tensor_ptr);
+    }
+    auto const &stored = _tensors.emplace(id, std::move(handle)).first->second;
     if (stored.tensor_ptr != nullptr) {
         // insert_or_assign, not emplace: an address freed during a capture can
         // be reused by a different tensor, and the index has to name the tensor
@@ -1204,6 +1661,17 @@ void Graph::annotate_spaces(TensorId id, std::vector<SpaceId> spaces) {
                                     "graph's registry",
                                     _name, handle.name, axis);
         }
+    }
+
+    // A symbol tied to two different spaces is a contradiction, and it is reachable from
+    // this side too: annotate the dims first, the spaces second. Checked against a copy of
+    // the finished state so a throw leaves the handle exactly as it was.
+    {
+        TensorHandle probe;
+        probe.name        = handle.name;
+        probe.dim_symbols = handle.dim_symbols;
+        probe.spaces      = spaces;
+        record_symbol_space_ties(probe);
     }
 
     // A declaration is authoritative, so it also clears the inferred flag: whatever capture or the
@@ -1410,67 +1878,52 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     // per-slice writes like the CCSD ladder's ``r2[i,j] += ...`` touch
     // provably different elements of one parent, and serializing them (the old
     // owner-only scan) chained every slice of a tensor behind every other,
-    // leaving parallel executors no width. Each eligible view (identity axis
-    // order, every bound a compile-time constant) gets a per-parent-axis
-    // interval box; two accesses conflict only when their boxes may overlap.
-    // Anything unprovable - a runtime bound, a permuted view, a view of a
-    // view, a whole-tensor access - keeps a null box, which overlaps
+    // leaving parallel executors no width. Each describable view gets a
+    // per-ROOT-axis interval box; two accesses conflict only when their boxes
+    // may overlap. Anything unprovable - a runtime bound, a non-injective
+    // parent layout, a whole-tensor access - keeps a null box, which overlaps
     // everything (the previous behavior). Element-disjoint writes commute
     // bitwise, so relaxing the order cannot change results.
-    using Box = std::vector<std::pair<std::int64_t, std::int64_t>>; // per parent axis: [lo, hi)
+    //
+    // The box comes from StructuralAliasResolver, the SAME derivation
+    // link_alias_structural writes onto the handles, and deliberately so: two
+    // derivations of one alias relation disagreeing is the shape of both the
+    // full-cover bug and the 32-hop cap. Sharing it also widened what is
+    // describable here, since the walk composes chains - a permuted view and a
+    // view of a view were both refused outright by the scan this replaces.
+    using Box = std::vector<std::pair<std::int64_t, std::int64_t>>; // per root axis: [lo, hi)
 
-    std::unordered_map<TensorId, Box>      view_box;    // view tid -> box in parent axis space
-    std::unordered_map<TensorId, TensorId> view_parent; // view tid -> immediate parent tid
+    std::unordered_map<TensorId, Box>      view_box;    // view tid -> box in root axis space
+    std::unordered_map<TensorId, TensorId> view_parent; // view tid -> alias ROOT tid
+    StructuralAliasResolver                resolver(*this);
     for (auto const &nd : _nodes) {
-        auto const *vd = std::get_if<ViewDescriptor>(&nd.op_data);
-        if (vd == nullptr || nd.kind != OpKind::View || nd.outputs.size() != 1 || !vd->permutation.empty()) {
+        if (nd.kind != OpKind::View || nd.outputs.size() != 1 || !std::holds_alternative<ViewDescriptor>(nd.op_data)) {
             continue;
         }
-        // The box lives in the immediate parent's axis space; a view of a view
-        // would need composing, so require the parent to be the owner.
-        if (resolve_alias(vd->parent_id) != vd->parent_id) {
+        TensorId const         vid = nd.outputs[0];
+        StructuralAlias const &res = resolver.resolve(vid);
+        if (!res.box_known || res.root == vid || view_box.contains(vid)) {
             continue;
         }
-        auto const *ph = find_tensor(vd->parent_id);
-        if (ph == nullptr || ph->dims.size() != vd->axes.size()) {
+        TensorHandle const *root = find_tensor(res.root);
+        // A box covering the whole root is the same statement as NO box and
+        // schedules better: a whole-tensor write dominates and retires the
+        // writers before it, while a full-cover box is not recognized as
+        // dominating anything and every later access takes an edge against all
+        // of them.
+        if (root == nullptr || whole_cover(res.box, root->dims)) {
             continue;
         }
-        Box box;
-        box.reserve(vd->axes.size());
-        bool constant = true;
-        for (size_t d = 0; d < vd->axes.size() && constant; ++d) {
-            auto const        &ax  = vd->axes[d];
-            std::int64_t const dim = static_cast<std::int64_t>(ph->dims[d]);
-            switch (ax.kind) {
-            case ViewAxis::Kind::Full:
-                box.emplace_back(0, dim);
-                break;
-            case ViewAxis::Kind::Drop:
-                constant = ax.lo.is_const();
-                if (constant) {
-                    box.emplace_back(ax.lo.const_value(), ax.lo.const_value() + 1);
-                }
-                break;
-            case ViewAxis::Kind::Range:
-                constant = ax.lo.is_const() && ax.hi.is_const();
-                if (constant) {
-                    box.emplace_back(ax.lo.const_value(), ax.hi.const_value());
-                }
-                break;
-            }
-        }
-        if (!constant) {
-            continue;
-        }
-        view_parent.emplace(nd.outputs[0], vd->parent_id);
-        view_box.emplace(nd.outputs[0], std::move(box));
+        view_parent.emplace(vid, res.root);
+        view_box.emplace(vid, res.box);
     }
 
     // Views that reached the graph without a View node (sliced outside a
-    // capture, linked by storage containment at registration) carry their box
-    // on the handle instead. Without this they would still be ordered against
-    // the parent correctly, but as whole-tensor accesses, chaining every slice
-    // behind every other and costing the parallel executors their width.
+    // capture, linked by storage containment at registration; or declared by a
+    // manifest and linked at bind) carry their box on the handle instead.
+    // Without this they would still be ordered against the parent correctly, but
+    // as whole-tensor accesses, chaining every slice behind every other and
+    // costing the parallel executors their width.
     for (auto const &[tid, h] : _tensors) {
         if (h.aliases == 0 || h.alias_box.empty() || view_box.contains(tid)) {
             continue;
@@ -1521,7 +1974,11 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
             return &it->second;
         }
         if (nd.kind == OpKind::View && nd.outputs.size() == 1) {
-            if (auto it = view_box.find(nd.outputs[0]); it != view_box.end() && view_parent.at(nd.outputs[0]) == raw) {
+            // ``view_parent`` names the alias ROOT, which for a view of a view
+            // is not @p raw (the immediate parent). Comparing against the
+            // resolved owner is what keeps a chained view's own metadata
+            // rebind boxed rather than widening to the whole buffer.
+            if (auto it = view_box.find(nd.outputs[0]); it != view_box.end() && view_parent.at(nd.outputs[0]) == tid) {
                 return &it->second;
             }
         }

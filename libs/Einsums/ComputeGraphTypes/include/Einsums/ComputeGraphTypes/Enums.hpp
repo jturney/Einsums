@@ -9,6 +9,7 @@
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 EINSUMS_NAMESPACE_BEGIN()
@@ -312,6 +313,68 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "TileElementwise";
     }
     return "Unknown";
+}
+
+/**
+ * @brief The @ref OpKind spelled @p name, if there is one.
+ * @param[in] name A spelling @ref op_kind_name produces.
+ * @return The kind, or an empty optional when nothing is spelled that way.
+ *
+ * The reverse of @ref op_kind_name, and it exists because the saved-graph IR
+ * writes op kinds BY NAME (design Part 3.8): @ref OpKind is a @c std::uint8_t
+ * enum whose members are added in the middle by whoever adds an operation, so a
+ * numeric value in a file would silently mean a different operation the next
+ * time someone inserts a kind. An unresolvable name is an empty optional rather
+ * than a fallback, so a loader can fail naming the string it could not resolve.
+ *
+ * Linear over the enumerators, which is what keeps the two functions from
+ * drifting: there is one table (the ``switch`` in @ref op_kind_name) and this
+ * asks it, rather than a second table that could disagree.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline std::optional<OpKind> op_kind_from_name(std::string_view name) {
+    for (std::uint16_t value = 0; value <= static_cast<std::uint16_t>(OpKind::Custom); ++value) {
+        auto const kind = static_cast<OpKind>(value);
+        if (op_kind_name(kind) == name) {
+            return kind;
+        }
+    }
+    return std::nullopt;
+}
+
+/**
+ * @brief The name of an initialization strategy, for diagnostics and the saved form.
+ * @param[in] kind The strategy to name.
+ * @return A stable spelling ("none", "zero", "random", "from_disk").
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline std::string_view init_kind_name(InitKind kind) noexcept {
+    switch (kind) {
+    case InitKind::None:
+        return "none";
+    case InitKind::Zero:
+        return "zero";
+    case InitKind::Random:
+        return "random";
+    case InitKind::FromDisk:
+        return "from_disk";
+    }
+    return "none";
+}
+
+/**
+ * @brief The @ref InitKind spelled @p name, if there is one.
+ * @param[in] name A spelling @ref init_kind_name produces.
+ * @return The strategy, or an empty optional.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline std::optional<InitKind> init_kind_from_name(std::string_view name) noexcept {
+    for (auto const kind : {InitKind::None, InitKind::Zero, InitKind::Random, InitKind::FromDisk}) {
+        if (init_kind_name(kind) == name) {
+            return kind;
+        }
+    }
+    return std::nullopt;
 }
 
 // ── OpKind classifier predicates ───────────────────────────────────────────

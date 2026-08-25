@@ -289,7 +289,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Workspace tensors can be used across multiple pipelines. The workspace
      * must outlive the pipeline.
      */
-    void set_workspace(Workspace &ws) { _workspace = &ws; }
+    void set_workspace(Workspace &ws) {
+        _workspace = &ws;
+        // Stages added before the workspace was associated must still see its
+        // scope table, or their manifests would call a workspace tensor
+        // graph-scoped purely because of the order two setup calls were made in.
+        for (std::size_t i = 0; i < _stages.size(); ++i) {
+            if (Graph *g = stage_graph(i); g != nullptr) {
+                g->add_scope_map(ws.scope_map());
+            }
+        }
+    }
 
     /// Get the associated workspace (may be nullptr).
     [[nodiscard]] Workspace *workspace() const { return _workspace; }
@@ -332,6 +342,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
             }
         };
         _handles.push_back(std::move(handle));
+        _handles.back().ownership = TensorOwnership::Pipeline;
+        _scopes->insert_or_assign(static_cast<void const *>(ptr), TensorOwnership::Pipeline);
 
         return *ptr;
     }
@@ -357,6 +369,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Access all declared tensor handles (for passes to inspect).
     [[nodiscard]] std::vector<TensorHandle> const &declared_handles() const { return _handles; }
     [[nodiscard]] std::vector<TensorHandle>       &declared_handles() { return _handles; }
+
+    /**
+     * @brief The ownership scopes of the tensors this pipeline declares.
+     *
+     * Attached to every stage graph so a stage's @ref InterfaceManifest reports a tensor
+     * that carries state between stages as pipeline-scoped rather than as one more
+     * graph-scoped operand. @see Workspace::scope_map for why the table is shared.
+     *
+     * @return The table. Never null.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] TensorScopeMapPtr const &scope_map() const noexcept { return _scopes; }
 
     // ── Runtime parameters ──────────────────────────────────────────────────
     //
@@ -387,6 +411,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     [[nodiscard]] std::shared_ptr<ParamTable> const &params_ptr() const { return _params; }
 
   private:
+    /// Attach this pipeline's (and its workspace's) ownership-scope tables to a
+    /// stage graph, so the stage's manifest reports the scope a tensor was
+    /// declared at rather than the graph-scoped default.
+    void attach_scope_maps(Graph &stage) const;
+
     /// Internal stage representation.
     struct Stage {
         std::string                   name;    ///< Stage name for profiling
@@ -406,6 +435,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Pipeline-scoped tensors with deferred allocation.
     std::vector<std::unique_ptr<void, void (*)(void *)>> _owned_tensors;
     std::vector<TensorHandle>                            _handles;
+
+    /// Scope table published to stage graphs. @see scope_map
+    TensorScopeMapPtr _scopes{std::make_shared<TensorScopeMap>()};
 
     /// Mutable runtime-parameter table. Held by shared_ptr so executor
     /// lambdas (and the optional external mutator paths in LoopCondition

@@ -42,6 +42,7 @@ set(ComputeGraphTests
     GraphCapture.cpp
     GraphFeatures.cpp
     GraphRegistry.cpp
+    InterfaceManifest.cpp
     CostModel.cpp
     LoopOptimizationCorrectness.cpp
     LuFactorization.cpp
@@ -68,6 +69,7 @@ set(ComputeGraphTests
     Pass_LoopInvariantHoisting.cpp
     Pass_Materialization.cpp
     AliasBoxDerivation.cpp
+    AliasStructural.cpp
     AliasOrderBatchedViews.cpp
     AliasOrderSharedScratch.cpp
     Pass_MemoryPlanning.cpp
@@ -102,6 +104,7 @@ set(ComputeGraphTests
     SpaceAnnotation.cpp
     SpaceRegistry.cpp
     SymbolicCost.cpp
+    SymbolicExtents.cpp
     StringEinsum.cpp
     TensorLifetime.cpp
     ThreadCostModel.cpp
@@ -140,6 +143,7 @@ set(ComputeGraphTests
     test_error_reporting_python.py
     test_executor_python.py
     test_einsum_rejection_python.py
+    test_fuzz_alias_equiv_python.py
     test_fuzz_diff_flat_python.py
     test_fuzz_diff_control_flow_python.py
     test_fuzz_diff_deep_nesting_python.py
@@ -249,3 +253,4 @@ foreach(test ${ComputeGraphTests})
     )
   endif ()
 endforeach()
+

@@ -19,10 +19,20 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 Pipeline::Pipeline(std::string name) : _name(std::move(name)) {
 }
 
+void Pipeline::attach_scope_maps(Graph &stage) const {
+    // Workspace first, pipeline second: the narrower scope wins a tie, and a
+    // tensor cannot honestly be declared by both.
+    if (_workspace != nullptr) {
+        stage.add_scope_map(_workspace->scope_map());
+    }
+    stage.add_scope_map(_scopes);
+}
+
 Graph &Pipeline::add_stage(std::string const &name) {
     _stages.push_back(Stage{.name = name, .content = Graph{name}});
     auto &g = std::get<Graph>(_stages.back().content);
     g.set_params_ptr(_params);
+    attach_scope_maps(g);
     return g;
 }
 
@@ -34,6 +44,7 @@ Graph &Pipeline::add_loop(std::string name, size_t max_iterations, LoopCondition
     _stages.push_back(Stage{.name = std::move(name), .content = std::move(loop)});
     auto &g = std::get<LoopNode>(_stages.back().content).body;
     g.set_params_ptr(_params);
+    attach_scope_maps(g);
     return g;
 }
 

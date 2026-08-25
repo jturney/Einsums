@@ -14,6 +14,7 @@
 #include <Einsums/ComputeGraph/Executor.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/GateFlags.hpp>
+#include <Einsums/ComputeGraph/InterfaceManifest.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
@@ -159,8 +160,123 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * every registration is quadratic, and a DLPNO-MP2 capture registers ~13k
      * tensors. Idempotent and cheap to call; register_tensor just marks it
      * stale.
+     *
+     * @note DELEGATES to @ref link_alias_structural when no handle in the graph
+     *       carries an address at all, which is the state of a graph read from a
+     *       file: nothing is allocated, so there is nothing to compare. Linking
+     *       nothing there is not a safe default - it is the shape of the
+     *       full-cover alias bug, a silently incomplete relation that surfaces
+     *       as a race rather than an error.
+     *
+     * @note A MIXED graph - some handles with addresses, some without - is the
+     *       ordinary case, not an error: a deferred shell has no address until
+     *       it is materialized, and ``TensorHandle::data_ptr`` is a
+     *       registration-time snapshot nothing refreshes. The rule is that the
+     *       pointer derivation runs whenever ANY handle carries an address and
+     *       simply cannot see a null-address handle, unchanged from before,
+     *       while the structural derivation takes the whole graph only when NONE
+     *       does. Spanning both modes are @ref declare_alias declarations, which
+     *       are applied first in either and are the only way an alias between
+     *       two address-less operands is expressible at all.
+     *
+     * @see link_alias_structural
      */
-    void link_alias_storage();
+    APIARY_EXPOSE void link_alias_storage();
+
+    /**
+     * @brief Derive the alias relation from ``View`` nodes and manifest
+     *        declarations, with no address consulted anywhere.
+     *
+     * The counterpart of @ref link_alias_storage for a graph that has no
+     * addresses to derive from, and the mechanism a loaded graph uses: the
+     * structure was read from a file, nothing is allocated, and the tensors
+     * bound afterwards are not the tensors that were captured. Writes its result
+     * through the same two fields - @ref TensorHandle::aliases and
+     * @ref TensorHandle::alias_box - so @ref resolve_alias, the hazard edges and
+     * @ref rebind's redirect chain consume it unchanged.
+     *
+     * Two sources, and they are exhaustive because nothing else can survive a
+     * save:
+     *
+     * - **``View`` nodes.** A @ref ViewDescriptor says which parent axis each
+     *   result axis reads (through @ref ViewDescriptor::permutation) and what
+     *   interval that axis is restricted to. Chains COMPOSE: a view of a view is
+     *   placed inside its parent's own region and linked to the root, the same
+     *   path compression the pointer derivation does and for the same reason -
+     *   @ref resolve_alias walks the chain on every hazard-scan lookup. A bound
+     *   that is not a compile-time constant (a Param or a Callback, unknown until
+     *   execute) yields NO box, so the view conflicts as its whole parent, which
+     *   is the same conservative answer the pointer path gives for a region it
+     *   cannot prove.
+     * - **Manifest declarations.** Two caller-supplied tensors that share storage
+     *   with no ``View`` node recording it are declared through
+     *   @ref declare_alias, which @ref ManifestEntry::aliases_input carries
+     *   across a save. The declaration names a buffer, never a region, so such a
+     *   pair conflicts as the whole parent until the schema records boxes.
+     *
+     * Recurses into ``Loop`` bodies and ``Conditional`` branches, which are
+     * separate graphs with their own handles; a body left unlinked answers "this
+     * view aliases nothing" and loses its hazard edges silently.
+     *
+     * @note Does NOT mark the pointer derivation as done. Running this and then
+     *       @ref link_alias_storage on a graph with addresses leaves the relation
+     *       unchanged, which is the equivalence stated the other way round and is
+     *       what every scheduling path enforces once this has been called.
+     *
+     * @note Idempotent, and safe to run on a graph that HAS addresses - it is
+     *       then strictly a second opinion, describing the ``View`` chains the
+     *       pointer path skipped (it skips any handle capture already linked) and
+     *       leaving the pointer-only relations, a reshaped window of a scratch
+     *       pool among them, to @ref link_alias_storage. Structural is therefore
+     *       not a replacement for the pointer derivation on a live graph; it is
+     *       what a graph with no addresses has instead of one.
+     *
+     * @see link_alias_storage
+     * @see declare_alias
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void link_alias_structural();
+
+    /**
+     * @brief Declare that @p child's storage is part of @p parent's.
+     *
+     * The manifest-level alias relation of Part 3.5 of the algebraic-optimizer
+     * design, and the only kind that survives a save: an aliasing pair with no
+     * ``View`` node recording it exists solely as two addresses that happen to
+     * coincide, and a loaded graph has neither. Installs the link immediately
+     * (with no box, since a declaration names a buffer and not a region) and
+     * remembers it, so it is reapplied by every later linking pass and is not
+     * lost to @ref clear_alias_links.
+     *
+     * @param[in] child  The tensor whose storage is part of another's.
+     * @param[in] parent The tensor that owns the storage.
+     *
+     * @note A no-op when either id is unknown to this graph or the two are equal.
+     * @throws std::invalid_argument If the declaration would make the two tensors each
+     *         other's alias parent. Containment is not symmetric, and a cycle turns
+     *         every later @ref resolve_alias into a throw whose message is about a
+     *         corrupt link rather than about the declaration that made it.
+     * @see link_alias_structural
+     * @see Graph::bind
+     * @versionadded{2.0.0}
+     */
+    void declare_alias(TensorId child, TensorId parent);
+
+    /**
+     * @brief Forget every derived alias link, keeping the declared ones.
+     *
+     * Clears @ref TensorHandle::aliases and @ref TensorHandle::alias_box on every
+     * handle and marks the relation stale, so the next @ref link_alias_storage
+     * rebuilds it from scratch. Exists so the two derivations can be compared on
+     * the same footing - the equivalence Part 3.5 asks to be tested rather than
+     * hoped for - and so a loader can install a fresh relation over a graph that
+     * carries a stale one.
+     *
+     * @note Declarations made through @ref declare_alias SURVIVE, because they
+     *       are an input to the derivation rather than an output of it.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void clear_alias_links() noexcept;
 
     /**
      * @brief Reuse or mint a TensorId for @p handle's buffer in this graph.
@@ -347,6 +463,115 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }
         return tensor_spaces(id);
     }
+
+    // ── Symbolic extents (Part 3.7) ─────────────────────────────────────────
+
+    /**
+     * @brief Declare which of a tensor's extents a @ref bind may move, and which move together.
+     *
+     * The extent counterpart of @ref annotate_spaces, and what makes a captured graph valid
+     * for a family of problem sizes rather than for the one geometry it was captured at.
+     * @ref rebind rejects any dim mismatch, which is right for a same-problem pointer swap
+     * and fatal for cross-problem reuse; a symbol is how a caller says "this axis is
+     * ``nv``, whatever ``nv`` turns out to be next time".
+     *
+     * @param[in] id The tensor to annotate.
+     * @param[in] symbols One entry per axis, in axis order. The empty string leaves an axis
+     *            LITERAL (a bind must match it exactly). Any other string names a symbol:
+     *            every axis in this graph carrying that symbol has one extent, and a bind
+     *            solves it. A ``"ragged:<space>"`` spelling (see @ref make_ragged_symbol,
+     *            or use @ref annotate_ragged_dim) marks an axis whose extent differs per
+     *            instance. Pass an empty vector to clear the annotation.
+     *
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @throws std::invalid_argument if the count differs from the tensor's rank; if a ragged
+     *         symbol names a space @ref space_registry cannot resolve; or if a symbol is
+     *         already tied to a DIFFERENT index space elsewhere in this graph.
+     *
+     * @par Symbol-space ties
+     * When an annotated axis also carries a @ref annotate_spaces annotation, the pair
+     * ``(symbol, space)`` is recorded. One symbol tied to two different spaces anywhere in
+     * one graph is a contradiction - ``nv`` cannot be both the virtual space and the
+     * auxiliary basis - and is refused here, where both spaces are still in hand, rather
+     * than surfacing as an unsolvable bind. The tie is recorded from either side, so
+     * annotating spaces after dims catches it too.
+     *
+     * @see bind
+     * @see symbol_spaces
+     * @versionadded{2.0.0}
+     */
+    void annotate_dims(TensorId id, std::vector<std::string> symbols);
+
+    /**
+     * @brief Declare a tensor's symbolic extents, addressing it by the caller's tensor object.
+     * @tparam TensorType The tensor type.
+     * @param[in] tensor The tensor to annotate. Registered here if the graph has not seen it,
+     *            exactly as @ref annotate_spaces does.
+     * @param[in] symbols One entry per axis; see @ref annotate_dims(TensorId, std::vector<std::string>).
+     * @versionadded{2.0.0}
+     */
+    template <GraphCapturableTensor TensorType>
+    void annotate_dims(TensorType const &tensor, std::vector<std::string> symbols) {
+        annotate_dims(register_operand(tensor), std::move(symbols));
+    }
+
+    /**
+     * @brief Declare one axis ragged over an index space.
+     *
+     * One symbol per space is not enough for the workload that motivates symbolic extents:
+     * a PNO domain has a different virtual extent per pair, and a block or tiled tensor
+     * carries per-block dims, so no single ``nv`` describes them. A ragged axis says so
+     * explicitly instead of pretending otherwise - it constrains nothing across slots, and
+     * a bind accepts whatever extent each bound instance carries.
+     *
+     * Sugar over @ref annotate_dims: it writes @ref make_ragged_symbol into @p axis of the
+     * tensor's existing symbol vector, creating an all-literal one first if the tensor has
+     * none.
+     *
+     * @param[in] id The tensor to annotate.
+     * @param[in] axis Which axis is ragged.
+     * @param[in] space_name The index space the axis is ragged over.
+     *
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @throws std::invalid_argument if @p axis is past the tensor's rank, or if
+     *         @p space_name does not resolve in @ref space_registry.
+     *
+     * @see bind_ragged_extents
+     * @versionadded{2.0.0}
+     */
+    void annotate_ragged_dim(TensorId id, std::size_t axis, std::string_view space_name);
+
+    /**
+     * @brief Declare one axis ragged, addressing the tensor by the caller's object.
+     * @tparam TensorType The tensor type.
+     * @param[in] tensor The tensor to annotate.
+     * @param[in] axis Which axis is ragged.
+     * @param[in] space_name The index space the axis is ragged over.
+     * @versionadded{2.0.0}
+     */
+    template <GraphCapturableTensor TensorType>
+    void annotate_ragged_dim(TensorType const &tensor, std::size_t axis, std::string_view space_name) {
+        annotate_ragged_dim(register_operand(tensor), axis, space_name);
+    }
+
+    /**
+     * @brief The symbolic extent declaration on a registered tensor's axes.
+     * @param[in] id The tensor to read.
+     * @return One entry per axis, or an empty vector when every axis is literal.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::vector<std::string> const &tensor_dim_symbols(TensorId id) const;
+
+    /**
+     * @brief Every ``(symbol, space)`` tie this graph's annotations have established.
+     * @return The map, empty when no annotated axis carries both a symbol and a space.
+     *
+     * Read by a serializer (the tie is part of what a saved manifest says) and by
+     * @ref annotate_dims itself, which refuses a second, different tie for one symbol.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::unordered_map<std::string, SpaceId> const &symbol_spaces() const noexcept { return _symbol_spaces; }
 
     /**
      * @brief The tensor object a node may legally dereference at EXECUTE time.
@@ -716,18 +941,111 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * than a boolean: this names each node that cannot, by id and label, and
      * says what blocks it.
      *
-     * @return One entry per blocking node, in node order. Empty means the graph
-     *         is fully reconstructible.
+     * @return One entry per blocking node, in node order, a control-flow node's
+     *         own verdict immediately before its body's. Empty means the graph
+     *         and everything below it is fully reconstructible.
      *
-     * @note Flat: it inspects THIS graph's nodes only. A ``Loop`` or
-     *       ``Conditional`` holds its body in a sub-graph, and both kinds are
-     *       already reported here (their predicates are closures), so the body
-     *       cannot be reachable-but-unreported.
+     * @note Recursive: a ``Loop`` body and each ``Conditional`` branch is a
+     *       separate sub-graph and is descended into, with
+     *       @ref SerializabilityBlocker::subgraph_path naming the path that
+     *       reaches each blocker. The earlier flat version was justified by
+     *       Loop and Conditional always blocking on their own closure-shaped
+     *       predicates, which made a body unreachable-but-unreported an
+     *       impossibility. Milestone B made both predicates data (@ref PredExpr
+     *       and @ref BoundExpr), so a clean control-flow node over a body full
+     *       of closures now reports clean, and the justification is gone.
      *
      * @see reconstruction_blocker for the per-node verdict.
      * @versionadded{2.0.0}
      */
     [[nodiscard]] std::vector<SerializabilityBlocker> serializability_report() const;
+
+    /**
+     * @brief A hash of this graph's STRUCTURE, and of nothing else.
+     *
+     * The digest of the canonical IR bytes with the provenance block removed:
+     * schema version, graph name, manifest, index spaces, parameters, gate-flag
+     * arrays, tensors, slot redirects and nodes. Two captures of the same
+     * program hash equal however they were produced and whoever wrote them; any
+     * structural difference - a changed prefactor, a reordered node, a renamed
+     * slot - changes the hash.
+     *
+     * @return The digest.
+     * @throws std::invalid_argument When the graph cannot be written at all
+     *         (see @ref serializability_report), because a structure that has no
+     *         canonical form has no hash either. The message carries the report.
+     *
+     * @note Provenance-independent BY CONSTRUCTION rather than by convention:
+     *       the hash is taken over the same object the writer emits, minus one
+     *       key, so a field can only enter the hash domain by being put in the
+     *       structure sections.
+     * @see save_graph
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] std::uint64_t content_hash() const;
+
+    // ── Named gate-flag arrays ──────────────────────────────────────────────
+
+    /**
+     * @brief Give a @ref GateFlags array a name this graph can refer to it by.
+     *
+     * A @ref PredExpr::FlagTest holds the shared buffer itself and nothing else,
+     * which is exactly right at run time and unwritable to a file: a
+     * ``shared_ptr`` has no identity that survives a restart. Naming the array
+     * is the minimal thing that gives it one, and it is a GRAPH-level table
+     * rather than a field on the predicate so that many conditionals gating on
+     * one array record one name between them.
+     *
+     * An unnamed array is fully legal and simply cannot be saved:
+     * @ref save_graph refuses such a node, naming it and pointing here.
+     *
+     * @param[in] name  The name. Must not be empty.
+     * @param[in] flags The array to name. Shared, not copied.
+     *
+     * @throws std::invalid_argument If @p name is empty, if @p name is already
+     *         bound to a DIFFERENT array, or if @p flags is already registered
+     *         under a different name. Both directions have to be unique for the
+     *         name to identify the array in a saved file.
+     * @versionadded{2.0.0}
+     */
+    void name_gate_flags(std::string name, GateFlags const &flags) { name_gate_flags(std::move(name), flags.buffer()); }
+
+    /**
+     * @brief Name a gate-flag array given its shared buffer directly.
+     * @param[in] name   The name; see @ref name_gate_flags(std::string, GateFlags const &).
+     * @param[in] buffer The array to name.
+     * @versionadded{2.0.0}
+     */
+    void name_gate_flags(std::string name, std::shared_ptr<std::vector<std::uint8_t>> buffer);
+
+    /**
+     * @brief Every named gate-flag array, in name order.
+     * @return The (name, buffer) pairs. Read by the serializer, and by a caller
+     *         enumerating what a loaded graph expects to be told.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> const &named_gate_flags() const noexcept {
+        return _named_gate_flags;
+    }
+
+    /**
+     * @brief The name @p buffer was registered under.
+     * @param[in] buffer The array to look up.
+     * @return The name, or an empty string when the array is unnamed.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::string gate_flag_name(std::shared_ptr<std::vector<std::uint8_t>> const &buffer) const;
+
+    /**
+     * @brief The named gate-flag array, as a handle a caller can write through.
+     * @param[in] name The name it was registered under.
+     * @return A handle sharing the graph's buffer, so a write reaches the nodes
+     *         that gate on it.
+     * @throws std::invalid_argument When no array carries that name; the message
+     *         lists the names that do.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] GateFlags gate_flags(std::string_view name) const;
 
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string const &name() const { return _name; } ///< Graph name.
 
@@ -793,6 +1111,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void insert_node_groups(std::vector<std::pair<std::size_t, std::vector<Node>>> groups);
 
     /// Read-only access to the tensor registry (TensorId → TensorHandle map).
+    /// @brief Durable slot redirects, child id to the terminal id its slot resolves to.
+    /// @return The map, empty on a graph no merge has rewritten.
+    ///
+    /// Read by the serializer. A redirect is not a derived cache: CSE merges a
+    /// duplicate by repointing the loser's SLOT and deliberately leaves the node
+    /// dataflow naming the loser, so this map is the only record that such a node
+    /// must read the winner's buffer.
+    /// @see redirect_slot
+    /// @versionadded{2.0.0}
+    [[nodiscard]] std::unordered_map<TensorId, TensorId> const &slot_redirects() const noexcept { return _slot_redirects; }
+
     [[nodiscard]] std::unordered_map<TensorId, TensorHandle> const &tensors_map() const { return _tensors; }
     /// Mutable access to the tensor registry (for testing / optimization passes).
     [[nodiscard]] std::unordered_map<TensorId, TensorHandle> &tensors_map() { return _tensors; }
@@ -988,6 +1317,49 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// property of the node list - UsageAnalysis, an executor's per-node
     /// scratch - can stamp itself with this and rebuild when it goes stale.
     [[nodiscard]] std::uint64_t analysis_version() const { return _analysis_version; }
+
+    /**
+     * @brief Counter of changes to the NODE SET, distinct from @ref analysis_version.
+     *
+     * Bumped when a node is added, removed or spliced in - the mutations that
+     * make a downstream plan describe a graph that no longer exists. NOT bumped
+     * by a reorder, by an annotation write (``annotate_spaces``, symmetry
+     * inference), by @ref rebind, or by ``execute()``: those change values,
+     * metadata or ordering, and a plan built over the node set survives them.
+     *
+     * @ref analysis_version cannot serve this role. It bumps at every
+     * mutation-DECLARATION point, ``mark_sorted()`` included, so it cannot tell
+     * a structural rewrite from a pass that merely re-sorted or refreshed a
+     * cache - and that is exactly the distinction the phase rule needs. The two
+     * live side by side: ``analysis_version`` invalidates position-keyed caches,
+     * ``structure_version`` invalidates *plans*.
+     *
+     * The two uses today:
+     * - ``PassManager::run`` watches it around every pass and throws when an
+     *   @ref PassPhase::Analysis or @ref PassPhase::Diagnostic pass moves it,
+     *   which is "analysis never rewrites" enforced rather than documented.
+     * - A structural pass moving it is the signal that the resource and tuning
+     *   phases must re-run rather than patch their annotations through the
+     *   rewrite, and that the analysis phase must re-run at the end.
+     *
+     * Sub-graph mutations bump the SUB-graph's counter, not the parent's; a
+     * caller reasoning about a whole tree must walk it.
+     */
+    [[nodiscard]] std::uint64_t structure_version() const { return _structure_version; }
+
+    /**
+     * @brief Declare that a direct mutation of @ref nodes changed the node set.
+     *
+     * @ref add_node, @ref erase_nodes and @ref insert_node_groups bump
+     * @ref structure_version themselves. A pass that instead rebuilds the node
+     * vector in place (the ``nodes = std::move(rebuilt)`` idiom several of them
+     * use) bypasses all three and must say so here, or the counter under-reports
+     * and a stale plan survives the rewrite that invalidated it.
+     *
+     * Idempotent in effect but not in value: call it once per rewrite, not once
+     * per node. Only the fact that the counter moved is meaningful.
+     */
+    void note_structural_change() { _structure_version++; }
 
     /**
      * @brief Threads the per-node widths on this graph were planned against.
@@ -1520,8 +1892,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
         _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
 
-        auto handle             = make_handle(*ptr, 0);
-        handle.is_intermediate  = false; // User-visible by default. Use create_tensor for intermediates.
+        auto handle            = make_handle(*ptr, 0);
+        handle.is_intermediate = false; // User-visible by default. Use create_tensor for intermediates.
+        // Graph scope: user-visible, but scoped to this graph and not carried
+        // between stages. This is the manifest's default and its most common case.
+        handle.ownership        = TensorOwnership::Graph;
         handle.alloc_state      = AllocState::Deferred;
         handle.materialize_fn   = [ptr]() { ptr->materialize(); };
         handle.release_fn       = [ptr]() { ptr->release(); };
@@ -2144,77 +2519,24 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] new_tensor The new tensor to bind to.
      * @throws std::invalid_argument If rank or dimensions don't match.
      * @throws std::out_of_range If no slot exists for this TensorId.
+     *
+     * @note Refreshes the handle's @ref TensorHandle::dims, @ref TensorHandle::strides and
+     *       @ref TensorHandle::data_ptr snapshots from @p new_tensor, and the slot's own
+     *       @ref TensorSlot::dims with them. Leaving them stale was latent while dims could
+     *       not change and pointer swaps rarely aliased differently; the alias relation is
+     *       derived from @ref TensorHandle::data_ptr, so a handle still advertising the
+     *       PREVIOUS buffer is how a rebind loses hazard edges. Moving either the address or
+     *       the extents therefore also drops this handle's derived alias link, so the next
+     *       @ref link_alias_storage re-derives it against what is there now.
+     *
+     * @note Bumps @ref analysis_version, which is what "rebind is a mutation-declaration
+     *       point" means for the caches keyed on it. Deliberately does NOT bump
+     *       @ref structure_version: the node set is untouched, and the two counters mean
+     *       different things on purpose.
      */
     template <GraphCapturableTensor TensorType>
     void rebind(TensorId id, TensorType &new_tensor) {
-        auto it = _slot_map.find(id);
-        if (it == _slot_map.end()) {
-            EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no slot for tensor id {}", _name, id);
-        }
-        auto *slot = it->second.get();
-
-        // Validate rank, read from the type when it carries ::Rank,
-        // otherwise from the live runtime-rank tensor.
-        std::size_t const new_rank = detail::tensor_rank(new_tensor);
-        if (new_rank != slot->rank) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': rebind tensor '{}': rank mismatch ({} vs {})", _name, slot->name,
-                                    new_rank, slot->rank);
-        }
-
-        // Validate dimensions
-        for (size_t d = 0; d < slot->rank; d++) {
-            if (new_tensor.dim(d) != slot->dims[d]) {
-                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': rebind tensor '{}': dim {} mismatch ({} vs {})", _name,
-                                        slot->name, d, new_tensor.dim(d), slot->dims[d]);
-            }
-        }
-
-        slot->ptr     = const_cast<void *>(static_cast<void const *>(&new_tensor));
-        slot->impl_of = slot_impl_accessor<TensorType>();
-        slot->name    = new_tensor.name();
-
-        // Tensor names feed the cached profiler annotations.
-        _profile_strings_valid = false;
-        // A fresh pointer has not been through the slot check yet.
-        _slots_validated = false;
-
-        // An explicit rebind of a merged-away tensor overrides its pass
-        // redirect; otherwise a later rebind of the survivor would stomp it.
-        _slot_redirects.erase(id);
-
-        // Slots that a pass redirected to this tensor (CSE duplicates,
-        // fused permute outputs) must follow the new buffer.
-        for (auto const &[f, t] : _slot_redirects) {
-            if (t == id) {
-                if (auto *fs = find_slot(f)) {
-                    fs->ptr     = slot->ptr;
-                    fs->impl_of = slot->impl_of;
-                }
-            }
-        }
-
-        // Update the TensorHandle too
-        auto th_it = _tensors.find(id);
-        if (th_it != _tensors.end()) {
-            th_it->second.tensor_ptr = slot->ptr;
-            // ``impl_fn`` was baked over the OLD tensor object, so leaving it
-            // alone hands every pass-built executor that reads through it (see
-            // ``make_einsum_node``) a rebound node's PREVIOUS storage. It is
-            // rebuilt here for the same reason the slot's accessor is.
-            if constexpr (requires(std::remove_cvref_t<TensorType> &t) { t.impl(); }) {
-                auto *bound           = &new_tensor;
-                th_it->second.impl_fn = [bound]() -> void * { return static_cast<void *>(&bound->impl()); };
-            }
-            th_it->second.name      = new_tensor.name();
-            th_it->second.name_hash = std::hash<std::string>{}(new_tensor.name());
-            th_it->second.validator = [&new_tensor, hash = th_it->second.name_hash]() -> bool {
-                try {
-                    return std::hash<std::string>{}(new_tensor.name()) == hash;
-                } catch (...) {
-                    return false;
-                }
-            };
-        }
+        rebind_impl(id, new_tensor, /*allow_extent_change=*/false);
     }
 
     /**
@@ -2272,6 +2594,306 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
         EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no tensor matching '{}' found for rebind", _name, old_tensor.name());
     }
+
+    // ── Interface manifest and manifest-driven binding ──────────────────────
+
+    /**
+     * @brief This graph's named, typed, space-annotated, ownership-scoped interface.
+     *
+     * The formalization of the complement of @ref TensorHandle::is_intermediate. Every
+     * handle that is NOT an intermediate and that at least one node reads or writes
+     * becomes an entry; a handle nothing touches is not part of the interface and is
+     * skipped, and an intermediate never appears at all.
+     *
+     * Reader and writer sets come from @ref usage, so control-flow subtree uses count: a
+     * buffer the parent graph only hands to a ``Loop`` body is reported through
+     * effective-IO expansion and is an entry here, which is right - a caller still has to
+     * supply it. What does NOT appear is a buffer the body created for itself, because
+     * effective-IO's orphan parent handle is a copy of the body's handle and carries the
+     * body's ``is_intermediate``.
+     *
+     * Uses are attributed at BUFFER granularity: @ref UsageAnalysis resolves alias chains,
+     * so a slot that is a view of another entry takes its direction from the buffer they
+     * share. Conservative and never wrong about whether a caller must supply a slot.
+     *
+     * @return The manifest. @ref ManifestDirection::InOut entries appear in both
+     *         @ref InterfaceManifest::inputs and @ref InterfaceManifest::outputs; both
+     *         vectors are ordered by name, then by id.
+     *
+     * @throws std::invalid_argument If two entries carry the same name, naming both ids.
+     *         Binding is by name, so an ambiguous name is an error here rather than a
+     *         surprise at bind time.
+     * @throws std::invalid_argument If a slot's @ref SpaceId does not resolve in
+     *         @ref space_registry, naming the tensor. That is a corrupted annotation, not
+     *         a policy question.
+     *
+     * @note Not const, and not by choice: @ref usage builds through
+     *       @ref effective_io, which registers a stable parent handle for a buffer only a
+     *       sub-graph touches, and @ref link_alias_storage (run here so
+     *       @ref ManifestEntry::aliases_input is complete) mutates handles as well.
+     *
+     * @note TOP-LEVEL only; it never descends into a ``Loop`` body or a ``Conditional``
+     *       branch. Those graphs hold deliberately fresh, default handles - see the
+     *       MetadataBoundary contract - so they have no interface of their own, and
+     *       nothing here propagates scope into one.
+     *
+     * @see bind
+     * @see InterfaceManifest
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] InterfaceManifest manifest();
+
+    /**
+     * @brief Bind caller storage to manifest slots by name.
+     *
+     * Manifest-driven @ref rebind: takes ``(name, tensor)`` pairs, validates each against
+     * the named @ref ManifestEntry, and delegates the actual repointing to @ref rebind so
+     * slot pointers, impl accessors, and redirect chains are updated in exactly one place.
+     *
+     * @tparam Args Alternating ``std::string``-convertible names and tensor lvalues.
+     * @param[in] args The ``(name, tensor)`` pairs, applied left to right.
+     *
+     * @throws std::invalid_argument If a name is not a manifest entry (the message lists
+     *         the names that are), if the dtype, rank, or any dimension disagrees with the
+     *         entry, if the incoming tensor carries a graph-side space annotation that
+     *         disagrees with the entry's, or if this bind makes two entries share storage
+     *         that the manifest does not declare as aliases.
+     *
+     * @par Extents
+     * An axis with no symbol must match the manifest EXACTLY, as @ref rebind requires. An
+     * axis @ref annotate_dims gave a symbol is SOLVED instead: the bind reads the extent off
+     * the tensor supplied for it, and every other axis in the graph naming that symbol must
+     * agree. Two bound tensors disagreeing about one symbol is an error naming the symbol,
+     * both slots and both extents. A ragged axis accepts whatever each instance carries.
+     *
+     * When the solution moves any extent, the bind then re-derives the graph's own
+     * intermediates: an intermediate whose producing contraction ties its axes to solved
+     * symbols takes new dims by letter propagation from the operands. Only DEFERRED
+     * intermediates can be resized that way, which is the design's "bind ... only then
+     * materializes intermediates whose dims are symbol expressions"; an already-materialized
+     * intermediate whose derived dims moved is an error naming it and both extents. Finally
+     * every node's operands are checked for agreement, so an under-annotated graph fails
+     * loudly here instead of executing garbage.
+     *
+     * @par What a moved extent refuses
+     * A graph whose GEMMs have already been batched (``BatchedGemm`` / ``GroupedBatchedGemm``
+     * nodes) refuses an extent change outright. Batching is a resource decision over one set
+     * of shapes, it is never saved, and the load path re-runs it; re-forming those nodes
+     * under new extents is that phase's job rather than @ref bind's. Bind before
+     * @ref apply, or re-run the batching passes afterwards.
+     *
+     * Spaces are checked only when the incoming tensor is already registered in this graph
+     * and its handle carries an annotation. Annotations live on handles, not on tensors, so
+     * a tensor the graph has never seen has nothing to check and is accepted in silence.
+     *
+     * The aliasing check compares BASE ADDRESSES only, which is sound (an identical base
+     * address is provable overlap) and incomplete (two genuinely overlapping slices of one
+     * parent are not caught). Structural alias reconstruction, which derives the relation
+     * from ``View`` nodes and manifest declarations with no address consulted at all, is
+     * Part 3.5 of the design and is what replaces this comparison.
+     *
+     * A partial bind is legal, exactly as a partial @ref rebind is: slots not named keep
+     * whatever storage they already had. @ref unbound_manifest_entries reports what a
+     * caller has not supplied; enforcing completeness is the loader's job and arrives with
+     * ``load_graph``.
+     *
+     * @code
+     * graph.bind("t2", T2, "fock", F);
+     * graph.execute();
+     * @endcode
+     *
+     * @see manifest
+     * @see unbound_manifest_entries
+     * @versionadded{2.0.0}
+     */
+    template <typename... Args>
+    void bind(Args &&...args) {
+        InterfaceManifest const contract = manifest();
+
+        // Two walks over the same pairs, because a symbol is a constraint ACROSS
+        // slots: nothing may be repointed until every extent the caller supplied
+        // has been read and reconciled, or a bind that turns out inconsistent has
+        // already left half the graph pointing at the new problem.
+        DimSolution solution;
+        bind_collect(contract, solution, args...);
+        prepare_bind_solution(solution);
+        bind_apply(contract, solution, args...);
+        finish_bind_solution(solution);
+    }
+
+    /**
+     * @brief Bind ONE named slot, the spelling a binding can carry.
+     *
+     * @ref bind is variadic, which is right for a C++ caller and unbindable from
+     * Python; this is the same operation with one pair, applied through the same
+     * solver. Call it once per slot.
+     *
+     * @tparam TensorType The tensor type.
+     * @param[in] name   The manifest name of the slot.
+     * @param[in] tensor The storage to bind.
+     * @see bind
+     * @versionadded{2.0.0}
+     */
+    template <GraphCapturableTensor TensorType>
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("bind", TensorType = einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind", TensorType = einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind", TensorType = einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind", TensorType = einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind", TensorType = einsums::RuntimeTensorView<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind", TensorType = einsums::RuntimeTensorView<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
+        // clang-format on
+        void bind_slot(std::string const &name, TensorType &tensor) {
+        bind(name, tensor);
+    }
+
+    /**
+     * @brief Every manifest binding key, in the manifest's own order.
+     * @return The names.
+     *
+     * The whole @ref InterfaceManifest is a richer object than a binding needs;
+     * this is the part a caller binds by, and it is what the Python surface
+     * exposes so a driver can walk a loaded graph's interface without the
+     * manifest type having to be bound too.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::string> manifest_names() { return manifest().names(); }
+
+    /**
+     * @brief Bind caller storage to a RANK-0 manifest slot.
+     *
+     * @ref bind takes tensors, and a rank-0 slot is not one: ``cg::dot(&e, A, B)``
+     * registers a bare ``double *`` as a rank-0 handle with no @c TensorImpl and
+     * no slot, which is the shape @ref ScalarAccessor exists for. A loaded graph
+     * owns a placeholder scalar for such a slot, so without this there would be
+     * no way to read the number a replay computes - the one operand class a save
+     * could not hand back.
+     *
+     * @tparam T The scalar type; must match the slot's declared dtype.
+     * @param[in] name    The manifest name of the slot.
+     * @param[in] storage Where the replay is to write. Must outlive the graph.
+     *
+     * @throws std::invalid_argument If @p name is not a manifest entry (the
+     *         message lists the names that are), if the slot is not rank 0, or
+     *         if @p T disagrees with the slot's dtype.
+     *
+     * Repointing works because @ref ScalarAccessor reads
+     * @ref TensorHandle::tensor_ptr on every call rather than copying it when the
+     * executor is built, which is exactly the property that file documents.
+     * @see bind
+     * @versionadded{2.0.0}
+     */
+    template <typename T>
+    void bind_scalar(std::string const &name, T *storage) {
+        bind_scalar_impl(name, static_cast<void *>(storage), packed_gemm::get_scalar_type<T>(), sizeof(T));
+    }
+
+    /**
+     * @brief Supply the per-instance extents of one ragged axis.
+     *
+     * A ragged axis (see @ref annotate_ragged_dim) has no scalar extent to solve, so this is
+     * what a caller hands the graph in place of one: the design's "``bind`` supplies a
+     * per-instance extent table rather than a scalar".
+     *
+     * @param[in] name The manifest name of the slot.
+     * @param[in] axis Which axis of that slot the table describes.
+     * @param[in] extents One extent per instance of the axis's space, in instance order.
+     *
+     * @throws std::invalid_argument If @p name is not a manifest entry; if @p axis is past
+     *         its rank or is not declared ragged; if @p extents is empty; or if another
+     *         table already stored for the SAME space has a different length. The length is
+     *         the instance count, which is a property of the space (how many pairs there
+     *         are) and not of one operand, so two tables over one space disagreeing about it
+     *         describes nothing.
+     *
+     * @note ACCEPTED and STORED, not yet consumed. The nodes that read such a table are the
+     *       grouped/batched ones the resource phase forms, and a saved graph holds the
+     *       pre-resource algebraic form, so those nodes are RE-CREATED at load time from the
+     *       table rather than rebound. That re-run is the load-path task; until it lands the
+     *       table is available through @ref ragged_extent_tables and nothing else reads it.
+     *
+     * @see clear_bindings
+     * @versionadded{2.0.0}
+     */
+    void bind_ragged_extents(std::string const &name, std::size_t axis, std::vector<std::size_t> extents);
+
+    /**
+     * @brief Every ragged extent table @ref bind_ragged_extents has accepted.
+     * @return The tables, in the order they were supplied.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::vector<RaggedExtentTable> const &ragged_extent_tables() const noexcept { return _ragged_extents; }
+
+    /**
+     * @brief The ragged extent table stored for one slot's axis.
+     * @param[in] name The manifest name the table was supplied under.
+     * @param[in] axis The axis it describes.
+     * @return The table, or nullptr when none was supplied.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] RaggedExtentTable const *find_ragged_extents(std::string_view name, std::size_t axis) const noexcept;
+
+    /**
+     * @brief Manifest slots no @ref bind call has supplied storage for.
+     *
+     * @return The names, in the manifest's own order.
+     *
+     * A slot missing from this list has been bound at least once; a slot present in it
+     * still holds whatever storage capture gave it, which is correct for a freshly
+     * captured graph and is exactly what a loaded graph cannot rely on. A loader is the
+     * component that must insist this comes back empty; @ref bind deliberately does not,
+     * because partial rebinding is a supported thing to do to a live graph.
+     *
+     * @see bind
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::vector<std::string> unbound_manifest_entries();
+
+    /**
+     * @brief Forget which manifest slots have been bound.
+     *
+     * Clears the record @ref unbound_manifest_entries reports from, the storage
+     * identities @ref bind checks aliasing against, and the ragged extent tables. For a
+     * caller that re-binds a graph to a fresh problem and wants the undeclared-aliasing
+     * check to start from nothing.
+     *
+     * @versionadded{2.0.0}
+     */
+    void clear_bindings() noexcept {
+        _bound_operands.clear();
+        _ragged_extents.clear();
+    }
+
+    /**
+     * @brief Attach a scope table published by a declaring @ref Workspace or @ref Pipeline.
+     *
+     * A capturing graph builds its own handle for a tensor another scope declared, so
+     * @ref TensorHandle::ownership would default to ``Graph`` and the manifest would call a
+     * workspace tensor graph-scoped. The declaring scope publishes its table and this
+     * attaches it, retroactively stamping handles that are already registered and stamping
+     * later ones as they register. Attaching the same table twice is a no-op.
+     *
+     * @param[in] map The table, shared with the declaring scope so a declaration made after
+     *            this graph was created still reaches it. Null is ignored.
+     *
+     * @see TensorScopeMap
+     * @versionadded{2.0.0}
+     */
+    void add_scope_map(TensorScopeMapPtr map);
+
+    /// The scope tables attached by @ref add_scope_map, in attachment order.
+    [[nodiscard]] std::vector<TensorScopeMapPtr> const &scope_maps() const noexcept { return _scope_maps; }
+
+    /**
+     * @brief The ownership scope this graph holds for @p ptr, consulting attached tables.
+     * @param[in] ptr A tensor object's address (@ref TensorHandle::tensor_ptr).
+     * @return The declared scope, or @ref TensorOwnership::Graph when no table names it.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] TensorOwnership scope_for_ptr(void const *ptr) const noexcept;
 
     /**
      * @brief Create mutable einsum parameters owned by the graph.
@@ -2336,6 +2958,381 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// callers handle unregister/register around it.
     void move_members_from(Graph &&other) noexcept;
 
+    /// Reapply every @ref declare_alias declaration onto the handles. Run at the
+    /// head of both linking passes, because a declaration is an INPUT to the
+    /// derivation and has to survive a relink that starts from a cleared state.
+    void apply_declared_aliases();
+
+    /// Half-open byte span of a bound operand's storage; a null @ref lo means the
+    /// operand offered none.
+    ///
+    /// A span rather than a base address, because two DISJOINT slices of one buffer
+    /// have distinct base addresses and must still bind without complaint, while two
+    /// OVERLAPPING ones share no address at all when neither starts where the other
+    /// does. Comparing base pointers answers the second case wrong, and answering it
+    /// wrong is how a bind loses the hazard edges between two slots.
+    struct BoundSpan {
+        char const *lo{nullptr}; ///< First byte, or null when there is no span.
+        char const *hi{nullptr}; ///< One past the last byte.
+
+        /// Whether the two spans share a byte. False whenever either is absent:
+        /// an operand with no address cannot be shown to alias anything.
+        [[nodiscard]] bool overlaps(BoundSpan const &other) const noexcept {
+            return lo != nullptr && other.lo != nullptr && lo < other.hi && other.lo < hi;
+        }
+
+        /// Number of bytes the two spans share, for the diagnostic.
+        [[nodiscard]] std::size_t overlap_bytes(BoundSpan const &other) const noexcept {
+            if (!overlaps(other)) {
+                return 0;
+            }
+            return static_cast<std::size_t>(std::min(hi, other.hi) - std::max(lo, other.lo));
+        }
+    };
+
+    // ── rebind() internals ──────────────────────────────────────────────────
+
+    /**
+     * @brief The one repointing path, with the exact-extent check under a flag.
+     *
+     * @param[in] id The slot to repoint.
+     * @param[in] new_tensor The storage to repoint it at.
+     * @param[in] allow_extent_change Skip the per-axis extent check. Reachable ONLY from
+     *            manifest-driven @ref bind, and there only for an entry that declares
+     *            symbolic axes, whose extents the bind solver has already checked against
+     *            every other slot naming the same symbols (and whose LITERAL axes it
+     *            checked exactly). Public @ref rebind always passes false, so the
+     *            "dimension mismatch throws" contract every caller relies on is unchanged.
+     * @param[in] descend Also repoint every slot in a ``Loop`` body or ``Conditional``
+     *            branch that names the SAME tensor object. See @ref rebind_subgraphs;
+     *            false only in the recursion, so one repoint is not applied twice.
+     */
+    template <GraphCapturableTensor TensorType>
+    void rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_change, bool descend = true) {
+        auto it = _slot_map.find(id);
+        if (it == _slot_map.end()) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no slot for tensor id {}", _name, id);
+        }
+        auto *slot = it->second.get();
+        // The object this slot named BEFORE the repoint, which is how a
+        // sub-graph's slot for the same buffer is recognised.
+        void *const old_ptr = slot->ptr;
+
+        // Validate rank, read from the type when it carries ::Rank,
+        // otherwise from the live runtime-rank tensor. Rank is never relaxed:
+        // a symbol renames an extent, it does not add or remove an axis.
+        std::size_t const new_rank = detail::tensor_rank(new_tensor);
+        if (new_rank != slot->rank) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': rebind tensor '{}': rank mismatch ({} vs {})", _name, slot->name,
+                                    new_rank, slot->rank);
+        }
+
+        std::vector<std::size_t> new_dims(new_rank);
+        std::vector<std::size_t> new_strides(new_rank);
+        for (std::size_t d = 0; d < new_rank; d++) {
+            new_dims[d]    = new_tensor.dim(d);
+            new_strides[d] = new_tensor.stride(d);
+        }
+
+        // Validate dimensions
+        if (!allow_extent_change) {
+            for (size_t d = 0; d < slot->rank; d++) {
+                if (new_dims[d] != slot->dims[d]) {
+                    EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': rebind tensor '{}': dim {} mismatch ({} vs {})", _name,
+                                            slot->name, d, new_dims[d], slot->dims[d]);
+                }
+            }
+        }
+
+        slot->ptr     = const_cast<void *>(static_cast<void const *>(&new_tensor));
+        slot->impl_of = slot_impl_accessor<TensorType>();
+        slot->name    = new_tensor.name();
+        slot->dims    = new_dims;
+
+        // Tensor names feed the cached profiler annotations.
+        _profile_strings_valid = false;
+        // A fresh pointer has not been through the slot check yet.
+        _slots_validated = false;
+
+        // An explicit rebind of a merged-away tensor overrides its pass
+        // redirect; otherwise a later rebind of the survivor would stomp it.
+        _slot_redirects.erase(id);
+
+        // Slots that a pass redirected to this tensor (CSE duplicates,
+        // fused permute outputs) must follow the new buffer.
+        for (auto const &[f, t] : _slot_redirects) {
+            if (t == id) {
+                if (auto *fs = find_slot(f)) {
+                    fs->ptr     = slot->ptr;
+                    fs->impl_of = slot->impl_of;
+                }
+            }
+        }
+
+        // Update the TensorHandle too
+        auto th_it = _tensors.find(id);
+        if (th_it != _tensors.end()) {
+            th_it->second.tensor_ptr = slot->ptr;
+            // ``impl_fn`` was baked over the OLD tensor object, so leaving it
+            // alone hands every pass-built executor that reads through it (see
+            // ``make_einsum_node``) a rebound node's PREVIOUS storage. It is
+            // rebuilt here for the same reason the slot's accessor is.
+            if constexpr (requires(std::remove_cvref_t<TensorType> &t) { t.impl(); }) {
+                auto *bound           = &new_tensor;
+                th_it->second.impl_fn = [bound]() -> void * { return static_cast<void *>(&bound->impl()); };
+            }
+            th_it->second.name      = new_tensor.name();
+            th_it->second.name_hash = std::hash<std::string>{}(new_tensor.name());
+            th_it->second.validator = [&new_tensor, hash = th_it->second.name_hash]() -> bool {
+                try {
+                    return std::hash<std::string>{}(new_tensor.name()) == hash;
+                } catch (...) {
+                    return false;
+                }
+            };
+
+            // Geometry snapshots. The alias relation, the manifest, and every
+            // extent check read these, and nothing else refreshed them.
+            void *new_data = nullptr;
+            if constexpr (requires { new_tensor.is_materialized(); }) {
+                if (new_tensor.is_materialized()) {
+                    new_data = const_cast<void *>(static_cast<void const *>(new_tensor.data()));
+                }
+            } else {
+                new_data = const_cast<void *>(static_cast<void const *>(new_tensor.data()));
+            }
+            note_rebind_geometry(th_it->second, new_data, new_dims, new_strides);
+        }
+
+        // Rebind is a mutation-declaration point (see analysis_version), which
+        // until now it only claimed to be.
+        _analysis_version++;
+
+        if (descend) {
+            rebind_subgraphs(old_ptr, new_tensor, allow_extent_change);
+        }
+    }
+
+    /**
+     * @brief Repoint every sub-graph slot that names @p old_ptr at @p new_tensor.
+     *
+     * A ``Loop`` body and a ``Conditional`` branch are separate graphs with their
+     * OWN handles and their own slots for the buffers the parent hands them (the
+     * MetadataBoundary contract), so a repoint of the parent's slot leaves the
+     * body reading the storage it was captured over. That was latent while the
+     * only callers swapped one live tensor for another that the body had been
+     * captured over too; it is fatal for a LOADED graph, whose bodies name the
+     * loader's placeholder storage until a bind moves it.
+     *
+     * Identity is the tensor OBJECT's address, which is what "the same buffer"
+     * means at this layer and is exactly what a body's slot shares with its
+     * parent's.
+     *
+     * @param[in] old_ptr The object the parent's slot named before the repoint.
+     * @param[in] new_tensor The storage to repoint at.
+     * @param[in] allow_extent_change Passed through; a symbolic bind moves the
+     *            extents of a body's slot exactly as it moves the parent's.
+     */
+    template <GraphCapturableTensor TensorType>
+    // NOLINTNEXTLINE(misc-no-recursion): control-flow bodies nest, so the walk over them does too.
+    void rebind_subgraphs(void *old_ptr, TensorType &new_tensor, bool allow_extent_change) {
+        if (old_ptr == nullptr || old_ptr == static_cast<void const *>(&new_tensor)) {
+            return;
+        }
+        // NOLINTNEXTLINE(misc-no-recursion): see above.
+        for_each_subgraph([&](Graph &sub) {
+            std::vector<TensorId> matches;
+            for (auto const &[id, slot] : sub._slot_map) {
+                if (slot != nullptr && slot->ptr == old_ptr) {
+                    matches.push_back(id);
+                }
+            }
+            for (auto const id : matches) {
+                sub.rebind_impl(id, new_tensor, allow_extent_change, /*descend=*/false);
+            }
+            sub.rebind_subgraphs(old_ptr, new_tensor, allow_extent_change);
+        });
+    }
+
+    /// Write the refreshed geometry onto @p handle and drop whatever the move
+    /// invalidated: the derived alias link when the address or the extents moved,
+    /// and the dependency lists with it. Not a template - it depends on nothing
+    /// the operand's static type carries - so a rebind of another tensor type
+    /// costs no second copy of the invalidation rule.
+    void note_rebind_geometry(TensorHandle &handle, void *new_data, std::vector<std::size_t> const &new_dims,
+                              std::vector<std::size_t> const &new_strides);
+
+    // ── bind() internals ────────────────────────────────────────────────────
+    //
+    // Everything that does not depend on the operand's static type lives here
+    // rather than in the templates below, so a bind of a fourth tensor type
+    // costs no extra instantiation of the validation logic.
+
+    /// The entry @p name selects, or a throw listing every name that exists.
+    [[nodiscard]] ManifestEntry const &lookup_manifest_entry(InterfaceManifest const &contract, std::string const &name) const;
+
+    /// Type-erased body of @ref bind_scalar; see that function for the contract.
+    void bind_scalar_impl(std::string const &name, void *storage, packed_gemm::ScalarType dtype, std::size_t element_size);
+
+    /// Check an incoming operand's dtype, rank, and extents against @p entry.
+    /// Axes @ref ManifestEntry::dim_symbols marks symbolic or ragged are skipped here;
+    /// the bind solver owns them.
+    void validate_bind_shape(ManifestEntry const &entry, packed_gemm::ScalarType dtype, std::size_t rank,
+                             std::vector<std::size_t> const &dims) const;
+
+    /// Check an incoming operand's graph-side space annotation against @p entry.
+    /// An empty @p incoming is "unannotated" and passes.
+    void validate_bind_spaces(ManifestEntry const &entry, std::vector<SpaceId> const &incoming) const;
+
+    /// Record @p entry as bound to the storage @p span covers, rejecting a bind that
+    /// makes two entries share storage the manifest does not declare as aliases, and
+    /// installing the alias link for a pair that DOES declare it.
+    void note_bound_operand(InterfaceManifest const &contract, ManifestEntry const &entry, BoundSpan const &span);
+
+    /// The byte span used for the undeclared-aliasing check, or an empty span when the
+    /// operand has none to offer (a deferred shell, a tile-wise sparse tensor, a zero
+    /// extent). Uses @ref detail::strided_byte_span, the same computation
+    /// @ref link_alias_storage reasons about containment with.
+    template <GraphCapturableTensor TensorType>
+    [[nodiscard]] static BoundSpan bind_storage_span(TensorType const &tensor) {
+        if constexpr (requires { tensor.is_materialized(); }) {
+            if (!tensor.is_materialized()) {
+                return {};
+            }
+        }
+        if constexpr (requires { tensor.is_tiled_tensor(); }) {
+            if (tensor.is_tiled_tensor()) {
+                return {}; // no single buffer to span
+            }
+        }
+        std::size_t const        rank = detail::tensor_rank(tensor);
+        std::vector<std::size_t> dims(rank);
+        std::vector<std::size_t> strides(rank);
+        for (std::size_t d = 0; d < rank; ++d) {
+            dims[d]    = tensor.dim(d);
+            strides[d] = tensor.stride(d);
+        }
+        BoundSpan span;
+        if (!detail::strided_byte_span(static_cast<void const *>(tensor.data()), dims, strides,
+                                       sizeof(typename std::remove_cvref_t<TensorType>::ValueType), span.lo, span.hi)) {
+            return {};
+        }
+        return span;
+    }
+
+    /**
+     * @brief What one @ref bind call's first walk worked out about the symbols.
+     *
+     * Values only, no storage identities: the second walk repoints, this one decides
+     * whether it may.
+     */
+    struct DimSolution {
+        /// Symbol name to the extent this bind solved it at.
+        std::unordered_map<std::string, std::size_t> values;
+        /// Symbol name to the manifest slot that first supplied its extent, so a
+        /// disagreement can name both sides rather than only the loser.
+        std::unordered_map<std::string, std::string> witness;
+        /// True when at least one bound entry declares a symbolic or ragged axis.
+        bool any_symbolic{false};
+        /// True when some bound extent differs from the one the graph holds. Everything
+        /// expensive below this is gated on it, so the ordinary same-shape bind - a replay
+        /// loop's - pays for one comparison per axis and nothing else.
+        bool extents_changed{false};
+    };
+
+    /// Read @p entry's symbolic axes off @p dims into @p solution, checking each symbol
+    /// against whatever an earlier slot in the same bind solved it at.
+    void solve_bind_dims(DimSolution &solution, ManifestEntry const &entry, std::vector<std::size_t> const &dims) const;
+
+    /// Refuse what a moved extent cannot be done to. Runs BETWEEN the two walks, so a
+    /// refusal leaves the graph exactly as it was.
+    void prepare_bind_solution(DimSolution const &solution) const;
+
+    /// Re-derive intermediate extents and check every node's operands agree. A no-op
+    /// unless @ref DimSolution::extents_changed.
+    void finish_bind_solution(DimSolution const &solution);
+
+    /// Record the ``(symbol, space)`` ties @p handle's two annotations imply, refusing a
+    /// symbol already tied to a different space. Called from both writers, so the tie is
+    /// caught whichever annotation arrives second.
+    void record_symbol_space_ties(TensorHandle const &handle);
+
+    /// Push solved extents through the graph, resizing every deferred intermediate whose
+    /// producing node ties it to an axis that moved.
+    void rederive_owned_extents();
+
+    /// Give one graph-owned tensor its derived extents, or explain why it cannot have them.
+    void resize_derived_extent(TensorId id, std::vector<std::size_t> const &derived, std::string_view producer);
+
+    /// Check that every node's operands still agree about their shared extents, so an
+    /// under-annotated graph fails here rather than at the kernel.
+    void validate_node_extents() const;
+
+    /// First walk: validate the shape of one pair and feed its symbols to the solver.
+    template <GraphCapturableTensor TensorType>
+    void bind_collect_one(InterfaceManifest const &contract, DimSolution &solution, std::string const &name, TensorType &tensor) {
+        using Clean = std::remove_cvref_t<TensorType>;
+
+        ManifestEntry const &entry = lookup_manifest_entry(contract, name);
+
+        std::size_t const        incoming_rank = detail::tensor_rank(tensor);
+        std::vector<std::size_t> incoming_dims(incoming_rank);
+        for (std::size_t d = 0; d < incoming_rank; ++d) {
+            incoming_dims[d] = tensor.dim(d);
+        }
+        validate_bind_shape(entry, packed_gemm::get_scalar_type<typename Clean::ValueType>(), incoming_rank, incoming_dims);
+        solve_bind_dims(solution, entry, incoming_dims);
+
+        // Space annotations live on handles, so only a tensor this graph already
+        // knows can carry one; anything else is unannotated and skipped.
+        std::weak_ptr<void> token;
+        if constexpr (requires { tensor.liveness_token(); }) {
+            token = tensor.liveness_token();
+        }
+        if (TensorId const incoming_id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), token); incoming_id != 0) {
+            validate_bind_spaces(entry, tensor_spaces(incoming_id));
+        }
+    }
+
+    /// See @ref bind_collect_one.
+    template <GraphCapturableTensor TensorType, typename... Rest>
+    void bind_collect(InterfaceManifest const &contract, DimSolution &solution, std::string const &name, TensorType &tensor,
+                      Rest &&...rest) {
+        bind_collect_one(contract, solution, name, tensor);
+        if constexpr (sizeof...(Rest) > 0) {
+            bind_collect(contract, solution, std::forward<Rest>(rest)...);
+        }
+    }
+
+    /// Second walk: repoint one ``(name, tensor)`` pair. See @ref bind for the contract.
+    template <GraphCapturableTensor TensorType>
+    void bind_one(InterfaceManifest const &contract, DimSolution const &solution, std::string const &name, TensorType &tensor) {
+        ManifestEntry const &entry = lookup_manifest_entry(contract, name);
+
+        note_bound_operand(contract, entry, bind_storage_span(tensor));
+
+        // A manifest entry that capture never gave a slot (registered as an operand
+        // but never reached by an op that builds one) still has to be rebindable;
+        // mint the slot from the incoming tensor, whose shape this already validated.
+        if (find_slot(entry.id) == nullptr) {
+            get_or_create_slot(tensor, entry.id);
+        }
+        // The controlled relaxation, and its whole reach: an entry that declares no
+        // symbol is repointed under exactly the public rebind's exact-extent rule.
+        bool const relax = solution.extents_changed && !entry.dim_symbols.empty();
+        rebind_impl(entry.id, tensor, relax);
+    }
+
+    /// Apply ``(name, tensor)`` pairs left to right against one manifest snapshot.
+    template <GraphCapturableTensor TensorType, typename... Rest>
+    void bind_apply(InterfaceManifest const &contract, DimSolution const &solution, std::string const &name, TensorType &tensor,
+                    Rest &&...rest) {
+        bind_one(contract, solution, name, tensor);
+        if constexpr (sizeof...(Rest) > 0) {
+            bind_apply(contract, solution, std::forward<Rest>(rest)...);
+        }
+    }
+
     std::string                                _name;
     std::string                                _pipeline_name;   ///< Parent pipeline name (empty if standalone)
     std::string                                _workspace_name;  ///< Parent workspace name (empty if none)
@@ -2344,6 +3341,60 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     int                                        _stage_index{-1}; ///< Order within pipeline
     std::vector<Node>                          _nodes;
     std::unordered_map<TensorId, TensorHandle> _tensors;
+
+    /// Ownership-scope tables published by a declaring Workspace or Pipeline.
+    /// Shared, so a declaration made after this graph was created still reaches it.
+    /// @see add_scope_map
+    std::vector<TensorScopeMapPtr> _scope_maps;
+
+    /// Manifest slots @ref bind has supplied storage for, and the byte span each was
+    /// given. Keyed by TensorId, not by name: @ref rebind renames the handle after
+    /// the tensor it now points at, so a name is not stable across the very
+    /// operation this records. The span is empty when the operand offered no address
+    /// (a deferred shell, a tile-wise sparse tensor), which still counts as bound and
+    /// simply cannot participate in the aliasing check.
+    std::unordered_map<TensorId, BoundSpan> _bound_operands;
+
+    /// Manifest-declared alias relations: child entry id -> the entry whose storage it
+    /// is part of.
+    ///
+    /// Kept beside the handles rather than only on them because a declaration is an
+    /// INPUT to alias discovery, not an output: it is the only relation that survives
+    /// a save (no address, no ``View`` node), so it has to be reapplied by every
+    /// linking pass and must not be lost to @ref clear_alias_links.
+    /// @see declare_alias
+    std::unordered_map<TensorId, TensorId> _declared_aliases;
+
+    /// Interface names pinned by @ref bind, by TensorId.
+    ///
+    /// A manifest name is the contract, and a contract that renamed itself every
+    /// time a caller bound different storage to it would be unusable: the second
+    /// ``bind("t2", ...)`` of a replay loop would report "no such interface tensor"
+    /// because the first one renamed the slot after the tensor it was handed.
+    /// @ref rebind's rename is right for the handle (which names a tensor) and wrong
+    /// for the interface (which names a slot), so the interface keeps its own record.
+    std::unordered_map<TensorId, std::string> _interface_names;
+
+    /// Ties established by @ref annotate_dims and @ref annotate_spaces between a dim
+    /// symbol and the index space its axes range over.
+    ///
+    /// Graph-level rather than per-handle, because the property worth enforcing is a
+    /// GLOBAL one: one symbol standing for two different spaces in two places is a
+    /// contradiction no single handle can see.
+    /// @see symbol_spaces
+    std::unordered_map<std::string, SpaceId> _symbol_spaces;
+
+    /// Per-instance extent tables @ref bind_ragged_extents has accepted, in supply order.
+    /// Cleared by @ref clear_bindings with the rest of the bind state.
+    std::vector<RaggedExtentTable> _ragged_extents;
+
+    /// Gate-flag arrays this graph can name, sorted by name.
+    ///
+    /// A vector rather than a map because the order is part of what a saved file
+    /// records and a hash is taken over: a map's iteration order is not a
+    /// property of the graph.
+    /// @see name_gate_flags
+    std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> _named_gate_flags;
 
     /// Registry the @ref SpaceId values on this graph's handles were issued by. Null means the
     /// process-global one, which is what @ref space_registry substitutes; a non-owning pointer
@@ -2445,6 +3496,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Mutation counter for cached analyses. Bumped at every
     /// mutation-declaration point; UsageAnalysis caches against it.
     std::uint64_t _analysis_version{0};
+    /// Node-set counter for the pass phase rule. @see structure_version
+    std::uint64_t _structure_version{0};
     /// Version _usage was built at (UINT64_MAX = never built).
     std::uint64_t _usage_version{std::numeric_limits<std::uint64_t>::max()};
     UsageAnalysis _usage;

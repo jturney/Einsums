@@ -721,6 +721,75 @@ enum class ParamSourceType : std::uint8_t {
 };
 
 /**
+ * @brief The name of a @ref ParamSourceType, for diagnostics and the saved form.
+ * @param[in] type The stored type to name.
+ * @return Its C++ spelling ("bool", "char", "signed char", ... "long double").
+ *
+ * The spelling is the TYPE's own, which is the point of naming these at all: a
+ * reader can check the name against the tensor it is about to bind, where a
+ * numeric enumerator would only say "the fourteenth one".
+ *
+ * @ref ParamSourceType::Int64 is an alias for whichever of @c long /
+ * @c long long is 64 bits on this platform, so it shares that one's name rather
+ * than getting a spelling of its own; naming it separately would make the file
+ * say something platform-dependent about a type that is not.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline std::string_view param_source_type_name(ParamSourceType type) noexcept {
+    switch (type) {
+    case ParamSourceType::Bool:
+        return "bool";
+    case ParamSourceType::Char:
+        return "char";
+    case ParamSourceType::SChar:
+        return "signed char";
+    case ParamSourceType::UChar:
+        return "unsigned char";
+    case ParamSourceType::Short:
+        return "short";
+    case ParamSourceType::UShort:
+        return "unsigned short";
+    case ParamSourceType::Int:
+        return "int";
+    case ParamSourceType::UInt:
+        return "unsigned int";
+    case ParamSourceType::Long:
+        return "long";
+    case ParamSourceType::ULong:
+        return "unsigned long";
+    case ParamSourceType::LongLong:
+        return "long long";
+    case ParamSourceType::ULongLong:
+        return "unsigned long long";
+    case ParamSourceType::Float:
+        return "float";
+    case ParamSourceType::Double:
+        return "double";
+    case ParamSourceType::LongDouble:
+        return "long double";
+    }
+    return "int";
+}
+
+/**
+ * @brief The @ref ParamSourceType spelled @p name, if there is one.
+ * @param[in] name A spelling @ref param_source_type_name produces.
+ * @return The enumerator, or an empty optional when nothing is spelled that way.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline std::optional<ParamSourceType> param_source_type_from_name(std::string_view name) noexcept {
+    for (auto const type : {ParamSourceType::Bool, ParamSourceType::Char, ParamSourceType::SChar, ParamSourceType::UChar,
+                            ParamSourceType::Short, ParamSourceType::UShort, ParamSourceType::Int, ParamSourceType::UInt,
+                            ParamSourceType::Long, ParamSourceType::ULong, ParamSourceType::LongLong, ParamSourceType::ULongLong,
+                            ParamSourceType::Float, ParamSourceType::Double, ParamSourceType::LongDouble}) {
+        if (param_source_type_name(type) == name) {
+            return type;
+        }
+    }
+    return std::nullopt;
+}
+
+/**
  * @brief The @ref ParamSourceType naming @p T.
  * @tparam T An arithmetic type.
  * @return Its enumerator.
