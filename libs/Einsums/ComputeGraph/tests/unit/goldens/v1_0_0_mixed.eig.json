@@ -1,0 +1,222 @@
+{
+  "einsums_graph_ir": "1.0.0",
+  "provenance": {"library_version":"2.0.0","config_fingerprint":"0x3163ced3f54d794c","structural_passes":[]},
+  "name": "golden_mixed",
+  "manifest": [
+    {
+      "id": 0,
+      "name": "A",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,4],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 1,
+      "name": "B",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [4,2],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 2,
+      "name": "C",
+      "direction": "inout",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,2],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 3,
+      "name": "D",
+      "direction": "inout",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [2,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 4,
+      "name": "dot_result",
+      "direction": "output",
+      "dtype": "float64",
+      "rank": 0,
+      "dims": [],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    }
+  ],
+  "spaces": {"names":[],"symbol_ties":[]},
+  "params": [{"name":"iterations","value":2}],
+  "gate_flags": [{"name":"blocks","size":1}],
+  "tensors": [],
+  "slot_redirects": [],
+  "nodes": [
+    {
+      "id": 0,
+      "kind": "Einsum",
+      "label": "einsum: C[i,j] = A[i,k] * B[k,j]",
+      "inputs": [0,1],
+      "outputs": [2],
+      "dtype": "float64",
+      "rank": 2,
+      "descriptor": {
+        "c_indices": ["i","j"],
+        "a_indices": ["i","k"],
+        "b_indices": ["k","j"],
+        "link_indices": ["k"],
+        "target_indices": ["i","j"],
+        "all_indices": ["i","j","k"],
+        "scalar_output": false,
+        "conj_a": false,
+        "conj_b": false,
+        "c_prefactor": {"dtype":"float64","re":0.0},
+        "ab_prefactor": {"dtype":"float64","re":1.0},
+        "letter_spaces": [],
+        "gemm_hint": {"m":3,"n":2,"k":4,"trans_a":"N","trans_b":"N","a":{"id":0,"leading_dim":3},"b":{"id":1,"leading_dim":4},"c":{"id":2,"leading_dim":3}}
+      }
+    },
+    {"id":1,"kind":"Scale","label":"scale(0.5, C)","inputs":[2],"outputs":[2],"dtype":"float64","rank":2,"descriptor":{"factor":{"dtype":"float64","re":0.5}}},
+    {
+      "id": 2,
+      "kind": "Permute",
+      "label": "permute: C[j,i] = A[i,j]",
+      "inputs": [2],
+      "outputs": [3],
+      "dtype": "float64",
+      "rank": 2,
+      "descriptor": {"alpha":{"dtype":"float64","re":1.0},"beta":{"dtype":"float64","re":0.0},"c_indices":["j","i"],"a_indices":["i","j"]}
+    },
+    {"id":3,"kind":"ElementTransform","label":"element_transform","inputs":[2],"outputs":[2],"dtype":"float64","rank":2,"descriptor":{"op":"square"}},
+    {"id":4,"kind":"Dot","label":"dot","inputs":[2,2],"outputs":[4],"dtype":"float64","rank":0,"descriptor":{"conjugated":false}},
+    {
+      "id": 5,
+      "kind": "WriteParam",
+      "label": "write_param: half <- const",
+      "inputs": [],
+      "outputs": [],
+      "dtype": "unknown",
+      "rank": 0,
+      "descriptor": {"param":"half","source_type":"long long","source_expr":{"const":1}}
+    },
+    {
+      "id": 6,
+      "kind": "Loop",
+      "label": "iters",
+      "inputs": [],
+      "outputs": [],
+      "dtype": "unknown",
+      "rank": 0,
+      "descriptor": {
+        "max_iterations": 8,
+        "condition": {"iteration":{"op":"lt","rhs":{"param":"iterations"}}},
+        "body": {
+          "name": "loop(iters)",
+          "tensors": [
+            {
+              "id": 0,
+              "name": "C",
+              "dtype": "float64",
+              "rank": 2,
+              "dims": [3,2],
+              "dim_symbols": [],
+              "spaces": [],
+              "spaces_inferred": false,
+              "intermediate": false,
+              "scope": "graph",
+              "init": "none",
+              "outer": 2
+            }
+          ],
+          "nodes": [
+            {
+              "id": 0,
+              "kind": "Axpby",
+              "label": "axpby(alpha=1, beta=1)",
+              "inputs": [0,0],
+              "outputs": [0],
+              "dtype": "float64",
+              "rank": 2,
+              "descriptor": {"alpha":{"dtype":"float64","re":1.0},"beta":{"dtype":"float64","re":1.0}}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": 7,
+      "kind": "Conditional",
+      "label": "gate",
+      "inputs": [],
+      "outputs": [],
+      "dtype": "unknown",
+      "rank": 0,
+      "descriptor": {
+        "predicate": {"flag":{"name":"blocks","index":0}},
+        "then": {
+          "name": "then(gate)",
+          "tensors": [
+            {
+              "id": 0,
+              "name": "D",
+              "dtype": "float64",
+              "rank": 2,
+              "dims": [2,3],
+              "dim_symbols": [],
+              "spaces": [],
+              "spaces_inferred": false,
+              "intermediate": false,
+              "scope": "graph",
+              "init": "none",
+              "outer": 3
+            }
+          ],
+          "nodes": [{"id":0,"kind":"Scale","label":"scale(2, D)","inputs":[0],"outputs":[0],"dtype":"float64","rank":2,"descriptor":{"factor":{"dtype":"float64","re":2.0}}}]
+        },
+        "else": {
+          "name": "else(gate)",
+          "tensors": [
+            {
+              "id": 0,
+              "name": "D",
+              "dtype": "float64",
+              "rank": 2,
+              "dims": [2,3],
+              "dim_symbols": [],
+              "spaces": [],
+              "spaces_inferred": false,
+              "intermediate": false,
+              "scope": "graph",
+              "init": "none",
+              "outer": 3
+            }
+          ],
+          "nodes": [{"id":0,"kind":"Scale","label":"scale(0.5, D)","inputs":[0],"outputs":[0],"dtype":"float64","rank":2,"descriptor":{"factor":{"dtype":"float64","re":0.5}}}]
+        }
+      }
+    }
+  ]
+}

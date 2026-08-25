@@ -43,6 +43,8 @@ set(ComputeGraphTests
     GraphFeatures.cpp
     GraphRegistry.cpp
     InterfaceManifest.cpp
+    Json.cpp
+    SaveLoad.cpp
     CostModel.cpp
     LoopOptimizationCorrectness.cpp
     LuFactorization.cpp
@@ -153,6 +155,7 @@ set(ComputeGraphTests
     test_fuzz_diff_parallel_stress_python.py
     test_fuzz_diff_graph_scratch_python.py
     test_fuzz_diff_regressions_python.py
+    test_fuzz_diff_roundtrip_python.py
     test_fuzz_diff_cse_python.py
     test_fuzz_diff_replay_python.py
     test_fuzz_diff_random_pipeline_python.py
@@ -255,3 +258,12 @@ foreach(test ${ComputeGraphTests})
   endif ()
 endforeach()
 
+# SaveLoad's golden corpus lives beside the test rather than being generated:
+# the promise it encodes is that a file written by an earlier build still loads,
+# and a generated file cannot make that promise. The directory is passed in so
+# the test can walk it without a working-directory assumption.
+if(TARGET SaveLoad_test)
+  target_compile_definitions(
+    SaveLoad_test PRIVATE EINSUMS_GRAPH_IR_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/goldens"
+  )
+endif()
