@@ -8,7 +8,7 @@ Optimization Passes
 ===================
 
 The ComputeGraph provides a catalog of built-in optimization passes. The default
-pipeline (``PassManager::create_default()``) adds 22 passes that always run, plus
+pipeline (``PassManager::create_default()``) adds 25 passes that always run, plus
 five GPU passes and five distributed passes that are included only when a GPU or
 MPI backend, or its mock, is available. One further pass,
 ``DistributiveFactoring``, is workload-specific and must be added by hand.
@@ -454,6 +454,152 @@ graph-owned intermediates.
 
 Reports ``num_inferred()``. See :doc:`symmetry` for the full story.
 
+SpacePropagation
+----------------
+
+Fills in the index spaces of graph-owned intermediates from the annotations their
+producers' operands carry.
+An index space is what an axis ranges over, occupied orbitals or virtuals or an
+auxiliary basis, and it is declared per tensor slot with
+``Graph::annotate_spaces``.
+A method annotates its handful of persistent inputs, and this pass carries the
+annotation through the intermediates, so the effort is proportional to a
+program's inputs rather than to its node count.
+
+Current rules: an einsum output slot takes the space of the letter that produced
+it; a scale inherits its input's spaces, since scaling changes values and never
+what an axis ranges over; a permute or transpose reorders the input's spaces by
+its own index letters; an ``Axpby`` takes the spaces every annotated input agrees
+on, slot by slot.
+
+.. code-block:: cpp
+
+   graph.annotate_spaces(A, {occ, virt});
+   graph.annotate_spaces(B, {virt, aux});
+   auto [modified, spaces] = graph.apply<cg::passes::SpacePropagation>();
+   // spaces.num_inferred() == the number of intermediates annotated
+
+One sweep in topological order is a fixpoint: a node is visited after every node
+that writes its inputs, so a chain of contractions resolves end to end in a
+single run and a second run infers nothing new.
+
+Only graph-owned intermediates are annotated, and only when a tensor has exactly
+one writer in this graph and is not referenced by a child sub-graph, the same
+soundness rule ``SymmetryPropagation`` uses.
+An annotation the user declared is never overwritten; one that capture or an
+earlier sweep inferred may be refined, and each handle records which of the two
+it holds so a validation pass can report a weaker verdict on a derived slot.
+Nothing is ever pushed back onto an unannotated input: inheritance across
+operands is off, because it is how one wrong annotation spreads silently.
+Operands that disagree about a letter are declined and counted in
+``skip_reasons()`` rather than raised, since diagnosing a cross-space conflict
+belongs to a validation pass.
+
+Runs beside ``SymmetryPropagation``, after Materialization and before the backend
+passes. The two are independent analyses and neither reads the other's output.
+
+Reports ``num_inferred()``.
+
+CrossSpaceValidation
+--------------------
+
+Flags a contraction letter that binds a slot of one index space against a slot of
+another.
+The bug it exists to catch is a letter tying an ``occ`` slot of one operand to a
+``virt`` slot of the next.
+In a coupled-cluster transcription that is almost always a mistake, and it is one
+the differential fuzzers cannot catch, because a hand-derived reference and its
+implementation are self-consistently wrong together.
+
+Capture already raises when a letter binds two different declared spaces within
+one contraction, so this pass exists for everything capture cannot see:
+annotations that arrive after capture through ``Graph::annotate_spaces``, which
+capture never revisits; annotations ``SpacePropagation`` inferred, which that pass
+declines to argue about by design; and verdicts that need the registry's declared
+relations rather than a comparison of two ids.
+
+Each letter is re-derived from the operands' current handle annotations, and every
+slot binding it is compared against the first.
+Two slots naming the same space report nothing.
+Two spaces declared disjoint are an **error**, because the contraction as written
+sums over an empty intersection and is identically zero.
+One space contained in the other is a **note**, since contracting a ``pno`` slot
+against a ``virt`` slot is a restriction of the parent space rather than a
+mistake, and it is listed only because an unintended restriction looks exactly
+like an intended one.
+Anything the registry cannot relate is a **warning**, because "unknown" is a
+first-class answer that has to be treated as carefully as "no".
+
+A finding involving a slot whose annotation was *inferred* rather than declared is
+reported one severity level lower and says so in its message.
+An authoritative verdict resting on a derived premise is worse than a weak verdict
+resting on a firm one.
+
+.. code-block:: cpp
+
+   graph.annotate_spaces(A, {occ, virt});
+   graph.annotate_spaces(B, {occ, aux});   // 'a' meets virt on A and occ on B
+   auto [modified, check] = graph.apply<cg::passes::CrossSpaceValidation>();
+   for (auto const &finding : check.findings()) {
+       std::cerr << finding.message << '\n';
+   }
+
+The pass never throws, never mutates, and never fails a pipeline.
+An unannotated program yields nothing at all, which is the honest answer when the
+registry has no premises to reason from.
+
+Reports ``num_errors()``, ``num_warnings()``, ``num_notes()`` and ``findings()``,
+with the full detail available through ``print_report(std::ostream &)`` or, for a
+caller that is not holding a stream, ``report_string()``.
+
+ScalingAnalysis
+---------------
+
+Reports how a program scales: every contraction's symbolic cost, every
+intermediate's symbolic size, the rate-limiting term and a bound on the memory
+footprint, all as polynomials in index-space scales rather than as numbers.
+It is the cost model of the algebraic optimizer delivered as a user-facing feature
+first, and it is the natural check that a program's space annotations are the ones
+its author meant.
+
+A node's cost comes from the spaces its operands carry when the pass runs, not
+from the map frozen into the node at capture, so the report reflects a declaration
+that arrived late and everything ``SpacePropagation`` inferred immediately before
+it.
+Letters that no annotation reaches become anonymous per-letter variables, so an
+unannotated program still yields a complete report, just one written in ``?i``
+rather than in ``o``.
+
+.. code-block:: cpp
+
+   auto [modified, scaling] = graph.apply<cg::passes::ScalingAnalysis>();
+   scaling.total_flops().to_string(&registry);   // e.g. "2*o^2*v^4"
+   scaling.rate_limiting();                      // the node(s) carrying that term
+   scaling.print_report(std::cout);
+
+The rate-limiting verdict ranks flops through the same total order the structural
+passes use, so two nodes tie only when their polynomials are literally identical
+and the answer is the same in every process.
+``memory_bound()`` is the **sum** of the intermediate sizes, which is an upper
+bound on the high-water mark and not the high-water mark itself; a liveness-aware
+figure needs the interval analysis ``MemoryPlanning`` does for bytes, applied to
+polynomials, and that is a later task.
+A loop body is analysed once rather than once per iteration, since a trip count is
+a runtime quantity, and every entry carries its graph's name so a body's
+contribution stays attributable.
+
+Only contraction nodes are costed.
+Every other kind is counted in ``skip_reasons()`` rather than given an invented
+formula.
+
+Reports ``node_costs()``, ``intermediate_sizes()``, ``total_flops()``,
+``total_traffic()``, ``memory_bound()``, ``rate_limiting()`` and
+``num_unannotated_nodes()``, with the full table available through
+``print_report(std::ostream &)`` or ``report_string()``.
+A caller that cannot hold a ``SymbolicPoly`` reads the same numbers as text
+through ``total_flops_str()``, ``node_flops()``, ``intermediate_sizes_str()`` and
+``rate_limiting_labels()``.
+
 StreamContractionFusion
 -----------------------
 
@@ -729,7 +875,10 @@ mock is present:
    16. DistributionPlanning      : decide replicate vs distribute
    17. Materialization           : insert allocation nodes for deferred tensors
    18. SymmetryPropagation       : tag intermediates whose symmetry is provable
-   19. StreamContractionFusion   : one pass over a streamed tensor, not N
+   19. SpacePropagation          : infer index spaces on intermediates
+   20. CrossSpaceValidation      : flag letters binding two different spaces
+   21. ScalingAnalysis           : report cost polynomials and the limiting term
+   22. StreamContractionFusion   : one pass over a streamed tensor, not N
        GPUPlacement             : decide CPU vs GPU per node       (GPU only)
        TransferInsertion        : insert H2D/D2H transfer nodes    (GPU only)
        TransferElimination      : remove redundant transfers       (GPU only)
@@ -740,9 +889,9 @@ mock is present:
        CommunicationInsertion   : insert allreduce/broadcast       (MPI only)
        CommunicationElimination : remove redundant communication   (MPI only)
        CommunicationScheduling  : overlap communication w/ compute (MPI only)
-   20. InplaceOptimization       : merge outputs into dying inputs
-   21. FreeInsertion             : insert Free nodes at last-consumer
-   22. MemoryPlanning            : liveness analysis + the host arena
+   23. InplaceOptimization       : merge outputs into dying inputs
+   24. FreeInsertion             : insert Free nodes at last-consumer
+   25. MemoryPlanning            : liveness analysis + the host arena
 
 Reading the results
 -------------------

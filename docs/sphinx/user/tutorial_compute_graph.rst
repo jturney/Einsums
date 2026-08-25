@@ -140,6 +140,12 @@ passes join it only when the corresponding backend (or its mock) is built in:
     Insert allocation nodes for deferred tensors.
 ``SymmetryPropagation``
     Tag intermediates whose symmetry is provable from their inputs.
+``SpacePropagation``
+    Infer the index spaces of intermediates from their producers' operands.
+``CrossSpaceValidation``
+    Flag a contraction letter that binds slots of two different index spaces.
+``ScalingAnalysis``
+    Report every contraction's cost polynomial and the rate-limiting term.
 ``StreamContractionFusion``
     Fuse contractions that stream one large tensor into a single pass over it.
 ``InplaceOptimization``
@@ -159,6 +165,65 @@ You can also apply a single pass:
 
     auto [modified, mem] = graph.apply<cg::passes::MemoryPlanning>();
     mem.print_report(std::cout);
+
+Index Space Annotation
+======================
+
+A tensor's dimensions say how big *this* problem is. An index space says what an
+axis ranges over - occupied orbitals, virtuals, an auxiliary basis - which is
+what lets a pass reason about how a *family* of problems grows.
+
+Spaces are registered once, with the letter each contributes to a cost
+polynomial and any relations that hold between them:
+
+.. code-block:: cpp
+
+    auto &registry = cg::global_space_registry();
+    auto  occ  = registry.register_space({.name = "occ",  .scale_symbol = "o"});
+    auto  virt = registry.register_space({.name = "virt", .scale_symbol = "v"});
+    registry.declare_less(occ, virt);        // there are fewer occupieds
+    registry.declare_disjoint(occ, virt);    // and no orbital is both
+
+Tensors are then annotated one slot per axis, before the operations that use
+them are captured:
+
+.. code-block:: cpp
+
+    graph.annotate_spaces(T2, {occ, occ, virt, virt});
+
+Only a program's inputs need annotating. ``SpacePropagation`` carries the
+annotation through the intermediates, ``CrossSpaceValidation`` reports a letter
+that binds two different spaces, and ``ScalingAnalysis`` reports what the program
+costs as a polynomial in the scale symbols:
+
+.. code-block:: cpp
+
+    auto [modified, scaling] = graph.apply<cg::passes::ScalingAnalysis>();
+    scaling.print_report(std::cout);   // total flops: 2*o^2*v^4, and what limits it
+
+From Python the same three passes run through ``PassManager``, spaces are built
+with ``cg.index_space``, and annotation takes names rather than ids:
+
+.. code-block:: python
+
+    import einsums.graph as cg
+
+    registry = cg.global_space_registry()
+    registry.register_space(cg.index_space("occ", "o"))
+    registry.register_space(cg.index_space("virt", "v"))
+
+    with cg.capture(g):
+        cg.annotate(T2, ("occ", "occ", "virt", "virt"))
+        ...
+
+    scaling = cg.ScalingAnalysis()
+    pm = cg.PassManager()
+    pm.add(scaling)
+    pm.run(g)
+    print(scaling.report_string())
+
+Cost polynomials reach Python as their renderings - ``scaling.total_flops_str()``
+and ``scaling.node_flops()`` - rather than as objects to compute with.
 
 Pipeline: Multi-Stage Workflows
 ================================

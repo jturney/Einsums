@@ -73,6 +73,9 @@ set(ComputeGraphTests
     Pass_Reorder.cpp
     Pass_ScaleAbsorption.cpp
     Pass_TiledExpansion.cpp
+    Pass_CrossSpaceValidation.cpp
+    Pass_ScalingAnalysis.cpp
+    Pass_SpacePropagation.cpp
     Pass_SymmetryPropagation.cpp
     PassManager.cpp
     PermuteFusion.cpp
@@ -190,12 +193,16 @@ set(ComputeGraphTests
     test_pass_memory_planning_python.py
     test_pass_operand_lifetime_python.py
     test_pass_reorder_python.py
+    test_pass_cross_space_validation_python.py
     test_pass_scale_absorption_python.py
+    test_pass_scaling_analysis_python.py
+    test_pass_space_propagation_python.py
     test_pass_symmetry_propagation_python.py
     test_permute_python.py
     test_scalar_writers_python.py
     test_scf_python.py
     test_scale_python.py
+    test_spaces_python.py
     test_special_values_python.py
     test_symm_gemm_views_python.py
     test_symmetrized_accumulation_python.py

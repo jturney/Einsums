@@ -28,6 +28,7 @@ from einsums import linalg as la
 import einsums.graph as cg
 
 from . import integrals
+from . import spaces as sp
 from . import sparse
 from . import tensors as ten
 from .layout import PairLayout
@@ -199,19 +200,25 @@ class DLPNOBase:
         F = ten.from_numpy("F (AO)", ref.F)
         C_occ = ten.from_numpy("C (occ)", ref.C_occ)
 
-        self.C_lmo = ten.from_numpy("C (LMO)", ref.C_lmo)
-        self.F_lmo = ten.triplet(self.C_lmo, F, self.C_lmo, trans_a=True, name="F (LMO)")
+        self.C_lmo = sp.annotate(ten.from_numpy("C (LMO)", ref.C_lmo), sp.C_LMO)
+        self.F_lmo = sp.annotate(
+            ten.triplet(self.C_lmo, F, self.C_lmo, trans_a=True, name="F (LMO)"), sp.F_LMO)
 
         C_pao = einsums.eye(ref.nbf, dtype="float64", name="C (PAO)")
         la.axpby(-1.0, ten.triplet(C_occ, C_occ, S, trans_b=True), 1.0, C_pao)
 
         # Normalize each PAO against its own overlap, then rebuild S and F.
         S_pao = ten.triplet(C_pao, S, C_pao, trans_a=True, name="S (PAO)")
-        self.C_pao = ten.scale_columns(
+        # The space annotations say what each axis ranges over; they are what
+        # the compute graph's cost model reads instead of a comment. A no-op
+        # outside a capture, which is where this setup runs. See dlpno.spaces.
+        self.C_pao = sp.annotate(ten.scale_columns(
             C_pao, ten.view(ten.diagonal(S_pao)) ** -0.5, name="C (PAO)"
-        )
-        self.S_pao = ten.triplet(self.C_pao, S, self.C_pao, trans_a=True, name="S (PAO)")
-        self.F_pao = ten.triplet(self.C_pao, F, self.C_pao, trans_a=True, name="F (PAO)")
+        ), sp.C_PAO)
+        self.S_pao = sp.annotate(
+            ten.triplet(self.C_pao, S, self.C_pao, trans_a=True, name="S (PAO)"), sp.S_PAO)
+        self.F_pao = sp.annotate(
+            ten.triplet(self.C_pao, F, self.C_pao, trans_a=True, name="F (PAO)"), sp.F_PAO)
 
         self._print(
             f"  orbitals: {ref.naocc} active occupied LMOs, "

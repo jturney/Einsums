@@ -22,6 +22,7 @@ from typing import Protocol, Sequence, runtime_checkable
 
 import einsums
 
+from . import spaces as sp
 from . import tensors as ten
 
 __all__ = ["KINDS", "Spaces", "Demand", "ThreeIndexSource", "DenseSource",
@@ -220,6 +221,12 @@ class DenseSource:
         # their indices reversed as well.
         Qmn = ten.from_numpy_reversed("(n m Q)", self._eri_3index)
 
+        # What each axis ranges over, for the compute graph's cost model. A
+        # no-op while this transform runs eagerly; see :mod:`dlpno.spaces`.
+        sp.annotate(Qmn, sp.QMN_REVERSED)
+        sp.annotate(C_lmo, sp.C_LMO)
+        sp.annotate(C_pao, sp.C_PAO)
+
         # Occupied index first. Both orders give the same answer, but the
         # half-transform carries whichever index has already been contracted,
         # and there are naocc of those against npao of the other - 13 against
@@ -237,14 +244,17 @@ class DenseSource:
         # Both LMO-first kinds share this one half-transform, which is most of
         # what either costs.
         if {"q_ia", "q_ij"} & set(self._kinds):
-            half = ten.empty("(n i Q)", [nbf, naocc, naux])
+            half = sp.annotate(ten.empty("(n i Q)", [nbf, naocc, naux]),
+                               sp.HALF_LMO_REVERSED)
             einsums.einsum("niQ <- nmQ ; mi", half, Qmn, C_lmo)
             if "q_ia" in self._kinds:
-                q_ia = ten.empty("(Q|i u)", [naux, naocc, npao])
+                q_ia = sp.annotate(ten.empty("(Q|i u)", [naux, naocc, npao]),
+                                   sp.Q_IA)
                 einsums.einsum("Qiu <- niQ ; nu", q_ia, half, C_pao)
                 self._blocks["q_ia"] = q_ia
             if "q_ij" in self._kinds:
-                q_ij = ten.empty("(Q|i j)", [naux, naocc, naocc])
+                q_ij = sp.annotate(ten.empty("(Q|i j)", [naux, naocc, naocc]),
+                                   sp.Q_IJ)
                 einsums.einsum("Qij <- niQ ; nj", q_ij, half, C_lmo)
                 self._blocks["q_ij"] = q_ij
             del half
@@ -256,9 +266,11 @@ class DenseSource:
         # (Q|uv) is what makes this source the oracle rather than the
         # production path, exactly as it already is for (Q|iu).
         if "q_ab" in self._kinds:
-            half_pao = ten.empty("(n u Q)", [nbf, npao, naux])
+            half_pao = sp.annotate(ten.empty("(n u Q)", [nbf, npao, naux]),
+                                   sp.HALF_PAO_REVERSED)
             einsums.einsum("nuQ <- nmQ ; mu", half_pao, Qmn, C_pao)
-            q_ab = ten.empty("(Q|u v)", [naux, npao, npao])
+            q_ab = sp.annotate(ten.empty("(Q|u v)", [naux, npao, npao]),
+                               sp.Q_AB)
             einsums.einsum("Quv <- nuQ ; nv", q_ab, half_pao, C_pao)
             self._blocks["q_ab"] = q_ab
             del half_pao

@@ -85,6 +85,67 @@ def current_graph():
     return _capture_graph_stack[-1] if _capture_graph_stack else None
 
 
+def _resolve_space(registry, space):
+    """Turn one entry of an ``annotate`` spaces argument into a ``SpaceId``.
+
+    Accepts a name, which is the spelling the design puts in user code, or a
+    ``SpaceId`` already in hand, which is what a caller that looked one up
+    keeps. An unregistered name is an error rather than an implicit
+    registration: a space's scale symbol and growth class are what the cost
+    model reads, and inventing them from a name would put numbers in a
+    scaling report that nobody declared.
+    """
+    if isinstance(space, str):
+        found = registry.find(space)
+        if found is None:
+            known = ", ".join(sorted(registry.space(i).name for i in registry.ids))
+            raise KeyError(
+                f"no index space named '{space}' is registered; "
+                f"registered spaces are: {known or '(none)'}"
+            )
+        return found
+    return space
+
+
+def annotate(tensor, spaces, graph=None):
+    """Annotate a tensor's axes with the index spaces they range over.
+
+    ``spaces`` is one entry per axis, in axis order, each a registered space
+    NAME or a ``SpaceId``. Names are the user-facing spelling: an id is a
+    handle into one registry and means nothing against another, while a name
+    is what a person writes and what a saved graph carries.
+
+    ``graph`` defaults to the graph currently being captured. Annotation is a
+    declaration about a tensor, but it is stored on the graph's handle for
+    that tensor, so there has to be a graph to store it on::
+
+        occ = registry.register_space(cg.index_space("occ", "o"))
+        virt = registry.register_space(cg.index_space("virt", "v"))
+
+        g = cg.Graph("ccsd")
+        with cg.capture(g):
+            cg.annotate(T2, ("occ", "occ", "virt", "virt"))
+            einsums.einsum("ijab <- ijcd ; cdab", R2, T2, Vvvvv)
+
+    Annotate BEFORE the operations that use the tensor are captured: capture
+    reads the annotation off the handle to bind each contraction's letters,
+    and one that arrives afterwards does not reach nodes already recorded.
+    ``SpacePropagation`` and the diagnostic passes read the handles as they
+    stand when they run, so a late annotation still reaches them.
+
+    Returns ``tensor``, so an annotation can wrap an allocation in one line.
+    """
+    g = graph if graph is not None else current_graph()
+    if g is None:
+        raise RuntimeError(
+            "cg.annotate needs a graph to store the annotation on: pass graph=..., "
+            "or call it inside cg.capture(...)"
+        )
+    registry = g.space_registry
+    g.annotate_spaces(tensor, [_resolve_space(registry, s) for s in spaces])
+    return tensor
+
+
 class _PyDiis:
     """Pure-Python Pulay DIIS, the reference the C++ accelerator is checked against.
 

@@ -49,6 +49,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
   public:
     virtual ~OptimizerPass() = default;
 
+    /// @name Special members
+    /// Spelled out because the virtual destructor suppresses the implicit move constructor: without
+    /// these, moving a derived pass (``Graph::apply`` returns one by value) COPIES this base, and
+    /// copying @ref _skips allocates. Defaulted, so the behaviour is the compiler's either way.
+    /// @{
+    OptimizerPass()                                     = default;
+    OptimizerPass(OptimizerPass const &)                = default;
+    OptimizerPass(OptimizerPass &&) noexcept            = default;
+    OptimizerPass &operator=(OptimizerPass const &)     = default;
+    OptimizerPass &operator=(OptimizerPass &&) noexcept = default;
+    /// @}
+
     /// @brief Human-readable pass name, exposed so Python tests can
     ///        assert which pass they're invoking.
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] virtual std::string name() const = 0;
@@ -432,26 +444,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * 18. Materialization: resize deferred tensors to local partitions
      * 19. SymmetryPropagation: infer symmetry on graph intermediates and
      *                                 push to backing tensors for rank-2 BLAS dispatch
-     * 20. StreamContractionFusion: loop-fuse sibling contractions over one big tensor
+     * 20. SpacePropagation: infer per-slot index spaces on graph intermediates
+     * 21. CrossSpaceValidation: flag letters binding slots of different index spaces
+     * 22. ScalingAnalysis: report every contraction's cost polynomial and what limits it
+     * 23. StreamContractionFusion: loop-fuse sibling contractions over one big tensor
      *
      * GPU block (when a GPU backend or mock is available):
-     * 21. GPUPlacement: cost-model based node-to-GPU assignment
-     * 22. TransferInsertion: insert HostToDevice / DeviceToHost nodes
-     * 23. TransferElimination: drop redundant transfers
-     * 24. GPUDiagnostics: log placement decisions
-     * 25. StreamAssignment: assign CUDA/HIP streams for overlap
+     * 24. GPUPlacement: cost-model based node-to-GPU assignment
+     * 25. TransferInsertion: insert HostToDevice / DeviceToHost nodes
+     * 26. TransferElimination: drop redundant transfers
+     * 27. GPUDiagnostics: log placement decisions
+     * 28. StreamAssignment: assign CUDA/HIP streams for overlap
      *
      * Distributed block (when MPI or its mock is available):
-     * 26. InputSlicing: create per-rank views of distributed inputs
-     * 27. SUMMAExpansion: expand einsums to SUMMA loops on square grids
-     * 28. CommunicationInsertion: insert allreduces for replicated outputs
-     * 29. CommunicationElimination: drop redundant communications
-     * 30. CommunicationScheduling: split allreduce into async iallreduce + wait
+     * 29. InputSlicing: create per-rank views of distributed inputs
+     * 30. SUMMAExpansion: expand einsums to SUMMA loops on square grids
+     * 31. CommunicationInsertion: insert allreduces for replicated outputs
+     * 32. CommunicationElimination: drop redundant communications
+     * 33. CommunicationScheduling: split allreduce into async iallreduce + wait
      *
      * Tail (always registered):
-     * 31. InplaceOptimization: merge elementwise outputs into dying inputs
-     * 32. FreeInsertion: free intermediates after last consumer
-     * 33. MemoryPlanning: tensor liveness, peak memory, and arena planning
+     * 34. InplaceOptimization: merge elementwise outputs into dying inputs
+     * 35. FreeInsertion: free intermediates after last consumer
+     * 36. MemoryPlanning: tensor liveness, peak memory, and arena planning
      *
      * @return A fully-populated PassManager.
      */

@@ -51,10 +51,13 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/PermuteFusion.hpp
     Einsums/ComputeGraph/Passes/Reorder.hpp
     Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp
+    Einsums/ComputeGraph/Passes/CrossSpaceValidation.hpp
     Einsums/ComputeGraph/Passes/GPUDiagnostics.hpp
     Einsums/ComputeGraph/Passes/GPUPlacement.hpp
+    Einsums/ComputeGraph/Passes/ScalingAnalysis.hpp
     Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp
     Einsums/ComputeGraph/Passes/ScratchPrivatization.hpp
+    Einsums/ComputeGraph/Passes/SpacePropagation.hpp
     Einsums/ComputeGraph/Passes/StreamAssignment.hpp
     Einsums/ComputeGraph/Passes/SymmetryPropagation.hpp
     Einsums/ComputeGraph/Passes/ThreadPlanning.hpp
@@ -109,10 +112,13 @@ set(ComputeGraphSources
     Passes/PermuteFusion.cpp
     Passes/Reorder.cpp
     Passes/SUMMAExpansion.cpp
+    Passes/CrossSpaceValidation.cpp
     Passes/GPUDiagnostics.cpp
     Passes/GPUPlacement.cpp
+    Passes/ScalingAnalysis.cpp
     Passes/ScaleAbsorption.cpp
     Passes/ScratchPrivatization.cpp
+    Passes/SpacePropagation.cpp
     Passes/StreamAssignment.cpp
     Passes/SymmetrizedAccumulation.cpp
     Passes/TiledExpansion.cpp

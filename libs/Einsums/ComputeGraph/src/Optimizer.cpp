@@ -14,6 +14,7 @@
 #include <Einsums/ComputeGraph/Passes/CommunicationScheduling.hpp>
 #include <Einsums/ComputeGraph/Passes/ConstantFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/ContractionPlanning.hpp>
+#include <Einsums/ComputeGraph/Passes/CrossSpaceValidation.hpp>
 #include <Einsums/ComputeGraph/Passes/DeadNodeElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributionPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributiveFactoring.hpp>
@@ -33,7 +34,9 @@
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
 #include <Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp>
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>
+#include <Einsums/ComputeGraph/Passes/ScalingAnalysis.hpp>
 #include <Einsums/ComputeGraph/Passes/ScratchPrivatization.hpp>
+#include <Einsums/ComputeGraph/Passes/SpacePropagation.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamAssignment.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp>
@@ -472,6 +475,32 @@ void PassManager::populate_default() {
     // here (after Materialization, before GPU placement) so downstream
     // passes and executions see the inferred symmetry.
     pm.add<passes::SymmetryPropagation>();
+
+    // Space propagation: fill in the index spaces of graph-owned intermediates
+    // from the annotations their producers' operands carry, so the algebraic
+    // passes and the cross-space checks see a fully annotated graph after the
+    // user has annotated only the inputs. Independent of SymmetryPropagation
+    // (neither reads the other's output); it sits here because it is the same
+    // shape of analysis and wants the same position, after Materialization and
+    // before the backend passes.
+    pm.add<passes::SpacePropagation>();
+
+    // Cross-space validation: now that every intermediate carries whatever spaces
+    // could be inferred, check that no contraction letter binds a slot of one
+    // space against a slot of another. Immediately after SpacePropagation
+    // because that pass is what makes the check see a whole program rather than
+    // its inputs, and because SpacePropagation declines a conflicting operand
+    // silently by design and leaves the diagnosis here. Read-only and silent
+    // unless something is wrong: the findings reach graph.explain() and
+    // print_report(), never stdout.
+    pm.add<passes::CrossSpaceValidation>();
+
+    // Scaling analysis: the cost layer delivered as a user-facing report. Runs
+    // after the validation so a report is not built on letters the check just
+    // called wrong, and after the restructuring passes so the polynomials
+    // describe the graph that will actually execute. Read-only, and a no-op
+    // report on a graph with no contractions.
+    pm.add<passes::ScalingAnalysis>();
 
     // Stream fusion: merge sibling contractions that sweep one large tensor
     // into a single storage-order pass. After Materialization (its size

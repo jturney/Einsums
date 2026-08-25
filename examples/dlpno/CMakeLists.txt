@@ -17,6 +17,11 @@ einsums_add_pseudo_dependencies(Tests.Examples Tests.Unit.Examples.DLPNO)
 einsums_add_python_unit_test("Examples.DLPNO" ReferenceIO SCRIPT test_reference_io.py)
 einsums_add_python_unit_test("Examples.DLPNO" Integrals SCRIPT test_integrals.py)
 
+# The index-space annotations, and the scaling ScalingAnalysis derives from
+# them. Psi4-free for the same reason as the two above: it reads the smallest
+# fixture and only ever asks what a captured transform COSTS.
+einsums_add_python_unit_test("Examples.DLPNO" Spaces SCRIPT test_spaces.py)
+
 # The coupled-cluster gates, which are psi4-free for the same reason: they run
 # the port against a saved fixture and against numpy oracles that share no code
 # with it. The two oracle suites come first because everything after them is

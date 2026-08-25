@@ -58,6 +58,10 @@ Around that core:
   timing, and ``contracts.py`` states the cross-boundary contracts of the two
   promoted stages, whose numerics live in ``pno_overlaps.py`` and
   ``pno_xform.py`` with C++ backends under ``../cpp/``.
+* ``spaces.py`` registers the four index spaces this port's contractions run
+  over (AO, auxiliary, LMO, PAO) with the compute graph, and annotates the
+  tensors as they are built, so a captured contraction's scaling is something
+  ``cg.ScalingAnalysis`` derives rather than something a comment claims.
 * ``molecules.py`` holds the shared test geometries.
 
 The solver names below are resolved lazily. ``reference`` and ``reference_io``

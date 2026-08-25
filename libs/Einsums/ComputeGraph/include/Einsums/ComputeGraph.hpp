@@ -96,6 +96,7 @@
 #include <Einsums/ComputeGraph/Passes/CommunicationScheduling.hpp>
 #include <Einsums/ComputeGraph/Passes/ConstantFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/ContractionPlanning.hpp>
+#include <Einsums/ComputeGraph/Passes/CrossSpaceValidation.hpp>
 #include <Einsums/ComputeGraph/Passes/DeadNodeElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributionPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributiveFactoring.hpp>
@@ -113,6 +114,8 @@
 #include <Einsums/ComputeGraph/Passes/PermuteFusion.hpp>
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>
+#include <Einsums/ComputeGraph/Passes/ScalingAnalysis.hpp>
+#include <Einsums/ComputeGraph/Passes/SpacePropagation.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamAssignment.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp>
