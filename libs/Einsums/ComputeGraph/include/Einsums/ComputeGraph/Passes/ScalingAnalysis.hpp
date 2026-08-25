@@ -139,6 +139,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::name
     [[nodiscard]] std::string name() const override { return "ScalingAnalysis"; }
 
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::Diagnostic; }
+
     /// @copydoc OptimizerPass::run
     bool run(Graph &graph) override;
 

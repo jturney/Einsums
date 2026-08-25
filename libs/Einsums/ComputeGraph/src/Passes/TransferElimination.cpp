@@ -262,6 +262,7 @@ bool TransferElimination::run(Graph &graph) {
     }
 
     nodes = std::move(result);
+    graph.note_structural_change();
 
     // Update TensorHandle residency.
     for (auto const &[tid, res] : residency) {

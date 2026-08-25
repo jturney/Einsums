@@ -81,7 +81,10 @@ class EINSUMS_EXPORT FreeInsertion : public OptimizerPass {
     ///                  in re-executed graphs (loops, Pipeline stages).
     explicit FreeInsertion(size_t min_bytes = static_cast<size_t>(1024 * 1024)) : _min_bytes(min_bytes) {}
 
-    [[nodiscard]] std::string              name() const override { return "FreeInsertion"; }
+    [[nodiscard]] std::string name() const override { return "FreeInsertion"; }
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }
     bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;

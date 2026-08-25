@@ -361,6 +361,10 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
         // Removing nodes keeps the body's relative order valid, but its
         // position-keyed dependency lists are stale; declare that.
         body_nodes = std::move(remaining);
+        // Both node vectors were rebuilt in place, so each graph's node-set
+        // counter has to be moved by hand: the body lost the hoisted nodes and
+        // the parent gains them a few lines below.
+        loop_desc->body->note_structural_change();
         loop_desc->body->mark_sorted();
 
         // Insert hoisted nodes directly BEFORE the loop in the parent's
@@ -372,6 +376,7 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
         // (the writer is seen after the reader) and biases the queue
         // toward the wrong order.
         size_t const n_hoisted = hoisted.size();
+        graph.note_structural_change();
         nodes.insert(nodes.begin() + static_cast<std::ptrdiff_t>(loop_idx), std::make_move_iterator(hoisted.begin()),
                      std::make_move_iterator(hoisted.end()));
         loop_idx += n_hoisted; // The loop has shifted; keep the outer index in sync.

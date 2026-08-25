@@ -57,6 +57,22 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
+std::string_view pass_phase_name(PassPhase phase) {
+    switch (phase) {
+    case PassPhase::Analysis:
+        return "analysis";
+    case PassPhase::StructuralAlgebraic:
+        return "structural-algebraic";
+    case PassPhase::StructuralResource:
+        return "structural-resource";
+    case PassPhase::Tuning:
+        return "tuning";
+    case PassPhase::Diagnostic:
+        return "diagnostic";
+    }
+    return "unknown";
+}
+
 void OptimizerPass::report(int level, std::string_view message) const {
     if (_verbosity >= level) {
         fmt::print(stderr, "[{}] {}\n", name(), message);
@@ -216,6 +232,25 @@ void check_observed_writes(Graph const &graph, std::unordered_map<NodeId, std::u
     }
 }
 
+/// A read-only phase that moved ``Graph::structure_version`` broke its own
+/// contract, and the diagnosis has to name the pass rather than surface later as
+/// a stale annotation or a re-planned schedule nobody asked for.
+void check_read_only_phase(Graph const &graph, OptimizerPass const &pass, std::uint64_t before) {
+    auto const phase = pass.phase();
+    if (phase != PassPhase::Analysis && phase != PassPhase::Diagnostic) {
+        return;
+    }
+    if (graph.structure_version() == before) {
+        return;
+    }
+    EINSUMS_THROW_EXCEPTION(std::logic_error,
+                            "Graph '{}': pass '{}' declares phase '{}', which may only write annotations, but it changed the "
+                            "graph's structure (structure_version {} -> {}). Either the pass belongs in a structural phase or "
+                            "the node-set change is a bug; a read-only phase is re-run after structural passes, so a rewrite "
+                            "here would be applied more than once.",
+                            graph.name(), pass.name(), pass_phase_name(phase), before, graph.structure_version());
+}
+
 } // namespace
 
 bool PassManager::run(Graph &graph) {
@@ -235,6 +270,12 @@ bool PassManager::run(Graph &graph) {
     }
 
     bool any_modified = false;
+    // Has a structural pass changed the node set since the last time the
+    // analysis phase looked at it? Cleared by each analysis pass that runs, set
+    // by every structural pass that reports a modification. When it is still
+    // set at the end of the pipeline, the annotations describe a node set that
+    // no longer exists and the analysis passes are re-run over the final one.
+    bool structure_stale_for_analysis = false;
     for (auto &pass : _passes) {
         // Check if this pass is disabled
         if (disabled.count(pass->name())) {
@@ -267,14 +308,34 @@ bool PassManager::run(Graph &graph) {
             EINSUMS_LOG_INFO("PassManager [analyze]: pass '{}' {} the graph ({} -> {} nodes, {:.2f} ms)", pass->name(),
                              modified ? "would modify" : "did not modify", nodes_before, graph.num_nodes(), ms);
 
-            // Restore original graph state
+            // Restore original graph state. Putting the old node list back is
+            // itself a node-set change, so declare it: a plan built against the
+            // list the pass produced does not describe this one.
             graph.nodes() = std::move(saved_nodes);
+            graph.note_structural_change();
             graph.topological_sort();
         } else {
-            auto const baseline = observed_writes(graph);
-            bool const modified = run_pass_recursive(*pass, graph);
-            auto       t1       = std::chrono::high_resolution_clock::now();
-            double     ms       = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            auto const baseline         = observed_writes(graph);
+            auto const structure_before = graph.structure_version();
+            bool const modified         = run_pass_recursive(*pass, graph);
+            auto       t1               = std::chrono::high_resolution_clock::now();
+            double     ms               = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+            check_read_only_phase(graph, *pass, structure_before);
+
+            switch (pass->phase()) {
+            case PassPhase::Analysis:
+                // Annotations now describe the current node set.
+                structure_stale_for_analysis = false;
+                break;
+            case PassPhase::StructuralAlgebraic:
+            case PassPhase::StructuralResource:
+                structure_stale_for_analysis = structure_stale_for_analysis || modified;
+                break;
+            case PassPhase::Tuning:
+            case PassPhase::Diagnostic:
+                break;
+            }
 
             if (modified) {
                 any_modified = true;
@@ -295,6 +356,35 @@ bool PassManager::run(Graph &graph) {
         }
     }
 
+    // Post-run annotation consistency. The default pipeline places the analysis
+    // passes at #19-20, ahead of the GPU, distributed and tail blocks, so a
+    // structural-resource pass down there leaves SymmetryPropagation's and
+    // SpacePropagation's output describing a node set that has since gained
+    // transfers, slices or SUMMA loops. Re-running them once at the end is the
+    // smallest thing that makes "after run(), the annotations match the graph"
+    // true without moving any pass.
+    //
+    // Deliberately NOT a reset_all_stats() re-run: the counters accumulate
+    // across the two invocations, so explain() and num_inferred() report what
+    // the pipeline inferred in total rather than only what the second, usually
+    // idempotent, sweep added. Skipped in analyze mode, where the graph is
+    // restored after every pass and there is no final node set to annotate.
+    if (structure_stale_for_analysis && !analyze) {
+        for (auto &pass : _passes) {
+            if (pass->phase() != PassPhase::Analysis || disabled.count(pass->name()) != 0) {
+                continue;
+            }
+            LabeledSection("reanalyze:{}", pass->name());
+            auto const structure_before = graph.structure_version();
+            run_pass_recursive(*pass, graph);
+            check_read_only_phase(graph, *pass, structure_before);
+            EINSUMS_LOG_INFO("PassManager: re-ran analysis pass '{}' after a structural change", pass->name());
+            if (_verbosity >= 1) {
+                fmt::print(stderr, "[PassManager] {}: re-run (structure changed after the analysis phase)\n", pass->name());
+            }
+        }
+    }
+
     return any_modified;
 }
 
@@ -302,6 +392,41 @@ PassManager PassManager::create_default() {
     PassManager pm;
     pm.populate_default();
     return pm;
+}
+
+PassManager PassManager::filtered_default(std::initializer_list<PassPhase> keep) {
+    PassManager pm;
+    for (auto &pass : build_default_passes()) {
+        if (std::ranges::find(keep, pass->phase()) != keep.end()) {
+            pm.add(std::move(pass));
+        }
+    }
+    return pm;
+}
+
+PassManager PassManager::analysis_pass_manager() {
+    return filtered_default({PassPhase::Analysis, PassPhase::Diagnostic});
+}
+
+PassManager PassManager::structural_pass_manager() {
+    return filtered_default({PassPhase::StructuralAlgebraic});
+}
+
+PassManager PassManager::resource_pass_manager() {
+    return filtered_default({PassPhase::StructuralResource});
+}
+
+PassManager PassManager::tuning_pass_manager() {
+    return filtered_default({PassPhase::Tuning});
+}
+
+std::vector<std::pair<std::string, PassPhase>> PassManager::phase_of_each() const {
+    std::vector<std::pair<std::string, PassPhase>> out;
+    out.reserve(_passes.size());
+    for (auto const &p : _passes) {
+        out.emplace_back(p->name(), p->phase());
+    }
+    return out;
 }
 
 PassManager PassManager::create_for(OptLevel level) {
@@ -339,8 +464,12 @@ std::string PassManager::explain() const {
     // other rather than being invisible to a type switch here.
     std::string out;
     for (auto const &p : _passes) {
+        // The phase leads each line: a rewrite that is right on one machine and
+        // wrong on another is a phase question first, and the label is what says
+        // whether a saved graph would have kept this decision or re-derived it.
+        auto const tag = fmt::format("  - [{}] ", pass_phase_name(p->phase()));
         for (auto const &entry : p->explain()) {
-            out += "  - ";
+            out += tag;
             out += entry;
             out += '\n';
         }
@@ -383,7 +512,16 @@ std::string PassManager::explain() const {
 }
 
 void PassManager::populate_default() {
-    auto &pm = *this;
+    // Appends, rather than replacing: the canonical list is built once by
+    // build_default_passes() so populate_default() and the phase-filtered
+    // factories cannot drift apart.
+    for (auto &pass : build_default_passes()) {
+        add(std::move(pass));
+    }
+}
+
+std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() {
+    std::vector<std::shared_ptr<OptimizerPass>> list;
 
     // Detect hardware once and share the cost_model across cost-model passes.
     auto cost_model = CostModel::detect_default();
@@ -397,23 +535,23 @@ void PassManager::populate_default() {
     // sparsity is not decidable, so a graph with no tiled operands is untouched.
     // Shares the detected cost model with the passes below, so the densify
     // decision and their planning are made against one profile.
-    pm.add<passes::TiledExpansion>(4096, -1.0, passes::Densify::Auto, passes::FuseTiles::Auto, cost_model);
+    list.push_back(std::make_shared<passes::TiledExpansion>(4096, -1.0, passes::Densify::Auto, passes::FuseTiles::Auto, cost_model));
 
     // Graph-transforming passes (reduce node count first).
     // Order matters: PermuteFusion runs before CSE/DNE so duplicate
     // permute→einsum patterns collapse into the same fused node, and
     // before Materialization / GPU placement so those passes don't
     // allocate / place tensors that are about to be removed.
-    pm.add<passes::ConstantFolding>();
-    pm.add<passes::ScaleAbsorption>();
-    pm.add<passes::PermuteFusion>();
-    pm.add<passes::CSE>();
-    pm.add<passes::DeadNodeElimination>();
+    list.push_back(std::make_shared<passes::ConstantFolding>());
+    list.push_back(std::make_shared<passes::ScaleAbsorption>());
+    list.push_back(std::make_shared<passes::PermuteFusion>());
+    list.push_back(std::make_shared<passes::CSE>());
+    list.push_back(std::make_shared<passes::DeadNodeElimination>());
     // Fold the CCSD symmetrization idiom (r2 += s*(tmp + P(tmp))) before
     // ElementWiseFusion, which would otherwise compose the two axpby into one
     // executor and hide the pattern. Recurses into loop bodies (the residual).
-    pm.add<passes::SymmetrizedAccumulation>();
-    pm.add<passes::ElementWiseFusion>();
+    list.push_back(std::make_shared<passes::SymmetrizedAccumulation>());
+    list.push_back(std::make_shared<passes::ElementWiseFusion>());
     // Fold transpose-paired contractions (the CCSD 2J-K idiom) into one
     // contraction against L = sum_k a_k P_k(B), and do it BEFORE
     // LoopInvariantHoisting: LCCF emits the L construction as its own node, whose
@@ -422,7 +560,7 @@ void PassManager::populate_default() {
     // builder out of the loop and L is built once instead of every replay. Ordered
     // after ElementWiseFusion for the same reason CSE/DNE precede it: match on a
     // deduplicated, canonical node set.
-    pm.add<passes::LinearCombinationContractionFolding>();
+    list.push_back(std::make_shared<passes::LinearCombinationContractionFolding>());
     // Factor a shared operand out of sibling accumulating contractions, next to
     // LCCF for the same reason and with the same ordering logic: it emits the sum
     // it builds as ordinary nodes, so when the summed operands are loop-invariant
@@ -432,15 +570,15 @@ void PassManager::populate_default() {
     // tau into one tensor. Self-gating on the shared cost model: it declines when
     // the axpy chain would cost more than the contractions it saves, which is the
     // bandwidth-bound case, so it is a no-op on graphs it cannot help.
-    pm.add<passes::DistributiveFactoring>(cost_model);
-    pm.add<passes::LoopInvariantHoisting>();
+    list.push_back(std::make_shared<passes::DistributiveFactoring>(cost_model));
+    list.push_back(std::make_shared<passes::LoopInvariantHoisting>());
     // After the structural rewrites above have settled and hoisting has thinned
     // the bodies: rename reused scratch onto per-generation clones so false
     // WAR/WAW chains stop serializing otherwise independent work. Before the
     // planning cluster so ContractionPlanning/GEMMBatching/Reorder see the
     // widened dependency structure, and before Materialization so the clones
     // are allocated with everything else.
-    pm.add<passes::ScratchPrivatization>();
+    list.push_back(std::make_shared<passes::ScratchPrivatization>());
 
     // Chain restructuring belongs in the planning phase: it rewrites GEMM
     // chains using the shared cost model and declares DEFERRED intermediates,
@@ -449,7 +587,7 @@ void PassManager::populate_default() {
     // allocate the intermediates it introduces). It used to run dead-last,
     // where its restructured nodes got no placement or memory management and
     // its eagerly-created intermediates leaked for the graph's lifetime.
-    pm.add<passes::ContractionPlanning>(cost_model);
+    list.push_back(std::make_shared<passes::ContractionPlanning>(cost_model));
     // GEMMBatching collapses groups of independent, shape-compatible
     // 2D×2D→2D einsums into a single BatchedGemm node backed by
     // blas::gemm_batch. Runs after CSE/DNE so duplicates/unused nodes
@@ -460,21 +598,21 @@ void PassManager::populate_default() {
     // that need those optimizations should not be batched first. A
     // future commit can gate GEMMBatching on the absence of a
     // distribution requirement.
-    pm.add<passes::GEMMBatching>(cost_model);
-    pm.add<passes::Reorder>();
-    pm.add<passes::IOPrefetch>();
+    list.push_back(std::make_shared<passes::GEMMBatching>(cost_model));
+    list.push_back(std::make_shared<passes::Reorder>());
+    list.push_back(std::make_shared<passes::IOPrefetch>());
 
     // Deferred allocation: decide distribution, then materialize.
     // Runs before GPU passes so GPUPlacement sees correct tensor sizes.
-    pm.add<passes::DistributionPlanning>();
-    pm.add<passes::Materialization>();
+    list.push_back(std::make_shared<passes::DistributionPlanning>());
+    list.push_back(std::make_shared<passes::Materialization>());
 
     // Symmetry propagation: now that tensors exist, infer descriptors on
     // graph-owned intermediates and push them to the backing tensors so
     // the rank-2 BLAS dispatch (Phase 2) fires at graph.execute(). Runs
     // here (after Materialization, before GPU placement) so downstream
     // passes and executions see the inferred symmetry.
-    pm.add<passes::SymmetryPropagation>();
+    list.push_back(std::make_shared<passes::SymmetryPropagation>());
 
     // Space propagation: fill in the index spaces of graph-owned intermediates
     // from the annotations their producers' operands carry, so the algebraic
@@ -483,7 +621,7 @@ void PassManager::populate_default() {
     // (neither reads the other's output); it sits here because it is the same
     // shape of analysis and wants the same position, after Materialization and
     // before the backend passes.
-    pm.add<passes::SpacePropagation>();
+    list.push_back(std::make_shared<passes::SpacePropagation>());
 
     // Cross-space validation: now that every intermediate carries whatever spaces
     // could be inferred, check that no contraction letter binds a slot of one
@@ -493,14 +631,14 @@ void PassManager::populate_default() {
     // silently by design and leaves the diagnosis here. Read-only and silent
     // unless something is wrong: the findings reach graph.explain() and
     // print_report(), never stdout.
-    pm.add<passes::CrossSpaceValidation>();
+    list.push_back(std::make_shared<passes::CrossSpaceValidation>());
 
     // Scaling analysis: the cost layer delivered as a user-facing report. Runs
     // after the validation so a report is not built on letters the check just
     // called wrong, and after the restructuring passes so the polynomials
     // describe the graph that will actually execute. Read-only, and a no-op
     // report on a graph with no contractions.
-    pm.add<passes::ScalingAnalysis>();
+    list.push_back(std::make_shared<passes::ScalingAnalysis>());
 
     // Stream fusion: merge sibling contractions that sweep one large tensor
     // into a single storage-order pass. After Materialization (its size
@@ -511,37 +649,38 @@ void PassManager::populate_default() {
     // (thresholds gate the rest to no-ops). The shared cost_model derives the
     // output-size cap from the cache hierarchy (thread-private accumulators
     // must stay cache-resident).
-    pm.add<passes::StreamContractionFusion>(cost_model);
+    list.push_back(std::make_shared<passes::StreamContractionFusion>(cost_model));
 
     // GPU passes, only included when a GPU backend (or mock) is available.
     // GPUPlacement uses the shared CostModel for its cost model.
     if constexpr (gpu::has_gpu || gpu::is_mock) {
-        pm.add<passes::GPUPlacement>(cost_model);
-        pm.add<passes::TransferInsertion>();
-        pm.add<passes::TransferElimination>();
-        pm.add<passes::GPUDiagnostics>();
-        pm.add<passes::StreamAssignment>();
+        list.push_back(std::make_shared<passes::GPUPlacement>(cost_model));
+        list.push_back(std::make_shared<passes::TransferInsertion>());
+        list.push_back(std::make_shared<passes::TransferElimination>());
+        list.push_back(std::make_shared<passes::GPUDiagnostics>());
+        list.push_back(std::make_shared<passes::StreamAssignment>());
     }
 
     // Distributed communication passes (when MPI or mock is available).
     if constexpr (comm::has_mpi || comm::is_mock) {
-        pm.add<passes::InputSlicing>();
-        pm.add<passes::SUMMAExpansion>();
-        pm.add<passes::CommunicationInsertion>();
-        pm.add<passes::CommunicationElimination>();
-        pm.add<passes::CommunicationScheduling>();
+        list.push_back(std::make_shared<passes::InputSlicing>());
+        list.push_back(std::make_shared<passes::SUMMAExpansion>());
+        list.push_back(std::make_shared<passes::CommunicationInsertion>());
+        list.push_back(std::make_shared<passes::CommunicationElimination>());
+        list.push_back(std::make_shared<passes::CommunicationScheduling>());
     }
 
     // Merge elementwise outputs into dying inputs BEFORE the liveness-based
     // passes: each merge removes a buffer, shortening the intervals
     // FreeInsertion and MemoryPlanning then work with.
-    pm.add<passes::InplaceOptimization>();
+    list.push_back(std::make_shared<passes::InplaceOptimization>());
 
     // Free intermediates after their last consumer to reduce peak memory.
-    pm.add<passes::FreeInsertion>();
+    list.push_back(std::make_shared<passes::FreeInsertion>());
 
     // Analysis and planning passes (examine final graph).
-    pm.add<passes::MemoryPlanning>();
+    list.push_back(std::make_shared<passes::MemoryPlanning>());
+    return list;
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)

@@ -285,8 +285,30 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Densify densify, FuseTiles fuse, CostModel cost_model);
 
     [[nodiscard]] std::string name() const override { return "TiledExpansion"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+
+    /**
+     * @copydoc OptimizerPass::phase
+     *
+     * Structural-resource: expanding a tiled operand into per-tile dense nodes
+     * is a node-set change made for machine reasons (tile shape, sparsity,
+     * whether densifying beats staying sparse on this cache hierarchy), so its
+     * output is re-derived on load rather than saved.
+     *
+     * @par Recorded deviation from the phase ordering rule
+     * The phase rule wants every algebraic pass to run before every resource
+     * pass, and the default pipeline runs this one FIRST, ahead of all of them.
+     * The reason is that a tiled op captures as one opaque ``OpKind::Custom``
+     * node: until it is lowered, CSE, ContractionPlanning, GEMMBatching,
+     * InplaceOptimization and MemoryPlanning cannot read it at all, so ordering
+     * this pass by phase would not delay a decision, it would delete one. The
+     * deviation is deliberate and documented rather than fixed by reordering,
+     * and it is why ``PassManager::populate_default`` is a hand-ordered
+     * sequence that the phase-filtered managers VIEW rather than a sequence
+     * derived from the phases.
+     */
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
+    bool                    run(Graph &graph) override;
+    void                    reset_stats() override;
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;

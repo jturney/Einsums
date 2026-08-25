@@ -117,6 +117,9 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
 
     [[nodiscard]] std::string name() const override { return "ThreadPlanning"; }
 
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::Tuning; }
+
     bool run(Graph &graph) override;
     void reset_stats() override;
 

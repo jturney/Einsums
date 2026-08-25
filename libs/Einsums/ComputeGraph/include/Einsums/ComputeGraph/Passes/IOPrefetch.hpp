@@ -69,8 +69,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 class EINSUMS_EXPORT IOPrefetch : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "IOPrefetch"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::Tuning; }
+    bool                    run(Graph &graph) override;
+    void                    reset_stats() override;
 
     /// Number of DiskRead nodes moved in the last run.
     [[nodiscard]] size_t num_prefetched() const { return _num_prefetched; }

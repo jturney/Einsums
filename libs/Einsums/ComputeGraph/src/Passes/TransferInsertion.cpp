@@ -169,6 +169,10 @@ bool TransferInsertion::run(Graph &graph) {
     if (_num_transfers == num_transfers_at_entry)
         return false;
 
+    // Rebuilt in place, so the node-set counter has to be moved by hand, and
+    // only on the path where transfer nodes were actually added.
+    graph.note_structural_change();
+
     // Update TensorHandle residency to match final state.
     for (auto const &[tid, res] : residency) {
         graph.tensor(tid).residency = res;

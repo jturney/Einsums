@@ -76,8 +76,11 @@ class EINSUMS_EXPORT DistributionPlanning : public OptimizerPass {
     explicit DistributionPlanning(size_t threshold = static_cast<size_t>(64 * 1024 * 1024), bool enable_summa = true);
 
     [[nodiscard]] std::string name() const override { return "DistributionPlanning"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
+    bool                    run(Graph &graph) override;
+    void                    reset_stats() override;
 
     [[nodiscard]] size_t num_distributed() const { return _num_distributed; }
     [[nodiscard]] size_t num_replicated() const { return _num_replicated; }

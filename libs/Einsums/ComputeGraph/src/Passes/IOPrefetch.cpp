@@ -203,11 +203,15 @@ bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t 
     for (auto it = remove_idx.rbegin(); it != remove_idx.rend(); ++it) {
         body_nodes.erase(body_nodes.begin() + static_cast<ptrdiff_t>(*it));
     }
+    // Both node vectors were edited in place rather than through the Graph
+    // helpers, so each graph's node-set counter has to be moved by hand.
+    child.note_structural_change();
     child.mark_sorted();
 
     auto &pnodes = parent.nodes();
     pnodes.insert(pnodes.begin() + static_cast<ptrdiff_t>(loop_idx), std::make_move_iterator(hoisted.begin()),
                   std::make_move_iterator(hoisted.end()));
+    parent.note_structural_change();
     parent.mark_sorted();
     num_prefetched += remove_idx.size();
 

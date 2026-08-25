@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -22,6 +23,57 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 class Graph;
+
+/**
+ * @brief Which phase of the pipeline a pass belongs to, and therefore whether a
+ *        saved graph may keep its output.
+ *
+ * The split exists because "does this pass change the node set" and "is this
+ * pass's answer valid on another machine" are independent questions, and a
+ * two-way structural/tuning label answers only the first. `TiledExpansion`,
+ * `GPUPlacement`, `DistributionPlanning`, `InputSlicing` and `SUMMAExpansion`
+ * all rewrite the node set for *machine* reasons: called structural, their
+ * output gets written into a file that is then wrong on the next machine;
+ * called tuning, nothing stops them running before the algebra is final. So
+ * they get a phase of their own.
+ *
+ * What a save persists is exactly @ref PassPhase::StructuralAlgebraic output.
+ * A load re-runs the resource and tuning phases over it, through the same code
+ * path a fresh capture takes rather than a second one that can drift. The
+ * batched-GEMM cost model (whose optimal bucket moves with thread count) and
+ * per-node thread widths (whose safety depends on the BLAS vendor) are the two
+ * findings that make this mandatory rather than tidy.
+ *
+ * @see OptimizerPass::phase
+ * @see PassManager::structural_pass_manager
+ */
+enum class PassPhase : std::uint8_t {
+    /// Writes annotations onto tensors or nodes and never rewrites the node
+    /// set; ``run()`` returns false. Re-runnable at any point, and the manager
+    /// re-runs these at the end of a pipeline whose structure changed.
+    Analysis,
+    /// Machine-independent rewrites of the mathematics. This is the only phase
+    /// whose output a saved graph persists, so a pass here must produce a
+    /// result that stays *correct* under any cost model or hardware profile.
+    StructuralAlgebraic,
+    /// Changes the node set for machine-dependent reasons (tiling, placement,
+    /// distribution). Never saved; re-derived on load from the algebraic form.
+    StructuralResource,
+    /// Schedule, memory, batching and thread decisions over a node set that is
+    /// already final. Never saved; re-derived on load.
+    Tuning,
+    /// Read-only reporting. Changes nothing, including annotations.
+    Diagnostic,
+};
+
+/**
+ * @brief Lower-case hyphenated name of a phase, for reports and test tables.
+ *
+ * @param[in] phase The phase to name.
+ * @return One of ``analysis``, ``structural-algebraic``, ``structural-resource``,
+ *         ``tuning``, ``diagnostic``.
+ */
+[[nodiscard]] EINSUMS_EXPORT std::string_view pass_phase_name(PassPhase phase);
 
 /**
  * @brief Abstract base class for optimization passes over a computation graph.
@@ -71,6 +123,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * @return True if the graph was modified, false if no changes were made.
      */
     virtual bool run(Graph &graph) = 0;
+
+    /**
+     * @brief Which pipeline phase this pass belongs to.
+     *
+     * The default is @ref PassPhase::Tuning, which is the phase whose output is
+     * never saved and always re-derived. That is deliberate: a new pass that
+     * nobody classified must not have its output silently written into a graph
+     * file, so the safe answer is the one that costs a re-run rather than a
+     * wrong number on the next machine. Every pass in this library overrides
+     * it, and ``PassPhases.cpp`` holds a hard-coded table that fails when one
+     * does not, so the default is a backstop and not a convention.
+     *
+     * Two obligations come with the label:
+     *
+     * - @ref PassPhase::Analysis and @ref PassPhase::Diagnostic passes must not
+     *   change the node set. ``PassManager::run`` watches
+     *   ``Graph::structure_version`` around every pass and throws when one of
+     *   these moves it, so the rule is mechanical rather than a comment.
+     * - @ref PassPhase::StructuralAlgebraic output is what a save persists, so
+     *   a pass here may consult a cost model only as a *hint*: its output must
+     *   remain valid, if not optimal, under a different one.
+     */
+    [[nodiscard]] virtual PassPhase phase() const { return PassPhase::Tuning; }
 
     /**
      * @brief Should ``PassManager`` re-invoke this pass on every sub-graph?
@@ -424,53 +499,114 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * both are present. populate_default() in Optimizer.cpp carries the
      * per-pass ordering rationale.
      *
-     *  1. TiledExpansion: lower tiled ops into per-tile dense nodes
-     *  2. ConstantFolding: evaluate constant-input nodes at compile time
-     *  3. ScaleAbsorption: drop a Scale(α) made dead by the next op overwriting it
-     *  4. PermuteFusion: absorb leading permutes into the GEMM trans flags
-     *  5. CSE: common subexpression elimination
-     *  6. DeadNodeElimination: drop nodes whose outputs are unused
-     *  7. SymmetrizedAccumulation: fold the r2 += s*(tmp + P(tmp)) idiom
-     *  8. ElementWiseFusion: merge adjacent element-wise ops
-     *  9. LinearCombinationContractionFolding: fold transpose-paired contractions
-     * 10. DistributiveFactoring: factor a shared operand out of sibling contractions
-     * 11. LoopInvariantHoisting: move invariant ops out of Loop bodies
-     * 12. ScratchPrivatization: clone reused scratch to break false WAR/WAW chains
-     * 13. ContractionPlanning: cost-model chain reassociation
-     * 14. GEMMBatching: collapse compatible GEMMs into one BatchedGemm
-     * 15. Reorder: memory-aware topological sort
-     * 16. IOPrefetch: overlap DiskRead with compute
-     * 17. DistributionPlanning: classify indices for distributed dispatch
-     * 18. Materialization: resize deferred tensors to local partitions
-     * 19. SymmetryPropagation: infer symmetry on graph intermediates and
+     * Each entry names its @ref PassPhase. The sequence is *not* sorted by
+     * phase, and one entry is a recorded deviation from the phase rule: see
+     * ``passes::TiledExpansion::phase`` for why lowering runs ahead of the
+     * algebraic cleanups it feeds. The phase labels are what
+     * @ref structural_pass_manager and friends filter on, and what a saved
+     * graph consults to decide which output it may keep.
+     *
+     *  1. TiledExpansion (structural-resource): lower tiled ops into per-tile dense nodes
+     *  2. ConstantFolding (structural-algebraic): evaluate constant-input nodes at compile time
+     *  3. ScaleAbsorption (structural-algebraic): drop a Scale(α) made dead by the next op overwriting it
+     *  4. PermuteFusion (structural-algebraic): absorb leading permutes into the GEMM trans flags
+     *  5. CSE (structural-algebraic): common subexpression elimination
+     *  6. DeadNodeElimination (structural-algebraic): drop nodes whose outputs are unused
+     *  7. SymmetrizedAccumulation (structural-algebraic): fold the r2 += s*(tmp + P(tmp)) idiom
+     *  8. ElementWiseFusion (structural-algebraic): merge adjacent element-wise ops
+     *  9. LinearCombinationContractionFolding (structural-algebraic): fold transpose-paired contractions
+     * 10. DistributiveFactoring (structural-algebraic): factor a shared operand out of sibling contractions
+     * 11. LoopInvariantHoisting (structural-algebraic): move invariant ops out of Loop bodies
+     * 12. ScratchPrivatization (structural-resource): clone reused scratch to break false WAR/WAW chains
+     * 13. ContractionPlanning (structural-algebraic): cost-model chain reassociation
+     * 14. GEMMBatching (tuning): collapse compatible GEMMs into one BatchedGemm
+     * 15. Reorder (tuning): memory-aware topological sort
+     * 16. IOPrefetch (tuning): overlap DiskRead with compute
+     * 17. DistributionPlanning (structural-resource): classify indices for distributed dispatch
+     * 18. Materialization (tuning): resize deferred tensors to local partitions
+     * 19. SymmetryPropagation (analysis): infer symmetry on graph intermediates and
      *                                 push to backing tensors for rank-2 BLAS dispatch
-     * 20. SpacePropagation: infer per-slot index spaces on graph intermediates
-     * 21. CrossSpaceValidation: flag letters binding slots of different index spaces
-     * 22. ScalingAnalysis: report every contraction's cost polynomial and what limits it
-     * 23. StreamContractionFusion: loop-fuse sibling contractions over one big tensor
+     * 20. SpacePropagation (analysis): infer per-slot index spaces on graph intermediates
+     * 21. CrossSpaceValidation (diagnostic): flag letters binding slots of different index spaces
+     * 22. ScalingAnalysis (diagnostic): report every contraction's cost polynomial and what limits it
+     * 23. StreamContractionFusion (tuning): loop-fuse sibling contractions over one big tensor
      *
      * GPU block (when a GPU backend or mock is available):
-     * 24. GPUPlacement: cost-model based node-to-GPU assignment
-     * 25. TransferInsertion: insert HostToDevice / DeviceToHost nodes
-     * 26. TransferElimination: drop redundant transfers
-     * 27. GPUDiagnostics: log placement decisions
-     * 28. StreamAssignment: assign CUDA/HIP streams for overlap
+     * 24. GPUPlacement (structural-resource): cost-model based node-to-GPU assignment
+     * 25. TransferInsertion (structural-resource): insert HostToDevice / DeviceToHost nodes
+     * 26. TransferElimination (structural-resource): drop redundant transfers
+     * 27. GPUDiagnostics (diagnostic): log placement decisions
+     * 28. StreamAssignment (tuning): assign CUDA/HIP streams for overlap
      *
      * Distributed block (when MPI or its mock is available):
-     * 29. InputSlicing: create per-rank views of distributed inputs
-     * 30. SUMMAExpansion: expand einsums to SUMMA loops on square grids
-     * 31. CommunicationInsertion: insert allreduces for replicated outputs
-     * 32. CommunicationElimination: drop redundant communications
-     * 33. CommunicationScheduling: split allreduce into async iallreduce + wait
+     * 29. InputSlicing (structural-resource): create per-rank views of distributed inputs
+     * 30. SUMMAExpansion (structural-resource): expand einsums to SUMMA loops on square grids
+     * 31. CommunicationInsertion (structural-resource): insert allreduces for replicated outputs
+     * 32. CommunicationElimination (structural-resource): drop redundant communications
+     * 33. CommunicationScheduling (structural-resource): split allreduce into async iallreduce + wait
      *
      * Tail (always registered):
-     * 34. InplaceOptimization: merge elementwise outputs into dying inputs
-     * 35. FreeInsertion: free intermediates after last consumer
-     * 36. MemoryPlanning: tensor liveness, peak memory, and arena planning
+     * 34. InplaceOptimization (tuning): merge elementwise outputs into dying inputs
+     * 35. FreeInsertion (tuning): free intermediates after last consumer
+     * 36. MemoryPlanning (tuning): tensor liveness, peak memory, and arena planning
      *
      * @return A fully-populated PassManager.
      */
     static PassManager create_default();
+
+    /**
+     * @brief The read-only phases of the default pipeline: analysis and diagnostic.
+     *
+     * Holds every @ref PassPhase::Analysis and @ref PassPhase::Diagnostic pass
+     * of @ref create_default, in the same relative order. The two share one
+     * manager because they share the property that makes this manager useful:
+     * running it changes nothing an executor can observe, so it is safe on a
+     * graph in any state, including one just loaded from a file and not yet
+     * re-planned.
+     *
+     * @return A PassManager holding only the read-only passes.
+     */
+    static PassManager analysis_pass_manager();
+
+    /**
+     * @brief The machine-independent rewrites: @ref PassPhase::StructuralAlgebraic.
+     *
+     * This is the phase whose output a saved graph persists, so this manager is
+     * what an offline optimizer runs before writing a file, and what a load
+     * does *not* re-run.
+     *
+     * @return A PassManager holding only the structural-algebraic passes.
+     */
+    static PassManager structural_pass_manager();
+
+    /**
+     * @brief The machine-dependent node-set changes: @ref PassPhase::StructuralResource.
+     *
+     * Tiling, GPU placement, distribution planning, slicing and SUMMA
+     * expansion. Never saved, always re-derived, so a load runs this manager
+     * and then @ref tuning_pass_manager over the file's algebraic form.
+     *
+     * @return A PassManager holding only the structural-resource passes.
+     */
+    static PassManager resource_pass_manager();
+
+    /**
+     * @brief The schedule, memory and batching decisions: @ref PassPhase::Tuning.
+     *
+     * @return A PassManager holding only the tuning passes.
+     */
+    static PassManager tuning_pass_manager();
+
+    /**
+     * @brief Every pass in this pipeline, in order, with the phase it declares.
+     *
+     * Introspection for tests and for anything that has to decide what a saved
+     * graph may keep. Reads @ref OptimizerPass::phase, so a pass defined
+     * outside this library is described like any other.
+     *
+     * @return ``(name, phase)`` pairs in pipeline order.
+     */
+    [[nodiscard]] std::vector<std::pair<std::string, PassPhase>> phase_of_each() const;
 
     /// Factory for a given optimization level (create_default() == O2).
     static PassManager create_for(OptLevel level);
@@ -490,6 +626,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * cannot tell you whether the graph was already optimal or whether every
      * candidate hit one satisfiable gate - and those call for opposite
      * responses - so raise the verbosity before concluding a pipeline is inert.
+     *
+     * Each line is prefixed with the reporting pass's @ref PassPhase, because
+     * "which phase produced this" is the first question asked of a rewrite that
+     * turns out to be wrong on one machine and right on another.
      */
     APIARY_EXPOSE [[nodiscard]] std::string explain() const;
 
@@ -504,6 +644,20 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_EXPOSE void populate_default();
 
   private:
+    /**
+     * @brief Construct the canonical pass list, once, for every consumer of it.
+     *
+     * @ref populate_default and the four phase-filtered factories all go
+     * through this, so the ordering rationale lives in exactly one place and a
+     * pass added to the default pipeline cannot be missing from the phase
+     * views (or ordered differently in them).
+     */
+    static std::vector<std::shared_ptr<OptimizerPass>> build_default_passes();
+
+    /// Build the default pass list and keep only the phases in @p keep,
+    /// preserving their relative order in the default sequence.
+    static PassManager filtered_default(std::initializer_list<PassPhase> keep);
+
     std::vector<std::shared_ptr<OptimizerPass>> _passes;
     int                                         _verbosity{0};
 };

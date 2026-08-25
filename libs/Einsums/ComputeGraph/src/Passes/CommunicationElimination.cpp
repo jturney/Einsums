@@ -69,6 +69,7 @@ bool CommunicationElimination::run(Graph &graph) {
             filtered.push_back(std::move(nodes[idx]));
     }
     nodes = std::move(filtered);
+    graph.note_structural_change();
     graph.mark_sorted();
 
     return true;

@@ -74,8 +74,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 class EINSUMS_EXPORT TransferInsertion : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "TransferInsertion"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
+    bool                    run(Graph &graph) override;
+    void                    reset_stats() override;
 
     /// Recurse into loop bodies / conditional branches.
     ///

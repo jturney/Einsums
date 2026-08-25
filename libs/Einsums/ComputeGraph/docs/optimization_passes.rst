@@ -65,6 +65,70 @@ an optimization: a graph that uses ``declare_tensor()`` cannot execute without
 it. It runs after ``DeadNodeElimination`` so dead deferred tensors are never
 allocated.
 
+Phases
+------
+
+Every pass declares a ``PassPhase``, and the phase answers one question: may a
+saved graph keep this pass's output, or must the output be re-derived on the
+machine that loads it?
+
+``analysis``
+    Writes annotations onto tensors and nodes and never rewrites the node set.
+    ``SymmetryPropagation`` and ``SpacePropagation``.
+``structural-algebraic``
+    Machine-independent rewrites of the mathematics.
+    This is the only phase whose output is persisted, so a pass here may consult
+    a cost model only as a hint: its output has to stay correct, if not optimal,
+    under a different one.
+``structural-resource``
+    Changes the node set for machine-dependent reasons such as tiling, GPU
+    placement, distribution planning, input slicing and SUMMA expansion.
+``tuning``
+    Schedule, memory, batching and thread decisions over a node set that is
+    already final.
+``diagnostic``
+    Read-only reporting.
+    ``CrossSpaceValidation``, ``ScalingAnalysis`` and ``GPUDiagnostics``.
+
+The split is three-way on the structural side rather than two-way because
+"changes the node set" and "is valid on another machine" are independent
+questions.
+``TiledExpansion`` and ``GPUPlacement`` rewrite the node set for reasons that
+belong to the hardware, so calling them structural would write a machine's tile
+shapes into a file and calling them tuning would let them run before the algebra
+is settled.
+
+Four factories build the phase views, each preserving the default pipeline's
+relative order:
+
+.. code-block:: cpp
+
+   auto analysis   = cg::PassManager::analysis_pass_manager();   // analysis + diagnostic
+   auto structural = cg::PassManager::structural_pass_manager(); // structural-algebraic
+   auto resource   = cg::PassManager::resource_pass_manager();   // structural-resource
+   auto tuning     = cg::PassManager::tuning_pass_manager();     // tuning
+
+   // What a load of a saved graph replays over the persisted algebraic form.
+   graph.apply(resource);
+   graph.apply(tuning);
+
+The four are views of ``create_default()``, not a re-planned pipeline, and the
+default sequence is unchanged by their existence.
+It is hand-ordered rather than derived from the phases, because the order
+carries constraints the phase rule does not express: ``TiledExpansion`` runs
+first so that every algebraic pass below it sees dense nodes rather than one
+opaque ``Custom`` node, which is a deliberate and documented deviation from
+"algebraic before resource".
+
+Two mechanisms keep the labels honest.
+``Graph::structure_version()`` counts changes to the node set, distinct from
+``analysis_version()``, which bumps at every mutation-declaration point
+including a plain re-sort.
+``PassManager::run()`` watches that counter around every pass and throws when an
+analysis or diagnostic pass moves it, and it re-runs the analysis passes once at
+the end of a pipeline whose structure changed after they last looked, so the
+annotations always describe the node set that will execute.
+
 Runtime Controls
 ----------------
 
@@ -100,6 +164,11 @@ Writing Custom Passes
            // If you modify the order, call graph.mark_sorted()
            return true;  // Return true if modified
        }
+
+       // Which phase this belongs to. The default is `tuning`, the phase whose
+       // output is never saved, so a pass that skips this is safe rather than
+       // silently persisted. See Phases above.
+       cg::PassPhase phase() const override { return cg::PassPhase::StructuralAlgebraic; }
 
        // Opt in when the rewrite is safe applied independently to a loop body
        // or a conditional branch. The manager then drives the recursion.

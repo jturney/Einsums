@@ -69,7 +69,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
   public:
     APIARY_EXPOSE ElementWiseFusion() = default;
 
-    [[nodiscard]] std::string              name() const override { return "ElementWiseFusion"; }
+    [[nodiscard]] std::string name() const override { return "ElementWiseFusion"; }
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase                phase() const override { return PassPhase::StructuralAlgebraic; }
     bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;

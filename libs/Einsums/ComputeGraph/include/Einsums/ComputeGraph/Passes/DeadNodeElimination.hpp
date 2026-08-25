@@ -72,7 +72,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
   public:
     APIARY_EXPOSE DeadNodeElimination() = default;
 
-    [[nodiscard]] std::string              name() const override { return "DeadNodeElimination"; }
+    [[nodiscard]] std::string name() const override { return "DeadNodeElimination"; }
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase                phase() const override { return PassPhase::StructuralAlgebraic; }
     bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;

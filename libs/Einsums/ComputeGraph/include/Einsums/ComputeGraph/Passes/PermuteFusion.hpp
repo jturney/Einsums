@@ -64,7 +64,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  */
 class EINSUMS_EXPORT PermuteFusion : public OptimizerPass {
   public:
-    [[nodiscard]] std::string              name() const override { return "PermuteFusion"; }
+    [[nodiscard]] std::string name() const override { return "PermuteFusion"; }
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase                phase() const override { return PassPhase::StructuralAlgebraic; }
     bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;

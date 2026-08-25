@@ -97,6 +97,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     [[nodiscard]] std::string name() const override { return "SymmetrizedAccumulation"; }
 
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+
     bool run(Graph &graph) override;
 
     /// @copydoc OptimizerPass::explain

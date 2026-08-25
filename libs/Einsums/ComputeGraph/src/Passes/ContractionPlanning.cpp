@@ -776,6 +776,10 @@ bool ContractionPlanning::run(Graph &graph) {
                     }
 
                     nodes = std::move(result);
+                    // Rebuilt in place rather than through erase_nodes/
+                    // insert_node_groups, so the node-set counter has to be
+                    // moved by hand. @see Graph::note_structural_change
+                    graph.note_structural_change();
                     graph.mark_sorted();
 
                     report.intermediates_created = inter_count;

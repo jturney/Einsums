@@ -102,8 +102,11 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
     explicit GPUPlacement(CostModel const &cost_model, size_t min_flops = 100000, size_t min_bytes = 65536);
 
     [[nodiscard]] std::string name() const override { return "GPUPlacement"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
+    bool                    run(Graph &graph) override;
+    void                    reset_stats() override;
 
     /// Number of nodes placed on GPU in the last run.
     [[nodiscard]] size_t num_placed() const { return _num_placed; }

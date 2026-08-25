@@ -91,7 +91,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     ///        and the plan are still computed and inspectable).
     APIARY_EXPOSE explicit MemoryPlanning(bool apply_arena) : _apply_arena(apply_arena) {}
 
-    [[nodiscard]] std::string              name() const override { return "MemoryPlanning"; }
+    [[nodiscard]] std::string name() const override { return "MemoryPlanning"; }
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }
     bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;

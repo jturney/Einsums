@@ -72,8 +72,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE ConstantFolding() = default;
 
     [[nodiscard]] std::string name() const override { return "ConstantFolding"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+    bool                    run(Graph &graph) override;
+    void                    reset_stats() override;
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;

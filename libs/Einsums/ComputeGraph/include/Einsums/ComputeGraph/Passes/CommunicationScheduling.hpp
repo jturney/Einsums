@@ -60,8 +60,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 class EINSUMS_EXPORT CommunicationScheduling : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "CommunicationScheduling"; }
-    bool                      run(Graph &graph) override;
-    void                      reset_stats() override;
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
+    bool                    run(Graph &graph) override;
+    void                    reset_stats() override;
 
     [[nodiscard]] size_t num_scheduled() const { return _num_scheduled; }
 

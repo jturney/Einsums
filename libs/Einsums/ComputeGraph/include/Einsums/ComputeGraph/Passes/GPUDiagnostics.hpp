@@ -63,7 +63,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 class EINSUMS_EXPORT GPUDiagnostics : public OptimizerPass {
   public:
     [[nodiscard]] std::string name() const override { return "GPUDiagnostics"; }
-    bool                      run(Graph &graph) override;
+
+    /// @copydoc OptimizerPass::phase
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::Diagnostic; }
+    bool                    run(Graph &graph) override;
 
     /// Print the diagnostic report to a stream.
     void print_report(std::ostream &os) const;

@@ -169,6 +169,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     [[nodiscard]] std::string name() const override { return "DistributiveFactoring"; }
 
+    /**
+     * @copydoc OptimizerPass::phase
+     *
+     * Structural-algebraic despite consulting a @ref CostModel: the measurement
+     * is a HINT, not a premise. This pass's output has to remain valid, if not
+     * optimal, on a machine whose costs differ, which is exactly what makes it
+     * safe to persist in a saved graph while a batching or placement decision
+     * made from the same measurement is not.
+     */
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+
     bool run(Graph &graph) override;
 
     [[nodiscard]] std::vector<std::string> explain() const override;

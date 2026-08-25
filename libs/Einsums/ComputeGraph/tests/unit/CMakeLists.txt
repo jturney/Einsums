@@ -82,6 +82,7 @@ set(ComputeGraphTests
     Pass_SpacePropagation.cpp
     Pass_SymmetryPropagation.cpp
     PassManager.cpp
+    PassPhases.cpp
     PermuteFusion.cpp
     PostReplayValidation.cpp
     PipelineLoop.cpp
