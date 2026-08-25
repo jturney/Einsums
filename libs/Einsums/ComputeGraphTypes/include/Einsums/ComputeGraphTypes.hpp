@@ -9,3 +9,4 @@
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/ComputeGraphTypes/Spaces.hpp>

@@ -61,6 +61,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/TransferElimination.hpp
     Einsums/ComputeGraph/Passes/TransferInsertion.hpp
     Einsums/ComputeGraph/Pipeline.hpp
+    Einsums/ComputeGraph/SpaceRegistryAccess.hpp
     Einsums/ComputeGraph/EinsumSpec.hpp
     Einsums/ComputeGraph/Executor.hpp
     Einsums/ComputeGraph/StringDispatch.hpp
@@ -118,6 +119,7 @@ set(ComputeGraphSources
     Passes/TransferElimination.cpp
     Passes/TransferInsertion.cpp
     Pipeline.cpp
+    SpaceRegistry.cpp
     ThreadSweep.cpp
 )
 

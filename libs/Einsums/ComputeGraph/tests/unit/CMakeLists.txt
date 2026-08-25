@@ -94,6 +94,7 @@ set(ComputeGraphTests
     GroupedGatherRotate.cpp
     GroupedElementwise.cpp
     GroupedScalarOps.cpp
+    SpaceRegistry.cpp
     StringEinsum.cpp
     TensorLifetime.cpp
     ThreadCostModel.cpp

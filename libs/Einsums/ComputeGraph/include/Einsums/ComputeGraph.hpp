@@ -121,6 +121,7 @@
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
 #include <Einsums/ComputeGraph/Pipeline.hpp>
+#include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/ComputeGraph/Workspace.hpp>

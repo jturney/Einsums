@@ -9,6 +9,7 @@ set(ComputeGraphTypesHeaders
     Einsums/ComputeGraphTypes/Ids.hpp
     Einsums/ComputeGraphTypes/Descriptors.hpp
     Einsums/ComputeGraphTypes/GraphData.hpp
+    Einsums/ComputeGraphTypes/Spaces.hpp
 )
 
 include(Einsums_AddModule)
