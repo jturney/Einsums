@@ -7,6 +7,8 @@
 
 // This header is included from Dispatch.hpp.
 
+#include <Einsums/Config.hpp>
+
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
@@ -298,10 +300,11 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 /// GEMM the wrappers would clamp to one thread. Thread-local, and for a batched
 /// contraction it names the last slice this thread ran; not an API for steering
 /// execution.
-inline char const *&last_contraction_route() {
-    thread_local char const *route = "none";
-    return route;
-}
+///
+/// Defined OUT OF LINE, and exported, so the whole process shares one slot; see
+/// @c compute_graph::dispatch::last_dispatch_route for why an inline
+/// thread-local is not enough.
+[[nodiscard]] EINSUMS_EXPORT char const *&last_contraction_route();
 
 /// The route pin the most recent route decision on this thread read.
 ///
@@ -310,10 +313,10 @@ inline char const *&last_contraction_route() {
 /// it. Adaptive means the decision came from @ref
 /// einsums::blas::vendor_call_is_fenced, which is what an eager caller and an
 /// unplanned graph get.
-inline KernelRoute &last_route_pin() {
-    thread_local KernelRoute pin = KernelRoute::Adaptive;
-    return pin;
-}
+///
+/// Exported and defined out of line for the same reason as
+/// @ref last_contraction_route.
+[[nodiscard]] EINSUMS_EXPORT KernelRoute &last_route_pin();
 
 /// @brief Whether this contraction is to be packed rather than handed to one
 ///        vendor GEMM.

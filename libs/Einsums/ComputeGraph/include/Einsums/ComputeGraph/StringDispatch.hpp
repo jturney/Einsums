@@ -14,6 +14,8 @@
  * unsupported patterns.
  */
 
+#include <Einsums/Config.hpp>
+
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
@@ -96,10 +98,13 @@ void string_gemv_mat_vec(ParsedEinsumSpec const & /*parsed*/, T c_pf, OutType *o
 /// fast path fired instead of a silent generic-loop fallback, mirroring the
 /// eager API's AlgorithmChoice out-parameter. Thread-local; not an API for
 /// steering execution.
-inline char const *&last_dispatch_route() {
-    thread_local char const *route = "none";
-    return route;
-}
+///
+/// Defined OUT OF LINE, and exported, so the whole process shares one slot. An
+/// inline function's thread-local gets a copy per shared object under hidden
+/// visibility, and a graph whose executors were built inside the library (which
+/// is every einsum node since @ref build_executor took over the lowering) would
+/// then write a slot no test executable can read.
+[[nodiscard]] EINSUMS_EXPORT char const *&last_dispatch_route();
 
 /**
  * @brief Generic runtime nested-loop contraction for arbitrary rank/pattern.
@@ -877,18 +882,31 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
- * @brief Execute a tensor permutation described by a string specification.
+ * @brief Execute a tensor permutation described by a string specification, over
+ *        rank-erased impls.
  *
  * C[c_indices] = beta * C[c_indices] + alpha * A[a_indices]
  *
  * Builds the index permutation mapping at runtime and performs a stride-based copy.
+ *
+ * This is where the operation actually lives, and it is written against
+ * ``TensorImpl`` rather than against tensor objects because an impl carries
+ * data, dims and strides as runtime values: one definition then serves every
+ * rank and every static tensor type. It is also what lets @ref build_executor
+ * run a permute without first wrapping its operands in a tensor object, which
+ * would copy two ``ShapeVector``s per operand on every replay.
+ *
+ * @tparam T Element type shared by both operands.
+ * @param[in] parsed The index lists, and the raw spec for diagnostics.
+ * @param[in] beta Prefactor on the destination; 0 overwrites it.
+ * @param[in,out] C Destination geometry.
+ * @param[in] alpha Prefactor on the source.
+ * @param[in] A Source geometry.
+ * @throws std::runtime_error When an output index does not appear in the input.
  */
-template <BasicTensorConcept AType, BasicTensorConcept CType>
-    requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>
-void string_permute(ParsedPermuteSpec const &parsed, typename AType::ValueType beta, CType *C, typename AType::ValueType alpha,
-                    AType const &A) {
-    using T = typename AType::ValueType;
-
+template <typename T>
+void string_permute_impl(ParsedPermuteSpec const &parsed, T beta, einsums::detail::TensorImpl<T> *C, T alpha,
+                         einsums::detail::TensorImpl<T> const &A) {
     auto const &c_idx = parsed.c_indices;
     auto const &a_idx = parsed.a_indices;
 
@@ -952,7 +970,7 @@ void string_permute(ParsedPermuteSpec const &parsed, typename AType::ValueType b
         }
         return true;
     };
-    if (rank >= 2 && canonical_dense(C->impl()) && canonical_dense(A.impl())) {
+    if (rank >= 2 && canonical_dense(*C) && canonical_dense(A)) {
         std::string a_chars(rank, ' ');
         std::string c_chars(rank, ' ');
         for (size_t j = 0; j < rank; j++) {
@@ -961,15 +979,18 @@ void string_permute(ParsedPermuteSpec const &parsed, typename AType::ValueType b
         for (size_t i = 0; i < rank; i++) {
             c_chars[i] = static_cast<char>('a' + perm[i]);
         }
-        tensor_algebra::detail::permute<false, T>(beta, c_chars, &C->impl(), alpha, a_chars, A.impl());
+        tensor_algebra::detail::permute<false, T>(beta, c_chars, C, alpha, a_chars, A);
         return;
     }
 
-    // Scale C by beta
+    // Scale C by beta. `copy_to` rather than a tensor's own `zero()`: it writes
+    // exactly the elements this geometry describes, which is what a strided
+    // destination needs, and it lands on the same all-zero bits an owning
+    // tensor's memset would.
     if (beta == T{0}) {
-        C->zero();
+        einsums::detail::copy_to(T{0}, *C);
     } else if (beta != T{1}) {
-        linear_algebra::scale(beta, C);
+        linear_algebra::detail::scale(beta, C);
     }
 
     // If alpha is zero, nothing more to do
@@ -1003,6 +1024,27 @@ void string_permute(ParsedPermuteSpec const &parsed, typename AType::ValueType b
 
         C->data()[c_offset] += alpha * A.data()[a_offset];
     }
+}
+
+/**
+ * @brief Tensor-object overload of @ref string_permute_impl.
+ *
+ * Forwards both operands' ``impl()`` to the one definition above, so every
+ * caller that holds tensor objects (capture's eager path, the tiled lowering,
+ * the reassociation passes) and the data-built executors run identical code.
+ *
+ * @tparam AType,CType Source and destination tensor types; same element type.
+ * @param[in] parsed The index lists, and the raw spec for diagnostics.
+ * @param[in] beta Prefactor on the destination; 0 overwrites it.
+ * @param[in,out] C Destination tensor.
+ * @param[in] alpha Prefactor on the source.
+ * @param[in] A Source tensor.
+ */
+template <BasicTensorConcept AType, BasicTensorConcept CType>
+    requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>
+void string_permute(ParsedPermuteSpec const &parsed, typename AType::ValueType beta, CType *C, typename AType::ValueType alpha,
+                    AType const &A) {
+    string_permute_impl<typename AType::ValueType>(parsed, beta, &C->impl(), alpha, A.impl());
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::dispatch)

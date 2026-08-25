@@ -80,6 +80,7 @@ set(ComputeGraphSources
     Options.cpp
     EinsumSpec.cpp
     Executor.cpp
+    StringDispatch.cpp
     ABILayout.cpp
     Graph.cpp
     GroupedBatchedGemm.cpp

@@ -17,6 +17,7 @@ set(PackedGemmSources
     InitModule.cpp
     MicroKernelDispatch.cpp
     Packing.cpp
+    RouteIntrospection.cpp
 )
 
 # MicroKernelImpl.cpp is the arch-generic tile-kernel implementation: it is
