@@ -33,7 +33,9 @@ set(ComputeGraphTests
     DistributiveFactoring.cpp
     AxpbyDescriptor.cpp
     EinsumSpec.cpp
+    ElementOps.cpp
     Executor.cpp
+    ExecutorBuilder.cpp
     GEMMBatching.cpp
     GPUPasses.cpp
     GateFlags.cpp
