@@ -214,6 +214,7 @@ set(ComputeGraphTests
     test_scf_python.py
     test_scale_python.py
     test_spaces_python.py
+    test_symbolic_extents_python.py
     test_special_values_python.py
     test_symm_gemm_views_python.py
     test_symmetrized_accumulation_python.py

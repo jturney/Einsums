@@ -24,8 +24,8 @@ struct Spaces {
     cg::SpaceId       virt;
 
     Spaces() {
-        occ  = registry.register_space(cg::IndexSpace{.name = "occ", .scale_symbol = "o", .typical_extent = 4.0});
-        virt = registry.register_space(cg::IndexSpace{.name = "virt", .scale_symbol = "v", .typical_extent = 8.0});
+        occ  = registry.register_space(cg::IndexSpace{.name = "occ", .scale_symbol = "o", .dim_symbol = "no", .typical_extent = 4.0});
+        virt = registry.register_space(cg::IndexSpace{.name = "virt", .scale_symbol = "v", .dim_symbol = "nv", .typical_extent = 8.0});
     }
 };
 
@@ -66,13 +66,13 @@ TEST_CASE("SpaceShapedDeclare - a space-shaped declare sizes and annotates in on
     auto const id = graph.find_tensor_id_by_ptr(&scratch);
     REQUIRE(id != 0);
     CHECK(graph.tensor_spaces(id) == std::vector<cg::SpaceId>{spaces.occ, spaces.virt});
-    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"occ", "virt"});
+    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"no", "nv"});
 
     // The symbol carries the tie, so the graph agrees the two name one space each.
     auto const &ties = graph.symbol_spaces();
-    REQUIRE(ties.contains("occ"));
-    CHECK(ties.at("occ") == spaces.occ);
-    CHECK(ties.at("virt") == spaces.virt);
+    REQUIRE(ties.contains("no"));
+    CHECK(ties.at("no") == spaces.occ);
+    CHECK(ties.at("nv") == spaces.virt);
 }
 
 TEST_CASE("SpaceShapedDeclare - a literal axis mixes with a space-typed one", "[ComputeGraph][Spaces][SpaceShape]") {
@@ -90,7 +90,7 @@ TEST_CASE("SpaceShapedDeclare - a literal axis mixes with a space-typed one", "[
     CHECK(history.dim(1) == 4);
 
     auto const id = graph.find_tensor_id_by_ptr(&history);
-    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"", "occ"});
+    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"", "no"});
     CHECK(graph.tensor_spaces(id)[0] == cg::SpaceId{});
     CHECK(graph.tensor_spaces(id)[1] == spaces.occ);
 }
@@ -152,7 +152,7 @@ TEST_CASE("SpaceShapedDeclare - the declared tensor is rebindable at a new exten
 
     RuntimeTensor<double> const t2("t2", {4, 8});
     graph.annotate_spaces(t2, {spaces.occ, spaces.virt});
-    graph.annotate_dims(t2, {"occ", "virt"});
+    graph.annotate_dims(t2, {"no", "nv"});
 
     auto &scratch = graph.declare_zero_runtime_tensor<double>("scratch", {spaces.occ, spaces.virt}, true);
 
@@ -160,8 +160,8 @@ TEST_CASE("SpaceShapedDeclare - the declared tensor is rebindable at a new exten
     // already the reusable form rather than pinned to the capture geometry. That is what the
     // manifest reads when a bind moves the problem.
     auto const id = graph.find_tensor_id_by_ptr(&scratch);
-    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"occ", "virt"});
-    CHECK(graph.tensor_dim_symbols(graph.find_tensor_id_by_ptr(&t2)) == std::vector<std::string>{"occ", "virt"});
+    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"no", "nv"});
+    CHECK(graph.tensor_dim_symbols(graph.find_tensor_id_by_ptr(&t2)) == std::vector<std::string>{"no", "nv"});
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -190,7 +190,7 @@ TEST_CASE("SpaceShapedDeclare - a tiled tensor takes its partition from the spac
     REQUIRE(id != 0);
     CHECK(graph.tensor_spaces(id) == std::vector<cg::SpaceId>{spaces.occ, spaces.virt});
     // A PLAIN symbol: the space fixes the total, and the tiling is layout, not raggedness.
-    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"occ", "virt"});
+    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"no", "nv"});
     CHECK_FALSE(cg::is_ragged_symbol(graph.tensor_dim_symbols(id)[0]));
 }
 
@@ -208,7 +208,7 @@ TEST_CASE("SpaceShapedDeclare - one axis overrides the canonical tiling", "[Comp
     auto const id = graph.find_tensor_id_by_ptr(&U);
 
     CHECK(graph.tensor_spaces(id) == std::vector<cg::SpaceId>{spaces.occ, spaces.virt});
-    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"occ", "virt"});
+    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"no", "nv"});
 }
 
 TEST_CASE("SpaceShapedDeclare - a partition that contradicts the space is refused", "[ComputeGraph][Spaces][SpaceShape][Tiled]") {
@@ -243,7 +243,7 @@ TEST_CASE("SpaceShapedDeclare - a space-less tiled axis mixes in", "[ComputeGrap
     auto      &T  = graph.declare_zero_tiled_tensor<double>("T", {cg::tiles({3, 3}), spaces.occ});
     auto const id = graph.find_tensor_id_by_ptr(&T);
 
-    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"", "occ"});
+    CHECK(graph.tensor_dim_symbols(id) == std::vector<std::string>{"", "no"});
     CHECK(graph.tensor_spaces(id)[0] == cg::SpaceId{});
     CHECK(graph.tensor_spaces(id)[1] == spaces.occ);
 }
@@ -277,4 +277,38 @@ TEST_CASE("SpaceShapedDeclare - two different canonical tilings leave the space 
     CHECK(*graph.space_extent(spaces.occ) == 4);
 
     CHECK_THROWS_WITH(graph.declare_zero_tiled_tensor<double>("T", {spaces.occ}), Catch::Matchers::ContainsSubstring("two different ones"));
+}
+
+TEST_CASE("SpaceShapedDeclare - a space with no dim symbol is refused rather than given one", "[ComputeGraph][Spaces][SpaceShape]") {
+    cg::SpaceRegistry registry;
+    auto const        grid = registry.register_space(cg::IndexSpace{.name = "grid", .scale_symbol = "g"});
+
+    cg::Graph graph("no_symbol");
+    graph.set_space_registry(registry);
+    graph.pin_space_extent(grid, 12);
+
+    // Inventing one from the space's name would make the (symbol, space) tie a tautology and
+    // would have a plain symbol claim a single extent for a space that may yet be ragged.
+    CHECK_THROWS_WITH(graph.declare_zero_runtime_tensor<double>("T", {grid}),
+                      Catch::Matchers::ContainsSubstring("without a") && Catch::Matchers::ContainsSubstring("dim symbol"));
+}
+
+TEST_CASE("SpaceShapedDeclare - create_* takes spaces but writes no dim symbols", "[ComputeGraph][Spaces][SpaceShape][Create]") {
+    Spaces spaces;
+
+    cg::Graph graph("create");
+    graph.set_space_registry(spaces.registry);
+    graph.pin_space_extent(spaces.occ, 4);
+    graph.pin_space_extent(spaces.virt, 8);
+
+    auto &T = graph.create_zero_runtime_tensor<double>("T", {spaces.occ, spaces.virt});
+
+    CHECK(T.dim(0) == 4);
+    CHECK(T.dim(1) == 8);
+
+    auto const id = graph.find_tensor_id_by_ptr(&T);
+    CHECK(graph.tensor_spaces(id) == std::vector<cg::SpaceId>{spaces.occ, spaces.virt});
+    // Deliberately absent: this tensor is allocated NOW, and a bind cannot resize it, so a
+    // symbol promising otherwise would be a bind-time error dressed up as an annotation.
+    CHECK(graph.tensor_dim_symbols(id).empty());
 }

@@ -60,17 +60,17 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * @see fixed
  * @versionadded{2.0.0}
  */
-struct SpaceDim {
+struct APIARY_EXPOSE APIARY_MODULE("graph") SpaceDim {
     /// The space this axis ranges over, or an invalid id when the axis is a literal.
-    SpaceId space{};
+    APIARY_EXPOSE APIARY_READONLY SpaceId space{};
 
     /// The extent, when @ref space is invalid. Meaningless otherwise.
-    std::size_t extent{0};
+    APIARY_EXPOSE APIARY_READONLY std::size_t extent{0};
 
     /// @brief An axis over @p s, sized from what the graph has learned about it.
     /// @param[in] s The index space.
     // NOLINTNEXTLINE(google-explicit-constructor)
-    constexpr SpaceDim(SpaceId s) noexcept : space{s} {}
+    APIARY_EXPOSE constexpr SpaceDim(SpaceId s) noexcept : space{s} {}
 
     /// @brief An axis of fixed size, with no space attached. Prefer @ref fixed.
     /// @param[in] n The extent.
@@ -100,22 +100,22 @@ struct SpaceDim {
  * @see Graph::pin_space_tiling
  * @versionadded{2.0.0}
  */
-struct SpaceTiling {
+struct APIARY_EXPOSE APIARY_MODULE("graph") SpaceTiling {
     /// The space this axis ranges over, or an invalid id when the axis names none.
-    SpaceId space{};
+    APIARY_EXPOSE APIARY_READONLY SpaceId space{};
 
     /// How the axis is cut up. Empty means "whatever @ref space is canonically tiled as".
-    std::vector<int> tile_sizes;
+    APIARY_EXPOSE APIARY_READONLY std::vector<int> tile_sizes;
 
     /// @brief An axis over @p s, tiled the way @p s is canonically tiled.
     /// @param[in] s The index space.
     // NOLINTNEXTLINE(google-explicit-constructor)
-    SpaceTiling(SpaceId s) : space{s} {}
+    APIARY_EXPOSE SpaceTiling(SpaceId s) : space{s} {}
 
     /// @brief An axis over @p s with a tiling of its own.
     /// @param[in] s The index space.
     /// @param[in] sizes The tile sizes, which must sum to what @p s measures.
-    SpaceTiling(SpaceId s, std::vector<int> sizes) : space{s}, tile_sizes{std::move(sizes)} {}
+    APIARY_EXPOSE SpaceTiling(SpaceId s, std::vector<int> sizes) : space{s}, tile_sizes{std::move(sizes)} {}
 };
 
 /**
@@ -127,7 +127,7 @@ struct SpaceTiling {
  * so it gets no space and no dim symbol and a bind may not move it.
  * @versionadded{2.0.0}
  */
-[[nodiscard]] inline SpaceTiling tiles(std::vector<int> sizes) {
+[[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") inline SpaceTiling tiles(std::vector<int> sizes) {
     SpaceTiling axis{SpaceId{}};
     axis.tile_sizes = std::move(sizes);
     return axis;
@@ -143,7 +143,7 @@ struct SpaceTiling {
  * bind may not move, which is exactly what "fixed" says.
  * @versionadded{2.0.0}
  */
-[[nodiscard]] constexpr SpaceDim fixed(std::size_t extent) noexcept {
+[[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") constexpr SpaceDim fixed(std::size_t extent) noexcept {
     return SpaceDim{extent, nullptr};
 }
 
@@ -502,7 +502,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * the annotation already handles per axis.
      * @versionadded{2.0.0}
      */
-    void annotate_space_axis(TensorId id, std::size_t axis, SpaceId space);
+    APIARY_EXPOSE void annotate_space_axis(TensorId id, std::size_t axis, SpaceId space);
 
     /**
      * @brief Annotate a tensor's axes, addressing it by the caller's tensor object.
@@ -604,7 +604,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @see declare_zero_runtime_tensor(std::string, std::vector<SpaceDim>, bool)
      * @versionadded{2.0.0}
      */
-    [[nodiscard]] std::optional<std::size_t> space_extent(SpaceId space) const noexcept;
+    APIARY_EXPOSE [[nodiscard]] std::optional<std::size_t> space_extent(SpaceId space) const noexcept;
 
     /**
      * @brief How @p space is canonically cut up, if this graph has been told.
@@ -624,7 +624,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @see pin_space_tiling
      * @versionadded{2.0.0}
      */
-    [[nodiscard]] std::optional<std::vector<int>> space_tiling(SpaceId space) const;
+    APIARY_EXPOSE [[nodiscard]] std::optional<std::vector<int>> space_tiling(SpaceId space) const;
 
     /**
      * @brief State how @p space is cut up, for every tiled axis that ranges over it.
@@ -638,7 +638,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * to happen.
      * @versionadded{2.0.0}
      */
-    void pin_space_tiling(SpaceId space, std::vector<int> tile_sizes);
+    APIARY_EXPOSE void pin_space_tiling(SpaceId space, std::vector<int> tile_sizes);
 
     /**
      * @brief State what @p space measures on this problem, rather than waiting to learn it.
@@ -649,7 +649,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * nothing to have learned from yet. A later disagreeing annotation still unpins the space.
      * @versionadded{2.0.0}
      */
-    void pin_space_extent(SpaceId space, std::size_t extent);
+    APIARY_EXPOSE void pin_space_extent(SpaceId space, std::size_t extent);
 
     // ── Symbolic extents (Part 3.7) ─────────────────────────────────────────
 
@@ -687,7 +687,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @see symbol_spaces
      * @versionadded{2.0.0}
      */
-    void annotate_dims(TensorId id, std::vector<std::string> symbols);
+    APIARY_EXPOSE void annotate_dims(TensorId id, std::vector<std::string> symbols);
 
     /**
      * @brief Declare a tensor's symbolic extents, addressing it by the caller's tensor object.
@@ -698,7 +698,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     template <GraphCapturableTensor TensorType>
-    void annotate_dims(TensorType const &tensor, std::vector<std::string> symbols) {
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::RuntimeTensorView<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::RuntimeTensorView<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::TiledRuntimeTensor<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::TiledRuntimeTensor<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
+        // clang-format on
+        void annotate_dims(TensorType const &tensor, std::vector<std::string> symbols) {
         annotate_dims(register_operand(tensor), std::move(symbols));
     }
 
@@ -726,7 +741,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @see bind_ragged_extents
      * @versionadded{2.0.0}
      */
-    void annotate_ragged_dim(TensorId id, std::size_t axis, std::string_view space_name);
+    APIARY_EXPOSE void annotate_ragged_dim(TensorId id, std::size_t axis, std::string_view space_name);
 
     /**
      * @brief Declare one axis ragged, addressing the tensor by the caller's object.
@@ -737,7 +752,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     template <GraphCapturableTensor TensorType>
-    void annotate_ragged_dim(TensorType const &tensor, std::size_t axis, std::string_view space_name) {
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::RuntimeTensorView<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::RuntimeTensorView<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::TiledRuntimeTensor<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::TiledRuntimeTensor<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
+        // clang-format on
+        void annotate_ragged_dim(TensorType const &tensor, std::size_t axis, std::string_view space_name) {
         annotate_ragged_dim(register_operand(tensor), axis, space_name);
     }
 
@@ -748,7 +778,47 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @throws std::out_of_range if no tensor with that id is registered.
      * @versionadded{2.0.0}
      */
-    [[nodiscard]] std::vector<std::string> const &tensor_dim_symbols(TensorId id) const;
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::string> const &tensor_dim_symbols(TensorId id) const;
+
+    /**
+     * @brief The symbolic extent declaration on a tensor's axes, addressed by the caller's object.
+     * @tparam TensorType The tensor type.
+     * @param[in] tensor The tensor to read.
+     * @return One entry per axis, or an empty vector when every axis is literal.
+     * @throws std::out_of_range if this graph has never seen that tensor.
+     *
+     * The extent counterpart of ``tensor_spaces(TensorType const &)``, and const in the same way:
+     * reading registers nothing.
+     * @versionadded{2.0.0}
+     */
+    template <GraphCapturableTensor TensorType>
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::RuntimeTensorView<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::RuntimeTensorView<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::TiledRuntimeTensor<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::TiledRuntimeTensor<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
+        // clang-format on
+        [[nodiscard]] std::vector<std::string> const &tensor_dim_symbols(TensorType const &tensor) const {
+        std::weak_ptr<void> token;
+        if constexpr (requires { tensor.liveness_token(); }) {
+            token = tensor.liveness_token();
+        }
+        TensorId const id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), token);
+        if (id == 0) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': tensor '{}' is not registered, so it carries no dim symbols", _name,
+                                    tensor.name());
+        }
+        return tensor_dim_symbols(id);
+    }
 
     /**
      * @brief Every ``(symbol, space)`` tie this graph's annotations have established.
@@ -1950,6 +2020,49 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     }
 
     /**
+     * @brief Create an eagerly allocated graph-owned tensor shaped in index spaces.
+     *
+     * The @ref create_zero_runtime_tensor counterpart of the space-shaped
+     * @ref declare_zero_runtime_tensor, and deliberately only HALF of it: the axes are sized
+     * from their spaces and annotated with them, and no dim symbols are written.
+     *
+     * @tparam T Element type.
+     * @tparam Alloc Allocator.
+     * @param[in] name Human-readable name.
+     * @param[in] shape One entry per axis; see the deferred overload. @ref fixed for a literal.
+     * @param[in] intermediate Whether the tensor is graph-internal scratch.
+     * @return Reference to the zeroed tensor.
+     * @throws std::invalid_argument As the deferred overload, except that a space with no
+     *         @ref IndexSpace::dim_symbol is fine here - nothing needs one.
+     *
+     * @par Why no dim symbols
+     * This tensor is allocated when the call returns, and only DEFERRED intermediates are
+     * resized at bind (a materialized one whose derived dims changed is an error). A symbol
+     * here would promise a rebindability the storage cannot honour, so the annotation stops at
+     * what is true: these axes mean occupied and virtual, and they are this big. New code that
+     * wants the graph to be reusable should declare rather than create.
+     *
+     * @see declare_zero_runtime_tensor(std::string, std::vector<SpaceDim> const &, bool)
+     * @versionadded{2.0.0}
+     */
+    template <typename T, typename Alloc = std::allocator<T>>
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor_over", T = float, Alloc = std::allocator<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor_over", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor_over", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor_over", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
+        // clang-format on
+        GeneralRuntimeTensor<T, Alloc> &create_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
+                                                                   bool intermediate = true) {
+        auto  resolved = resolve_space_shape(shape, name, /*need_symbols=*/false);
+        auto &t        = create_zero_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
+        resolved.symbols.clear();
+        apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
+        return t;
+    }
+
+    /**
      * @brief Declare a graph-owned runtime-rank tensor with DEFERRED allocation.
      *
      * The runtime-rank, pybind-exposed analog of declare_tensor(): a shell tensor
@@ -2026,17 +2139,25 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * @par What the axes are annotated with
      * A space-typed axis is annotated with that space AND given a dim symbol, so the tensor is
-     * rebindable at new extents without a second call. The symbol is the space's own NAME, which
-     * keeps the ``(symbol, space)`` tie trivially consistent and adds nothing to the saved
-     * schema. A numeric axis is left literal and unannotated, which is what a fixed size means.
+     * rebindable at new extents without a second call. The symbol is the space's
+     * @ref IndexSpace::dim_symbol, declared once at registration; a space registered without one
+     * is refused here rather than having a name invented for it. A numeric axis is left literal
+     * and unannotated, which is what a fixed size means.
      *
      * @see SpaceDim
      * @see annotate_dims
      * @versionadded{2.0.0}
      */
     template <typename T, typename Alloc = std::allocator<T>>
-    GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
-                                                                bool intermediate = false) {
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor_over", T = float, Alloc = std::allocator<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor_over", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor_over", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor_over", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
+        // clang-format on
+        GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
+                                                                    bool intermediate = false) {
         auto const resolved = resolve_space_shape(shape, name);
         auto      &t        = declare_zero_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
         apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
@@ -2055,8 +2176,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     template <typename T, typename Alloc = std::allocator<T>>
-    GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
-                                                           bool intermediate = false) {
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor_over", T = float, Alloc = std::allocator<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor_over", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor_over", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor_over", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
+        // clang-format on
+        GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
+                                                               bool intermediate = false) {
         auto const resolved = resolve_space_shape(shape, name);
         auto      &t        = declare_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
         apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
@@ -2152,7 +2280,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *         than what its space measures.
      *
      * @par What the axes are annotated with
-     * The space, and a dim symbol that is the space's name - a PLAIN symbol, not a ragged one.
+     * The space, and its @ref IndexSpace::dim_symbol - a PLAIN symbol, not a ragged one.
      * A tiled axis's TOTAL is what the space fixes and what a bind moves; how it is cut up is a
      * layout choice that varies between tensors over one space without the space being ragged.
      *
@@ -2165,7 +2293,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     template <typename T>
-    TiledRuntimeTensor<T> &declare_zero_tiled_tensor(std::string name, std::vector<SpaceTiling> const &shape, bool intermediate = false) {
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor_over", T = float)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor_over", T = double)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor_over", T = std::complex<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor_over", T = std::complex<double>)
+        // clang-format on
+        TiledRuntimeTensor<T> &declare_zero_tiled_tensor(std::string name, std::vector<SpaceTiling> const &shape,
+                                                         bool intermediate = false) {
         auto const         resolved = resolve_tiled_shape(shape, name);
         auto              &t        = declare_zero_tiled_tensor<T>(std::move(name), resolved.tile_sizes, intermediate);
         ResolvedSpaceShape carried;
@@ -3125,7 +3261,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @see clear_bindings
      * @versionadded{2.0.0}
      */
-    void bind_ragged_extents(std::string const &name, std::size_t axis, std::vector<std::size_t> extents);
+    APIARY_EXPOSE void bind_ragged_extents(std::string const &name, std::size_t axis, std::vector<std::size_t> extents);
 
     /**
      * @brief Every ragged extent table @ref bind_ragged_extents has accepted.
@@ -3730,7 +3866,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// @param[in] name The tensor's name, for the error message.
     /// @return The resolved shape.
     /// @throws std::invalid_argument When a space has no usable extent.
-    [[nodiscard]] ResolvedSpaceShape resolve_space_shape(std::vector<SpaceDim> const &shape, std::string const &name) const;
+    [[nodiscard]] ResolvedSpaceShape resolve_space_shape(std::vector<SpaceDim> const &shape, std::string const &name,
+                                                         bool need_symbols = true) const;
 
     /// @brief Apply the annotations a resolved shape implies to a freshly declared tensor.
     /// @param[in] id The tensor.

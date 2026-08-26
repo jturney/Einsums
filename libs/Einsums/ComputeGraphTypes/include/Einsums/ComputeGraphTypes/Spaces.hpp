@@ -103,7 +103,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") GrowthClass {
  * error for a conflicting one.
  *
  * An aggregate, deliberately: every construction site in the library uses designated initializers,
- * which is what keeps a four-field declaration readable. Python has no aggregate initialization, so
+ * which is what keeps a five-field declaration readable. Python has no aggregate initialization, so
  * it builds one through @ref make_index_space (spelled ``cg.index_space`` there) instead, and reads
  * the fields back.
  */
@@ -114,6 +114,16 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
     /// Letter this space contributes to a symbolic cost polynomial ("o", "v", "x", "g", ...).
     APIARY_EXPOSE APIARY_READONLY std::string scale_symbol;
 
+    /// Name a SYMBOLIC EXTENT over this space goes by ("no", "nv", ...). Empty when the space has
+    /// none, and then an axis over it cannot be given a symbolic extent from the space alone.
+    ///
+    /// Distinct from @ref scale_symbol, which names the space in a cost POLYNOMIAL ("o"), and
+    /// distinct from @ref name, which identifies the space itself. Spelling a dim symbol as the
+    /// space's name would make the ``(symbol, space)`` tie a tautology and, worse, would have a
+    /// plain symbol claim a single extent for a space that may be ragged - which is exactly what
+    /// ``"ragged:<space>"`` exists to say instead.
+    APIARY_EXPOSE APIARY_READONLY std::string dim_symbol;
+
     /// Advisory extent, used only to break ties when no tensor instance is bound. Zero means unset.
     APIARY_EXPOSE APIARY_READONLY double typical_extent{0};
 
@@ -123,10 +133,10 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
     /// @brief Compare two index spaces field by field.
     /// @param[in] lhs Left operand.
     /// @param[in] rhs Right operand.
-    /// @return True when name, scale symbol, typical extent and growth all match.
+    /// @return True when name, scale symbol, dim symbol, typical extent and growth all match.
     [[nodiscard]] friend bool operator==(IndexSpace const &lhs, IndexSpace const &rhs) noexcept {
-        return lhs.name == rhs.name && lhs.scale_symbol == rhs.scale_symbol && lhs.typical_extent == rhs.typical_extent &&
-               lhs.growth == rhs.growth;
+        return lhs.name == rhs.name && lhs.scale_symbol == rhs.scale_symbol && lhs.dim_symbol == rhs.dim_symbol &&
+               lhs.typical_extent == rhs.typical_extent && lhs.growth == rhs.growth;
     }
 };
 
@@ -143,8 +153,13 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
  * aggregate initialization (Python) builds one through.
  */
 [[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("index_space") inline IndexSpace
-    make_index_space(std::string name, std::string scale_symbol, double typical_extent = 0.0, GrowthClass growth = GrowthClass::linear()) {
-    return IndexSpace{.name = std::move(name), .scale_symbol = std::move(scale_symbol), .typical_extent = typical_extent, .growth = growth};
+    make_index_space(std::string name, std::string scale_symbol, double typical_extent = 0.0, GrowthClass growth = GrowthClass::linear(),
+                     std::string dim_symbol = std::string{}) {
+    return IndexSpace{.name           = std::move(name),
+                      .scale_symbol   = std::move(scale_symbol),
+                      .dim_symbol     = std::move(dim_symbol),
+                      .typical_extent = typical_extent,
+                      .growth         = growth};
 }
 
 /**

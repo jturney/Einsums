@@ -315,18 +315,26 @@ Graph::ResolvedTiledShape Graph::resolve_tiled_shape(std::vector<SpaceTiling> co
             }
         }
 
+        std::string const &symbol = space_registry().space(entry.space).dim_symbol;
+        if (symbol.empty()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "Graph '{}': tensor '{}' axis {} is shaped by index space '{}', which was registered without a "
+                                    "dim symbol, so there is no name to give its extent; register the space with one",
+                                    _name, name, axis, space_name);
+        }
+
         resolved.tile_sizes.push_back(std::move(axis_tiles));
         resolved.spaces.push_back(entry.space);
         // A PLAIN symbol, not a ragged one: the space fixes the axis TOTAL, and how that total
         // is cut up is a layout choice two tensors may differ on without the space being ragged.
-        resolved.symbols.push_back(space_name);
+        resolved.symbols.push_back(symbol);
         resolved.any_space = true;
     }
 
     return resolved;
 }
 
-Graph::ResolvedSpaceShape Graph::resolve_space_shape(std::vector<SpaceDim> const &shape, std::string const &name) const {
+Graph::ResolvedSpaceShape Graph::resolve_space_shape(std::vector<SpaceDim> const &shape, std::string const &name, bool need_symbols) const {
     ResolvedSpaceShape resolved;
     resolved.dims.reserve(shape.size());
     resolved.spaces.reserve(shape.size());
@@ -361,11 +369,17 @@ Graph::ResolvedSpaceShape Graph::resolve_space_shape(std::vector<SpaceDim> const
                                     _name, name, axis, space);
         }
 
+        std::string const &symbol = space_registry().space(dim.space).dim_symbol;
+        if (need_symbols && symbol.empty()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "Graph '{}': tensor '{}' axis {} is shaped by index space '{}', which was registered without a "
+                                    "dim symbol, so there is no name to give its extent; register the space with one",
+                                    _name, name, axis, space_registry().space(dim.space).name);
+        }
+
         resolved.dims.push_back(*extent);
         resolved.spaces.push_back(dim.space);
-        // The space's own name as the dim symbol. It keeps the (symbol, space) tie trivially
-        // consistent, and it adds no field to IndexSpace and so nothing to the saved schema.
-        resolved.symbols.push_back(space_registry().space(dim.space).name);
+        resolved.symbols.push_back(symbol);
         resolved.any_space = true;
     }
 
@@ -391,8 +405,11 @@ void Graph::apply_space_shape(TensorId id, ResolvedSpaceShape const &resolved) {
         }
     }
 
-    // Dim symbols carry the hole natively: the empty string IS a literal axis.
-    annotate_dims(id, resolved.symbols);
+    // Dim symbols carry the hole natively: the empty string IS a literal axis. An EMPTY vector
+    // is the create_* case, which annotates spaces and stops there.
+    if (!resolved.symbols.empty()) {
+        annotate_dims(id, resolved.symbols);
+    }
 }
 
 void Graph::annotate_dims(TensorId id, std::vector<std::string> symbols) {
