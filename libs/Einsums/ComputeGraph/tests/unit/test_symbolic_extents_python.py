@@ -14,6 +14,7 @@ assertion below is something no Python program could express before.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 import einsums
@@ -207,3 +208,104 @@ def test_create_takes_spaces_but_writes_no_dim_symbols():
     assert g.tensor_spaces(T) == [occ, virt]
     # Deliberately absent: this tensor is allocated now and a bind cannot resize it.
     assert g.tensor_dim_symbols(T) == []
+
+
+def _global_spaces(tag):
+    """Spaces in the PROCESS-GLOBAL registry, which is the one load_graph resolves against."""
+    reg = cg.global_space_registry()
+    occ = reg.register_space(cg.index_space(f"{tag}_occ", "o", 8.0, cg.GrowthClass.linear(), f"{tag}_no"))
+    vir = reg.register_space(cg.index_space(f"{tag}_virt", "v", 16.0, cg.GrowthClass.linear(), f"{tag}_nv"))
+    return reg, occ, vir
+
+
+def _chain(tag, no, nv, occ, vir, seed):
+    """One contraction chain with a graph-owned deferred intermediate."""
+    rng = np.random.default_rng(seed)
+    amp = einsums.create_zero_tensor("amp", [no, nv])
+    out = einsums.create_zero_tensor("out", [no, no])
+    np.asarray(amp)[...] = rng.standard_normal((no, nv))
+
+    g = cg.Graph(f"chain_{no}_{nv}")
+    g.annotate_spaces(amp, [occ, vir])
+    g.annotate_dims(amp, [f"{tag}_no", f"{tag}_nv"])
+    g.annotate_spaces(out, [occ, occ])
+    g.annotate_dims(out, [f"{tag}_no", f"{tag}_no"])
+    tmp = g.declare_zero_tensor_over("tmp", [cg.SpaceDim(occ), cg.SpaceDim(vir)], True)
+    with cg.capture(g):
+        einsums.einsum("i,a <- i,a ; i,a", tmp, amp, amp, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("i,j <- i,a ; j,a", out, tmp, amp, c_pf=0.0, ab_pf=1.0)
+    return g, amp, out, tmp
+
+
+def test_cg_bind_moves_a_multi_slot_interface():
+    """The dict form binds every slot as ONE transaction.
+
+    A dim symbol constrains across slots, so a caller moving the problem's extents has to
+    hand over the whole interface before any of it is reconciled. Binding one slot at a
+    time solves the second against an interface the first already moved.
+    """
+    _, occ, vir = _global_spaces("pybind_tx")
+    g, _, _, tmp = _chain("pybind_tx", 4, 6, occ, vir, seed=3)
+
+    assert [tmp.dim(i) for i in range(2)] == [4, 6]
+
+    amp2 = einsums.create_zero_tensor("amp2", [3, 5])
+    out2 = einsums.create_zero_tensor("out2", [3, 3])
+    np.asarray(amp2)[...] = np.random.default_rng(9).standard_normal((3, 5))
+
+    cg.bind(g, {"amp": amp2, "out": out2})
+
+    # The behaviour that matters: the deferred intermediate followed the symbols.
+    assert [tmp.dim(i) for i in range(2)] == [3, 5]
+
+
+def test_cg_bind_rejects_a_non_dict():
+    _, occ, vir = _global_spaces("pybind_bad")
+    g, _, _, _ = _chain("pybind_bad", 4, 6, occ, vir, seed=3)
+    with pytest.raises(TypeError, match="expects a dict"):
+        cg.bind(g, [("amp", None)])
+
+
+def test_a_saved_graph_with_scratch_replays_at_a_new_size(tmp_path):
+    """THE case the feature exists for, for a graph that has scratch.
+
+    Capture at one size, save, load with no addresses in it, bind a different-sized
+    problem, and get bitwise what a fresh capture at that size computes.
+    """
+    _, occ, vir = _global_spaces("pyreuse")
+
+    g1, _, _, _ = _chain("pyreuse", 6, 10, occ, vir, seed=7)
+    path = str(tmp_path / "chain.eig")
+    cg.save_graph(g1, path)
+
+    # Fresh operands for the NEW problem, used by both the replay and the reference.
+    rng = np.random.default_rng(11)
+    amp_new = rng.standard_normal((8, 14))
+
+    amp_a = einsums.create_zero_tensor("amp_a", [8, 14])
+    out_a = einsums.create_zero_tensor("out_a", [8, 8])
+    np.asarray(amp_a)[...] = amp_new
+
+    g2 = cg.load_graph(path)
+    cg.bind(g2, {"amp": amp_a, "out": out_a})
+    g2.optimize()
+    g2.execute()
+
+    # Reference: capture the same chain at the new size.
+    amp_b = einsums.create_zero_tensor("amp_b", [8, 14])
+    out_b = einsums.create_zero_tensor("out_b", [8, 8])
+    np.asarray(amp_b)[...] = amp_new
+    g3 = cg.Graph("fresh")
+    g3.annotate_spaces(amp_b, [occ, vir])
+    g3.annotate_dims(amp_b, ["pyreuse_no", "pyreuse_nv"])
+    g3.annotate_spaces(out_b, [occ, occ])
+    g3.annotate_dims(out_b, ["pyreuse_no", "pyreuse_no"])
+    tmp_b = g3.declare_zero_tensor_over("tmp", [cg.SpaceDim(occ), cg.SpaceDim(vir)], True)
+    with cg.capture(g3):
+        einsums.einsum("i,a <- i,a ; i,a", tmp_b, amp_b, amp_b, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("i,j <- i,a ; j,a", out_b, tmp_b, amp_b, c_pf=0.0, ab_pf=1.0)
+    g3.optimize()
+    g3.execute()
+
+    # Not close: identical. Both run the same kernels over the same values in the same order.
+    assert np.array_equal(np.asarray(out_a), np.asarray(out_b))

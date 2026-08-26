@@ -2091,7 +2091,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         handle.alloc_state     = AllocState::Deferred;
         handle.materialize_fn  = [ptr]() { ptr->materialize(); };
         handle.release_fn      = [ptr]() { ptr->release(); };
-        handle.zero_fn         = [ptr]() {
+        // Without this a bind CANNOT move this tensor's extents, whatever its dim symbols
+        // say: resize_derived_extent requires the hook as well as the deferred state, so a
+        // runtime-rank intermediate that lacked it was refused with a message blaming the
+        // storage. The static-rank declare_tensor has always installed one.
+        handle.resize_deferred_fn = [ptr](std::vector<size_t> const &new_dims) { ptr->resize_deferred(new_dims); };
+        handle.is_materialized_fn = [ptr]() { return ptr->is_materialized(); };
+        handle.zero_fn            = [ptr]() {
             ptr->materialize();
             ptr->zero();
         };
@@ -3165,6 +3171,81 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     }
 
     /**
+     * @brief Begin a multi-slot bind, to be finished by @ref bind_commit.
+     *
+     * @ref bind is variadic and cannot be bound to Python, and calling the one-pair spelling
+     * once per slot is NOT the same operation: a dim symbol is a constraint ACROSS slots, so
+     * a caller moving a problem's extents has to hand over every slot before any of them is
+     * reconciled. Binding them one at a time solves each against a half-updated interface and
+     * fails with operands that "describe two different problems".
+     *
+     * These three calls are that transaction, opened up so a caller without variadics can
+     * drive it: @ref bind_begin, then @ref bind_add once per slot, then @ref bind_commit.
+     * Nothing is repointed until the commit, so a refusal leaves the graph as it was.
+     *
+     * @note Each added tensor must outlive the commit; only a reference is kept.
+     * @see bind_add
+     * @see bind_commit
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void bind_begin() { _pending_binds.clear(); }
+
+    /**
+     * @brief Add one slot to the bind opened by @ref bind_begin.
+     * @tparam TensorType The tensor type.
+     * @param[in] name The manifest name of the slot.
+     * @param[in] tensor The storage to bind. Must outlive the commit.
+     * @throws std::logic_error When no bind is open.
+     * @versionadded{2.0.0}
+     */
+    template <GraphCapturableTensor TensorType>
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::RuntimeTensorView<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::RuntimeTensorView<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
+        // clang-format on
+        void bind_add(std::string const &name, TensorType &tensor) {
+        _pending_binds.push_back(
+            PendingBind{.name    = name,
+                        .collect = [this, name, &tensor](InterfaceManifest const &contract,
+                                                         DimSolution &solution) { bind_collect_one(contract, solution, name, tensor); },
+                        .apply   = [this, name, &tensor](InterfaceManifest const &contract,
+                                                       DimSolution const       &solution) { bind_one(contract, solution, name, tensor); }});
+    }
+
+    /**
+     * @brief Finish the bind opened by @ref bind_begin, as one transaction.
+     * @throws std::invalid_argument As @ref bind does, with nothing repointed.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void bind_commit() {
+        // The pending list is cleared whatever happens, so a refused transaction does not
+        // leak into the next one.
+        try {
+            InterfaceManifest const contract = manifest();
+            DimSolution             solution;
+            for (auto const &pending : _pending_binds) {
+                pending.collect(contract, solution);
+            }
+            prepare_bind_solution(solution);
+            for (auto const &pending : _pending_binds) {
+                pending.apply(contract, solution);
+            }
+            finish_bind_solution(solution);
+        } catch (...) {
+            _pending_binds.clear();
+            throw;
+        }
+        _pending_binds.clear();
+    }
+
+    /**
      * @brief Bind ONE named slot, the spelling a binding can carry.
      *
      * @ref bind is variadic, which is right for a C++ caller and unbindable from
@@ -3682,6 +3763,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         /// loop's - pays for one comparison per axis and nothing else.
         bool extents_changed{false};
     };
+
+    /// One slot handed to @ref bind_add, held until @ref bind_commit runs the transaction.
+    /// The two steps are stored type-erased because the pairs are heterogeneous and the
+    /// commit has to walk them twice, once to solve and once to repoint.
+    struct PendingBind {
+        std::string                                                         name;
+        std::function<void(InterfaceManifest const &, DimSolution &)>       collect;
+        std::function<void(InterfaceManifest const &, DimSolution const &)> apply;
+    };
+
+    std::vector<PendingBind> _pending_binds;
 
     /// Read @p entry's symbolic axes off @p dims into @p solution, checking each symbol
     /// against whatever an earlier slot in the same bind solved it at.

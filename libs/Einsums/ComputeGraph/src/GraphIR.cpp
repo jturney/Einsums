@@ -184,6 +184,11 @@ struct IrTensor {
     TensorOwnership          scope{TensorOwnership::Graph};
     InitKind                 init{InitKind::None};
 
+    /// Whether the tensor still needs storage. Absent in files written before this was
+    /// recorded, and Materialized is the right reading of those: a graph that never said
+    /// otherwise had its intermediates allocated at capture.
+    AllocState alloc{AllocState::Materialized};
+
     /// Set on a FRAGMENT tensor that denotes a buffer the enclosing frame
     /// already defines; the value is that frame's id for it.
     std::optional<std::size_t> outer;
@@ -570,6 +575,11 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
     out.set("intermediate", Value{handle.is_intermediate});
     out.set("scope", Value{std::string(tensor_ownership_name(handle.ownership))});
     out.set("init", Value{std::string(init_kind_name(handle.init_kind))});
+    // Whether the tensor has storage yet, which is NOT what "init" says: that one is what to
+    // fill it with once it does. Dropping this turned every loaded intermediate into a
+    // materialized one, and a materialized intermediate refuses the extent-changing bind that
+    // cross-problem reuse is made of.
+    out.set("alloc", Value{std::string(alloc_state_name(handle.alloc_state))});
 
     if (auto const outer = frame.outer_of(handle.tensor_ptr); outer.has_value()) {
         out.set("outer", Value{static_cast<std::int64_t>(*outer)});
@@ -994,6 +1004,30 @@ T read_named(Object const &object, std::string_view key, std::string const &path
     return fallback;
 }
 
+/// As @ref read_named, but for a key a file is allowed not to have.
+///
+/// The compatibility policy lets the schema GAIN fields, with an absent one taking its
+/// documented default, so a key added after a golden was written must not be demanded of it.
+/// ``take`` rather than @ref field: it marks the key consumed for the strict unconsumed-key
+/// check without reporting a missing one as a problem.
+template <typename T, typename Fn>
+T read_named_optional(Object const &object, std::string_view key, std::string const &path, Problems &problems, Fn &&resolve,
+                      std::string_view what, T fallback) {
+    Value const *value = object.take(key);
+    if (value == nullptr) {
+        return fallback;
+    }
+    if (!value->is_string()) {
+        note(problems, fmt::format("{}.{}", path, key), value->position, fmt::format("expected a string, found {}", value->type_name()));
+        return fallback;
+    }
+    if (auto const resolved = resolve(value->as_string()); resolved.has_value()) {
+        return *resolved;
+    }
+    note(problems, fmt::format("{}.{}", path, key), value->position, fmt::format("'{}' is not a known {}", value->as_string(), what));
+    return fallback;
+}
+
 /// A typed scalar, back to a @ref PrefactorScalar.
 PrefactorScalar read_prefactor(Value const &value, std::string const &path, Problems &problems) {
     PrefactorScalar out{double{0}};
@@ -1170,6 +1204,10 @@ IrTensor read_tensor(Value const &value, std::string const &path, Problems &prob
         out.intermediate = read_bool(*object, "intermediate", path, problems, value.position);
         out.init         = read_named<InitKind>(*object, "init", path, problems, value.position, init_kind_from_name, "initialization kind",
                                         InitKind::None);
+        // Optional: a file written before this key existed means Materialized, which is what
+        // its graph's intermediates were.
+        out.alloc = read_named_optional<AllocState>(*object, "alloc", path, problems, alloc_state_from_name, "allocation state",
+                                                    AllocState::Materialized);
     }
 
     if (out.dims.size() != out.rank) {
@@ -1711,14 +1749,35 @@ LoadedTensor allocate_tensor(Graph &root, Graph &graph, IrTensor const &spec) {
         return LoadedTensor{.object = static_cast<void *>(scalar), .id = id, .scalar = true};
     }
     using TensorType = GeneralRuntimeTensor<T, std::allocator<T>>;
-    auto *tensor     = new TensorType(spec.name, spec.dims);
-    tensor->zero();
+
+    // A tensor the file says is DEFERRED comes back deferred, with the lifecycle hooks its
+    // declaration installed. Allocating it here instead would look harmless (the pass would
+    // just find it already materialized) and would quietly cost the graph the one thing the
+    // save exists to enable: only a deferred intermediate can be resized by a bind, so a
+    // materialized one refuses the move to a different-sized problem.
+    bool const deferred = spec.alloc == AllocState::Deferred;
+    auto      *tensor =
+        deferred ? new TensorType(typename TensorType::DeferredAlloc{}, spec.name, spec.dims) : new TensorType(spec.name, spec.dims);
+    if (!deferred) {
+        tensor->zero();
+    }
     root.adopt([tensor]() { delete tensor; });
     auto handle            = make_handle(*tensor, 0);
     handle.is_intermediate = spec.intermediate;
     handle.ownership       = spec.scope;
     handle.init_kind       = spec.init;
-    TensorId const id      = graph.register_tensor(std::move(handle));
+    if (deferred) {
+        handle.alloc_state        = AllocState::Deferred;
+        handle.materialize_fn     = [tensor]() { tensor->materialize(); };
+        handle.release_fn         = [tensor]() { tensor->release(); };
+        handle.is_materialized_fn = [tensor]() { return tensor->is_materialized(); };
+        handle.resize_deferred_fn = [tensor](std::vector<size_t> const &new_dims) { tensor->resize_deferred(new_dims); };
+        handle.zero_fn            = [tensor]() {
+            tensor->materialize();
+            tensor->zero();
+        };
+    }
+    TensorId const id = graph.register_tensor(std::move(handle));
     graph.get_or_create_slot(*tensor, id);
     return LoadedTensor{.object = static_cast<void *>(tensor), .id = id, .scalar = false};
 }

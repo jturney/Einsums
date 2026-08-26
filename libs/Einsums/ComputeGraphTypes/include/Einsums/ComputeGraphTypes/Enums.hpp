@@ -343,6 +343,40 @@ inline std::string_view op_kind_name(OpKind kind) {
 }
 
 /**
+ * @brief The name of an allocation state, for diagnostics and the saved form.
+ * @param[in] state The state to name.
+ * @return A stable spelling ("materialized", "deferred").
+ *
+ * Distinct from @ref init_kind_name, which says what a tensor is FILLED with. This says
+ * whether it has storage at all, which is what decides whether a bind may still reshape it.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline std::string_view alloc_state_name(AllocState state) noexcept {
+    switch (state) {
+    case AllocState::Materialized:
+        return "materialized";
+    case AllocState::Deferred:
+        return "deferred";
+    }
+    return "materialized";
+}
+
+/**
+ * @brief The @ref AllocState spelled @p name, if there is one.
+ * @param[in] name A spelling @ref alloc_state_name produces.
+ * @return The state, or an empty optional.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline std::optional<AllocState> alloc_state_from_name(std::string_view name) noexcept {
+    for (auto const state : {AllocState::Materialized, AllocState::Deferred}) {
+        if (alloc_state_name(state) == name) {
+            return state;
+        }
+    }
+    return std::nullopt;
+}
+
+/**
  * @brief The name of an initialization strategy, for diagnostics and the saved form.
  * @param[in] kind The strategy to name.
  * @return A stable spelling ("none", "zero", "random", "from_disk").

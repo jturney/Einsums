@@ -504,3 +504,104 @@ TEST_CASE("Symbolic extents - rebind moves analysis_version and leaves structure
     CHECK(graph.analysis_version() > analysis);
     CHECK(graph.structure_version() == structure);
 }
+
+TEST_CASE("Symbolic extents - a RUNTIME-RANK deferred intermediate resizes at bind", "[ComputeGraph][Manifest][Symbolic][Bind]") {
+    // The runtime-rank declare is the whole Python surface, and it shipped without the
+    // resize hook that only the static-rank declare_tensor installed. The graph was refused
+    // with "its storage is already materialized", which named the wrong cause: the tensor WAS
+    // deferred, the callback was missing. Asserting on the dim symbols would not have caught
+    // it, because the symbols were written correctly and did nothing.
+    cg::SpaceRegistry registry;
+    auto const        occ  = registry.register_space(cg::IndexSpace{.name = "rr_occ", .scale_symbol = "o", .dim_symbol = "no"});
+    auto const        virt = registry.register_space(cg::IndexSpace{.name = "rr_virt", .scale_symbol = "v", .dim_symbol = "nv"});
+
+    RuntimeTensor<double> amp("amp", std::vector<std::size_t>{4, 6});
+    RuntimeTensor<double> out("out", std::vector<std::size_t>{4, 4});
+
+    cg::Graph graph("runtime_rank_resize");
+    graph.set_space_registry(registry);
+    graph.annotate_spaces(amp, {occ, virt});
+    graph.annotate_dims(amp, {"no", "nv"});
+    graph.annotate_spaces(out, {occ, occ});
+    graph.annotate_dims(out, {"no", "no"});
+
+    auto &tmp = graph.declare_zero_runtime_tensor<double>("tmp", {cg::SpaceDim{occ}, cg::SpaceDim{virt}}, true);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ia;ia->ia", &tmp, amp, amp);
+        cg::einsum("ia;ja->ij", &out, tmp, amp);
+    }
+
+    CHECK(tmp.dim(0) == 4);
+    CHECK(tmp.dim(1) == 6);
+
+    RuntimeTensor<double> amp2("amp2", std::vector<std::size_t>{3, 5});
+    RuntimeTensor<double> out2("out2", std::vector<std::size_t>{3, 3});
+    REQUIRE_NOTHROW(graph.bind("amp", amp2, "out", out2));
+
+    // The behaviour, not the declaration: the intermediate followed the symbols.
+    CHECK(tmp.dim(0) == 3);
+    CHECK(tmp.dim(1) == 5);
+
+    // Deferred scratch needs its Materialize node before the graph can run, which is the
+    // resource phase's job and deliberately not bind's.
+    cg::PassManager pm;
+    pm.add<cg::passes::Materialization>();
+    graph.apply(pm);
+    REQUIRE_NOTHROW(graph.execute());
+}
+
+TEST_CASE("Symbolic extents - bind_begin/add/commit is one transaction", "[ComputeGraph][Manifest][Symbolic][Bind]") {
+    // The spelling a caller without variadics has to use. A dim symbol constrains ACROSS
+    // slots, so binding one slot at a time solves the second against an interface the first
+    // has already moved; these three calls are the variadic bind opened up.
+    cg::SpaceRegistry registry;
+    auto const        occ  = registry.register_space(cg::IndexSpace{.name = "tx_occ", .scale_symbol = "o", .dim_symbol = "no"});
+    auto const        virt = registry.register_space(cg::IndexSpace{.name = "tx_virt", .scale_symbol = "v", .dim_symbol = "nv"});
+
+    RuntimeTensor<double> amp("amp", std::vector<std::size_t>{4, 6});
+    RuntimeTensor<double> out("out", std::vector<std::size_t>{4, 4});
+
+    cg::Graph graph("transaction");
+    graph.set_space_registry(registry);
+    graph.annotate_spaces(amp, {occ, virt});
+    graph.annotate_dims(amp, {"no", "nv"});
+    graph.annotate_spaces(out, {occ, occ});
+    graph.annotate_dims(out, {"no", "no"});
+    auto &tmp = graph.declare_zero_runtime_tensor<double>("tmp", {cg::SpaceDim{occ}, cg::SpaceDim{virt}}, true);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ia;ia->ia", &tmp, amp, amp);
+        cg::einsum("ia;ja->ij", &out, tmp, amp);
+    }
+
+    RuntimeTensor<double> amp2("amp2", std::vector<std::size_t>{3, 5});
+    RuntimeTensor<double> out2("out2", std::vector<std::size_t>{3, 3});
+
+    graph.bind_begin();
+    graph.bind_add("amp", amp2);
+    graph.bind_add("out", out2);
+    REQUIRE_NOTHROW(graph.bind_commit());
+
+    CHECK(tmp.dim(0) == 3);
+    CHECK(tmp.dim(1) == 5);
+
+    // Binding the SAME pair one slot at a time is what the transaction exists to avoid: the
+    // second slot is reconciled against an interface the first already moved.
+    cg::Graph other("one_at_a_time");
+    other.set_space_registry(registry);
+    RuntimeTensor<double> amp3("amp3", std::vector<std::size_t>{4, 6});
+    RuntimeTensor<double> out3("out3", std::vector<std::size_t>{4, 4});
+    other.annotate_spaces(amp3, {occ, virt});
+    other.annotate_dims(amp3, {"no", "nv"});
+    other.annotate_spaces(out3, {occ, occ});
+    other.annotate_dims(out3, {"no", "no"});
+    auto &tmp3 = other.declare_zero_runtime_tensor<double>("tmp", {cg::SpaceDim{occ}, cg::SpaceDim{virt}}, true);
+    {
+        cg::CaptureGuard const guard(other);
+        cg::einsum("ia;ia->ia", &tmp3, amp3, amp3);
+        cg::einsum("ia;ja->ij", &out3, tmp3, amp3);
+    }
+    RuntimeTensor<double> amp4("amp4", std::vector<std::size_t>{3, 5});
+    CHECK_THROWS(other.bind("amp", amp4));
+}

@@ -429,6 +429,74 @@ TEST_CASE("SaveLoad - spaces, dim symbols and a re-bind at a new size", "[Comput
     REQUIRE(bytes_of(H2) == bytes_of(expected));
 }
 
+TEST_CASE("SaveLoad - a deferred intermediate comes back deferred and rebinds", "[ComputeGraph][SaveLoad][Symbolic]") {
+    // The sibling test above proves a re-bind at a new size for a graph whose every tensor is
+    // a manifest entry. Every real graph also has SCRATCH, and that case was broken in a way
+    // no test could see: AllocState was not serialized, so a loaded intermediate came back
+    // materialized and the extent-changing bind was refused for storage reasons.
+    auto             &registry = cg::global_space_registry();
+    cg::SpaceId const occ      = registry.register_space(cg::IndexSpace{.name = "sl_occ", .scale_symbol = "o", .dim_symbol = "sl_no"});
+    cg::SpaceId const virt     = registry.register_space(cg::IndexSpace{.name = "sl_virt", .scale_symbol = "v", .dim_symbol = "sl_nv"});
+
+    RuntimeTensor<double> amp("amp", std::vector<std::size_t>{4, 6});
+    RuntimeTensor<double> out("out", std::vector<std::size_t>{4, 4});
+    for (std::size_t i = 0; i < 4; ++i) {
+        for (std::size_t a = 0; a < 6; ++a) {
+            amp(i, a) = 0.25 * static_cast<double>(i + 1) - 0.125 * static_cast<double>(a);
+        }
+    }
+
+    cg::Graph graph("scratch_reuse");
+    graph.annotate_spaces(amp, {occ, virt});
+    graph.annotate_dims(amp, {"sl_no", "sl_nv"});
+    graph.annotate_spaces(out, {occ, occ});
+    graph.annotate_dims(out, {"sl_no", "sl_no"});
+    auto &tmp = graph.declare_zero_runtime_tensor<double>("tmp", {cg::SpaceDim{occ}, cg::SpaceDim{virt}}, true);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ia;ia->ia", &tmp, amp, amp);
+        cg::einsum("ia;ja->ij", &out, tmp, amp);
+    }
+
+    std::string const text = must_save(graph);
+    REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring("\"alloc\""));
+    REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring("deferred"));
+
+    cg::Graph loaded = must_load(text);
+
+    // Bind the loaded graph to a DIFFERENT problem and let it re-derive the scratch.
+    RuntimeTensor<double> amp2("amp2", std::vector<std::size_t>{3, 5});
+    RuntimeTensor<double> out2("out2", std::vector<std::size_t>{3, 3});
+    for (std::size_t i = 0; i < 3; ++i) {
+        for (std::size_t a = 0; a < 5; ++a) {
+            amp2(i, a) = 0.5 * static_cast<double>(i) - 0.0625 * static_cast<double>(a + 2);
+        }
+    }
+    REQUIRE_NOTHROW(loaded.bind("amp", amp2, "out", out2));
+
+    cg::PassManager pm;
+    pm.add<cg::passes::Materialization>();
+    loaded.apply(pm);
+    loaded.execute();
+
+    // The reference: capture the same thing at the new size and compare bitwise, which is
+    // what "valid for a family of problems" has to mean.
+    RuntimeTensor<double> ref("ref", std::vector<std::size_t>{3, 3});
+    cg::Graph             fresh("scratch_reuse_fresh");
+    auto                 &fresh_tmp = fresh.declare_zero_runtime_tensor<double>("tmp", std::vector<std::size_t>{3, 5}, true);
+    {
+        cg::CaptureGuard const guard(fresh);
+        cg::einsum("ia;ia->ia", &fresh_tmp, amp2, amp2);
+        cg::einsum("ia;ja->ij", &ref, fresh_tmp, amp2);
+    }
+    cg::PassManager fresh_pm;
+    fresh_pm.add<cg::passes::Materialization>();
+    fresh.apply(fresh_pm);
+    fresh.execute();
+
+    REQUIRE(bytes_of(out2) == bytes_of(ref));
+}
+
 // ── Tier 2: refusals ───────────────────────────────────────────────────────
 
 TEST_CASE("SaveLoad - a graph with blockers refuses, carrying the report", "[ComputeGraph][SaveLoad]") {

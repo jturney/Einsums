@@ -146,6 +146,40 @@ def annotate(tensor, spaces, graph=None):
     return tensor
 
 
+def bind(graph, mapping):
+    """Bind several manifest slots at once, as ONE transaction.
+
+    ``mapping`` is ``{manifest name: tensor}``::
+
+        g = cg.load_graph("ccsd.eig")
+        cg.bind(g, {"t1": T1, "t2": T2, "fock": F})
+        g.optimize()
+        g.execute()
+
+    This is not the same as calling ``graph.bind(name, tensor)`` once per slot,
+    and the difference matters exactly when it is most wanted. A dim symbol is a
+    constraint ACROSS slots: ``nv`` is one extent wherever it appears, so moving a
+    graph to a different-sized problem means every slot has to be read before any
+    of them is repointed. Bound one at a time, the second call solves against an
+    interface the first has already half-moved, and the graph is refused with
+    operands that "describe two different problems".
+
+    The single-slot ``graph.bind`` remains right for what it was built for: a
+    same-shape pointer swap, where no symbol moves and order cannot matter.
+
+    Nothing is repointed unless every slot reconciles, so a refusal leaves the
+    graph exactly as it was. Every tensor in ``mapping`` must stay alive until
+    this returns.
+    """
+    if not isinstance(mapping, dict):
+        raise TypeError(f"cg.bind expects a dict of {{name: tensor}}, got {type(mapping).__name__}")
+    graph.bind_begin()
+    for name, tensor in mapping.items():
+        graph.bind_add(name, tensor)
+    graph.bind_commit()
+    return graph
+
+
 class _PyDiis:
     """Pure-Python Pulay DIIS, the reference the C++ accelerator is checked against.
 
