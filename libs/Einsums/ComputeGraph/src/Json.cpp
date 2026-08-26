@@ -475,7 +475,7 @@ class Parser {
             return unexpected(fail(fmt::format("nesting deeper than the {}-level limit", _options.max_depth)));
         }
         advance(); // '['
-        Value::Array items;
+        Array items;
         skip_whitespace();
         if (at_end()) {
             return unexpected(fail("unexpected end of input inside an array"));

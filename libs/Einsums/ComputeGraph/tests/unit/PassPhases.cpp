@@ -223,11 +223,11 @@ TEST_CASE("pass phases - the unclassified default is the never-saved one", "[Com
 }
 
 TEST_CASE("pass phases - names round-trip", "[ComputeGraph][Phases]") {
-    CHECK(cg::pass_phase_name(cg::PassPhase::Analysis) == "analysis");
-    CHECK(cg::pass_phase_name(cg::PassPhase::StructuralAlgebraic) == "structural-algebraic");
-    CHECK(cg::pass_phase_name(cg::PassPhase::StructuralResource) == "structural-resource");
-    CHECK(cg::pass_phase_name(cg::PassPhase::Tuning) == "tuning");
-    CHECK(cg::pass_phase_name(cg::PassPhase::Diagnostic) == "diagnostic");
+    CHECK(std::string(cg::pass_phase_name(cg::PassPhase::Analysis)) == "analysis");
+    CHECK(std::string(cg::pass_phase_name(cg::PassPhase::StructuralAlgebraic)) == "structural-algebraic");
+    CHECK(std::string(cg::pass_phase_name(cg::PassPhase::StructuralResource)) == "structural-resource");
+    CHECK(std::string(cg::pass_phase_name(cg::PassPhase::Tuning)) == "tuning");
+    CHECK(std::string(cg::pass_phase_name(cg::PassPhase::Diagnostic)) == "diagnostic");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

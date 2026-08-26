@@ -240,7 +240,15 @@ jobs:
           # ("B33*") by default and bail with "geninfo: ERROR: GCOV failed ...
           # prefer version 'B33*'". Pinning --gcov-tool keeps the toolchain
           # consistent.
-          lcov --gcov-tool "$GCOV" --capture --directory . --output-file coverage.info --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\*
+          # --ignore-errors inconsistent: lcov 2.x hard-errors on gcov line
+          # ranges it considers inconsistent, and gcc emits one for the
+          # registration symbol Catch2's TEMPLATE_TEST_CASE generates
+          # ("mismatched end line for ..._reg_test<std::complex<double>>").
+          # It is a defect in the coverage data for compiler-generated code,
+          # not in the code under test, and it would fail the whole leg over a
+          # line range in a test registrar. Demoted to a warning so a real
+          # capture failure still stops us.
+          lcov --gcov-tool "$GCOV" --ignore-errors inconsistent --capture --directory . --output-file coverage.info --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\*
 
       - name: Upload C++ coverage to Codecov
         if: ${{ matrix.compiler == 'default' && matrix.blas == 'openblas' && matrix.variant == 'default' }}

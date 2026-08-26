@@ -78,6 +78,13 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::json)
 
 class Value;
 
+/// An ordered list of values, which is what a JSON array holds.
+///
+/// Declared here rather than as a member of @ref Value because @ref Value's own
+/// storage needs it: a ``std::vector`` of an incomplete type is legal, and the
+/// element type completes before anything indexes one.
+using Array = std::vector<Value>;
+
 /**
  * @brief A 1-based source position, for a diagnostic that points at the text.
  * @versionadded{2.0.0}
@@ -202,16 +209,13 @@ class Object {
  * @brief One JSON value: null, bool, int64, double, string, array or object.
  *
  * @note Exported per-member rather than per-class; see the note on @ref Object.
- *       ``Array`` is a ``std::vector<Value>``, so this class holds itself
+ *       @ref Array is a ``std::vector<Value>``, so this class holds itself
  *       incompletely too.
  *
  * @versionadded{2.0.0}
  */
 class Value {
   public:
-    /// An ordered list of values, which is what a JSON array holds.
-    using Array = std::vector<Value>;
-
     /// The seven alternatives, in the order @ref Type enumerates them.
     using Storage = std::variant<std::nullptr_t, bool, std::int64_t, double, std::string, Array, Object>;
 

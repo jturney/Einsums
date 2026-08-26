@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <span>
 #include <string>
 #include <utility>
@@ -1663,7 +1664,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Gemm honors a conjugate transpose"
     REQUIRE(desc->trans_a == 'N');
 
     graph.execute();
-    auto const plain = bytes_of_scalar(C(0, 0));
+    auto const plain_value = C(0, 0);
 
     // Now the conjugate-transposed form of the same product, which must differ
     // and must survive a rebuild.
@@ -1694,9 +1695,21 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Gemm honors a conjugate transpose"
     conj_graph.execute();
 
     REQUIRE(bytes_of(D) == captured);
-    // conj(conj(A))^T^T is A, so the two products agree - which is the check
-    // that 'c' really was applied rather than silently read as 't'.
-    REQUIRE(bytes_of_scalar(D(0, 0)) == plain);
+
+    // conj(conj(A))^H is A, so the two products agree - which is the check that
+    // 'c' really was applied rather than silently read as 't'. Compared with a
+    // tolerance, NOT byte-for-byte: the two are the same value computed by two
+    // different BLAS kernels, and a vendor is free to accumulate them in
+    // different orders. MKL's cgemm does, and disagrees with the plain path in
+    // the last ulp. Reading 'c' as 't' would drop the conjugation entirely and
+    // move the result far more than this tolerance allows, so the looser
+    // comparison still catches the bug the case exists for.
+    // Scaled by the magnitude rather than compared per-component: the imaginary
+    // part of a product can land near zero, where a relative check on it alone
+    // is meaningless.
+    using Real           = einsums::RemoveComplexT<T>;
+    auto const tolerance = static_cast<Real>(1e3) * std::numeric_limits<Real>::epsilon();
+    REQUIRE(std::abs(D(0, 0) - plain_value) <= tolerance * std::abs(plain_value));
 }
 
 TEST_CASE("ExecutorBuilder - a rebuilt Gemm follows redirect_slot", "[ComputeGraph][ExecutorBuilder][Gemm][CSE]") {

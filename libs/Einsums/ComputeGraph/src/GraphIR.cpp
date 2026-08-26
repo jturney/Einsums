@@ -83,6 +83,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
 
+using json::Array;
 using json::Object;
 using json::Value;
 
@@ -378,11 +379,11 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         auto const &desc = std::get<PermuteDescriptor>(node.op_data);
         out.set("alpha", desc.params != nullptr ? write_prefactor(desc.params->alpha) : write_complex(desc.alpha));
         out.set("beta", desc.params != nullptr ? write_prefactor(desc.params->beta) : write_complex(desc.beta));
-        Value::Array c_indices;
+        Array c_indices;
         for (auto const &index : desc.c_indices) {
             c_indices.emplace_back(index);
         }
-        Value::Array a_indices;
+        Array a_indices;
         for (auto const &index : desc.a_indices) {
             a_indices.emplace_back(index);
         }
@@ -406,7 +407,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
     case OpKind::Einsum: {
         auto const &desc = std::get<EinsumDescriptor>(node.op_data);
         auto const  list = [](std::vector<std::string> const &items) {
-            Value::Array array;
+            Array array;
             for (auto const &item : items) {
                 array.emplace_back(item);
             }
@@ -431,7 +432,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("c_prefactor", write_prefactor(desc.params != nullptr ? desc.params->c_pf : desc.c_prefactor));
         out.set("ab_prefactor", write_prefactor(desc.params != nullptr ? desc.params->ab_pf : desc.ab_prefactor));
 
-        Value::Array letters;
+        Array letters;
         for (auto const &[letter, space] : desc.letter_spaces) {
             Object entry;
             entry.set("letter", Value{letter});
@@ -548,19 +549,19 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
     out.set("dtype", Value{std::string(scalar_type_name(handle.dtype))});
     out.set("rank", Value{static_cast<std::int64_t>(handle.rank)});
 
-    Value::Array dims;
+    Array dims;
     for (auto const dim : handle.dims) {
         dims.emplace_back(static_cast<std::int64_t>(dim));
     }
     out.set("dims", Value{std::move(dims)});
 
-    Value::Array symbols;
+    Array symbols;
     for (auto const &symbol : handle.dim_symbols) {
         symbols.emplace_back(symbol);
     }
     out.set("dim_symbols", Value{std::move(symbols)});
 
-    Value::Array spaces;
+    Array spaces;
     for (auto const space : handle.spaces) {
         spaces.emplace_back(graph.space_registry().space(space).name);
     }
@@ -584,13 +585,13 @@ Value write_node(Node const &node, std::size_t dense_id, Graph const &graph, Gra
     out.set("kind", Value{std::string(op_kind_name(node.kind))});
     out.set("label", Value{node.label});
 
-    Value::Array inputs;
+    Array inputs;
     for (auto const id : node.inputs) {
         inputs.emplace_back(static_cast<std::int64_t>(frame.intern(id)));
     }
     out.set("inputs", Value{std::move(inputs)});
 
-    Value::Array outputs;
+    Array outputs;
     for (auto const id : node.outputs) {
         outputs.emplace_back(static_cast<std::int64_t>(frame.intern(id)));
     }
@@ -627,12 +628,12 @@ Value write_fragment(Graph const &graph, Graph const &root, Frame const *parent,
 
     // Nodes are walked first so the tensor numbering is first-mention order over
     // the node list, which is what makes two captures of one program agree.
-    Value::Array nodes;
+    Array nodes;
     for (std::size_t position = 0; position < graph.nodes().size(); ++position) {
         nodes.emplace_back(write_node(graph.nodes()[position], position, graph, root, frame));
     }
 
-    Value::Array tensors;
+    Array tensors;
     for (std::size_t dense = 0; dense < frame.order().size(); ++dense) {
         TensorHandle const *handle = graph.find_tensor(frame.order()[dense]);
         if (handle == nullptr) {
@@ -672,12 +673,12 @@ Object write_structure(Graph const &graph) {
         frame.intern(entry.id);
     }
 
-    Value::Array nodes;
+    Array nodes;
     for (std::size_t position = 0; position < graph.nodes().size(); ++position) {
         nodes.emplace_back(write_node(graph.nodes()[position], position, graph, graph, frame));
     }
 
-    Value::Array manifest;
+    Array manifest;
     for (auto const &entry : contract.entries()) {
         require_storable_dtype(entry.name, entry.dtype);
         Object record;
@@ -687,19 +688,19 @@ Object write_structure(Graph const &graph) {
         record.set("dtype", Value{std::string(scalar_type_name(entry.dtype))});
         record.set("rank", Value{static_cast<std::int64_t>(entry.rank)});
 
-        Value::Array dims;
+        Array dims;
         for (auto const dim : entry.dims) {
             dims.emplace_back(static_cast<std::int64_t>(dim));
         }
         record.set("dims", Value{std::move(dims)});
 
-        Value::Array symbols;
+        Array symbols;
         for (auto const &symbol : entry.dim_symbols) {
             symbols.emplace_back(symbol);
         }
         record.set("dim_symbols", Value{std::move(symbols)});
 
-        Value::Array spaces;
+        Array spaces;
         for (auto const &space : entry.spaces) {
             spaces.emplace_back(space);
         }
@@ -719,7 +720,7 @@ Object write_structure(Graph const &graph) {
         manifest.emplace_back(std::move(record));
     }
 
-    Value::Array tensors;
+    Array tensors;
     for (std::size_t dense = 0; dense < frame.order().size(); ++dense) {
         TensorId const      id     = frame.order()[dense];
         TensorHandle const *handle = graph.find_tensor(id);
@@ -747,7 +748,7 @@ Object write_structure(Graph const &graph) {
     std::ranges::sort(space_names);
     space_names.erase(std::ranges::unique(space_names).begin(), space_names.end());
 
-    Value::Array space_array;
+    Array space_array;
     for (auto const &name : space_names) {
         space_array.emplace_back(name);
     }
@@ -756,7 +757,7 @@ Object write_structure(Graph const &graph) {
         ties.emplace_back(symbol, graph.space_registry().space(space).name);
     }
     std::ranges::sort(ties);
-    Value::Array tie_array;
+    Array tie_array;
     for (auto const &[symbol, space] : ties) {
         Object tie;
         tie.set("symbol", Value{symbol});
@@ -775,7 +776,7 @@ Object write_structure(Graph const &graph) {
         }
     }
     std::ranges::sort(params);
-    Value::Array param_array;
+    Array param_array;
     for (auto const &[name, value] : params) {
         Object param;
         param.set("name", Value{name});
@@ -783,7 +784,7 @@ Object write_structure(Graph const &graph) {
         param_array.emplace_back(std::move(param));
     }
 
-    Value::Array gate_flags;
+    Array gate_flags;
     for (auto const &[name, buffer] : graph.named_gate_flags()) {
         Object flags;
         flags.set("name", Value{name});
@@ -805,7 +806,7 @@ Object write_structure(Graph const &graph) {
                                static_cast<std::size_t>(dense_to - frame.order().begin()));
     }
     std::ranges::sort(redirects);
-    Value::Array redirect_array;
+    Array redirect_array;
     for (auto const &[from, to] : redirects) {
         Object redirect;
         redirect.set("from", Value{static_cast<std::int64_t>(from)});
@@ -831,7 +832,7 @@ Value write_provenance(SaveOptions const &options) {
     Object out;
     out.set("library_version", Value{full_version_as_string()});
     out.set("config_fingerprint", Value{fmt::format("0x{:016x}", sealed::config_fingerprint())});
-    Value::Array passes;
+    Array passes;
     for (auto const &pass : options.structural_passes) {
         passes.emplace_back(pass);
     }
@@ -877,7 +878,7 @@ Object const *as_object(Value const &value, std::string const &path, Problems &p
     return &value.as_object();
 }
 
-Value::Array const *as_array(Value const &value, std::string const &path, Problems &problems) {
+Array const *as_array(Value const &value, std::string const &path, Problems &problems) {
     if (!value.is_array()) {
         note(problems, path, value.position, fmt::format("expected an array, found {}", value.type_name()));
         return nullptr;
@@ -937,8 +938,8 @@ std::vector<std::string> read_string_array(Object const &object, std::string_vie
     if (value == nullptr) {
         return out;
     }
-    std::string const   child = fmt::format("{}.{}", path, key);
-    Value::Array const *items = as_array(*value, child, problems);
+    std::string const child = fmt::format("{}.{}", path, key);
+    Array const      *items = as_array(*value, child, problems);
     if (items == nullptr) {
         return out;
     }
@@ -960,8 +961,8 @@ std::vector<std::size_t> read_extent_array(Object const &object, std::string_vie
     if (value == nullptr) {
         return out;
     }
-    std::string const   child = fmt::format("{}.{}", path, key);
-    Value::Array const *items = as_array(*value, child, problems);
+    std::string const child = fmt::format("{}.{}", path, key);
+    Array const      *items = as_array(*value, child, problems);
     if (items == nullptr) {
         return out;
     }
@@ -1285,7 +1286,7 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
 
         if (Value const *letters = field(*object, "letter_spaces", path, problems, value.position); letters != nullptr) {
             std::string const child = fmt::format("{}.letter_spaces", path);
-            if (Value::Array const *items = as_array(*letters, child, problems); items != nullptr) {
+            if (Array const *items = as_array(*letters, child, problems); items != nullptr) {
                 for (std::size_t i = 0; i < items->size(); ++i) {
                     std::string const entry_path = fmt::format("{}[{}]", child, i);
                     Object const     *entry      = as_object((*items)[i], entry_path, problems);
@@ -1437,8 +1438,8 @@ IrNode read_node(Value const &value, std::string const &path, Problems &problems
         if (entry == nullptr) {
             return list;
         }
-        std::string const   child = fmt::format("{}.{}", path, key);
-        Value::Array const *items = as_array(*entry, child, problems);
+        std::string const child = fmt::format("{}.{}", path, key);
+        Array const      *items = as_array(*entry, child, problems);
         if (items == nullptr) {
             return list;
         }
@@ -1474,7 +1475,7 @@ IrFragment read_fragment(Value const &value, std::string const &path, Problems &
     out.name = read_string(*object, "name", path, problems, value.position);
     if (Value const *tensors = field(*object, "tensors", path, problems, value.position); tensors != nullptr) {
         std::string const child = fmt::format("{}.tensors", path);
-        if (Value::Array const *items = as_array(*tensors, child, problems); items != nullptr) {
+        if (Array const *items = as_array(*tensors, child, problems); items != nullptr) {
             for (std::size_t i = 0; i < items->size(); ++i) {
                 out.tensors.push_back(read_tensor((*items)[i], fmt::format("{}[{}]", child, i), problems, /*manifest_entry=*/false));
             }
@@ -1482,7 +1483,7 @@ IrFragment read_fragment(Value const &value, std::string const &path, Problems &
     }
     if (Value const *nodes = field(*object, "nodes", path, problems, value.position); nodes != nullptr) {
         std::string const child = fmt::format("{}.nodes", path);
-        if (Value::Array const *items = as_array(*nodes, child, problems); items != nullptr) {
+        if (Array const *items = as_array(*nodes, child, problems); items != nullptr) {
             for (std::size_t i = 0; i < items->size(); ++i) {
                 out.nodes.push_back(read_node((*items)[i], fmt::format("{}[{}]", child, i), problems, gates));
             }
@@ -1571,7 +1572,7 @@ IrDocument read_document(Value const &root, Problems &problems) {
 
     // Gate-flag declarations are read before anything that can reference one.
     if (Value const *gates = field(*object, "gate_flags", "$", problems, root.position); gates != nullptr) {
-        if (Value::Array const *items = as_array(*gates, "$.gate_flags", problems); items != nullptr) {
+        if (Array const *items = as_array(*gates, "$.gate_flags", problems); items != nullptr) {
             for (std::size_t i = 0; i < items->size(); ++i) {
                 std::string const path  = fmt::format("$.gate_flags[{}]", i);
                 Object const     *entry = as_object((*items)[i], path, problems);
@@ -1595,7 +1596,7 @@ IrDocument read_document(Value const &root, Problems &problems) {
     GateFlagTable const &gates = out.gate_buffers;
 
     if (Value const *manifest = field(*object, "manifest", "$", problems, root.position); manifest != nullptr) {
-        if (Value::Array const *items = as_array(*manifest, "$.manifest", problems); items != nullptr) {
+        if (Array const *items = as_array(*manifest, "$.manifest", problems); items != nullptr) {
             for (std::size_t i = 0; i < items->size(); ++i) {
                 out.manifest.push_back(read_tensor((*items)[i], fmt::format("$.manifest[{}]", i), problems, /*manifest_entry=*/true));
             }
@@ -1616,7 +1617,7 @@ IrDocument read_document(Value const &root, Problems &problems) {
                 }
             }
             if (Value const *ties = field(*body, "symbol_ties", "$.spaces", problems, spaces->position); ties != nullptr) {
-                if (Value::Array const *items = as_array(*ties, "$.spaces.symbol_ties", problems); items != nullptr) {
+                if (Array const *items = as_array(*ties, "$.spaces.symbol_ties", problems); items != nullptr) {
                     for (std::size_t i = 0; i < items->size(); ++i) {
                         std::string const path  = fmt::format("$.spaces.symbol_ties[{}]", i);
                         Object const     *entry = as_object((*items)[i], path, problems);
@@ -1632,7 +1633,7 @@ IrDocument read_document(Value const &root, Problems &problems) {
     }
 
     if (Value const *params = field(*object, "params", "$", problems, root.position); params != nullptr) {
-        if (Value::Array const *items = as_array(*params, "$.params", problems); items != nullptr) {
+        if (Array const *items = as_array(*params, "$.params", problems); items != nullptr) {
             for (std::size_t i = 0; i < items->size(); ++i) {
                 std::string const path  = fmt::format("$.params[{}]", i);
                 Object const     *entry = as_object((*items)[i], path, problems);
@@ -1646,7 +1647,7 @@ IrDocument read_document(Value const &root, Problems &problems) {
     }
 
     if (Value const *tensors = field(*object, "tensors", "$", problems, root.position); tensors != nullptr) {
-        if (Value::Array const *items = as_array(*tensors, "$.tensors", problems); items != nullptr) {
+        if (Array const *items = as_array(*tensors, "$.tensors", problems); items != nullptr) {
             for (std::size_t i = 0; i < items->size(); ++i) {
                 out.tensors.push_back(read_tensor((*items)[i], fmt::format("$.tensors[{}]", i), problems, /*manifest_entry=*/false));
             }
@@ -1654,7 +1655,7 @@ IrDocument read_document(Value const &root, Problems &problems) {
     }
 
     if (Value const *redirects = field(*object, "slot_redirects", "$", problems, root.position); redirects != nullptr) {
-        if (Value::Array const *items = as_array(*redirects, "$.slot_redirects", problems); items != nullptr) {
+        if (Array const *items = as_array(*redirects, "$.slot_redirects", problems); items != nullptr) {
             for (std::size_t i = 0; i < items->size(); ++i) {
                 std::string const path  = fmt::format("$.slot_redirects[{}]", i);
                 Object const     *entry = as_object((*items)[i], path, problems);
@@ -1669,7 +1670,7 @@ IrDocument read_document(Value const &root, Problems &problems) {
     }
 
     if (Value const *nodes = field(*object, "nodes", "$", problems, root.position); nodes != nullptr) {
-        if (Value::Array const *items = as_array(*nodes, "$.nodes", problems); items != nullptr) {
+        if (Array const *items = as_array(*nodes, "$.nodes", problems); items != nullptr) {
             for (std::size_t i = 0; i < items->size(); ++i) {
                 out.nodes.push_back(read_node((*items)[i], fmt::format("$.nodes[{}]", i), problems, gates));
             }
