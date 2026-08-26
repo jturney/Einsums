@@ -45,6 +45,108 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
+/**
+ * @brief One dimension of a declared tensor, given as an index space rather than a number.
+ *
+ * Converts implicitly from @ref SpaceId so a shape reads as what its axes MEAN
+ * (``{occ, virt}``). An axis that is genuinely a fixed size is spelled @ref fixed
+ * (``{occ, fixed(3)}``).
+ *
+ * There is deliberately NO implicit conversion from an integer. A braced list of plain
+ * numbers must keep selecting the dims-based overload unambiguously, and an all-literal
+ * shape means the caller opted out of spaces entirely - @ref fixed is how they say that
+ * about one axis while still naming spaces for the others.
+ *
+ * @see fixed
+ * @versionadded{2.0.0}
+ */
+struct SpaceDim {
+    /// The space this axis ranges over, or an invalid id when the axis is a literal.
+    SpaceId space{};
+
+    /// The extent, when @ref space is invalid. Meaningless otherwise.
+    std::size_t extent{0};
+
+    /// @brief An axis over @p s, sized from what the graph has learned about it.
+    /// @param[in] s The index space.
+    // NOLINTNEXTLINE(google-explicit-constructor)
+    constexpr SpaceDim(SpaceId s) noexcept : space{s} {}
+
+    /// @brief An axis of fixed size, with no space attached. Prefer @ref fixed.
+    /// @param[in] n The extent.
+    /// @param[in] tag Disambiguates from the space-taking constructor.
+    constexpr SpaceDim(std::size_t n, std::nullptr_t tag) noexcept : extent{n} { (void)tag; }
+};
+
+/**
+ * @brief One axis of a declared TILED tensor: what it means, and how it is cut up.
+ *
+ * A tiled axis is described by a PARTITION, not an extent: an index space fixes the total
+ * (``occ`` is 4) but ``{2,2}``, ``{1,3}`` and ``{4}`` all tile it. So the two halves are
+ * supplied separately, and either may come from the space:
+ *
+ * @code
+ * {occ, virt}                        // both axes take their space's canonical tiling
+ * {{occ, {2, 2}}, {virt, {4, 4}}}    // this tensor tiles differently from the default
+ * {occ, tiles({4, 4})}               // second axis is a partition with no chemical meaning
+ * @endcode
+ *
+ * Converts implicitly from @ref SpaceId so the first form needs no ceremony. There is no
+ * conversion from a bare tile list, so a plain ``{{2,2},{4,4}}`` keeps selecting the
+ * tile-sizes overload unambiguously; @ref tiles is how a space-less axis joins a shape that
+ * names spaces elsewhere.
+ *
+ * @see tiles
+ * @see Graph::pin_space_tiling
+ * @versionadded{2.0.0}
+ */
+struct SpaceTiling {
+    /// The space this axis ranges over, or an invalid id when the axis names none.
+    SpaceId space{};
+
+    /// How the axis is cut up. Empty means "whatever @ref space is canonically tiled as".
+    std::vector<int> tile_sizes;
+
+    /// @brief An axis over @p s, tiled the way @p s is canonically tiled.
+    /// @param[in] s The index space.
+    // NOLINTNEXTLINE(google-explicit-constructor)
+    SpaceTiling(SpaceId s) : space{s} {}
+
+    /// @brief An axis over @p s with a tiling of its own.
+    /// @param[in] s The index space.
+    /// @param[in] sizes The tile sizes, which must sum to what @p s measures.
+    SpaceTiling(SpaceId s, std::vector<int> sizes) : space{s}, tile_sizes{std::move(sizes)} {}
+};
+
+/**
+ * @brief A tiled axis with a partition and no space.
+ * @param[in] sizes The tile sizes.
+ * @return The axis.
+ *
+ * The tiled counterpart of @ref fixed: an axis that is cut up but means nothing chemically,
+ * so it gets no space and no dim symbol and a bind may not move it.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline SpaceTiling tiles(std::vector<int> sizes) {
+    SpaceTiling axis{SpaceId{}};
+    axis.tile_sizes = std::move(sizes);
+    return axis;
+}
+
+/**
+ * @brief An axis whose size is a number and whose meaning is nothing.
+ * @param[in] extent The size.
+ * @return The dimension.
+ *
+ * A DIIS history depth or a fixed block count is a real thing to want in a shape that
+ * otherwise names spaces, and it must NOT pick up a dim symbol: a literal axis is one a
+ * bind may not move, which is exactly what "fixed" says.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] constexpr SpaceDim fixed(std::size_t extent) noexcept {
+    return SpaceDim{extent, nullptr};
+}
+
 class PassManager; // Forward declaration
 class OptimizerPass;
 enum class OptLevel : std::uint8_t; // Optimizer.hpp
@@ -369,7 +471,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @brief Annotate a registered tensor's axes with the index spaces they range over.
      * @param[in] id The tensor to annotate.
      * @param[in] spaces One space per axis, in axis order. Pass an empty vector to clear the
-     *            annotation.
+     *            annotation. Every axis must name a real space; to leave one axis unannotated,
+     *            see @ref annotate_space_axis.
      * @throws std::out_of_range if no tensor with that id is registered.
      * @throws std::invalid_argument if the count differs from the tensor's rank, or if any id is
      *         invalid or does not resolve in @ref space_registry.
@@ -380,6 +483,26 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * annotation added afterwards does not reach nodes that are already recorded.
      */
     APIARY_EXPOSE void annotate_spaces(TensorId id, std::vector<SpaceId> spaces);
+
+    /**
+     * @brief Annotate ONE axis, leaving the others as they are.
+     * @param[in] id The tensor to annotate.
+     * @param[in] axis Which axis.
+     * @param[in] space The space that axis ranges over.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @throws std::invalid_argument if @p axis is past the tensor's rank, or if @p space is
+     *         invalid or does not resolve in @ref space_registry.
+     *
+     * @ref annotate_spaces takes THE COMPLETE annotation and rightly refuses a hole in it: a
+     * caller handing over a whole vector has said something about every axis, and an invalid id
+     * in one slot is far more likely a mistake than an intention. This is how the hole is made
+     * deliberately, one axis at a time, for a tensor that mixes axes over a space with axes
+     * whose extent is a fixed number meaning nothing chemically - a DIIS history depth beside a
+     * pair of orbital indices. Axes nobody has named stay unannotated, which every reader of
+     * the annotation already handles per axis.
+     * @versionadded{2.0.0}
+     */
+    void annotate_space_axis(TensorId id, std::size_t axis, SpaceId space);
 
     /**
      * @brief Annotate a tensor's axes, addressing it by the caller's tensor object.
@@ -463,6 +586,70 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }
         return tensor_spaces(id);
     }
+
+    // ── Space-typed dimensions (prototype) ──────────────────────────────────
+
+    /**
+     * @brief The extent this graph has learned for @p space, if it knows one.
+     * @param[in] space The space to ask about.
+     * @return The extent, or an empty optional when no annotated tensor has pinned it or when
+     *         two of them disagree.
+     *
+     * Learned, not declared: @ref annotate_spaces on a tensor whose dims are concrete says how
+     * big that space is on this problem, so the graph records it rather than making the caller
+     * repeat it. Two annotated axes over one space that disagree leave the space UNPINNED, which
+     * is not an error - a PNO domain legitimately has a different extent per pair - but it does
+     * mean a space-typed dimension cannot be sized from it.
+     *
+     * @see declare_zero_runtime_tensor(std::string, std::vector<SpaceDim>, bool)
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::optional<std::size_t> space_extent(SpaceId space) const noexcept;
+
+    /**
+     * @brief How @p space is canonically cut up, if this graph has been told.
+     * @param[in] space The space to ask about.
+     * @return The tile sizes, or an empty optional when none was stated or two statements
+     *         disagreed.
+     *
+     * A tiled program usually cuts one space the same way everywhere - every occupied axis in a
+     * tiled CC lands on the same block boundaries - so the partition is worth saying ONCE, at
+     * the space, instead of at every tensor that has such an axis. Retiling is then one edit
+     * rather than one per declaration.
+     *
+     * Unlike @ref space_extent this is never learned: a tensor's tiling is a property of that
+     * tensor, and taking the first one seen as canonical would silently make one scratch
+     * buffer's layout everyone else's.
+     *
+     * @see pin_space_tiling
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::optional<std::vector<int>> space_tiling(SpaceId space) const;
+
+    /**
+     * @brief State how @p space is cut up, for every tiled axis that ranges over it.
+     * @param[in] space The space.
+     * @param[in] tile_sizes The partition. Empty clears it.
+     * @throws std::invalid_argument If @p space is invalid, if any tile is not positive, or if
+     *         the tiles sum to something other than an extent already known for @p space.
+     *
+     * Also pins the extent to the sum, because a partition states one: a space cut into
+     * ``{2,2}`` measures 4, and leaving those two facts able to disagree would be a bug waiting
+     * to happen.
+     * @versionadded{2.0.0}
+     */
+    void pin_space_tiling(SpaceId space, std::vector<int> tile_sizes);
+
+    /**
+     * @brief State what @p space measures on this problem, rather than waiting to learn it.
+     * @param[in] space The space.
+     * @param[in] extent Its extent. Zero clears whatever was known.
+     *
+     * For the graph whose first tensor over a space is the one being declared, so there is
+     * nothing to have learned from yet. A later disagreeing annotation still unpins the space.
+     * @versionadded{2.0.0}
+     */
+    void pin_space_extent(SpaceId space, std::size_t extent);
 
     // ── Symbolic extents (Part 3.7) ─────────────────────────────────────────
 
@@ -1808,6 +1995,74 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         return *ptr;
     }
 
+    /**
+     * @brief Declare a deferred graph-owned tensor whose shape is stated in index spaces.
+     *
+     * The three statements a space-shaped scratch tensor needs today, collapsed into the one
+     * that cannot disagree with itself:
+     *
+     * @code
+     * // Today - three calls, three chances to drift apart:
+     * auto &T = graph.declare_zero_runtime_tensor<double>("T", {4, 8});
+     * graph.annotate_spaces(T, {occ, virt});
+     * graph.annotate_dims(T, {"occ", "virt"});
+     *
+     * // Here:
+     * auto &T = graph.declare_zero_runtime_tensor<double>("T", {occ, virt});
+     * @endcode
+     *
+     * @tparam T Element type.
+     * @tparam Alloc Allocator.
+     * @param[in] name Human-readable name.
+     * @param[in] shape One entry per axis: an index space, or a number for an axis that is
+     *            genuinely a fixed size. @ref SpaceDim converts from both.
+     * @param[in] intermediate Whether the tensor is graph-internal scratch.
+     * @return Reference to the deferred tensor.
+     *
+     * @throws std::invalid_argument If a named space has no extent this graph has learned (see
+     *         @ref space_extent): either nothing annotated over it yet, in which case
+     *         @ref pin_space_extent says so directly, or two annotated axes disagree, which is
+     *         what a ragged family looks like and wants @ref annotate_ragged_dim instead.
+     *
+     * @par What the axes are annotated with
+     * A space-typed axis is annotated with that space AND given a dim symbol, so the tensor is
+     * rebindable at new extents without a second call. The symbol is the space's own NAME, which
+     * keeps the ``(symbol, space)`` tie trivially consistent and adds nothing to the saved
+     * schema. A numeric axis is left literal and unannotated, which is what a fixed size means.
+     *
+     * @see SpaceDim
+     * @see annotate_dims
+     * @versionadded{2.0.0}
+     */
+    template <typename T, typename Alloc = std::allocator<T>>
+    GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
+                                                                bool intermediate = false) {
+        auto const resolved = resolve_space_shape(shape, name);
+        auto      &t        = declare_zero_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
+        apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
+        return t;
+    }
+
+    /**
+     * @brief The un-zeroed counterpart of the space-shaped @ref declare_zero_runtime_tensor.
+     * @tparam T Element type.
+     * @tparam Alloc Allocator.
+     * @param[in] name Human-readable name.
+     * @param[in] shape One entry per axis; see the zeroed overload.
+     * @param[in] intermediate Whether the tensor is graph-internal scratch.
+     * @return Reference to the deferred tensor.
+     * @throws std::invalid_argument As the zeroed overload.
+     * @versionadded{2.0.0}
+     */
+    template <typename T, typename Alloc = std::allocator<T>>
+    GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
+                                                           bool intermediate = false) {
+        auto const resolved = resolve_space_shape(shape, name);
+        auto      &t        = declare_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
+        apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
+        return t;
+    }
+
     /// Runtime-rank analog of declare_zero_tensor() (graph-owned, deferred, zeroed
     /// at materialize time).
     template <typename T, typename Alloc = std::allocator<T>>
@@ -1867,6 +2122,58 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         register_tensor(std::move(handle));
         // No Alloc node, MaterializationPass inserts Materialize + Initialize.
         return *ptr;
+    }
+
+    /**
+     * @brief Declare a deferred graph-owned TILED tensor whose shape is stated in index spaces.
+     *
+     * The tiled counterpart of the space-shaped @ref declare_zero_runtime_tensor. An axis names
+     * the space it ranges over and, where it differs from that space's canonical partition, its
+     * own tiling:
+     *
+     * @code
+     * graph.pin_space_tiling(occ,  {2, 2});
+     * graph.pin_space_tiling(virt, {4, 4});
+     *
+     * auto &T = graph.declare_zero_tiled_tensor<double>("T", {occ, virt});
+     * auto &U = graph.declare_zero_tiled_tensor<double>("U", {{occ, {1, 3}}, virt});
+     * @endcode
+     *
+     * @tparam T Element type.
+     * @param[in] name Human-readable name.
+     * @param[in] shape One entry per axis. @ref SpaceTiling converts from a bare @ref SpaceId
+     *            (take the space's canonical tiling) and carries an explicit partition
+     *            otherwise; @ref tiles is an axis with a partition and no space.
+     * @param[in] intermediate Whether the tensor is graph-internal scratch.
+     * @return Reference to the deferred tiled tensor.
+     *
+     * @throws std::invalid_argument If an axis names a space with no canonical tiling and
+     *         supplies none of its own, or if an explicit partition sums to something other
+     *         than what its space measures.
+     *
+     * @par What the axes are annotated with
+     * The space, and a dim symbol that is the space's name - a PLAIN symbol, not a ragged one.
+     * A tiled axis's TOTAL is what the space fixes and what a bind moves; how it is cut up is a
+     * layout choice that varies between tensors over one space without the space being ragged.
+     *
+     * @note @ref Pass_MemoryPlanning leaves tiled scratch alone by construction (the arena needs
+     *       a single buffer and a tile-wise tensor has none), so this is annotation ergonomics
+     *       for tiled tensors, not the memory-planning payoff the dense declaration gets.
+     *
+     * @see SpaceTiling
+     * @see pin_space_tiling
+     * @versionadded{2.0.0}
+     */
+    template <typename T>
+    TiledRuntimeTensor<T> &declare_zero_tiled_tensor(std::string name, std::vector<SpaceTiling> const &shape, bool intermediate = false) {
+        auto const         resolved = resolve_tiled_shape(shape, name);
+        auto              &t        = declare_zero_tiled_tensor<T>(std::move(name), resolved.tile_sizes, intermediate);
+        ResolvedSpaceShape carried;
+        carried.spaces    = resolved.spaces;
+        carried.symbols   = resolved.symbols;
+        carried.any_space = resolved.any_space;
+        apply_space_shape(find_tensor_id_by_ptr(&t), carried);
+        return t;
     }
 
     // ── Deferred tensor declaration ─────────────────────────────────────────
@@ -3383,6 +3690,56 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// contradiction no single handle can see.
     /// @see symbol_spaces
     std::unordered_map<std::string, SpaceId> _symbol_spaces;
+
+    /// What each space measures on the problem currently annotated, learned from
+    /// @ref annotate_spaces. The bool is "still uniform": two annotated axes over one space
+    /// that disagree set it false and the extent stops being usable, which is a ragged family
+    /// rather than a mistake. Keyed on the raw id value because SpaceId is not hashable.
+    std::unordered_map<std::uint32_t, std::pair<std::size_t, bool>> _space_extents;
+
+    /// The canonical partition of each space, from @ref pin_space_tiling. The bool mirrors
+    /// @ref _space_extents: two disagreeing statements leave the space with no usable tiling.
+    std::unordered_map<std::uint32_t, std::pair<std::vector<int>, bool>> _space_tiles;
+
+    /// One space-typed TILED shape, resolved against @ref _space_tiles.
+    struct ResolvedTiledShape {
+        std::vector<std::vector<int>> tile_sizes;
+        std::vector<SpaceId>          spaces;
+        std::vector<std::string>      symbols;
+        bool                          any_space{false};
+    };
+
+    /// @brief Turn a space-typed tiled shape into tile sizes plus the annotations it implies.
+    /// @param[in] shape The caller's shape.
+    /// @param[in] name The tensor's name, for the error message.
+    /// @return The resolved shape.
+    /// @throws std::invalid_argument When an axis has neither a tiling of its own nor a space
+    ///         with a canonical one, or when the two disagree about the total.
+    [[nodiscard]] ResolvedTiledShape resolve_tiled_shape(std::vector<SpaceTiling> const &shape, std::string const &name) const;
+
+    /// One space-typed shape, resolved against @ref _space_extents.
+    struct ResolvedSpaceShape {
+        std::vector<std::size_t> dims;
+        std::vector<SpaceId>     spaces;
+        std::vector<std::string> symbols;
+        bool                     any_space{false};
+    };
+
+    /// @brief Turn a space-typed shape into dims plus the annotations it implies.
+    /// @param[in] shape The caller's shape.
+    /// @param[in] name The tensor's name, for the error message.
+    /// @return The resolved shape.
+    /// @throws std::invalid_argument When a space has no usable extent.
+    [[nodiscard]] ResolvedSpaceShape resolve_space_shape(std::vector<SpaceDim> const &shape, std::string const &name) const;
+
+    /// @brief Apply the annotations a resolved shape implies to a freshly declared tensor.
+    /// @param[in] id The tensor.
+    /// @param[in] resolved What @ref resolve_space_shape produced.
+    void apply_space_shape(TensorId id, ResolvedSpaceShape const &resolved);
+
+    /// @brief Learn what @p handle's dims say about the spaces it is annotated with.
+    /// @param[in] handle The freshly annotated handle.
+    void learn_space_extents(TensorHandle const &handle);
 
     /// Per-instance extent tables @ref bind_ragged_extents has accepted, in supply order.
     /// Cleared by @ref clear_bindings with the rest of the bind state.

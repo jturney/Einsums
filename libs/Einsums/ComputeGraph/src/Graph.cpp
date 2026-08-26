@@ -1679,6 +1679,43 @@ void Graph::annotate_spaces(TensorId id, std::vector<SpaceId> spaces) {
     // downstream may overwrite that.
     handle.spaces          = std::move(spaces);
     handle.spaces_inferred = false;
+
+    // A declaration over a tensor with concrete dims also says how big those spaces are on
+    // this problem, which is what lets a later tensor be shaped in spaces instead of numbers.
+    learn_space_extents(handle);
+}
+
+void Graph::annotate_space_axis(TensorId id, std::size_t axis, SpaceId space) {
+    auto &handle = tensor(id);
+
+    if (axis >= handle.rank) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': annotate_space_axis tensor '{}': axis {} is past its rank of {}", _name,
+                                handle.name, axis, handle.rank);
+    }
+    if (!space.valid() || space.value() >= space_registry().size()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "Graph '{}': annotate_space_axis tensor '{}': axis {} names a space that does not resolve in this "
+                                "graph's registry",
+                                _name, handle.name, axis);
+    }
+
+    if (handle.spaces.size() != handle.rank) {
+        // Axes nobody has spoken for stay default-constructed, which is what "this axis has no
+        // space" looks like everywhere that reads the annotation per axis.
+        handle.spaces.resize(handle.rank);
+    }
+    handle.spaces[axis]    = space;
+    handle.spaces_inferred = false;
+
+    {
+        TensorHandle probe;
+        probe.name        = handle.name;
+        probe.dim_symbols = handle.dim_symbols;
+        probe.spaces      = handle.spaces;
+        record_symbol_space_ties(probe);
+    }
+
+    learn_space_extents(handle);
 }
 
 std::vector<SpaceId> const &Graph::tensor_spaces(TensorId id) const {

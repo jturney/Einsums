@@ -107,6 +107,7 @@ set(ComputeGraphTests
     SpaceAnnotation.cpp
     SpaceRegistry.cpp
     SymbolicCost.cpp
+    SpaceShapedDeclare.cpp
     SymbolicExtents.cpp
     StringEinsum.cpp
     TensorLifetime.cpp

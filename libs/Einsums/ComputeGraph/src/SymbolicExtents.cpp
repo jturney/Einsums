@@ -158,6 +158,243 @@ void Graph::record_symbol_space_ties(TensorHandle const &handle) {
     }
 }
 
+// ── Space-typed dimensions ─────────────────────────────────────────────────
+
+void Graph::learn_space_extents(TensorHandle const &handle) {
+    if (handle.spaces.empty() || handle.dims.empty()) {
+        return;
+    }
+    std::size_t const axes = std::min(handle.spaces.size(), handle.dims.size());
+    for (std::size_t axis = 0; axis < axes; ++axis) {
+        SpaceId const space = handle.spaces[axis];
+        if (!space.valid()) {
+            continue;
+        }
+        auto const [it, inserted] = _space_extents.try_emplace(space.value(), handle.dims[axis], true);
+        if (!inserted && it->second.first != handle.dims[axis]) {
+            // Not an error. Two axes over one space with different extents is exactly what a
+            // ragged family is, and the design says so: PNO domains have a different virtual
+            // extent per pair. What it costs is the ability to SIZE an axis from the space,
+            // so the space stops being usable that way and says so if anyone asks.
+            it->second.second = false;
+        }
+    }
+}
+
+std::optional<std::size_t> Graph::space_extent(SpaceId space) const noexcept {
+    if (!space.valid()) {
+        return std::nullopt;
+    }
+    auto const it = _space_extents.find(space.value());
+    if (it == _space_extents.end() || !it->second.second) {
+        return std::nullopt;
+    }
+    return it->second.first;
+}
+
+void Graph::pin_space_extent(SpaceId space, std::size_t extent) {
+    if (!space.valid()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': pin_space_extent: the id does not name a space", _name);
+    }
+    if (extent == 0) {
+        _space_extents.erase(space.value());
+        return;
+    }
+    _space_extents[space.value()] = {extent, true};
+}
+
+std::optional<std::vector<int>> Graph::space_tiling(SpaceId space) const {
+    if (!space.valid()) {
+        return std::nullopt;
+    }
+    auto const it = _space_tiles.find(space.value());
+    if (it == _space_tiles.end() || !it->second.second) {
+        return std::nullopt;
+    }
+    return it->second.first;
+}
+
+void Graph::pin_space_tiling(SpaceId space, std::vector<int> tile_sizes) {
+    if (!space.valid()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': pin_space_tiling: the id does not name a space", _name);
+    }
+    if (tile_sizes.empty()) {
+        _space_tiles.erase(space.value());
+        return;
+    }
+
+    std::string const name = space_registry().space(space).name;
+
+    std::size_t total = 0;
+    for (std::size_t tile = 0; tile < tile_sizes.size(); ++tile) {
+        if (tile_sizes[tile] <= 0) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "Graph '{}': pin_space_tiling index space '{}': tile {} has size {}; a tile is a non-empty piece "
+                                    "of the space",
+                                    _name, name, tile, tile_sizes[tile]);
+        }
+        total += static_cast<std::size_t>(tile_sizes[tile]);
+    }
+
+    // A partition states an extent, so the two must not be able to drift apart.
+    if (auto const known = space_extent(space); known.has_value() && *known != total) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "Graph '{}': pin_space_tiling index space '{}': the tiles sum to {}, but this graph already has it "
+                                "measuring {}",
+                                _name, name, total, *known);
+    }
+
+    auto const [it, inserted] = _space_tiles.try_emplace(space.value(), tile_sizes, true);
+    if (!inserted && it->second.first != tile_sizes) {
+        // Mirrors the extent rule: a second, different statement is not an error but it does
+        // leave the space without a canonical answer, so an axis has to bring its own.
+        it->second.second = false;
+    }
+    _space_extents[space.value()] = {total, true};
+}
+
+Graph::ResolvedTiledShape Graph::resolve_tiled_shape(std::vector<SpaceTiling> const &shape, std::string const &name) const {
+    ResolvedTiledShape resolved;
+    resolved.tile_sizes.reserve(shape.size());
+    resolved.spaces.reserve(shape.size());
+    resolved.symbols.reserve(shape.size());
+
+    for (std::size_t axis = 0; axis < shape.size(); ++axis) {
+        SpaceTiling const &entry = shape[axis];
+
+        if (!entry.space.valid()) {
+            // tiles({...}): a partition with no meaning. No space, no symbol, and a bind may
+            // not move it, exactly as fixed() behaves for a dense axis.
+            if (entry.tile_sizes.empty()) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                        "Graph '{}': tensor '{}' axis {} names no index space and carries no tiles, so nothing says "
+                                        "how big it is or how it is cut up",
+                                        _name, name, axis);
+            }
+            resolved.tile_sizes.push_back(entry.tile_sizes);
+            resolved.spaces.emplace_back();
+            resolved.symbols.emplace_back();
+            continue;
+        }
+
+        std::string const space_name = space_registry().space(entry.space).name;
+
+        std::vector<int> axis_tiles = entry.tile_sizes;
+        if (axis_tiles.empty()) {
+            auto const canonical = space_tiling(entry.space);
+            if (!canonical.has_value()) {
+                auto const it = _space_tiles.find(entry.space.value());
+                if (it != _space_tiles.end() && !it->second.second) {
+                    EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                            "Graph '{}': tensor '{}' axis {} takes its tiling from index space '{}', which has been "
+                                            "given two different ones; give this axis the partition it wants",
+                                            _name, name, axis, space_name);
+                }
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                        "Graph '{}': tensor '{}' axis {} takes its tiling from index space '{}', but nothing has said "
+                                        "how that space is cut up; call pin_space_tiling, or give this axis its own partition",
+                                        _name, name, axis, space_name);
+            }
+            axis_tiles = *canonical;
+        } else {
+            std::size_t total = 0;
+            for (int const tile : axis_tiles) {
+                if (tile <= 0) {
+                    EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                            "Graph '{}': tensor '{}' axis {}: a tile has size {}; a tile is a non-empty piece of the "
+                                            "space",
+                                            _name, name, axis, tile);
+                }
+                total += static_cast<std::size_t>(tile);
+            }
+            if (auto const known = space_extent(entry.space); known.has_value() && *known != total) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                        "Graph '{}': tensor '{}' axis {} tiles index space '{}' into pieces summing to {}, but this "
+                                        "graph has that space measuring {}",
+                                        _name, name, axis, space_name, total, *known);
+            }
+        }
+
+        resolved.tile_sizes.push_back(std::move(axis_tiles));
+        resolved.spaces.push_back(entry.space);
+        // A PLAIN symbol, not a ragged one: the space fixes the axis TOTAL, and how that total
+        // is cut up is a layout choice two tensors may differ on without the space being ragged.
+        resolved.symbols.push_back(space_name);
+        resolved.any_space = true;
+    }
+
+    return resolved;
+}
+
+Graph::ResolvedSpaceShape Graph::resolve_space_shape(std::vector<SpaceDim> const &shape, std::string const &name) const {
+    ResolvedSpaceShape resolved;
+    resolved.dims.reserve(shape.size());
+    resolved.spaces.reserve(shape.size());
+    resolved.symbols.reserve(shape.size());
+
+    for (std::size_t axis = 0; axis < shape.size(); ++axis) {
+        SpaceDim const &dim = shape[axis];
+        if (!dim.space.valid()) {
+            // A number is a number: literal extent, no space, no symbol.
+            resolved.dims.push_back(dim.extent);
+            resolved.spaces.emplace_back();
+            resolved.symbols.emplace_back();
+            continue;
+        }
+
+        auto const extent = space_extent(dim.space);
+        if (!extent.has_value()) {
+            SpaceRegistry const &registry = space_registry();
+            std::string const    space    = registry.space(dim.space).name;
+            auto const           it       = _space_extents.find(dim.space.value());
+            if (it != _space_extents.end() && !it->second.second) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                        "Graph '{}': tensor '{}' axis {} is shaped by index space '{}', whose extent differs between "
+                                        "the tensors already annotated with it; that is a ragged family and has no single size to "
+                                        "take, so give the axis a number or declare it with annotate_ragged_dim",
+                                        _name, name, axis, space);
+            }
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "Graph '{}': tensor '{}' axis {} is shaped by index space '{}', but nothing annotated with that "
+                                    "space has told this graph how big it is; annotate an operand over it first, or say so with "
+                                    "pin_space_extent",
+                                    _name, name, axis, space);
+        }
+
+        resolved.dims.push_back(*extent);
+        resolved.spaces.push_back(dim.space);
+        // The space's own name as the dim symbol. It keeps the (symbol, space) tie trivially
+        // consistent, and it adds no field to IndexSpace and so nothing to the saved schema.
+        resolved.symbols.push_back(space_registry().space(dim.space).name);
+        resolved.any_space = true;
+    }
+
+    return resolved;
+}
+
+void Graph::apply_space_shape(TensorId id, ResolvedSpaceShape const &resolved) {
+    if (!resolved.any_space) {
+        // Every axis was a number. Annotating nothing is the honest record of that, and it
+        // keeps a fully literal shape indistinguishable from the dims-based overload.
+        return;
+    }
+
+    bool const every_axis = std::none_of(resolved.spaces.begin(), resolved.spaces.end(), [](SpaceId s) { return !s.valid(); });
+    if (every_axis) {
+        annotate_spaces(id, resolved.spaces);
+    } else {
+        // A mixed shape has a hole in it by construction, and the vector form refuses one.
+        for (std::size_t axis = 0; axis < resolved.spaces.size(); ++axis) {
+            if (resolved.spaces[axis].valid()) {
+                annotate_space_axis(id, axis, resolved.spaces[axis]);
+            }
+        }
+    }
+
+    // Dim symbols carry the hole natively: the empty string IS a literal axis.
+    annotate_dims(id, resolved.symbols);
+}
+
 void Graph::annotate_dims(TensorId id, std::vector<std::string> symbols) {
     auto &handle = tensor(id);
 
