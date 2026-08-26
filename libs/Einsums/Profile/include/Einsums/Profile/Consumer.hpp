@@ -112,7 +112,7 @@ struct AggNode {
     /// Frees the subtree with a worklist rather than by recursion.
     ///
     /// The compiler-generated destructor recurses once per level through the
-    /// child ``unique_ptr``s, so freeing the tree costs a stack frame per level
+    /// child ``unique_ptr`` members, so freeing the tree costs a stack frame per level
     /// of nesting - and a profiler is exactly the thing that must not turn a
     /// deeply nested program into a crash at exit. One did: a run that dropped
     /// events built a chain over 100k nodes long (see @ref Event::depth) and

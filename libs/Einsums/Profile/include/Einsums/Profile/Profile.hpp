@@ -390,7 +390,7 @@ struct EINSUMS_EXPORT Profiler {
  * @brief The interned identity of one instrumentation site's location.
  *
  * ``__FILE__`` and ``__func__`` are compile-time constants where a zone is
- * written, so interning them on every entry re-hashes and re-``memcmp``s the same
+ * written, so interning them on every entry re-hashes and re-compares the same
  * strings under a shared mutex - and ``__FILE__`` is a long absolute path.
  * @ref LabeledSection declares one of these as a function-local static, paying
  * that once per site for the life of the process.

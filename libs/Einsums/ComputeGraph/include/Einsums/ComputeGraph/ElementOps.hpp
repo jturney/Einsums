@@ -234,7 +234,7 @@ class ElementOpRegistry {
                                     signature.arity);
         }
 
-        Entry entry{.signature = std::move(signature), .content = std::type_index(typeid(Kernel))};
+        Entry entry{.sig = std::move(signature), .content = std::type_index(typeid(Kernel))};
 
         // Install exactly the arms the kernel compiles for. A constrained
         // generic lambda is what makes "not defined for complex" visible here
@@ -255,14 +255,14 @@ class ElementOpRegistry {
         // The declared domain is a MASK as well as a promise: an op declared
         // real-only stays real-only even when its kernel happens to compile for
         // complex, because the declaration is what a saved graph carries.
-        if (entry.signature.domain == ElementOpDomain::RealOnly) {
+        if (entry.sig.domain == ElementOpDomain::RealOnly) {
             entry.c64  = nullptr;
             entry.c128 = nullptr;
         }
 
         require_arm(name, entry.f32 != nullptr, "float");
         require_arm(name, entry.f64 != nullptr, "double");
-        if (entry.signature.domain == ElementOpDomain::AllDtypes) {
+        if (entry.sig.domain == ElementOpDomain::AllDtypes) {
             require_arm(name, entry.c64 != nullptr, "complex<float>");
             require_arm(name, entry.c128 != nullptr, "complex<double>");
         }
@@ -270,7 +270,7 @@ class ElementOpRegistry {
         std::scoped_lock const guard(_mutex);
         auto const             existing = _entries.find(name);
         if (existing != _entries.end()) {
-            if (existing->second.content == entry.content && existing->second.signature == entry.signature) {
+            if (existing->second.content == entry.content && existing->second.sig == entry.sig) {
                 return; // the same registration, made twice
             }
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "element_ops::register_op: op '{}' is already registered with different content",
@@ -297,7 +297,7 @@ class ElementOpRegistry {
      */
     [[nodiscard]] ElementOpSignature signature(std::string_view name) const {
         std::scoped_lock const guard(_mutex);
-        return find_locked(name).signature;
+        return find_locked(name).sig;
     }
 
     /**
@@ -358,7 +358,10 @@ class ElementOpRegistry {
 
   private:
     struct Entry {
-        ElementOpSignature signature;
+        /// Named ``sig``, not ``signature``: the class already has a public
+        /// @ref signature accessor, and the two collide in one scope when the
+        /// documentation extractor flattens this nested struct onto the class page.
+        ElementOpSignature sig;
         /// The registered callable's C++ type; see the identity note on the class.
         std::type_index content{typeid(void)};
 

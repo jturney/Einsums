@@ -77,7 +77,7 @@ struct GemmOperand {
  * reads m/n/k to size a node. Non-GEMM contractions leave
  * ``gemm_hint == nullptr``.
  *
- * Every field is DATA. The operands used to be three ``std::function``s that
+ * Every field is DATA. The operands used to be three ``std::function`` members that
  * resolved a live pointer plus leading dimension at call time; a closure
  * cannot be written to a file, and it was the last thing standing between an
  * einsum node and being reconstructible from its descriptor
@@ -717,7 +717,10 @@ enum class ParamSourceType : std::uint8_t {
     /// The width-named spellings the graph itself uses. @c std::int64_t is one
     /// of @c long / @c long long depending on the platform, so this is an alias
     /// for whichever of those it is rather than a fifteenth distinct type.
-    Int64 = LongLong,
+    /// Spelling it as either one outright is wrong on half the world: glibc's
+    /// LP64 @c int64_t is @c long, libc++'s is @c long long, and a hardcoded
+    /// alias disagrees with @ref param_source_type there.
+    Int64 = std::is_same_v<std::int64_t, long> ? Long : LongLong,
 };
 
 /**
@@ -831,6 +834,13 @@ constexpr ParamSourceType param_source_type() {
         return ParamSourceType::LongDouble;
     }
 }
+
+/// The alias and the mapping have to agree, or a descriptor written by
+/// @ref param_source_type never compares equal to the alias a caller wrote.
+/// The two are derived from the same platform question, so this only fires if
+/// one of them stops asking it.
+static_assert(param_source_type<std::int64_t>() == ParamSourceType::Int64,
+              "ParamSourceType::Int64 must alias whichever of long / long long is std::int64_t here");
 
 /**
  * @brief Metadata for @c WriteParam nodes, explicit dataflow write into a Pipeline parameter.

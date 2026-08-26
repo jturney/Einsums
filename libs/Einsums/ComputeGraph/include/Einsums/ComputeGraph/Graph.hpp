@@ -389,7 +389,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @throws std::invalid_argument if the count differs from the tensor's rank, or if any id is
      *         invalid or does not resolve in @ref space_registry.
      *
-     * The by-object form of @ref annotate_spaces(TensorId, std::vector<SpaceId>), mirroring
+     * The by-object form of ``annotate_spaces(TensorId, std::vector<SpaceId>)``, mirroring
      * @ref rebind's pair of overloads. A tensor the graph has not seen yet is registered here,
      * exactly the way capture would register it (storage adopted into a graph-owned stand-in,
      * identity kept on the caller's wrapper), so annotating before the first capture that uses
@@ -430,7 +430,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return One space per axis, or an empty vector when the tensor carries no annotation.
      * @throws std::out_of_range if this graph has never seen that tensor.
      *
-     * The read counterpart of @ref annotate_spaces(TensorType const &, std::vector<SpaceId>), and
+     * The read counterpart of ``annotate_spaces(TensorType const &, std::vector<SpaceId>)``, and
      * deliberately NOT its mirror image: reading is const and registers nothing. A tensor the
      * graph does not know has no annotation to report and no handle to put one on, and saying so
      * is more useful than silently adopting its storage on a read.
@@ -507,7 +507,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @tparam TensorType The tensor type.
      * @param[in] tensor The tensor to annotate. Registered here if the graph has not seen it,
      *            exactly as @ref annotate_spaces does.
-     * @param[in] symbols One entry per axis; see @ref annotate_dims(TensorId, std::vector<std::string>).
+     * @param[in] symbols One entry per axis; see ``annotate_dims(TensorId, std::vector<std::string>)``.
      * @versionadded{2.0.0}
      */
     template <GraphCapturableTensor TensorType>
@@ -1012,7 +1012,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /**
      * @brief Name a gate-flag array given its shared buffer directly.
-     * @param[in] name   The name; see @ref name_gate_flags(std::string, GateFlags const &).
+     * @param[in] name   The name; see ``name_gate_flags(std::string, GateFlags const &)``.
      * @param[in] buffer The array to name.
      * @versionadded{2.0.0}
      */
@@ -1547,7 +1547,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @brief Add a loop whose condition is DATA rather than a closure.
      *
      * The same node the ``std::function`` overload builds; see
-     * @ref add_conditional(std::string, PredExpr) for why the spelling matters.
+     * ``add_conditional(std::string, PredExpr)`` for why the spelling matters.
      * A @ref PredExpr::Iteration arm compares against the index of the iteration
      * that just finished, which is how a loop expresses "stop after n" without a
      * parameter table entry that would otherwise be visible graph-wide.

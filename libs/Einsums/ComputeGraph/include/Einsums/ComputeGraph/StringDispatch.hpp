@@ -894,7 +894,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
  * data, dims and strides as runtime values: one definition then serves every
  * rank and every static tensor type. It is also what lets @ref build_executor
  * run a permute without first wrapping its operands in a tensor object, which
- * would copy two ``ShapeVector``s per operand on every replay.
+ * would copy two ``ShapeVector`` objects per operand on every replay.
  *
  * @tparam T Element type shared by both operands.
  * @param[in] parsed The index lists, and the raw spec for diagnostics.

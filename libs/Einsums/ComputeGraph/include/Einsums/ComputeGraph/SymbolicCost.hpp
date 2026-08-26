@@ -131,7 +131,6 @@ class EINSUMS_EXPORT SymbolicVar {
 
     /**
      * @brief The canonical order on variables.
-     * @param[in] lhs Left operand.
      * @param[in] rhs Right operand.
      * @return Space variables before anonymous ones; space variables by @ref SpaceId, which is
      *         registration order in their registry; anonymous variables lexicographically by letter.
@@ -140,8 +139,13 @@ class EINSUMS_EXPORT SymbolicVar {
      * processes for anonymous variables unconditionally, and for space variables as long as the
      * spaces are registered in the same order, which is the normal case because registration is
      * startup code.
+     *
+     * A member rather than a hidden friend, which every other spaceship in the
+     * tree already is: a variable converts from nothing, so the two forms behave
+     * identically here, and the member form is the one the documentation
+     * extractor renders without mangling the operator's name.
      */
-    [[nodiscard]] friend std::strong_ordering operator<=>(SymbolicVar const &lhs, SymbolicVar const &rhs) = default;
+    [[nodiscard]] std::strong_ordering operator<=>(SymbolicVar const &rhs) const = default;
 
     /// @brief Hash so a variable can key an unordered container.
     /// @return A hash of flavour and payload.

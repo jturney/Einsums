@@ -189,10 +189,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") SpaceId {
     [[nodiscard]] friend constexpr bool operator==(SpaceId lhs, SpaceId rhs) noexcept { return lhs._value == rhs._value; }
 
     /// @brief Order two ids so they can key an ordered container.
-    /// @param[in] lhs Left operand.
     /// @param[in] rhs Right operand.
     /// @return The ordering of the underlying indices, which is registration order.
-    [[nodiscard]] friend constexpr std::strong_ordering operator<=>(SpaceId lhs, SpaceId rhs) noexcept { return lhs._value <=> rhs._value; }
+    ///
+    /// A member rather than a hidden friend, which every other spaceship in the
+    /// tree already is: an id converts from nothing, so the two forms behave
+    /// identically here, and the member form is the one the documentation
+    /// extractor renders without mangling the operator's name.
+    [[nodiscard]] constexpr std::strong_ordering operator<=>(SpaceId rhs) const noexcept { return _value <=> rhs._value; }
 
   private:
     friend class SpaceRegistry;

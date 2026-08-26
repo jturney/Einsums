@@ -112,9 +112,18 @@ struct ParseError {
  * what is left; anything left is a field this build does not know, which the
  * strict policy refuses.
  *
+ * @note The export annotation sits on the individual members, NOT on the class.
+ *       ``__declspec(dllexport)`` on a class instantiates its implicit members
+ *       right at the class definition, and this one holds a
+ *       ``std::vector<Value>`` while @ref Value is still incomplete: declaring
+ *       the vector is legal there, destroying it is not. Exporting the class
+ *       wholesale therefore fails to compile under MSVC and clang-cl even
+ *       though it is fine on the Itanium ABI. @ref Value carries the same
+ *       constraint, for the same reason.
+ *
  * @versionadded{2.0.0}
  */
-class EINSUMS_EXPORT Object {
+class Object {
   public:
     Object() = default;
 
@@ -125,39 +134,39 @@ class EINSUMS_EXPORT Object {
      * @param[in] value The value.
      * @throws std::invalid_argument When @p key is already present.
      */
-    void set(std::string key, Value value);
+    EINSUMS_EXPORT void set(std::string key, Value value);
 
     /// @brief Whether @p key is present.
     /// @param[in] key The key to look for.
     /// @return True when present, consumed or not.
-    [[nodiscard]] bool contains(std::string_view key) const noexcept;
+    [[nodiscard]] EINSUMS_EXPORT bool contains(std::string_view key) const noexcept;
 
     /**
      * @brief Read @p key WITHOUT marking it consumed.
      * @param[in] key The key to read.
      * @return The value, or nullptr when absent.
      */
-    [[nodiscard]] Value const *peek(std::string_view key) const noexcept;
+    [[nodiscard]] EINSUMS_EXPORT Value const *peek(std::string_view key) const noexcept;
 
     /**
      * @brief Read @p key and mark it consumed.
      * @param[in] key The key to read.
      * @return The value, or nullptr when absent (nothing is marked then).
      */
-    [[nodiscard]] Value const *take(std::string_view key) const noexcept;
+    [[nodiscard]] EINSUMS_EXPORT Value const *take(std::string_view key) const noexcept;
 
     /// @brief Mark @p key consumed without reading it, for a key a reader
     ///        deliberately ignores.
     /// @param[in] key The key to mark.
-    void mark_consumed(std::string_view key) const noexcept;
+    EINSUMS_EXPORT void mark_consumed(std::string_view key) const noexcept;
 
     /// @brief Keys still unconsumed, in insertion order.
     /// @return The names. Empty when the reader understood the whole object.
-    [[nodiscard]] std::vector<std::string> unconsumed_keys() const;
+    [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> unconsumed_keys() const;
 
     /// @brief Every key, in insertion order.
     /// @return The names.
-    [[nodiscard]] std::vector<std::string> keys() const;
+    [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> keys() const;
 
     /// How many keys the object holds.
     [[nodiscard]] std::size_t size() const noexcept { return _keys.size(); }
@@ -191,11 +200,19 @@ class EINSUMS_EXPORT Object {
 
 /**
  * @brief One JSON value: null, bool, int64, double, string, array or object.
+ *
+ * @note Exported per-member rather than per-class; see the note on @ref Object.
+ *       ``Array`` is a ``std::vector<Value>``, so this class holds itself
+ *       incompletely too.
+ *
  * @versionadded{2.0.0}
  */
-class EINSUMS_EXPORT Value {
+class Value {
   public:
-    using Array   = std::vector<Value>;
+    /// An ordered list of values, which is what a JSON array holds.
+    using Array = std::vector<Value>;
+
+    /// The seven alternatives, in the order @ref Type enumerates them.
     using Storage = std::variant<std::nullptr_t, bool, std::int64_t, double, std::string, Array, Object>;
 
     /// Which alternative a value holds.
@@ -264,7 +281,7 @@ class EINSUMS_EXPORT Value {
     /// @brief The name of @p type, for a diagnostic.
     /// @param[in] type The type to name.
     /// @return ``"null"``, ``"bool"``, ``"integer"``, ``"number"``, ``"string"``, ``"array"`` or ``"object"``.
-    [[nodiscard]] static std::string_view type_name(Type type) noexcept;
+    [[nodiscard]] EINSUMS_EXPORT static std::string_view type_name(Type type) noexcept;
 
     /// The name of this value's own type.
     [[nodiscard]] std::string_view type_name() const noexcept { return type_name(type()); }

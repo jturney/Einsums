@@ -45,6 +45,17 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /**
+ * @brief Recovers a tensor's ``TensorImpl`` from the erased object @ref TensorSlot::ptr addresses.
+ *
+ * Named rather than spelled inline at each use because a bare
+ * ``void *(*)(void *)`` is a declarator the field, the factory's return type
+ * and the documentation extractor each have to spell the same way.
+ *
+ * @versionadded{2.0.0}
+ */
+using SlotImplAccessor = void *(*)(void *);
+
+/**
  * @brief A rebindable tensor reference.
  *
  * Holds a void pointer to the current tensor object. The pointer can be
@@ -80,7 +91,7 @@ struct TensorSlot {
     ///
     /// Null for tile-wise sparse tensors, which have no single impl, and for
     /// slots created before the accessor existed. Gate on it.
-    void *(*impl_of)(void *){nullptr};
+    SlotImplAccessor impl_of{nullptr};
 
     /// Keeps whatever @ref ptr addresses alive for as long as the slot exists.
     ///
@@ -104,7 +115,7 @@ struct TensorSlot {
  * ``if constexpr``.
  */
 template <typename TensorType>
-[[nodiscard]] constexpr auto slot_impl_accessor() -> void *(*)(void *) {
+[[nodiscard]] constexpr auto slot_impl_accessor() -> SlotImplAccessor {
     using Clean = std::remove_cvref_t<TensorType>;
     if constexpr (requires(Clean &t) { t.impl(); }) {
         return [](void *object) -> void * { return static_cast<void *>(&static_cast<Clean *>(object)->impl()); };

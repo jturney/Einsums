@@ -513,8 +513,8 @@ void permute(PermuteFormatString spec, CType *C, AType const &A) {
 /// Graph-aware permute with explicit prefactors.
 ///
 /// ``spec`` is a permutation pattern such as ``"ji <- ij"`` (transpose)
-/// or ``"kji <- ijk"`` (rank-3 reorder). Computes ``C = c_pf * C + a_pf
-/// * permute(A)`` according to ``spec``. ``c_pf`` defaults to 0 and
+/// or ``"kji <- ijk"`` (rank-3 reorder). Computes
+/// ``C = c_pf * C + a_pf * permute(A)`` according to ``spec``. ``c_pf`` defaults to 0 and
 /// ``a_pf`` to 1, i.e. ``C = permute(A)``.
 template <typename AType, typename CType>
     requires requires {
