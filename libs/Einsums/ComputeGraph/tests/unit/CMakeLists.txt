@@ -134,6 +134,7 @@ set(ComputeGraphTests
     test_block_copy_python.py
     test_capture_parity_gaps_python.py
     test_capture_python.py
+    test_ccsd_reuse_python.py
     test_diis_python.py
     test_diis_differential_python.py
     test_diis_cpp_differential_python.py
