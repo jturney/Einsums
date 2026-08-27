@@ -239,12 +239,37 @@ struct SaveOptions {
 [[nodiscard]] EINSUMS_EXPORT expected<Graph, GraphError> load_graph(std::string const &path);
 
 /**
+ * @brief Read @p path back, resolving its index spaces against @p registry.
+ * @param[in] path The file to read.
+ * @param[in] registry The registry the file's space NAMES are looked up in. Must outlive the graph.
+ * @return The graph, or the failure.
+ *
+ * A saved graph carries space NAMES rather than ids, because a @ref SpaceId is meaningless
+ * outside the registry that issued it. Resolving them needs a registry, and the no-registry
+ * overload uses the process-global one, which is right for a program with one set of spaces and
+ * wrong for a caller who keeps their own: such a caller got "index space 'occ' is not registered
+ * in this process" with an empty list of what IS registered, having registered everything.
+ *
+ * The loaded graph is also told to USE @p registry, so its annotations, a later save, and any
+ * pass that reads a space all agree with the ids it was built from.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] EINSUMS_EXPORT expected<Graph, GraphError> load_graph(std::string const &path, SpaceRegistry &registry);
+
+/**
  * @brief Read ``einsums_graph_ir`` text back as a runnable graph.
  * @param[in] text The document.
  * @return The graph, or the first reason it could not be built.
  * @versionadded{2.0.0}
  */
 [[nodiscard]] EINSUMS_EXPORT expected<Graph, GraphError> load_graph_string(std::string_view text);
+
+/// @brief As @ref load_graph_string, resolving index spaces against @p registry.
+/// @param[in] text The document.
+/// @param[in] registry The registry to resolve space names in. Must outlive the graph.
+/// @return The graph, or the failure.
+/// @versionadded{2.0.0}
+[[nodiscard]] EINSUMS_EXPORT expected<Graph, GraphError> load_graph_string(std::string_view text, SpaceRegistry &registry);
 
 /**
  * @brief Check an ``einsums_graph_ir`` file without building a graph, reporting
@@ -269,6 +294,13 @@ struct SaveOptions {
  * @versionadded{2.0.0}
  */
 [[nodiscard]] EINSUMS_EXPORT expected<void, GraphError> validate_graph_ir_string(std::string_view text);
+
+/// @brief As @ref validate_graph_ir_string, resolving index spaces against @p registry.
+/// @param[in] text The document.
+/// @param[in] registry The registry to resolve space names in.
+/// @return Nothing, or every problem found.
+/// @versionadded{2.0.0}
+[[nodiscard]] EINSUMS_EXPORT expected<void, GraphError> validate_graph_ir_string(std::string_view text, SpaceRegistry &registry);
 
 // ── The Python spelling ────────────────────────────────────────────────────
 //
@@ -298,6 +330,20 @@ APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("save_graph")
  */
 APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("load_graph") APIARY_RVP(take_ownership)
     [[nodiscard]] EINSUMS_EXPORT Graph *load_graph_file(std::string const &path);
+
+/**
+ * @brief Read @p path back against @p registry, throwing on failure. The Python spelling.
+ * @param[in] path The file to read.
+ * @param[in] registry The registry the file's space NAMES resolve in. Must outlive the graph.
+ * @return The graph, owned by the caller.
+ * @throws std::runtime_error With every problem the file has.
+ *
+ * The counterpart of @ref load_graph(std::string const &, SpaceRegistry &) for a caller who
+ * keeps their own registry rather than using the process-global one.
+ * @versionadded{2.0.0}
+ */
+APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("load_graph_into") APIARY_RVP(take_ownership) APIARY_KEEP_ALIVE(0, 2)
+    [[nodiscard]] EINSUMS_EXPORT Graph *load_graph_file_into(std::string const &path, SpaceRegistry &registry);
 
 /**
  * @brief Check @p path, throwing with every problem when it is not valid.

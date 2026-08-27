@@ -309,3 +309,48 @@ def test_a_saved_graph_with_scratch_replays_at_a_new_size(tmp_path):
 
     # Not close: identical. Both run the same kernels over the same values in the same order.
     assert np.array_equal(np.asarray(out_a), np.asarray(out_b))
+
+
+def test_load_graph_into_a_private_registry(tmp_path):
+    """A saved graph resolves its space NAMES against a registry the caller chooses.
+
+    load_graph used the process-global registry unconditionally, so a caller keeping
+    their own was told the space "is not registered in this process" with an empty list
+    of what IS registered, having registered everything.
+    """
+    mine = cg.SpaceRegistry()
+    occ = mine.register_space(cg.index_space("priv_occ", "o", 4.0, cg.GrowthClass.linear(), "p_no"))
+    vir = mine.register_space(cg.index_space("priv_virt", "v", 6.0, cg.GrowthClass.linear(), "p_nv"))
+
+    amp = einsums.create_zero_tensor("amp", [4, 6])
+    out = einsums.create_zero_tensor("out", [4, 4])
+    np.asarray(amp)[...] = np.random.default_rng(1).standard_normal((4, 6))
+
+    g = cg.Graph("priv")
+    g.set_space_registry(mine)
+    g.annotate_spaces(amp, [occ, vir])
+    g.annotate_dims(amp, ["p_no", "p_nv"])
+    g.annotate_spaces(out, [occ, occ])
+    g.annotate_dims(out, ["p_no", "p_no"])
+    tmp = g.declare_zero_tensor_over("tmp", [cg.SpaceDim(occ), cg.SpaceDim(vir)], True)
+    with cg.capture(g):
+        einsums.einsum("i,a <- i,a ; i,a", tmp, amp, amp, c_pf=0.0, ab_pf=1.0)
+        einsums.einsum("i,j <- i,a ; j,a", out, tmp, amp, c_pf=0.0, ab_pf=1.0)
+
+    path = str(tmp_path / "priv.eig")
+    cg.save_graph(g, path)
+
+    # The global registry has never heard of these names.
+    with pytest.raises(Exception, match="priv_occ"):
+        cg.load_graph(path)
+
+    # Handed the right registry, the same file loads and is still rebindable.
+    loaded = cg.load_graph_into(path, mine)
+    assert sorted(loaded.manifest_names()) == ["amp", "out"]
+
+    amp2 = einsums.create_zero_tensor("amp2", [3, 5])
+    out2 = einsums.create_zero_tensor("out2", [3, 3])
+    np.asarray(amp2)[...] = np.random.default_rng(2).standard_normal((3, 5))
+    cg.bind(loaded, {"amp": amp2, "out": out2})
+    loaded.optimize()
+    loaded.execute()

@@ -845,3 +845,58 @@ TEST_CASE("SaveLoad - a batched form refuses to save and says why", "[ComputeGra
     REQUIRE_FALSE(saved.has_value());
     CHECK_THAT(saved.error().message, Catch::Matchers::ContainsSubstring("resource decision"));
 }
+
+TEST_CASE("SaveLoad - a load resolves spaces against a registry the caller owns", "[ComputeGraph][SaveLoad][Spaces]") {
+    // A saved graph carries space NAMES, because a SpaceId means nothing outside the registry
+    // that issued it. Resolving them needs a registry, and load_graph used the process-global
+    // one unconditionally: a caller keeping their own registry got told the space "is not
+    // registered in this process" with an empty list of what IS, having registered everything.
+    cg::SpaceRegistry mine;
+    cg::SpaceId const occ  = mine.register_space(cg::IndexSpace{.name = "private_occ", .scale_symbol = "o", .dim_symbol = "p_no"});
+    cg::SpaceId const virt = mine.register_space(cg::IndexSpace{.name = "private_virt", .scale_symbol = "v", .dim_symbol = "p_nv"});
+
+    auto F = create_random_tensor<double>("F", 3, 4);
+    auto G = create_random_tensor<double>("G", 4, 3);
+    auto H = create_zero_tensor<double>("H", 3, 3);
+
+    cg::Graph graph("private_registry");
+    graph.set_space_registry(mine);
+    graph.annotate_spaces(F, {occ, virt});
+    graph.annotate_dims(F, {"p_no", "p_nv"});
+    graph.annotate_spaces(G, {virt, occ});
+    graph.annotate_dims(G, {"p_nv", "p_no"});
+    graph.annotate_spaces(H, {occ, occ});
+    graph.annotate_dims(H, {"p_no", "p_no"});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ia;aj->ij", &H, F, G);
+    }
+
+    std::string const text = must_save(graph);
+
+    // The global registry has never heard of these names, so the default overload must fail
+    // and say so. That is the behaviour a caller was stuck with.
+    auto const against_global = cg::load_graph_string(text);
+    REQUIRE_FALSE(against_global.has_value());
+    CHECK_THAT(against_global.error().message, Catch::Matchers::ContainsSubstring("private_occ"));
+
+    // Handed the right registry, the same document loads.
+    auto const against_mine = cg::load_graph_string(text, mine);
+    REQUIRE(against_mine.has_value());
+
+    // And the loaded graph USES it, so the ids read back are the ones it was built from
+    // rather than whatever sits at those indices in the global registry.
+    cg::Graph &loaded = const_cast<cg::Graph &>(*against_mine);
+    CHECK(&loaded.space_registry() == &mine);
+    // The manifest is held in a local on purpose: `manifest()` returns BY VALUE, so
+    // `loaded.manifest().find("F")` leaves the pointer dangling once the temporary dies at
+    // the semicolon. Reading it inside the same full-expression is safe; storing it is not.
+    auto const  contract = loaded.manifest();
+    auto const *entry    = contract.find("F");
+    REQUIRE(entry != nullptr);
+    CHECK(loaded.tensor_spaces(entry->id) == std::vector<cg::SpaceId>{occ, virt});
+
+    // validate_graph_ir_string takes one too, for the same reason.
+    CHECK_FALSE(cg::validate_graph_ir_string(text).has_value());
+    CHECK(cg::validate_graph_ir_string(text, mine).has_value());
+}

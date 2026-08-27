@@ -1232,13 +1232,15 @@ IrTensor read_tensor(Value const &value, std::string const &path, Problems &prob
     return out;
 }
 
-IrFragment read_fragment(Value const &value, std::string const &path, Problems &problems, GateFlagTable const &gates);
+IrFragment read_fragment(Value const &value, std::string const &path, Problems &problems, GateFlagTable const &gates,
+                         SpaceRegistry const &registry);
 
 /// One node's descriptor, per kind. The coverage is exactly the reconstructible
 /// set, which is what makes an unknown kind here a file problem rather than a
 /// gap: the writer could not have produced one.
 // NOLINTNEXTLINE(misc-no-recursion): control-flow descriptors hold fragments.
-void read_descriptor(IrNode &node, Value const &value, std::string const &path, Problems &problems, GateFlagTable const &gates) {
+void read_descriptor(IrNode &node, Value const &value, std::string const &path, Problems &problems, GateFlagTable const &gates,
+                     SpaceRegistry const &registry) {
     Object const *object = as_object(value, path, problems);
     if (object == nullptr) {
         return;
@@ -1333,7 +1335,7 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
                     }
                     std::string const letter = read_string(*entry, "letter", entry_path, problems, (*items)[i].position);
                     std::string const space  = read_string(*entry, "space", entry_path, problems, (*items)[i].position);
-                    auto const        id     = global_space_registry().find(space);
+                    auto const        id     = registry.find(space);
                     if (!id.has_value()) {
                         note(problems, entry_path, (*items)[i].position,
                              fmt::format("index space '{}' is not registered in this process", space));
@@ -1426,11 +1428,13 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
             desc.predicate = read_pred_expr(*predicate, fmt::format("{}.predicate", path), problems, gates);
         }
         if (Value const *then_branch = field(*object, "then", path, problems, value.position); then_branch != nullptr) {
-            node.then_branch = std::make_shared<IrFragment>(read_fragment(*then_branch, fmt::format("{}.then", path), problems, gates));
+            node.then_branch =
+                std::make_shared<IrFragment>(read_fragment(*then_branch, fmt::format("{}.then", path), problems, gates, registry));
         }
         if (Value const *else_branch = field(*object, "else", path, problems, value.position);
             else_branch != nullptr && !else_branch->is_null()) {
-            node.else_branch = std::make_shared<IrFragment>(read_fragment(*else_branch, fmt::format("{}.else", path), problems, gates));
+            node.else_branch =
+                std::make_shared<IrFragment>(read_fragment(*else_branch, fmt::format("{}.else", path), problems, gates, registry));
         }
         node.descriptor = std::move(desc);
         return;
@@ -1446,7 +1450,7 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
             desc.condition = read_pred_expr(*condition, fmt::format("{}.condition", path), problems, gates);
         }
         if (Value const *body = field(*object, "body", path, problems, value.position); body != nullptr) {
-            node.body = std::make_shared<IrFragment>(read_fragment(*body, fmt::format("{}.body", path), problems, gates));
+            node.body = std::make_shared<IrFragment>(read_fragment(*body, fmt::format("{}.body", path), problems, gates, registry));
         }
         node.descriptor = std::move(desc);
         return;
@@ -1460,7 +1464,8 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
 }
 
 // NOLINTNEXTLINE(misc-no-recursion): see read_descriptor.
-IrNode read_node(Value const &value, std::string const &path, Problems &problems, GateFlagTable const &gates) {
+IrNode read_node(Value const &value, std::string const &path, Problems &problems, GateFlagTable const &gates,
+                 SpaceRegistry const &registry) {
     IrNode        out;
     Object const *object = as_object(value, path, problems);
     if (object == nullptr) {
@@ -1498,13 +1503,14 @@ IrNode read_node(Value const &value, std::string const &path, Problems &problems
     out.rank    = static_cast<std::size_t>(std::max<std::int64_t>(read_int(*object, "rank", path, problems, value.position), 0));
 
     if (Value const *descriptor = field(*object, "descriptor", path, problems, value.position); descriptor != nullptr) {
-        read_descriptor(out, *descriptor, fmt::format("{}.descriptor", path), problems, gates);
+        read_descriptor(out, *descriptor, fmt::format("{}.descriptor", path), problems, gates, registry);
     }
     return out;
 }
 
 // NOLINTNEXTLINE(misc-no-recursion): fragments nest.
-IrFragment read_fragment(Value const &value, std::string const &path, Problems &problems, GateFlagTable const &gates) {
+IrFragment read_fragment(Value const &value, std::string const &path, Problems &problems, GateFlagTable const &gates,
+                         SpaceRegistry const &registry) {
     IrFragment    out;
     Object const *object = as_object(value, path, problems);
     if (object == nullptr) {
@@ -1523,7 +1529,7 @@ IrFragment read_fragment(Value const &value, std::string const &path, Problems &
         std::string const child = fmt::format("{}.nodes", path);
         if (Array const *items = as_array(*nodes, child, problems); items != nullptr) {
             for (std::size_t i = 0; i < items->size(); ++i) {
-                out.nodes.push_back(read_node((*items)[i], fmt::format("{}[{}]", child, i), problems, gates));
+                out.nodes.push_back(read_node((*items)[i], fmt::format("{}[{}]", child, i), problems, gates, registry));
             }
         }
     }
@@ -1569,7 +1575,7 @@ std::optional<int> compare_semver(std::string_view lhs, std::string_view rhs) {
 
 /// Read the whole document. Reports every problem it can see; a document that
 /// reports none is one the builder may run on.
-IrDocument read_document(Value const &root, Problems &problems) {
+IrDocument read_document(Value const &root, Problems &problems, SpaceRegistry const &registry) {
     IrDocument    out;
     Object const *object = as_object(root, "$", problems);
     if (object == nullptr) {
@@ -1645,10 +1651,10 @@ IrDocument read_document(Value const &root, Problems &problems) {
         if (Object const *body = as_object(*spaces, "$.spaces", problems); body != nullptr) {
             out.space_names = read_string_array(*body, "names", "$.spaces", problems, spaces->position);
             for (auto const &name : out.space_names) {
-                if (!global_space_registry().find(name).has_value()) {
+                if (!registry.find(name).has_value()) {
                     std::vector<std::string> known;
-                    for (SpaceId const id : global_space_registry().ids()) {
-                        known.push_back(global_space_registry().space(id).name);
+                    for (SpaceId const id : registry.ids()) {
+                        known.push_back(registry.space(id).name);
                     }
                     note(problems, "$.spaces.names", spaces->position,
                          fmt::format("index space '{}' is not registered in this process. Registered: [{}]", name, fmt::join(known, ", ")));
@@ -1710,7 +1716,7 @@ IrDocument read_document(Value const &root, Problems &problems) {
     if (Value const *nodes = field(*object, "nodes", "$", problems, root.position); nodes != nullptr) {
         if (Array const *items = as_array(*nodes, "$.nodes", problems); items != nullptr) {
             for (std::size_t i = 0; i < items->size(); ++i) {
-                out.nodes.push_back(read_node((*items)[i], fmt::format("$.nodes[{}]", i), problems, gates));
+                out.nodes.push_back(read_node((*items)[i], fmt::format("$.nodes[{}]", i), problems, gates, registry));
             }
         }
     }
@@ -1820,7 +1826,7 @@ LoadedTensor materialize_tensor(Graph &root, Graph &graph, IrTensor const &spec,
 }
 
 std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrTensor> const &tensors, std::vector<IrNode> const &nodes,
-                                      std::vector<LoadedTensor> const *parent, GateFlagTable const &gates);
+                                      std::vector<LoadedTensor> const *parent, GateFlagTable const &gates, SpaceRegistry const &registry);
 
 /// Turn one fragment into a live sub-graph.
 ///
@@ -1829,10 +1835,10 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
 /// parameters, not against a table private to the iteration.
 // NOLINTNEXTLINE(misc-no-recursion): fragments nest.
 std::shared_ptr<Graph> build_fragment(Graph &root, IrFragment const &fragment, std::vector<LoadedTensor> const &parent,
-                                      GateFlagTable const &gates) {
+                                      GateFlagTable const &gates, SpaceRegistry const &registry) {
     auto body = std::make_shared<Graph>(fragment.name);
     body->set_params_ptr(root.params_ptr());
-    build_frame(root, *body, fragment.tensors, fragment.nodes, &parent, gates);
+    build_frame(root, *body, fragment.tensors, fragment.nodes, &parent, gates, registry);
     return body;
 }
 
@@ -1840,7 +1846,7 @@ std::shared_ptr<Graph> build_fragment(Graph &root, IrFragment const &fragment, s
 /// fragment a control-flow node names.
 // NOLINTNEXTLINE(misc-no-recursion): see build_fragment.
 std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrTensor> const &tensors, std::vector<IrNode> const &nodes,
-                                      std::vector<LoadedTensor> const *parent, GateFlagTable const &gates) {
+                                      std::vector<LoadedTensor> const *parent, GateFlagTable const &gates, SpaceRegistry const &registry) {
     std::vector<LoadedTensor> loaded(tensors.size());
     for (auto const &spec : tensors) {
         if (spec.id >= tensors.size()) {
@@ -1874,7 +1880,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         std::vector<SpaceId> ids;
         ids.reserve(spec.spaces.size());
         for (auto const &name : spec.spaces) {
-            auto const id = global_space_registry().find(name);
+            auto const id = registry.find(name);
             if (!id.has_value()) {
                 throw BuildFailure(fmt::format("tensor '{}' names index space '{}', which is not registered", spec.name, name));
             }
@@ -1967,15 +1973,15 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
             if (spec.then_branch == nullptr) {
                 throw BuildFailure(fmt::format("conditional node '{}' has no then-branch", spec.label));
             }
-            conditional->then_branch = build_fragment(root, *spec.then_branch, loaded, gates);
-            conditional->else_branch =
-                spec.else_branch != nullptr ? build_fragment(root, *spec.else_branch, loaded, gates) : std::make_shared<Graph>("else");
+            conditional->then_branch = build_fragment(root, *spec.then_branch, loaded, gates, registry);
+            conditional->else_branch = spec.else_branch != nullptr ? build_fragment(root, *spec.else_branch, loaded, gates, registry)
+                                                                   : std::make_shared<Graph>("else");
         }
         if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
             if (spec.body == nullptr) {
                 throw BuildFailure(fmt::format("loop node '{}' has no body", spec.label));
             }
-            loop->body  = build_fragment(root, *spec.body, loaded, gates);
+            loop->body  = build_fragment(root, *spec.body, loaded, gates, registry);
             loop->state = std::make_shared<LoopState>();
         }
 
@@ -1990,8 +1996,13 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
 }
 
 /// Turn a clean document into a graph.
-Graph build_graph(IrDocument const &document) {
+Graph build_graph(IrDocument const &document, SpaceRegistry &registry) {
     Graph graph(document.name);
+
+    // Before anything is annotated. The ids about to be resolved come from THIS registry, and
+    // a graph reading its spaces back through a different one would resolve them to whatever
+    // happens to sit at those indices there.
+    graph.set_space_registry(registry);
 
     // Exactly the buffers the predicates read out of the document already hold.
     for (auto const &[name, size] : document.gate_flags) {
@@ -2023,7 +2034,7 @@ Graph build_graph(IrDocument const &document) {
         place(entry);
     }
 
-    std::vector<LoadedTensor> const loaded = build_frame(graph, graph, tensors, document.nodes, nullptr, document.gate_buffers);
+    std::vector<LoadedTensor> const loaded = build_frame(graph, graph, tensors, document.nodes, nullptr, document.gate_buffers, registry);
 
     // Slot redirects, once every slot exists. Not a derived cache: a node whose
     // dataflow still names a merged-away duplicate reads the survivor's buffer
@@ -2153,14 +2164,14 @@ expected<std::string, GraphError> read_file(std::string const &path, std::string
 ///
 /// The unconsumed-key audit runs LAST and over the whole document, because a
 /// leftover key is only leftover once every reader has had its turn.
-IrDocument inspect(std::string_view text, Problems &problems, json::Value &document) {
+IrDocument inspect(std::string_view text, Problems &problems, json::Value &document, SpaceRegistry const &registry) {
     auto parsed = json::parse(text);
     if (!parsed) {
         problems.push_back(parsed.error().to_string());
         return {};
     }
     document       = std::move(*parsed);
-    IrDocument out = read_document(document, problems);
+    IrDocument out = read_document(document, problems, registry);
 
     std::vector<std::string> unconsumed;
     json::collect_unconsumed(document, "$", unconsumed);
@@ -2175,14 +2186,18 @@ IrDocument inspect(std::string_view text, Problems &problems, json::Value &docum
 } // namespace
 
 expected<Graph, GraphError> load_graph_string(std::string_view text) {
+    return load_graph_string(text, global_space_registry());
+}
+
+expected<Graph, GraphError> load_graph_string(std::string_view text, SpaceRegistry &registry) {
     Problems         problems;
     json::Value      document;
-    IrDocument const ir = inspect(text, problems, document);
+    IrDocument const ir = inspect(text, problems, document, registry);
     if (!problems.empty()) {
         return unexpected(GraphError::parse(fmt::format("load_graph: {}", problems.front())));
     }
     try {
-        return build_graph(ir);
+        return build_graph(ir, registry);
     } catch (BuildFailure const &failure) {
         return unexpected(GraphError::validation(fmt::format("load_graph: {}", failure.what())));
     } catch (std::exception const &error) {
@@ -2191,11 +2206,15 @@ expected<Graph, GraphError> load_graph_string(std::string_view text) {
 }
 
 expected<Graph, GraphError> load_graph(std::string const &path) {
+    return load_graph(path, global_space_registry());
+}
+
+expected<Graph, GraphError> load_graph(std::string const &path, SpaceRegistry &registry) {
     auto text = read_file(path, "load_graph");
     if (!text) {
         return unexpected(text.error());
     }
-    auto graph = load_graph_string(*text);
+    auto graph = load_graph_string(*text, registry);
     if (!graph) {
         return unexpected(GraphError{.kind = graph.error().kind, .message = fmt::format("{} (reading '{}')", graph.error().message, path)});
     }
@@ -2203,14 +2222,18 @@ expected<Graph, GraphError> load_graph(std::string const &path) {
 }
 
 expected<void, GraphError> validate_graph_ir_string(std::string_view text) {
+    return validate_graph_ir_string(text, global_space_registry());
+}
+
+expected<void, GraphError> validate_graph_ir_string(std::string_view text, SpaceRegistry &registry) {
     Problems         problems;
     json::Value      document;
-    IrDocument const ir = inspect(text, problems, document);
+    IrDocument const ir = inspect(text, problems, document, registry);
     if (problems.empty()) {
         // A document that reads clean still has to BUILD, and a build failure is
         // one more problem to report rather than a separate outcome.
         try {
-            Graph const graph = build_graph(ir);
+            Graph const graph = build_graph(ir, registry);
             (void)graph;
         } catch (std::exception const &error) {
             problems.emplace_back(error.what());
@@ -2249,6 +2272,15 @@ Graph *load_graph_file(std::string const &path) {
     }
     // A raw pointer because the Python binding takes ownership of it; there is
     // no C++ caller for this overload.
+    return new Graph(std::move(*graph)); // NOLINT(cppcoreguidelines-owning-memory)
+}
+
+Graph *load_graph_file_into(std::string const &path, SpaceRegistry &registry) {
+    auto graph = load_graph(path, registry);
+    if (!graph) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "{}", graph.error().message);
+    }
+    // As load_graph_file: a raw pointer because the Python binding takes ownership.
     return new Graph(std::move(*graph)); // NOLINT(cppcoreguidelines-owning-memory)
 }
 
