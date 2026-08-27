@@ -811,3 +811,37 @@ TEST_CASE("SaveLoad - every checked-in golden still loads", "[ComputeGraph][Save
     }
     REQUIRE(loaded_count > 0);
 }
+
+TEST_CASE("SaveLoad - a batched form refuses to save and says why", "[ComputeGraph][SaveLoad][Batched]") {
+    // "Not yet reconstructible" reads as an oversight. This one is a decision, and the
+    // refusal has to carry it: a grouped batch partitions its members by SHAPE at capture
+    // and reorders the operand lists to match, so its descriptor is a function of one
+    // problem's extents. Saving it would freeze that problem into the file, which is what
+    // Part 3.6's structure/tuning split forbids. Making it saveable means capturing the
+    // algebraic form and grouping on load, not teaching the descriptor to serialize itself.
+    auto a1 = create_random_tensor<double>("a1", 3, 4);
+    auto b1 = create_random_tensor<double>("b1", 4, 5);
+    auto c1 = create_zero_tensor<double>("c1", 3, 5);
+    auto a2 = create_random_tensor<double>("a2", 2, 6);
+    auto b2 = create_random_tensor<double>("b2", 6, 7);
+    auto c2 = create_zero_tensor<double>("c2", 2, 7);
+
+    cg::Graph graph("grouped_refusal");
+    {
+        cg::CaptureGuard const                       guard(graph);
+        std::vector<Tensor<double, 2> const *> const as{&a1, &a2};
+        std::vector<Tensor<double, 2> const *> const bs{&b1, &b2};
+        std::vector<Tensor<double, 2> *> const       cs{&c1, &c2};
+        cg::grouped_batched_gemm(1.0, as, bs, 0.0, cs);
+    }
+
+    auto const report = graph.serializability_report();
+    REQUIRE(report.size() == 1);
+    CHECK(report.front().kind_name == "GroupedBatchedGemm");
+    CHECK_THAT(report.front().reason, Catch::Matchers::ContainsSubstring("resource decision"));
+    CHECK_THAT(report.front().reason, Catch::Matchers::ContainsSubstring("let the resource phase group them"));
+
+    auto const saved = cg::save_graph_string(graph);
+    REQUIRE_FALSE(saved.has_value());
+    CHECK_THAT(saved.error().message, Catch::Matchers::ContainsSubstring("resource decision"));
+}

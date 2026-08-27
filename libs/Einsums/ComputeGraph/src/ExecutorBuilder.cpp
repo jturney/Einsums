@@ -745,6 +745,22 @@ std::shared_ptr<GemmHint> derive_gemm_hint(packed_gemm::ScalarType dtype, packed
 
 std::string reconstruction_blocker(Node const &node) {
     if (!is_reconstructible(node.kind)) {
+        // The batched family is held back for a reason worth stating, because "not yet" reads
+        // as an oversight and this one is a decision. A grouped batch partitions its members
+        // by SHAPE at capture and reorders the operand lists to match, so its descriptor is a
+        // function of one problem's extents; saving it would freeze that problem into the
+        // file, which is exactly what the structure/tuning split forbids (Part 3.6: batching
+        // is never saved, and a grouping chosen on one machine is wrong on another). Making it
+        // reconstructible therefore means saving the ALGEBRAIC form and re-grouping on load,
+        // not teaching the descriptor to serialize itself.
+        switch (node.kind) {
+        case OpKind::BatchedGemm:
+        case OpKind::GroupedBatchedGemm:
+            return "batched forms are a resource decision and are deliberately not saved; capture the "
+                   "per-member operations and let the resource phase group them";
+        default:
+            break;
+        }
         return "kind not yet reconstructible";
     }
     switch (node.kind) {

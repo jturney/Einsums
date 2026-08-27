@@ -1215,7 +1215,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @see reconstruction_blocker for the per-node verdict.
      * @versionadded{2.0.0}
      */
-    [[nodiscard]] std::vector<SerializabilityBlocker> serializability_report() const;
+    APIARY_EXPOSE [[nodiscard]] std::vector<SerializabilityBlocker> serializability_report() const;
 
     /**
      * @brief A hash of this graph's STRUCTURE, and of nothing else.
@@ -3333,11 +3333,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *         are) and not of one operand, so two tables over one space disagreeing about it
      *         describes nothing.
      *
-     * @note ACCEPTED and STORED, not yet consumed. The nodes that read such a table are the
-     *       grouped/batched ones the resource phase forms, and a saved graph holds the
-     *       pre-resource algebraic form, so those nodes are RE-CREATED at load time from the
-     *       table rather than rebound. That re-run is the load-path task; until it lands the
-     *       table is available through @ref ragged_extent_tables and nothing else reads it.
+     * @note ACCEPTED and STORED, not yet consumed, and the task is larger than it first
+     *       looked. The nodes that read such a table are the grouped/batched ones, and the
+     *       original plan was that the resource phase re-forms them at load from the table.
+     *       That assumes grouped nodes are a resource-phase PRODUCT. They are not:
+     *       ``grouped_batched_gemm`` is a capture-time API and the workload that needs this
+     *       (DLPNO) calls it directly, so there is no pre-resource algebraic form underneath
+     *       to fall back to. Worse, a grouped batch partitions its members by SHAPE at
+     *       capture and reorders the operand lists to match, so moving the extents changes
+     *       the partition itself and not merely the numbers in it.
+     *
+     *       Consuming the table therefore waits on a decision recorded in the design doc:
+     *       either capture the per-member algebraic form and add a pass that groups it, or
+     *       keep the grouped form and teach it to re-derive its own partition. Until then a
+     *       graph containing a grouped node refuses to save, saying so, and the table is
+     *       available through @ref ragged_extent_tables and nothing else reads it.
      *
      * @see clear_bindings
      * @versionadded{2.0.0}

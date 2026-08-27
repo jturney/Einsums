@@ -149,6 +149,7 @@
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
+#include <Einsums/Python/Annotations.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
 #include <cstddef>
@@ -409,11 +410,17 @@ class ScalarAccessor {
  *
  * @see Graph::serializability_report
  */
-struct SerializabilityBlocker {
-    NodeId      node_id{0}; ///< The offending node's id.
-    std::string label;      ///< Its human-readable label, so the report names something a user recognises.
-    std::string kind_name;  ///< @ref op_kind_name of its kind.
-    std::string reason;     ///< What blocks it, e.g. "kind not yet reconstructible".
+struct APIARY_EXPOSE APIARY_MODULE("graph") SerializabilityBlocker {
+    APIARY_EXPOSE APIARY_READONLY NodeId node_id{0}; ///< The offending node's id.
+
+    /// Its human-readable label, so the report names something a user recognises.
+    APIARY_EXPOSE APIARY_READONLY std::string label;
+
+    /// @ref op_kind_name of its kind.
+    APIARY_EXPOSE APIARY_READONLY std::string kind_name;
+
+    /// What blocks it, e.g. "kind not yet reconstructible".
+    APIARY_EXPOSE APIARY_READONLY std::string reason;
 
     /// Where the node lives relative to the graph the report was asked of.
     ///
@@ -425,7 +432,7 @@ struct SerializabilityBlocker {
     /// This is what makes the pair addressable.
     ///
     /// @versionadded{2.0.0}
-    std::string subgraph_path;
+    APIARY_EXPOSE APIARY_READONLY std::string subgraph_path;
 };
 
 /**
