@@ -175,7 +175,7 @@ bool RegionRewrite::run(Graph &graph) {
     return modified;
 }
 
-bool RegionIdentity::rewrite(Graph const &graph, Region const &region, TensorExpr &expr) {
+bool RegionIdentity::rewrite(Graph &graph, Region const &region, TensorExpr &expr) {
     // Deliberately empty. Returning true is what makes the lowering happen, and
     // the lowering is the thing under test.
     (void)graph;

@@ -149,7 +149,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /**
      * @brief Rewrite one region's algebra in place.
      *
-     * @param[in]     graph  The graph, for anything the algebra does not carry.
+     * @param[in,out] graph  The graph, for anything the algebra does not carry.
      * @param[in]     region The region being offered.
      * @param[in,out] expr   The algebra. Rewrite in place.
      * @return True when @p expr was changed and should be lowered; false to leave
@@ -159,8 +159,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * having produced something @ref lower_region refuses is reported as a skip
      * and leaves the region untouched, so a broken client costs a rewrite rather
      * than a wrong number - but it is a bug in the client, not a supported mode.
+     *
+     * @par What a client may do to the graph, and what it may not
+     * The graph is MUTABLE because a rewrite that introduces tensors the user
+     * never wrote has to create them somewhere, and a leaf carries a
+     * @ref TensorId rather than a description. Registering and declaring tensors
+     * is therefore fair game.
+     *
+     * NODES are not. A region is a range of positions in ``graph.nodes()`` and
+     * those positions are live for the whole call: inserting or erasing one
+     * moves the region out from under the splice that is about to replace it.
+     * A client needing a node outside the region (a setup node holding a
+     * fitting, say) records the intent here and emits it after @ref run
+     * returns, when no region is open.
      */
-    virtual bool rewrite(Graph const &graph, Region const &region, TensorExpr &expr) = 0;
+    virtual bool rewrite(Graph &graph, Region const &region, TensorExpr &expr) = 0;
 
     /**
      * @brief A cheap check, before any region is formed, that this pass has work here.
@@ -251,7 +264,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * @return Always true: the region IS lowered, which is the whole point. A
      *         pass that returned false would skip the lowering and test nothing.
      */
-    bool rewrite(Graph const &graph, Region const &region, TensorExpr &expr) override;
+    bool rewrite(Graph &graph, Region const &region, TensorExpr &expr) override;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

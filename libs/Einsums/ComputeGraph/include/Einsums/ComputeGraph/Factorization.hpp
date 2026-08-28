@@ -118,11 +118,21 @@ struct FactorizationPlan {
 
     /// Capture the fitting into a setup body.
     ///
-    /// Called with the body graph and the ids of the created factors, in @ref factors order,
-    /// under no capture guard: the callback opens its own, exactly as any other code that
-    /// captures does. Whatever it records runs once per bound problem and is skipped by every
-    /// replay after, which is the whole reason a factorization is affordable at all.
-    std::function<void(Graph &body, std::vector<TensorId> const &factors)> emit_setup;
+    /// Called with the PARENT graph, the body to capture into, and the ids of the created
+    /// factors in @ref factors order. Under no capture guard: the callback opens its own,
+    /// exactly as any other code that captures does. Whatever it records runs once per bound
+    /// problem and is skipped by every replay after, which is the whole reason a factorization
+    /// is affordable at all.
+    ///
+    /// The parent is passed because the factors are ITS tensors and a plan holds only their
+    /// ids; capture takes tensor references, so a callback writing into a factor has to reach
+    /// the object through the parent's handle for it, which carries the address. Handing over
+    /// the id alone would make the one thing every provider must do the one thing it cannot.
+    ///
+    /// The expression is spelled in prose rather than as a call, because a cross-reference or
+    /// an inline literal followed immediately by a parameter list renders as a literal whose
+    /// start-string is never terminated, and the docs build treats that warning as an error.
+    std::function<void(Graph &parent, Graph &body, std::vector<TensorId> const &factors)> emit_setup;
 };
 
 /**

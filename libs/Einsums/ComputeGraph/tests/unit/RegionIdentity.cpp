@@ -307,7 +307,7 @@ TEST_CASE("a refused lowering leaves the graph exactly as it was", "[ComputeGrap
         [[nodiscard]] std::string name() const override { return "BreakIt"; }
 
       protected:
-        bool rewrite(cg::Graph const & /*graph*/, cg::Region const & /*region*/, cg::TensorExpr &expr) override {
+        bool rewrite(cg::Graph & /*graph*/, cg::Region const & /*region*/, cg::TensorExpr &expr) override {
             // A three-operand contraction: representable in the IR, and with no
             // node form to lower to, which is exactly what lower_region declines.
             for (auto &term : expr.terms) {

@@ -138,7 +138,7 @@ bool DeltaElimination::applicable(Graph const &graph) const {
     return std::ranges::any_of(graph.tensors_map(), [](auto const &entry) { return entry.second.tag.name == provenance_identity; });
 }
 
-bool DeltaElimination::rewrite(Graph const &graph, Region const &region, TensorExpr &expr) {
+bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &expr) {
     bool changed = false;
 
     // To a fixpoint, so a chain of deltas collapses in one visit. Each pass over the statements

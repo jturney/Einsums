@@ -8,6 +8,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Approximation.hpp
     Einsums/ComputeGraph/Blueprints.hpp
     Einsums/ComputeGraph/Factorization.hpp
+    Einsums/ComputeGraph/Passes/FactorizationPass.hpp
     Einsums/ComputeGraph/Blueprints/Orthogonalization.hpp
     Einsums/ComputeGraph/Blueprints/TensorAlgebra.hpp
     Einsums/ComputeGraph/BoundExpr.hpp
@@ -117,6 +118,7 @@ set(ComputeGraphSources
     Passes/CommunicationScheduling.cpp
     Passes/ContractionPlanning.cpp
     Passes/DeltaElimination.cpp
+    Passes/FactorizationPass.cpp
     Passes/ProvenancePropagation.cpp
     Passes/ConstantFolding.cpp
     Passes/DistributionPlanning.cpp

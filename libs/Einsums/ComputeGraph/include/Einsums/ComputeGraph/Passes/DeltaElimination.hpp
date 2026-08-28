@@ -108,7 +108,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * @param[in,out] expr   The algebra, rewritten in place.
      * @return True when anything was eliminated.
      */
-    bool rewrite(Graph const &graph, Region const &region, TensorExpr &expr) override;
+    bool rewrite(Graph &graph, Region const &region, TensorExpr &expr) override;
 
     /**
      * @brief Does @p graph hold a tensor declared to be an identity?
