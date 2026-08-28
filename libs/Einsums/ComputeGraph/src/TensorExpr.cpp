@@ -62,12 +62,41 @@ TermId TensorExpr::add(ExprTerm term) {
     return static_cast<TermId>(terms.size() - 1);
 }
 
+namespace {
+
+/// Mark @p id and everything below it, so a cost sums what the expression COMPUTES.
+// NOLINTNEXTLINE(misc-no-recursion): the arena is a DAG and terms name children by index.
+void mark_reachable(std::vector<ExprTerm> const &terms, TermId id, std::vector<bool> &seen) {
+    if (id == invalid_term || id >= terms.size() || seen[id]) {
+        return;
+    }
+    seen[id] = true;
+    for (auto const child : terms[id].operands) {
+        mark_reachable(terms, child, seen);
+    }
+}
+
+} // namespace
+
 SymbolicCost TensorExpr::total_cost() const {
+    // Only the terms the STATEMENTS reach. A rewrite replaces a statement's value and leaves the
+    // term it replaced in the arena, since nothing renumbers indices mid-rewrite; summing the
+    // arena would therefore count the arithmetic a rewrite just removed and report a
+    // before-and-after that never changes. That is not a cosmetic difference: this number is
+    // what a report offers as evidence the rewrite was worth making.
+    std::vector<bool> reachable(terms.size(), false);
+    for (auto const &statement : statements) {
+        mark_reachable(terms, statement.value, reachable);
+    }
+
     SymbolicCost out;
-    for (auto const &term : terms) {
-        out.flops += term.cost.flops;
-        out.traffic += term.cost.traffic;
-        out.resident += term.cost.resident;
+    for (std::size_t id = 0; id < terms.size(); ++id) {
+        if (!reachable[id]) {
+            continue;
+        }
+        out.flops += terms[id].cost.flops;
+        out.traffic += terms[id].cost.traffic;
+        out.resident += terms[id].cost.resident;
     }
     return out;
 }

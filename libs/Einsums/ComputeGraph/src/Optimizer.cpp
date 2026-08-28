@@ -16,6 +16,7 @@
 #include <Einsums/ComputeGraph/Passes/ContractionPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/CrossSpaceValidation.hpp>
 #include <Einsums/ComputeGraph/Passes/DeadNodeElimination.hpp>
+#include <Einsums/ComputeGraph/Passes/DeltaElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributionPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributiveFactoring.hpp>
 #include <Einsums/ComputeGraph/Passes/ElementWiseFusion.hpp>
@@ -31,6 +32,7 @@
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/MemoryPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/PermuteFusion.hpp>
+#include <Einsums/ComputeGraph/Passes/ProvenancePropagation.hpp>
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
 #include <Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp>
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>
@@ -604,6 +606,12 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // Detect hardware once and share the cost_model across cost-model passes.
     auto cost_model = CostModel::detect_default();
 
+    // Provenance first, and it really does have to be first: a tag says what a tensor IS, and
+    // DeltaElimination below cannot recognize a delta somebody permuted before contracting
+    // unless the tag has already travelled across that permute. Costs one walk of the node set
+    // and writes annotations only.
+    list.push_back(std::make_shared<passes::ProvenancePropagation>());
+
     // Lowering, so it comes before everything: a tiled op is one opaque Custom
     // node that no pass below can read, and expanding it into per-tile DENSE nodes
     // is what puts those tiles in front of CSE, ContractionPlanning, GEMMBatching,
@@ -614,6 +622,15 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // Shares the detected cost model with the passes below, so the densify
     // decision and their planning are made against one profile.
     list.push_back(std::make_shared<passes::TiledExpansion>(4096, -1.0, passes::Densify::Auto, passes::FuseTiles::Auto, cost_model));
+
+    // Delta elimination ahead of the cleanup cluster, because what it leaves behind is exactly
+    // what that cluster is for: dissolving an intermediate strands the Alloc and Free that
+    // named it, and DeadNodeElimination three entries below removes them. Running it after
+    // would leave a dead allocation in every graph it fired on.
+    //
+    // Self-gating, and cheaply: it declines before forming a single region when no tensor in
+    // the graph is declared an identity, which is every graph that has not been annotated.
+    list.push_back(std::make_shared<passes::DeltaElimination>());
 
     // Graph-transforming passes (reduce node count first).
     // Order matters: PermuteFusion runs before CSE/DNE so duplicate

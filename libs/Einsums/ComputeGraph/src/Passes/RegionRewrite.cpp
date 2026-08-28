@@ -16,37 +16,58 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <string_view>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 void RegionRewrite::reset_stats() {
     _dumps.clear();
+    _decline_reasons.clear();
     _regions_formed    = 0;
     _regions_rewritten = 0;
     _regions_declined  = 0;
 }
 
+void RegionRewrite::decline(std::string_view reason, std::string_view detail) {
+    ++_regions_declined;
+    note_skip(reason, detail);
+    auto const hit = std::ranges::find_if(_decline_reasons, [&reason](auto const &e) { return e.first == reason; });
+    if (hit == _decline_reasons.end()) {
+        _decline_reasons.emplace_back(std::string(reason), 1);
+    } else {
+        ++hit->second;
+    }
+}
+
 std::vector<std::string> RegionRewrite::explain() const {
     std::vector<std::string> out;
-    if (_regions_rewritten != 0) {
-        out.push_back(fmt::format("{}: rewrote {} of {} region(s)", name(), _regions_rewritten, _regions_formed));
+
+    // Formed, rewritten, declined - reported together, because "formed twelve regions and
+    // rewrote none" and "formed none" are different findings and only the first one means the
+    // region rule is doing its job on this graph.
+    if (_regions_formed != 0) {
+        out.push_back(fmt::format("{}: formed {} region(s), rewrote {}", name(), _regions_formed, _regions_rewritten));
     }
-    // Which regions formed, and which declined.
-    // Reported even when nothing was rewritten, because "formed twelve regions
-    // and rewrote none" and "formed none" are different findings and only the
-    // first one means the region rule is working.
-    if (_regions_rewritten == 0 && _regions_formed != 0) {
-        out.push_back(fmt::format("{}: formed {} region(s), rewrote none", name(), _regions_formed));
+    for (auto const &[reason, count] : _decline_reasons) {
+        out.push_back(fmt::format("{}: declined {} region(s): {}", name(), count, reason));
     }
-    if (_regions_declined != 0) {
-        out.push_back(fmt::format("{}: {} region(s) could not be raised or lowered; see the skip tally", name(), _regions_declined));
-    }
+
+    // What each accepted rewrite cost, before and after. Printed at every verbosity because it
+    // is one line and it answers the question a rewrite exists to answer; the algebra behind it
+    // is what the dump is for.
     for (auto const &dump : _dumps) {
-        if (!dump.changed) {
+        if (!dump.changed || dump.cost_before.empty()) {
             continue;
         }
-        out.push_back(fmt::format("{}: region {} ({} nodes)\n      before: {}\n      after:  {}", name(), dump.region_index,
-                                  dump.node_count, dump.before, dump.after));
+        out.push_back(fmt::format("{}: region {} ({} node(s)) cost {} -> {}", name(), dump.region_index, dump.node_count, dump.cost_before,
+                                  dump.cost_after));
+        if (!dump.before.empty()) {
+            out.push_back(fmt::format("      before: {}\n      after:  {}", dump.before, dump.after));
+        }
+    }
+
+    for (auto &line : describe()) {
+        out.push_back(std::move(line));
     }
     return out;
 }
@@ -60,8 +81,19 @@ std::string RegionRewrite::dump_text() const {
     return out;
 }
 
+bool RegionRewrite::applicable(Graph const & /*graph*/) const {
+    return true;
+}
+
 bool RegionRewrite::run(Graph &graph) {
     bool const dump = _dump || config::get(option::GraphDumpRegions);
+
+    // Before anything expensive. See the header: a pass in the default pipeline runs on every
+    // graph anyone optimizes, and most of them have nothing for it.
+    if (!applicable(graph)) {
+        note_skip("the graph holds nothing this pass acts on");
+        return false;
+    }
 
     auto const    escapes = EscapeAnalysis::over(graph);
     RegionOptions options;
@@ -86,8 +118,7 @@ bool RegionRewrite::run(Graph &graph) {
 
         auto raised = raise_region(graph, region);
         if (!raised) {
-            ++_regions_declined;
-            note_skip(raised.error().reason, raised.error().detail);
+            decline(raised.error().reason, raised.error().detail);
             continue;
         }
 
@@ -100,11 +131,22 @@ bool RegionRewrite::run(Graph &graph) {
 
         TensorExpr rewritten = *raised;
         bool const changed   = rewrite(graph, region, rewritten);
+        record.changed       = changed;
         if (dump) {
-            record.after   = changed ? rewritten.to_string(registry) : record.before;
-            record.changed = changed;
-            _dumps.push_back(record);
+            record.after = changed ? rewritten.to_string(registry) : record.before;
             report(2, fmt::format("region {} ({} nodes)\n  before:\n{}  after:\n{}", index, region.size(), record.before, record.after));
+        }
+        if (changed) {
+            // Only for an accepted rewrite: summing a polynomial per term is cheap, and doing
+            // it for regions nobody touched would be paid on every graph for nothing.
+            record.cost_before = raised->total_cost().flops.to_string(registry);
+            record.cost_after  = rewritten.total_cost().flops.to_string(registry);
+        }
+        // Recorded when dumping OR when something changed, so the structural report has a line
+        // per rewrite without the option being on; an untouched region with dumping off is not
+        // worth a record.
+        if (dump || changed) {
+            _dumps.push_back(record);
         }
         if (!changed) {
             continue;
@@ -113,8 +155,8 @@ bool RegionRewrite::run(Graph &graph) {
         if (auto lowered = lower_region(graph, region, rewritten); !lowered) {
             // The graph is untouched: lower_region builds every node before it
             // erases anything, so a refusal costs the rewrite and nothing else.
-            ++_regions_declined;
-            note_skip(lowered.error().reason, lowered.error().detail);
+            _dumps.pop_back();
+            decline(lowered.error().reason, lowered.error().detail);
             continue;
         }
         ++_regions_rewritten;

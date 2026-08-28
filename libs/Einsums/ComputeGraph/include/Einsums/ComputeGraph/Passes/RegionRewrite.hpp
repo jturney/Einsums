@@ -45,6 +45,8 @@
 
 #include <cstddef>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -53,9 +55,18 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 struct RegionDump {
     std::size_t region_index{0}; ///< Which region of the graph, in program order.
     std::size_t node_count{0};   ///< How many nodes it held.
-    std::string before;          ///< The raised algebra.
-    std::string after;           ///< The algebra the client returned, equal to @ref before when it changed nothing.
+    std::string before;          ///< The raised algebra. Empty unless dumping is on.
+    std::string after;           ///< The algebra the client returned. Empty unless dumping is on.
     bool        changed{false};  ///< Whether the client said it rewrote anything.
+
+    /// What the region cost symbolically before and after, as polynomials in space scales.
+    ///
+    /// Recorded for every ACCEPTED rewrite whether or not dumping is on, because it is the one
+    /// thing a report can say about a rewrite that is short enough to print unconditionally and
+    /// still answers the question worth asking: did this make the arithmetic smaller? The
+    /// algebra itself is far more informative and far too long, which is what dumping is for.
+    std::string cost_before;
+    std::string cost_after;
 };
 
 /**
@@ -86,9 +97,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief Zero the per-apply counters.
     void reset_stats() override;
 
-    /// @brief What this pass did, for @ref PassManager::explain.
-    /// @return One line per statistic worth reporting; empty when nothing happened.
-    [[nodiscard]] std::vector<std::string> explain() const override;
+    /**
+     * @brief What this pass did, for @ref PassManager::explain.
+     *
+     * FINAL, and that is the point rather than an accident. The report has two halves: what the
+     * framework did (regions formed, declined and why, and what each accepted rewrite cost
+     * before and after) and what the client did. A client that overrode this would silently
+     * drop the first half, which is exactly what happened the first time one did - the pass
+     * reported its own counters and the structural section vanished from the report that exists
+     * to diagnose it. Clients add their lines through @ref describe instead.
+     *
+     * @return The framework's lines followed by the client's; empty when nothing happened.
+     */
+    [[nodiscard]] std::vector<std::string> explain() const final;
 
     /**
      * @brief The before/after algebra of every region this run raised.
@@ -142,6 +163,31 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     virtual bool rewrite(Graph const &graph, Region const &region, TensorExpr &expr) = 0;
 
     /**
+     * @brief A cheap check, before any region is formed, that this pass has work here.
+     *
+     * Forming regions and raising them costs a walk of the node set and an expression per
+     * region, and a client that can rule a graph out from something far cheaper should. A
+     * pass in @ref PassManager::create_default runs on every graph anyone optimizes, most of
+     * which will have nothing for it; without this the framework's own cost would be paid by
+     * every one of them for a guaranteed no-op.
+     *
+     * Returning false records a @c note_skip and stops, so a decline is still visible in the
+     * report rather than silent.
+     *
+     * @param[in] graph The graph about to be examined.
+     * @return True to proceed with region formation. True by default.
+     */
+    [[nodiscard]] virtual bool applicable(Graph const &graph) const;
+
+    /**
+     * @brief What this client wants to say, appended to the framework's report.
+     *
+     * @return One line per statistic worth reporting; empty by default, which is right for a
+     *         client whose whole story is already in the region counts.
+     */
+    [[nodiscard]] virtual std::vector<std::string> describe() const { return {}; }
+
+    /**
      * @brief The smallest region this pass is interested in.
      *
      * One node by default. A pass that folds pairs should return two, so a
@@ -152,11 +198,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] virtual std::size_t min_region_nodes() const { return 1; }
 
   private:
+    /// Record a region turned away, counting the reason for the structural report as well as
+    /// for the skip tally. One call rather than two statements at each site, because the two
+    /// used to drift: the count said three declines and the tally named one.
+    void decline(std::string_view reason, std::string_view detail = {});
+
+  protected:
+  private:
     bool                    _dump{false};
     std::vector<RegionDump> _dumps;
     std::size_t             _regions_formed{0};
     std::size_t             _regions_rewritten{0};
     std::size_t             _regions_declined{0};
+
+    /// Why regions were turned away, counted. A subset of @ref skip_reasons: those are every
+    /// decline the pass made including per-candidate ones, and these are the region-level ones
+    /// the structural report is about.
+    std::vector<std::pair<std::string, std::size_t>> _decline_reasons;
 };
 
 /**

@@ -126,12 +126,16 @@ void DeltaElimination::reset_stats() {
     _num_dissolved  = 0;
 }
 
-std::vector<std::string> DeltaElimination::explain() const {
+std::vector<std::string> DeltaElimination::describe() const {
     if (_num_eliminated == 0) {
         return {};
     }
     return {fmt::format("DeltaElimination: removed {} contraction(s) against a Kronecker delta, dissolving {} intermediate(s)",
                         _num_eliminated, _num_dissolved)};
+}
+
+bool DeltaElimination::applicable(Graph const &graph) const {
+    return std::ranges::any_of(graph.tensors_map(), [](auto const &entry) { return entry.second.tag.name == provenance_identity; });
 }
 
 bool DeltaElimination::rewrite(Graph const &graph, Region const &region, TensorExpr &expr) {

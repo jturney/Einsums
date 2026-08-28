@@ -432,3 +432,55 @@ TEST_CASE("propagation never overrules a declaration", "[ComputeGraph][DeltaElim
     REQUIRE_FALSE(reasons.empty());
     CHECK(reasons[0].first.find("already carries a different provenance tag") != std::string::npos);
 }
+
+TEST_CASE("the structural report says what the rewrite cost, before and after", "[ComputeGraph][DeltaElimination][Report]") {
+    // Two defects live here, both found by reading the report rather than by a failing test.
+    //
+    // The first: a client that overrode `explain()` silently dropped the framework's half of it,
+    // so the pass reported its own counters and the structural section - the one that exists to
+    // diagnose the pass - vanished. `explain()` is final now and clients add through `describe`.
+    //
+    // The second: `total_cost()` summed the whole term arena, and a rewrite leaves the term it
+    // replaced in the arena because nothing renumbers indices mid-rewrite. So the before and
+    // after were always equal, which is worse than reporting nothing: it is evidence that the
+    // rewrite achieved nothing, printed on a rewrite that removed a contraction.
+    auto A     = create_random_tensor<double>("A", 4, 5);
+    auto delta = create_identity_tensor<double>("delta", 5, 5);
+    auto D     = create_random_tensor<double>("D", 5, 3);
+    auto C     = create_zero_tensor<double>("C", 4, 3);
+
+    cg::Graph graph("report");
+    graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
+    auto &tmp = graph.create_zero_runtime_tensor<double>("tmp", {4, 5}, true);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &tmp, A, delta);
+        cg::einsum("ij;jl->il", &C, tmp, D);
+    }
+
+    cg::PassManager pm;
+    pm.add(std::make_shared<cg::passes::DeltaElimination>());
+    REQUIRE(pm.run(graph));
+
+    auto const report = pm.explain();
+    INFO("report:\n" << report);
+
+    // The framework's half survives the client's.
+    CHECK(report.find("formed 1 region(s), rewrote 1") != std::string::npos);
+    // The client's half is still there.
+    CHECK(report.find("dissolving 1 intermediate") != std::string::npos);
+
+    // And the cost really moved. Read the two sides of the arrow and require them different:
+    // asserting the exact polynomial would pin the cost model's spelling rather than the
+    // property worth pinning, which is that eliminating a contraction is visible as one.
+    auto const arrow = report.find("cost ");
+    REQUIRE(arrow != std::string::npos);
+    auto const line  = report.substr(arrow, report.find('\n', arrow) - arrow);
+    auto const split = line.find(" -> ");
+    REQUIRE(split != std::string::npos);
+    auto const before = line.substr(std::string("cost ").size(), split - std::string("cost ").size());
+    auto const after  = line.substr(split + 4);
+    INFO("before='" << before << "' after='" << after << "'");
+    CHECK(before != after);
+    CHECK(before.size() > after.size()); // a term went away
+}

@@ -96,11 +96,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief Zero the per-apply counters.
     void reset_stats() override;
 
-    /// @brief What this pass did, for @ref PassManager::explain.
-    /// @return One line per statistic worth reporting; empty when nothing happened.
-    [[nodiscard]] std::vector<std::string> explain() const override;
-
   protected:
+    /// @brief This pass's own line, appended to the framework's region report.
+    /// @return One line when anything was eliminated, empty otherwise.
+    [[nodiscard]] std::vector<std::string> describe() const override;
+
     /**
      * @brief Substitute away every delta contraction in one region's algebra.
      * @param[in]     graph  The graph, for tag lookups the algebra does not carry.
@@ -109,6 +109,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * @return True when anything was eliminated.
      */
     bool rewrite(Graph const &graph, Region const &region, TensorExpr &expr) override;
+
+    /**
+     * @brief Does @p graph hold a tensor declared to be an identity?
+     * @param[in] graph The graph.
+     * @return True when at least one tensor carries @ref provenance_identity.
+     *
+     * This pass is in the default pipeline, so it runs on every graph anyone optimizes and
+     * almost none of them declare a delta. One scan of the tensor map is what keeps that from
+     * costing a region formation and a raise per region for a guaranteed no-op.
+     */
+    [[nodiscard]] bool applicable(Graph const &graph) const override;
 
   private:
     std::size_t _num_eliminated{0};

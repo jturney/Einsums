@@ -41,6 +41,7 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         // Analysis: writes annotations, never the node set.
         {"SymmetryPropagation", cg::PassPhase::Analysis},
         {"SpacePropagation", cg::PassPhase::Analysis},
+        {"ProvenancePropagation", cg::PassPhase::Analysis},
 
         // Diagnostic: read-only reporting.
         {"CrossSpaceValidation", cg::PassPhase::Diagnostic},
@@ -48,6 +49,7 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         {"GPUDiagnostics", cg::PassPhase::Diagnostic},
 
         // Structural-algebraic: machine-independent, and the only output a save keeps.
+        {"DeltaElimination", cg::PassPhase::StructuralAlgebraic},
         {"ConstantFolding", cg::PassPhase::StructuralAlgebraic},
         {"ScaleAbsorption", cg::PassPhase::StructuralAlgebraic},
         {"PermuteFusion", cg::PassPhase::StructuralAlgebraic},
@@ -86,6 +88,10 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         // Not in the default pipeline, tagged anyway: the classification is a
         // property of the pass, not of whether create_default() happens to use it.
         {"ThreadPlanning", cg::PassPhase::Tuning},
+        // A region rewrite that rewrites nothing. Structural-algebraic because it LOWERS, which
+        // is a node-set change however faithful, and a pass whose phase said otherwise would be
+        // refused by the manager's own read-only check.
+        {"RegionIdentity", cg::PassPhase::StructuralAlgebraic},
     };
     return table;
 }
