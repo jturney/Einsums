@@ -7,6 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/ComputeGraph/Approximation.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
@@ -331,6 +332,34 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * verbosity warrants it.
      */
     EINSUMS_EXPORT void note_skip(std::string_view reason, std::string_view detail = {}) const;
+
+    /**
+     * @brief Ask whether this pass may apply a lossy rewrite, and record it when it may.
+     *
+     * @param[in,out] graph The graph the rewrite would be applied to.
+     * @param[in] record What the rewrite is and what it would cost. See @ref ApproximationRecord.
+     * @return True when the record was accepted and the pass may proceed. False when it was
+     *         refused, in which case the reason has already gone into the skip tally and the
+     *         pass must leave the graph alone.
+     *
+     * The whole of Part 5.2's "a pass that cannot bound its effect under already-applied
+     * approximations declines with a reported reason", in one place, so that every lossy
+     * pass declines the same way rather than each inventing its own.
+     *
+     * Called BEFORE the rewrite, not after. @ref Graph::note_approximation throws on a
+     * refusal precisely so that a pass which rewrote first and asked afterwards cannot
+     * quietly carry on: at that point the graph is already wrong and there is nothing a
+     * return value could do about it.
+     *
+     * @code
+     * if (!approximate(graph, {.pass = name(), .tolerance = _epsilon,
+     *                          .effect = ApproximationEffect::NormRelative, .bound = estimated})) {
+     *     return false;
+     * }
+     * @endcode
+     * @versionadded{2.0.0}
+     */
+    EINSUMS_EXPORT bool approximate(Graph &graph, ApproximationRecord record) const;
 
     int _verbosity{0};
 

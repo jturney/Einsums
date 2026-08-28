@@ -34,6 +34,8 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <fmt/format.h>
+
 #include <complex>
 #include <cstdint>
 #include <cstring>
@@ -648,14 +650,18 @@ TEST_CASE("SaveLoad - the version gate refuses a newer file, naming both version
     }
     std::string const text = must_save(graph, cg::SaveOptions{.pretty = false});
 
+    // Patched against the version this build WRITES rather than against a literal, which is
+    // a version number in a test that a schema bump has to remember to update. It did not.
+    std::string const current = fmt::format(R"("einsums_graph_ir":"{}")", cg::graph_ir_schema_version);
+
     SECTION("a newer schema is refused with both versions named") {
-        auto const message = load_refusal(patched(text, R"("einsums_graph_ir":"1.0.0")", R"("einsums_graph_ir":"2.0.0")"));
-        REQUIRE_THAT(message, Catch::Matchers::ContainsSubstring("2.0.0"));
-        REQUIRE_THAT(message, Catch::Matchers::ContainsSubstring("1.0.0"));
+        auto const message = load_refusal(patched(text, current, R"("einsums_graph_ir":"9.0.0")"));
+        REQUIRE_THAT(message, Catch::Matchers::ContainsSubstring("9.0.0"));
+        REQUIRE_THAT(message, Catch::Matchers::ContainsSubstring(std::string{cg::graph_ir_schema_version}));
         REQUIRE_THAT(message, Catch::Matchers::ContainsSubstring("never the reverse"));
     }
     SECTION("a malformed version is refused before anything else is read") {
-        auto const message = load_refusal(patched(text, R"("einsums_graph_ir":"1.0.0")", R"("einsums_graph_ir":"one")"));
+        auto const message = load_refusal(patched(text, current, R"("einsums_graph_ir":"one")"));
         REQUIRE_THAT(message, Catch::Matchers::ContainsSubstring("major.minor.patch"));
     }
 }

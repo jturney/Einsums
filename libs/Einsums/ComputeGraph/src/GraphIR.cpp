@@ -252,6 +252,7 @@ struct IrDocument {
     std::vector<IrTensor>                             manifest;
     std::vector<std::string>                          space_names;
     std::vector<std::pair<std::string, std::string>>  symbol_ties;
+    std::vector<ApproximationRecord>                  approximations;
     std::vector<std::pair<std::string, std::int64_t>> params;
     std::vector<std::pair<std::string, std::size_t>>  gate_flags;
     std::vector<IrTensor>                             tensors;
@@ -882,11 +883,36 @@ Object write_structure(Graph const &graph) {
         redirect_array.emplace_back(std::move(redirect));
     }
 
+    // Approximation records, in the order they were applied. Order is content here rather
+    // than presentation: composition is not commutative for a relative effect, so a reader
+    // re-deriving the composed bound has to see them in the order the passes ran.
+    Array approximations;
+    for (auto const &record : graph.approximations()) {
+        Object entry;
+        entry.set("pass_name", Value{record.pass_name});
+        entry.set("effect", Value{std::string(approximation_effect_name(record.effect))});
+        entry.set("tolerance", Value{record.tolerance});
+        entry.set("bound", Value{record.bound});
+        Array outputs;
+        for (auto const &name : record.outputs) {
+            outputs.emplace_back(name);
+        }
+        entry.set("outputs", Value{std::move(outputs)});
+        Array spaces_used;
+        for (auto const &name : record.spaces) {
+            spaces_used.emplace_back(name);
+        }
+        entry.set("spaces", Value{std::move(spaces_used)});
+        entry.set("setup", Value{record.setup});
+        approximations.emplace_back(std::move(entry));
+    }
+
     Object out;
     out.set(std::string(key_version), Value{std::string(graph_ir_schema_version)});
     out.set("name", Value{graph.name()});
     out.set("manifest", Value{std::move(manifest)});
     out.set("spaces", Value{std::move(spaces)});
+    out.set("approximations", Value{std::move(approximations)});
     out.set("params", Value{std::move(param_array)});
     out.set("gate_flags", Value{std::move(gate_flags)});
     out.set("tensors", Value{std::move(tensors)});
@@ -1818,6 +1844,47 @@ IrDocument read_document(Value const &root, Problems &problems, SpaceRegistry co
         }
     }
 
+    // OPTIONAL, and the compatibility policy says an added field takes a documented default:
+    // a file written before this section existed describes a graph nothing approximated,
+    // which is an empty list and is exactly right.
+    if (Value const *approximations = object->take("approximations"); approximations != nullptr) {
+        if (Array const *items = as_array(*approximations, "$.approximations", problems); items != nullptr) {
+            for (std::size_t i = 0; i < items->size(); ++i) {
+                std::string const path  = fmt::format("$.approximations[{}]", i);
+                Object const     *entry = as_object((*items)[i], path, problems);
+                if (entry == nullptr) {
+                    continue;
+                }
+                ApproximationRecord record;
+                record.pass_name = read_string(*entry, "pass_name", path, problems, (*items)[i].position);
+                // The effect has no safe default: a bound whose units are unreadable cannot be
+                // composed or compared, and guessing one would silently produce a number in
+                // the wrong scale. read_named reports the unresolvable name and the load fails.
+                record.effect =
+                    read_named<ApproximationEffect>(*entry, "effect", path, problems, (*items)[i].position, approximation_effect_from_name,
+                                                    "approximation effect", ApproximationEffect::NormRelative);
+                if (Value const *tolerance = field(*entry, "tolerance", path, problems, (*items)[i].position); tolerance != nullptr) {
+                    if (auto const parsed = tagged_number(*tolerance); parsed.has_value()) {
+                        record.tolerance = *parsed;
+                    } else {
+                        note(problems, fmt::format("{}.tolerance", path), tolerance->position, "expected a number");
+                    }
+                }
+                if (Value const *bound = field(*entry, "bound", path, problems, (*items)[i].position); bound != nullptr) {
+                    if (auto const parsed = tagged_number(*bound); parsed.has_value()) {
+                        record.bound = *parsed;
+                    } else {
+                        note(problems, fmt::format("{}.bound", path), bound->position, "expected a number");
+                    }
+                }
+                record.outputs = read_string_array(*entry, "outputs", path, problems, (*items)[i].position);
+                record.spaces  = read_string_array(*entry, "spaces", path, problems, (*items)[i].position);
+                record.setup   = read_string(*entry, "setup", path, problems, (*items)[i].position);
+                out.approximations.push_back(std::move(record));
+            }
+        }
+    }
+
     if (Value const *params = field(*object, "params", "$", problems, root.position); params != nullptr) {
         if (Array const *items = as_array(*params, "$.params", problems); items != nullptr) {
             for (std::size_t i = 0; i < items->size(); ++i) {
@@ -2201,6 +2268,14 @@ Graph build_graph(IrDocument const &document, SpaceRegistry &registry) {
     for (auto const &pass_name : document.structural_passes) {
         graph.note_structural_pass(pass_name);
     }
+
+    // The accuracy history, which unlike the pass list IS acted on: a lossy pass applied to
+    // the loaded graph composes against these, and a differential comparison widens by them.
+    // Installed directly rather than through note_approximation, which would re-run
+    // can_approximate against a budget this process has not set and could refuse a record
+    // that was perfectly legal in the process that wrote it. A file is a statement of what
+    // WAS applied, not a request to apply it.
+    graph.restore_approximations(document.approximations);
 
     // Slot redirects, once every slot exists. Not a derived cache: a node whose
     // dataflow still names a merged-away duplicate reads the survivor's buffer

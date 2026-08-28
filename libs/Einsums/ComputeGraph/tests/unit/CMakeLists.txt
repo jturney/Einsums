@@ -24,6 +24,7 @@ function(_einsums_snake_to_camel out_var snake)
 endfunction()
 
 set(ComputeGraphTests
+    Approximation.cpp
     Blueprints.cpp
     PooledOperands.cpp
     ControlFlow.cpp
@@ -139,6 +140,7 @@ set(ComputeGraphTests
     test_block_copy_python.py
     test_capture_parity_gaps_python.py
     test_capture_python.py
+    test_approximation_python.py
     test_ccsd_reuse_python.py
     test_setup_subgraph_python.py
     test_delta_elimination_python.py

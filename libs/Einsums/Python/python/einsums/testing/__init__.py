@@ -127,6 +127,48 @@ def _infer_dtype(actual: np.ndarray, expected: np.ndarray) -> str | None:
     return "complex128" if is_complex else "float64"
 
 
+def tolerance_for_graph(
+    graph: Any,
+    output: str = "",
+    *,
+    dtype: str | None = None,
+) -> tuple[float, float]:
+    """Return the ``(rtol, atol)`` a graph's approximation records call for.
+
+    A graph that has had no lossy pass applied to it carries no records, and this
+    is the dtype default unchanged: exact mode, which is what every differential
+    test did before lossy passes existed. A graph that HAS been approximated
+    reports what it cost, and the comparison widens by exactly that.
+
+    The composition itself is not done here. ``graph.approximation_tolerance``
+    already walks the records and composes them, and composition is arithmetic
+    with a correctness argument behind it (a relative bound does not compose by
+    addition); a second implementation of that rule in the test layer would be a
+    second thing to keep right.
+
+    The two sources of error are ADDED rather than maxed. Floating-point rounding
+    and a deliberate approximation are both present in the result, so the bound
+    that holds is their sum. In practice one dominates and the difference is
+    invisible, which is precisely why picking the wrong one would go unnoticed
+    until it mattered.
+
+    :param graph: A ``einsums.graph.Graph``. Anything without an
+        ``approximation_tolerance`` method is treated as carrying no records, so
+        a caller may pass ``None``.
+    :param output: The manifest name to ask about, or ``""`` for the graph-wide
+        worst case, which counts every record whatever it names.
+    :param dtype: A dtype name from :data:`ALL_DTYPES` giving the floating-point
+        baseline. ``None`` uses a generic ``(1e-7, 0.0)``.
+    :returns: The ``(rtol, atol)`` pair to compare with.
+    """
+    rtol, atol = tolerance_for(dtype) if dtype is not None else (1e-7, 0.0)
+    reader = getattr(graph, "approximation_tolerance", None)
+    if reader is None:
+        return rtol, atol
+    widened = reader(output)
+    return rtol + widened.relative, atol + widened.absolute
+
+
 def assert_close(
     actual: Any,
     expected: Any,
@@ -134,6 +176,8 @@ def assert_close(
     dtype: str | None = None,
     rtol: float | None = None,
     atol: float | None = None,
+    graph: Any = None,
+    output: str = "",
 ) -> None:
     """Compare two arrays with dtype-aware tolerance defaults.
 
@@ -149,6 +193,15 @@ def assert_close(
         default tolerance. Inferred from the inputs when ``None``.
     :param rtol: Relative tolerance. Overrides the dtype default when given.
     :param atol: Absolute tolerance. Overrides the dtype default when given.
+    :param graph: A graph whose approximation records widen the tolerance. A
+        graph with no records changes nothing, which is exact mode and the
+        behavior of every call that does not pass one. An explicit ``rtol`` or
+        ``atol`` is a floor rather than a ceiling: it replaces the dtype default
+        and is then widened by the records, because a caller asking for a tighter
+        comparison than the arithmetic can deliver wants the assertion, not a
+        failure they have to go and diagnose.
+    :param output: The manifest name the comparison is about, when ``graph`` is
+        given. ``""`` takes the graph-wide worst case.
     :raises AssertionError: If the arrays are not equal within tolerance.
     """
     a = np.asarray(actual)
@@ -165,6 +218,12 @@ def assert_close(
         rtol = 1e-7
     if atol is None:
         atol = 0.0
+    if graph is not None:
+        reader = getattr(graph, "approximation_tolerance", None)
+        if reader is not None:
+            widened = reader(output)
+            rtol += widened.relative
+            atol += widened.absolute
     np.testing.assert_allclose(a, e, rtol=rtol, atol=atol)
 
 

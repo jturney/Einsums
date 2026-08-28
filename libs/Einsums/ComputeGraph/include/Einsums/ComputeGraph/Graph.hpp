@@ -7,6 +7,7 @@
 
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/Comm/Collectives.hpp>
+#include <Einsums/ComputeGraph/Approximation.hpp>
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
 #include <Einsums/ComputeGraph/DeviceShadowMap.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
@@ -1752,6 +1753,146 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     APIARY_EXPOSE [[nodiscard]] std::vector<std::string> const &structural_passes() const noexcept { return _structural_passes; }
+
+    // ── The accuracy contract ───────────────────────────────────────────────
+
+    /**
+     * @brief Every lossy rewrite applied to this graph, in the order it was applied.
+     * @return The records, empty on a graph nothing has approximated. An empty list is
+     *         EXACT mode: a differential comparison against eager stays at bit equality.
+     *
+     * Saved with the structure and restored by a load, because a record says what the graph
+     * now computes rather than how it runs. Unlike @ref structural_passes, which is
+     * provenance and is read by nobody, these ARE acted on: a second lossy pass composes
+     * against them, and a tolerance-aware comparison widens by them.
+     * @see note_approximation
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] std::vector<ApproximationRecord> const &approximations() const noexcept { return _approximations; }
+
+    /**
+     * @brief Record a lossy rewrite this graph has just had applied.
+     *
+     * @param[in] record What the rewrite was and what it cost. See @ref ApproximationRecord.
+     * @throws std::invalid_argument With the reason, when @ref can_approximate refuses it.
+     *         Throwing rather than returning a flag, because a pass reaching here has already
+     *         rewritten the graph: a refusal at this point is a pass that did not ask first,
+     *         and the graph it leaves behind is wrong in a way no return value would fix.
+     *
+     * A pass asks @ref can_approximate BEFORE it rewrites anything, and declines through
+     * @ref OptimizerPass::approximate when the answer is no.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void note_approximation(ApproximationRecord record);
+
+    /**
+     * @brief Install a whole approximation history, unchecked, as a load does.
+     *
+     * @param[in] records The records the file carried, in the order they were applied.
+     *
+     * Not @ref note_approximation in a loop, deliberately. That would re-run
+     * @ref can_approximate against whatever budget THIS process happens to have set, and a
+     * record perfectly legal where it was applied would be refused here. A file is a
+     * statement of what was already done, not a request to do it.
+     * @versionadded{2.0.0}
+     */
+    void restore_approximations(std::vector<ApproximationRecord> records);
+
+    /**
+     * @brief Whether a pass may apply @p candidate, and why not when it may not.
+     *
+     * @param[in] candidate The rewrite a pass is about to apply.
+     * @return An empty string when it may; otherwise the reason, phrased for a skip tally.
+     *
+     * Three ways the answer is no, and each is a real case rather than a guard against
+     * nonsense input:
+     *
+     * - The bound is negative or not finite. A pass that cannot state its effect has not met
+     *   the contract, whatever else it can do.
+     * - The composed bound exceeds the declared budget for some output it names.
+     * - A budget is set and a record of a DIFFERENT effect already covers an output this one
+     *   names. Only under a budget: bounds of different kinds coexist happily otherwise, and
+     *   the tolerance carries them on separate sides. What a budget adds is a claim to be a
+     *   cap, and a cap that governs one kind of error while another goes uncounted is
+     *   misleading in a way that saying so is not.
+     *
+     * A graph with no budget therefore refuses only the first case: adding a lossy pass to a
+     * manager is the opt-in, and a budget is the further cap on what several may spend
+     * together.
+     *
+     * What is NOT decided here is whether a pass's own error model still holds once
+     * something else has perturbed its inputs. Only that pass knows; @ref approximations is
+     * readable so it can look, and it declines through @ref OptimizerPass::approximate like
+     * any other refusal.
+     * @see set_accuracy_budget
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] std::string can_approximate(ApproximationRecord const &candidate) const;
+
+    /**
+     * @brief The composed bound already spent on one output.
+     *
+     * @param[in] effect The units to answer in. Records of other effects are not counted,
+     *            because they do not convert.
+     * @param[in] output The manifest name to ask about, or empty for the graph-wide worst
+     *            case, which counts every record whatever it names.
+     * @return The composed bound, 0 when nothing applies.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] double accuracy_spent(ApproximationEffect effect, std::string const &output = "") const;
+
+    /**
+     * @brief The comparison tolerance this graph's records imply for one output.
+     *
+     * @param[in] output The manifest name to ask about, or empty for the graph-wide worst case.
+     * @return The relative and absolute halves. Both zero on a graph with no records, which
+     *         is exact mode.
+     *
+     * The point of entry for Part 5.4's tolerance-aware differential mode, and the reason it
+     * lives here rather than in the harness: composition is arithmetic with a correctness
+     * argument behind it (see @ref compose_approximation), and a second implementation of it
+     * in the test layer would be a second thing to get right.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] ApproximationTolerance approximation_tolerance(std::string const &output = "") const;
+
+    /**
+     * @brief Cap what lossy passes may spend on this graph, together.
+     *
+     * @param[in] effect The units the cap is stated in. A pass bounding itself in any other
+     *            effect will decline rather than convert.
+     * @param[in] value The largest composed bound any single output may carry.
+     * @throws std::invalid_argument If @p value is negative or not finite.
+     *
+     * Not set by default, and the default is not zero: a lossy pass runs only because a
+     * caller put it in a manager, and that is the opt-in. This is the second guard, for the
+     * caller who wants several of them and a ceiling on what they cost together.
+     * @see clear_accuracy_budget
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void set_accuracy_budget(ApproximationEffect effect, double value);
+
+    /**
+     * @brief Remove the cap, if one was set.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void clear_accuracy_budget();
+
+    /**
+     * @brief Whether a budget is set, and what it is.
+     * @return The effect and value, or an empty optional when none is set.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::optional<std::pair<ApproximationEffect, double>> accuracy_budget() const noexcept { return _accuracy_budget; }
+
+    /**
+     * @brief The budget's value, for a caller that cannot hold an optional pair.
+     * @return The cap, or a negative number when no budget is set.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE APIARY_GETTER("accuracy_budget_value") [[nodiscard]] double accuracy_budget_value() const noexcept {
+        return _accuracy_budget.has_value() ? _accuracy_budget->second : -1.0;
+    }
 
     /**
      * @brief Threads the per-node widths on this graph were planned against.
@@ -4465,6 +4606,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// The problem identity a caller declared, or empty when none was.
     /// @see set_setup_key
     std::string _setup_key;
+
+    /// Every lossy rewrite applied to this graph, in order. Saved with the structure.
+    /// @see note_approximation
+    std::vector<ApproximationRecord> _approximations;
+
+    /// The cap lossy passes compose against, or unset for no cap. NOT saved: a budget is
+    /// what a caller was willing to spend, which is a property of the run rather than of
+    /// the graph, and a loaded graph's caller gets to state their own.
+    std::optional<std::pair<ApproximationEffect, double>> _accuracy_budget;
 
     /// Mutable einsum parameters (kept alive by shared_ptr in lambdas + this list).
     std::vector<std::shared_ptr<EinsumParams>>  _params_store;

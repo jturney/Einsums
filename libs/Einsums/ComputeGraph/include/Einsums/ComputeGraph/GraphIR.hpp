@@ -20,17 +20,18 @@
  * be, which is why it refuses a graph it cannot write instead of writing a
  * partial one.
  *
- * @par The schema: ``einsums_graph_ir``, semver, currently 1.0.0
+ * @par The schema: ``einsums_graph_ir``, semver, currently 1.1.0
  * One JSON object with a FIXED top-level key order, so a tool can validate the
  * interface before it parses a single node:
  *
  * @code{.json}
  * {
- *   "einsums_graph_ir": "1.0.0",
+ *   "einsums_graph_ir": "1.1.0",
  *   "provenance":       { ... },
  *   "name":             "ccsd_doubles",
  *   "manifest":         [ ... ],
  *   "spaces":           { "names": [ ... ], "symbol_ties": [ ... ] },
+ *   "approximations":   [ ... ],
  *   "params":           [ ... ],
  *   "gate_flags":       [ ... ],
  *   "tensors":          [ ... ],
@@ -41,6 +42,12 @@
  *
  * Every section is written even when empty, so the layout is fixed rather than
  * merely conventional and a diff of two files lines up section for section.
+ *
+ * ``approximations`` arrived at 1.1.0 and is the one section a READER treats as
+ * optional, because the golden corpus is written by older builds and a file
+ * without it describes a graph nothing approximated. It is written
+ * unconditionally, empty list included, so the layout rule above still holds
+ * for everything this build produces.
  *
  * @par The hash domain
  * @ref Graph::content_hash digests the canonical bytes of that object with
@@ -175,7 +182,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.0.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.1.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

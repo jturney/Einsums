@@ -1,0 +1,150 @@
+{
+  "einsums_graph_ir": "1.1.0",
+  "provenance": {"library_version":"2.0.0","config_fingerprint":"0x3163ced3f54d794c","structural_passes":[]},
+  "name": "golden_setup_approx",
+  "manifest": [
+    {
+      "id": 0,
+      "name": "A",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,4],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 1,
+      "name": "B",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [4,5],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 2,
+      "name": "C",
+      "direction": "inout",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,5],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 3,
+      "name": "F",
+      "direction": "inout",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,4],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    }
+  ],
+  "spaces": {"names":[],"symbol_ties":[]},
+  "approximations": [{"pass_name":"GoldenFactorization","effect":"norm-relative","tolerance":1e-05,"bound":4e-06,"outputs":["C"],"spaces":[],"setup":"fit"}],
+  "params": [],
+  "gate_flags": [],
+  "tensors": [],
+  "slot_redirects": [],
+  "nodes": [
+    {
+      "id": 0,
+      "kind": "Setup",
+      "label": "fit",
+      "inputs": [],
+      "outputs": [],
+      "dtype": "unknown",
+      "rank": 0,
+      "descriptor": {
+        "body": {
+          "name": "setup(fit)",
+          "tensors": [
+            {
+              "id": 0,
+              "name": "A",
+              "dtype": "float64",
+              "rank": 2,
+              "dims": [3,4],
+              "dim_symbols": [],
+              "spaces": [],
+              "spaces_inferred": false,
+              "intermediate": false,
+              "scope": "graph",
+              "init": "none",
+              "alloc": "materialized",
+              "outer": 0
+            },
+            {
+              "id": 1,
+              "name": "F",
+              "dtype": "float64",
+              "rank": 2,
+              "dims": [3,4],
+              "dim_symbols": [],
+              "spaces": [],
+              "spaces_inferred": false,
+              "intermediate": false,
+              "scope": "graph",
+              "init": "none",
+              "alloc": "materialized",
+              "outer": 3
+            }
+          ],
+          "nodes": [
+            {
+              "id": 0,
+              "kind": "Permute",
+              "label": "permute: C[i,j] = A[i,j]",
+              "inputs": [0],
+              "outputs": [1],
+              "dtype": "float64",
+              "rank": 2,
+              "descriptor": {"alpha":{"dtype":"float64","re":2.0},"beta":{"dtype":"float64","re":0.0},"c_indices":["i","j"],"a_indices":["i","j"]}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": 1,
+      "kind": "Einsum",
+      "label": "einsum: C[i,j] = A[i,k] * B[k,j]",
+      "inputs": [3,1],
+      "outputs": [2],
+      "dtype": "float64",
+      "rank": 2,
+      "descriptor": {
+        "c_indices": ["i","j"],
+        "a_indices": ["i","k"],
+        "b_indices": ["k","j"],
+        "link_indices": ["k"],
+        "target_indices": ["i","j"],
+        "all_indices": ["i","j","k"],
+        "scalar_output": false,
+        "conj_a": false,
+        "conj_b": false,
+        "c_prefactor": {"dtype":"float64","re":0.0},
+        "ab_prefactor": {"dtype":"float64","re":1.0},
+        "letter_spaces": [],
+        "gemm_hint": {"m":3,"n":5,"k":4,"trans_a":"N","trans_b":"N","a":{"id":3,"leading_dim":3},"b":{"id":1,"leading_dim":4},"c":{"id":2,"leading_dim":3}}
+      }
+    },
+    {"id":2,"kind":"Scale","label":"scale(0.5, C)","inputs":[2],"outputs":[2],"dtype":"float64","rank":2,"descriptor":{"factor":{"dtype":"float64","re":0.5}}}
+  ]
+}

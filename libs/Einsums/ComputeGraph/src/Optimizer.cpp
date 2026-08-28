@@ -98,6 +98,19 @@ void OptimizerPass::note_skip(std::string_view reason, std::string_view detail) 
     }
 }
 
+bool OptimizerPass::approximate(Graph &graph, ApproximationRecord record) const {
+    if (std::string reason = graph.can_approximate(record); !reason.empty()) {
+        // The reason is already a full sentence naming this pass, so it goes in as the
+        // aggregation key rather than being wrapped in one. Two different refusals of the
+        // same pass are different keys, which is right: "cannot be bounded" and "over
+        // budget" call for different fixes and a tally that merged them would say neither.
+        note_skip("declined a lossy rewrite", reason);
+        return false;
+    }
+    graph.note_approximation(std::move(record));
+    return true;
+}
+
 std::vector<std::pair<std::string, std::size_t>> OptimizerPass::skip_reasons() const {
     auto out = _skips;
     // Most-frequent first: the dominant reason a pass stayed quiet is the one

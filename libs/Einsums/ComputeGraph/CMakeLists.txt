@@ -5,6 +5,7 @@
 
 set(ComputeGraphHeaders
     Einsums/ComputeGraph.hpp
+    Einsums/ComputeGraph/Approximation.hpp
     Einsums/ComputeGraph/Blueprints.hpp
     Einsums/ComputeGraph/Blueprints/Orthogonalization.hpp
     Einsums/ComputeGraph/Blueprints/TensorAlgebra.hpp
@@ -87,6 +88,7 @@ set(ComputeGraphHeaders
 )
 
 set(ComputeGraphSources
+    Approximation.cpp
     CaptureContext.cpp
     Options.cpp
     EinsumSpec.cpp
