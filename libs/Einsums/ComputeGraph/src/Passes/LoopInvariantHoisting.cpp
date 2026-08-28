@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
@@ -27,34 +28,6 @@ namespace {
 /// transform) and any einsum/permute/batched-gemm with a *nonzero* destination
 /// prefactor (``C = c_pf*C + …`` reads the old C). A pure overwrite (prefactor
 /// zero) does not read its output and may still be hoisted.
-/// Count real (non-lifecycle) writers of each tensor across @p g and every
-/// descendant sub-graph, keyed by the tensor's underlying pointer (stable
-/// across graphs). A producer can only be hoisted out of a loop when each
-/// of its outputs has exactly one such writer in the loop subtree, itself.
-/// Otherwise another node in the loop also writes that tensor, and removing
-/// the producer's per-iteration write changes which write wins (e.g. an
-/// einsum that resets C followed by an in-place scale that would then
-/// accumulate). Reads don't count, so a consumer of the produced value
-/// doesn't block the hoist.
-void count_subtree_writers_by_ptr(Graph const &g, std::unordered_map<void const *, int> &writers) {
-    for (auto const &n : g.nodes()) {
-        if (is_lifecycle(n.kind)) {
-            continue;
-        }
-        for (auto tid : n.outputs) {
-            // Resolve view aliases to the owning buffer: a write through a view
-            // of T is a write to T, so it must count against T's pointer (not
-            // the view object's). Otherwise an invariant-looking consumer of T
-            // would be hoisted past a view-write that mutates T each iteration.
-            auto it = g.tensors_map().find(g.resolve_alias(tid));
-            if (it != g.tensors_map().end() && it->second.tensor_ptr != nullptr) {
-                writers[it->second.tensor_ptr]++;
-            }
-        }
-    }
-    g.for_each_subgraph([&](Graph const &sub) { count_subtree_writers_by_ptr(sub, writers); });
-}
-
 } // namespace
 
 void LoopInvariantHoisting::reset_stats() {
@@ -124,11 +97,13 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             }
         }
 
-        // Real value-writer count per tensor pointer across the loop subtree.
+        // Real value-writer count per underlying buffer across the loop subtree.
         // Used to refuse hoisting a producer whose output is also written by
         // another node in the loop (which would change which write wins).
-        std::unordered_map<void const *, int> subtree_writers;
-        count_subtree_writers_by_ptr(*loop_desc->body, subtree_writers);
+        // Shared with SymmetryPropagation and the region framework: three
+        // derivations of one relation disagreeing in the corner nobody tested is
+        // this module's signature bug, so there is only ever one.
+        auto const escapes = EscapeAnalysis::over(*loop_desc->body);
 
         // Identify invariant nodes: all inputs are NOT written by any body node
         // Iterate in order and propagate (hoisted outputs become invariant)
@@ -192,17 +167,8 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
                 // lists. Without it, an input mutated only inside a conditional
                 // would look invariant and the consumer would be wrongly
                 // hoisted out of the loop.
-                bool written_in_body = body_writes.count(tid) > 0;
-                if (!written_in_body) {
-                    auto hit = loop_desc->body->tensors_map().find(loop_desc->body->resolve_alias(tid));
-                    if (hit != loop_desc->body->tensors_map().end() && hit->second.tensor_ptr != nullptr) {
-                        auto wit = subtree_writers.find(hit->second.tensor_ptr);
-                        if (wit != subtree_writers.end() && wit->second > 0) {
-                            written_in_body = true;
-                        }
-                    }
-                }
-                bool const from_hoisted = hoisted_outputs.count(tid) > 0;
+                bool const written_in_body = body_writes.count(tid) > 0 || escapes.subtree_writer_count(tid) > 0;
+                bool const from_hoisted    = hoisted_outputs.count(tid) > 0;
                 if (written_in_body && !from_hoisted) {
                     all_inputs_invariant = false;
                     break;
@@ -217,19 +183,11 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             // DiskRead with no inputs is "invariant" by the input check above;
             // this guard stops it being hoisted when something else in the
             // loop overwrites its destination.) Reads of the output are fine.
-            bool single_writer_outputs = true;
-            for (auto out_tid : bnode.outputs) {
-                auto hit = loop_desc->body->tensors_map().find(loop_desc->body->resolve_alias(out_tid));
-                if (hit == loop_desc->body->tensors_map().end() || hit->second.tensor_ptr == nullptr) {
-                    single_writer_outputs = false; // can't prove single-writer → be safe
-                    break;
-                }
-                auto wit = subtree_writers.find(hit->second.tensor_ptr);
-                if (wit == subtree_writers.end() || wit->second != 1) {
-                    single_writer_outputs = false;
-                    break;
-                }
-            }
+            // A count of exactly one is the proof; anything else, including a
+            // tensor with no buffer to count against, leaves it unproven and so
+            // refused.
+            bool const single_writer_outputs =
+                std::ranges::all_of(bnode.outputs, [&escapes](TensorId out_tid) { return escapes.subtree_writer_count(out_tid) == 1; });
             if (!single_writer_outputs) {
                 note_skip("node's output is written more than once in the loop subtree", fmt::format("body node '{}'", bnode.label));
                 continue;

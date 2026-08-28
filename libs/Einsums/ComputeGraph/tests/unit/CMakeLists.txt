@@ -34,6 +34,7 @@ set(ComputeGraphTests
     AxpbyDescriptor.cpp
     EinsumSpec.cpp
     ElementOps.cpp
+    EscapeAnalysis.cpp
     Executor.cpp
     ExecutorBuilder.cpp
     GEMMBatching.cpp

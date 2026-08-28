@@ -30,6 +30,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Operations.hpp
     Einsums/ComputeGraph/Optimizer.hpp
     Einsums/ComputeGraph/UsageAnalysis.hpp
+    Einsums/ComputeGraph/EscapeAnalysis.hpp
     Einsums/ComputeGraph/Passes/ContractionPlanning.hpp
     Einsums/ComputeGraph/Passes/CommunicationElimination.hpp
     Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp
@@ -97,6 +98,7 @@ set(ComputeGraphSources
     SymbolicExtents.cpp
     GroupedBatchedGemm.cpp
     UsageAnalysis.cpp
+    EscapeAnalysis.cpp
     CostModel.cpp
     SymbolicCost.cpp
     Node.cpp

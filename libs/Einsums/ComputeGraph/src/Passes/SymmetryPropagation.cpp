@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetryPropagation.hpp>
@@ -31,21 +32,12 @@ namespace {
 /// Without these guards a stale tag could claim symmetry the data no longer
 /// has. They make the pass strictly conservative and therefore safe to
 /// recurse into loop bodies.
-struct InferGuard {
-    std::unordered_map<TensorId, int> writer_count;
-    std::unordered_set<void const *>  subtree_ptrs;
-
-    [[nodiscard]] bool safe(Graph const &graph, TensorId tid) const {
-        if (auto it = writer_count.find(tid); it == writer_count.end() || it->second != 1) {
-            return false;
-        }
-        auto it = graph.tensors_map().find(tid);
-        if (it == graph.tensors_map().end()) {
-            return false;
-        }
-        return it->second.tensor_ptr == nullptr || subtree_ptrs.count(it->second.tensor_ptr) == 0;
-    }
-};
+/// Both conditions in one call: exactly one value-writer in this graph, and no
+/// descendant sub-graph touching the buffer. Shared with LoopInvariantHoisting
+/// and the region framework rather than counted a second time here, because
+/// three derivations of one relation disagreeing in the corner nobody tested is
+/// this module's signature bug.
+using InferGuard = EscapeAnalysis;
 
 /// Try to push an inferred descriptor to a graph-owned tensor handle.
 /// Returns true if the descriptor was applied (either taking on a new value
@@ -54,7 +46,7 @@ bool apply_inferred(Graph &graph, TensorId out_tid, SymmetryDescriptor desc, Inf
     auto &handle = graph.tensor(out_tid);
     if (!handle.is_intermediate)
         return false; // Never mutate user-owned tensor state.
-    if (!guard.safe(graph, out_tid))
+    if (!guard.stable(out_tid))
         return false; // Could be overwritten later / by a child body, don't tag.
     // Skip if the tensor already has an equivalent descriptor, avoids
     // redundant work and spurious "new inference" reports on re-runs.
@@ -204,20 +196,11 @@ bool SymmetryPropagation::run(Graph &graph) {
     // Build the soundness guard for this graph: writer counts + the set of
     // tensor pointers referenced by child sub-graphs. Only single-writer,
     // not-used-by-a-child tensors get tagged.
-    InferGuard guard;
-    for (auto const &node : nodes) {
-        // Lifecycle nodes (Alloc/Free/Materialize/Initialize) list the tensor
-        // as an output but don't write a *value* that could invalidate an
-        // inferred symmetry, a freshly created/zeroed tensor is then filled
-        // by exactly one real op. Count only value-producing nodes.
-        if (is_lifecycle(node.kind)) {
-            continue;
-        }
-        for (auto tid : node.outputs) {
-            guard.writer_count[tid]++;
-        }
-    }
-    graph.collect_subtree_referenced_ptrs(guard.subtree_ptrs);
+    // Lifecycle nodes (Alloc/Free/Materialize/Initialize) list the tensor as an
+    // output but don't write a *value* that could invalidate an inferred
+    // symmetry; a freshly created or zeroed tensor is then filled by exactly one
+    // real op. The shared analysis excludes them for the same reason.
+    auto const guard = InferGuard::over(graph);
 
     for (auto const &node : nodes) {
         if (propagate_scale(graph, node, guard))
