@@ -47,6 +47,7 @@ set(ComputeGraphTests
     InterfaceManifest.cpp
     Json.cpp
     SaveLoad.cpp
+    SetupSubgraph.cpp
     CostModel.cpp
     LoopOptimizationCorrectness.cpp
     LuFactorization.cpp
@@ -139,6 +140,7 @@ set(ComputeGraphTests
     test_capture_parity_gaps_python.py
     test_capture_python.py
     test_ccsd_reuse_python.py
+    test_setup_subgraph_python.py
     test_delta_elimination_python.py
     test_diis_python.py
     test_diis_differential_python.py

@@ -499,7 +499,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
                 if (remove[k]) {
                     continue; // subsumed by an earlier group; it will not exist
                 }
-                if (nodes[k].kind == OpKind::Loop || nodes[k].kind == OpKind::Conditional) {
+                if (is_control_flow(nodes[k].kind)) {
                     usable = false;
                     break;
                 }

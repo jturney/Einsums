@@ -131,6 +131,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
     // giving the container one would count the same machine twice.
     case OpKind::Conditional:
     case OpKind::Loop:
+    case OpKind::Setup:
         return false;
 
     default:

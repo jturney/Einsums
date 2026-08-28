@@ -46,11 +46,7 @@ bool CommunicationInsertion::run(Graph &graph) {
         // mixes GEMMBatching with the distribution pipeline, which is unsupported
         // (see libs/Einsums/ComputeGraph/docs/gemm_batching.rst). On non-distributed
         // inputs the has_distributed_input check below short-circuits.
-        if (node.kind == OpKind::Materialize || node.kind == OpKind::Initialize || node.kind == OpKind::Allreduce ||
-            node.kind == OpKind::Broadcast || node.kind == OpKind::Allgather || node.kind == OpKind::Scatter ||
-            node.kind == OpKind::Barrier || node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost ||
-            node.kind == OpKind::DiskRead || node.kind == OpKind::DiskWrite || node.kind == OpKind::Loop ||
-            node.kind == OpKind::Conditional)
+        if (is_infrastructure(node.kind))
             continue;
 
         // Check if any input is distributed (non-replicated)

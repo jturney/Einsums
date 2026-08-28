@@ -532,6 +532,17 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("body", write_fragment(*desc.body, root, &frame, fmt::format("loop({})", node.label)));
         return Value{std::move(out)};
     }
+    case OpKind::Setup: {
+        auto const &desc = std::get<SetupDescriptor>(node.op_data);
+        if (desc.body == nullptr) {
+            refuse(node, "body", "is null; a setup node without a body has nothing to record");
+        }
+        // The body and nothing else. SetupState is what a replay COMPUTED, which is a fact
+        // about one process holding one bound problem, and a loaded graph has neither: it
+        // arrives having fitted nothing, which is what a default-constructed state says.
+        out.set("body", write_fragment(*desc.body, root, &frame, fmt::format("setup({})", node.label)));
+        return Value{std::move(out)};
+    }
     default:
         refuse(node, "kind", "has no descriptor encoding; the serializability report should have caught this first");
     }
@@ -1568,6 +1579,14 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
         node.descriptor = std::move(desc);
         return;
     }
+    case OpKind::Setup: {
+        SetupDescriptor desc;
+        if (Value const *body = field(*object, "body", path, problems, value.position); body != nullptr) {
+            node.body = std::make_shared<IrFragment>(read_fragment(*body, fmt::format("{}.body", path), problems, gates, registry));
+        }
+        node.descriptor = std::move(desc);
+        return;
+    }
     default:
         note(problems, path, value.position,
              fmt::format("op kind '{}' is not one this schema can describe; the reconstructible set is what a file may contain",
@@ -2114,6 +2133,15 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
             }
             loop->body  = build_fragment(root, *spec.body, loaded, gates, registry);
             loop->state = std::make_shared<LoopState>();
+        }
+        if (auto *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
+            if (spec.body == nullptr) {
+                throw BuildFailure(fmt::format("setup node '{}' has no body", spec.label));
+            }
+            setup->body = build_fragment(root, *spec.body, loaded, gates, registry);
+            // Fresh, so a loaded graph knows it has fitted nothing. Anything else would be
+            // a file claiming the factors are on hand in a process that has never bound.
+            setup->state = std::make_shared<SetupState>();
         }
 
         try {

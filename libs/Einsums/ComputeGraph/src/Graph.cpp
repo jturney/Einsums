@@ -588,6 +588,7 @@ void Graph::move_members_from(Graph &&other) noexcept {
     _analysis_version      = other._analysis_version;
     _structure_version     = other._structure_version;
     _structural_passes     = std::move(other._structural_passes);
+    _setup_key             = std::move(other._setup_key);
     _usage_version         = other._usage_version;
     _usage                 = std::move(other._usage);
     // The widths themselves ride along inside _nodes, so the count they were
@@ -1765,6 +1766,10 @@ void Graph::for_each_subgraph(std::function<void(Graph &)> const &visitor) {
             if (cond->else_branch) {
                 visitor(*cond->else_branch);
             }
+        } else if (auto *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
+            if (setup->body) {
+                visitor(*setup->body);
+            }
         }
     }
 }
@@ -1781,6 +1786,10 @@ void Graph::for_each_subgraph(std::function<void(Graph const &)> const &visitor)
             }
             if (cond->else_branch) {
                 visitor(*cond->else_branch);
+            }
+        } else if (auto const *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
+            if (setup->body) {
+                visitor(*setup->body);
             }
         }
     }
@@ -1816,7 +1825,7 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node
     std::vector<TensorId> ins  = node.inputs;
     std::vector<TensorId> outs = node.outputs;
 
-    if (node.kind != OpKind::Loop && node.kind != OpKind::Conditional) {
+    if (!is_control_flow(node.kind)) {
         return {ins, outs};
     }
 
@@ -1864,6 +1873,10 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node
         }
         if (cond->else_branch) {
             collect(*cond->else_branch);
+        }
+    } else if (auto const *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
+        if (setup->body) {
+            collect(*setup->body);
         }
     }
 
@@ -1916,7 +1929,7 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node
 }
 
 std::pair<std::span<TensorId const>, std::span<TensorId const>> Graph::effective_io_cached(Node const &node, EffectiveIoCache &cache) {
-    if (node.kind != OpKind::Loop && node.kind != OpKind::Conditional) {
+    if (!is_control_flow(node.kind)) {
         // Ordinary nodes: their own I/O lists ARE the effective lists; hand
         // out views instead of heap-copying two vectors per node per scan.
         return {node.inputs, node.outputs};
@@ -2780,6 +2793,84 @@ void Graph::add_loop(std::string label, size_t max_iterations, std::function<boo
     body_fn();
 }
 
+// ── Setup subgraphs ─────────────────────────────────────────────────────────
+
+Graph &Graph::add_setup(std::string label) {
+    auto body_graph = std::make_shared<Graph>(label + "/setup");
+
+    SetupDescriptor desc;
+    desc.body = body_graph;
+    // Shared with the executor, so the "already computed" answer a replay writes is the
+    // one a later bind clears. See LoopDescriptor::state for why this is not a plain field.
+    desc.state = std::make_shared<SetupState>();
+    // A setup node added after a key was declared still belongs to the problem the caller
+    // named; the key is graph state and the node is where it has to be readable from.
+    desc.state->pending_key = _setup_key;
+
+    OpData op_data(std::move(desc));
+    auto   executor = build_executor(OpKind::Setup, packed_gemm::ScalarType::Unknown, 0, op_data, *this, {}, {});
+
+    Node node;
+    node.kind    = OpKind::Setup;
+    node.label   = std::move(label);
+    node.execute = std::move(executor);
+    node.op_data = std::move(op_data);
+
+    add_node(std::move(node));
+
+    return *body_graph;
+}
+
+void Graph::add_setup(std::string label, std::function<void()> body_fn) {
+    auto              &body = add_setup(std::move(label));
+    CaptureGuard const g(body);
+    body_fn();
+}
+
+bool Graph::has_setup() const noexcept {
+    return std::any_of(_nodes.begin(), _nodes.end(), [](Node const &node) { return node.kind == OpKind::Setup; });
+}
+
+void Graph::run_setup(bool force) {
+    for (auto &node : _nodes) {
+        auto *desc = std::get_if<SetupDescriptor>(&node.op_data);
+        if (desc == nullptr || !desc->body) {
+            continue;
+        }
+        if (force && desc->state != nullptr) {
+            // Clear both, not just the flag: a stale key would otherwise let the very next
+            // guard skip the body that this call exists to force.
+            desc->state->computed = false;
+            desc->state->computed_key.clear();
+        }
+        // Through the node's own executor rather than by calling body->execute() here, so
+        // there is one place that decides whether a setup body runs. A second copy of the
+        // two guards is a second thing to keep in step with the first.
+        node.execute();
+    }
+}
+
+void Graph::invalidate_setup() {
+    for (auto &node : _nodes) {
+        auto *desc = std::get_if<SetupDescriptor>(&node.op_data);
+        if (desc == nullptr || desc->state == nullptr) {
+            continue;
+        }
+        desc->state->computed = false;
+    }
+}
+
+void Graph::set_setup_key(std::string key) {
+    _setup_key = std::move(key);
+    for (auto &node : _nodes) {
+        auto *desc = std::get_if<SetupDescriptor>(&node.op_data);
+        if (desc == nullptr || desc->state == nullptr) {
+            continue;
+        }
+        desc->state->pending_key = _setup_key;
+    }
+}
+
 void Graph::update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorScalar ab_pf) {
     for (auto &node : _nodes) {
         if (node.id != node_id) {
@@ -3338,6 +3429,27 @@ expected<void, GraphError> Graph::validate_tensors() const {
                         }
                     }
                 }
+                // A Materialize can also live inside a sub-graph, and one that does still
+                // brings the buffer to life before anything here reads it. This used never
+                // to happen, because Materialization HOISTS a body tensor's lifecycle into
+                // the parent; a setup body is the exception, since its lifecycle has to be
+                // skipped on the replays that skip the fitting. Matched by tensor_ptr, which
+                // is the identity two graphs share; ids are per-graph and would not.
+                // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest, so the walk over them does too.
+                std::function<void(Graph const &)> collect_sub = [&](Graph const &sub) {
+                    for (auto const &node : sub._nodes) {
+                        if (node.kind != OpKind::Materialize) {
+                            continue;
+                        }
+                        for (auto out : node.outputs) {
+                            if (auto it = sub._tensors.find(out); it != sub._tensors.end() && it->second.tensor_ptr != nullptr) {
+                                materialize_ptrs.insert(it->second.tensor_ptr);
+                            }
+                        }
+                    }
+                    sub.for_each_subgraph(collect_sub);
+                };
+                for_each_subgraph(collect_sub);
             }
             // A deferred handle no node references cannot corrupt execution.
             // These exist by design: effective_io registers orphan parent

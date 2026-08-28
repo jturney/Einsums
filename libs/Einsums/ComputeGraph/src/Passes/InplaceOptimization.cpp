@@ -73,7 +73,7 @@ std::optional<MergePlan> find_merge(Graph &graph) {
     // tensor a body still reads. Bodies are processed on their own recursion
     // level; the parent level is skipped when control flow is present.
     for (auto const &node : nodes) {
-        if (node.kind == OpKind::Loop || node.kind == OpKind::Conditional) {
+        if (is_control_flow(node.kind)) {
             return std::nullopt;
         }
         // GPU placement swaps buffers behind slots (device shadows); storage

@@ -71,14 +71,33 @@ struct DescendantFreeable {
 };
 
 void collect_descendant_freeable(Graph &graph, size_t min_bytes, std::vector<DescendantFreeable> &out) {
-    graph.for_each_subgraph([&](Graph &sub) {
+    // Written out rather than delegated to ``Graph::for_each_subgraph``, which visits every
+    // sub-graph including a Setup body. A setup body's storage must not be reclaimed here
+    // for the reason the Part B comment gives, and the visitor cannot see which node handed
+    // it the graph, so the exclusion has to happen where the descent is chosen.
+    auto descend = [&](Graph &sub) {
         for (auto const &[tid, handle] : sub.tensors_map()) {
             if (handle.is_intermediate && handle.release_fn && handle.aliases == 0 && handle.total_bytes() >= min_bytes) {
                 out.push_back({.owner = &sub, .tid = tid});
             }
         }
         collect_descendant_freeable(sub, min_bytes, out);
-    });
+    };
+
+    for (auto &node : graph.nodes()) {
+        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+            if (loop->body) {
+                descend(*loop->body);
+            }
+        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+            if (cond->then_branch) {
+                descend(*cond->then_branch);
+            }
+            if (cond->else_branch) {
+                descend(*cond->else_branch);
+            }
+        }
+    }
 }
 
 } // namespace
@@ -116,6 +135,25 @@ bool FreeInsertion::run(Graph &graph) {
     // body-CREATED buffers is prevented by the planned-name dedup below.
     auto const &ua = graph.usage();
 
+    // Buffers a setup body produces. Their live range is not the one this pass measures:
+    // within a single replay a fitted tensor looks exactly like an ordinary intermediate,
+    // read for the last time somewhere in the body and never touched again, and freeing it
+    // there is correct only if something rewrites it before the next replay reads it.
+    // Nothing does, because that is the whole point of a setup node - the second replay
+    // skips the body. So they are excluded rather than measured.
+    std::unordered_set<TensorId> setup_outputs;
+    for (auto const &node : nodes) {
+        if (node.kind != OpKind::Setup) {
+            continue;
+        }
+        // effective_io already maps the subtree's buffers back to this graph's ids, which
+        // is the same mapping Part A's usage table is keyed on.
+        auto const [eff_in, eff_out] = graph.effective_io(node);
+        for (TensorId const tid : eff_out) {
+            setup_outputs.insert(graph.resolve_alias(tid));
+        }
+    }
+
     std::vector<FreePlan>           plans;
     std::unordered_set<std::string> planned_names;
 
@@ -130,6 +168,8 @@ bool FreeInsertion::run(Graph &graph) {
         auto const &handle = it->second;
 
         if (!handle.is_intermediate || !handle.release_fn)
+            continue;
+        if (setup_outputs.contains(tid))
             continue;
         if (handle.total_bytes() < _min_bytes)
             continue;
@@ -200,6 +240,12 @@ bool FreeInsertion::run(Graph &graph) {
             }
         };
 
+        // Setup bodies are deliberately absent from this walk. A buffer a setup body created
+        // for itself could be freed after the node, but the paired Materialize this pass
+        // emits would then run on every replay to reallocate storage that a skipped body
+        // never fills. Leaving a setup body's own scratch alone costs one allocation that
+        // outlives the fitting and buys the guarantee that nothing a skipped node was
+        // supposed to write is missing.
         if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
             if (loop->body) {
                 collect_from(*loop->body);

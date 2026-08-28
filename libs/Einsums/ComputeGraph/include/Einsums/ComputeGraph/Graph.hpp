@@ -1494,6 +1494,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *   - ``OpKind::Loop``         → ``LoopDescriptor::body``
      *   - ``OpKind::Conditional``  → ``ConditionalDescriptor::then_branch`` and
      *                                ``else_branch`` (when non-null)
+     *   - ``OpKind::Setup``        → ``SetupDescriptor::body``
      *
      * Does not recurse into nested control flow, visitor must do its own
      * descent if it wants the whole sub-tree. The order of visits is the node
@@ -1982,6 +1983,120 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     APIARY_EXPOSE void add_loop(std::string label, size_t max_iterations, std::function<bool(size_t)> condition,
                                 std::function<void()> body_fn);
+
+    // ── Setup subgraphs ─────────────────────────────────────────────────────
+
+    /**
+     * @brief Add a setup node: a body computed once per bound problem, not once per replay.
+     *
+     * Returns the body sub-graph, to be captured into with a @ref CaptureGuard exactly as a
+     * loop body is. What goes in it is the computation that depends on WHAT is bound rather
+     * than on how many times the graph is replayed: a density fitting, a metric inverse, an
+     * integral transform. The replay body then reads its outputs and never recomputes them.
+     *
+     * Structurally this is a control-flow node like any other, which is the point: it takes
+     * its position in the ordinary schedule, its effective I/O is the sub-graph's reads and
+     * writes (so the scheduler orders it before every consumer with no special case), and a
+     * pass that walks sub-graphs reaches it through @ref for_each_subgraph. What is special
+     * is only the executor, which skips a body that has already computed.
+     *
+     * @param[in] label Human-readable label for profiling and diagnostics.
+     * @return Reference to the setup body Graph. Valid for the life of this graph.
+     *
+     * @par When the body runs
+     * At the first @ref execute after capture, and at the first @ref execute after any
+     * @ref bind. It is not run BY the bind: a bind that is never executed should cost
+     * nothing, and a caller who wants the factors on hand earlier calls @ref run_setup.
+     *
+     * @par What a setup output must not be
+     * Its outputs live across replays, so nothing may free them between two. @ref
+     * passes::FreeInsertion is told this rather than left to infer it from a live range that
+     * looks, within one replay, exactly like an ordinary intermediate's.
+     *
+     * @code
+     * auto &fit = graph.add_setup("df_fit");
+     * {
+     *     cg::CaptureGuard const guard(fit);
+     *     cg::einsum("Qmn <- QP ; Pmn", &B, metric_inv_sqrt, ints);
+     * }
+     * // ... the replay body reads B ...
+     * graph.execute();   // fits, then replays
+     * graph.execute();   // replays only
+     * @endcode
+     *
+     * @see run_setup
+     * @see set_setup_key
+     * @see invalidate_setup
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE APIARY_RVP(reference_internal) Graph &add_setup(std::string label);
+
+    /**
+     * @brief Add a setup node with a lambda-captured body.
+     * @param[in] label Human-readable label.
+     * @param[in] body_fn Called during construction to capture the body's operations.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void add_setup(std::string label, std::function<void()> body_fn);
+
+    /**
+     * @brief Whether this graph carries at least one setup node.
+     * @return True when it does. Top-level only; a setup node inside a loop body is that
+     *         body's business and not reported here.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE APIARY_GETTER("has_setup") [[nodiscard]] bool has_setup() const noexcept;
+
+    /**
+     * @brief Run every setup body that is not current, now.
+     *
+     * What the next @ref execute would do anyway, pulled forward for a caller who wants the
+     * fitting cost paid at a moment of their choosing rather than inside the first replay's
+     * timing. Nothing else differs: the same guards apply, so a body already computed for
+     * the bound problem is skipped here exactly as it would be there.
+     *
+     * @param[in] force Run every body whatever its state, ignoring both the computed flag
+     *            and the key. The escape hatch for a caller who changed the CONTENTS of a
+     *            bound tensor without rebinding it, which nothing can observe.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE APIARY_RELEASE_GIL void run_setup(bool force = false);
+
+    /**
+     * @brief Mark every setup body as needing recomputation.
+     *
+     * Called by @ref bind, which is the one event that can change what a setup body would
+     * produce. Public because a caller who mutates a bound tensor in place has made the same
+     * change without going through a bind, and nothing else can see that.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void invalidate_setup();
+
+    /**
+     * @brief Name the problem currently bound, so a re-bind of it can skip refitting.
+     *
+     * The cache of the setup phase, and a claim the caller makes rather than one this graph
+     * checks. A bind invalidates every setup body; if the key set here is non-empty and equal
+     * to the key the body last computed for, the body is skipped anyway on the ground that
+     * the caller has said this is the same problem.
+     *
+     * Empty (the default) disables the cache: every bind refits, which is always correct.
+     * A caller supplying a key owns the consequence of supplying the same one for two
+     * different problems, which is a stale factorization and no diagnostic. Use something
+     * that identifies the problem rather than the call: a molecule and basis, a checkpoint
+     * id, a content hash the caller computed for its own reasons.
+     *
+     * @param[in] key The problem identity, or empty to disable the cache.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void set_setup_key(std::string key);
+
+    /**
+     * @brief The key @ref set_setup_key last recorded.
+     * @return The key, empty when none was set.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE APIARY_GETTER("setup_key") [[nodiscard]] std::string const &setup_key() const noexcept { return _setup_key; }
 
     /**
      * @brief Mark a tensor's lifetime end with a Free node.
@@ -3682,9 +3797,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
             EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no slot for tensor id {}", _name, id);
         }
         auto *slot = it->second.get();
-        // The object this slot named BEFORE the repoint, which is how a
-        // sub-graph's slot for the same buffer is recognised.
-        void *const old_ptr = slot->ptr;
+        // What this slot named BEFORE the repoint, which is how a sub-graph's slot for the
+        // same operand is recognised.
+        //
+        // The HANDLE's address, not the slot's, and the difference is the whole of a bug
+        // this used to have. Capture ADOPTS an operand, so a slot points at a graph-owned
+        // stand-in rather than at the caller's tensor, and a parent and a body that captured
+        // the same operand hold two DIFFERENT stand-ins for it. Comparing stand-in addresses
+        // therefore never matched across the boundary, and a rebind of a graph with a body
+        // repointed the parent while the body went on writing through the storage it had
+        // adopted. The handle records the caller's own address, which is the identity both
+        // sides agree on.
+        void *const old_ptr = [&]() -> void * {
+            TensorHandle const *handle = find_tensor(id);
+            return handle != nullptr && handle->tensor_ptr != nullptr ? handle->tensor_ptr : slot->ptr;
+        }();
 
         // Validate rank, read from the type when it carries ::Rank,
         // otherwise from the live runtime-rank tensor. Rank is never relaxed:
@@ -3778,6 +3905,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
         if (descend) {
             rebind_subgraphs(old_ptr, new_tensor, allow_extent_change);
+            // Repointing a slot changes what a setup body would read, so whatever it
+            // computed is about the previous problem. Placed on the top-level arm only
+            // (`descend` is false in the recursion) so one rebind invalidates once, and
+            // here rather than in `bind` so a plain `rebind` is covered by the same rule:
+            // the graph cannot tell which entry point moved the storage, and neither can
+            // the factors that were computed from it.
+            invalidate_setup();
         }
     }
 
@@ -3811,7 +3945,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         for_each_subgraph([&](Graph &sub) {
             std::vector<TensorId> matches;
             for (auto const &[id, slot] : sub._slot_map) {
-                if (slot != nullptr && slot->ptr == old_ptr) {
+                if (slot == nullptr) {
+                    continue;
+                }
+                // Identity is the caller's address, held by the handle; see the note in
+                // rebind_impl for why the slot's own pointer is the wrong thing to compare.
+                TensorHandle const *handle = sub.find_tensor(id);
+                void const         *ident  = handle != nullptr && handle->tensor_ptr != nullptr ? handle->tensor_ptr : slot->ptr;
+                if (ident == old_ptr) {
                     matches.push_back(id);
                 }
             }
@@ -4320,6 +4461,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Executor plain execute() delegates to (see set_executor); nullptr means
     /// the built-in sequential path. Loop bodies replay through this.
     std::shared_ptr<Executor> _executor;
+
+    /// The problem identity a caller declared, or empty when none was.
+    /// @see set_setup_key
+    std::string _setup_key;
 
     /// Mutable einsum parameters (kept alive by shared_ptr in lambdas + this list).
     std::vector<std::shared_ptr<EinsumParams>>  _params_store;

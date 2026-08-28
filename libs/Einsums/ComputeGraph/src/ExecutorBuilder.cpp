@@ -471,6 +471,43 @@ std::function<void()> build_loop(LoopDescriptor const &desc, std::shared_ptr<Par
 }
 
 /**
+ * @brief The body, once per bound problem, and a boolean on every replay after that.
+ *
+ * The whole of what makes a setup node different from a loop node with one iteration is
+ * here: the two guards below. A replay that finds the body already computed returns without
+ * touching it, which is what "executes once per bind" means once it is expressed as a node
+ * in the ordinary schedule rather than as a phase beside it.
+ *
+ * The key guard is the cache of Part 6.3. @ref Graph::invalidate_setup clears
+ * @ref SetupState::computed on every bind, because a bind is the only event that can change
+ * what the body would produce; a caller that KNOWS the new bind is the same problem says so
+ * with @ref Graph::set_setup_key, and the two keys agreeing is what lets the body be skipped
+ * anyway. Nothing here validates the claim, which is the trade the design records: a
+ * host-provided key is cheap and trusts the host, and the alternative is hashing every bound
+ * input on every bind.
+ */
+std::function<void()> build_setup(SetupDescriptor const &desc) {
+    if (!desc.body) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Setup): the descriptor carries no body");
+    }
+    // As build_loop does: a node a pass assembled by hand carries no live state, and a
+    // private block keeps it running rather than making the omission a crash.
+    std::shared_ptr<SetupState> state = desc.state != nullptr ? desc.state : std::make_shared<SetupState>();
+    return [body = desc.body, state = std::move(state)]() {
+        if (state->computed) {
+            return;
+        }
+        if (!state->pending_key.empty() && state->pending_key == state->computed_key) {
+            state->computed = true;
+            return;
+        }
+        body->execute();
+        state->computed     = true;
+        state->computed_key = state->pending_key;
+    };
+}
+
+/**
  * @brief ``params[name] = int64(source)``, the TENSOR arm of ``cg::write_param``.
  *
  * The source address is read on every call rather than closed over, which is
@@ -591,6 +628,9 @@ std::string descriptor_name(OpData const &data) {
     }
     if (std::holds_alternative<LoopDescriptor>(data)) {
         return "LoopDescriptor";
+    }
+    if (std::holds_alternative<SetupDescriptor>(data)) {
+        return "SetupDescriptor";
     }
     return fmt::format("descriptor alternative #{}", data.index());
 }
@@ -866,6 +906,16 @@ std::string reconstruction_blocker(Node const &node) {
         }
         return {};
     }
+    case OpKind::Setup: {
+        auto const *desc = std::get_if<SetupDescriptor>(&node.op_data);
+        if (desc == nullptr) {
+            return fmt::format("Setup: expected a SetupDescriptor, found {}", descriptor_name(node.op_data));
+        }
+        // Nothing else to check. A setup node's only data is its body, and the body's own
+        // nodes are reported separately by the recursive blocker walk; the live state is
+        // deliberately not written, because a loaded graph has not fitted anything yet.
+        return {};
+    }
     default:
         break;
     }
@@ -874,8 +924,9 @@ std::string reconstruction_blocker(Node const &node) {
 
 namespace {
 
-/// Append the blockers of @p graph and, recursively, of every Loop body and
-/// Conditional branch below it, tagging each with the path that reaches it.
+/// Append the blockers of @p graph and, recursively, of every Loop body,
+/// Conditional branch and Setup body below it, tagging each with the path that
+/// reaches it.
 ///
 /// Recursion is written out here rather than delegated to
 /// ``Graph::for_each_subgraph``, which visits one level and hands the visitor
@@ -904,6 +955,8 @@ void collect_blockers(Graph const &graph, std::string const &path, std::vector<S
         } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
             descend(cond->then_branch.get(), fmt::format("then({})", node.label));
             descend(cond->else_branch.get(), fmt::format("else({})", node.label));
+        } else if (auto const *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
+            descend(setup->body.get(), fmt::format("setup({})", node.label));
         }
     }
 }
@@ -924,8 +977,8 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
     // ParamTable entry that no tensor names at all, and the two control-flow
     // kinds, which have no tensor destination of any rank. Rank is not
     // dispatched on anyway; see the header.
-    bool const scalar_destination_ok = kind == OpKind::Einsum || kind == OpKind::Dot || kind == OpKind::Trace ||
-                                       kind == OpKind::WriteParam || kind == OpKind::Conditional || kind == OpKind::Loop;
+    bool const scalar_destination_ok =
+        kind == OpKind::Einsum || kind == OpKind::Dot || kind == OpKind::Trace || kind == OpKind::WriteParam || is_control_flow(kind);
     if (rank == 0 && !scalar_destination_ok) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): rank must be at least 1", op_kind_name(kind));
     }
@@ -1092,6 +1145,13 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
             wrong_descriptor(kind, desc, "LoopDescriptor");
         }
         return build_loop(*d, graph.params_ptr());
+    }
+    case OpKind::Setup: {
+        auto const *d = std::get_if<SetupDescriptor>(&desc);
+        if (d == nullptr) {
+            wrong_descriptor(kind, desc, "SetupDescriptor");
+        }
+        return build_setup(*d);
     }
     default:
         break;

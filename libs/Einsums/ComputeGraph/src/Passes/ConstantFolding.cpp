@@ -96,11 +96,11 @@ bool ConstantFolding::run(Graph &graph) {
 
         // Skip control flow, memory management, I/O, communication, allocation, and user-defined nodes.
         // These have side effects and should never be folded.
-        if (node.kind == OpKind::Conditional || node.kind == OpKind::Loop || node.kind == OpKind::Alloc || node.kind == OpKind::Free ||
-            node.kind == OpKind::DiskRead || node.kind == OpKind::DiskWrite || node.kind == OpKind::Custom ||
-            node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost || node.kind == OpKind::Allreduce ||
-            node.kind == OpKind::Broadcast || node.kind == OpKind::Allgather || node.kind == OpKind::Scatter ||
-            node.kind == OpKind::Barrier || node.kind == OpKind::Materialize || node.kind == OpKind::Initialize) {
+        if (is_control_flow(node.kind) || node.kind == OpKind::Alloc || node.kind == OpKind::Free || node.kind == OpKind::DiskRead ||
+            node.kind == OpKind::DiskWrite || node.kind == OpKind::Custom || node.kind == OpKind::HostToDevice ||
+            node.kind == OpKind::DeviceToHost || node.kind == OpKind::Allreduce || node.kind == OpKind::Broadcast ||
+            node.kind == OpKind::Allgather || node.kind == OpKind::Scatter || node.kind == OpKind::Barrier ||
+            node.kind == OpKind::Materialize || node.kind == OpKind::Initialize) {
             continue;
         }
 

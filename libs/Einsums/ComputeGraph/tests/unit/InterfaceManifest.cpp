@@ -550,6 +550,38 @@ TEST_CASE("Manifest - a loop body's own intermediates do not leak into the paren
     graph.execute();
 }
 
+TEST_CASE("Manifest - a bind reaches the slots inside a loop body", "[ComputeGraph][Manifest][Bind]") {
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+
+    cg::Graph graph("bind_into_body");
+    // Every operation lives in the BODY, so a bind that does not reach through the boundary
+    // repoints the parent's slots and changes nothing about what actually runs.
+    auto &body = graph.add_loop("once", 1, cg::PredExpr::iteration(cg::CmpOp::Lt, cg::BoundExpr{0}));
+    {
+        cg::CaptureGuard const guard(body);
+        cg::permute("ij <- ij", 0.0, &C, 1.0, A);
+    }
+    graph.execute();
+
+    auto A2 = create_random_tensor<double>("A", 4, 4);
+    auto C2 = create_zero_tensor<double>("C", 4, 4);
+
+    graph.bind("A", A2, "C", C2);
+    graph.execute();
+
+    // C2 holds the new problem's answer, and C still holds the old one. Before the identity
+    // fix in rebind_impl this wrote the OLD C on every replay: capture ADOPTS an operand, so
+    // the parent and the body hold two different stand-ins for one caller tensor, and the
+    // descent compared stand-in addresses that can never be equal across the boundary.
+    for (std::size_t i = 0; i < 4; ++i) {
+        for (std::size_t j = 0; j < 4; ++j) {
+            REQUIRE(std::abs(C2(i, j) - A2(i, j)) < 1e-14);
+            REQUIRE(std::abs(C(i, j) - A(i, j)) < 1e-14);
+        }
+    }
+}
+
 // ── serializability_report descends into bodies ────────────────────────────
 
 TEST_CASE("Manifest - serializability_report reports a blocker inside a loop body", "[ComputeGraph][ExecutorBuilder]") {

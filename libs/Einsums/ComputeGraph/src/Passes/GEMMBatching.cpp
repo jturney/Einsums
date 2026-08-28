@@ -207,7 +207,7 @@ bool GEMMBatching::run(Graph &graph) {
                 if (member_set.count(i))
                     continue;
                 Node const &other = nodes[i];
-                if (other.kind == OpKind::Loop || other.kind == OpKind::Conditional) {
+                if (is_control_flow(other.kind)) {
                     interference = true;
                     break;
                 }

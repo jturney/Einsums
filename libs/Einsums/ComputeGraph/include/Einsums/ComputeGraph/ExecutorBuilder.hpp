@@ -399,6 +399,7 @@ class ScalarAccessor {
     case OpKind::ElementTransform:
     case OpKind::Conditional:
     case OpKind::Loop:
+    case OpKind::Setup:
         return true;
     default:
         return false;

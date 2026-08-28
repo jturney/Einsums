@@ -245,7 +245,7 @@ bool policy_forbids_width(Node const &node) {
     // planned separately and its nodes acquire their own widths from the same
     // process-wide budget, so giving the container a width would hand out the
     // same machine twice.
-    if (node.kind == OpKind::Loop || node.kind == OpKind::Conditional) {
+    if (is_control_flow(node.kind)) {
         return true;
     }
     // A kernel that cannot be told how many threads to use gets whatever the

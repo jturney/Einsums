@@ -81,6 +81,7 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     // Control flow
     Conditional, ///< If-then-else branch with subgraphs
     Loop,        ///< While/for loop with body subgraph
+    Setup,       ///< Body computed once per bound problem, skipped by later replays
 
     // Memory management
     Alloc, ///< Tensor allocation (marks lifetime start)
@@ -265,6 +266,8 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "Conditional";
     case OpKind::Loop:
         return "Loop";
+    case OpKind::Setup:
+        return "Setup";
     case OpKind::Alloc:
         return "Alloc";
     case OpKind::Free:
@@ -425,9 +428,15 @@ inline std::string_view op_kind_name(OpKind kind) {
     return kind == OpKind::Alloc || kind == OpKind::Free || kind == OpKind::Materialize || kind == OpKind::Initialize;
 }
 
-/// @brief Control-flow kinds carrying subgraphs (Conditional, Loop).
+/// @brief Control-flow kinds carrying subgraphs (Conditional, Loop, Setup).
+///
+/// Membership is about STRUCTURE, not about how often a body runs: everything that
+/// walks, expands, or refuses a node because it owns a sub-graph has to see all three.
+/// A @ref OpKind::Setup body runs at most once per bound problem where a loop body runs
+/// many times, and that difference belongs to the executor and to whichever pass reasons
+/// about iteration counts, not to the question this predicate answers.
 [[nodiscard]] inline bool is_control_flow(OpKind kind) {
-    return kind == OpKind::Conditional || kind == OpKind::Loop;
+    return kind == OpKind::Conditional || kind == OpKind::Loop || kind == OpKind::Setup;
 }
 
 /// @brief Host<->device transfer kinds (HostToDevice, DeviceToHost).

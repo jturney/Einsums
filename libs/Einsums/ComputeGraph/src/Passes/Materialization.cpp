@@ -12,6 +12,7 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -270,8 +271,61 @@ bool Materialization::run(Graph &graph) {
         add_req(handle.tensor_ptr, h.owning_node_index, /*owns_tid=*/false, h.handle_owner, h.tid);
     }
 
+    // A buffer whose first use is a Setup node that WRITES it is produced once per bound
+    // problem, and its lifecycle belongs on the same schedule. Left in the parent, the
+    // Initialize runs on every replay and zeroes a fitting the skipped body will not
+    // recompute, which is a silently wrong answer on the second replay and a correct one on
+    // the first. So the pair goes to the front of the setup body instead, where it runs
+    // exactly when the thing it prepares storage for runs.
+    auto setup_body_writing = [&](std::size_t position, void const *ptr) -> Graph * {
+        if (position >= nodes.size() || nodes[position].kind != OpKind::Setup || ptr == nullptr) {
+            return nullptr;
+        }
+        auto *desc = std::get_if<SetupDescriptor>(&nodes[position].op_data);
+        if (desc == nullptr || !desc->body) {
+            return nullptr;
+        }
+        Graph &body = *desc->body;
+        for (auto const &node : body.nodes()) {
+            for (TensorId const out : node.outputs) {
+                TensorHandle const *written = body.find_tensor(body.resolve_alias(out));
+                if (written != nullptr && written->tensor_ptr == ptr) {
+                    return &body;
+                }
+            }
+        }
+        return nullptr;
+    };
+
+    /// The body's own id for the buffer @p ptr names, which is what a node placed in the
+    /// body has to carry: ids are per-graph and the parent's mean nothing there.
+    auto body_tid_for = [](Graph &body, void const *ptr) -> std::optional<TensorId> {
+        for (auto const &[tid, handle] : body.tensors_map()) {
+            if (handle.tensor_ptr == ptr) {
+                return tid;
+            }
+        }
+        return std::nullopt;
+    };
+
     for (auto const &r : reqs) {
         auto &handle = r.owner->tensor(r.tid);
+
+        if (Graph *body = setup_body_writing(r.position, handle.tensor_ptr); body != nullptr) {
+            if (auto const body_tid = body_tid_for(*body, handle.tensor_ptr); body_tid.has_value()) {
+                auto body_nodes = build_lifecycle_nodes(handle, *body_tid);
+                _num_materialized++;
+                if (handle.init_kind != InitKind::None) {
+                    _num_initialized++;
+                }
+                report(2, fmt::format("materialize deferred tensor '{}' inside setup body '{}'", handle.name, nodes[r.position].label));
+                std::vector<std::pair<std::size_t, std::vector<Node>>> body_group;
+                body_group.emplace_back(0, std::move(body_nodes));
+                body->insert_node_groups(std::move(body_group));
+                continue;
+            }
+        }
+
         // A parent-owned request emits its own id; a hoisted body request
         // resolves the buffer to a parent id (minting one if effective_io
         // has not yet), so the Loop / Conditional node gets a RAW edge after

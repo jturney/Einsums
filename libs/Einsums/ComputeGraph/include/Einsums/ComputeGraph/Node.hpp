@@ -644,6 +644,59 @@ struct LoopDescriptor {
 };
 
 /**
+ * @brief Live state a @ref SetupDescriptor shares with its executor.
+ *
+ * Held in a shared block for the reason @ref LoopState states: an executor cannot hold a
+ * pointer into the node vector that passes insert into and reorder.
+ *
+ * The two keys are what makes the setup body skippable across a re-bind rather than only
+ * across a replay. @ref pending_key is what the CALLER says the current problem is, written
+ * by @ref Graph::set_setup_key; @ref computed_key is the problem the body last actually ran
+ * for. A bind clears @ref computed, and the executor then reruns unless the two keys agree
+ * and are non-empty, which is the caller stating that this is the same problem and the
+ * factors on hand are still its factors.
+ *
+ * An empty @ref pending_key disables the cache, which is the default: refitting is always
+ * correct, and a graph whose caller has said nothing about problem identity gets the
+ * behavior that cannot be wrong.
+ */
+struct SetupState {
+    /// Whether the body has run since the last @ref Graph::invalidate_setup.
+    bool computed{false};
+
+    /// The problem the body last ran for, or empty when it has never run or ran with no key.
+    std::string computed_key;
+
+    /// The problem the caller says is bound now, or empty when the caller has not said.
+    std::string pending_key;
+};
+
+/**
+ * @brief Metadata for setup nodes: a body computed once per bound problem.
+ *
+ * A setup body holds the computation that depends only on what a caller binds and not on
+ * how many times the graph is replayed: a fitting, a metric inverse, an integral transform.
+ * Structurally it is a sub-graph exactly as a loop body is, and everything that walks,
+ * expands, or refuses a sub-graph reaches it through @ref is_control_flow. What differs is
+ * when it runs: the executor skips the body entirely once it has computed, so the node
+ * costs one boolean per replay, and a bind is what puts it back to work.
+ *
+ * Its outputs therefore live ACROSS replays and must not be freed between them, which
+ * @ref passes::FreeInsertion is told about rather than left to infer.
+ *
+ * @see Graph::add_setup
+ * @see SetupState
+ */
+struct SetupDescriptor {
+    std::shared_ptr<Graph>      body;  ///< The subgraph computed once per bound problem.
+    std::shared_ptr<SetupState> state; ///< Live state shared with the executor.
+
+    /// @brief Whether the body has run since the last bind.
+    /// @return True when the outputs on hand are current; false on a node carrying no state.
+    [[nodiscard]] bool computed() const noexcept { return state != nullptr && state->computed; }
+};
+
+/**
  * @brief Per-axis specification for a @c View op.
  *
  * Each axis of the parent tensor maps to one of:
@@ -1050,7 +1103,7 @@ using OpData =
                  GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, GroupedDotDescriptor,
                  GroupedAxpbyDescriptor, GroupedElementwiseDescriptor, GroupedSandwichDescriptor, GroupedGatherRotateDescriptor,
                  TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor, ElementwiseBinaryDescriptor,
-                 DotDescriptor, TraceDescriptor, GemmDescriptor, ElementTransformDescriptor>;
+                 DotDescriptor, TraceDescriptor, GemmDescriptor, ElementTransformDescriptor, SetupDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.

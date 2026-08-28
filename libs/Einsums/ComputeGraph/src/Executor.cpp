@@ -498,7 +498,7 @@ unsigned DataflowExecutor::Scaffold::effective_width(Node const &node) const {
     // is never handed out twice; the body's own nodes acquire their real widths
     // from the same budget, and the unit this one holds goes back to the budget
     // for the duration of the nested run (WidthBudget::BlockedScope).
-    if (node.kind == OpKind::Loop || node.kind == OpKind::Conditional) {
+    if (is_control_flow(node.kind)) {
         return 1;
     }
     return node.thread_width == 0 ? 1U : node.thread_width;

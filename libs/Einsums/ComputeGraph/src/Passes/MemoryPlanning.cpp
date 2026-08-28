@@ -212,8 +212,8 @@ ArenaPlan plan_arena(Graph &graph) {
     // refuse to plan inside Loop bodies outright - cross-iteration liveness is
     // not derivable from the body graph alone).
     for (auto const &node : nodes) {
-        if (node.kind == OpKind::Loop || node.kind == OpKind::Conditional || node.target == Target::GPU ||
-            node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
+        if (is_control_flow(node.kind) || node.target == Target::GPU || node.kind == OpKind::HostToDevice ||
+            node.kind == OpKind::DeviceToHost) {
             return plan;
         }
     }

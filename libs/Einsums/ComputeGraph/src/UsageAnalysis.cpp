@@ -97,7 +97,7 @@ UsageAnalysis UsageAnalysis::build(Graph &graph) {
             }
         }
 
-        if (node.kind == OpKind::Loop || node.kind == OpKind::Conditional) {
+        if (is_control_flow(node.kind)) {
             auto [eff_in, eff_out] = graph.effective_io_cached(node, cache);
             for (auto const tid : eff_in) {
                 TensorId const owner = graph.resolve_alias(tid);
