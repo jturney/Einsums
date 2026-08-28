@@ -48,6 +48,43 @@ enum class APIARY_EXPOSE APIARY_MODULE("graph") ApproximationEffect : std::uint8
 };
 
 /**
+ * @brief Where a bound's number came from.
+ *
+ * A bound and a guess are the same double, and months later a reader of a saved graph cannot
+ * tell them apart from the number alone. They deserve different trust, so the file carries
+ * which it is.
+ *
+ * @ref Asserted is not a lesser answer, it is the only one available wherever measuring would
+ * mean computing the exact result the approximation exists to avoid computing. A metric fit is
+ * that case: its error is the difference from the exact tensor, and a caller holding that had
+ * no reason to fit. @ref Measured belongs to a provider that genuinely knows, a truncated
+ * decomposition holding its own discarded singular values being the plain example.
+ * @versionadded{2.0.0}
+ */
+enum class APIARY_EXPOSE APIARY_MODULE("graph") ApproximationOrigin : std::uint8_t{
+    /// The pass computed the error it actually had.
+    Measured,
+    /// A caller stated the error, and nothing here checked it.
+    Asserted,
+};
+
+/**
+ * @brief The name of an approximation origin, for diagnostics and for the saved form.
+ * @param[in] origin The origin to name.
+ * @return A stable spelling ("measured", "asserted").
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] EINSUMS_EXPORT std::string_view approximation_origin_name(ApproximationOrigin origin) noexcept;
+
+/**
+ * @brief The @ref ApproximationOrigin spelled @p name, if there is one.
+ * @param[in] name A spelling @ref approximation_origin_name produces.
+ * @return The origin, or an empty optional when nothing is spelled that way.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] EINSUMS_EXPORT std::optional<ApproximationOrigin> approximation_origin_from_name(std::string_view name) noexcept;
+
+/**
  * @brief The name of an approximation effect, for diagnostics and for the saved form.
  * @param[in] effect The effect to name.
  * @return A stable spelling ("element-wise", "norm-relative", "energy-like"). Written by
@@ -140,6 +177,11 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") ApproximationRecord {
     /// what a tolerance-aware comparison widens by.
     APIARY_EXPOSE double bound{0};
 
+    /// Whether @ref bound was computed or claimed. Defaults to @ref ApproximationOrigin::Asserted,
+    /// which is also how a file written before this field existed is read: a number cannot be
+    /// promoted to evidence by a newer build reading it.
+    APIARY_EXPOSE ApproximationOrigin origin{ApproximationOrigin::Asserted};
+
     /// Manifest names the bound applies to. EMPTY means every output, which is the honest
     /// answer for a pass that rewrote something feeding all of them.
     APIARY_EXPOSE std::vector<std::string> outputs;
@@ -184,6 +226,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") ApproximationTolerance {
  * @param[in] outputs Manifest names the bound applies to; empty means all of them.
  * @param[in] spaces Index-space names the rewrite involved.
  * @param[in] setup Label of the setup node it created, or empty.
+ * @param[in] origin Whether @p bound was computed or claimed.
  * @return The record.
  *
  * A free function rather than a constructor, so @ref ApproximationRecord stays an AGGREGATE
@@ -196,6 +239,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") ApproximationTolerance {
 APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("approximation_record") [[nodiscard]] EINSUMS_EXPORT ApproximationRecord
     make_approximation_record(std::string pass_name, ApproximationEffect effect, double tolerance, double bound,
                               std::vector<std::string> outputs = std::vector<std::string>{},
-                              std::vector<std::string> spaces = std::vector<std::string>{}, std::string setup = "");
+                              std::vector<std::string> spaces = std::vector<std::string>{}, std::string setup = "",
+                              ApproximationOrigin origin = ApproximationOrigin::Asserted);
 
 EINSUMS_NAMESPACE_END(compute_graph)

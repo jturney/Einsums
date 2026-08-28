@@ -7,6 +7,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/MetricFitFactorization.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
+#include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
@@ -20,60 +21,13 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
-namespace {
-
-/// @f$B = J^{-1/2} R@f$, computed eagerly, for the error measurement only.
-///
-/// The graph recomputes this on every bind through the nodes @ref MetricFitFactorization
-/// captures; this copy exists so the provider can state what its approximation actually costs
-/// rather than what a caller guessed it would.
-Tensor<double, 3> fit_eagerly(Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric) {
-    std::size_t const naux = metric.dim(0);
-    std::size_t const rows = three_index.dim(1);
-    std::size_t const cols = three_index.dim(2);
-
-    auto scratch           = Tensor<double, 2>("metric copy", naux, naux);
-    scratch                = metric;
-    auto [vectors, values] = linear_algebra::syev(scratch);
-
-    for (std::size_t i = 0; i < naux; ++i) {
-        values(i) = values(i) > 0.0 ? 1.0 / std::sqrt(values(i)) : 0.0;
-    }
-
-    // half[P,Q] = sum_R U[P,R] s[R] U[Q,R]
-    auto half = Tensor<double, 2>("metric inverse square root", naux, naux);
-    half.zero();
-    for (std::size_t p = 0; p < naux; ++p) {
-        for (std::size_t q = 0; q < naux; ++q) {
-            double sum = 0.0;
-            for (std::size_t r = 0; r < naux; ++r) {
-                sum += vectors(p, r) * values(r) * vectors(q, r);
-            }
-            half(p, q) = sum;
-        }
-    }
-
-    auto fitted = Tensor<double, 3>("fitted", naux, rows, cols);
-    fitted.zero();
-    for (std::size_t q = 0; q < naux; ++q) {
-        for (std::size_t m = 0; m < rows; ++m) {
-            for (std::size_t n = 0; n < cols; ++n) {
-                double sum = 0.0;
-                for (std::size_t p = 0; p < naux; ++p) {
-                    sum += half(q, p) * three_index(p, m, n);
-                }
-                fitted(q, m, n) = sum;
-            }
-        }
-    }
-    return fitted;
+MetricFitFactorization::MetricFitFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric,
+                                               double bound, std::string name)
+    : _tag(std::move(tag)), _name(std::move(name)), _three_index(&three_index), _metric(&metric), _bound(bound) {
 }
 
-} // namespace
-
-MetricFitFactorization::MetricFitFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric,
-                                               std::optional<double> declared_bound, std::string name)
-    : _tag(std::move(tag)), _name(std::move(name)), _three_index(&three_index), _metric(&metric), _declared(declared_bound) {
+std::string MetricFitFactorization::dropped_param_name(std::string const &provider, std::string const &tensor) {
+    return fmt::format("{}.{}.dropped_directions", provider, tensor);
 }
 
 expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph const &graph, TensorId tensor) const {
@@ -111,46 +65,15 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
     factor.letters = {"Q", "p", "q"};
     plan.factors.push_back(factor);
 
-    double bound = 0.0;
-    if (_declared.has_value()) {
-        bound     = *_declared;
-        _measured = -1.0;
-    } else {
-        // The measurement. Forms the fitted product once, which is the same order of work as
-        // one contraction against the tensor this replaces, and buys a record that says what
-        // the approximation cost rather than what someone expected it to.
-        auto const  fitted = fit_eagerly(*_three_index, *_metric);
-        auto const &source = *static_cast<Tensor<double, 4> const *>(handle->tensor_ptr);
-
-        double error_sq = 0.0;
-        double norm_sq  = 0.0;
-        for (std::size_t m = 0; m < rows; ++m) {
-            for (std::size_t n = 0; n < cols; ++n) {
-                for (std::size_t p = 0; p < rows; ++p) {
-                    for (std::size_t q = 0; q < cols; ++q) {
-                        double sum = 0.0;
-                        for (std::size_t aux = 0; aux < naux; ++aux) {
-                            sum += fitted(aux, m, n) * fitted(aux, p, q);
-                        }
-                        double const exact_value = source(m, n, p, q);
-                        double const delta       = sum - exact_value;
-                        error_sq += delta * delta;
-                        norm_sq += exact_value * exact_value;
-                    }
-                }
-            }
-        }
-        _measured = norm_sq > 0.0 ? std::sqrt(error_sq / norm_sq) : std::sqrt(error_sq);
-        bound     = _measured;
-    }
-
-    plan.accuracy = make_approximation_record(_name, ApproximationEffect::NormRelative, _declared.value_or(bound), bound);
+    plan.accuracy = make_approximation_record(_name, ApproximationEffect::NormRelative, _bound, _bound);
 
     // The fitting, as nodes. Every step is a captured operation, so a bind that moves the
     // problem refits rather than replaying a metric inverse computed once at optimize time.
     Tensor<double, 3> const *three_index = _three_index;
     Tensor<double, 2> const *metric      = _metric;
-    plan.emit_setup = [three_index, metric, naux, rows, cols](Graph &parent, Graph &body, std::vector<TensorId> const &factors) {
+    std::string const        dropped_key = dropped_param_name(_name, handle->name);
+    plan.emit_setup                      = [three_index, metric, naux, rows, cols, dropped_key](Graph &parent, Graph &body,
+                                                                           std::vector<TensorId> const &factors) {
         auto *b = static_cast<RuntimeTensor<double> *>(parent.tensor(factors[0]).tensor_ptr);
 
         // The fitting's own workspace, declared on the BODY: it is live only while the
@@ -159,6 +82,13 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
         auto &values  = body.declare_runtime_tensor<double>("metric_values", {naux}, /*intermediate=*/true);
         auto &scaled  = body.declare_runtime_tensor<double>("metric_scaled", {naux, naux}, /*intermediate=*/true);
         auto &half    = body.declare_runtime_tensor<double>("metric_inv_sqrt", {naux, naux}, /*intermediate=*/true);
+        auto &dropped = body.declare_runtime_tensor<double>("metric_dropped_flags", {naux}, /*intermediate=*/true);
+
+        // The counter's destination. A plain scalar rather than a tensor because that is what
+        // the pointer-writing dot and write_param both take, and owned by the BODY because it
+        // has to outlive this call and every replay after it.
+        auto *count = new double{0.0};
+        body.adopt([count]() { delete count; });
 
         {
             CaptureGuard const guard(body);
@@ -170,6 +100,20 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
             einsum("P,R ; R -> P,R", &scaled, vectors, values);
             einsum("P,R ; Q,R -> P,Q", &half, scaled, vectors);
             einsum("Q,P ; P,m,n -> Q,m,n", b, half, *three_index);
+
+            // How many auxiliary directions this fit threw away, counted on every refit
+            // rather than once, because it is a property of the metric that is bound now.
+            // The entries are exactly zero only where inv_sqrt_or_zero assigned zero, so the
+            // indicator is reading that guard's decision rather than testing a float for
+            // equality in the usual mistaken way.
+            //
+            // The dot of the indicator with ITSELF is the count, since every entry is 0 or 1.
+            // A dot against a vector of ones would say the same thing and need a fifth tensor
+            // declared, materialized and filled to say it.
+            permute("R <- R", 0.0, &dropped, 1.0, values);
+            element_transform(&dropped, "is_zero");
+            dot(count, dropped, dropped);
+            write_param(dropped_key, *count);
         }
 
         // The workspace is declared and left DEFERRED. Materializing it here would look like

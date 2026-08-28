@@ -25,13 +25,19 @@
  * auxiliary index, the metric and the tag are all the caller's, and the same class serves any
  * factorization of that shape.
  *
- * @par The bound is MEASURED, not asserted
- * The fitting error depends on the auxiliary set and no formula the library has predicts it.
- * But the exact tensor is in hand at the moment the pass asks, so this forms the fitted product
- * once and reports the relative Frobenius error it actually has. That is a statement about the
- * problem it was fitted on, which is exactly what an @ref ApproximationRecord is, and it is a
- * far better number than one a caller guessed. A caller who would rather assert a bound than
- * pay for measuring one can supply it.
+ * @par The bound is ASSERTED, and it has to be
+ * The fitting error is the difference between the fitted product and the exact tensor, and a
+ * caller who has the exact tensor in memory did not need to fit anything. So there is nothing
+ * to measure against: from the three-index tensor and the metric the library can compute the
+ * FITTED product and nothing else, because the exact four-index quantity comes from an integral
+ * engine this library does not have. The bound is the caller's statement, recorded as one.
+ *
+ * What CAN be measured is reported instead, and per bind rather than once: how many auxiliary
+ * directions the fit threw away. A metric of a nearly linearly dependent auxiliary set has
+ * eigenvalues at or below zero, the guarded inverse square root zeroes them, and the fitted
+ * space is then smaller than the auxiliary set the caller supplied. That is a specific and
+ * common way for accuracy to degrade quietly, it costs nothing extra because the eigenvalues
+ * are computed anyway, and it is a real number rather than a restatement of an assertion.
  *
  * @see Factorization.hpp for what a provider is
  * @see Passes/FactorizationPass.hpp for what is done with the offer
@@ -43,7 +49,6 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
-#include <optional>
 #include <string>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -63,13 +68,12 @@ class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
      * @param[in] three_index @c R[P,m,n]. Must outlive the provider and every graph it
      *            factorizes, because the fitting reads it on every bind.
      * @param[in] metric @c J[P,Q], symmetric and positive semi-definite. Must outlive the same.
-     * @param[in] declared_bound A relative bound to assert instead of measuring one, or an
-     *            empty optional to measure. Measuring forms the fitted product once, which is
-     *            the same order of work as one contraction against the tensor being replaced.
+     * @param[in] bound The relative error the caller asserts this fit has. Required, because
+     *            nothing here can measure it; see the file note.
      * @param[in] name The provider's name, which the approximation record and the report carry.
      */
-    MetricFitFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric,
-                           std::optional<double> declared_bound = std::nullopt, std::string name = "MetricFit");
+    MetricFitFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric, double bound,
+                           std::string name = "MetricFit");
 
     /// @copydoc FactorizationProvider::name
     [[nodiscard]] std::string name() const override { return _name; }
@@ -88,18 +92,26 @@ class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
      */
     [[nodiscard]] expected<FactorizationPlan, std::string> propose(Graph const &graph, TensorId tensor) const override;
 
-    /// @brief The relative Frobenius error the last @ref propose measured, or a negative number
-    ///        when it asserted a bound instead.
-    /// @return The error.
-    [[nodiscard]] double measured_error() const { return _measured; }
+    /**
+     * @brief The parameter a fitted graph reports its dropped auxiliary directions under.
+     *
+     * @param[in] provider The provider's @ref name.
+     * @param[in] tensor The tagged tensor's name.
+     * @return The key to read out of the graph's parameter table after an execute.
+     *
+     * A function rather than a documented convention, so a caller reads the name from the same
+     * place the graph writes it. Zero means the metric was well conditioned and the fit kept
+     * every direction the caller supplied; anything else is accuracy lost in a way the asserted
+     * bound does not describe.
+     */
+    [[nodiscard]] static std::string dropped_param_name(std::string const &provider, std::string const &tensor);
 
   private:
     std::string              _tag;
     std::string              _name;
     Tensor<double, 3> const *_three_index;
     Tensor<double, 2> const *_metric;
-    std::optional<double>    _declared;
-    mutable double           _measured{-1.0};
+    double                   _bound;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

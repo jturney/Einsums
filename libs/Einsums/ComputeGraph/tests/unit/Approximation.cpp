@@ -367,3 +367,61 @@ TEST_CASE("Approximation - every effect round-trips through its name", "[Compute
     }
     REQUIRE_FALSE(cg::approximation_effect_from_name("not-an-effect").has_value());
 }
+
+// ── Where a number came from ───────────────────────────────────────────────
+
+TEST_CASE("Approximation - a bound is asserted unless a pass says it measured one", "[ComputeGraph][Approximation]") {
+    // The default is the safe one. A provider that says nothing about provenance is claiming
+    // nothing, and a claim is what most of them have: measuring an approximation's error means
+    // computing the exact answer it exists to avoid computing.
+    auto const claimed = cg::make_approximation_record("Claimed", cg::ApproximationEffect::NormRelative, 1e-5, 1e-5);
+    REQUIRE(claimed.origin == cg::ApproximationOrigin::Asserted);
+
+    auto const known = cg::make_approximation_record("Known", cg::ApproximationEffect::NormRelative, 1e-5, 4e-6, {}, {}, "",
+                                                     cg::ApproximationOrigin::Measured);
+    REQUIRE(known.origin == cg::ApproximationOrigin::Measured);
+}
+
+TEST_CASE("Approximation - the origin survives a save, and an older file's number is not promoted",
+          "[ComputeGraph][Approximation][SaveLoad]") {
+    auto A     = create_random_tensor<double>("A", 3, 4);
+    auto B     = create_random_tensor<double>("B", 4, 5);
+    auto C     = create_zero_tensor<double>("C", 3, 5);
+    auto graph = make_graph("origin", A, B, C);
+
+    graph.note_approximation(cg::make_approximation_record("Truncation", cg::ApproximationEffect::NormRelative, 1e-5, 4e-6, {"C"}, {}, "",
+                                                           cg::ApproximationOrigin::Measured));
+
+    auto const text = cg::save_graph_string(graph);
+    REQUIRE(text.has_value());
+
+    auto loaded = cg::load_graph_string(*text);
+    REQUIRE(loaded.has_value());
+    REQUIRE(loaded->approximations()[0].origin == cg::ApproximationOrigin::Measured);
+
+    // The same file with the key taken out, which is what every file written before the key
+    // existed looks like. It reads back as ASSERTED: a number whose provenance nobody recorded
+    // does not become evidence because a newer build opened it.
+    std::string older = *text;
+    auto const  key   = older.find(R"("origin":"measured",)");
+    REQUIRE(key != std::string::npos);
+    older.erase(key, std::string_view{R"("origin":"measured",)"}.size());
+
+    auto older_loaded = cg::load_graph_string(older);
+    if (!older_loaded.has_value()) {
+        UNSCOPED_INFO(older_loaded.error().message);
+    }
+    REQUIRE(older_loaded.has_value());
+    REQUIRE(older_loaded->approximations()[0].origin == cg::ApproximationOrigin::Asserted);
+    REQUIRE(older_loaded->approximations()[0].bound == Catch::Approx(4e-6));
+}
+
+TEST_CASE("Approximation - every origin round-trips through its name", "[ComputeGraph][Approximation]") {
+    for (auto const origin : {cg::ApproximationOrigin::Measured, cg::ApproximationOrigin::Asserted}) {
+        auto const name = cg::approximation_origin_name(origin);
+        INFO("origin name: " << name);
+        REQUIRE(cg::approximation_origin_from_name(name).has_value());
+        REQUIRE(*cg::approximation_origin_from_name(name) == origin);
+    }
+    REQUIRE_FALSE(cg::approximation_origin_from_name("guessed").has_value());
+}

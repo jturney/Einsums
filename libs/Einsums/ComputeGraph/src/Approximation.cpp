@@ -23,6 +23,12 @@ constexpr std::array<std::pair<ApproximationEffect, std::string_view>, 3> effect
     {ApproximationEffect::EnergyLike, "energy-like"},
 }};
 
+/// The origin name table, a table for the same reason the effect one is.
+constexpr std::array<std::pair<ApproximationOrigin, std::string_view>, 2> origin_names{{
+    {ApproximationOrigin::Measured, "measured"},
+    {ApproximationOrigin::Asserted, "asserted"},
+}};
+
 } // namespace
 
 std::string_view approximation_effect_name(ApproximationEffect effect) noexcept {
@@ -43,12 +49,32 @@ std::optional<ApproximationEffect> approximation_effect_from_name(std::string_vi
     return std::nullopt;
 }
 
+std::string_view approximation_origin_name(ApproximationOrigin origin) noexcept {
+    for (auto const &[value, name] : origin_names) {
+        if (value == origin) {
+            return name;
+        }
+    }
+    return "unknown";
+}
+
+std::optional<ApproximationOrigin> approximation_origin_from_name(std::string_view name) noexcept {
+    for (auto const &[value, spelling] : origin_names) {
+        if (spelling == name) {
+            return value;
+        }
+    }
+    return std::nullopt;
+}
+
 ApproximationRecord make_approximation_record(std::string pass_name, ApproximationEffect effect, double tolerance, double bound,
-                                              std::vector<std::string> outputs, std::vector<std::string> spaces, std::string setup) {
+                                              std::vector<std::string> outputs, std::vector<std::string> spaces, std::string setup,
+                                              ApproximationOrigin origin) {
     return ApproximationRecord{.pass_name = std::move(pass_name),
                                .tolerance = tolerance,
                                .effect    = effect,
                                .bound     = bound,
+                               .origin    = origin,
                                .outputs   = std::move(outputs),
                                .spaces    = std::move(spaces),
                                .setup     = std::move(setup)};

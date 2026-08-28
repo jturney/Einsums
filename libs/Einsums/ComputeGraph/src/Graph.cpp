@@ -2805,6 +2805,13 @@ Graph &Graph::add_setup(std::string label) {
 Graph &Graph::add_setup_at(std::string label, std::size_t position) {
     auto body_graph = std::make_shared<Graph>(label + "/setup");
 
+    // One parameter table with the parent, not a fresh one. A setup body is a PHASE of this
+    // graph rather than a separate scope: a value it writes out with cg::write_param exists to
+    // be read by the caller or by a later node here, and a body holding its own table would
+    // write it somewhere nobody looks. That is how the fitting diagnostic went missing the
+    // first time it was asked for.
+    body_graph->set_params_ptr(_params);
+
     SetupDescriptor desc;
     desc.body = body_graph;
     // Shared with the executor, so the "already computed" answer a replay writes is the

@@ -42,6 +42,16 @@ void register_builtin_element_ops(ElementOpRegistry &registry) {
     registry.register_op(
         "inv_sqrt_or_zero", []<std::floating_point T>(T x) { return x > T{0} ? T{1} / std::sqrt(x) : T{0}; },
         ElementOpSignature{.arity = 1, .domain = ElementOpDomain::RealOnly, .description = "1/sqrt(x) for x > 0, else 0"});
+
+    // The indicator that counts what a guarded kernel threw away. Exact equality with zero
+    // looks like the usual floating-point mistake and is not one HERE: the entries this is
+    // applied to are zero only because a guard such as `inv_sqrt_or_zero` ASSIGNED T{0} to
+    // them, and no surviving value can drift into looking dropped, since the inverse square
+    // root of a small positive is enormous rather than tiny. The guard and the counter read
+    // the same decision.
+    registry.register_op(
+        "is_zero", []<std::floating_point T>(T x) { return x == T{0} ? T{1} : T{0}; },
+        ElementOpSignature{.arity = 1, .domain = ElementOpDomain::RealOnly, .description = "1 when x is exactly zero, else 0"});
 }
 
 ElementOpRegistry &global_element_op_registry() {

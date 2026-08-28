@@ -96,22 +96,14 @@ TEST_CASE("MetricFit - an exactly fitted tensor is replaced and the contraction 
     }
     graph.annotate_tag(T, cg::ProvenanceTag{.name = "eri"});
 
-    auto provider = std::make_shared<cg::MetricFitFactorization>("eri", R, J);
-
     cg::FactorizationRegistry registry;
-    registry.add(provider);
+    registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-12));
 
     cg::passes::FactorizationPass factorization(registry);
     cg::PassManager               pm;
     pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
     REQUIRE(graph.apply(pm));
     REQUIRE(factorization.num_factorized() == 1);
-
-    // T is exactly the metric-fitted product, so the measured error is rounding and nothing
-    // else. This is the assertion that the fitting is the RIGHT arithmetic rather than merely
-    // arithmetic of the right shape: a wrong inverse square root would show up here as a
-    // number of order one.
-    REQUIRE(provider->measured_error() < 1e-10);
 
     auto defaults = cg::PassManager::create_default();
     graph.apply(defaults);
@@ -128,7 +120,7 @@ TEST_CASE("MetricFit - an exactly fitted tensor is replaced and the contraction 
     // number anyone asserted.
     REQUIRE(graph.approximations().size() == 1);
     REQUIRE(graph.approximations()[0].pass_name == "MetricFit");
-    REQUIRE(graph.approximations()[0].bound == Catch::Approx(provider->measured_error()));
+    REQUIRE(graph.approximations()[0].bound == Catch::Approx(1e-12));
 }
 
 TEST_CASE("MetricFit - one tensor is fitted, not two", "[ComputeGraph][Factorization][MetricFit]") {
@@ -146,7 +138,7 @@ TEST_CASE("MetricFit - one tensor is fitted, not two", "[ComputeGraph][Factoriza
     graph.annotate_tag(T, cg::ProvenanceTag{.name = "eri"});
 
     cg::FactorizationRegistry registry;
-    registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J));
+    registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-12));
     cg::passes::FactorizationPass factorization(registry);
     cg::PassManager               pm;
     pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
@@ -164,30 +156,76 @@ TEST_CASE("MetricFit - one tensor is fitted, not two", "[ComputeGraph][Factoriza
     REQUIRE(fitted_tensors == 1);
 }
 
-TEST_CASE("MetricFit - a declared bound is recorded instead of a measured one", "[ComputeGraph][Factorization][MetricFit]") {
+TEST_CASE("MetricFit - a well-conditioned metric drops nothing, and a singular one says how much",
+          "[ComputeGraph][Factorization][MetricFit]") {
     auto R = create_random_tensor<double>("R", naux, nbf, nbf);
     auto J = make_metric();
     auto T = exact_fit(R, J);
     auto D = create_random_tensor<double>("D", nbf, nbf);
     auto C = create_zero_tensor<double>("C", nbf, nbf);
 
-    cg::Graph graph("declared");
-    {
-        cg::CaptureGuard const guard(graph);
-        cg::einsum("m,n,p,q ; p,q -> m,n", &C, T, D);
+    auto const build = [&](Tensor<double, 2> &metric, Tensor<double, 4> &tagged, Tensor<double, 2> &out) {
+        auto graph = std::make_unique<cg::Graph>("conditioning");
+        {
+            cg::CaptureGuard const guard(*graph);
+            cg::einsum("m,n,p,q ; p,q -> m,n", &out, tagged, D);
+        }
+        graph->annotate_tag(tagged, cg::ProvenanceTag{.name = "eri"});
+        return graph;
+    };
+
+    std::string const key = cg::MetricFitFactorization::dropped_param_name("MetricFit", "T");
+
+    SECTION("a metric with no null directions keeps every one") {
+        auto                      graph = build(J, T, C);
+        cg::FactorizationRegistry registry;
+        registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-12));
+        cg::passes::FactorizationPass factorization(registry);
+        cg::PassManager               pm;
+        pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+        REQUIRE(graph->apply(pm));
+
+        auto defaults = cg::PassManager::create_default();
+        graph->apply(defaults);
+        graph->execute();
+
+        REQUIRE(graph->params_ptr()->get(key) == 0);
     }
-    graph.annotate_tag(T, cg::ProvenanceTag{.name = "eri"});
 
-    auto                      provider = std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-5);
-    cg::FactorizationRegistry registry;
-    registry.add(provider);
-    cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE(graph.apply(pm));
+    SECTION("a metric with a null direction reports it, on every refit") {
+        // A metric with one unambiguously NEGATIVE eigenvalue, spelled as a diagonal so there
+        // is nothing to argue about: the guarded inverse square root has to throw that
+        // direction away, and the fitted space is then smaller than the auxiliary set the
+        // caller supplied. That is the case an asserted bound says nothing about, and nothing
+        // else would tell them.
+        //
+        // Negative rather than merely tiny, deliberately, because the guard tests `x > 0` and
+        // a near-singular metric whose smallest eigenvalue lands at +1e-17 slips through it
+        // and produces an enormous 1/sqrt instead. Real orthogonalizations drop below a
+        // THRESHOLD for exactly that reason; this one does not have one yet, and a test that
+        // pretended otherwise would be testing a guard this code does not have.
+        auto singular = create_zero_tensor<double>("J", naux, naux);
+        for (std::size_t q = 0; q < naux; ++q) {
+            singular(q, q) = 2.0;
+        }
+        singular(0, 0) = -1.0;
+        auto tagged    = create_zero_tensor<double>("T", nbf, nbf, nbf, nbf);
+        auto out       = create_zero_tensor<double>("C", nbf, nbf);
 
-    REQUIRE(provider->measured_error() < 0.0); // nothing was measured
-    REQUIRE(graph.approximations()[0].bound == Catch::Approx(1e-5));
+        auto                      graph = build(singular, tagged, out);
+        cg::FactorizationRegistry registry;
+        registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, singular, 1e-3));
+        cg::passes::FactorizationPass factorization(registry);
+        cg::PassManager               pm;
+        pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+        REQUIRE(graph->apply(pm));
+
+        auto defaults = cg::PassManager::create_default();
+        graph->apply(defaults);
+        graph->execute();
+
+        REQUIRE(graph->params_ptr()->get(key) >= 1);
+    }
 }
 
 TEST_CASE("MetricFit - a tensor whose shape the fit cannot produce is declined", "[ComputeGraph][Factorization][MetricFit]") {
@@ -205,7 +243,7 @@ TEST_CASE("MetricFit - a tensor whose shape the fit cannot produce is declined",
     graph.annotate_tag(T, cg::ProvenanceTag{.name = "eri"});
 
     cg::FactorizationRegistry registry;
-    registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J));
+    registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-12));
     cg::passes::FactorizationPass factorization(registry);
     cg::PassManager               pm;
     pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));

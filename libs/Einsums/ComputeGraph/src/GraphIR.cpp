@@ -955,6 +955,7 @@ Object write_structure(Graph const &graph) {
         entry.set("effect", Value{std::string(approximation_effect_name(record.effect))});
         entry.set("tolerance", Value{record.tolerance});
         entry.set("bound", Value{record.bound});
+        entry.set("origin", Value{std::string(approximation_origin_name(record.origin))});
         Array outputs;
         for (auto const &name : record.outputs) {
             outputs.emplace_back(name);
@@ -1949,6 +1950,12 @@ IrDocument read_document(Value const &root, Problems &problems, SpaceRegistry co
                         note(problems, fmt::format("{}.bound", path), bound->position, "expected a number");
                     }
                 }
+                // OPTIONAL, and defaulted to asserted rather than measured. A file written
+                // before this key existed carries a number whose provenance nobody recorded,
+                // and reading it as evidence would promote a guess by nothing more than a
+                // newer build having opened it.
+                record.origin  = read_named_optional<ApproximationOrigin>(*entry, "origin", path, problems, approximation_origin_from_name,
+                                                                         "approximation origin", ApproximationOrigin::Asserted);
                 record.outputs = read_string_array(*entry, "outputs", path, problems, (*items)[i].position);
                 record.spaces  = read_string_array(*entry, "spaces", path, problems, (*items)[i].position);
                 record.setup   = read_string(*entry, "setup", path, problems, (*items)[i].position);

@@ -20,13 +20,13 @@
  * be, which is why it refuses a graph it cannot write instead of writing a
  * partial one.
  *
- * @par The schema: ``einsums_graph_ir``, semver, currently 1.1.0
+ * @par The schema: ``einsums_graph_ir``, semver, currently 1.2.0
  * One JSON object with a FIXED top-level key order, so a tool can validate the
  * interface before it parses a single node:
  *
  * @code{.json}
  * {
- *   "einsums_graph_ir": "1.1.0",
+ *   "einsums_graph_ir": "1.2.0",
  *   "provenance":       { ... },
  *   "name":             "ccsd_doubles",
  *   "manifest":         [ ... ],
@@ -45,7 +45,9 @@
  *
  * ``approximations`` arrived at 1.1.0 and is the one section a READER treats as
  * optional, because the golden corpus is written by older builds and a file
- * without it describes a graph nothing approximated. It is written
+ * without it describes a graph nothing approximated. Its ``origin`` key arrived
+ * at 1.2.0 and is optional within it for the same reason, defaulting to
+ * ``asserted``: a number whose provenance nobody recorded is not evidence. It is written
  * unconditionally, empty list included, so the layout rule above still holds
  * for everything this build produces.
  *
@@ -182,7 +184,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.1.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.2.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}
