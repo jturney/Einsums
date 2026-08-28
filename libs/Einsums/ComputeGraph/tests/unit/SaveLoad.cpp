@@ -30,6 +30,7 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/GraphIR.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/Tensor/TiledRuntimeTensor.hpp>
 #include <Einsums/TensorUtilities/CreateIdentity.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -255,6 +256,107 @@ TEST_CASE("SaveLoad - gemm, transpose, dot and trace round-trip bitwise", "[Comp
     REQUIRE(bytes_of(C2) == expected_c);
     REQUIRE(bytes_of_scalar(loaded_dot) == expected_dot);
     REQUIRE(bytes_of_scalar(loaded_trace) == expected_trace);
+}
+
+namespace {
+
+/// A symmetric matrix with well-separated eigenvalues, so LAPACK's ordering of
+/// the eigenvectors is not a coin toss between two runs of the same build.
+Tensor<double, 2> symmetric_matrix() {
+    auto out = create_zero_tensor<double>("A", 4, 4);
+    for (size_t i = 0; i < 4; ++i) {
+        for (size_t j = i; j < 4; ++j) {
+            double const value = 1.0 / (1.0 + static_cast<double>(i + j)) + (i == j ? 3.0 * static_cast<double>(i + 1) : 0.0);
+            out(i, j)          = value;
+            out(j, i)          = value;
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("SaveLoad - a symmetric eigendecomposition round-trips bitwise", "[ComputeGraph][SaveLoad]") {
+    // A is decomposed IN PLACE, so the node lists it as an input AND an output, and the
+    // matrix the loaded graph must be handed is the ORIGINAL rather than the eigenvectors
+    // the capture-time execute left in it. The snapshot below is taken before any execute
+    // for exactly that reason.
+    auto A = symmetric_matrix();
+    auto W = create_zero_tensor<double>("W", 4);
+
+    auto const A0 = bytes_of(A);
+
+    cg::Graph graph("eigen");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::syev(&A, &W);
+    }
+    graph.execute();
+    auto const expected_vectors = bytes_of(A);
+    auto const expected_values  = bytes_of(W);
+
+    std::string const text = must_save(graph);
+    REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring("\"Syev\""));
+    REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring("compute_eigenvectors"));
+
+    cg::Graph loaded = must_load(text);
+
+    auto A2 = create_zero_tensor<double>("A2", 4, 4);
+    auto W2 = create_zero_tensor<double>("W2", 4);
+    std::memcpy(A2.data(), A0.data(), A0.size());
+    loaded.bind("A", A2, "W", W2);
+    loaded.execute();
+
+    REQUIRE(bytes_of(A2) == expected_vectors);
+    REQUIRE(bytes_of(W2) == expected_values);
+}
+
+TEST_CASE("SaveLoad - an eigenvalues-only decomposition stays eigenvalues-only", "[ComputeGraph][SaveLoad]") {
+    // ComputeEigenvectors is a TEMPLATE argument at the capture site, so it is the one part
+    // of a syev that a file has to carry explicitly. Getting it wrong is not a slower answer:
+    // LAPACK's jobz='n' leaves A holding the tridiagonal reduction's scratch, so a loaded
+    // graph that guessed 'v' would hand every downstream consumer a different matrix.
+    auto A = symmetric_matrix();
+    auto W = create_zero_tensor<double>("W", 4);
+
+    auto const A0 = bytes_of(A);
+
+    cg::Graph graph("eigenvalues_only");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::syev<false>(&A, &W);
+    }
+    graph.execute();
+    auto const expected_values = bytes_of(W);
+
+    cg::Graph loaded = must_load(must_save(graph));
+
+    // The flag itself, read back off the node rather than inferred from the numbers, so the
+    // assertion still means something if LAPACK's two jobs ever agree on A for small inputs.
+    REQUIRE(loaded.num_nodes() == 1);
+    auto const *descriptor = std::get_if<cg::SyevDescriptor>(&loaded.nodes()[0].op_data);
+    REQUIRE(descriptor != nullptr);
+    REQUIRE_FALSE(descriptor->compute_eigenvectors);
+
+    auto A2 = create_zero_tensor<double>("A2", 4, 4);
+    auto W2 = create_zero_tensor<double>("W2", 4);
+    std::memcpy(A2.data(), A0.data(), A0.size());
+    loaded.bind("A", A2, "W", W2);
+    loaded.execute();
+
+    REQUIRE(bytes_of(W2) == expected_values);
+
+    // And the eigenvectors are NOT what came back, which is what makes the flag observable
+    // in the numbers as well as in the descriptor.
+    auto      V  = symmetric_matrix();
+    auto      Wv = create_zero_tensor<double>("Wv", 4);
+    cg::Graph vectors("with_vectors");
+    {
+        cg::CaptureGuard const guard(vectors);
+        cg::syev<true>(&V, &Wv);
+    }
+    vectors.execute();
+    REQUIRE(bytes_of(A2) != bytes_of(V));
 }
 
 TEST_CASE("SaveLoad - a named element transform round-trips", "[ComputeGraph][SaveLoad]") {
@@ -817,6 +919,34 @@ TEST_CASE("SaveLoad - every checked-in golden still loads", "[ComputeGraph][Save
         ++loaded_count;
     }
     REQUIRE(loaded_count > 0);
+}
+
+TEST_CASE("SaveLoad - a tiled eigendecomposition refuses although its kind is reconstructible", "[ComputeGraph][SaveLoad][TiledRuntime]") {
+    // Syev is per KIND, and the kind covers two operations. The dense one is reconstructible;
+    // the tiled one diagonalizes each diagonal block of a grid of buffers, has no builder
+    // entry, and records no descriptor at all. So the per-node verdict is the only one that
+    // can tell them apart, and the message has to say that the absent descriptor is what a
+    // tiled node looks like rather than a field the writer dropped.
+    using Grid = std::vector<std::vector<int>>;
+    TiledRuntimeTensor<double> A("A", Grid{{2, 3}, {2, 3}});
+    TiledRuntimeTensor<double> W("W", Grid{{2, 3}});
+
+    A.add_tile({0, 0});
+    A.add_tile({1, 1});
+    A.materialize();
+
+    cg::Graph graph("tiled_eigen");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::syev(&A, &W);
+    }
+
+    auto const report = graph.serializability_report();
+    REQUIRE(report.size() == 1);
+    CHECK(report.front().kind_name == "Syev");
+    CHECK_THAT(report.front().reason, Catch::Matchers::ContainsSubstring("tiled variant records none"));
+
+    CHECK_THAT(save_refusal(graph), Catch::Matchers::ContainsSubstring("Syev"));
 }
 
 TEST_CASE("SaveLoad - a batched form refuses to save and says why", "[ComputeGraph][SaveLoad][Batched]") {

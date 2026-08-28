@@ -356,7 +356,14 @@ class ScalarAccessor {
  * @note The bit is per KIND, which is coarser than per node: ``DirectDivision``
  *       is reconstructible, yet a TILED direct division records under that kind
  *       with a @ref TiledElementwiseDescriptor and is not. Ask
- *       @ref reconstruction_blocker for the per-node answer.
+ *       @ref reconstruction_blocker for the per-node answer. ``Syev`` splits the
+ *       same way, with the tiled arm recording no descriptor at all.
+ *
+ * @note ``Syev`` is the first entry whose builder refuses a DTYPE rather than a
+ *       descriptor. A symmetric eigendecomposition is real; the complex operand
+ *       is a Hermitian one and records as ``Heev``, which has no entry yet. No
+ *       capture can produce a complex ``Syev`` node, so the refusal is aimed at
+ *       a file that describes one.
  *
  * @note ``WriteParam`` was the first kind where the true bit covers only PART of
  *       what the kind records, and the split is worth stating because it is not
@@ -400,6 +407,7 @@ class ScalarAccessor {
     case OpKind::Conditional:
     case OpKind::Loop:
     case OpKind::Setup:
+    case OpKind::Syev:
         return true;
     default:
         return false;

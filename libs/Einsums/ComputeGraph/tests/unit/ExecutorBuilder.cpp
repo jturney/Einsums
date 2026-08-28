@@ -193,9 +193,10 @@ TEST_CASE("ExecutorBuilder - the reconstructible set holds every kind converted 
     // If a change to this list is deliberate, the argument for it belongs in
     // the commit message, not in a quiet edit here.
     std::vector<cg::OpKind> const converted{
-        cg::OpKind::Scale,          cg::OpKind::Permute,          cg::OpKind::Transpose,   cg::OpKind::Axpby, cg::OpKind::DirectProduct,
-        cg::OpKind::DirectDivision, cg::OpKind::Einsum,           cg::OpKind::Dot,         cg::OpKind::Trace, cg::OpKind::WriteParam,
-        cg::OpKind::Gemm,           cg::OpKind::ElementTransform, cg::OpKind::Conditional, cg::OpKind::Loop,
+        cg::OpKind::Scale,         cg::OpKind::Permute,        cg::OpKind::Transpose, cg::OpKind::Axpby,
+        cg::OpKind::DirectProduct, cg::OpKind::DirectDivision, cg::OpKind::Einsum,    cg::OpKind::Dot,
+        cg::OpKind::Trace,         cg::OpKind::WriteParam,     cg::OpKind::Gemm,      cg::OpKind::ElementTransform,
+        cg::OpKind::Conditional,   cg::OpKind::Loop,           cg::OpKind::Setup,     cg::OpKind::Syev,
     };
 
     for (auto kind : converted) {
@@ -320,6 +321,71 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Permute is bitwise identical at ra
     graph.execute();
 
     REQUIRE(bytes_of(C) == captured);
+}
+
+TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Syev is bitwise identical", "[ComputeGraph][ExecutorBuilder]", float, double) {
+    using T = TestType;
+
+    // Real only: the capture site requires a non-complex operand, and the complex
+    // counterpart is Hermitian and records as OpKind::Heev.
+    auto A = create_zero_tensor<T>("A", 4, 4);
+    auto W = create_zero_tensor<T>("W", 4);
+    for (size_t i = 0; i < 4; ++i) {
+        for (size_t j = i; j < 4; ++j) {
+            T const value = static_cast<T>(1.0 / (1.0 + static_cast<double>(i + j))) + (i == j ? static_cast<T>(3 * (i + 1)) : T{0});
+            A(i, j)       = value;
+            A(j, i)       = value;
+        }
+    }
+    auto const a_initial = bytes_of(A);
+
+    cg::Graph graph("builder_syev");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::syev(&A, &W);
+    }
+
+    graph.execute();
+    auto const captured_vectors = bytes_of(A);
+    auto const captured_values  = bytes_of(W);
+    REQUIRE(captured_vectors != a_initial);
+
+    // A is listed in BOTH the inputs and the outputs, so the rebuild has to read the matrix
+    // operand from the same list the capture-baked lambda held a slot for. Restoring A here
+    // is what makes a builder that picked the wrong list visible: it would decompose W.
+    restore(&A, a_initial);
+    REQUIRE(rebuild_executors(graph) == 1);
+    graph.execute();
+
+    REQUIRE(bytes_of(A) == captured_vectors);
+    REQUIRE(bytes_of(W) == captured_values);
+}
+
+TEST_CASE("ExecutorBuilder - a complex Syev node is refused, naming Heev", "[ComputeGraph][ExecutorBuilder]") {
+    // No capture can produce this node: the syev overloads require a non-complex operand.
+    // A FILE can, though, which is the whole reason the builder checks rather than trusting
+    // the dtype it is handed, and the reader of that file needs to be told which kind the
+    // node should have carried.
+    auto A = create_random_tensor<std::complex<double>>("A", 4, 4);
+    auto W = create_random_tensor<std::complex<double>>("W", 4);
+
+    cg::Graph graph("complex_syev");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(std::complex<double>{1.0, 0.0}, &A);
+        cg::scale(std::complex<double>{1.0, 0.0}, &W);
+    }
+    REQUIRE(graph.num_nodes() == 2);
+    cg::TensorId const a_id = graph.nodes()[0].outputs.front();
+    cg::TensorId const w_id = graph.nodes()[1].outputs.front();
+
+    std::vector<cg::TensorId> const inputs{a_id};
+    std::vector<cg::TensorId> const outputs{a_id, w_id};
+    cg::OpData const                descriptor{cg::SyevDescriptor{}};
+
+    REQUIRE_THROWS_WITH(cg::build_executor(cg::OpKind::Syev, packed_gemm::ScalarType::Complex128, 2, descriptor, graph,
+                                           std::span<cg::TensorId const>{inputs}, std::span<cg::TensorId const>{outputs}),
+                        Catch::Matchers::ContainsSubstring("Heev"));
 }
 
 TEST_CASE("ExecutorBuilder - rebuilt Transpose is bitwise identical", "[ComputeGraph][ExecutorBuilder]") {

@@ -6204,7 +6204,14 @@ void syev(AType *A, WType *W) {
         linear_algebra::syev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
     };
 
-    ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor));
+    // A is BOTH an input and an output: the decomposition overwrites it. Listing it only as
+    // an output would let a reader of the original matrix be ordered after this node, and
+    // listing it only as an input would leave the overwrite unordered against a later writer.
+    //
+    // The descriptor carries the one piece of state a saved file cannot recover from the
+    // operand lists, because it is a template argument rather than a value. See SyevDescriptor.
+    ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor),
+               OpData(SyevDescriptor{.compute_eigenvectors = ComputeEigenvectors}));
 }
 
 /// Real symmetric eigendecomposition (in-place): ``A = V * diag(W) * V^T``.
@@ -6247,7 +6254,14 @@ APIARY_INSTANTIATE_BOOLS("syev", einsums::RuntimeTensorView<double>, einsums::Ge
         linear_algebra::syev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
     };
 
-    ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor));
+    // A is BOTH an input and an output: the decomposition overwrites it. Listing it only as
+    // an output would let a reader of the original matrix be ordered after this node, and
+    // listing it only as an input would leave the overwrite unordered against a later writer.
+    //
+    // The descriptor carries the one piece of state a saved file cannot recover from the
+    // operand lists, because it is a template argument rather than a value. See SyevDescriptor.
+    ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor),
+               OpData(SyevDescriptor{.compute_eigenvectors = ComputeEigenvectors}));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6391,6 +6405,9 @@ void syev(AType *A, WType *W) {
         LabeledSection("syev execute");
         detail::tiled_syev<ComputeEigenvectors, T>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
     };
+    // No SyevDescriptor, deliberately. A tiled operand is a grid of buffers rather than one,
+    // so the dense builder cannot rebuild this node and the absent descriptor is what tells
+    // reconstruction_blocker so. Recording one would claim a save this kind cannot honor.
     ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor));
 }
 

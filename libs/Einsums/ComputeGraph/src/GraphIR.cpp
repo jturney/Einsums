@@ -499,6 +499,13 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("trans_b", Value{std::string(1, desc.trans_b)});
         return Value{std::move(out)};
     }
+    case OpKind::Syev: {
+        // The LAPACK job, and nothing else. It is a template argument at the capture site, so
+        // it is the one part of a syev a file has to carry; the operand roles, the triangle
+        // read and the absence of a prefactor are all fixed by the operation.
+        out.set("compute_eigenvectors", Value{std::get<SyevDescriptor>(node.op_data).compute_eigenvectors});
+        return Value{std::move(out)};
+    }
     case OpKind::ElementTransform: {
         out.set("op", Value{std::get<ElementTransformDescriptor>(node.op_data).op_name});
         return Value{std::move(out)};
@@ -1548,6 +1555,16 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
         desc.trans_a    = transpose_char("trans_a", 'n');
         desc.trans_b    = transpose_char("trans_b", 'n');
         node.descriptor = desc;
+        return;
+    }
+    case OpKind::Syev: {
+        SyevDescriptor desc;
+        // REQUIRED, not defaulted, even though the field arrived with this kind. No file
+        // predates it: no earlier build could write a Syev node at all, so an absent key is a
+        // malformed file rather than an older one, and the two LAPACK jobs leave A holding
+        // different matrices. Guessing the default would silently change what a graph computes.
+        desc.compute_eigenvectors = read_bool(*object, "compute_eigenvectors", path, problems, value.position);
+        node.descriptor           = desc;
         return;
     }
     case OpKind::ElementTransform: {

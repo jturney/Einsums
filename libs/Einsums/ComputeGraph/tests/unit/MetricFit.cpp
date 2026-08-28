@@ -215,7 +215,7 @@ TEST_CASE("MetricFit - a tensor whose shape the fit cannot produce is declined",
     REQUIRE(graph.approximations().empty());
 }
 
-TEST_CASE("MetricFit - a fitted graph cannot be saved yet, and the refusal names the eigendecomposition",
+TEST_CASE("MetricFit - the eigendecomposition no longer blocks a save, and the storage nodes still do",
           "[ComputeGraph][Factorization][MetricFit][SaveLoad]") {
     auto R = create_random_tensor<double>("R", naux, nbf, nbf);
     auto J = make_metric();
@@ -237,16 +237,30 @@ TEST_CASE("MetricFit - a fitted graph cannot be saved yet, and the refusal names
     pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
     REQUIRE(graph.apply(pm));
 
-    // The gap, asserted rather than left to be discovered. The rewritten BODY is perfectly
-    // saveable; the fitting is not, because a symmetric inverse square root needs an
-    // eigendecomposition and Syev is not in the reconstructible set. So the one thing a
-    // factorization exists to make reusable across problems is the one thing that cannot yet
-    // be written to a file.
-    //
-    // When Syev joins the set this test goes red, which is the reminder to replace it with a
-    // round-trip.
+    // Half the gap is closed and the other half is somewhere else entirely, so both halves
+    // are asserted. The eigendecomposition IS reconstructible now: no blocker names Syev,
+    // and the arithmetic of the fitting - the permute, the eigendecomposition, the
+    // element transform and the three contractions - is all content a file can hold.
+    auto const report = graph.serializability_report();
+    REQUIRE_FALSE(report.empty());
+    for (auto const &blocker : report) {
+        INFO("blocker: " << blocker.kind_name << " '" << blocker.label << "'");
+        REQUIRE(blocker.kind_name != "Syev");
+    }
+
+    // What remains is STORAGE, not arithmetic. The provider materializes the fitting's own
+    // workspace before handing the body over, because a body is not a graph the caller
+    // applies passes to; each of those Materialize nodes carries the allocating closure the
+    // deferred handle was declared with, and a closure is what a file cannot hold. So the
+    // fitting is one resource decision away from round-tripping rather than one operation
+    // away, which is a different problem with a different answer.
+    for (auto const &blocker : report) {
+        CHECK(blocker.kind_name == "Materialize");
+        CHECK_THAT(blocker.subgraph_path, Catch::Matchers::ContainsSubstring("setup("));
+    }
+
     auto const text = cg::save_graph_string(graph);
     REQUIRE_FALSE(text.has_value());
-    REQUIRE_THAT(text.error().message, Catch::Matchers::ContainsSubstring("Syev"));
-    REQUIRE_THAT(text.error().message, Catch::Matchers::ContainsSubstring("setup("));
+    REQUIRE_THAT(text.error().message, Catch::Matchers::ContainsSubstring("Materialize"));
+    REQUIRE_THAT(text.error().message, !Catch::Matchers::ContainsSubstring("Syev"));
 }

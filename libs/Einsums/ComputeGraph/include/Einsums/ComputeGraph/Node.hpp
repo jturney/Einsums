@@ -365,6 +365,38 @@ struct GemmDescriptor {
 };
 
 /**
+ * @brief Metadata for the DENSE @ref OpKind::Syev nodes: the real symmetric
+ *        eigendecomposition @f$A = V \operatorname{diag}(W) V^T@f$, in place.
+ *
+ * One field, and it is the only part of the capture site that was not already
+ * data. ``cg::syev`` takes ``ComputeEigenvectors`` as a TEMPLATE parameter, so
+ * the choice between LAPACK's eigenvalues-only job and its full one lived in the
+ * type of the baked lambda and nowhere in the node. A file cannot carry a
+ * template argument, and a loader guessing it would not merely pick a slower
+ * kernel: the eigenvalues-only job leaves ``A`` holding the tridiagonal
+ * reduction's scratch rather than the eigenvectors, so every consumer of ``A``
+ * downstream would read a different matrix.
+ *
+ * Nothing else needs recording. The operand roles are fixed by the operation
+ * (``A`` is an input AND an output because it is decomposed in place, ``W`` is
+ * the second output), the triangle the kernel reads is fixed, and there is no
+ * prefactor to fold, so kind, dtype and operand ids carry the rest.
+ *
+ * The TILED syev shares the kind and records NO descriptor, which is the same
+ * split @ref TraceDescriptor describes: it diagonalizes each diagonal block of a
+ * block-diagonal operator and has no builder entry, so a missing alternative
+ * here is what a per-block decomposition looks like rather than a dropped field.
+ * Ask @ref reconstruction_blocker for the per-node answer.
+ *
+ * @versionadded{2.0.0}
+ */
+struct SyevDescriptor {
+    /// Whether the eigenvectors are written into ``A`` (LAPACK ``jobz='v'``) or
+    /// only the eigenvalues are computed (``jobz='n'``).
+    bool compute_eigenvectors{true};
+};
+
+/**
  * @brief Metadata for @ref OpKind::GroupedDot nodes.
  *
  * A grouped dot is a run of independent `result_i = sum(A_i * B_i)` reductions
@@ -1103,7 +1135,7 @@ using OpData =
                  GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, GroupedDotDescriptor,
                  GroupedAxpbyDescriptor, GroupedElementwiseDescriptor, GroupedSandwichDescriptor, GroupedGatherRotateDescriptor,
                  TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor, ElementwiseBinaryDescriptor,
-                 DotDescriptor, TraceDescriptor, GemmDescriptor, ElementTransformDescriptor, SetupDescriptor>;
+                 DotDescriptor, TraceDescriptor, GemmDescriptor, ElementTransformDescriptor, SetupDescriptor, SyevDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.

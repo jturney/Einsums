@@ -591,6 +591,62 @@ std::function<void()> build_gemm(packed_gemm::ScalarType dtype, GemmDescriptor c
     });
 }
 
+/**
+ * @brief ``A = V diag(W) V^T``, in place. Rank-erased; the kernel is
+ *        ``linear_algebra::detail::syev``, which is what the typed and
+ *        runtime-rank capture overloads both reduce to.
+ *
+ * Real ONLY, and refused here rather than inside the dtype dispatch. The capture
+ * sites require a non-complex operand and record the complex case as
+ * @ref OpKind::Heev, so a complex Syev node is a file describing an operation no
+ * capture in this library can produce. Naming Heev is the only thing the reader
+ * of that message can act on; letting the dispatch instantiate the complex arm
+ * would reach a kernel whose eigenvalue output is a real vector the node's dtype
+ * does not describe.
+ *
+ * ``compute_eigenvectors`` is read ONCE, at build time, because it selects
+ * between two LAPACK jobs and is a structural field like a permute's index
+ * lists: a pass that changes it rebuilds the executor rather than mutating it
+ * under a replay.
+ *
+ * No vendor fence, deliberately. The capture-baked executors took none, and a
+ * dot's argument for one does not carry: LAPACK's answer is not a summation
+ * order the thread count reorders, and fencing here would make a rebuilt node
+ * slower than the capture it replaces without making it more reproducible.
+ */
+std::function<void()> build_syev(packed_gemm::ScalarType dtype, SyevDescriptor const &desc, OperandAccessor const &a,
+                                 OperandAccessor const &w) {
+    if (dtype == packed_gemm::ScalarType::Complex64 || dtype == packed_gemm::ScalarType::Complex128) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "build_executor(Syev): a symmetric eigendecomposition is real, and this node names a complex operand. "
+                                "The complex counterpart is Hermitian and records as OpKind::Heev, which has no builder entry yet");
+    }
+
+    bool const compute_eigenvectors = desc.compute_eigenvectors;
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+            if (compute_eigenvectors) {
+                return [a, w]() {
+                    LabeledSection("syev execute");
+                    auto *matrix = a.impl<T>();
+                    ProfileAnnotate("n", static_cast<std::int64_t>(matrix->dim(0)));
+                    linear_algebra::detail::syev<true>(matrix, w.impl<T>());
+                };
+            }
+            return [a, w]() {
+                LabeledSection("syev execute");
+                auto *matrix = a.impl<T>();
+                ProfileAnnotate("n", static_cast<std::int64_t>(matrix->dim(0)));
+                linear_algebra::detail::syev<false>(matrix, w.impl<T>());
+            };
+        } else {
+            // Unreachable: the guard above returned for both complex arms. The
+            // branch exists because the dispatch instantiates all four.
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Syev): a complex dtype reached the real-only builder");
+        }
+    });
+}
+
 /// The descriptor alternative @p data holds, for a diagnostic.
 std::string descriptor_name(OpData const &data) {
     if (std::holds_alternative<std::monostate>(data)) {
@@ -631,6 +687,9 @@ std::string descriptor_name(OpData const &data) {
     }
     if (std::holds_alternative<SetupDescriptor>(data)) {
         return "SetupDescriptor";
+    }
+    if (std::holds_alternative<SyevDescriptor>(data)) {
+        return "SyevDescriptor";
     }
     return fmt::format("descriptor alternative #{}", data.index());
 }
@@ -906,6 +965,16 @@ std::string reconstruction_blocker(Node const &node) {
         }
         return {};
     }
+    case OpKind::Syev:
+        // The kind covers a dense decomposition and a tiled one, and the tiled capture site
+        // records NO descriptor, so "no descriptor" here is what a per-block syev looks like
+        // rather than a field someone forgot to fill in. The message says both, because
+        // "expected a SyevDescriptor" alone sends the reader hunting for a writer bug.
+        return std::holds_alternative<SyevDescriptor>(node.op_data)
+                   ? std::string{}
+                   : fmt::format("Syev: expected a SyevDescriptor, found {}; the tiled variant records none, and its per-block "
+                                 "decomposition has no builder entry",
+                                 descriptor_name(node.op_data));
     case OpKind::Setup: {
         auto const *desc = std::get_if<SetupDescriptor>(&node.op_data);
         if (desc == nullptr) {
@@ -1131,6 +1200,19 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
             missing_operand(kind, "outputs", 1, outputs.size());
         }
         return build_element_transform(dtype, *d, resolve_operand(graph, outputs[0], kind, "C"));
+    }
+    case OpKind::Syev: {
+        // A is listed in BOTH lists because it is decomposed in place, so the matrix operand
+        // is read from outputs[0] and never from inputs[0]: a pass that rewrote the input
+        // list would otherwise silently move which buffer gets overwritten. W is outputs[1].
+        if (outputs.size() < 2) {
+            missing_operand(kind, "outputs", 2, outputs.size());
+        }
+        auto const *d = std::get_if<SyevDescriptor>(&desc);
+        if (d == nullptr) {
+            wrong_descriptor(kind, desc, "SyevDescriptor");
+        }
+        return build_syev(dtype, *d, resolve_operand(graph, outputs[0], kind, "A"), resolve_operand(graph, outputs[1], kind, "W"));
     }
     case OpKind::Conditional: {
         auto const *d = std::get_if<ConditionalDescriptor>(&desc);

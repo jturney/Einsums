@@ -1,0 +1,69 @@
+{
+  "einsums_graph_ir": "1.1.0",
+  "provenance": {"library_version":"2.0.0","config_fingerprint":"0x3163ced3f54d794c","structural_passes":[]},
+  "name": "syev_golden",
+  "manifest": [
+    {
+      "id": 0,
+      "name": "A",
+      "direction": "inout",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [4,4],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 1,
+      "name": "B",
+      "direction": "inout",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [4,4],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 2,
+      "name": "V",
+      "direction": "output",
+      "dtype": "float64",
+      "rank": 1,
+      "dims": [4],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 3,
+      "name": "W",
+      "direction": "output",
+      "dtype": "float64",
+      "rank": 1,
+      "dims": [4],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    }
+  ],
+  "spaces": {"names":[],"symbol_ties":[]},
+  "approximations": [],
+  "params": [],
+  "gate_flags": [],
+  "tensors": [],
+  "slot_redirects": [],
+  "nodes": [
+    {"id":0,"kind":"Syev","label":"syev","inputs":[0],"outputs":[0,3],"dtype":"float64","rank":2,"descriptor":{"compute_eigenvectors":true}},
+    {"id":1,"kind":"Syev","label":"syev","inputs":[1],"outputs":[1,2],"dtype":"float64","rank":2,"descriptor":{"compute_eigenvectors":false}}
+  ]
+}
