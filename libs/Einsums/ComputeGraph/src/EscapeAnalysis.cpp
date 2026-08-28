@@ -73,7 +73,11 @@ EscapeAnalysis EscapeAnalysis::over(Graph const &graph) {
             }
         }
         for (auto const tid : node.inputs) {
-            out._readers[graph.resolve_alias(tid)].push_back(node.id);
+            auto const root = graph.resolve_alias(tid);
+            out._any_readers[root].push_back(node.id);
+            if (!lifecycle) {
+                out._value_readers[root].push_back(node.id);
+            }
         }
     }
 
@@ -169,13 +173,26 @@ Escape EscapeAnalysis::classify(TensorId id, std::unordered_set<NodeId> const &r
         }
     }
 
+    // VALUE writers and readers, so a lifecycle node outside the region does not
+    // make a tensor escape it. That distinction is load-bearing rather than
+    // tidy: `Graph::create_*` and `declare_*` put an Alloc ahead of the first
+    // real write, Alloc is not raisable and so is never inside a region, and
+    // counting its mention would make every graph-owned intermediate
+    // undissolvable - which is every intermediate a rewrite exists to dissolve.
+    //
+    // The consequence is worth stating because a caller has to handle it: a
+    // rewrite that dissolves an intermediate leaves that intermediate's Alloc
+    // and Free behind, naming a tensor nothing writes any more. They are dead
+    // rather than wrong, and `DeadNodeElimination` removes them; a region
+    // rewrite must not assume it owns them, because they sit outside it.
+    //
     // Writes before reads: both decline, but an outside writer means the region
     // does not own this value at all, while an outside reader usually means the
     // region merely needs to grow, and the two call for different responses.
-    if (outside(_any_writers, root)) {
+    if (outside(_value_writers, root)) {
         return Escape::WrittenOutside;
     }
-    if (outside(_readers, root)) {
+    if (outside(_value_readers, root)) {
         return Escape::ReadOutside;
     }
     if (touched_by_subtree(id)) {

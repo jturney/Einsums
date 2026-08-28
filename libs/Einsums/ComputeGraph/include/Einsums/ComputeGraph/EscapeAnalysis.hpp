@@ -195,14 +195,23 @@ class EINSUMS_EXPORT EscapeAnalysis {
      *  1. Does the graph know it? Otherwise @ref Escape::Unknown.
      *  2. Is it an intermediate? Otherwise @ref Escape::UserOwned.
      *  3. Is any tensor over the same buffer user-owned? @ref Escape::AliasedFromOutside.
-     *  4. Does a node outside the region write the buffer? @ref Escape::WrittenOutside.
-     *  5. Does a node outside the region read it? @ref Escape::ReadOutside.
+     *  4. Does a node outside the region write a VALUE into the buffer? @ref Escape::WrittenOutside.
+     *  5. Does a node outside the region read its value? @ref Escape::ReadOutside.
      *  6. Does a descendant sub-graph touch it? @ref Escape::TouchedBySubgraph.
      *
      * Writes are checked before reads deliberately. Both decline, but the two
      * call for different responses from whoever reads the tally: an outside
      * writer means the region does not own the value at all, while an outside
      * reader often means the region simply needs to grow.
+     *
+     * Lifecycle mentions do NOT count on either side. `create_*` and `declare_*`
+     * put an Alloc ahead of the first real write, Alloc is not raisable and so is
+     * never inside a region, and counting its mention would make every
+     * graph-owned intermediate undissolvable - which is every intermediate a
+     * rewrite exists to dissolve. The caller carries the consequence: dissolving
+     * an intermediate leaves its Alloc and Free naming a tensor nothing writes
+     * any more, which is dead rather than wrong and is what
+     * `DeadNodeElimination` is for.
      *
      * @param[in] id     The tensor to classify.
      * @param[in] region The node ids the rewrite covers.
@@ -228,7 +237,8 @@ class EINSUMS_EXPORT EscapeAnalysis {
     /// Value-writers and readers of this graph, keyed by RESOLVED tensor id.
     std::unordered_map<TensorId, std::vector<NodeId>> _value_writers;
     std::unordered_map<TensorId, std::vector<NodeId>> _any_writers;
-    std::unordered_map<TensorId, std::vector<NodeId>> _readers;
+    std::unordered_map<TensorId, std::vector<NodeId>> _value_readers;
+    std::unordered_map<TensorId, std::vector<NodeId>> _any_readers;
 
     /// Resolved id -> every id of this graph that resolves to it.
     std::unordered_map<TensorId, std::vector<TensorId>> _by_root;

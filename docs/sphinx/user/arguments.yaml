@@ -171,6 +171,19 @@
 
     Example: ``--einsums:pass:disable CSE,Reorder``
 
+"einsums:graph:dump-regions":
+  added: "2.0.0"
+  body: |
+    Dump the algebra each region rewrite raised, before and after it rewrote, in the algebraic
+    form rather than as a node list.
+
+    This is the first thing to turn on when an optimized graph produces a wrong number. A diff of
+    two node-list dumps tells you which nodes changed; a diff of the algebra tells you what the
+    rewrite *claimed*, which is where the mistake actually is. Output goes to stderr at pass
+    verbosity 2 and above, and is also kept on the pass so a test can read it.
+
+    Costs one rendering per region, so it is off by default.
+
 "einsums:pass:analyze":
   added: "2.0.0"
   body: |

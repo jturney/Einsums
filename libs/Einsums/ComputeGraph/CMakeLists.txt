@@ -31,6 +31,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Optimizer.hpp
     Einsums/ComputeGraph/UsageAnalysis.hpp
     Einsums/ComputeGraph/EscapeAnalysis.hpp
+    Einsums/ComputeGraph/TensorExpr.hpp
     Einsums/ComputeGraph/Passes/ContractionPlanning.hpp
     Einsums/ComputeGraph/Passes/CommunicationElimination.hpp
     Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp
@@ -55,6 +56,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/IOPrefetch.hpp
     Einsums/ComputeGraph/Passes/Materialization.hpp
     Einsums/ComputeGraph/Passes/PermuteFusion.hpp
+    Einsums/ComputeGraph/Passes/RegionRewrite.hpp
     Einsums/ComputeGraph/Passes/Reorder.hpp
     Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp
     Einsums/ComputeGraph/Passes/CrossSpaceValidation.hpp
@@ -99,6 +101,7 @@ set(ComputeGraphSources
     GroupedBatchedGemm.cpp
     UsageAnalysis.cpp
     EscapeAnalysis.cpp
+    TensorExpr.cpp
     CostModel.cpp
     SymbolicCost.cpp
     Node.cpp
@@ -125,6 +128,7 @@ set(ComputeGraphSources
     Passes/IOPrefetch.cpp
     Passes/Materialization.cpp
     Passes/PermuteFusion.cpp
+    Passes/RegionRewrite.cpp
     Passes/Reorder.cpp
     Passes/SUMMAExpansion.cpp
     Passes/CrossSpaceValidation.cpp

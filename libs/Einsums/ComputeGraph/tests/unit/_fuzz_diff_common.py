@@ -738,6 +738,79 @@ _SAFE_PASSES = [
 ]
 
 # ──────────────────────────────────────────────────────────────────────────
+# Region identity round trip
+#
+# The differential shards ask "does the graph agree with numpy". This one asks
+# a question no other shard covers and that no tolerance applies to: does a
+# program survive being RAISED into the algebraic IR and LOWERED back?
+#
+# `lower_region` rebuilds every node from the expression rather than reusing
+# what it raised, so anything the IR fails to carry - a conjugation flag, a
+# destination prefactor, an index list a pass rewrote through the live block
+# rather than the snapshot - comes back as a different number rather than as a
+# missing field nobody notices.
+#
+# BITWISE, not allclose. A lowered node runs the same kernel over the same
+# values in the same order as the node it replaced, so anything short of
+# identical is a defect and not a floating-point question. That also makes this
+# shard immune to the overflow skip the tolerance-based ones need: inf == inf
+# and a NaN pool is compared with equal_nan, so a numerically degenerate
+# program is still a perfectly good round-trip test.
+#
+# `_REGION_STATS` counts what actually formed a region, so a shard can assert
+# the corpus has not quietly degraded into programs with nothing raisable in
+# them.
+# ──────────────────────────────────────────────────────────────────────────
+
+_REGION_STATS = {"attempted": 0, "with_regions": 0, "rewritten": 0}
+
+
+def _run_program_region_identity(prog, m_arrays, v_arrays, t_arrays, name):
+    """Build, raise every region and lower it unchanged, execute."""
+    _REGION_STATS["attempted"] += 1
+
+    mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, name)
+    g = cg.Graph(name)
+    build_cg(prog, g, mats, vecs, r3s, name)
+
+    identity = cg.RegionIdentity()
+    pm = cg.PassManager()
+    pm.add(identity)
+    pm.run(g)
+
+    if identity.regions_formed:
+        _REGION_STATS["with_regions"] += 1
+    if identity.regions_rewritten:
+        _REGION_STATS["rewritten"] += 1
+
+    g.execute()
+    return ([np.asarray(x).copy() for x in mats],
+            [np.asarray(x).copy() for x in vecs],
+            [np.asarray(x).copy() for x in r3s]), identity
+
+
+def check_program_region_identity(prog, m_arrays, v_arrays, t_arrays, label, dtype="float64"):
+    """Raise every region, lower it unchanged, demand the same bits."""
+    raw = _run_program(prog, m_arrays, v_arrays, t_arrays, f"{label}_raw", optimize=False)
+    (identity_pools, identity) = _run_program_region_identity(
+        prog, m_arrays, v_arrays, t_arrays, f"{label}_id")
+
+    for kind, got, expected in zip("mvt", identity_pools, raw):
+        for idx in range(len(expected)):
+            # equal_nan, because a degenerate program is still a valid
+            # round-trip case and skipping it would throw away exactly the
+            # inputs most likely to expose a dropped prefactor.
+            if not np.array_equal(got[idx], expected[idx], equal_nan=True):
+                raise AssertionError(
+                    f"a raise/lower round trip changed {kind}{idx} (dtype={dtype})\n"
+                    f"program={prog!r}\n"
+                    f"regions formed={identity.regions_formed} "
+                    f"rewritten={identity.regions_rewritten}\n"
+                    f"captured=\n{expected[idx]}\nafter round trip=\n{got[idx]}"
+                )
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # Save / load round trip
 #
 # The differential above asks "does the graph agree with numpy". This one asks
@@ -888,6 +961,9 @@ __all__ = [
     '_CROSS_EXECUTORS',
     '_run_program_exec',
     'check_program_cross_executor',
+    '_REGION_STATS',
+    '_run_program_region_identity',
+    'check_program_region_identity',
     '_ROUNDTRIP_STATS',
     '_run_program_roundtrip',
     'check_program_roundtrip',

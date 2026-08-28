@@ -115,6 +115,7 @@
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/MemoryPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/PermuteFusion.hpp>
+#include <Einsums/ComputeGraph/Passes/RegionRewrite.hpp>
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>
 #include <Einsums/ComputeGraph/Passes/ScalingAnalysis.hpp>
@@ -130,6 +131,7 @@
 #include <Einsums/ComputeGraph/PredExpr.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
 #include <Einsums/ComputeGraph/SymbolicCost.hpp>
+#include <Einsums/ComputeGraph/TensorExpr.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/ComputeGraph/Workspace.hpp>

@@ -92,6 +92,7 @@ set(ComputeGraphTests
     PipelineLoop.cpp
     OperandOwnership.cpp
     Rebind.cpp
+    RegionIdentity.cpp
     RecursionPlumbing.cpp
     EagerParityGaps.cpp
     Gather.cpp
@@ -160,6 +161,7 @@ set(ComputeGraphTests
     test_fuzz_diff_graph_scratch_python.py
     test_fuzz_diff_regressions_python.py
     test_fuzz_diff_roundtrip_python.py
+    test_fuzz_diff_region_identity_python.py
     test_fuzz_diff_cse_python.py
     test_fuzz_diff_replay_python.py
     test_fuzz_diff_random_pipeline_python.py

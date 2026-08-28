@@ -11,6 +11,7 @@ EINSUMS_NAMESPACE_BEGIN()
 
 int register_Einsums_ComputeGraph_options() {
     cl::register_option(option::PassDisable);
+    cl::register_option(option::GraphDumpRegions);
     cl::register_option(option::PassAnalyze);
     cl::register_option(option::PassVerbose);
     cl::register_option(option::PassVerbosity);

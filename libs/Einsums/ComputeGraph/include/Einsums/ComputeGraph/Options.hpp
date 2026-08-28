@@ -50,6 +50,24 @@ inline constinit cl::ConfigOption<std::int64_t> PassVerbosity =
                                  "summary per pass, 2 each modification and decline, 3 the detail behind each decline",
                                  "ComputeGraph Passes", 0, "LEVEL", cl::Range{0, 3});
 
+/// Dump the algebra a region rewrite raised, before and after it rewrote.
+///
+/// An optimizer that rewrites mathematics will eventually produce a wrong
+/// number, and the bug history in this module is the evidence rather than a
+/// worry: the baked-lambda redirect, the full-cover alias miss, the Kahn FIFO
+/// hoist. Each produced a plausible graph and a wrong result. A diffable
+/// before-and-after of the ALGEBRA is what turns such a case into a readable bug
+/// report; a diff of two node-list dumps is not the same thing, because the
+/// node list is the encoding and the algebra is the claim.
+///
+/// Goes to stderr at pass verbosity 2 and up, and is also kept on the pass, so a
+/// test asserts on it rather than scraping a stream.
+inline constinit cl::ConfigOption<bool> GraphDumpRegions =
+    cl::config_flag("einsums:graph:dump-regions",
+                    "Dump each region rewrite's expression before and after the rewrite, in the algebraic form rather than as a node "
+                    "list. Costs a rendering per region and is the first thing to turn on when a rewrite produces a wrong number",
+                    "ComputeGraph Passes", false);
+
 /// Break a grouped batched GEMM into one profiler zone per shape class.
 /// Deliberately CHANGES how the GEMM runs, because a per-group breakdown of one
 /// parallel loop is not obtainable any other way. See Detail/GroupedBatchedGemm.hpp.
