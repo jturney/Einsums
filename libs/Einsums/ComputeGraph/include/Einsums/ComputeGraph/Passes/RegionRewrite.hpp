@@ -104,15 +104,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief Collect the before/after dumps regardless of the option.
     /// @param[in] on Whether to collect.
-    void set_dump(bool on) { _dump = on; }
+    APIARY_EXPOSE void set_dump(bool on) { _dump = on; }
 
     /// @brief How many regions were formed on the last run.
     /// @return The count.
-    [[nodiscard]] std::size_t regions_formed() const { return _regions_formed; }
+    APIARY_EXPOSE APIARY_GETTER("regions_formed") [[nodiscard]] std::size_t regions_formed() const { return _regions_formed; }
 
     /// @brief How many regions were rewritten on the last run.
     /// @return The count.
-    [[nodiscard]] std::size_t regions_rewritten() const { return _regions_rewritten; }
+    APIARY_EXPOSE APIARY_GETTER("regions_rewritten") [[nodiscard]] std::size_t regions_rewritten() const { return _regions_rewritten; }
 
     /**
      * @brief Every dump of the last run, rendered as one block of text.
@@ -122,7 +122,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      *
      * @return The rendering.
      */
-    [[nodiscard]] std::string dump_text() const;
+    APIARY_EXPOSE APIARY_GETTER("dump_text") [[nodiscard]] std::string dump_text() const;
 
   protected:
     /**
@@ -183,33 +183,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief The pass name.
     /// @return ``"RegionIdentity"``.
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string name() const override { return "RegionIdentity"; }
-
-    /// @name The Python spelling of the base's introspection
-    ///
-    /// Forwarders rather than annotations on @ref RegionRewrite itself. The base
-    /// is abstract and is not a type Python can hold, so the codegen has nothing
-    /// to attach an inherited member to; every other pass in this module spells
-    /// its counters on the concrete class for the same reason.
-    /// @{
-
-    /// @brief How many regions the last run formed.
-    /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("regions_formed") [[nodiscard]] std::size_t python_regions_formed() const { return regions_formed(); }
-
-    /// @brief How many regions the last run rewrote.
-    /// @return The count.
-    APIARY_EXPOSE APIARY_GETTER("regions_rewritten") [[nodiscard]] std::size_t python_regions_rewritten() const {
-        return regions_rewritten();
-    }
-
-    /// @brief Collect the before/after dumps regardless of the option.
-    /// @param[in] on Whether to collect.
-    APIARY_EXPOSE void set_dump(bool on) { RegionRewrite::set_dump(on); }
-
-    /// @brief The last run's dumps as one block of text.
-    /// @return The rendering, empty when nothing was dumped.
-    APIARY_EXPOSE APIARY_GETTER("dump_text") [[nodiscard]] std::string python_dump_text() const { return dump_text(); }
-    /// @}
 
   protected:
     /**

@@ -101,6 +101,7 @@
 #include <Einsums/ComputeGraph/Passes/ContractionPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/CrossSpaceValidation.hpp>
 #include <Einsums/ComputeGraph/Passes/DeadNodeElimination.hpp>
+#include <Einsums/ComputeGraph/Passes/DeltaElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributionPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributiveFactoring.hpp>
 #include <Einsums/ComputeGraph/Passes/ElementWiseFusion.hpp>
@@ -115,6 +116,7 @@
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/MemoryPlanning.hpp>
 #include <Einsums/ComputeGraph/Passes/PermuteFusion.hpp>
+#include <Einsums/ComputeGraph/Passes/ProvenancePropagation.hpp>
 #include <Einsums/ComputeGraph/Passes/RegionRewrite.hpp>
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
 #include <Einsums/ComputeGraph/Passes/ScaleAbsorption.hpp>

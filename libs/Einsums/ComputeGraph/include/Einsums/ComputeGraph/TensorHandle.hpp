@@ -14,6 +14,7 @@
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
+#include <Einsums/Python/Annotations.hpp>
 #include <Einsums/Tensor/PendingInit.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/TensorBase/TensorBase.hpp>
@@ -23,11 +24,86 @@
 #include <functional>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
+
+/**
+ * @brief What a tensor is, for a pass that has to recognize it rather than merely size it.
+ *
+ * A @ref name from an open vocabulary, plus optional key/value attributes for anything the name
+ * alone cannot carry (which basis a set of integrals is over, which order a denominator is).
+ * Attributes are kept SORTED by key, so two tags built in different orders compare equal and a
+ * saved graph's bytes do not depend on the order a caller happened to set them in.
+ *
+ * @see TensorHandle::tag
+ */
+struct APIARY_EXPOSE APIARY_MODULE("graph") ProvenanceTag {
+    /// The vocabulary name, or empty for untagged. Compared exactly, including case.
+    APIARY_EXPOSE APIARY_READONLY std::string name;
+
+    /// Sorted key/value attributes. Empty for a tag that needs no qualification.
+    APIARY_EXPOSE APIARY_READONLY std::vector<std::pair<std::string, std::string>> attributes;
+
+    /// @brief Whether this tag says anything at all.
+    /// @return True when @ref name is non-empty.
+    APIARY_EXPOSE APIARY_GETTER("valid") [[nodiscard]] bool valid() const noexcept { return !name.empty(); }
+
+    /// @brief The value of one attribute.
+    /// @param[in] key The attribute to look up.
+    /// @return The value, or an empty optional when the tag does not carry that key.
+    APIARY_EXPOSE [[nodiscard]] std::optional<std::string> attribute(std::string_view key) const {
+        for (auto const &entry : attributes) {
+            if (entry.first == key) {
+                return entry.second;
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// @brief Structural equality, which the sorted attribute order makes meaningful.
+    /// @param[in] lhs Left operand.
+    /// @param[in] rhs Right operand.
+    /// @return True when the names and the attribute lists match exactly.
+    [[nodiscard]] friend bool operator==(ProvenanceTag const &lhs, ProvenanceTag const &rhs) = default;
+};
+
+/**
+ * @brief Build a @ref ProvenanceTag.
+ *
+ * A named constructor rather than a real one, for the same reason @ref make_index_space is one:
+ * @ref ProvenanceTag stays an aggregate so the library's designated-initializer construction
+ * sites keep working, and this is what a caller with no aggregate initialization builds one
+ * through.
+ *
+ * @param[in] name       The vocabulary name.
+ * @param[in] attributes Key/value pairs, possibly empty. Sorted by @ref Graph::annotate_tag on
+ *                       the way in, so the order given here does not matter.
+ * @return The tag.
+ *
+ * Both parameters are required rather than the second defaulted, which is a binding constraint
+ * rather than a preference: the codegen renders a ``= {}`` default as a bare brace-init that
+ * pybind's ``py::arg`` cannot be assigned from. The Python-side helper in ``einsums.graph``
+ * supplies the empty list, so a caller there still writes just the name.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("provenance_tag") inline ProvenanceTag
+    make_provenance_tag(std::string name, std::vector<std::pair<std::string, std::string>> attributes) {
+    return ProvenanceTag{.name = std::move(name), .attributes = std::move(attributes)};
+}
+
+/**
+ * @brief The tag name for a Kronecker delta, the identity over one index space.
+ *
+ * Spelled once here rather than as a string literal at each site, because a pass matching a
+ * misspelled name silently does nothing and the tag vocabulary is deliberately unvalidated.
+ */
+inline constexpr std::string_view provenance_identity = "identity";
 
 namespace detail {
 
@@ -305,6 +381,45 @@ struct TensorHandle {
      * @see Graph::annotate_spaces
      */
     bool spaces_inferred{false};
+
+    /**
+     * @brief What this tensor IS, as a name from an open vocabulary plus free-form attributes.
+     *
+     * Index spaces say how big a tensor's axes are and what they range over, which is enough to
+     * cost a contraction and not nearly enough to recognize one. A pass that wants to know a
+     * tensor is a Kronecker delta, an electron-repulsion integral, a Coulomb metric or an energy
+     * denominator is asking a question about PROVENANCE, and no amount of extent information
+     * answers it. This field is that answer.
+     *
+     * @par Declared, never derived from values
+     * A tag is a statement by whoever built the graph, and the alternative was considered and
+     * rejected rather than overlooked: a pass could look at a tensor's CONTENTS and notice it
+     * happens to be an identity matrix. That would be wrong here in a way that is easy to miss.
+     * A structural-algebraic rewrite's output is what a saved graph keeps, and a later bind may
+     * supply a different tensor under the same manifest name, so a rewrite justified by today's
+     * contents would be baked into a file and wrong on the next problem. The whole reason the
+     * phase rule exists is to stop exactly that, and reading values would route around it.
+     *
+     * @par The vocabulary is open
+     * Names are strings and nothing validates them against a list, because the set of things
+     * worth recognizing grows with the passes that recognize them, and a closed enum would mean
+     * a library change for every new one. The cost is that a typo is a tag nobody matches; a
+     * pass looking for a name it never finds reports it through its skip tally rather than
+     * silently doing nothing.
+     *
+     * @par Propagation
+     * A tag travels only through operations that preserve IDENTITY - a view, a permute, a copy -
+     * and is never inferred through a contraction. The permute of a delta is still a delta; the
+     * contraction of two integrals is not an integral. ``ProvenancePropagation`` implements
+     * exactly that rule and nothing more permissive.
+     *
+     * Empty @ref ProvenanceTag::name means untagged, which is the default and the state of every
+     * tensor in a program that has not been annotated.
+     *
+     * @see Graph::annotate_tag
+     * @see Graph::tensor_tag
+     */
+    ProvenanceTag tag;
 
     /**
      * @brief Per-axis symbolic extent declaration, parallel to @ref dims.

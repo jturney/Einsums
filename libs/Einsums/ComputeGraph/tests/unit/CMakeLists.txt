@@ -27,6 +27,7 @@ set(ComputeGraphTests
     Blueprints.cpp
     PooledOperands.cpp
     ControlFlow.cpp
+    DeltaElimination.cpp
     DependencyOrder.cpp
     DiisAccelerator.cpp
     DistributedIntegration.cpp
@@ -138,6 +139,7 @@ set(ComputeGraphTests
     test_capture_parity_gaps_python.py
     test_capture_python.py
     test_ccsd_reuse_python.py
+    test_delta_elimination_python.py
     test_diis_python.py
     test_diis_differential_python.py
     test_diis_cpp_differential_python.py

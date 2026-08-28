@@ -1640,6 +1640,25 @@ void Graph::set_space_registry(SpaceRegistry &registry) noexcept {
     _space_registry = &registry;
 }
 
+void Graph::annotate_tag(TensorId id, ProvenanceTag tag) {
+    auto &handle = tensor(id);
+
+    // Sorted on the way in, so two tags built by setting the same keys in a different order
+    // compare equal and a saved graph's bytes do not depend on the order a caller happened to
+    // use. Stable, so a caller who set one key twice keeps the LAST value rather than an
+    // arbitrary one; the duplicate is then removed, since a tag carrying two values for one key
+    // has no meaning and every reader would have to pick.
+    std::ranges::stable_sort(tag.attributes, [](auto const &lhs, auto const &rhs) { return lhs.first < rhs.first; });
+    auto const duplicates = std::ranges::unique(tag.attributes, [](auto const &lhs, auto const &rhs) { return lhs.first == rhs.first; });
+    tag.attributes.erase(duplicates.begin(), duplicates.end());
+
+    handle.tag = std::move(tag);
+}
+
+ProvenanceTag const &Graph::tensor_tag(TensorId id) const {
+    return tensor(id).tag;
+}
+
 void Graph::annotate_spaces(TensorId id, std::vector<SpaceId> spaces) {
     auto &handle = tensor(id);
 

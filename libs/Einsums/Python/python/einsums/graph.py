@@ -166,13 +166,60 @@ def _resolve_space(registry, space):
     return space
 
 
-def annotate(tensor, spaces, graph=None):
-    """Annotate a tensor's axes with the index spaces they range over.
+def _resolve_tag(tag):
+    """Turn an ``annotate`` tag argument into a ``ProvenanceTag``.
+
+    Accepts the three spellings a caller reaches for, in order of how often:
+
+    * a string, which is the name alone (``tag="identity"``);
+    * a mapping with a ``"name"`` key, whose other entries are the attributes
+      (``tag={"name": "eri", "basis": "cc-pvdz"}``);
+    * a ``ProvenanceTag`` already in hand.
+
+    Attribute values are stringified, because the tag vocabulary is text: a
+    number written into an attribute is a label, not a quantity, and letting
+    one through as an int would make the saved form depend on the caller's
+    type rather than on what they meant.
+    """
+    core = _core()
+    if isinstance(tag, core.ProvenanceTag):
+        return tag
+    if isinstance(tag, str):
+        return core.provenance_tag(tag, [])
+    try:
+        name = tag["name"]
+    except (TypeError, KeyError):
+        raise TypeError(
+            "cg.annotate tag= takes a name, a mapping with a 'name' key, or a "
+            f"ProvenanceTag; got {tag!r}"
+        ) from None
+    attributes = [(str(k), str(v)) for k, v in tag.items() if k != "name"]
+    return core.provenance_tag(str(name), attributes)
+
+
+def annotate(tensor, spaces=None, tag=None, graph=None):
+    """Annotate a tensor with what its axes range over, what it is, or both.
 
     ``spaces`` is one entry per axis, in axis order, each a registered space
     NAME or a ``SpaceId``. Names are the user-facing spelling: an id is a
     handle into one registry and means nothing against another, while a name
     is what a person writes and what a saved graph carries.
+
+    ``tag`` says what the tensor IS, which is a different question from how big
+    it is and the one a pass that wants to RECOGNIZE something has to ask.
+    ``DeltaElimination`` looks for ``"identity"``; a factorization provider
+    looks for its own name. Spell it as a name, or as a mapping carrying
+    ``"name"`` plus attributes::
+
+        cg.annotate(delta, tag="identity")
+        cg.annotate(eri, spaces=("occ", "occ", "virt", "virt"),
+                    tag={"name": "eri", "basis": "cc-pvdz"})
+
+    A tag is a DECLARATION and is never inferred from a tensor's contents. A
+    pass could notice that a tensor happens to hold an identity today, and that
+    would be wrong in a way easy to miss: a structural rewrite is what a saved
+    graph keeps, and a later bind may put a different tensor behind the same
+    name.
 
     ``graph`` defaults to the graph currently being captured. Annotation is a
     declaration about a tensor, but it is stored on the graph's handle for
@@ -194,14 +241,20 @@ def annotate(tensor, spaces, graph=None):
 
     Returns ``tensor``, so an annotation can wrap an allocation in one line.
     """
+    if spaces is None and tag is None:
+        raise TypeError("cg.annotate needs spaces=, tag=, or both; it was given neither")
+
     g = graph if graph is not None else current_graph()
     if g is None:
         raise RuntimeError(
             "cg.annotate needs a graph to store the annotation on: pass graph=..., "
             "or call it inside cg.capture(...)"
         )
-    registry = g.space_registry
-    g.annotate_spaces(tensor, [_resolve_space(registry, s) for s in spaces])
+    if spaces is not None:
+        registry = g.space_registry
+        g.annotate_spaces(tensor, [_resolve_space(registry, s) for s in spaces])
+    if tag is not None:
+        g.annotate_tag(tensor, _resolve_tag(tag))
     return tensor
 
 

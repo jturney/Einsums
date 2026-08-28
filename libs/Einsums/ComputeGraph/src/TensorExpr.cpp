@@ -134,7 +134,17 @@ std::string render_term(TensorExpr const &expr, TermId id) {
             if (i != 0) {
                 out += ", ";
             }
-            out += render_term(expr, term.operands[i]);
+            auto const operand = render_term(expr, term.operands[i]);
+            if (i < term.operand_indices.size()) {
+                // The letters this TERM reads the operand by, which is what a rewrite that
+                // renamed one has to be able to show. A leaf's own indices are positional axis
+                // names (#0, #1) and would render a substitution as though nothing happened,
+                // which is the one thing the dump exists to make visible.
+                out += operand.substr(0, operand.find('['));
+                out += render_indices(term.operand_indices[i]);
+            } else {
+                out += operand;
+            }
         }
         out += ')';
         return out;

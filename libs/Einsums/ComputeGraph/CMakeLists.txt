@@ -33,6 +33,8 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/EscapeAnalysis.hpp
     Einsums/ComputeGraph/TensorExpr.hpp
     Einsums/ComputeGraph/Passes/ContractionPlanning.hpp
+    Einsums/ComputeGraph/Passes/DeltaElimination.hpp
+    Einsums/ComputeGraph/Passes/ProvenancePropagation.hpp
     Einsums/ComputeGraph/Passes/CommunicationElimination.hpp
     Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp
     Einsums/ComputeGraph/Passes/CommunicationScheduling.hpp
@@ -110,6 +112,8 @@ set(ComputeGraphSources
     Passes/CommunicationInsertion.cpp
     Passes/CommunicationScheduling.cpp
     Passes/ContractionPlanning.cpp
+    Passes/DeltaElimination.cpp
+    Passes/ProvenancePropagation.cpp
     Passes/ConstantFolding.cpp
     Passes/DistributionPlanning.cpp
     Passes/CSE.cpp

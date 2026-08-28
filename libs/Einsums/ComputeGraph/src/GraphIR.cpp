@@ -180,9 +180,15 @@ struct IrTensor {
     std::vector<std::string> dim_symbols;
     std::vector<std::string> spaces;
     bool                     spaces_inferred{false};
-    bool                     intermediate{false};
-    TensorOwnership          scope{TensorOwnership::Graph};
-    InitKind                 init{InitKind::None};
+
+    /// What the tensor is declared to BE. Optional, because the vast majority of tensors are
+    /// untagged and writing an empty object for each of them would cost every file bytes for
+    /// nothing; absent reads as untagged.
+    ProvenanceTag tag;
+
+    bool            intermediate{false};
+    TensorOwnership scope{TensorOwnership::Graph};
+    InitKind        init{InitKind::None};
 
     /// Whether the tensor still needs storage. Absent in files written before this was
     /// recorded, and Materialized is the right reading of those: a graph that never said
@@ -546,6 +552,32 @@ void require_storable_dtype(std::string_view name, packed_gemm::ScalarType dtype
 }
 
 /// One tensor's storage-side record.
+/// Write a tensor's provenance tag into @p out, when it carries one.
+///
+/// Shared by the two records that describe a tensor - its manifest entry and its tensor record -
+/// because a field added to one and not the other is the drift this module keeps being bitten by,
+/// and it was: the first version of this wrote the tag only into the tensor record, so every
+/// tensor a caller actually binds, which is every tensor that has a manifest entry, saved without
+/// one.
+///
+/// Written only when the tag says something, so an untagged tensor costs the file nothing and
+/// the golden corpus is unchanged by tags existing.
+void write_provenance_tag(Object &out, ProvenanceTag const &tag) {
+    if (!tag.valid()) {
+        return;
+    }
+    Object record;
+    record.set("name", Value{tag.name});
+    if (!tag.attributes.empty()) {
+        Object attributes;
+        for (auto const &[key, entry] : tag.attributes) {
+            attributes.set(key, Value{entry});
+        }
+        record.set("attributes", Value{std::move(attributes)});
+    }
+    out.set("tag", Value{std::move(record)});
+}
+
 Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t dense, Frame const &frame) {
     require_storable_dtype(handle.name, handle.dtype);
     Object out;
@@ -572,6 +604,10 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
     }
     out.set("spaces", Value{std::move(spaces)});
     out.set("spaces_inferred", Value{handle.spaces_inferred});
+    // Provenance is SAVED structure rather than a re-derivable annotation: it is a statement
+    // about the mathematics that no machine can recover, and a rewrite justified by it (a delta
+    // eliminated, an integral factorized) is exactly what a saved graph keeps.
+    write_provenance_tag(out, handle.tag);
     out.set("intermediate", Value{handle.is_intermediate});
     out.set("scope", Value{std::string(tensor_ownership_name(handle.ownership))});
     out.set("init", Value{std::string(init_kind_name(handle.init_kind))});
@@ -716,6 +752,12 @@ Object write_structure(Graph const &graph) {
         }
         record.set("spaces", Value{std::move(spaces)});
         record.set("spaces_inferred", Value{entry.spaces_inferred});
+        // From the HANDLE rather than from the manifest entry, which carries no tag: a tag is a
+        // statement about the tensor, and the manifest entry is a statement about the interface
+        // slot it fills.
+        if (TensorHandle const *handle = graph.find_tensor(entry.id); handle != nullptr) {
+            write_provenance_tag(record, handle->tag);
+        }
         record.set("scope", Value{std::string(tensor_ownership_name(entry.scope))});
 
         // By NAME, never by id: an alias declaration is part of the interface
@@ -939,6 +981,62 @@ bool read_bool(Object const &object, std::string_view key, std::string const &pa
         return false;
     }
     return value->as_bool();
+}
+
+/// A tensor's provenance tag, or an empty one when the record carries none.
+///
+/// OPTIONAL by the compatibility policy: a file written before tags existed has no ``tag`` key
+/// and its tensors are untagged, which is exactly what they were. Reading it as anything else
+/// would break the golden corpus, and the corpus is right that an added field takes a documented
+/// default.
+///
+/// Every key of the tag object is CONSUMED, including the attribute keys, because an unconsumed
+/// key is a load-time error by design: a file carrying a field this build does not understand is
+/// a file written by something newer, and reading it silently would be the drift the strict
+/// document model exists to prevent.
+ProvenanceTag read_provenance_tag(Object const &object, std::string const &path, Problems &problems) {
+    ProvenanceTag out;
+    Value const  *value = object.take("tag");
+    if (value == nullptr || value->is_null()) {
+        return out;
+    }
+    if (!value->is_object()) {
+        note(problems, fmt::format("{}.tag", path), value->position, fmt::format("expected an object, found {}", value->type_name()));
+        return out;
+    }
+
+    Object const     &tag      = value->as_object();
+    std::string const tag_path = fmt::format("{}.tag", path);
+    out.name                   = read_string(tag, "name", tag_path, problems, value->position);
+
+    if (Value const *attributes = tag.take("attributes"); attributes != nullptr && !attributes->is_null()) {
+        if (!attributes->is_object()) {
+            note(problems, fmt::format("{}.attributes", tag_path), attributes->position,
+                 fmt::format("expected an object, found {}", attributes->type_name()));
+        } else {
+            Object const &entries = attributes->as_object();
+            for (auto const &key : entries.keys()) {
+                Value const *entry = entries.take(key);
+                if (entry == nullptr) {
+                    continue;
+                }
+                if (!entry->is_string()) {
+                    note(problems, fmt::format("{}.attributes.{}", tag_path, key), entry->position,
+                         fmt::format("expected a string, found {}", entry->type_name()));
+                    continue;
+                }
+                out.attributes.emplace_back(key, entry->as_string());
+            }
+            // Sorted, matching what the writer's own sort produced, so two loads of one file
+            // compare equal and a tag round-trips to the same bytes.
+            std::ranges::sort(out.attributes, [](auto const &lhs, auto const &rhs) { return lhs.first < rhs.first; });
+        }
+    }
+
+    if (out.name.empty()) {
+        note(problems, tag_path, value->position, "a provenance tag with an empty name says nothing; omit the key instead");
+    }
+    return out;
 }
 
 std::vector<std::string> read_string_array(Object const &object, std::string_view key, std::string const &path, Problems &problems,
@@ -1188,6 +1286,7 @@ IrTensor read_tensor(Value const &value, std::string const &path, Problems &prob
     out.dim_symbols = read_string_array(*object, "dim_symbols", path, problems, value.position);
     out.spaces      = read_string_array(*object, "spaces", path, problems, value.position);
     out.spaces_inferred = read_bool(*object, "spaces_inferred", path, problems, value.position);
+    out.tag             = read_provenance_tag(*object, path, problems);
     out.scope = read_named<TensorOwnership>(*object, "scope", path, problems, value.position, tensor_ownership_from_name, "ownership scope",
                                             TensorOwnership::Graph);
     if (manifest_entry) {
@@ -1895,6 +1994,14 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
     for (auto const &spec : tensors) {
         if (!spec.dim_symbols.empty()) {
             graph.annotate_dims(loaded[spec.id].id, spec.dim_symbols);
+        }
+    }
+
+    // Provenance last, and independent of the two above: a tag is a statement about what the
+    // tensor IS, and it neither constrains nor is constrained by extents or spaces.
+    for (auto const &spec : tensors) {
+        if (spec.tag.valid()) {
+            graph.annotate_tag(loaded[spec.id].id, spec.tag);
         }
     }
 

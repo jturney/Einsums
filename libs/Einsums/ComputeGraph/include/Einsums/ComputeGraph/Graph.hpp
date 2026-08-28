@@ -587,6 +587,109 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         return tensor_spaces(id);
     }
 
+    // ── Provenance ──────────────────────────────────────────────────────────
+
+    /**
+     * @brief Declare what a tensor IS, by name.
+     * @param[in] id The tensor to tag.
+     * @param[in] tag The tag. An empty name clears any tag the tensor carried.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     *
+     * Index spaces say how big a tensor's axes are; this says what the tensor is, which is the
+     * question a pass that wants to RECOGNIZE something has to ask. ``DeltaElimination`` looks
+     * for @ref provenance_identity; a factorization provider will look for its own name.
+     *
+     * The vocabulary is open and unvalidated on purpose, because the set of things worth
+     * recognizing grows with the passes that recognize them. The cost is real and worth stating:
+     * a misspelled name is a tag nothing matches, and the only symptom is a pass that quietly
+     * finds no candidates. A pass is expected to report that through its skip tally rather than
+     * to stay silent.
+     *
+     * Attributes are sorted on the way in, so two tags built by setting the same keys in a
+     * different order compare equal and a saved graph's bytes do not depend on call order.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE void annotate_tag(TensorId id, ProvenanceTag tag);
+
+    /**
+     * @brief Declare what a tensor is, addressing it by the caller's tensor object.
+     * @tparam TensorType The tensor type.
+     * @param[in] tensor The tensor to tag.
+     * @param[in] tag The tag.
+     *
+     * The by-object form, registering the tensor if the graph has not seen it, exactly as
+     * ``annotate_spaces(TensorType const &, ...)`` does and for the same reason.
+     * @versionadded{2.0.0}
+     */
+    template <GraphCapturableTensor TensorType>
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::RuntimeTensorView<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::RuntimeTensorView<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::TiledRuntimeTensor<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::TiledRuntimeTensor<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
+        // clang-format on
+        void annotate_tag(TensorType const &tensor, ProvenanceTag tag) {
+        annotate_tag(register_operand(tensor), std::move(tag));
+    }
+
+    /**
+     * @brief What a registered tensor is declared to be.
+     * @param[in] id The tensor to read.
+     * @return The tag, whose @ref ProvenanceTag::name is empty for an untagged tensor.
+     * @throws std::out_of_range if no tensor with that id is registered.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] APIARY_EXPOSE ProvenanceTag const &tensor_tag(TensorId id) const;
+
+    /**
+     * @brief What a tensor is declared to be, addressing it by the caller's object.
+     * @tparam TensorType The tensor type.
+     * @param[in] tensor The tensor to read.
+     * @return The tag, empty-named when untagged.
+     * @throws std::out_of_range if this graph has never seen that tensor.
+     *
+     * Reading is const and registers nothing, which is the same asymmetry
+     * @ref tensor_spaces has against its writer and for the same reason.
+     * @versionadded{2.0.0}
+     */
+    template <GraphCapturableTensor TensorType>
+    // clang-format off
+    APIARY_EXPOSE
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::RuntimeTensorView<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::RuntimeTensorView<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::TiledRuntimeTensor<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::TiledRuntimeTensor<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
+        // clang-format on
+        [[nodiscard]] ProvenanceTag const &tensor_tag(TensorType const &tensor) const {
+        std::weak_ptr<void> token;
+        if constexpr (requires { tensor.liveness_token(); }) {
+            token = tensor.liveness_token();
+        }
+        TensorId const id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), token);
+        if (id == 0) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': tensor '{}' is not registered, so it carries no provenance tag", _name,
+                                    tensor.name());
+        }
+        return tensor_tag(id);
+    }
+
     // ── Space-typed dimensions (prototype) ──────────────────────────────────
 
     /**
