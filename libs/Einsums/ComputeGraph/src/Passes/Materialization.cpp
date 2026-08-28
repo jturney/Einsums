@@ -130,6 +130,17 @@ void collect_descendant_deferred(Graph &graph, std::vector<DeferredEntry> &out) 
     });
 }
 
+/// Whether @p graph already holds a Materialize node for the tensor named @p name.
+///
+/// Cheap and name-keyed, matching what FreeInsertion does for the same question. The pass is
+/// re-runnable (a manager may apply it twice, and the load path applies it to a graph a save
+/// was taken before), so emitting a second lifecycle for a tensor that already has one has to
+/// be impossible rather than merely unlikely.
+bool already_materialized_in(Graph const &graph, std::string const &name) {
+    std::string const want = fmt::format("materialize({})", name);
+    return std::ranges::any_of(graph.nodes(), [&want](Node const &node) { return node.kind == OpKind::Materialize && node.label == want; });
+}
+
 } // namespace
 
 std::vector<std::string> Materialization::explain() const {
@@ -307,6 +318,59 @@ bool Materialization::run(Graph &graph) {
         }
         return std::nullopt;
     };
+
+    // A setup body's OWN workspace, materialized inside the body. The parent cannot see these
+    // through either path above: they are not its tensors, and the hoist walk deliberately
+    // covers only loop bodies and conditional branches, where a hoisted lifecycle is what
+    // stops an allocation happening per iteration.
+    //
+    // Inside rather than hoisted, because a setup body runs once per bound problem and is
+    // skipped by every replay after. A parent-placed Materialize would allocate the fitting's
+    // scratch on every replay to feed a body that does not run.
+    //
+    // The provider used to do this itself, by applying a pass manager to the body before
+    // handing it over. That was wrong for a reason worth keeping written down: a Materialize
+    // node carries an allocating closure, a closure is the one thing a file cannot hold, and
+    // allocation is a resource decision that the design says is re-derived on load rather than
+    // saved. Doing it at capture baked a resource decision into structure and made the fitting
+    // unsaveable, which is the one thing a factorization exists to avoid.
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        auto *setup = std::get_if<SetupDescriptor>(&nodes[i].op_data);
+        if (setup == nullptr || !setup->body) {
+            continue;
+        }
+        Graph &body = *setup->body;
+
+        std::vector<Node> body_lifecycle;
+        for (auto &[tid, handle] : body.tensors_map()) {
+            if (handle.alloc_state != AllocState::Deferred) {
+                continue;
+            }
+            // A handle with no allocating hook is not this graph's to allocate. That is
+            // exactly the body's copy of a tensor the PARENT declared, which the block above
+            // has already placed a Materialize for; emitting a second one here would double
+            // the node and, since the copy carries no hook, the second would allocate nothing.
+            if (!handle.materialize_fn) {
+                continue;
+            }
+            if (already_materialized_in(body, handle.name)) {
+                continue;
+            }
+            for (auto &node : build_lifecycle_nodes(handle, tid)) {
+                body_lifecycle.push_back(std::move(node));
+            }
+            _num_materialized++;
+            if (handle.init_kind != InitKind::None) {
+                _num_initialized++;
+            }
+            report(2, fmt::format("materialize setup-body scratch '{}' inside '{}'", handle.name, nodes[i].label));
+        }
+        if (!body_lifecycle.empty()) {
+            std::vector<std::pair<std::size_t, std::vector<Node>>> group;
+            group.emplace_back(0, std::move(body_lifecycle));
+            body.insert_node_groups(std::move(group));
+        }
+    }
 
     for (auto const &r : reqs) {
         auto &handle = r.owner->tensor(r.tid);

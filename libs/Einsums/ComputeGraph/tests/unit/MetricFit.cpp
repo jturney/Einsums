@@ -215,7 +215,7 @@ TEST_CASE("MetricFit - a tensor whose shape the fit cannot produce is declined",
     REQUIRE(graph.approximations().empty());
 }
 
-TEST_CASE("MetricFit - the eigendecomposition no longer blocks a save, and the storage nodes still do",
+TEST_CASE("MetricFit - a fitted graph saves, loads, and refits for the problem it is bound to",
           "[ComputeGraph][Factorization][MetricFit][SaveLoad]") {
     auto R = create_random_tensor<double>("R", naux, nbf, nbf);
     auto J = make_metric();
@@ -231,36 +231,68 @@ TEST_CASE("MetricFit - the eigendecomposition no longer blocks a save, and the s
     graph.annotate_tag(T, cg::ProvenanceTag{.name = "eri"});
 
     cg::FactorizationRegistry registry;
-    registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J));
+    registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-5));
     cg::passes::FactorizationPass factorization(registry);
     cg::PassManager               pm;
     pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
     REQUIRE(graph.apply(pm));
 
-    // Half the gap is closed and the other half is somewhere else entirely, so both halves
-    // are asserted. The eigendecomposition IS reconstructible now: no blocker names Syev,
-    // and the arithmetic of the fitting - the permute, the eigendecomposition, the
-    // element transform and the three contractions - is all content a file can hold.
-    auto const report = graph.serializability_report();
-    REQUIRE_FALSE(report.empty());
-    for (auto const &blocker : report) {
-        INFO("blocker: " << blocker.kind_name << " '" << blocker.label << "'");
-        REQUIRE(blocker.kind_name != "Syev");
-    }
-
-    // What remains is STORAGE, not arithmetic. The provider materializes the fitting's own
-    // workspace before handing the body over, because a body is not a graph the caller
-    // applies passes to; each of those Materialize nodes carries the allocating closure the
-    // deferred handle was declared with, and a closure is what a file cannot hold. So the
-    // fitting is one resource decision away from round-tripping rather than one operation
-    // away, which is a different problem with a different answer.
-    for (auto const &blocker : report) {
-        CHECK(blocker.kind_name == "Materialize");
-        CHECK_THAT(blocker.subgraph_path, Catch::Matchers::ContainsSubstring("setup("));
-    }
-
+    // Saved BEFORE any resource pass, which is the documented flow rather than a convenience:
+    // a Materialize node carries an allocating closure and allocation is re-derived on load.
+    // Nothing in the fitting blocks it now, the eigendecomposition included.
+    REQUIRE(graph.serializability_report().empty());
     auto const text = cg::save_graph_string(graph);
-    REQUIRE_FALSE(text.has_value());
-    REQUIRE_THAT(text.error().message, Catch::Matchers::ContainsSubstring("Materialize"));
-    REQUIRE_THAT(text.error().message, !Catch::Matchers::ContainsSubstring("Syev"));
+    if (!text.has_value()) {
+        UNSCOPED_INFO(text.error().message);
+    }
+    REQUIRE(text.has_value());
+
+    // The four-index tensor is gone from the interface: nothing reads it any more, so a
+    // caller of the loaded graph is not asked for the very thing the factorization exists to
+    // avoid needing.
+    auto loaded = cg::load_graph_string(*text);
+    if (!loaded.has_value()) {
+        UNSCOPED_INFO(loaded.error().message);
+    }
+    REQUIRE(loaded.has_value());
+    REQUIRE(loaded->manifest().find("T") == nullptr);
+
+    // A fresh set of storage for the same problem. R and J are bindable because the fitting
+    // reads them, which is what makes a refit per bound problem possible at all.
+    auto R2 = create_zero_tensor<double>("R", naux, nbf, nbf);
+    auto J2 = create_zero_tensor<double>("J", naux, naux);
+    auto D2 = create_zero_tensor<double>("D", nbf, nbf);
+    auto C2 = create_zero_tensor<double>("C", nbf, nbf);
+    R2      = R;
+    J2      = J;
+    D2      = D;
+
+    loaded->bind("R", R2, "J", J2, "D", D2, "C", C2);
+
+    auto defaults = cg::PassManager::create_default();
+    loaded->apply(defaults);
+    loaded->execute();
+
+    // The reference: the four-index contraction done directly, which the loaded graph never
+    // forms and still reproduces.
+    auto      expected = create_zero_tensor<double>("expected", nbf, nbf);
+    cg::Graph reference("reference");
+    {
+        cg::CaptureGuard const guard(reference);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &expected, T, D);
+    }
+    reference.execute();
+
+    for (std::size_t i = 0; i < nbf; ++i) {
+        for (std::size_t j = 0; j < nbf; ++j) {
+            INFO("i=" << i << " j=" << j);
+            REQUIRE(std::abs(C2(i, j) - expected(i, j)) < 1e-9);
+        }
+    }
+
+    // The accuracy statement travelled with the structure, because it says what the graph
+    // computes and no machine could recover it from the node list.
+    REQUIRE(loaded->approximations().size() == 1);
+    REQUIRE(loaded->approximations()[0].pass_name == "MetricFit");
+    REQUIRE(loaded->approximations()[0].bound == Catch::Approx(1e-5));
 }

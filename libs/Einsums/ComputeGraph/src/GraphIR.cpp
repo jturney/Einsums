@@ -685,6 +685,61 @@ Value write_node(Node const &node, std::size_t dense_id, Graph const &graph, Gra
     }
     out.set("dtype", Value{std::string(scalar_type_name(dtype))});
     out.set("rank", Value{static_cast<std::int64_t>(rank)});
+
+    // A control-flow node's own operand lists are EMPTY: its body is captured after the node
+    // exists, so what it touches is known only through the subtree. The parent frame therefore
+    // has to be told about the buffers the body names BEFORE the fragment is written, because
+    // a fragment tensor is matched to an enclosing frame by address and a frame that has not
+    // interned the buffer yet reports no match. The body then writes its own tensor record,
+    // the load allocates a second buffer for it, and the two ends of one boundary quietly
+    // become two tensors.
+    //
+    // It went unnoticed while every such buffer happened to be mentioned by an EARLIER node.
+    // A setup node holding a fitting is the case where that cannot be true: it is spliced at
+    // the front precisely so it runs before the consumers that mention what it produces.
+    //
+    // Walked in program order over the subtree's nodes rather than over its tensor map, which
+    // is unordered: the dense numbering is what makes two captures of one program produce
+    // byte-identical files, so anything that feeds it has to be ordered.
+    if (is_control_flow(node.kind)) {
+        // NOLINTNEXTLINE(misc-no-recursion): control-flow bodies nest, so the walk over them does too.
+        std::function<void(Graph const &)> intern_boundary = [&](Graph const &sub) {
+            for (auto const &inner : sub.nodes()) {
+                auto const note = [&](TensorId tid) {
+                    TensorHandle const *handle = sub.find_tensor(tid);
+                    if (handle == nullptr || handle->tensor_ptr == nullptr) {
+                        return;
+                    }
+                    if (TensorId const outer = graph.find_tensor_id_by_ptr(handle->tensor_ptr); outer != 0) {
+                        frame.intern(outer);
+                    }
+                };
+                for (auto const tid : inner.inputs) {
+                    note(tid);
+                }
+                for (auto const tid : inner.outputs) {
+                    note(tid);
+                }
+            }
+            sub.for_each_subgraph(intern_boundary);
+        };
+        // This node's own bodies, taken from its descriptor: for_each_subgraph would hand over
+        // every sub-graph in the parent, and interning another node's boundary here would put
+        // tensors into the dense order in a position nothing mentions them at.
+        if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data); loop != nullptr && loop->body) {
+            intern_boundary(*loop->body);
+        } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data); cond != nullptr) {
+            if (cond->then_branch) {
+                intern_boundary(*cond->then_branch);
+            }
+            if (cond->else_branch) {
+                intern_boundary(*cond->else_branch);
+            }
+        } else if (auto const *setup = std::get_if<SetupDescriptor>(&node.op_data); setup != nullptr && setup->body) {
+            intern_boundary(*setup->body);
+        }
+    }
+
     out.set("descriptor", write_descriptor(node, graph, root, frame));
     return Value{std::move(out)};
 }
@@ -2342,8 +2397,24 @@ Graph build_graph(IrDocument const &document, SpaceRegistry &registry) {
         }
     }
     if (contract.size() != document.manifest.size()) {
-        throw BuildFailure(
-            fmt::format("the rebuilt graph has {} interface tensors but the file declares {}", contract.size(), document.manifest.size()));
+        // Naming the difference, not just counting it. A mismatch here means the node list and
+        // the interface describe different programs, and the only actionable part of that is
+        // WHICH tensor appeared or vanished; a bare count sends the reader back to diff two
+        // manifests by hand, which is what this check already did for them.
+        std::vector<std::string> declared;
+        for (auto const &entry : document.manifest) {
+            declared.push_back(entry.name);
+        }
+        std::vector<std::string> derived = contract.names();
+        std::ranges::sort(declared);
+        std::ranges::sort(derived);
+        std::vector<std::string> only_derived;
+        std::ranges::set_difference(derived, declared, std::back_inserter(only_derived));
+        std::vector<std::string> only_declared;
+        std::ranges::set_difference(declared, derived, std::back_inserter(only_declared));
+        throw BuildFailure(fmt::format(
+            "the rebuilt graph has {} interface tensors but the file declares {}. Only in the rebuilt graph: [{}]. Only in the file: [{}]",
+            contract.size(), document.manifest.size(), fmt::join(only_derived, ", "), fmt::join(only_declared, ", ")));
     }
 
     return graph;

@@ -7,8 +7,6 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/MetricFitFactorization.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
-#include <Einsums/ComputeGraph/Optimizer.hpp>
-#include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
@@ -174,12 +172,15 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
             einsum("Q,P ; P,m,n -> Q,m,n", b, half, *three_index);
         }
 
-        // The workspace is the body's own, and the body is not a graph the caller applies
-        // passes to. Materializing it here is the provider taking responsibility for the
-        // storage it declared rather than assuming someone else will walk in and do it.
-        PassManager fitting;
-        fitting.add<passes::Materialization>();
-        body.apply(fitting);
+        // The workspace is declared and left DEFERRED. Materializing it here would look like
+        // the provider taking responsibility for the storage it declared, and it was: a
+        // Materialize node carries an allocating closure, a closure is the one thing a file
+        // cannot hold, and allocation is a resource decision the design re-derives on load
+        // rather than saving. Doing it at capture baked a resource decision into structure and
+        // left the fitting unsaveable, which is the one thing a factorization exists to avoid.
+        //
+        // The resource phase places it now, inside this body, where a fitting's scratch
+        // belongs. See passes::Materialization.
     };
 
     return plan;
