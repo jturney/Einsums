@@ -27,9 +27,9 @@
 #include <variant>
 #include <vector>
 
-// Part 3.7 of the algebraic-optimizer design: symbolic extents. ``rebind`` rejects any
-// dim mismatch, which is right for a same-problem pointer swap and fatal for the
-// cross-problem reuse a saved graph exists to allow. The manifest therefore declares each
+// Symbolic extents. ``rebind`` rejects any dim mismatch, which is right for a
+// same-problem pointer swap and fatal for the cross-problem reuse a saved graph
+// exists to allow. The manifest therefore declares each
 // dimension as literal, as a symbol, or as ragged over a space; ``bind`` solves the
 // symbols from the tensors it is handed, checks every slot that names one, re-derives the
 // graph's own intermediates, and only then lets the repointing stand.
@@ -393,7 +393,7 @@ void Graph::apply_space_shape(TensorId id, ResolvedSpaceShape const &resolved) {
         return;
     }
 
-    bool const every_axis = std::none_of(resolved.spaces.begin(), resolved.spaces.end(), [](SpaceId s) { return !s.valid(); });
+    bool const every_axis = std::ranges::all_of(resolved.spaces, [](SpaceId s) { return s.valid(); });
     if (every_axis) {
         annotate_spaces(id, resolved.spaces);
     } else {
@@ -549,11 +549,26 @@ void Graph::resize_derived_extent(TensorId id, std::vector<std::size_t> const &d
         return;
     }
 
-    if (handle->alloc_state != AllocState::Deferred || !handle->resize_deferred_fn) {
+    // Two separate reasons a tensor cannot take a new shape, and they call for opposite
+    // responses: an eagerly created tensor is the caller's own choice about WHEN to
+    // allocate, while a missing hook is a hole in the declare_* that made this tensor and
+    // nothing the caller did can work around it. Reporting both as "already materialized"
+    // is what sent a day of the symbolic-extent work looking at allocation timing for a
+    // runtime-rank intermediate whose deferred state was perfect and whose hook was absent.
+    if (handle->alloc_state != AllocState::Deferred) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "Graph '{}': binding these extents makes intermediate '{}' (written by {}) [{}] instead of [{}], but "
                                 "its storage is already materialized and cannot be reshaped. Re-bind before materialization, or "
                                 "create the graph with deferred intermediates (Graph::scratch)",
+                                _name, handle->name, producer, fmt::join(derived, ", "), fmt::join(handle->dims, ", "));
+    }
+    if (!handle->resize_deferred_fn) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "Graph '{}': binding these extents makes intermediate '{}' (written by {}) [{}] instead of [{}]. Its "
+                                "storage is deferred, so the shape could move, but the handle carries no resize hook and nothing here "
+                                "can reshape it. A hook is installed by whichever declare_* created the tensor; one that registers a "
+                                "deferred handle without a resize_deferred_fn produces a tensor whose dim symbols are read and then "
+                                "cannot be acted on",
                                 _name, handle->name, producer, fmt::join(derived, ", "), fmt::join(handle->dims, ", "));
     }
 

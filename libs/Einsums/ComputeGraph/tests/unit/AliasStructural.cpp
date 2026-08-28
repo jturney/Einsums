@@ -54,6 +54,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -162,18 +163,14 @@ size_t widest_level(cg::Graph &graph) {
 
 // => tier 1: every shape the pointer derivation can describe <= //
 //
-// Every case here records its views with ``cg::view_runtime``, and that is a
-// statement about where the pointer derivation is DEFINED rather than a
-// stylistic choice. The runtime-rank recorder offsets its capture-time
-// placeholder by the slice's constant bounds, so the registration-time geometry
-// the pointer path reads really is the slice's geometry. The typed
-// ``cg::view`` recorder deliberately does not: its placeholder keeps the
-// PARENT's base pointer (see `record_typed_view`), so re-deriving a typed view's
-// region from addresses reads a placeholder rather than a slice, and the two
-// derivations would be compared on data only one of them can trust. That gap is
-// pinned by its own case at the end of this file, where it is also shown to be
-// harmless: the hazard scan takes the ``View`` node's box in preference to the
-// handle's, and the node's box is the structural one.
+// Most cases here record their views with ``cg::view_runtime``, which is
+// historical rather than required: the runtime-rank recorder was for a while the
+// only one that offset its capture-time placeholder by the slice's constant
+// bounds, so it was the only one whose registration-time geometry really was the
+// slice's geometry. The typed ``cg::view`` recorder now does the same, so both
+// recorders present the pointer derivation with a region rather than with the
+// slice's extents at the parent's address, and the last case in this file asserts
+// the two agree on one shape recorded both ways.
 
 TEST_CASE("structural and pointer derivations agree on sliced views", "[ComputeGraph][Alias]") {
     constexpr size_t      n = 8, chains = 4;
@@ -789,22 +786,22 @@ TEST_CASE("a declared aliasing bind installs the hazard link", "[ComputeGraph][A
     CHECK(widest_level(graph) == 1);
 }
 
-// => the typed recorder's placeholder, and why the gap is harmless <= //
+// => the typed recorder registers where its slice actually is <= //
 
-TEST_CASE("a typed view's box comes from its node, not its registration address", "[ComputeGraph][Alias]") {
-    // ``cg::view`` (the compile-time-rank recorder) emplaces its capture-time
-    // placeholder at the PARENT's base pointer with the slice's extents, so the
-    // registration-time geometry on the handle is not the slice's geometry. That
-    // makes the pointer derivation undefined on such a handle, which is why the
-    // equality tier above records with ``cg::view_runtime`` instead.
+TEST_CASE("a typed view registers at its own address, not its parent's", "[ComputeGraph][Alias]") {
+    // ``cg::view`` (the compile-time-rank recorder) used to emplace its
+    // capture-time placeholder at the PARENT's base pointer while giving it the
+    // SLICE's extents, so the geometry on the handle described no real region:
+    // every slice of one parent registered at the same address. Nothing consulted
+    // it - the hazard scan reads a ``View`` node's box from the DESCRIPTOR and
+    // prefers it over anything on the handle - so the gap was harmless and was
+    // carried as a pinned observation rather than a bug.
     //
-    // It is harmless, and this is the case that says so rather than leaving it
-    // to be rediscovered. The hazard scan reads a ``View`` node's box from the
-    // DESCRIPTOR - through the same structural derivation this task added - and
-    // prefers it over anything on the handle, so the placeholder's address is
-    // never consulted for a tensor a node describes. Disjoint typed slices stay
-    // disjoint, which they would not if the addresses were believed: all four
-    // placeholders sit at the parent's base.
+    // It is fixed rather than pinned now, because a region rewrite that reaches a
+    // handle would inherit the lie, and "harmless as long as nobody asks" is not a
+    // property a new consumer preserves. The recorder applies the slice's constant
+    // offset, so this case asserts the placeholders are DISTINCT and that both
+    // derivations agree on a shape the two recorders record identically.
     constexpr size_t n = 8, chains = 4;
     auto             parent = create_zero_tensor<double>("parent", n, n);
 
@@ -820,13 +817,19 @@ TEST_CASE("a typed view's box comes from its node, not its registration address"
     }
     CHECK(widest_level(graph) == chains);
 
-    // The placeholder addresses really do coincide with the parent's, which is
-    // the premise the paragraph above rests on.
-    size_t at_parent_base = 0;
+    // Four slices, four addresses. Column-major storage puts row-slice s at the
+    // parent's base + 2*s elements, which is the offset the recorder applies.
+    std::set<void const *> addresses;
     for (auto const &[id, handle] : graph.tensors_map()) {
-        if (handle.aliases != 0 && handle.data_ptr == static_cast<void const *>(parent.data())) {
-            ++at_parent_base;
+        if (handle.aliases != 0) {
+            addresses.insert(handle.data_ptr);
         }
     }
-    CHECK(at_parent_base == chains);
+    CHECK(addresses.size() == chains);
+    CHECK(addresses.count(static_cast<void const *>(parent.data())) == 1); // slice 0 begins at the base
+
+    // And the two derivations agree, which they could not while every slice
+    // registered on top of every other.
+    require_derivations_agree(graph);
+    require_schedules_agree(graph);
 }

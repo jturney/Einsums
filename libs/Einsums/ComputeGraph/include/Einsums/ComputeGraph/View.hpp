@@ -191,13 +191,32 @@ TensorView<T, Rank> &record_typed_view(ParentT &parent, std::vector<ViewAxis> co
             return static_cast<size_t>(ax.hi.const_value() - ax.lo.const_value());
         return parent.dim(p);
     };
-    Stride<Rank> parent_strides;
-    Dim<Rank>    parent_dims;
+    // Offset the placeholder's base pointer by the slice's constant bounds, exactly as
+    // ``view_runtime`` does. Without it the registration-time geometry on the handle is the
+    // slice's EXTENTS at the PARENT's address, which is not any real region: every slice of
+    // one parent registers at the same base, so a derivation that reads addresses sees them
+    // as overlapping when they are disjoint. The hazard scan takes the ``View`` node's box in
+    // preference to the handle's and so never asked, which is why this was harmless in
+    // practice and wrong on paper; a region rewrite that consults a handle would inherit the
+    // lie, so the two recorders agree here instead.
+    std::ptrdiff_t ph_offset = 0;
+    Stride<Rank>   parent_strides;
+    Dim<Rank>      parent_dims;
     for (size_t i = 0; i < Rank; ++i) {
-        parent_dims[i]    = placeholder_dim(i, parent_axis(i));
-        parent_strides[i] = parent.stride(parent_axis(i));
+        size_t const p = parent_axis(i);
+        if (auto const &ax = axis_vec[i]; ax.kind != ViewAxis::Kind::Full && ax.lo.is_const()) {
+            ph_offset += ax.lo.const_value() * static_cast<std::ptrdiff_t>(parent.stride(p));
+        }
+        parent_dims[i]    = placeholder_dim(i, p);
+        parent_strides[i] = parent.stride(p);
     }
-    holder->view.emplace(parent.data(), parent_dims, parent_strides);
+    // A deferred parent has no base to offset from, and nullptr + n is undefined rather than
+    // merely useless. Such a placeholder keeps the null base the executor re-emplaces anyway.
+    T *ph_base = parent.data();
+    if (ph_base != nullptr) {
+        ph_base += ph_offset;
+    }
+    holder->view.emplace(ph_base, parent_dims, parent_strides);
 
     auto *graph = ctx.graph();
     if (graph == nullptr)
@@ -917,9 +936,9 @@ void write_param(std::string name, T &source) {
 /// parameter writes is scheduled correctly; a literal and a callback name
 /// nothing and are unordered against anything.
 ///
-/// This is Part 3.3 of the design applied to the last of its four closures: a
-/// runtime scalar is a literal, a named parameter, or a callback, with only the
-/// last unserializable. @c OpKind::WriteParam is a reconstructible KIND either
+/// This is the named-callable rule applied to the last of the four closures a
+/// graph can carry: a runtime scalar is a literal, a named parameter, or a
+/// callback, with only the last unserializable. @c OpKind::WriteParam is a reconstructible KIND either
 /// way, and @ref Graph::serializability_report names a callback-arm node
 /// individually.
 inline void write_param(std::string name, BoundExpr source) {
