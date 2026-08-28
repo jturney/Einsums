@@ -8,7 +8,7 @@
 ``Graph.link_alias_storage`` recovers which tensors share storage from
 registration-time data pointers and strides. A graph read from a file has none,
 so the same relation has to be derivable from ``View`` nodes and manifest
-declarations alone - and the design (Part 3.5) asks for that equivalence to be
+declarations alone - and that equivalence is to be
 *tested over the differential fuzz corpus* rather than hoped for, because both
 of the alias bugs this module has shipped (the full-cover one and the 32-hop
 ``resolve_alias`` cap) were subtly incomplete relations that surfaced as a race

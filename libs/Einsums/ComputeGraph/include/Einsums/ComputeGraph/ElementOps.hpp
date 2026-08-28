@@ -55,7 +55,7 @@
  * existing ``cg::custom`` overloads are untouched. The mechanism proved here is
  * the one that generalizes when that client appears.
  *
- * @see DESIGN-algebraic-optimizer.md, Part 3.3 and Part 9 item 2
+ * @see PredExpr.hpp for the same treatment of a branch condition
  */
 
 #include <Einsums/Config.hpp>

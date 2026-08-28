@@ -529,7 +529,7 @@ void Graph::adopt(std::function<void()> deleter) {
 ///       content hash covers", and the answer is deliberately no for most of it:
 ///       thread widths, admission priorities, stream ids, timings, estimated
 ///       flops and bytes, and the planned thread count are all tuning artifacts
-///       of one machine, which is the design's Part 3.6 rule made concrete.
+///       of one machine, which is the structure/tuning rule made concrete.
 ///       ``GraphIR.cpp`` states the verdict member by member; keep the two in
 ///       step when adding one.
 void Graph::move_members_from(Graph &&other) noexcept {

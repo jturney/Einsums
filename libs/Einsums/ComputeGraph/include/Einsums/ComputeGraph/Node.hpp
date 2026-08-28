@@ -1039,7 +1039,7 @@ build_letter_spaces(std::span<LetterSpaceOperand const> operands, SpaceRegistry 
  * std::monostate.
  */
 /// New alternatives are APPENDED, never inserted. The variant index is not a
-/// serialized property today - the IR of the design's Part 3.8 writes
+/// serialized property today - the round-trip IR writes
 /// descriptors by NAME, precisely so adding one in the middle cannot silently
 /// reinterpret an old file - but keeping the order append-only costs nothing
 /// and keeps every debug dump that prints ``op_data.index()`` comparable

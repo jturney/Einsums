@@ -139,7 +139,7 @@
  * raw scalar goes through @ref TensorHandle::tensor_ptr, read on every call so
  * that repointing the handle moves the write.
  *
- * @see DESIGN-algebraic-optimizer.md, Part 3.2 and Part 9 item 1
+ * @see GraphIR.hpp, whose loader rebuilds every node through this same point
  */
 
 #include <Einsums/Config.hpp>

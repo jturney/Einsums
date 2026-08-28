@@ -817,7 +817,7 @@ TEST_CASE("SaveLoad - a batched form refuses to save and says why", "[ComputeGra
     // refusal has to carry it: a grouped batch partitions its members by SHAPE at capture
     // and reorders the operand lists to match, so its descriptor is a function of one
     // problem's extents. Saving it would freeze that problem into the file, which is what
-    // Part 3.6's structure/tuning split forbids. Making it saveable means capturing the
+    // the structure/tuning split forbids. Making it saveable means capturing the
     // algebraic form and grouping on load, not teaching the descriptor to serialize itself.
     auto a1 = create_random_tensor<double>("a1", 3, 4);
     auto b1 = create_random_tensor<double>("b1", 4, 5);

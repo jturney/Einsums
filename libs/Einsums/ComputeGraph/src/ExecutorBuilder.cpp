@@ -749,7 +749,7 @@ std::string reconstruction_blocker(Node const &node) {
         // as an oversight and this one is a decision. A grouped batch partitions its members
         // by SHAPE at capture and reorders the operand lists to match, so its descriptor is a
         // function of one problem's extents; saving it would freeze that problem into the
-        // file, which is exactly what the structure/tuning split forbids (Part 3.6: batching
+        // file, which is exactly what the structure/tuning split forbids (batching
         // is never saved, and a grouping chosen on one machine is wrong on another). Making it
         // reconstructible therefore means saving the ALGEBRAIC form and re-grouping on load,
         // not teaching the descriptor to serialize itself.
@@ -816,8 +816,8 @@ std::string reconstruction_blocker(Node const &node) {
             return fmt::format("WriteParam: expected a WriteParamDescriptor, found {}", descriptor_name(node.op_data));
         }
         // The kind's bit is true and this ARM is still not saveable. See the
-        // note on is_reconstructible: a callback is one of the four closures
-        // Part 3.2 inventories, and only the Const and Param arms of the
+        // note on is_reconstructible: a callback is one of the four closures a
+        // node can carry, and only the Const and Param arms of the
         // BoundExpr that replaced it are content a file can carry.
         if (desc->source_expr.has_value() && desc->source_expr->is_callback()) {
             return "WriteParam: callback arm, whose source is a std::function a saved graph cannot hold";

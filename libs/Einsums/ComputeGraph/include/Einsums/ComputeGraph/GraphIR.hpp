@@ -12,7 +12,7 @@
  * @par What this is, and what `to_json` is not
  * ``Graph::to_json`` writes ids, kinds, labels, edges and timings for the
  * profile viewer, and nothing reads it back. This is the round-trip IR of the
- * design's Part 3.8: an exact, versioned, by-name encoding of everything a
+ * an exact, versioned, by-name encoding of everything a
  * graph needs to be rebuilt and executed in another process, and the interchange
  * format an offline optimizer transforms.
  *
@@ -98,13 +98,12 @@
  * has and a file does not - which is exactly why it has to be recorded.
  *
  * Fragments nest, so a loop inside a conditional inside a loop is three levels of
- * the same shape. Milestone D's region dumps are to reuse this shape rather than
- * inventing a second one: a region is a node list plus the tensors it touches
- * plus references to what crosses its boundary, which is what a fragment already
- * is.
+ * the same shape. A region dump reuses this shape rather than inventing a second
+ * one: a region is a node list plus the tensors it touches plus references to
+ * what crosses its boundary, which is what a fragment already is.
  *
  * @par What is saved, and what is deliberately not
- * Structure only, which is Part 3.6's rule made concrete. Saved: nodes,
+ * Structure only. Saved: nodes,
  * descriptors, dataflow edges, slot redirects, the manifest, index-space and
  * symbolic-extent annotations, parameters, named gate-flag arrays, and the
  * schema version. NOT saved, at all: @ref Node::thread_width,
@@ -149,7 +148,7 @@
  * that silently rewrote the node set would make the loaded graph something other
  * than what the file says.
  *
- * @see DESIGN-algebraic-optimizer.md, Part 3.6 and Part 3.8, and Part 9 item 11
+ * @see Graph::serializability_report for what a graph must satisfy to be saved
  * @see Einsums/ComputeGraph/Detail/Json.hpp for the strict document model
  */
 
@@ -170,7 +169,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 /**
  * @brief The schema version this build writes.
  *
- * Semver, and the compatibility policy is Part 3.8's: a newer build loads an
+ * Semver, and the compatibility policy is: a newer build loads an
  * older IR, the reverse is refused with both versions named. A descriptor field
  * may be ADDED (an absent field takes its documented default) but never
  * repurposed; a semantic change is a new field name and a minor bump.

@@ -342,8 +342,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /**
      * @brief Declare that @p child's storage is part of @p parent's.
      *
-     * The manifest-level alias relation of Part 3.5 of the algebraic-optimizer
-     * design, and the only kind that survives a save: an aliasing pair with no
+     * The manifest-level alias relation, and the only kind that survives a save:
+     * an aliasing pair with no
      * ``View`` node recording it exists solely as two addresses that happen to
      * coincide, and a loaded graph has neither. Installs the link immediately
      * (with no box, since a declaration names a buffer and not a region) and
@@ -370,8 +370,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Clears @ref TensorHandle::aliases and @ref TensorHandle::alias_box on every
      * handle and marks the relation stale, so the next @ref link_alias_storage
      * rebuilds it from scratch. Exists so the two derivations can be compared on
-     * the same footing - the equivalence Part 3.5 asks to be tested rather than
-     * hoped for - and so a loader can install a fresh relation over a graph that
+     * the same footing - the equivalence is tested rather than hoped for - and so
+     * a loader can install a fresh relation over a graph that
      * carries a stale one.
      *
      * @note Declarations made through @ref declare_alias SURVIVE, because they
@@ -651,7 +651,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     APIARY_EXPOSE void pin_space_extent(SpaceId space, std::size_t extent);
 
-    // ── Symbolic extents (Part 3.7) ─────────────────────────────────────────
+    // ── Symbolic extents ────────────────────────────────────────────────────
 
     /**
      * @brief Declare which of a tensor's extents a @ref bind may move, and which move together.
@@ -1208,7 +1208,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *       reaches each blocker. The earlier flat version was justified by
      *       Loop and Conditional always blocking on their own closure-shaped
      *       predicates, which made a body unreachable-but-unreported an
-     *       impossibility. Milestone B made both predicates data (@ref PredExpr
+     *       impossibility. Making both predicates data (@ref PredExpr
      *       and @ref BoundExpr), so a clean control-flow node over a body full
      *       of closures now reports clean, and the justification is gone.
      *
@@ -3139,7 +3139,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * address is provable overlap) and incomplete (two genuinely overlapping slices of one
      * parent are not caught). Structural alias reconstruction, which derives the relation
      * from ``View`` nodes and manifest declarations with no address consulted at all, is
-     * Part 3.5 of the design and is what replaces this comparison.
+     * what replaces this comparison; see @ref link_alias_structural.
      *
      * A partial bind is legal, exactly as a partial @ref rebind is: slots not named keep
      * whatever storage they already had. @ref unbound_manifest_entries reports what a

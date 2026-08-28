@@ -1432,8 +1432,8 @@ TEST_CASE("ExecutorBuilder - a rebuilt Trace refuses a non-square operand at exe
 //
 // The first kind whose reconstructible BIT is true while one of its arms is
 // blocked. The tensor arm names a graph scalar and rebuilds; the callback arm
-// holds a std::function, which is one of the four closures Part 3.2 of the
-// design inventories and which Part 3.3's BoundExpr work retires.
+// holds a std::function, which is one of the four closures a node can carry and
+// which the BoundExpr work retires.
 
 TEST_CASE("ExecutorBuilder - a rebuilt WriteParam reads the graph's source, not a captured reference",
           "[ComputeGraph][ExecutorBuilder][WriteParam]") {
@@ -2051,7 +2051,7 @@ TEST_CASE("ExecutorBuilder - a rebuilt named ElementTransform follows a redirect
 
 // ── PredExpr: a conditional and a loop become data ──────────────────────────
 //
-// The three closures Part 3.2 of the design inventoried beside the kernels are
+// The three closures a node can carry beside its kernel are
 // a conditional's predicate, a loop's condition and a write_param's source.
 // All three are BoundExpr-shaped now, so the arm a node holds is what decides
 // whether it can be saved - and a callback arm still runs, unchanged.

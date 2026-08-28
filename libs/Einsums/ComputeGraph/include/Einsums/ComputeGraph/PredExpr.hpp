@@ -36,7 +36,7 @@
  * against it. The counter is loop-private state, so it is spelled as loop-private
  * state.
  *
- * @see DESIGN-algebraic-optimizer.md, Part 3.3 and Part 9 item 2
+ * @see BoundExpr.hpp for the same treatment of a runtime scalar
  */
 
 #include <Einsums/ComputeGraph/BoundExpr.hpp>

@@ -23,8 +23,8 @@
  * loader refuses a document that still has an unconsumed key, naming the key
  * and its path. A field this build does not know about is an error, not a
  * shrug. Additive schema evolution stays possible because the compatibility
- * policy makes the READER responsible for knowing the field (Part 3.8: a newer
- * build loads an older IR, never the reverse), so an unconsumed key genuinely
+ * policy makes the READER responsible for knowing the field (a newer build loads
+ * an older IR, never the reverse), so an unconsumed key genuinely
  * means "this file was written by something this build does not understand".
  *
  * @par The value model
@@ -58,7 +58,7 @@
  * partially populated value. Nesting is capped (@ref ParseOptions::max_depth)
  * so a depth bomb is a diagnostic rather than a stack overflow.
  *
- * @see DESIGN-algebraic-optimizer.md, Part 3.8
+ * @see GraphIR.hpp for the schema this document model carries
  * @see Einsums/ComputeGraph/GraphIR.hpp for the schema written on top of this.
  */
 

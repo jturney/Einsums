@@ -321,7 +321,7 @@ inline std::string_view op_kind_name(OpKind kind) {
  * @return The kind, or an empty optional when nothing is spelled that way.
  *
  * The reverse of @ref op_kind_name, and it exists because the saved-graph IR
- * writes op kinds BY NAME (design Part 3.8): @ref OpKind is a @c std::uint8_t
+ * writes op kinds BY NAME: @ref OpKind is a @c std::uint8_t
  * enum whose members are added in the middle by whoever adds an operation, so a
  * numeric value in a file would silently mean a different operation the next
  * time someone inserts a kind. An unresolvable name is an empty optional rather

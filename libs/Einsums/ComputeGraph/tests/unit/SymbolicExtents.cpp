@@ -7,8 +7,8 @@
 /// @brief Dim symbols, the bind solver, and the rebind staleness they made live.
 ///
 /// ``rebind`` rejects any dim mismatch, which is right for a same-problem pointer swap and
-/// fatal for the cross-problem reuse a saved graph exists to allow. Part 3.7 of the
-/// algebraic-optimizer design answers that with symbols: a dimension is either literal
+/// fatal for the cross-problem reuse a saved graph exists to allow. Dim symbols answer
+/// that: a dimension is either literal
 /// (matched exactly, as before), a symbol every slot naming it must agree on, or ragged
 /// over an index space. ``bind`` solves the symbols, re-derives the graph's own
 /// intermediates from them, and refuses what it cannot honestly do.
