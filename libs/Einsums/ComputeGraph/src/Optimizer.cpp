@@ -128,16 +128,6 @@ std::set<std::string> parse_disabled_passes() {
     return disabled;
 }
 
-/// Per-pass flags are spelled from a pass name at run time, so they have no
-/// descriptor to name; this is the documented dynamic-key escape hatch.
-bool get_pass_flag(std::string const &key, bool default_val) {
-    try {
-        return config::get_dynamic<bool>(key, default_val);
-    } catch (...) {
-        return default_val;
-    }
-}
-
 } // namespace
 
 namespace {
@@ -253,12 +243,50 @@ void check_read_only_phase(Graph const &graph, OptimizerPass const &pass, std::u
 
 } // namespace
 
+PassManager &PassManager::disable(std::string pass_name) {
+    _switches[std::move(pass_name)] = false;
+    return *this;
+}
+
+PassManager &PassManager::enable(std::string pass_name) {
+    _switches[std::move(pass_name)] = true;
+    return *this;
+}
+
 bool PassManager::run(Graph &graph) {
     LabeledSection("PassManager::run({})", graph.name());
 
-    auto       disabled = parse_disabled_passes();
-    bool const analyze  = config::get(option::PassAnalyze);
-    bool const verbose  = config::get(option::PassVerbose);
+    // Two sources of "skip this pass", and the more specific one wins. The option
+    // is what a user types with no rebuild; a switch is what this program said
+    // about this pipeline. A program that called enable() and silently did not get
+    // the pass would be the surprise the whole surface exists to remove.
+    auto const from_option = parse_disabled_passes();
+    auto const is_disabled = [&](std::string const &pass_name) {
+        if (auto const hit = _switches.find(pass_name); hit != _switches.end()) {
+            return !hit->second;
+        }
+        return from_option.count(pass_name) != 0;
+    };
+
+    // Every name either source mentions, so one that matches no pass in this
+    // pipeline can be reported rather than doing nothing in silence.
+    std::set<std::string> unmatched(from_option.begin(), from_option.end());
+    for (auto const &[pass_name, on] : _switches) {
+        unmatched.insert(pass_name);
+    }
+    for (auto const &pass : _passes) {
+        unmatched.erase(pass->name());
+    }
+    _last_unmatched.assign(unmatched.begin(), unmatched.end());
+    _last_skipped.clear();
+    for (auto const &pass_name : _last_unmatched) {
+        EINSUMS_LOG_WARN("PassManager: pass switch '{}' matches no pass in this pipeline, so it does nothing; check the "
+                         "spelling, or whether this build has that pass",
+                         pass_name);
+    }
+
+    bool const analyze = config::get(option::PassAnalyze);
+    bool const verbose = config::get(option::PassVerbose);
 
     // A level nobody set programmatically comes from the option, so a report
     // can be turned on from a command line without editing the program. A
@@ -277,9 +305,12 @@ bool PassManager::run(Graph &graph) {
     // no longer exists and the analysis passes are re-run over the final one.
     bool structure_stale_for_analysis = false;
     for (auto &pass : _passes) {
-        // Check if this pass is disabled
-        if (disabled.count(pass->name())) {
+        if (is_disabled(pass->name())) {
+            _last_skipped.push_back(pass->name());
             EINSUMS_LOG_INFO("PassManager: skipping disabled pass '{}'", pass->name());
+            if (_verbosity >= 1) {
+                fmt::print(stderr, "[PassManager] {}: DISABLED\n", pass->name());
+            }
             continue;
         }
 
@@ -371,7 +402,7 @@ bool PassManager::run(Graph &graph) {
     // restored after every pass and there is no final node set to annotate.
     if (structure_stale_for_analysis && !analyze) {
         for (auto &pass : _passes) {
-            if (pass->phase() != PassPhase::Analysis || disabled.count(pass->name()) != 0) {
+            if (pass->phase() != PassPhase::Analysis || is_disabled(pass->name())) {
                 continue;
             }
             LabeledSection("reanalyze:{}", pass->name());
@@ -394,14 +425,34 @@ PassManager PassManager::create_default() {
     return pm;
 }
 
-PassManager PassManager::filtered_default(std::initializer_list<PassPhase> keep) {
-    PassManager pm;
+void PassManager::populate_filtered(std::initializer_list<PassPhase> keep) {
     for (auto &pass : build_default_passes()) {
         if (std::ranges::find(keep, pass->phase()) != keep.end()) {
-            pm.add(std::move(pass));
+            add(std::move(pass));
         }
     }
+}
+
+PassManager PassManager::filtered_default(std::initializer_list<PassPhase> keep) {
+    PassManager pm;
+    pm.populate_filtered(keep);
     return pm;
+}
+
+void PassManager::populate_analysis() {
+    populate_filtered({PassPhase::Analysis, PassPhase::Diagnostic});
+}
+
+void PassManager::populate_structural() {
+    populate_filtered({PassPhase::StructuralAlgebraic});
+}
+
+void PassManager::populate_resource() {
+    populate_filtered({PassPhase::StructuralResource});
+}
+
+void PassManager::populate_tuning() {
+    populate_filtered({PassPhase::Tuning});
 }
 
 PassManager PassManager::analysis_pass_manager() {
@@ -505,8 +556,35 @@ std::string PassManager::explain() const {
         }
     }
 
-    if (!applied_anything) {
+    if (!applied_anything && _last_skipped.empty() && _last_unmatched.empty()) {
         out.insert(0, "  (no optimizations applied)\n");
+    }
+
+    // A switched-off pass is reported at EVERY verbosity, unlike the skip tally
+    // above. "No optimizations applied" and "the pass that would have applied one
+    // was switched off" look identical in a report that omits this, and the second
+    // is usually a leftover environment variable from the last bisect run.
+    if (!_last_skipped.empty()) {
+        if (!out.empty()) {
+            out += '\n';
+        }
+        out += "  switched off for this run:\n";
+        for (auto const &pass_name : _last_skipped) {
+            out += fmt::format("  - {}\n", pass_name);
+        }
+    }
+
+    // A name that matched nothing is the silent-typo mode, and it is worth more
+    // noise than a skip: the user asked for something that did not happen and
+    // nothing else in the run will say so.
+    if (!_last_unmatched.empty()) {
+        if (!out.empty()) {
+            out += '\n';
+        }
+        out += "  switch names matching no pass in this pipeline:\n";
+        for (auto const &pass_name : _last_unmatched) {
+            out += fmt::format("  - {} (misspelled, or a pass this build does not have)\n", pass_name);
+        }
     }
     return out;
 }

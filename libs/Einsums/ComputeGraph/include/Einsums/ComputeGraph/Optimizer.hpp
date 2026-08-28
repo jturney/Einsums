@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -448,6 +449,72 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     }
 
     /**
+     * @brief Switch one pass off by name, without removing it from the pipeline.
+     *
+     * The programmatic half of ``einsums:pass:disable``. Both exist because they
+     * answer to different people: the option is what a user reaches for from a
+     * command line with no rebuild, and this is what a driver reaches for when it
+     * has to run the same pipeline N times with a different pass switched off each
+     * time. A driver that had only the option would have to mutate process-global
+     * configuration to do its job.
+     *
+     * The name is the pass's @ref OptimizerPass::name, and it need not be in the
+     * pipeline yet: switches are consulted at @ref run, so disabling before
+     * @ref populate_default works. A name that still matches no pass when
+     * ``run()`` finishes is REPORTED through @ref explain rather than ignored -
+     * a mistyped pass name that silently does nothing is the failure mode this
+     * whole surface exists to avoid.
+     *
+     * @param[in] pass_name The pass to switch off.
+     * @return Reference to this PassManager, for chaining.
+     *
+     * @code
+     * pm.disable("CSE").disable("Reorder");
+     * @endcode
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE APIARY_RVP(reference_internal) PassManager &disable(std::string pass_name);
+
+    /**
+     * @brief Switch one pass back on, overriding ``einsums:pass:disable``.
+     *
+     * Undoes a @ref disable, and also overrides the option: an explicit call here
+     * beats an environment variable, because the more specific statement about
+     * this pipeline should win, and a program that asked for a pass by name and
+     * silently did not get it is the surprise this surface is meant to remove.
+     *
+     * @param[in] pass_name The pass to switch on.
+     * @return Reference to this PassManager, for chaining.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE APIARY_RVP(reference_internal) PassManager &enable(std::string pass_name);
+
+    /**
+     * @brief The passes the last @ref run actually skipped, in pipeline order.
+     *
+     * Empty before the first run, and empty on a run that skipped nothing.
+     * Reports what HAPPENED rather than what was requested, so a name in
+     * ``einsums:pass:disable`` that matched no pass does not appear here; see
+     * @ref unmatched_switches for those.
+     *
+     * @return The skipped passes' names.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::string> disabled_passes() const { return _last_skipped; }
+
+    /**
+     * @brief Switch names, from either source, that matched no pass in the pipeline.
+     *
+     * A mistyped name is indistinguishable from a correctly typed one for a pass
+     * this build does not have, and both produce a pipeline that quietly did not
+     * do what was asked. Sorted, so the report is diffable.
+     *
+     * @return The unmatched names.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::string> unmatched_switches() const { return _last_unmatched; }
+
+    /**
      * @brief Set introspection verbosity for every pass in the pipeline.
      *
      * Propagates @p level to all currently-registered passes and to any added
@@ -643,7 +710,43 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     APIARY_EXPOSE void populate_default();
 
+    /// @name In-place phase population, for the Python binding
+    ///
+    /// The four static factories above return a @ref PassManager by value, which a
+    /// language without move semantics cannot receive: the class is deliberately
+    /// NOCOPY/NOMOVE on the binding side. These do the same job in place, exactly
+    /// as @ref populate_default does for @ref create_default, and
+    /// ``einsums.graph`` wraps each one as ``<phase>_pass_manager()``.
+    ///
+    /// This matters more than the symmetry suggests. A saved graph's documented
+    /// load path is "run the resource phase, then the tuning phase", and until
+    /// these existed a Python caller could only run the whole default pipeline -
+    /// which re-runs the structural-algebraic phase a load is specified NOT to
+    /// re-run. Each appends, so a manager may be built from more than one phase.
+    /// @{
+
+    /// @brief Append the read-only passes. @see analysis_pass_manager
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE void populate_analysis();
+
+    /// @brief Append the machine-independent rewrites. @see structural_pass_manager
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE void populate_structural();
+
+    /// @brief Append the machine-dependent node-set changes. @see resource_pass_manager
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE void populate_resource();
+
+    /// @brief Append the schedule, memory and batching passes. @see tuning_pass_manager
+    /// @versionadded{2.0.0}
+    APIARY_EXPOSE void populate_tuning();
+    /// @}
+
   private:
+    /// Build the default pass list and append the phases in @p keep, preserving
+    /// their relative order. The in-place counterpart of @ref filtered_default.
+    void populate_filtered(std::initializer_list<PassPhase> keep);
+
     /**
      * @brief Construct the canonical pass list, once, for every consumer of it.
      *
@@ -660,6 +763,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     std::vector<std::shared_ptr<OptimizerPass>> _passes;
     int                                         _verbosity{0};
+
+    /// Per-pass switches set through @ref disable / @ref enable: ``false`` is off,
+    /// ``true`` is on and overriding ``einsums:pass:disable``. Ordered rather than
+    /// hashed so the report is the same on every run.
+    std::map<std::string, bool> _switches;
+
+    /// What the last @ref run skipped, and which switch names matched nothing.
+    /// Written by ``run()``, read by @ref explain, which is const.
+    std::vector<std::string> _last_skipped;
+    std::vector<std::string> _last_unmatched;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

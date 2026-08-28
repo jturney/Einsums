@@ -63,6 +63,65 @@ def default_pass_manager():
     return pm
 
 
+def analysis_pass_manager():
+    """Return a PassManager holding only the read-only passes.
+
+    Analysis and diagnostic passes, in their default-pipeline order. Running
+    it changes nothing an executor can observe, so it is safe on a graph in
+    any state, including one just loaded from a file and not yet re-planned.
+
+    Mirrors ``cg::PassManager::analysis_pass_manager()``; built in place for
+    the same reason ``default_pass_manager`` is.
+    """
+    pm = _core().PassManager()
+    pm.populate_analysis()
+    return pm
+
+
+def structural_pass_manager():
+    """Return a PassManager holding only the machine-independent rewrites.
+
+    This is the phase whose output a saved graph persists, so it is what to
+    run before ``save_graph`` and what a load deliberately does *not* re-run.
+
+    Mirrors ``cg::PassManager::structural_pass_manager()``.
+    """
+    pm = _core().PassManager()
+    pm.populate_structural()
+    return pm
+
+
+def resource_pass_manager():
+    """Return a PassManager holding only the machine-dependent node-set changes.
+
+    Tiling, GPU placement, distribution planning, slicing and SUMMA expansion.
+    Never saved, always re-derived, so this and ``tuning_pass_manager`` are
+    the two a caller runs over a loaded graph::
+
+        g = cg.load_graph("ccsd.eig.json")
+        cg.bind(g, {"t2": t2, "fock": f})
+        g.apply(cg.resource_pass_manager())
+        g.apply(cg.tuning_pass_manager())
+        g.execute()
+
+    Mirrors ``cg::PassManager::resource_pass_manager()``.
+    """
+    pm = _core().PassManager()
+    pm.populate_resource()
+    return pm
+
+
+def tuning_pass_manager():
+    """Return a PassManager holding only the schedule, memory and batching passes.
+
+    Mirrors ``cg::PassManager::tuning_pass_manager()``. See
+    ``resource_pass_manager`` for the load path the two belong to.
+    """
+    pm = _core().PassManager()
+    pm.populate_tuning()
+    return pm
+
+
 # Python-side stack of graphs currently being captured. The C++
 # CaptureContext owns the authoritative capture state, but its ``graph()``
 # accessor isn't bound to Python. Operator helpers in
