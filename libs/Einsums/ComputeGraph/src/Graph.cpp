@@ -587,6 +587,7 @@ void Graph::move_members_from(Graph &&other) noexcept {
     _last_optimize_report  = std::move(other._last_optimize_report);
     _analysis_version      = other._analysis_version;
     _structure_version     = other._structure_version;
+    _structural_passes     = std::move(other._structural_passes);
     _usage_version         = other._usage_version;
     _usage                 = std::move(other._usage);
     // The widths themselves ride along inside _nodes, so the count they were
@@ -1638,6 +1639,16 @@ SpaceRegistry &Graph::space_registry() const noexcept {
 
 void Graph::set_space_registry(SpaceRegistry &registry) noexcept {
     _space_registry = &registry;
+}
+
+void Graph::note_structural_pass(std::string pass_name) {
+    // Once per pass, however many times it ran. The list says what shaped this graph; a count
+    // of applies would say something about the caller's pipeline instead, and the two get
+    // confused the moment anyone applies a manager twice.
+    if (std::ranges::find(_structural_passes, pass_name) != _structural_passes.end()) {
+        return;
+    }
+    _structural_passes.push_back(std::move(pass_name));
 }
 
 void Graph::annotate_tag(TensorId id, ProvenanceTag tag) {

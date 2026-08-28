@@ -1722,6 +1722,37 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void note_structural_change() { _structure_version++; }
 
     /**
+     * @brief Record that a structural-algebraic pass rewrote this graph.
+     *
+     * The saved form is whatever the structural-algebraic phase produced, so "which passes
+     * produced it" is the first question asked of a file whose numbers turn out wrong, and
+     * until this existed nothing in the library could answer it: the provenance block took the
+     * pass list from whoever called ``save_graph``, which is to say from someone who had to
+     * remember.
+     *
+     * Called by ``PassManager::run`` for each pass in that phase that reports a modification.
+     * Order is the order they ran, and a pass that ran twice and changed something twice is
+     * recorded once: the list says what shaped this graph, not how many times.
+     *
+     * Provenance is DATA. Nothing reads this back and acts on it - a load does not re-run a
+     * named pass, and does not refuse a graph because of what is in here.
+     *
+     * @param[in] pass_name The pass that modified this graph.
+     * @versionadded{2.0.0}
+     */
+    void note_structural_pass(std::string pass_name);
+
+    /**
+     * @brief The structural-algebraic passes that have rewritten this graph, in order.
+     * @return The names, empty on a graph nothing has rewritten.
+     *
+     * Survives a save and a load, so a graph loaded from a file reports what shaped it before
+     * it was written rather than starting blank.
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::string> const &structural_passes() const noexcept { return _structural_passes; }
+
+    /**
      * @brief Threads the per-node widths on this graph were planned against.
      *
      * A width is chosen for one machine at one moment: the planner divides a
@@ -4197,6 +4228,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     std::uint64_t _analysis_version{0};
     /// Node-set counter for the pass phase rule. @see structure_version
     std::uint64_t _structure_version{0};
+
+    /// Structural-algebraic passes that rewrote this graph, in the order they did. @see note_structural_pass
+    std::vector<std::string> _structural_passes;
     /// Version _usage was built at (UINT64_MAX = never built).
     std::uint64_t _usage_version{std::numeric_limits<std::uint64_t>::max()};
     UsageAnalysis _usage;

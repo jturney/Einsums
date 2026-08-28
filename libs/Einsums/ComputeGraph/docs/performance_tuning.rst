@@ -47,7 +47,7 @@ Disable specific passes via runtime config:
 
    ./my_program --einsums:pass:disable "ContractionPlanning,GEMMBatching"
 
-Or in code:
+Or in code, either by building a pipeline that omits them:
 
 .. code-block:: cpp
 
@@ -58,6 +58,26 @@ Or in code:
    pm.add<cg::passes::Materialization>();
    // Omit ContractionPlanning, GEMMBatching, etc.
    graph.apply(pm);
+
+or by switching one off in the canonical pipeline:
+
+.. code-block:: cpp
+
+   auto pm = cg::PassManager::create_default();
+   pm.disable("GEMMBatching");
+   graph.apply(pm);
+
+The second form is what a bisect driver wants: it runs the same pipeline once
+per pass with a different one switched off each time, and building a bespoke
+manager per trial would change more than the one variable under test.
+``enable(name)`` switches a pass back on and overrides
+``--einsums:pass:disable``, so a program that names a pass is not silently
+overruled by a shell variable left over from an earlier run.
+
+Switches are consulted at ``run()``, so a pass may be switched off before it is
+added. A switch naming no pass in the pipeline is reported through ``explain()``
+and logged as a warning rather than quietly doing nothing, which is the failure
+mode a misspelled pass name would otherwise have.
 
 Verbose Pass Logging
 ---------------------

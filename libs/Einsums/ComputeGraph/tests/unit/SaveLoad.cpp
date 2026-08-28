@@ -30,6 +30,7 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/GraphIR.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/TensorUtilities/CreateIdentity.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -899,4 +900,68 @@ TEST_CASE("SaveLoad - a load resolves spaces against a registry the caller owns"
     // validate_graph_ir_string takes one too, for the same reason.
     CHECK_FALSE(cg::validate_graph_ir_string(text).has_value());
     CHECK(cg::validate_graph_ir_string(text, mine).has_value());
+}
+
+TEST_CASE("a save records the structural passes that shaped the graph", "[ComputeGraph][SaveLoad][Provenance]") {
+    // The provenance block used to take its pass list from whoever called save_graph, which
+    // meant it was accurate exactly as often as someone remembered to fill it in - and the
+    // block exists to answer "what shaped this file" for a graph whose numbers turn out wrong,
+    // which is the moment nobody has that to hand.
+    auto A     = create_random_tensor<double>("A", 4, 5);
+    auto delta = create_identity_tensor<double>("delta", 5, 5);
+    auto C     = create_zero_tensor<double>("C", 4, 5);
+
+    cg::Graph graph("recorded");
+    graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, delta);
+    }
+    CHECK(graph.structural_passes().empty()); // nothing has run yet
+
+    cg::PassManager pm;
+    pm.add(std::make_shared<cg::passes::DeltaElimination>());
+    REQUIRE(graph.apply(pm));
+
+    REQUIRE(graph.structural_passes().size() == 1);
+    CHECK(graph.structural_passes()[0] == "DeltaElimination");
+
+    // Applying again records nothing new: the list says what shaped the graph, not how many
+    // times a caller ran a manager.
+    cg::PassManager again;
+    again.add(std::make_shared<cg::passes::DeltaElimination>());
+    graph.apply(again);
+    CHECK(graph.structural_passes().size() == 1);
+
+    auto const text = cg::save_graph_string(graph);
+    REQUIRE(text.has_value());
+    CHECK(text->find("DeltaElimination") != std::string::npos);
+
+    // And it survives the round trip, so a load-optimize-resave does not silently drop the
+    // history of everything that shaped the file the first time.
+    auto loaded = cg::load_graph_string(*text);
+    REQUIRE(loaded.has_value());
+    REQUIRE(loaded->structural_passes().size() == 1);
+    CHECK(loaded->structural_passes()[0] == "DeltaElimination");
+}
+
+TEST_CASE("a caller-supplied pass list still wins", "[ComputeGraph][SaveLoad][Provenance]") {
+    // A tool assembling a file from pieces knows things the graph does not, so an explicit list
+    // overrides the recorded one rather than being merged with it: a merge would produce a
+    // history that is neither what the tool said nor what happened.
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 5);
+    auto C = create_zero_tensor<double>("C", 4, 5);
+
+    cg::Graph graph("supplied");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+
+    cg::SaveOptions options;
+    options.structural_passes = {"SomeOfflineOptimizer"};
+    auto const text           = cg::save_graph_string(graph, options);
+    REQUIRE(text.has_value());
+    CHECK(text->find("SomeOfflineOptimizer") != std::string::npos);
 }

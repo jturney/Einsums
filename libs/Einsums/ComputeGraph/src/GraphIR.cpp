@@ -241,8 +241,13 @@ struct IrFragment {
 using GateFlagTable = std::unordered_map<std::string, std::shared_ptr<std::vector<std::uint8_t>>>;
 
 struct IrDocument {
-    std::string                                       version;
-    std::string                                       name;
+    std::string version;
+    std::string name;
+    /// The provenance block's pass list. CARRIED, never acted on: a load does not re-run one
+    /// of these, and does not refuse a graph because of what is in the list. It is put back on
+    /// the loaded graph so a load, further optimization and a re-save do not silently drop the
+    /// history of everything that shaped the file in the first place.
+    std::vector<std::string>                          structural_passes;
     GateFlagTable                                     gate_buffers;
     std::vector<IrTensor>                             manifest;
     std::vector<std::string>                          space_names;
@@ -880,12 +885,21 @@ Object write_structure(Graph const &graph) {
 }
 
 /// The provenance block. Data, never instructions; see GraphIR.hpp.
-Value write_provenance(SaveOptions const &options) {
+///
+/// The pass list comes from the GRAPH, which records each structural-algebraic pass that
+/// rewrote it, unless the caller supplied one. It used to come only from the caller, which meant
+/// it was accurate exactly as often as someone remembered to fill it in - and the block exists
+/// to answer "what shaped this file" for a graph whose numbers turn out wrong, which is the
+/// moment nobody has that information to hand.
+///
+/// A caller who does supply a list still wins, because a tool assembling a file from pieces
+/// knows things the graph does not.
+Value write_provenance(Graph const &graph, SaveOptions const &options) {
     Object out;
     out.set("library_version", Value{full_version_as_string()});
     out.set("config_fingerprint", Value{fmt::format("0x{:016x}", sealed::config_fingerprint())});
     Array passes;
-    for (auto const &pass : options.structural_passes) {
+    for (auto const &pass : options.structural_passes.empty() ? graph.structural_passes() : options.structural_passes) {
         passes.emplace_back(pass);
     }
     out.set("structural_passes", Value{std::move(passes)});
@@ -898,7 +912,7 @@ Value write_document(Graph const &graph, SaveOptions const &options) {
     Object const structure = write_structure(graph);
     Object       out;
     out.set(std::string(key_version), Value{std::string(graph_ir_schema_version)});
-    out.set(std::string(key_provenance), write_provenance(options));
+    out.set(std::string(key_provenance), write_provenance(graph, options));
     for (std::size_t i = 0; i < structure.size(); ++i) {
         if (structure.key_at(i) == key_version) {
             continue;
@@ -1707,7 +1721,17 @@ IrDocument read_document(Value const &root, Problems &problems, SpaceRegistry co
         if (Object const *body = as_object(*provenance, "$.provenance", problems); body != nullptr) {
             body->mark_consumed("library_version");
             body->mark_consumed("config_fingerprint");
-            body->mark_consumed("structural_passes");
+            // Read rather than merely consumed, and reading is not acting: nothing behaves
+            // differently for what is in here. A malformed entry is skipped rather than
+            // failing the load, because provenance is not structure and a file whose history
+            // is unreadable still describes a perfectly good graph.
+            if (Value const *passes = body->take("structural_passes"); passes != nullptr && passes->is_array()) {
+                for (auto const &entry : passes->as_array()) {
+                    if (entry.is_string()) {
+                        out.structural_passes.push_back(entry.as_string());
+                    }
+                }
+            }
         }
     }
 
@@ -2142,6 +2166,13 @@ Graph build_graph(IrDocument const &document, SpaceRegistry &registry) {
     }
 
     std::vector<LoadedTensor> const loaded = build_frame(graph, graph, tensors, document.nodes, nullptr, document.gate_buffers, registry);
+
+    // The history the file carries, put back on the graph. Nothing acts on it; it is here so a
+    // load, further optimization and a re-save produce a file that still names everything that
+    // shaped this graph rather than only what the second pipeline did.
+    for (auto const &pass_name : document.structural_passes) {
+        graph.note_structural_pass(pass_name);
+    }
 
     // Slot redirects, once every slot exists. Not a derived cache: a node whose
     // dataflow still names a merged-away duplicate reads the survivor's buffer

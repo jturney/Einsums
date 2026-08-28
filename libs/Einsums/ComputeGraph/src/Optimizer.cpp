@@ -362,6 +362,14 @@ bool PassManager::run(Graph &graph) {
                 structure_stale_for_analysis = false;
                 break;
             case PassPhase::StructuralAlgebraic:
+                // What a save persists is this phase's output, so this is the phase whose
+                // membership the provenance block is about. Recorded here rather than asked of
+                // the caller, which is what it used to be and what nobody remembered to supply.
+                if (modified) {
+                    graph.note_structural_pass(pass->name());
+                }
+                structure_stale_for_analysis = structure_stale_for_analysis || modified;
+                break;
             case PassPhase::StructuralResource:
                 structure_stale_for_analysis = structure_stale_for_analysis || modified;
                 break;

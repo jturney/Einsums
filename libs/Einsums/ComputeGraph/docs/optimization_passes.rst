@@ -8,7 +8,7 @@ Optimization Passes
 ===================
 
 The ComputeGraph provides a catalog of built-in optimization passes. The default
-pipeline (``PassManager::create_default()``) adds 25 passes that always run, plus
+pipeline (``PassManager::create_default()``) adds 27 passes that always run, plus
 five GPU passes and five distributed passes that are included only when a GPU or
 MPI backend, or its mock, is available. One further pass,
 ``DistributiveFactoring``, is workload-specific and must be added by hand.
@@ -144,10 +144,24 @@ Runtime Controls
    # then the graph is restored. No modification persists.
    ./my_program --einsums:pass:analyze
 
+   # Dump the algebra each region rewrite raised, before and after it rewrote.
+   # The first thing to reach for when an optimized graph produces a wrong number.
+   ./my_program --einsums:graph:dump-regions --einsums:pass:verbosity 2
+
 In code, ``PassManager::set_verbosity(level)`` does the same as
 ``--einsums:pass:verbose`` and propagates the level to every pass already added
 and every pass added afterwards. Level 1 reports totals, level 2 narrates each
 modification, level 3 adds per-candidate detail.
+
+``PassManager::disable(name)`` and ``enable(name)`` are the programmatic half of
+``--einsums:pass:disable``, and exist because a driver that bisects a wrong
+result runs the same pipeline once per pass and would otherwise have to mutate
+process-global configuration to do it.
+Switches are read at ``run()``, so a pass can be switched off before it is added.
+An explicit ``enable`` overrides the option, because the more specific statement
+about this pipeline is the one that should win.
+A switch name matching no pass in the pipeline is reported through ``explain()``
+and logged as a warning rather than doing nothing in silence.
 
 Writing Custom Passes
 =====================
@@ -206,6 +220,53 @@ trade, elementwise fusion, and the node budget.
 Reports ``num_expanded()``, ``num_tile_nodes()``, ``num_declined()``,
 ``num_screened()``, ``num_densified()``, ``num_fused()`` and
 ``num_gathers_reused()``.
+
+DeltaElimination
+----------------
+
+Contraction against a Kronecker delta is a rename, so the pass does the rename
+and drops the delta::
+
+    tmp[i,j] = A[i,k] delta[k,j]     ->  (nothing; consumers read A directly)
+    C[i,l]  += tmp[i,j] D[j,l]       ->  C[i,l] += A[i,j] D[j,l]
+
+Two nodes and one intermediate become one node. Machine-generated input,
+spin-summed equations in particular, produces these in bulk, and each one is a
+full-size GEMM against an identity matrix, so what is saved is a whole
+contraction rather than a constant factor on one.
+
+The rewrite is **bitwise-exact**, which is why it runs by default and needs no
+opt-in: ``sum_k A[i,k] * I[k,j]`` has exactly one nonzero term, every other
+product is exactly ``0.0``, and adding exact zeros into a running sum changes
+nothing. The result is the same float, not a nearby one.
+
+That claim has one deliberate hole. If any ``A[i,k]`` with ``k != j`` is infinite
+or NaN, the captured form computes ``0.0 * inf``, which is NaN, and the sum is
+poisoned; the rewritten form returns ``A[i,j]`` unharmed. The two genuinely
+differ on non-finite input. This is accepted rather than guarded because the
+difference is one-directional: the rewrite only ever *removes* a NaN the
+arithmetic had no reason to produce, and can never introduce one.
+
+Recognition is by tag; see ``ProvenancePropagation`` below. A tensor that happens
+to hold an identity but carries no tag is left alone.
+
+What happens to the contraction's output is decided by the escape rule rather
+than by a heuristic. An output nothing outside the region can observe is
+dissolved outright and its readers repointed at the surviving operand. One that
+escapes, because the caller holds it or something outside reads it, still has to
+be produced, so the contraction becomes a ``Permute`` carrying the reordering and
+both prefactors.
+
+Declined, each through the skip tally: a delta whose two letters are both free in
+the output (a diagonal extraction), both contracted (a trace), a conjugated
+surviving operand, and any rename whose result does not carry exactly the
+output's letters.
+
+Self-gating and cheaply so: the pass declines before forming a single region when
+no tensor in the graph is declared an identity, which is every graph nobody has
+annotated.
+
+Reports ``num_eliminated()`` and ``num_dissolved()``.
 
 ConstantFolding
 ---------------
@@ -568,6 +629,51 @@ Runs beside ``SymmetryPropagation``, after Materialization and before the backen
 passes. The two are independent analyses and neither reads the other's output.
 
 Reports ``num_inferred()``.
+
+ProvenancePropagation
+---------------------
+
+Carries a tensor's **provenance tag** across the operations that preserve its
+identity.
+
+A tag says what a tensor *is*, which is a different question from how big it is
+and the one a pass that wants to *recognize* something has to ask. Index spaces
+cannot answer it: they say an axis ranges over virtuals, not that this particular
+matrix is a Kronecker delta or a Coulomb metric. Declare one with
+``Graph::annotate_tag``, or from Python::
+
+    cg.annotate(delta, tag="identity")
+    cg.annotate(eri, spaces=("occ", "occ", "virt", "virt"),
+                tag={"name": "eri", "basis": "cc-pvdz"})
+
+The vocabulary is open and unvalidated, because the set of things worth
+recognizing grows with the passes that recognize them. The cost is that a
+misspelled name is a tag nothing matches, and the only symptom is a pass that
+quietly finds no candidates; a pass is expected to report that through its skip
+tally.
+
+A tag is a **declaration** and is never inferred from a tensor's contents. A pass
+could look at the data and notice a tensor happens to hold an identity today, and
+that would be wrong in a way easy to miss: a structural-algebraic rewrite is what
+a saved graph keeps, and a later bind may supply a different tensor under the
+same manifest name.
+
+What propagates, and what deliberately does not: only the axis reorderings,
+``Permute``, ``Transpose`` and ``HPTTPermute``. A **view** does not, and the
+reason is worth stating because the obvious rule gets it wrong. "Views, permutes
+and copies preserve identity" is false for the tag that matters most here: a view
+of a Kronecker delta is an identity only when the slice is a square block on the
+diagonal, and ``delta[0:2, 0:4]`` is an ordinary rectangular matrix of ones and
+zeros. Eliminating a contraction against that would produce a wrong number rather
+than a slower one. So the rule is whole-tensor. That is conservative for tags
+whose slices genuinely would inherit, and the trade is deliberate: a tag that is
+missing costs a pass one candidate, while a tag that is wrong costs a wrong
+answer and no later pass can tell the difference.
+
+An inferred tag never overwrites a declared one. A disagreement is reported
+through the skip tally rather than resolved by picking a winner.
+
+Reports ``num_propagated()``.
 
 CrossSpaceValidation
 --------------------
