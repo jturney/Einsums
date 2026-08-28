@@ -337,8 +337,12 @@ APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("load_graph") APIARY_RVP(take
  * @return The graph, owned by the caller.
  * @throws std::runtime_error With every problem the file has.
  *
- * The counterpart of @ref load_graph(std::string const &, SpaceRegistry &) for a caller who
- * keeps their own registry rather than using the process-global one.
+ * The counterpart of the @ref load_graph overload taking a @ref SpaceRegistry, for a caller
+ * who keeps their own registry rather than using the process-global one.
+ *
+ * The overload is named in prose rather than written out as a signature: a cross-reference
+ * followed immediately by a parameter list renders as an inline literal with an unterminated
+ * start-string, and the docs build treats that warning as an error.
  * @versionadded{2.0.0}
  */
 APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("load_graph_into") APIARY_RVP(take_ownership) APIARY_KEEP_ALIVE(0, 2)
