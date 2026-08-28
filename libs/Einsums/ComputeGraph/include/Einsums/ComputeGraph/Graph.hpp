@@ -2173,6 +2173,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_EXPOSE APIARY_RVP(reference_internal) Graph &add_setup(std::string label);
 
     /**
+     * @brief Add a setup node at a chosen position rather than at the end.
+     *
+     * @param[in] label Human-readable label.
+     * @param[in] position Index in @ref nodes to splice at; clamped to the node count.
+     * @return Reference to the setup body Graph.
+     *
+     * What @ref add_setup is, with the placement made explicit. A CAPTURING caller always
+     * wants the end, because program order is the order they wrote things in; a PASS that
+     * introduces a fitting does not, because the nodes that will read the factors are
+     * already there and a setup appended behind them is a writer behind its readers, which
+     * the dependency sort reads as an anti-dependency and orders exactly the wrong way
+     * round.
+     * @versionadded{2.0.0}
+     */
+    Graph &add_setup_at(std::string label, std::size_t position);
+
+    /**
      * @brief Add a setup node with a lambda-captured body.
      * @param[in] label Human-readable label.
      * @param[in] body_fn Called during construction to capture the body's operations.

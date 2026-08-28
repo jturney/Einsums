@@ -7,6 +7,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph.hpp
     Einsums/ComputeGraph/Approximation.hpp
     Einsums/ComputeGraph/Blueprints.hpp
+    Einsums/ComputeGraph/Factorization.hpp
     Einsums/ComputeGraph/Blueprints/Orthogonalization.hpp
     Einsums/ComputeGraph/Blueprints/TensorAlgebra.hpp
     Einsums/ComputeGraph/BoundExpr.hpp
@@ -90,6 +91,7 @@ set(ComputeGraphHeaders
 set(ComputeGraphSources
     Approximation.cpp
     CaptureContext.cpp
+    Factorization.cpp
     Options.cpp
     EinsumSpec.cpp
     ElementOps.cpp

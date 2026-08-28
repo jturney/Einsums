@@ -26,6 +26,7 @@ endfunction()
 set(ComputeGraphTests
     Approximation.cpp
     Blueprints.cpp
+    Factorization.cpp
     PooledOperands.cpp
     ControlFlow.cpp
     DeltaElimination.cpp

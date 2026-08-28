@@ -100,6 +100,37 @@ TEST_CASE("Setup - the parent node reports the body's reads and writes as its ow
     REQUIRE(std::find(eff_out.begin(), eff_out.end(), fit_id) != eff_out.end());
 }
 
+TEST_CASE("Setup - a body placed before its consumers runs before them", "[ComputeGraph][Setup]") {
+    auto ones  = create_zero_tensor<double>("ones", 2, 2);
+    auto fit   = create_zero_tensor<double>("fit", 2, 2);
+    auto out   = create_zero_tensor<double>("out", 2, 2);
+    ones(0, 0) = 1.0;
+    ones(0, 1) = 1.0;
+    ones(1, 0) = 1.0;
+    ones(1, 1) = 1.0;
+
+    cg::Graph graph("setup_placed");
+    // The CONSUMER is captured first, which is the situation a pass that introduces a fitting
+    // is always in: the nodes that will read the factors already exist. Appending the setup
+    // behind them puts a writer behind its readers, and the dependency sort reads that as an
+    // anti-dependency and orders it exactly the wrong way round.
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("ij <- ij", 0.0, &out, 1.0, fit);
+    }
+    {
+        auto                  &body = graph.add_setup_at("fit", 0);
+        cg::CaptureGuard const guard(body);
+        cg::axpy(1.0, ones, &fit);
+    }
+
+    REQUIRE(graph.nodes().front().kind == cg::OpKind::Setup);
+
+    graph.execute();
+    REQUIRE(run_count(fit) == Catch::Approx(1.0));
+    REQUIRE(out(0, 0) == Catch::Approx(1.0));
+}
+
 TEST_CASE("Setup - a bind puts the body back to work", "[ComputeGraph][Setup][Bind]") {
     auto ones  = create_zero_tensor<double>("ones", 2, 2);
     auto fit   = create_zero_tensor<double>("fit", 2, 2);

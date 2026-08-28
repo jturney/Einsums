@@ -2799,6 +2799,10 @@ void Graph::add_loop(std::string label, size_t max_iterations, std::function<boo
 // ── Setup subgraphs ─────────────────────────────────────────────────────────
 
 Graph &Graph::add_setup(std::string label) {
+    return add_setup_at(std::move(label), _nodes.size());
+}
+
+Graph &Graph::add_setup_at(std::string label, std::size_t position) {
     auto body_graph = std::make_shared<Graph>(label + "/setup");
 
     SetupDescriptor desc;
@@ -2818,8 +2822,14 @@ Graph &Graph::add_setup(std::string label) {
     node.label   = std::move(label);
     node.execute = std::move(executor);
     node.op_data = std::move(op_data);
+    node.id      = reserve_node_id();
 
-    add_node(std::move(node));
+    // Through insert_node_groups rather than add_node, because that is the splice that
+    // already knows how to keep positions valid; appending and then moving would be a second
+    // way of doing it and one more thing to keep in step.
+    std::vector<std::pair<std::size_t, std::vector<Node>>> group;
+    group.emplace_back(std::min(position, _nodes.size()), std::vector<Node>{std::move(node)});
+    insert_node_groups(std::move(group));
 
     return *body_graph;
 }
