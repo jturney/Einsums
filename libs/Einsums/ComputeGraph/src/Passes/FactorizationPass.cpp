@@ -481,8 +481,19 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
 
         // Create the factors and the intermediate. Tensors only: a node added here would move
         // the region out from under the splice that is about to replace it.
+        //
+        // Two factors under ONE name are one tensor, which is not a shortcut but the
+        // commonest case there is: a metric-fitted factorization writes its tensor as
+        // B[Q,m,n] B[Q,p,q], the same B twice with different letters. Creating two would fit
+        // it twice and store it twice. A contraction whose operands share a tensor is
+        // already legal, so nothing downstream needs to know.
         std::vector<TensorId> factor_ids(2);
+        bool const            one_tensor = best->plan.factors[0].name == best->plan.factors[1].name;
         for (std::size_t which = 0; which < 2; ++which) {
+            if (which == 1 && one_tensor) {
+                factor_ids[1] = factor_ids[0];
+                break;
+            }
             factor_ids[which] = declare_scratch(graph, fmt::format("{}_{}", best->plan.provider, best->plan.factors[which].name),
                                                 best->plan.factors[which].dtype, best->plan.factors[which].dims);
         }

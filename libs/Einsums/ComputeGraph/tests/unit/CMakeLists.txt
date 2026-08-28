@@ -27,6 +27,7 @@ set(ComputeGraphTests
     Approximation.cpp
     Blueprints.cpp
     Factorization.cpp
+    MetricFit.cpp
     PooledOperands.cpp
     ControlFlow.cpp
     DeltaElimination.cpp

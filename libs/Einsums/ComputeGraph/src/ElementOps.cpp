@@ -32,6 +32,16 @@ void register_builtin_element_ops(ElementOpRegistry &registry) {
     registry.register_op(
         "sqrt_or_zero", []<std::floating_point T>(T x) { return x > T{0} ? std::sqrt(x) : T{0}; },
         ElementOpSignature{.arity = 1, .domain = ElementOpDomain::RealOnly, .description = "sqrt(x) for x > 0, else 0"});
+
+    // The kernel a symmetric inverse square root is made of. Guarded the same way its
+    // partner is, and for a reason rather than for symmetry: the matrices this is applied
+    // to are metrics, a metric of a nearly linearly dependent basis has eigenvalues at or
+    // below zero, and 1/sqrt of one of those is an infinity that propagates through
+    // everything the factorization then touches. Zeroing the offending direction is what
+    // every orthogonalization does with it.
+    registry.register_op(
+        "inv_sqrt_or_zero", []<std::floating_point T>(T x) { return x > T{0} ? T{1} / std::sqrt(x) : T{0}; },
+        ElementOpSignature{.arity = 1, .domain = ElementOpDomain::RealOnly, .description = "1/sqrt(x) for x > 0, else 0"});
 }
 
 ElementOpRegistry &global_element_op_registry() {

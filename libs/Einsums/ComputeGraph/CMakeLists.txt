@@ -8,6 +8,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Approximation.hpp
     Einsums/ComputeGraph/Blueprints.hpp
     Einsums/ComputeGraph/Factorization.hpp
+    Einsums/ComputeGraph/MetricFitFactorization.hpp
     Einsums/ComputeGraph/Passes/FactorizationPass.hpp
     Einsums/ComputeGraph/Blueprints/Orthogonalization.hpp
     Einsums/ComputeGraph/Blueprints/TensorAlgebra.hpp
@@ -93,6 +94,7 @@ set(ComputeGraphSources
     Approximation.cpp
     CaptureContext.cpp
     Factorization.cpp
+    MetricFitFactorization.cpp
     Options.cpp
     EinsumSpec.cpp
     ElementOps.cpp
