@@ -47,6 +47,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -1494,15 +1495,23 @@ void element_transform(CType *C, UnaryOperator unary_op) {
 /// A TILED destination is not accepted; a tiled transform stays anonymous, and
 /// it records under @ref OpKind::Custom in any case.
 ///
+/// A PARAMETERIZED op takes its policy number here, and the node carries it, so
+/// a drop threshold is part of what a saved graph says it computes rather than
+/// something the process that replays it has to remember. Passing nothing runs
+/// the op at the default its registration documents; passing a number to an op
+/// that takes none is an error rather than an ignored argument.
+///
 /// @param[in,out] C       The tensor to transform in place.
 /// @param[in]     op_name Name of the kernel in the process's element-op registry.
-/// @throws std::invalid_argument When no op of that name is registered, or when
-///         it is not defined for @p C 's element type.
+/// @param[in]     param   The policy number for a parameterized op.
+/// @throws std::invalid_argument When no op of that name is registered, when it
+///         is not defined for @p C 's element type, or when @p param is supplied
+///         for an op that takes none.
 template <CoreBasicTensorConcept CType>
-void element_transform(CType *C, std::string_view op_name) {
+void element_transform(CType *C, std::string_view op_name, std::optional<double> param = std::nullopt) {
     using T = typename CType::ValueType;
 
-    auto kernel = element_ops::global_element_op_registry().kernel<T>(op_name);
+    auto kernel = element_ops::global_element_op_registry().kernel<T>(op_name, param);
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -1516,6 +1525,7 @@ void element_transform(CType *C, std::string_view op_name) {
 
     ElementTransformDescriptor desc;
     desc.op_name = std::string(op_name);
+    desc.param   = param;
 
     OpData op_data(std::move(desc));
     auto   executor = build_executor(OpKind::ElementTransform, packed_gemm::get_scalar_type<T>(), C->impl().rank(), op_data, *ctx.graph(),

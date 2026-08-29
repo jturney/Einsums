@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/TensorAlgebra.hpp>
@@ -16,14 +17,22 @@
 #include <fmt/format.h>
 
 #include <cmath>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 MetricFitFactorization::MetricFitFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric,
-                                               double bound, std::string name)
-    : _tag(std::move(tag)), _name(std::move(name)), _three_index(&three_index), _metric(&metric), _bound(bound) {
+                                               double bound, double drop_threshold, std::string name)
+    : _tag(std::move(tag)), _name(std::move(name)), _three_index(&three_index), _metric(&metric), _bound(bound),
+      _drop_threshold(drop_threshold) {
+    if (!std::isfinite(drop_threshold) || drop_threshold < 0.0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "MetricFitFactorization: the drop threshold must be finite and not negative; got {}. Zero is the bare "
+                                "positivity guard, and there is nothing a negative one could mean",
+                                drop_threshold);
+    }
 }
 
 std::string MetricFitFactorization::dropped_param_name(std::string const &provider, std::string const &tensor) {
@@ -72,8 +81,9 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
     Tensor<double, 3> const *three_index = _three_index;
     Tensor<double, 2> const *metric      = _metric;
     std::string const        dropped_key = dropped_param_name(_name, handle->name);
-    plan.emit_setup                      = [three_index, metric, naux, rows, cols, dropped_key](Graph &parent, Graph &body,
-                                                                           std::vector<TensorId> const &factors) {
+    double const             threshold   = _drop_threshold;
+    plan.emit_setup                      = [three_index, metric, naux, rows, cols, dropped_key, threshold](Graph &parent, Graph &body,
+                                                                                      std::vector<TensorId> const &factors) {
         auto *b = static_cast<RuntimeTensor<double> *>(parent.tensor(factors[0]).tensor_ptr);
 
         // The fitting's own workspace, declared on the BODY: it is live only while the
@@ -95,7 +105,9 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
             // A copy, because syev destroys what it decomposes and the metric is the caller's.
             permute("P,Q <- P,Q", 0.0, &vectors, 1.0, *metric);
             syev(&vectors, &values);
-            element_transform(&values, "inv_sqrt_or_zero");
+            // The threshold rides in the NODE, so a graph saved here and loaded elsewhere drops
+            // the same directions rather than whatever the loading process happens to think.
+            element_transform(&values, "inv_sqrt_or_zero", threshold);
             // Column scaling, spelled as the contraction that sums over nothing.
             einsum("P,R ; R -> P,R", &scaled, vectors, values);
             einsum("P,R ; Q,R -> P,Q", &half, scaled, vectors);
@@ -105,7 +117,9 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
             // rather than once, because it is a property of the metric that is bound now.
             // The entries are exactly zero only where inv_sqrt_or_zero assigned zero, so the
             // indicator is reading that guard's decision rather than testing a float for
-            // equality in the usual mistaken way.
+            // equality in the usual mistaken way. It reads the THRESHOLD's decision too, at
+            // no extra cost: the direction that used to slip through as a huge 1/sqrt is now
+            // dropped, and this is what says so.
             //
             // The dot of the indicator with ITSELF is the count, since every entry is 0 or 1.
             // A dot against a vector of ones would say the same thing and need a fifth tensor

@@ -395,6 +395,11 @@ std::int64_t read_param_source(ParamSourceType type, void const *source) {
  * being in the descriptor: an op this process has not registered is refused at
  * BUILD time -- which is capture time today and load time when a loader exists
  * -- with the op named, instead of failing somewhere in the middle of a replay.
+ *
+ * A parameterized op's policy number is bound here too, from the descriptor or,
+ * where the node carries none, from the default its registration documents. So
+ * the built kernel is a plain unary map either way and the replay loop is the
+ * same one an unparameterized op runs.
  */
 std::function<void()> build_element_transform(packed_gemm::ScalarType dtype, ElementTransformDescriptor const &desc,
                                               OperandAccessor const &c) {
@@ -403,7 +408,7 @@ std::function<void()> build_element_transform(packed_gemm::ScalarType dtype, Ele
     }
     auto const &registry = element_ops::global_element_op_registry();
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
-        auto kernel = registry.kernel<T>(desc.op_name);
+        auto kernel = registry.kernel<T>(desc.op_name, desc.param);
         return [kernel = std::move(kernel), c]() {
             LabeledSection("element_transform execute");
             element_ops::detail::apply_element_op<T>(kernel, c.impl<T>());

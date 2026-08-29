@@ -22,6 +22,7 @@
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+#include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
 #include <cmath>
 #include <complex>
@@ -149,11 +150,109 @@ TEST_CASE("ElementOps - a declared real-only domain masks a kernel that would co
     REQUIRE_THROWS_WITH(registry.kernel<std::complex<float>>("bump"), Catch::Matchers::ContainsSubstring("not defined for"));
 }
 
+// ── Parameterized ops ──────────────────────────────────────────────────────
+
+TEST_CASE("ElementOps - a parameterized op runs at the number it is given, or at its default", "[ComputeGraph][ElementOps]") {
+    // A guard whose threshold is a policy is one op with a number, not one op
+    // per number: the alternative puts the value in the NAME, and a file naming
+    // "drop_above_1e_10" is unreadable by a process that registered a different
+    // threshold under a different spelling of the same idea.
+    ops::ElementOpRegistry registry;
+    registry.register_op(
+        "clamp_below", []<std::floating_point T>(T x, double floor) { return x > static_cast<T>(floor) ? x : T{0}; },
+        ops::ElementOpSignature{.domain = ops::ElementOpDomain::RealOnly, .parameterized = true, .default_param = 0.0});
+
+    REQUIRE(registry.signature("clamp_below").parameterized);
+    REQUIRE(registry.signature("clamp_below").default_param == 0.0);
+
+    auto const chosen = registry.kernel<double>("clamp_below", 1.0);
+    REQUIRE(chosen(2.0) == 2.0);
+    REQUIRE(chosen(0.5) == 0.0);
+
+    // No number means the DOCUMENTED default, which is what an old file's
+    // absent key resolves to as well.
+    auto const defaulted = registry.kernel<double>("clamp_below");
+    REQUIRE(defaulted(0.5) == 0.5);
+    REQUIRE(defaulted(-1.0) == 0.0);
+}
+
+TEST_CASE("ElementOps - a registration whose declaration and kernel disagree about the parameter is refused",
+          "[ComputeGraph][ElementOps]") {
+    // Both directions, and each with its own message: "not invocable for double"
+    // is TRUE for either mistake and sends the reader to look at dtypes when
+    // what actually happened is a shape mismatch.
+    ops::ElementOpRegistry registry;
+
+    REQUIRE_THROWS_WITH(registry.register_op(
+                            "declared_only", []<std::floating_point T>(T x) { return x; },
+                            ops::ElementOpSignature{.domain = ops::ElementOpDomain::RealOnly, .parameterized = true}),
+                        Catch::Matchers::ContainsSubstring("(T x, double p)"));
+
+    REQUIRE_THROWS_WITH(registry.register_op(
+                            "kernel_only", []<std::floating_point T>(T x, double p) { return x + static_cast<T>(p); },
+                            ops::ElementOpSignature{.domain = ops::ElementOpDomain::RealOnly}),
+                        Catch::Matchers::ContainsSubstring("set parameterized"));
+
+    REQUIRE(registry.size() == 0);
+}
+
+TEST_CASE("ElementOps - a parameter handed to an op that takes none is refused", "[ComputeGraph][ElementOps]") {
+    // Ignoring it would be the worse failure: a caller who thinks they set a
+    // threshold and did not gets the wrong answer with no sign of it.
+    ops::ElementOpRegistry registry;
+    registry.register_op("bump", []<typename T>(T x) { return x + T{1}; });
+
+    REQUIRE(registry.kernel<double>("bump")(1.0) == 2.0);
+    REQUIRE_THROWS_WITH(registry.kernel<double>("bump", 0.5),
+                        Catch::Matchers::ContainsSubstring("bump") && Catch::Matchers::ContainsSubstring("takes no parameter"));
+}
+
+TEST_CASE("ElementOps - a parameterized registration differing only in its default is a conflict", "[ComputeGraph][ElementOps]") {
+    // The default is what an absent key means, so two registrations that
+    // disagree about it compute different things for the same saved node.
+    ops::ElementOpRegistry registry;
+    auto const             kernel = []<std::floating_point T>(T x, double floor) { return x > static_cast<T>(floor) ? x : T{0}; };
+
+    registry.register_op("clamp_below", kernel,
+                         ops::ElementOpSignature{.domain = ops::ElementOpDomain::RealOnly, .parameterized = true, .default_param = 0.0});
+    REQUIRE_THROWS_WITH(
+        registry.register_op(
+            "clamp_below", kernel,
+            ops::ElementOpSignature{.domain = ops::ElementOpDomain::RealOnly, .parameterized = true, .default_param = 1.0e-10}),
+        Catch::Matchers::ContainsSubstring("different content"));
+}
+
+TEMPLATE_TEST_CASE("ElementOps - inv_sqrt_or_zero drops at the threshold it is handed", "[ComputeGraph][ElementOps]", float, double) {
+    using T = TestType;
+
+    auto const &registry = ops::global_element_op_registry();
+    REQUIRE(registry.signature("inv_sqrt_or_zero").parameterized);
+
+    // The default is the guard this op has always had, so an old file keeps
+    // computing what it computed.
+    auto const bare = registry.kernel<T>("inv_sqrt_or_zero");
+    REQUIRE_THAT(bare(T{4}), Catch::Matchers::WithinRel(T{0.5}, tol_for<T>()));
+    REQUIRE(bare(T{0}) == T{0});
+    REQUIRE(bare(T{-1}) == T{0});
+
+    // The case the threshold exists for: a positive eigenvalue small enough
+    // that 1/sqrt of it is enormous passes the bare guard and is dropped by a
+    // real one.
+    T const tiny = static_cast<T>(1.0e-17);
+    REQUIRE(bare(tiny) > T{1});
+    REQUIRE(registry.kernel<T>("inv_sqrt_or_zero", 1.0e-10)(tiny) == T{0});
+    REQUIRE_THAT(registry.kernel<T>("inv_sqrt_or_zero", 1.0e-10)(T{4}), Catch::Matchers::WithinRel(T{0.5}, tol_for<T>()));
+
+    // A negative threshold cannot open the guard: this op's contract is that it
+    // never returns a non-finite value.
+    REQUIRE(registry.kernel<T>("inv_sqrt_or_zero", -1.0)(T{-4}) == T{0});
+}
+
 // ── The starter set ────────────────────────────────────────────────────────
 
 TEST_CASE("ElementOps - the process registry ships the starter ops", "[ComputeGraph][ElementOps]") {
     auto const &registry = ops::global_element_op_registry();
-    for (auto const *name : {"recip", "square", "negate", "sqrt_or_zero"}) {
+    for (auto const *name : {"recip", "square", "negate", "sqrt_or_zero", "inv_sqrt_or_zero", "is_zero"}) {
         INFO("op: " << name);
         REQUIRE(registry.contains(name));
     }
@@ -241,6 +340,52 @@ TEST_CASE("ElementOps - a named element_transform records a descriptor, an anony
     REQUIRE(desc != nullptr);
     REQUIRE(desc->op_name == "recip");
     REQUIRE(std::holds_alternative<std::monostate>(graph.nodes()[1].op_data));
+}
+
+TEST_CASE("ElementOps - a captured node carries the parameter it was given, and none when it was not", "[ComputeGraph][ElementOps]") {
+    // The number belongs to the NODE rather than to the process, which is the
+    // whole reason it is a descriptor field: a graph saved here and replayed
+    // elsewhere has to drop at the threshold the capture chose.
+    auto with    = create_random_tensor<double>("with", 3, 3);
+    auto without = create_random_tensor<double>("without", 3, 3);
+
+    cg::Graph graph("parameter_shape");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::element_transform(&with, "inv_sqrt_or_zero", 1.0e-10);
+        cg::element_transform(&without, "inv_sqrt_or_zero");
+    }
+
+    REQUIRE(graph.num_nodes() == 2);
+    auto const *carried = std::get_if<cg::ElementTransformDescriptor>(&graph.nodes()[0].op_data);
+    REQUIRE(carried != nullptr);
+    REQUIRE(carried->param.has_value());
+    REQUIRE(*carried->param == 1.0e-10);
+
+    auto const *bare = std::get_if<cg::ElementTransformDescriptor>(&graph.nodes()[1].op_data);
+    REQUIRE(bare != nullptr);
+    REQUIRE_FALSE(bare->param.has_value());
+}
+
+TEST_CASE("ElementOps - a captured parameter is what the rebuilt executor applies", "[ComputeGraph][ElementOps]") {
+    // Capture, replay: the eigenvalue below the threshold has to come back zero
+    // rather than as the enormous reciprocal square root the bare guard lets
+    // through, and it has to do so through the executor the builder made.
+    auto values = create_zero_tensor<double>("values", 3);
+    values(0)   = 4.0;
+    values(1)   = 1.0e-17;
+    values(2)   = -1.0;
+
+    cg::Graph graph("threshold_replay");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::element_transform(&values, "inv_sqrt_or_zero", 1.0e-10);
+    }
+    graph.execute();
+
+    REQUIRE_THAT(values(0), Catch::Matchers::WithinAbs(0.5, 1.0e-12));
+    REQUIRE(values(1) == 0.0);
+    REQUIRE(values(2) == 0.0);
 }
 
 TEST_CASE("ElementOps - a named element_transform over a runtime-rank tensor works", "[ComputeGraph][ElementOps]") {

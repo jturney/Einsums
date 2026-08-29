@@ -507,7 +507,16 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         return Value{std::move(out)};
     }
     case OpKind::ElementTransform: {
-        out.set("op", Value{std::get<ElementTransformDescriptor>(node.op_data).op_name});
+        auto const &desc = std::get<ElementTransformDescriptor>(node.op_data);
+        out.set("op", Value{desc.op_name});
+        // Written only when the capture site chose one. An absent key is not
+        // "no parameter" but "the default this op documents", which is what
+        // makes every file written before the key existed still mean what it
+        // meant: the ops that grew a parameter kept their old behavior as that
+        // default. See ElementOpSignature::default_param.
+        if (desc.param.has_value()) {
+            out.set("param", number_or_tag(*desc.param));
+        }
         return Value{std::move(out)};
     }
     case OpKind::WriteParam: {
@@ -1630,6 +1639,16 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
             note(problems, fmt::format("{}.op", path), value.position,
                  fmt::format("element op '{}' is not registered in this process. Registered: [{}]", desc.op_name,
                              fmt::join(element_ops::global_element_op_registry().names(), ", ")));
+        }
+        // OPTIONAL, and absent means the op's documented default rather than
+        // zero: an older file predates the key entirely, and a node written by
+        // this build omits it whenever the capture site named no number.
+        if (Value const *param = object->take("param"); param != nullptr) {
+            if (auto const parsed = tagged_number(*param); parsed.has_value()) {
+                desc.param = *parsed;
+            } else {
+                note(problems, fmt::format("{}.param", path), param->position, "expected a number");
+            }
         }
         node.descriptor = std::move(desc);
         return;

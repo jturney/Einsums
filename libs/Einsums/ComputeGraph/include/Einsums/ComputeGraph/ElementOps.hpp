@@ -44,6 +44,24 @@
  * kernel, which is where it belongs; the registry deliberately has no
  * four-callables-in-a-struct entry point for it.
  *
+ * @par A kernel may take one policy number
+ * A guard is rarely a fixed rule: an orthogonalization drops an eigenvalue
+ * BELOW A THRESHOLD, and the threshold is a policy the caller sets rather than
+ * a property of the kernel. Such a kernel is written ``(T x, double p)``, is
+ * declared with ``parameterized = true`` and a documented ``default_param``,
+ * and is captured with the number the site chose:
+ *
+ * @code
+ * cg::element_transform(&eigenvalues, "inv_sqrt_or_zero", 1e-10);
+ * @endcode
+ *
+ * The number lives in the NODE, so it is saved with the graph and a load
+ * applies the same policy the capture did. A node that names no number runs at
+ * the registration's default, which is also how a file written before nodes
+ * could carry one reads. The alternative -- a separately registered name per
+ * threshold -- would put a number in a string and make every file that used one
+ * unreadable by a process that had not registered that exact value.
+ *
  * @par Named `Custom` is deferred, on purpose
  * @ref OpKind::Custom records around forty distinct internal operations -- a
  * reshape, a gather, a scatter-add, several LAPACK-adjacent wrappers -- whose
@@ -70,6 +88,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -102,16 +121,39 @@ struct ElementOpSignature {
     /// Which element types the op is defined for.
     ElementOpDomain domain{ElementOpDomain::AllDtypes};
 
+    /// Whether the kernel takes a POLICY NUMBER beside the element it maps.
+    ///
+    /// A parameterized kernel is written ``(T x, double p)`` and is applied with
+    /// one number chosen by whoever captures the node, which is how a drop
+    /// threshold reaches a guard without a separately named op per value. It is
+    /// part of the signature rather than deduced from the callable so that a
+    /// registration declaring one shape and supplying the other is an error at
+    /// the registration instead of a lookup that finds no arm later.
+    bool parameterized{false};
+
+    /// The parameter a node that names no value is applied with.
+    ///
+    /// The DOCUMENTED default of the compatibility policy: a saved node carries
+    /// its parameter only when the capture site chose one, and an absent one has
+    /// to mean something a reader of an old file can look up. Ignored entirely
+    /// when @ref parameterized is false.
+    double default_param{0};
+
     /// One-line human description, shown in a listing. Not part of identity.
     std::string description;
 
     /// @brief Compare two signatures for the identity check.
     /// @param[in] lhs Left operand.
     /// @param[in] rhs Right operand.
-    /// @return True when arity and domain match. The description is prose and
-    ///         deliberately not compared.
+    /// @return True when arity, domain and the parameter contract match. The
+    ///         description is prose and deliberately not compared.
+    ///
+    /// The default parameter IS compared, because it is what an old file's
+    /// absent value resolves to: two registrations differing only there compute
+    /// different things for the same node.
     [[nodiscard]] friend bool operator==(ElementOpSignature const &lhs, ElementOpSignature const &rhs) noexcept {
-        return lhs.arity == rhs.arity && lhs.domain == rhs.domain;
+        return lhs.arity == rhs.arity && lhs.domain == rhs.domain && lhs.parameterized == rhs.parameterized &&
+               lhs.default_param == rhs.default_param;
     }
 };
 
@@ -239,32 +281,89 @@ class ElementOpRegistry {
         // Install exactly the arms the kernel compiles for. A constrained
         // generic lambda is what makes "not defined for complex" visible here
         // instead of being a hard error at instantiation.
+        //
+        // Which SHAPE is installed follows the declaration rather than the
+        // callable: a parameterized op is stored as ``(T, double)`` arms and an
+        // ordinary one as ``(T)`` arms, so a registration whose declaration and
+        // callable disagree ends up with no arm at all and is reported below by
+        // the same check that catches a kernel that does not compile for a
+        // dtype its domain requires.
         if constexpr (std::is_invocable_r_v<float, Kernel const &, float>) {
-            entry.f32 = kernel;
+            if (!entry.sig.parameterized) {
+                entry.f32 = kernel;
+            }
         }
         if constexpr (std::is_invocable_r_v<double, Kernel const &, double>) {
-            entry.f64 = kernel;
+            if (!entry.sig.parameterized) {
+                entry.f64 = kernel;
+            }
         }
         if constexpr (std::is_invocable_r_v<std::complex<float>, Kernel const &, std::complex<float>>) {
-            entry.c64 = kernel;
+            if (!entry.sig.parameterized) {
+                entry.c64 = kernel;
+            }
         }
         if constexpr (std::is_invocable_r_v<std::complex<double>, Kernel const &, std::complex<double>>) {
-            entry.c128 = kernel;
+            if (!entry.sig.parameterized) {
+                entry.c128 = kernel;
+            }
+        }
+        if constexpr (std::is_invocable_r_v<float, Kernel const &, float, double>) {
+            if (entry.sig.parameterized) {
+                entry.f32p = kernel;
+            }
+        }
+        if constexpr (std::is_invocable_r_v<double, Kernel const &, double, double>) {
+            if (entry.sig.parameterized) {
+                entry.f64p = kernel;
+            }
+        }
+        if constexpr (std::is_invocable_r_v<std::complex<float>, Kernel const &, std::complex<float>, double>) {
+            if (entry.sig.parameterized) {
+                entry.c64p = kernel;
+            }
+        }
+        if constexpr (std::is_invocable_r_v<std::complex<double>, Kernel const &, std::complex<double>, double>) {
+            if (entry.sig.parameterized) {
+                entry.c128p = kernel;
+            }
         }
 
         // The declared domain is a MASK as well as a promise: an op declared
         // real-only stays real-only even when its kernel happens to compile for
         // complex, because the declaration is what a saved graph carries.
         if (entry.sig.domain == ElementOpDomain::RealOnly) {
-            entry.c64  = nullptr;
-            entry.c128 = nullptr;
+            entry.c64   = nullptr;
+            entry.c128  = nullptr;
+            entry.c64p  = nullptr;
+            entry.c128p = nullptr;
         }
 
-        require_arm(name, entry.f32 != nullptr, "float");
-        require_arm(name, entry.f64 != nullptr, "double");
+        // The shape mismatch is reported as itself rather than as a missing
+        // dtype arm, because "the kernel is not invocable for double" is a true
+        // statement that sends the reader looking at the wrong thing when what
+        // actually happened is that the declaration and the callable disagree
+        // about whether there is a parameter.
+        constexpr bool unary_ok = std::is_invocable_r_v<double, Kernel const &, double>;
+        constexpr bool param_ok = std::is_invocable_r_v<double, Kernel const &, double, double>;
+        if (entry.sig.parameterized && !param_ok && unary_ok) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "element_ops::register_op('{}'): the registration declares a parameterized op and the kernel takes "
+                                    "only an element; write it as (T x, double p) or drop the declaration",
+                                    name);
+        }
+        if (!entry.sig.parameterized && !unary_ok && param_ok) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "element_ops::register_op('{}'): the kernel takes a parameter and the registration does not declare "
+                                    "one; set parameterized on the signature, with the default the op runs at",
+                                    name);
+        }
+
+        require_arm(name, entry.has_arm<float>(), "float");
+        require_arm(name, entry.has_arm<double>(), "double");
         if (entry.sig.domain == ElementOpDomain::AllDtypes) {
-            require_arm(name, entry.c64 != nullptr, "complex<float>");
-            require_arm(name, entry.c128 != nullptr, "complex<double>");
+            require_arm(name, entry.has_arm<std::complex<float>>(), "complex<float>");
+            require_arm(name, entry.has_arm<std::complex<double>>(), "complex<double>");
         }
 
         std::scoped_lock const guard(_mutex);
@@ -301,39 +400,73 @@ class ElementOpRegistry {
     }
 
     /**
-     * @brief The kernel registered under @p name, for element type @p T.
+     * @brief The kernel registered under @p name, for element type @p T, ready to apply.
      *
      * @tparam T One of the four BLAS element types.
-     * @param[in] name The op.
-     * @return A copy of the kernel, so the caller may hold it after the
-     *         registry's lock is released.
-     * @throws std::invalid_argument When no op of that name is registered, or
-     *         when the op is not defined for @p T. Both messages name the op.
+     * @param[in] name  The op.
+     * @param[in] param The policy number to apply a PARAMETERIZED op with. An
+     *            empty optional takes the default its registration documents.
+     * @return A copy of the kernel as a unary map, so the caller may hold it
+     *         after the registry's lock is released.
+     * @throws std::invalid_argument When no op of that name is registered, when
+     *         the op is not defined for @p T, or when @p param is supplied for
+     *         an op that takes none. Every message names the op.
+     *
+     * The parameter is bound HERE, once, and what comes back is a plain
+     * ``T(T)``: a replay applies the same unary map per element that an
+     * unparameterized op does, and nothing downstream of this call has to know
+     * which shape was registered.
      */
     template <typename T>
-    [[nodiscard]] std::function<T(T)> kernel(std::string_view name) const {
-        std::scoped_lock const     guard(_mutex);
-        Entry const               &entry = find_locked(name);
-        std::function<T(T)> const *slot  = nullptr;
-        char const                *dtype = nullptr;
+    [[nodiscard]] std::function<T(T)> kernel(std::string_view name, std::optional<double> param = std::nullopt) const {
+        std::scoped_lock const guard(_mutex);
+        Entry const           &entry = find_locked(name);
+
+        char const *dtype = nullptr;
         if constexpr (std::is_same_v<T, float>) {
-            slot  = &entry.f32;
             dtype = "float";
         } else if constexpr (std::is_same_v<T, double>) {
-            slot  = &entry.f64;
             dtype = "double";
         } else if constexpr (std::is_same_v<T, std::complex<float>>) {
-            slot  = &entry.c64;
             dtype = "complex<float>";
         } else {
             static_assert(std::is_same_v<T, std::complex<double>>, "element_ops: unsupported element type");
-            slot  = &entry.c128;
             dtype = "complex<double>";
         }
-        if (!*slot) {
+        if (!entry.has_arm<T>()) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "element_ops: op '{}' is not defined for {}", name, dtype);
         }
-        return *slot;
+
+        if (!entry.sig.parameterized) {
+            // A number handed to an op that has nowhere to put it is a caller
+            // error rather than something to ignore: silently dropping it would
+            // run a guard at a threshold nobody chose.
+            if (param.has_value()) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "element_ops: op '{}' takes no parameter, and one was supplied ({})", name,
+                                        *param);
+            }
+            if constexpr (std::is_same_v<T, float>) {
+                return entry.f32;
+            } else if constexpr (std::is_same_v<T, double>) {
+                return entry.f64;
+            } else if constexpr (std::is_same_v<T, std::complex<float>>) {
+                return entry.c64;
+            } else {
+                return entry.c128;
+            }
+        }
+
+        double const value = param.value_or(entry.sig.default_param);
+        auto const   bind  = [value](auto const &kernel) { return std::function<T(T)>{[kernel, value](T x) { return kernel(x, value); }}; };
+        if constexpr (std::is_same_v<T, float>) {
+            return bind(entry.f32p);
+        } else if constexpr (std::is_same_v<T, double>) {
+            return bind(entry.f64p);
+        } else if constexpr (std::is_same_v<T, std::complex<float>>) {
+            return bind(entry.c64p);
+        } else {
+            return bind(entry.c128p);
+        }
     }
 
     /**
@@ -369,6 +502,31 @@ class ElementOpRegistry {
         std::function<double(double)>                             f64;
         std::function<std::complex<float>(std::complex<float>)>   c64;
         std::function<std::complex<double>(std::complex<double>)> c128;
+
+        /// The same four arms for a PARAMETERIZED op. Exactly one of the two
+        /// sets is populated, chosen by @ref ElementOpSignature::parameterized,
+        /// so a lookup never has to decide which one an entry meant.
+        std::function<float(float, double)>                               f32p;
+        std::function<double(double, double)>                             f64p;
+        std::function<std::complex<float>(std::complex<float>, double)>   c64p;
+        std::function<std::complex<double>(std::complex<double>, double)> c128p;
+
+        /// @brief Whether this entry has a kernel for @p T, in whichever shape it declared.
+        /// @tparam T One of the four BLAS element types.
+        /// @return True when the arm is installed.
+        template <typename T>
+        [[nodiscard]] bool has_arm() const noexcept {
+            if constexpr (std::is_same_v<T, float>) {
+                return sig.parameterized ? static_cast<bool>(f32p) : static_cast<bool>(f32);
+            } else if constexpr (std::is_same_v<T, double>) {
+                return sig.parameterized ? static_cast<bool>(f64p) : static_cast<bool>(f64);
+            } else if constexpr (std::is_same_v<T, std::complex<float>>) {
+                return sig.parameterized ? static_cast<bool>(c64p) : static_cast<bool>(c64);
+            } else {
+                static_assert(std::is_same_v<T, std::complex<double>>, "element_ops: unsupported element type");
+                return sig.parameterized ? static_cast<bool>(c128p) : static_cast<bool>(c128);
+            }
+        }
     };
 
     /// Complain that a kernel does not compile for a dtype its domain requires.

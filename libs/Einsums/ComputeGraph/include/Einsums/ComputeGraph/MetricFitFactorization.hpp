@@ -39,6 +39,24 @@
  * common way for accuracy to degrade quietly, it costs nothing extra because the eigenvalues
  * are computed anyway, and it is a real number rather than a restatement of an assertion.
  *
+ * @par The drop threshold, and why it is ABSOLUTE
+ * Which directions are thrown away is a policy, so it is a constructor parameter with a
+ * conventional default rather than a rule baked into the kernel. A guard testing @c x>0
+ * catches the eigenvalue that has already gone negative and misses the one that has not
+ * quite: at @c +1e-17 it passes, and @f$1/\sqrt{x}@f$ of it is about @c 3e8, which is worse
+ * than an infinity because nothing downstream looks wrong and the dropped-directions count
+ * reports zero. Every orthogonalization in practice drops below a threshold instead.
+ *
+ * The threshold is compared against the eigenvalue itself, not against the largest
+ * eigenvalue, and the difference matters for a caller whose metric is scaled: the
+ * conventional cutoff in quantum chemistry is RELATIVE, @f$\lambda < \tau\lambda_{max}@f$,
+ * which is invariant to scaling the metric and this is not. What a relative one needs and
+ * this does not have is a reduction over the eigenvalues feeding a value into the guard,
+ * which is a runtime quantity, while a captured element op binds its policy number when the
+ * executor is built. That is a mechanism to add rather than a number to change, and until
+ * then a caller whose metric is scaled far from unity is expected to scale the threshold
+ * with it; @ref default_drop_threshold documents what the default assumes.
+ *
  * @see Factorization.hpp for what a provider is
  * @see Passes/FactorizationPass.hpp for what is done with the offer
  */
@@ -62,6 +80,16 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
   public:
     /**
+     * @brief The drop threshold a caller who states none gets.
+     *
+     * An eigenvalue of a Coulomb-like metric in atomic units is @c O(1e-3) to @c O(1e3), so
+     * @c 1e-10 is far below anything a well-conditioned auxiliary set produces and far above
+     * the noise a linearly dependent one leaves behind. It is the magnitude the conventional
+     * relative cutoff uses, applied absolutely; see the file note on the difference.
+     */
+    static constexpr double default_drop_threshold = 1.0e-10;
+
+    /**
      * @brief Construct the provider.
      *
      * @param[in] tag The provenance tag this claims, e.g. ``"eri"``.
@@ -70,10 +98,18 @@ class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
      * @param[in] metric @c J[P,Q], symmetric and positive semi-definite. Must outlive the same.
      * @param[in] bound The relative error the caller asserts this fit has. Required, because
      *            nothing here can measure it; see the file note.
+     * @param[in] drop_threshold Auxiliary directions whose metric eigenvalue does not exceed
+     *            this are dropped from the fit and counted; see @ref default_drop_threshold
+     *            and the file note on why the comparison is absolute. Zero reproduces the
+     *            bare @c x>0 guard.
      * @param[in] name The provider's name, which the approximation record and the report carry.
+     * @throws std::invalid_argument When @p drop_threshold is negative or not finite. A
+     *         negative one reads as "keep more than everything" and would mean nothing; the
+     *         kernel floors it at zero anyway, and silently running at a threshold the caller
+     *         did not ask for is the failure this whole parameter exists to prevent.
      */
     MetricFitFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric, double bound,
-                           std::string name = "MetricFit");
+                           double drop_threshold = default_drop_threshold, std::string name = "MetricFit");
 
     /// @copydoc FactorizationProvider::name
     [[nodiscard]] std::string name() const override { return _name; }
@@ -91,6 +127,12 @@ class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
      *         auxiliary index.
      */
     [[nodiscard]] expected<FactorizationPlan, std::string> propose(Graph const &graph, TensorId tensor) const override;
+
+    /**
+     * @brief The threshold below which this provider drops an auxiliary direction.
+     * @return The number handed to the constructor, or @ref default_drop_threshold.
+     */
+    [[nodiscard]] double drop_threshold() const noexcept { return _drop_threshold; }
 
     /**
      * @brief The parameter a fitted graph reports its dropped auxiliary directions under.
@@ -112,6 +154,7 @@ class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
     Tensor<double, 3> const *_three_index;
     Tensor<double, 2> const *_metric;
     double                   _bound;
+    double                   _drop_threshold;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

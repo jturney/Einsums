@@ -10,6 +10,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <complex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -224,6 +225,17 @@ struct CommDescriptor {
 struct ElementTransformDescriptor {
     /// Name of the kernel in the process's element-op registry.
     std::string op_name;
+
+    /// The policy number a PARAMETERIZED kernel is applied with, e.g. the drop
+    /// threshold a guarded inverse square root compares against.
+    ///
+    /// Empty for an op that takes no parameter, and empty for a parameterized op
+    /// the capture site said nothing about, which then runs with the default its
+    /// registration documents. That is also how a file written before this field
+    /// existed reads, which is the whole reason the default is part of the
+    /// REGISTRATION rather than of the capture site: an absent key has to mean
+    /// something a reader can look up.
+    std::optional<double> param;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

@@ -888,6 +888,74 @@ TEST_CASE("SaveLoad - content_hash refuses a graph that cannot be written", "[Co
     REQUIRE_THROWS_WITH(graph.content_hash(), Catch::Matchers::ContainsSubstring("anonymous closure"));
 }
 
+TEST_CASE("SaveLoad - an element transform's parameter travels with the node", "[ComputeGraph][SaveLoad][ElementOps]") {
+    // A threshold that stayed in the capturing process would make a saved graph mean
+    // something different everywhere else: the same file would drop different directions
+    // depending on what the loading process happened to think the policy was. So the number
+    // is in the node, and this is the test that says so.
+    auto values     = create_zero_tensor<double>("values", 3);
+    values(0)       = 4.0;
+    values(1)       = 1.0e-17;
+    values(2)       = -1.0;
+    auto const seed = bytes_of(values);
+
+    cg::Graph graph("element_param");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::element_transform(&values, "inv_sqrt_or_zero", 1.0e-10);
+    }
+    graph.execute();
+    auto const expected = bytes_of(values);
+
+    std::string const text = must_save(graph);
+    REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring(R"("param":1e-10)"));
+
+    cg::Graph loaded = must_load(text);
+    REQUIRE(loaded.num_nodes() == 1);
+    auto const *desc = std::get_if<cg::ElementTransformDescriptor>(&loaded.nodes()[0].op_data);
+    REQUIRE(desc != nullptr);
+    REQUIRE(desc->param.has_value());
+    REQUIRE(*desc->param == 1.0e-10);
+
+    std::memcpy(values.data(), seed.data(), seed.size());
+    loaded.bind("values", values);
+    loaded.execute();
+    REQUIRE(bytes_of(values) == expected);
+}
+
+TEST_CASE("SaveLoad - an element transform with no parameter writes no key and runs the op's default",
+          "[ComputeGraph][SaveLoad][ElementOps]") {
+    // The other half of the compatibility promise: a node that named no number writes no key,
+    // which is exactly what every file older than 1.3.0 looks like, and it has to keep
+    // computing what it computed. For this op that default is the bare x>0 guard, so the
+    // eigenvalue at 1e-17 survives as an enormous reciprocal square root rather than being
+    // quietly dropped by whatever threshold the loading build now prefers.
+    auto values = create_zero_tensor<double>("values", 2);
+    values(0)   = 4.0;
+    values(1)   = 1.0e-17;
+
+    cg::Graph graph("element_no_param");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::element_transform(&values, "inv_sqrt_or_zero");
+    }
+
+    std::string const text = must_save(graph);
+    // The key, not the word: the document has a ``params`` section, and a substring match on
+    // "param" would pass for the wrong reason.
+    REQUIRE_THAT(text, !Catch::Matchers::ContainsSubstring(R"("param":)"));
+
+    cg::Graph   loaded = must_load(text);
+    auto const *desc   = std::get_if<cg::ElementTransformDescriptor>(&loaded.nodes()[0].op_data);
+    REQUIRE(desc != nullptr);
+    REQUIRE_FALSE(desc->param.has_value());
+
+    loaded.bind("values", values);
+    loaded.execute();
+    REQUIRE_THAT(values(0), Catch::Matchers::WithinAbs(0.5, 1.0e-12));
+    REQUIRE(values(1) > 1.0e8);
+}
+
 // ── Tier 4: goldens ────────────────────────────────────────────────────────
 
 TEST_CASE("SaveLoad - every checked-in golden still loads", "[ComputeGraph][SaveLoad]") {
