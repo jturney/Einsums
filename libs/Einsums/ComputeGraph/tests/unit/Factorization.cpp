@@ -32,7 +32,14 @@ class NamedProvider : public cg::FactorizationProvider {
 
     [[nodiscard]] expected<cg::FactorizationPlan, std::string> propose(cg::Graph const & /*graph*/,
                                                                        cg::TensorId /*tensor*/) const override {
-        return unexpected(std::string{"this provider offers nothing"});
+        // QUALIFIED, and it has to be. This file says `using namespace einsums;` at global
+        // scope, so an unqualified `unexpected` here is a name two using-directives can both
+        // supply: ours and the standard library's. libstdc++ and libc++ resolve it in our
+        // favour and the MSVC STL reports it as ambiguous, which makes the unqualified
+        // spelling a portability trap rather than a style choice. The library's own sources
+        // are safe unqualified because they sit INSIDE einsums, where the enclosing namespace
+        // hides anything a using-directive brings in.
+        return einsums::unexpected(std::string{"this provider offers nothing"});
     }
 
   private:
@@ -140,7 +147,7 @@ class ExactLowRank : public cg::FactorizationProvider {
     [[nodiscard]] expected<cg::FactorizationPlan, std::string> propose(cg::Graph const &graph, cg::TensorId tensor) const override {
         cg::TensorHandle const *handle = graph.find_tensor(tensor);
         if (handle == nullptr || handle->rank != 4) {
-            return unexpected(std::string{"this provider only factorizes a rank-4 tensor"});
+            return einsums::unexpected(std::string{"this provider only factorizes a rank-4 tensor"});
         }
         std::size_t const rank = _left->dim(0);
 

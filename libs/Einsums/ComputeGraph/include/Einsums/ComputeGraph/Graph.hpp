@@ -33,6 +33,7 @@
 
 #include <array>
 #include <functional>
+#include <initializer_list>
 #include <iosfwd>
 #include <memory>
 #include <mutex>
@@ -2427,6 +2428,39 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     }
 
     /**
+     * @brief Declare storage from a braced list of extents; see the note on why this overload exists.
+     *
+     * @tparam T Element type.
+     * @tparam Alloc Allocator.
+     * @param[in] name Human-readable name.
+     * @param[in] dims One extent per axis.
+     * @param[in] intermediate Whether the tensor is graph-internal scratch.
+     * @return What the @c std::vector overload returns, which is what this forwards to.
+     *
+     * @par Why this exists, since it looks redundant
+     * It is what makes @ref SpaceDim's "a braced list of plain numbers keeps selecting the
+     * dims overload" true rather than merely intended. Without it, ``{n}`` -- one integer --
+     * is AMBIGUOUS under libstdc++: @c std::vector<SpaceDim> has an explicit
+     * @c vector(size_type) constructor, that constructor is a candidate when the compiler
+     * forms the conversion sequence for a braced list, and the two overloads then tie on
+     * user-defined conversions. libc++ does not consider it, so the call compiles on macOS and
+     * fails on GCC, which is the worst shape a portability trap can have.
+     *
+     * A parameter of type @c std::initializer_list<size_t> settles it by the standard's own
+     * rule rather than by luck: the conversion sequence for a braced list matching it is the
+     * WORST ELEMENT conversion, an identity here, and an identity beats the user-defined
+     * sequence either vector needs. So a braced list of numbers lands here on every compiler,
+     * a braced list of spaces cannot (no space converts to an integer) and still lands on the
+     * @ref SpaceDim overload, and a mixed list is a compile error as it always was.
+     * @versionadded{2.0.0}
+     */
+    template <typename T, typename Alloc = std::allocator<T>>
+    GeneralRuntimeTensor<T, Alloc> &create_zero_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims,
+                                                               bool intermediate = true) {
+        return create_zero_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate);
+    }
+
+    /**
      * @brief Create an eagerly allocated graph-owned tensor shaped in index spaces.
      *
      * The @ref create_zero_runtime_tensor counterpart of the space-shaped
@@ -2519,6 +2553,39 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         register_tensor(std::move(handle));
         // No Alloc node, MaterializationPass inserts Materialize + Initialize.
         return *ptr;
+    }
+
+    /**
+     * @brief Declare a deferred runtime-rank tensor from a braced list of extents.
+     *
+     * @tparam T Element type.
+     * @tparam Alloc Allocator.
+     * @param[in] name Human-readable name.
+     * @param[in] dims One extent per axis.
+     * @param[in] intermediate Whether the tensor is graph-internal scratch.
+     * @return What the @c std::vector overload returns, which is what this forwards to.
+     *
+     * @par Why this exists, since it looks redundant
+     * It is what makes @ref SpaceDim's "a braced list of plain numbers keeps selecting the
+     * dims overload" true rather than merely intended. Without it, ``{n}`` -- one integer --
+     * is AMBIGUOUS under libstdc++: @c std::vector<SpaceDim> has an explicit
+     * @c vector(size_type) constructor, that constructor is a candidate when the compiler
+     * forms the conversion sequence for a braced list, and the two overloads then tie on
+     * user-defined conversions. libc++ does not consider it, so the call compiles on macOS and
+     * fails on GCC, which is the worst shape a portability trap can have.
+     *
+     * A parameter of type @c std::initializer_list<size_t> settles it by the standard's own
+     * rule rather than by luck: the conversion sequence for a braced list matching it is the
+     * WORST ELEMENT conversion, an identity here, and an identity beats the user-defined
+     * sequence either vector needs. So a braced list of numbers lands here on every compiler,
+     * a braced list of spaces cannot (no space converts to an integer) and still lands on the
+     * @ref SpaceDim overload, and a mixed list is a compile error as it always was.
+     * @versionadded{2.0.0}
+     */
+    template <typename T, typename Alloc = std::allocator<T>>
+    GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims,
+                                                           bool intermediate = false) {
+        return declare_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate);
     }
 
     /**
@@ -2622,6 +2689,39 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }
         t.set_pending_init(PendingInit::Zero);
         return t;
+    }
+
+    /**
+     * @brief Declare a deferred, zeroed runtime-rank tensor from a braced list of extents.
+     *
+     * @tparam T Element type.
+     * @tparam Alloc Allocator.
+     * @param[in] name Human-readable name.
+     * @param[in] dims One extent per axis.
+     * @param[in] intermediate Whether the tensor is graph-internal scratch.
+     * @return What the @c std::vector overload returns, which is what this forwards to.
+     *
+     * @par Why this exists, since it looks redundant
+     * It is what makes @ref SpaceDim's "a braced list of plain numbers keeps selecting the
+     * dims overload" true rather than merely intended. Without it, ``{n}`` -- one integer --
+     * is AMBIGUOUS under libstdc++: @c std::vector<SpaceDim> has an explicit
+     * @c vector(size_type) constructor, that constructor is a candidate when the compiler
+     * forms the conversion sequence for a braced list, and the two overloads then tie on
+     * user-defined conversions. libc++ does not consider it, so the call compiles on macOS and
+     * fails on GCC, which is the worst shape a portability trap can have.
+     *
+     * A parameter of type @c std::initializer_list<size_t> settles it by the standard's own
+     * rule rather than by luck: the conversion sequence for a braced list matching it is the
+     * WORST ELEMENT conversion, an identity here, and an identity beats the user-defined
+     * sequence either vector needs. So a braced list of numbers lands here on every compiler,
+     * a braced list of spaces cannot (no space converts to an integer) and still lands on the
+     * @ref SpaceDim overload, and a mixed list is a compile error as it always was.
+     * @versionadded{2.0.0}
+     */
+    template <typename T, typename Alloc = std::allocator<T>>
+    GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims,
+                                                                bool intermediate = false) {
+        return declare_zero_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate);
     }
 
     /// Tiled analog of declare_zero_runtime_tensor(): a graph-owned
