@@ -101,34 +101,54 @@ TEMPLATE_TEST_CASE("pow", "[linear-algebra]", float, double) {
         auto norm = linear_algebra::vec_norm(v1);
         v1 /= norm;
 
-        // Orthogonalize.
-        for (int i = 1; i < size; i++) {
-            auto qi = Evecs(All, i);
-            for (int j = 0; j < i; j++) {
+        // Orthogonalize, TWICE against every earlier vector.
+        //
+        // One sweep of classical Gram-Schmidt loses orthogonality in proportion
+        // to how nearly dependent the drawn vectors were, and in float it loses
+        // enough to matter: a single sweep left this basis orthogonal to only
+        // about 1e-3, against 3e-16 for the same code in double. That is not a
+        // cosmetic difference here, because B below is the REFERENCE this test
+        // measures pow() against, and a basis that is not orthonormal makes B a
+        // reference for a matrix that is not A. The result was failures of a
+        // percent or so, roughly one run in a few hundred, that read as pow()
+        // being wrong when pow() was right and the reference was not.
+        //
+        // Twice is the standard remedy and is more than enough at this size.
+        auto project_out_earlier = [&](auto &vec, int upto) {
+            for (int j = 0; j < upto; j++) {
                 auto qj = Evecs(All, j);
 
-                auto proj = linear_algebra::true_dot(qi, qj);
+                auto proj = linear_algebra::true_dot(vec, qj);
 
-                // axpy(-proj, qj, &qi);
+                // axpy(-proj, qj, &vec);
                 for (int k = 0; k < size; k++) {
-                    qi(k) -= proj * qj(k);
+                    vec(k) -= proj * qj(k);
                 }
             }
+        };
+
+        for (int i = 1; i < size; i++) {
+            auto qi = Evecs(All, i);
+            project_out_earlier(qi, i);
+            project_out_earlier(qi, i);
 
             while (linear_algebra::vec_norm(qi) < TestType{1e-5}) {
                 qi = create_random_tensor<TestType>("new vec", size);
-                for (int j = 0; j < i; j++) {
-                    auto qj = Evecs(All, j);
-
-                    auto proj = linear_algebra::true_dot(qi, qj);
-
-                    // axpy(-proj, qj, &qi);
-                    for (int k = 0; k < size; k++) {
-                        qi(k) -= proj * qj(k);
-                    }
-                }
+                project_out_earlier(qi, i);
+                project_out_earlier(qi, i);
             }
             qi /= linear_algebra::vec_norm(qi);
+        }
+
+        // Check the basis before trusting anything built on it, so a regression
+        // here fails as "the reference basis is not orthonormal" rather than as
+        // "pow() disagrees", which is the shape this test wore for a while.
+        auto const ortho_tol = std::is_same_v<TestType, float> ? 1e-5 : 1e-12;
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < size; j++) {
+                auto const dot = static_cast<double>(linear_algebra::true_dot(Evecs(All, i), Evecs(All, j)));
+                REQUIRE_THAT(dot, Catch::Matchers::WithinAbs(i == j ? 1.0 : 0.0, ortho_tol));
+            }
         }
 
         // Create the test tensors.
