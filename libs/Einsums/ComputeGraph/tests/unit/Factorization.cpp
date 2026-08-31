@@ -311,6 +311,89 @@ TEST_CASE("Factorization - a split that is not cheaper is declined", "[ComputeGr
     REQUIRE(named_the_cost);
 }
 
+TEST_CASE("Factorization - a symbolic axis makes the bound-extent veto abstain", "[ComputeGraph][Factorization]") {
+    std::size_t const n = 4;
+    // The SAME rank and the same numbers as the decline case above: at these extents the two
+    // contractions cost more than the one they replace. The only difference is that this graph
+    // says its extents are a FAMILY rather than a geometry, and that has to be enough to change
+    // the answer. The captured 4 is then a placeholder for whatever a later bind supplies, and
+    // a veto read off it would delete the factorization the family was annotated for, at the
+    // capture and before the save, rather than at the bind that would have wanted it.
+    std::size_t const rank = 32;
+
+    auto left  = create_random_tensor<double>("left", rank, n, n);
+    auto right = create_random_tensor<double>("right", rank, n, n);
+    auto M     = create_zero_tensor<double>("M", n, n, n, n);
+    auto T     = create_random_tensor<double>("T", n, n);
+    auto C     = create_zero_tensor<double>("C", n, n);
+
+    // M is exactly the product the provider claims it is, as in the success case above, so the
+    // rewrite this abstention allows can be checked and not merely counted.
+    for (std::size_t m = 0; m < n; ++m) {
+        for (std::size_t nn = 0; nn < n; ++nn) {
+            for (std::size_t p = 0; p < n; ++p) {
+                for (std::size_t q = 0; q < n; ++q) {
+                    double sum = 0.0;
+                    for (std::size_t r = 0; r < rank; ++r) {
+                        sum += left(r, m, nn) * right(r, p, q);
+                    }
+                    M(m, nn, p, q) = sum;
+                }
+            }
+        }
+    }
+
+    cg::Graph reference("reference");
+    {
+        cg::CaptureGuard const guard(reference);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &C, M, T);
+    }
+    reference.execute();
+    auto const expected = C;
+
+    auto      Cf = create_zero_tensor<double>("C", n, n);
+    cg::Graph graph("symbolic_family");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &Cf, M, T);
+    }
+    graph.annotate_tag(M, cg::ProvenanceTag{.name = "test_lowrank"});
+
+    // Every axis of the contraction carries one symbol, so there is no literal extent here for
+    // the veto to hold the pass to.
+    graph.annotate_dims(M, {"n", "n", "n", "n"});
+    graph.annotate_dims(T, {"n", "n"});
+    graph.annotate_dims(Cf, {"n", "n"});
+
+    cg::FactorizationRegistry registry;
+    registry.add(std::make_shared<ExactLowRank>(left, right));
+
+    cg::passes::FactorizationPass factorization(registry);
+    cg::PassManager               pm;
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+
+    REQUIRE(graph.apply(pm));
+    REQUIRE(factorization.num_factorized() == 1);
+
+    // Specifically NOT declined for its extents, which is the whole difference from the case
+    // above and the reason this test spends the same numbers on the opposite outcome.
+    for (auto const &[reason, count] : factorization.skip_reasons()) {
+        REQUIRE(reason.find("not cheaper at the extents") == std::string::npos);
+    }
+
+    // Abstaining is not rewriting blind. The symbolic comparison still ran and still had to
+    // accept, and what it accepted still has to compute the right thing.
+    auto defaults = cg::PassManager::create_default();
+    graph.apply(defaults);
+    graph.execute();
+
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+            REQUIRE(std::abs(Cf(i, j) - expected(i, j)) < 1e-10);
+        }
+    }
+}
+
 TEST_CASE("Factorization - a tagged tensor the graph writes is declined", "[ComputeGraph][Factorization]") {
     std::size_t const n    = 4;
     std::size_t const rank = 3;

@@ -310,14 +310,24 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             // this contraction already has, and off the plan for the letters it introduces;
             // between them every letter of both forms is covered or none of it is, and a
             // partial answer disables the veto rather than guessing at it.
+            //
+            // An axis carrying a SYMBOLIC extent is noted too, because a capture-time number
+            // for such an axis is a placeholder for whatever the next bind supplies rather
+            // than a size anything runs at.
             std::unordered_map<std::string, double> extents;
-            auto const                              note_extent = [&](TensorId id, std::vector<ExprIndex> const &indices) {
+            bool                                    any_symbolic_extent = false;
+            auto const                              note_extent         = [&](TensorId id, std::vector<ExprIndex> const &indices) {
                 TensorHandle const *handle = graph.find_tensor(id);
                 if (handle == nullptr) {
                     return;
                 }
                 for (std::size_t axis = 0; axis < indices.size() && axis < handle->dims.size(); ++axis) {
                     extents.emplace(indices[axis].letter, static_cast<double>(handle->dims[axis]));
+                    // An EMPTY dim_symbols means every axis is literal; an empty ENTRY means
+                    // this one is. Anything else is a symbol or a ragged axis, both resizable.
+                    if (axis < handle->dim_symbols.size() && !handle->dim_symbols[axis].empty()) {
+                        any_symbolic_extent = true;
+                    }
                 }
             };
             note_extent(tagged_id, tagged_index);
@@ -444,9 +454,21 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                                       before.flops.to_string(ctx.registry)));
                 continue;
             }
+
+            // The bound-extent veto applies only where the capture extents ARE the problem
+            // size. An axis annotated symbolic is one a later bind may resize, so a number
+            // read off it here describes a placeholder geometry rather than anything that
+            // will run. Vetoing on such a number would let a graph captured small delete a
+            // factorization the family it was annotated for needs, and delete it at the
+            // capture, before the save, rather than at the bind that would have wanted it.
+            // Where nothing is annotated the capture size is the contract and the veto stands.
             auto const before_flops = before.flops.evaluate(extent_of);
             auto const after_flops  = after.flops.evaluate(extent_of);
-            if (before_flops.has_value() && after_flops.has_value() && *after_flops >= *before_flops) {
+            if (any_symbolic_extent) {
+                report(2, fmt::format("the extent veto abstains on '{}' ({}): a symbolic axis makes the captured size a "
+                                      "placeholder, so the symbolic verdict stands alone",
+                                      tagged_name, provider->name()));
+            } else if (before_flops.has_value() && after_flops.has_value() && *after_flops >= *before_flops) {
                 note_skip("the decomposed form is not cheaper at the extents this graph holds",
                           fmt::format("'{}' on '{}': {:g} vs {:g} flops", provider->name(), tagged_name, *after_flops, *before_flops));
                 continue;
