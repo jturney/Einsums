@@ -8,6 +8,8 @@
 ///        the Graph::structure_version counter they are enforced with.
 
 #include <Einsums/ComputeGraph.hpp>
+// Not reached through the umbrella header, which does not carry this pass.
+#include <Einsums/ComputeGraph/Passes/FactorizationPass.hpp>
 #include <Einsums/ComputeGraphTypes/Spaces.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
@@ -92,6 +94,12 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         // is a node-set change however faithful, and a pass whose phase said otherwise would be
         // refused by the manager's own read-only check.
         {"RegionIdentity", cg::PassPhase::StructuralAlgebraic},
+        // Also outside the default pipeline, and for a stronger reason than ThreadPlanning:
+        // this one does nothing at all until a caller registers a provider, so create_default()
+        // could never carry it. Structural-algebraic because it rewrites the arithmetic, which
+        // is the phase a save keeps, and a factorization a reload quietly dropped would change
+        // what the graph computes.
+        {"FactorizationPass", cg::PassPhase::StructuralAlgebraic},
     };
     return table;
 }
@@ -219,6 +227,14 @@ TEST_CASE("pass phases - a pass outside the default pipeline is classified too",
     cg::passes::ThreadPlanning const planner;
     CHECK(planner.phase() == cg::PassPhase::Tuning);
     CHECK(expected_phases().at(planner.name()) == planner.phase());
+
+    // The test above walks the DEFAULT pipeline, and this pass is deliberately not in it: it
+    // does nothing until a caller registers a provider. So the enforcement that catches an
+    // unclassified pass cannot reach this one, and asking here is what puts it back under the
+    // rule the table's comment states.
+    cg::passes::FactorizationPass const factorization;
+    CHECK(factorization.phase() == cg::PassPhase::StructuralAlgebraic);
+    CHECK(expected_phases().at(factorization.name()) == factorization.phase());
 }
 
 TEST_CASE("pass phases - the unclassified default is the never-saved one", "[ComputeGraph][Phases]") {
