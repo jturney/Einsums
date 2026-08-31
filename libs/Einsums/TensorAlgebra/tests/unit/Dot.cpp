@@ -7,6 +7,9 @@
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <cmath>
+#include <limits>
+
 #include <Einsums/Testing.hpp>
 
 EINSUMS_TEMPLATE_TEST_CASE("Einsum Dot Product", "[tensor-algebra]", float, double, std::complex<float>, std::complex<double>) {
@@ -111,11 +114,28 @@ TEMPLATE_TEST_CASE("Dot TensorView and Tensor", "[tensor_algebra]", float, doubl
     einsum(Indices{}, &C, Indices{l, k}, A_view, Indices{l, k}, B, &alg_choice);
     REQUIRE(alg_choice == einsums::tensor_algebra::detail::DOT);
 
+    using Real = RemoveComplexT<TestType>;
+    Real accumulated{0};
     for (size_t l = 0; l < l_; l++) {
         for (size_t k = 0; k < k_; k++) {
             C0 += A(l, k) * B(l, k);
+            accumulated += std::abs(A(l, k) * B(l, k));
         }
     }
 
-    REQUIRE_THAT(C, CheckWithinRel(C0, 0.0001));
+    // TWO tolerances, and the absolute one is what makes this test honest. The inputs are
+    // uniform on [-1, 1], so the dot CANCELS: twenty products of magnitude around 0.25 can
+    // sum to 5e-4, which leaves about four significant digits in a float and none of them
+    // safe. A purely relative bound then asks the vendor's reduction and this loop to agree
+    // to one part in 10^4 of a number that is almost entirely cancellation, which they do
+    // only by luck. That is what failed in a nightly run, on a tree nothing had changed.
+    //
+    // The absolute half is the standard bound for a sum of n terms reassociated: about
+    // n * eps of the accumulated MAGNITUDE, which is the quantity cancellation destroys and
+    // the relative bound cannot see. A wrong dot product is wrong by a factor, not by an
+    // ulp of the magnitude, so nothing this test exists to catch fits underneath it.
+    Real const floor    = static_cast<Real>(4 * l_ * k_) * std::numeric_limits<Real>::epsilon() * accumulated;
+    Real const relative = static_cast<Real>(0.0001) * std::abs(C0);
+    INFO("dot " << std::abs(C - C0) << " vs bound " << std::max(floor, relative) << " (accumulated magnitude " << accumulated << ")");
+    REQUIRE(std::abs(C - C0) <= std::max(floor, relative));
 }

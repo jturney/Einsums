@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -149,22 +150,53 @@ TEST_CASE("a vendor call inside our own parallel region is bit-reproducible", "[
     std::vector<double> reference(c_elems, 0.0);
     einsums::blas::gemm('N', 'N', m, n, k, 1.0, a.data(), m, b.data(), k, 0.0, reference.data(), m);
 
-    int const                        teams = std::max(2, std::min(8, omp_get_max_threads()));
-    std::vector<std::vector<double>> results(static_cast<size_t>(teams), std::vector<double>(c_elems, 0.0));
+    int const teams = std::max(2, std::min(8, omp_get_max_threads()));
 
+    auto const run_team = [&](std::vector<std::vector<double>> &out) {
+        out.assign(static_cast<size_t>(teams), std::vector<double>(c_elems, 0.0));
 #    pragma omp parallel for num_threads(teams) schedule(static)
-    for (int t = 0; t < teams; t++) {
-        einsums::blas::gemm('N', 'N', m, n, k, 1.0, a.data(), m, b.data(), k, 0.0, results[static_cast<size_t>(t)].data(), m);
-    }
+        for (int t = 0; t < teams; t++) {
+            einsums::blas::gemm('N', 'N', m, n, k, 1.0, a.data(), m, b.data(), k, 0.0, out[static_cast<size_t>(t)].data(), m);
+        }
+    };
 
+    std::vector<std::vector<double>> first;
+    std::vector<std::vector<double>> second;
+    run_team(first);
+    run_team(second);
+
+    // WHAT IS COMPARED, and why it is not the reference. The harm this pins is a residual
+    // that CHANGED between two evaluations at identical amplitudes, which is a statement
+    // about one call made twice, not about a call made in two different regimes. So the
+    // bit-identical comparisons are the ones where the configuration is genuinely the same:
+    // every member of a team against every other, and a second pass of the whole team
+    // against the first. Both stay exact, and a vendor that forks a differently sized team
+    // per call fails them, which is the defect itself.
+    //
+    // The out-of-region reference is NOT compared bitwise, and that is the correction. The
+    // fence clamps an in-region call while a call on the main thread is free to split K
+    // across however many cores the machine has, so requiring the two to agree to the last
+    // bit asserted something no vendor promises and that the fence never claimed: it made
+    // the test a detector of how many cores the runner happened to have. It failed that way
+    // on a loaded MKL runner and on Windows, on a tree that had not changed.
     for (int t = 0; t < teams; t++) {
         INFO("team member " << t);
         for (size_t i = 0; i < c_elems; i++) {
             INFO("element " << i);
-            // Bit-identical, not close: a tolerance here would pass on exactly
-            // the nondeterminism this exists to catch.
-            REQUIRE(results[static_cast<size_t>(t)][i] == reference[i]);
+            REQUIRE(first[static_cast<size_t>(t)][i] == first[0][i]);
+            REQUIRE(second[static_cast<size_t>(t)][i] == first[static_cast<size_t>(t)][i]);
         }
+    }
+
+    // And the reference to a DERIVED bound rather than a chosen one: a dot of k terms
+    // reassociated differently moves by at most about k * eps of the accumulated magnitude,
+    // so anything inside that is the summation order and anything outside it is the
+    // corruption this vendor layer exists to prevent. The two are fourteen orders of
+    // magnitude apart, so the bound has lost no teeth.
+    double const reassociation = 2.0 * static_cast<double>(k) * std::numeric_limits<double>::epsilon();
+    for (size_t i = 0; i < c_elems; i++) {
+        INFO("element " << i);
+        REQUIRE_THAT(first[0][i], Catch::Matchers::WithinRel(reference[i], reassociation));
     }
 }
 #endif

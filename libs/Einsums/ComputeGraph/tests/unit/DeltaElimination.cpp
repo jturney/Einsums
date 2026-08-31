@@ -27,7 +27,9 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <complex>
 #include <limits>
 #include <string>
 #include <vector>
@@ -51,10 +53,14 @@ std::vector<T> flatten(Tensor<T, 2> const &tensor) {
     return out;
 }
 
-/// Run @p build with no passes, then again through DeltaElimination, and require both the same
-/// bits and that the pass actually fired.
-template <typename Build, typename Reset, typename Read>
-std::shared_ptr<cg::passes::DeltaElimination> require_same_bits(Build &&build, Reset &&reset, Read &&read) {
+/// Run @p build with no passes, then again through DeltaElimination, hand both results to
+/// @p compare, and require that the pass actually fired.
+///
+/// One derivation for the two comparisons below, because the only thing that differs between
+/// them is what agreement MEANS for the rewrite under test; everything about running the graph
+/// twice and proving the pass fired is common.
+template <typename Build, typename Reset, typename Read, typename Compare>
+std::shared_ptr<cg::passes::DeltaElimination> require_rewrite(Build &&build, Reset &&reset, Read &&read, Compare &&compare) {
     reset();
     cg::Graph plain("plain");
     build(plain);
@@ -77,11 +83,49 @@ std::shared_ptr<cg::passes::DeltaElimination> require_same_bits(Build &&build, R
     auto const actual = read();
 
     REQUIRE(actual.size() == expected.size());
-    for (std::size_t i = 0; i < actual.size(); ++i) {
-        INFO("element " << i);
-        CHECK(actual[i] == expected[i]); // bitwise
-    }
+    compare(expected, actual);
     return pass;
+}
+
+/// Require the rewrite to reproduce the unrewritten result to the last bit.
+///
+/// The right assertion wherever the rewrite leaves the SAME kernel computing the value: index
+/// substitution against a delta removes multiplications by one and does not reorder a sum, so
+/// anything short of identical is a defect.
+template <typename Build, typename Reset, typename Read>
+std::shared_ptr<cg::passes::DeltaElimination> require_same_bits(Build &&build, Reset &&reset, Read &&read) {
+    return require_rewrite(build, reset, read, [](auto const &expected, auto const &actual) {
+        for (std::size_t i = 0; i < actual.size(); ++i) {
+            INFO("element " << i);
+            CHECK(actual[i] == expected[i]); // bitwise
+        }
+    });
+}
+
+/// Require the rewrite to reproduce the unrewritten result to within a few ulps.
+///
+/// The right assertion wherever the rewrite REPLACES the kernel, which is what happens as soon
+/// as prefactors are involved: the unrewritten form is a vendor GEMM computing
+/// ``beta*C + alpha*(A delta)`` and the rewritten one is a scaled permute computing
+/// ``beta*C + alpha*A``. Those are two implementations of one expression, and a platform is
+/// free to contract one of them into an FMA and not the other, which is a last-bit difference
+/// and not a defect. Demanding bit equality across them asserted something the design's own
+/// reproducibility rule does not offer - it promises the same graph on the same machine in the
+/// same configuration, not two different node sets - and it passed here only because
+/// Accelerate and this compiler happened to agree. GCC does not.
+///
+/// The bound is eight ulps of the result. What these cases exist to catch is a dropped or
+/// mangled prefactor, which moves a value by a FACTOR: fifteen orders of magnitude above this
+/// line, so nothing that matters fits underneath it.
+template <typename Build, typename Reset, typename Read>
+std::shared_ptr<cg::passes::DeltaElimination> require_within_ulps(Build &&build, Reset &&reset, Read &&read) {
+    return require_rewrite(build, reset, read, [](auto const &expected, auto const &actual) {
+        for (std::size_t i = 0; i < actual.size(); ++i) {
+            INFO("element " << i);
+            double const bound = 8.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, std::abs(expected[i]));
+            CHECK(std::abs(actual[i] - expected[i]) <= bound);
+        }
+    });
 }
 
 } // namespace
@@ -228,8 +272,33 @@ TEST_CASE("prefactors survive the rewrite exactly", "[ComputeGraph][DeltaElimina
             }
         }
     };
-    auto const pass = require_same_bits(build, reset, [&] { return flatten(C); });
+    auto const pass = require_within_ulps(build, reset, [&] { return flatten(C); });
     CHECK(pass->num_eliminated() == 1);
+
+    // And the claim this case is really about, asserted where it is DISCRETE. A dropped
+    // prefactor is a property of the node the pass emitted, not of the bits that come out of
+    // it, so reading it off the rewritten graph says exactly what the test set out to say and
+    // says it without asking two kernels to round alike. This half stays exact on every
+    // platform; the numeric half above is the sanity check that the node is also WIRED up.
+    reset();
+    cg::Graph structural("structural");
+    build(structural);
+    cg::PassManager pm;
+    pm.add(std::make_shared<cg::passes::DeltaElimination>());
+    REQUIRE(pm.run(structural));
+
+    bool found_permute = false;
+    for (auto const &node : structural.nodes()) {
+        if (node.kind != cg::OpKind::Permute) {
+            continue;
+        }
+        auto const *desc = std::get_if<cg::PermuteDescriptor>(&node.op_data);
+        REQUIRE(desc != nullptr);
+        CHECK(desc->alpha == std::complex<double>{2.5, 0.0}); // the product prefactor
+        CHECK(desc->beta == std::complex<double>{1.5, 0.0});  // the accumulation prefactor
+        found_permute = true;
+    }
+    CHECK(found_permute);
 }
 
 TEST_CASE("an untagged identity matrix is left alone", "[ComputeGraph][DeltaElimination]") {

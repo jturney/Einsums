@@ -216,7 +216,20 @@ constexpr double kWideTolerance = 1e-12;
 /// different internal thread counts, and a dot product summed in two orders
 /// lands about a unit apart in the last place. Zero would be asserting that a
 /// vendor never varies with its caller, which is not something it promises.
-constexpr double kOrderingTolerance = 8.0 * std::numeric_limits<double>::epsilon();
+/// The reassociation budget, DERIVED from the chain rather than chosen for it.
+///
+/// A replay that runs a node on a worker thread instead of the main one can get a different
+/// vendor width, and a different width is a different summation order. Each contraction sums
+/// @ref kExtent terms and each chain accumulates @ref kPermutations of them, so two orders of
+/// the same arithmetic can separate by about that product in units of epsilon. The previous
+/// number here was 8 epsilon, which is not a budget for this chain but for a much shallower
+/// one; a GCC leg measured 40 and was right to.
+///
+/// It has lost no teeth. What this test exists to catch is CORRUPTION - the mixed-width
+/// vendor defect produced wrong values and deadlocks, not last bits - and that is O(1),
+/// fourteen orders of magnitude above this line. A difference that exceeds this bound is
+/// still the bug returning, which is the property a hand-picked constant could not state.
+constexpr double kOrderingTolerance = static_cast<double>(kPermutations * kExtent) * std::numeric_limits<double>::epsilon();
 
 /// Every element of every accumulator, in one flat vector - the bit-for-bit
 /// snapshot the rounds are compared against.
