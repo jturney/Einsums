@@ -66,6 +66,7 @@ Data-dependent branching is covered by the dedicated SCF/MP2 tests.
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 
@@ -920,6 +921,243 @@ def _assert_pools(got, oracle, prog, label, extra=""):
                 )
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Single-pass tier measurement
+#
+# The shards above ask "does the optimized graph agree with numpy". Sorting a
+# pass into one of the Part 5.1 tiers asks something narrower and quantitative:
+# run ONE pass alone, and report how far its answer sits from the same graph
+# with no passes at all.
+#
+# Two properties of what follows are the point rather than conveniences.
+#
+# It reports whether the pass FIRED. A single-pass differential that finds no
+# difference has shown the pass faithful, or has shown that it never ran, and
+# those are opposite conclusions drawn from identical output. Every candidate
+# below carries a counter for exactly this reason.
+#
+# And it MEASURES rather than asserts. A pass that is not bitwise over this
+# corpus is not thereby broken, it is re-associating, and the number it deviates
+# by is the bound its tier test should pin. An assertion of bit equality here
+# would answer the classification question by assuming it, which is the mistake
+# the GCC leg already caught once.
+#
+# Non-finite positions are held apart from the arithmetic. A bitwise-exact pass
+# may legitimately differ there, since removing a multiplication also removes
+# its ability to produce a NaN, so folding that into a max-deviation number
+# would report inf for a pass that is exact everywhere it computes anything.
+# ──────────────────────────────────────────────────────────────────────────
+
+#: Every structural-algebraic pass a tier classification has to cover, mapped to
+#: the attribute naming how many times it fired. Adding a pass here is what puts
+#: it in the measurement, so the table is the list of what has been classified.
+TIER_CANDIDATES = {
+    "DeltaElimination": "num_eliminated",
+    "ConstantFolding": "num_folded",
+    "ScaleAbsorption": "num_absorbed",
+    "PermuteFusion": "num_rewrites",
+    "CSE": "num_eliminated",
+    "DeadNodeElimination": "num_eliminated",
+    "SymmetrizedAccumulation": "num_rewritten",
+    "ElementWiseFusion": "num_fused",
+    "LinearCombinationContractionFolding": "num_eliminated",
+    "DistributiveFactoring": "num_eliminated",
+    "LoopInvariantHoisting": "num_hoisted",
+    "ContractionPlanning": "chains_restructured",
+}
+
+#: Per-pass tallies across a shard, so a run can say how much evidence it
+#: actually gathered instead of only that nothing failed.
+_TIER_STATS = {}
+
+
+def _tier_stat(pass_name):
+    return _TIER_STATS.setdefault(
+        pass_name, {"attempted": 0, "usable": 0, "fired": 0, "bitwise": 0})
+
+
+def _written_pool_indices(g, counts):
+    """Which pool buffers @p g still WRITES, per kind.
+
+    Needed because a pass may legitimately ORPHAN a buffer: PermuteFusion folds
+    a transpose into its consumer and the transposed temporary is then never
+    written, exactly as CSE leaves an eliminated duplicate's storage alone. Such
+    a buffer still holds its seed value, and comparing it would report the seed
+    against the computed answer as if the pass had corrupted something. It is
+    not part of what the graph computes, so it is not part of the measurement.
+
+    Read off the graph rather than declared per generator, because a hand-kept
+    list of dead buffers is one more table to fall out of step with the passes.
+    """
+    doc = json.loads(g.to_json())
+    names = {t["id"]: t.get("name", "") for t in doc.get("tensors", [])}
+
+    written_names = set()
+
+    def walk(nodes):
+        for n in nodes or []:
+            for oid in (n.get("outputs") or []):
+                nm = names.get(oid)
+                if nm:
+                    written_names.add(nm)
+            # Loop bodies and conditional branches carry their own node lists.
+            for key in ("body", "then_body", "else_body", "nodes"):
+                sub = n.get(key)
+                if isinstance(sub, dict):
+                    walk(sub.get("nodes"))
+                elif isinstance(sub, list):
+                    walk(sub)
+
+    walk(doc.get("nodes"))
+    return {kind: {i for i in range(count)
+                   if any(nm.endswith(f"_{kind}{i}") for nm in written_names)}
+            for kind, count in counts.items()}
+
+
+def _run_program_single_pass(prog, m_arrays, v_arrays, t_arrays, name, pass_name):
+    """Build, apply exactly one pass, execute.
+
+    Returns ``(pools, fired_count, written)``, where ``written`` names the pool
+    buffers the rewritten graph still produces.
+    """
+    mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, name)
+    g = cg.Graph(name)
+    build_cg(prog, g, mats, vecs, r3s, name)
+
+    pass_obj = getattr(cg, pass_name)()
+    pm = cg.PassManager()
+    pm.add(pass_obj)
+    pm.run(g)
+
+    counts = {"m": len(mats), "v": len(vecs), "t": len(r3s)}
+    written = _written_pool_indices(g, counts)
+
+    g.execute()
+
+    fired = int(getattr(pass_obj, TIER_CANDIDATES[pass_name]))
+    return ([np.asarray(x).copy() for x in mats],
+            [np.asarray(x).copy() for x in vecs],
+            [np.asarray(x).copy() for x in r3s]), fired, written
+
+
+def _run_program_raw_written(prog, m_arrays, v_arrays, t_arrays, name):
+    """The unoptimized run, plus which pool buffers it writes."""
+    mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, name)
+    g = cg.Graph(name)
+    build_cg(prog, g, mats, vecs, r3s, name)
+    counts = {"m": len(mats), "v": len(vecs), "t": len(r3s)}
+    written = _written_pool_indices(g, counts)
+    g.execute()
+    return ([np.asarray(x).copy() for x in mats],
+            [np.asarray(x).copy() for x in vecs],
+            [np.asarray(x).copy() for x in r3s]), written
+
+
+def _gap(got, expected):
+    """Absolute, relative, ULP and norm-relative gap over FINITE positions.
+
+    Returns ``(max_abs, max_rel, max_ulp, sq_err, sq_ref, nonfinite_diff)``.
+    The two squared sums are returned rather than a ratio so a caller can
+    accumulate a norm-relative figure across a whole pool.
+    """
+    finite = np.isfinite(got) & np.isfinite(expected)
+    # Disagreeing about WHERE the non-finite values sit is a real difference and
+    # a categorical one, so it is reported as a flag rather than folded into a
+    # magnitude that would come out inf.
+    nonfinite_diff = bool(np.any(np.isfinite(got) != np.isfinite(expected)))
+    if not np.any(finite):
+        return 0.0, 0.0, 0.0, 0.0, 0.0, nonfinite_diff
+
+    g = got[finite].astype(np.float64)
+    e = expected[finite].astype(np.float64)
+    diff = np.abs(g - e)
+    max_abs = float(diff.max())
+
+    nz = np.abs(e) > 0
+    max_rel = float((diff[nz] / np.abs(e[nz])).max()) if np.any(nz) else 0.0
+    # np.spacing of a zero reference is a denormal, which would turn any gap at
+    # all into ~1e300 ulps and say nothing; those positions are the abs figure's.
+    max_ulp = float((diff[nz] / np.spacing(np.abs(e[nz]))).max()) if np.any(nz) else 0.0
+
+    return max_abs, max_rel, max_ulp, float((diff ** 2).sum()), float((e ** 2).sum()), nonfinite_diff
+
+
+def measure_program_single_pass(prog, m_arrays, v_arrays, t_arrays, label,
+                                pass_name, dtype="float64"):
+    """Run one pass alone against the unoptimized graph and report the gap.
+
+    Returns ``None`` when the trial is not usable (the oracle overflowed, which
+    tests floating point rather than the pass). Otherwise a dict:
+
+    ``fired``          how many rewrites the pass reported making
+    ``bitwise``        every finite element identical to the last bit
+    ``max_abs``        largest absolute gap over finite positions
+    ``max_rel``        largest element-wise relative gap
+    ``max_ulp``        largest gap in units in the last place
+    ``norm_rel``       Frobenius-norm relative gap over the whole pool
+    ``nonfinite_diff`` the two runs disagree about where non-finite values are
+    ``orphaned``       buffers excluded because the pass folded their producer
+                       away, so the rewritten graph no longer writes them
+
+    Deliberately not an assertion: which tier a pass belongs to is what this is
+    evidence for, so the caller decides what the number means.
+    """
+    stat = _tier_stat(pass_name)
+    stat["attempted"] += 1
+
+    cap = _DTYPE_CAP[dtype]
+    raw, raw_written = _run_program_raw_written(
+        prog, m_arrays, v_arrays, t_arrays, f"{label}_raw")
+    if not _usable(*raw, cap=cap):
+        return None
+    stat["usable"] += 1
+
+    pools, fired, opt_written = _run_program_single_pass(
+        prog, m_arrays, v_arrays, t_arrays, f"{label}_{pass_name}", pass_name)
+
+    max_abs = max_rel = max_ulp = 0.0
+    sq_err = sq_ref = 0.0
+    nonfinite_diff = False
+    bitwise = True
+    orphaned = 0
+
+    for kind, got, expected in zip("mvt", pools, raw):
+        for idx in range(len(expected)):
+            # A buffer the raw run produced and the rewritten one no longer
+            # does is orphaned, not wrong: it holds its seed value because the
+            # pass folded its producer away. See _written_pool_indices.
+            if idx in raw_written[kind] and idx not in opt_written[kind]:
+                orphaned += 1
+                continue
+            if not np.array_equal(got[idx], expected[idx], equal_nan=True):
+                bitwise = False
+            a, r, u, se, sr, nf = _gap(got[idx], expected[idx])
+            max_abs = max(max_abs, a)
+            max_rel = max(max_rel, r)
+            max_ulp = max(max_ulp, u)
+            sq_err += se
+            sq_ref += sr
+            nonfinite_diff = nonfinite_diff or nf
+
+    if fired:
+        stat["fired"] += 1
+    if bitwise:
+        stat["bitwise"] += 1
+
+    return {
+        "pass_name": pass_name,
+        "fired": fired,
+        "bitwise": bitwise,
+        "max_abs": max_abs,
+        "max_rel": max_rel,
+        "max_ulp": max_ulp,
+        "norm_rel": (sq_err ** 0.5 / sq_ref ** 0.5) if sq_ref > 0 else 0.0,
+        "nonfinite_diff": nonfinite_diff,
+        "orphaned": orphaned,
+        "program": prog,
+    }
+
+
 __all__ = [
     'fuzz_seeds',
     'DIMS',
@@ -976,4 +1214,12 @@ __all__ = [
     '_assert_pools',
     '_SAFE_PASSES',
     '_G',
+    'TIER_CANDIDATES',
+    '_TIER_STATS',
+    '_tier_stat',
+    '_written_pool_indices',
+    '_run_program_single_pass',
+    '_run_program_raw_written',
+    '_gap',
+    'measure_program_single_pass',
 ]
