@@ -2438,10 +2438,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return What the @c std::vector overload returns, which is what this forwards to.
      *
      * @par Why this exists, since it looks redundant
-     * It is what makes @ref SpaceDim's "a braced list of plain numbers keeps selecting the
-     * dims overload" true rather than merely intended. Without it, ``{n}`` -- one integer --
-     * is AMBIGUOUS under libstdc++: @c std::vector<SpaceDim> has an explicit
-     * @c vector(size_type) constructor, that constructor is a candidate when the compiler
+     * It is what makes the promise on @ref SpaceDim, that a braced list of plain numbers keeps
+     * selecting the dims overload, true rather than merely intended. Without it, ``{n}`` --
+     * one integer -- is AMBIGUOUS under libstdc++: @c std::vector<SpaceDim> has an explicit
+     * ``vector(size_type)`` constructor, that constructor is a candidate when the compiler
      * forms the conversion sequence for a braced list, and the two overloads then tie on
      * user-defined conversions. libc++ does not consider it, so the call compiles on macOS and
      * fails on GCC, which is the worst shape a portability trap can have.
@@ -2566,10 +2566,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return What the @c std::vector overload returns, which is what this forwards to.
      *
      * @par Why this exists, since it looks redundant
-     * It is what makes @ref SpaceDim's "a braced list of plain numbers keeps selecting the
-     * dims overload" true rather than merely intended. Without it, ``{n}`` -- one integer --
-     * is AMBIGUOUS under libstdc++: @c std::vector<SpaceDim> has an explicit
-     * @c vector(size_type) constructor, that constructor is a candidate when the compiler
+     * It is what makes the promise on @ref SpaceDim, that a braced list of plain numbers keeps
+     * selecting the dims overload, true rather than merely intended. Without it, ``{n}`` --
+     * one integer -- is AMBIGUOUS under libstdc++: @c std::vector<SpaceDim> has an explicit
+     * ``vector(size_type)`` constructor, that constructor is a candidate when the compiler
      * forms the conversion sequence for a braced list, and the two overloads then tie on
      * user-defined conversions. libc++ does not consider it, so the call compiles on macOS and
      * fails on GCC, which is the worst shape a portability trap can have.
@@ -2702,10 +2702,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return What the @c std::vector overload returns, which is what this forwards to.
      *
      * @par Why this exists, since it looks redundant
-     * It is what makes @ref SpaceDim's "a braced list of plain numbers keeps selecting the
-     * dims overload" true rather than merely intended. Without it, ``{n}`` -- one integer --
-     * is AMBIGUOUS under libstdc++: @c std::vector<SpaceDim> has an explicit
-     * @c vector(size_type) constructor, that constructor is a candidate when the compiler
+     * It is what makes the promise on @ref SpaceDim, that a braced list of plain numbers keeps
+     * selecting the dims overload, true rather than merely intended. Without it, ``{n}`` --
+     * one integer -- is AMBIGUOUS under libstdc++: @c std::vector<SpaceDim> has an explicit
+     * ``vector(size_type)`` constructor, that constructor is a candidate when the compiler
      * forms the conversion sequence for a braced list, and the two overloads then tie on
      * user-defined conversions. libc++ does not consider it, so the call compiles on macOS and
      * fails on GCC, which is the worst shape a portability trap can have.
