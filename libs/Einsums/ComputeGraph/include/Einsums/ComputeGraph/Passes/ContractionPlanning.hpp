@@ -99,10 +99,14 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - Reorder the leaf list when the running product enters a member as `input_b`,
  *   instead of declining the chain.
  */
-class EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
   public:
     /// Construct with auto-detected hardware cost_model.
-    ContractionPlanning();
+    ///
+    /// The only constructor reachable from Python: the @ref CostModel overload below takes a
+    /// type nothing binds, and a pass whose cost model is a hint rather than a premise is
+    /// worth reaching with the machine's own numbers anyway.
+    APIARY_EXPOSE ContractionPlanning();
 
     /// Construct with a specific hardware cost_model.
     explicit ContractionPlanning(CostModel cost_model);
@@ -150,8 +154,13 @@ class EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
     /// subgraph. ``_reports`` alone would hold only the last fixpoint iteration
     /// of the last subgraph visited; ``graph.explain()`` reads this getter.
     [[nodiscard]] std::vector<ChainReport> const &chain_reports() const { return _apply_reports; }
-    [[nodiscard]] size_t                          chains_restructured() const { return _chains_restructured; }
-    [[nodiscard]] size_t                          intermediates_created() const { return _intermediates_created; }
+
+    /// How many GEMM chains the last apply() re-parenthesized. The firing count: a differential
+    /// test that sees no difference has to know whether this pass ran or merely declined.
+    APIARY_EXPOSE APIARY_GETTER("chains_restructured") [[nodiscard]] size_t chains_restructured() const { return _chains_restructured; }
+    APIARY_EXPOSE APIARY_GETTER("intermediates_created") [[nodiscard]] size_t intermediates_created() const {
+        return _intermediates_created;
+    }
 
   private:
     CostModel _cost_model;

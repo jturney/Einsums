@@ -128,6 +128,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      */
     bool run(Graph &graph) override;
 
+    /// @brief How many duplicate nodes the last @ref run eliminated, across the whole tree.
+    ///
+    /// Every other structural-algebraic pass carries one of these, and this pass wanting one
+    /// is not symmetry: a differential test that runs a single pass over a corpus and finds
+    /// no difference has proved the pass is faithful OR that it never fired, and without a
+    /// count it cannot tell those apart. Reset at the top of @ref run.
+    APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+
   private:
     /// One graph of the tree. @p tree_context is an opaque handle to the
     /// root-level facts collected by @ref run (type-erased to keep the tree
@@ -135,6 +143,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// a body the survivor must be graph-owned too, because a loop predicate or
     /// DIIS callback runs between iterations and can write user tensors.
     bool run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph);
+
+    size_t _num_eliminated{0};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

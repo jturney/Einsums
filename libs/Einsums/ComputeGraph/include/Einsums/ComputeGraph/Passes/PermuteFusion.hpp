@@ -37,16 +37,18 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @endcode
  *
  * @par Example (Python)
- * PermuteFusion is not exposed as a standalone Python pass (it carries no APIARY binding). It runs as part of the default
- * pipeline:
  * @code{.py}
  * import einsums, einsums.graph as cg
+ * import einsums._core.graph as _G
  * g = cg.Graph("permute_fusion")
  * with cg.capture(g):
  *     einsums.permute("ji <- ij", A_T, A)                # physical transpose
  *     einsums.einsum("ik <- ji ; jk", C, A_T, B)         # GEMM on the transposed copy
- * g.apply(cg.default_pass_manager())                     # PermuteFusion fires inside the pipeline
+ * pf = _G.PermuteFusion()
+ * pm = _G.PassManager(); pm.add(pf); pm.run(g)
+ * # pf.num_rewrites -> 1   (getter is a property, not a method)
  * @endcode
+ * It also runs as part of ``cg.default_pass_manager()``.
  *
  * @par Limitations
  * - The consumer must be an **Einsum** node and the permuted tensor must feed one of its first two operand slots (A or B); a
@@ -62,8 +64,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - Extend fusion to non-einsum consumers (e.g. gemm/BatchedGemm slots) and to permutes feeding operand positions beyond A/B.
  * - Handle a permute with multiple consumers by fusing into each reader instead of bailing on the shared-temporary case.
  */
-class EINSUMS_EXPORT PermuteFusion : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT PermuteFusion : public OptimizerPass {
   public:
+    APIARY_EXPOSE PermuteFusion() = default;
+
     [[nodiscard]] std::string name() const override { return "PermuteFusion"; }
 
     /// @copydoc OptimizerPass::phase
@@ -77,10 +81,10 @@ class EINSUMS_EXPORT PermuteFusion : public OptimizerPass {
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Number of Permute→Einsum/Gemm pairs detected this run (before safety filtering).
-    [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
+    APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
 
     /// Number of candidates that passed safety checks and were actually rewritten.
-    [[nodiscard]] size_t num_rewrites() const { return _num_rewrites; }
+    APIARY_EXPOSE APIARY_GETTER("num_rewrites") [[nodiscard]] size_t num_rewrites() const { return _num_rewrites; }
 
   private:
     size_t _num_candidates{0};

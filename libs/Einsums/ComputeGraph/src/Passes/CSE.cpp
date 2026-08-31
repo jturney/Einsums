@@ -643,6 +643,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
             remove[j] = true;
             modified  = true;
             merged    = true;
+            ++_num_eliminated;
 
             if (*ratio == 1.0) {
                 EINSUMS_LOG_INFO("CSE: eliminated node {} (duplicate of node {})", nodes[j].id, nodes[i].id);
@@ -691,6 +692,8 @@ bool CSE::run(Graph &graph) {
     // whether a buffer escapes the graph being rewritten, and whether a body's
     // handle for a parent-created tensor really describes a user tensor.
     // Collecting the whole tree once here answers both.
+    _num_eliminated = 0;
+
     TreeContext ctx;
     collect_tree_context(graph, ctx);
 
