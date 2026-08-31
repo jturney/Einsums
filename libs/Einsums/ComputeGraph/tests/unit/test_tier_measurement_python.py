@@ -76,6 +76,15 @@ def test_fires_on_a_lone_consumer_and_declines_on_a_shared_temporary():
     assert declined_any, "the shared-temporary shape should be declined"
 
 
+#: What "the same answer" is allowed to mean across a kernel change. PermuteFusion
+#: folds a transpose into its consumer's transa flag, so the fused form runs a
+#: DIFFERENT vendor kernel than the explicit-transpose-then-GEMM form, and two
+#: implementations of one expression may disagree in the last bit. A few ULP is
+#: the bound Part 5.1 puts on that; bit equality is not available and asserting
+#: it would detect toolchains rather than bugs.
+_KERNEL_CHANGE_ULP = 4.0
+
+
 def test_an_orphaned_buffer_is_not_counted_as_a_deviation():
     """A buffer whose producer was folded away is excluded, not compared.
 
@@ -83,14 +92,25 @@ def test_an_orphaned_buffer_is_not_counted_as_a_deviation():
     seed value. Comparing it would report the seed against the computed answer
     and call a faithful pass a 60%-error one, which is exactly what the first
     version of this harness did.
+
+    The bar is a few ULP rather than bit equality, and the difference between
+    those two numbers is the whole point: without the exclusion the gap is of
+    order one, with it the gap is of order the last bit. Asserting zero here
+    would be asserting that the vendor computes ``A^T B`` the same way whether
+    it is handed a transposed copy or a transa flag, which no BLAS promises and
+    Accelerate does not do.
     """
+    checked = 0
     for seed in range(8):
         prog, pool = _perm_program(np.random.default_rng(4400 + seed), False)
         rec = measure_program_single_pass(prog, pool, [], [], f"orph{seed}", "PermuteFusion")
         if rec is None or not rec["fired"]:
             continue
+        checked += 1
         assert rec["orphaned"] >= 1, "the folded transpose's output should be excluded"
-        assert rec["bitwise"], (
-            "folding a transpose into its consumer changed no value the graph still "
-            f"produces, so the measurement should see none: {rec}")
-        assert rec["max_ulp"] == 0.0 and rec["norm_rel"] == 0.0
+        assert rec["max_ulp"] <= _KERNEL_CHANGE_ULP, (
+            "folding a transpose into its consumer changed a value the graph still "
+            f"produces by more than a kernel swap can explain: {rec}")
+        assert rec["norm_rel"] < 1e-12, (
+            f"an orphaned buffer looks like it leaked into the measurement: {rec}")
+    assert checked, "the fusion never fired; this test then proves nothing"
