@@ -284,6 +284,11 @@ jobs:
           # conftest.py); ctest discards the output of a test it kills on
           # timeout, so a hang leaves nothing else behind.
           EINSUMS_TEST_STACKDUMP_DIR: ${{ github.workspace }}\dumps
+          # The tier measurement, per leg. This one is the only leg that varies
+          # the compiler and runtime rather than the BLAS underneath the same
+          # one, which is what makes it worth a seventh report.
+          EINSUMS_TIER_REPORT_DIR: ${{ github.workspace }}\tier-reports
+          EINSUMS_TIER_LABEL: windows-clang-cl-openblas-${{ matrix.build_type }}
         run: |
           call conda activate einsums-env
           if errorlevel 1 exit /b %ERRORLEVEL%
@@ -297,5 +302,14 @@ jobs:
         with:
           name: windows-crash-dumps-${{ matrix.build_type }}
           path: ${{ github.workspace }}/dumps
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload tier measurement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-tier-report-${{ matrix.build_type }}
+          path: ${{ github.workspace }}/tier-reports
           if-no-files-found: ignore
           retention-days: 14
