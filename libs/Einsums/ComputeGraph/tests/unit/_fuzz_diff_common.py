@@ -1014,6 +1014,23 @@ def _written_pool_indices(g, counts):
             for kind, count in counts.items()}
 
 
+def _build_for_measurement(prog, g, mats, vecs, r3s, name):
+    """Lay a trial's work into @p g.
+
+    ``prog`` is either a statement list, which goes through @ref build_cg as
+    every other shard's does, or a CALLABLE ``(graph, m, v, t, name)``. The
+    callable form exists because several passes cannot be provoked by a
+    statement list at all: their guards want graph-owned scratch, or a delta, or
+    a loop body holding an invariant, and the pool the statement format draws
+    from is user tensors and nothing else. An opportunity generator for such a
+    pass builds its own graph and is handed the same seeded pool.
+    """
+    if callable(prog):
+        prog(g, mats, vecs, r3s, name)
+    else:
+        build_cg(prog, g, mats, vecs, r3s, name)
+
+
 def _run_program_single_pass(prog, m_arrays, v_arrays, t_arrays, name, pass_name):
     """Build, apply exactly one pass, execute.
 
@@ -1022,7 +1039,7 @@ def _run_program_single_pass(prog, m_arrays, v_arrays, t_arrays, name, pass_name
     """
     mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, name)
     g = cg.Graph(name)
-    build_cg(prog, g, mats, vecs, r3s, name)
+    _build_for_measurement(prog, g, mats, vecs, r3s, name)
 
     pass_obj = getattr(cg, pass_name)()
     pm = cg.PassManager()
@@ -1044,7 +1061,7 @@ def _run_program_raw_written(prog, m_arrays, v_arrays, t_arrays, name):
     """The unoptimized run, plus which pool buffers it writes."""
     mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, name)
     g = cg.Graph(name)
-    build_cg(prog, g, mats, vecs, r3s, name)
+    _build_for_measurement(prog, g, mats, vecs, r3s, name)
     counts = {"m": len(mats), "v": len(vecs), "t": len(r3s)}
     written = _written_pool_indices(g, counts)
     g.execute()
@@ -1217,6 +1234,7 @@ __all__ = [
     'TIER_CANDIDATES',
     '_TIER_STATS',
     '_tier_stat',
+    '_build_for_measurement',
     '_written_pool_indices',
     '_run_program_single_pass',
     '_run_program_raw_written',

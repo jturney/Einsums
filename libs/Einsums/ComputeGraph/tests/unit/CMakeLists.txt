@@ -179,6 +179,7 @@ set(ComputeGraphTests
     test_fuzz_diff_gemm_batching_python.py
     test_fuzz_diff_optin_python.py
     test_tier_measurement_python.py
+    test_tier_opportunities_python.py
     test_fuzz_ergonomics_python.py
     test_gemm_views_python.py
     test_gemv_views_python.py
