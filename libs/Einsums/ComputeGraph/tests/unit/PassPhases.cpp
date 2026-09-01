@@ -104,6 +104,64 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
     return table;
 }
 
+/// The tier every built-in pass is expected to declare, and where each entry
+/// came from.
+///
+/// MEASURED, not declared. Each of these was run alone over a program built to
+/// provoke it, against the same graph with no passes, on six CI legs:
+/// clang/OpenBLAS, clang/OpenBLAS no-profiler, gcc/MKL, gcc/OpenBLAS,
+/// gcc/OpenBLAS free-threaded, and macOS/Accelerate. The generators live in
+/// ``_tier_opportunities.py`` and each leg uploads its numbers.
+///
+/// The measurement is why this table is not the obvious one. ``PermuteFusion``
+/// is bit-identical on FIVE of the six legs and differs on Accelerate, so a
+/// table written from one machine, or from the agreeing majority, would have
+/// called it bitwise. A pass added here later is not classified until it has
+/// run everywhere too.
+std::map<std::string, cg::PassTier> const &expected_tiers() {
+    static std::map<std::string, cg::PassTier> const table = {
+        // Bitwise-exact: measured at EXACTLY zero on all six legs.
+        {"CSE", cg::PassTier::BitwiseExact},
+        {"DeadNodeElimination", cg::PassTier::BitwiseExact},
+        {"DeltaElimination", cg::PassTier::BitwiseExact},
+        {"ElementWiseFusion", cg::PassTier::BitwiseExact},
+        {"LoopInvariantHoisting", cg::PassTier::BitwiseExact},
+        {"ScaleAbsorption", cg::PassTier::BitwiseExact},
+        {"SymmetrizedAccumulation", cg::PassTier::BitwiseExact},
+        {"RegionIdentity", cg::PassTier::BitwiseExact},
+
+        // Re-associating, with the worst norm-relative gap measured across the
+        // six legs. All of them sit within a few eps, which is the tier
+        // behaving as described rather than a bound anyone had to choose.
+        {"ContractionPlanning", cg::PassTier::ReAssociating},                 // 4.0e-16
+        {"DistributiveFactoring", cg::PassTier::ReAssociating},               // 6.5e-16
+        {"LinearCombinationContractionFolding", cg::PassTier::ReAssociating}, // 1.4e-16
+        {"PermuteFusion", cg::PassTier::ReAssociating},                       // 4.6e-17, Accelerate only
+
+        // Lossy: trades accuracy under a recorded tolerance, never in a default manager.
+        {"FactorizationPass", cg::PassTier::Lossy},
+    };
+    return table;
+}
+
+/// Passes with no measured tier, and why.
+///
+/// Kept as data rather than left out of the table, because an absence is
+/// something a reader has to notice and an entry is something they can read. A
+/// pass here declares whatever ``OptimizerPass::tier`` defaults to, and that
+/// default is a statement that nobody has measured it rather than a claim about
+/// its arithmetic.
+std::map<std::string, std::string> const &unmeasured_tiers() {
+    static std::map<std::string, std::string> const table = {
+        {"ConstantFolding",
+         "Nothing has ever been observed to fire it. Its constants must be graph-owned intermediates that are ALREADY "
+         "materialized, and those two are not simultaneously reachable: an intermediate is deferred until Materialization "
+         "runs. It also has no positive test anywhere in this tree, C++ included; every num_folded assertion checks for "
+         "zero. That makes its behaviour unknown rather than its tier unknown."},
+    };
+    return table;
+}
+
 std::vector<std::string> names_of(cg::PassManager const &pm) {
     std::vector<std::string> out;
     out.reserve(pm.passes().size());
@@ -221,6 +279,90 @@ TEST_CASE("pass phases - every default pass declares the phase the table names",
         REQUIRE(hit != expected_phases().end()); // a new pass must be classified here
         CHECK(hit->second == phase);
     }
+}
+
+TEST_CASE("pass tiers - every default pass declares the tier the table names", "[ComputeGraph][Phases]") {
+    auto const pm = cg::PassManager::create_default();
+
+    for (auto const &pass : pm.passes()) {
+        auto const name = pass->name();
+        INFO("pass '" << name << "' reports tier '" << cg::pass_tier_name(pass->tier()) << "'");
+
+        auto const unmeasured = unmeasured_tiers().find(name);
+        if (unmeasured != unmeasured_tiers().end()) {
+            // Not classified, and saying so is the point. What it must NOT do
+            // is claim a tier it has not been measured at.
+            CHECK(pass->tier() == cg::PassTier::Tuning);
+            continue;
+        }
+
+        auto const hit = expected_tiers().find(name);
+        if (hit != expected_tiers().end()) {
+            CHECK(hit->second == pass->tier());
+            continue;
+        }
+
+        // Absent from the table. That is only acceptable for a pass whose tier
+        // is a property of its PHASE rather than something to measure: analysis
+        // and diagnostic passes touch no values, and resource and tuning passes
+        // reschedule a node set they do not change the arithmetic of. Part 5.1
+        // puts all of those in the tuning tier by construction.
+        //
+        // A STRUCTURAL-ALGEBRAIC pass is the case this rejects. That phase is
+        // exactly the set whose members rewrite the mathematics, so one of them
+        // arriving unmeasured would be claiming the tuning tier's promise
+        // without anyone having checked it.
+        CHECK(pass->phase() != cg::PassPhase::StructuralAlgebraic);
+        CHECK(pass->tier() == cg::PassTier::Tuning);
+    }
+}
+
+TEST_CASE("pass tiers - the passes outside the default pipeline are classified too", "[ComputeGraph][Phases]") {
+    // Same gap the phase table has: the check above walks the default pipeline,
+    // and these two are deliberately not in it.
+    cg::passes::RegionIdentity const identity;
+    CHECK(identity.tier() == cg::PassTier::BitwiseExact);
+    CHECK(expected_tiers().at(identity.name()) == identity.tier());
+
+    cg::passes::FactorizationPass const factorization;
+    CHECK(factorization.tier() == cg::PassTier::Lossy);
+    CHECK(expected_tiers().at(factorization.name()) == factorization.tier());
+}
+
+TEST_CASE("pass tiers - an unclassified pass claims the least", "[ComputeGraph][Phases]") {
+    // A pass that never answered the question must not be taken to have said
+    // its arithmetic is exact. Tuning is the tier that claims least about the
+    // algebra, which is what makes it the right default.
+    UnclassifiedPass const pass;
+    CHECK(pass.tier() == cg::PassTier::Tuning);
+}
+
+TEST_CASE("pass tiers - no pass is both measured and unmeasured", "[ComputeGraph][Phases]") {
+    for (auto const &[name, reason] : unmeasured_tiers()) {
+        INFO("pass '" << name << "'");
+        CHECK(expected_tiers().find(name) == expected_tiers().end());
+        // A gap is only acceptable while it says why it is there.
+        CHECK(reason.size() > 40);
+    }
+}
+
+TEST_CASE("pass tiers - a lossy pass is never in a default manager", "[ComputeGraph][Phases]") {
+    // The guard the tier exists to make mechanical: a pass that trades accuracy
+    // is opt-in, and "we did not add it" is not the same as "it cannot be
+    // added". Every named manager is a view on create_default(), so checking
+    // that one covers them all.
+    auto const pm = cg::PassManager::create_default();
+    for (auto const &pass : pm.passes()) {
+        INFO("pass '" << pass->name() << "'");
+        CHECK(pass->tier() != cg::PassTier::Lossy);
+    }
+}
+
+TEST_CASE("pass tiers - names round-trip", "[ComputeGraph][Phases]") {
+    CHECK(std::string(cg::pass_tier_name(cg::PassTier::BitwiseExact)) == "bitwise-exact");
+    CHECK(std::string(cg::pass_tier_name(cg::PassTier::ReAssociating)) == "re-associating");
+    CHECK(std::string(cg::pass_tier_name(cg::PassTier::Tuning)) == "tuning");
+    CHECK(std::string(cg::pass_tier_name(cg::PassTier::Lossy)) == "lossy");
 }
 
 TEST_CASE("pass phases - a pass outside the default pipeline is classified too", "[ComputeGraph][Phases]") {

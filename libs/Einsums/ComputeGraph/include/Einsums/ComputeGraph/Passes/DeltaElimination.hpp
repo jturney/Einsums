@@ -85,6 +85,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return ``"DeltaElimination"``.
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string name() const override { return "DeltaElimination"; }
 
+    /// @copydoc OptimizerPass::tier
+    /// Index substitution against a Kronecker delta removes multiplications by one; it does not reorder a sum.
+    /// This pass is the reason PassTier::BitwiseExact carries its non-finite qualification: removing a multiply also
+    /// removes its ability to produce a NaN, and that difference is one-directional.
+    [[nodiscard]] PassTier tier() const override { return PassTier::BitwiseExact; }
+
     /// @brief How many delta contractions the last run removed.
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] std::size_t num_eliminated() const { return _num_eliminated; }

@@ -106,6 +106,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
 
+    /// @copydoc OptimizerPass::tier
+    /// Substituting a duplicate's consumers for the survivor changes which node computes a value, not what that computation
+    /// is.
+    [[nodiscard]] PassTier tier() const override { return PassTier::BitwiseExact; }
+
     /// Opts out of the PassManager's recursion and descends ITSELF, which is
     /// not the same as not running on bodies - it does, since `run()` walks the
     /// tree.

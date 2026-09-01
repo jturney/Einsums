@@ -111,6 +111,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
 
+    /// @copydoc OptimizerPass::tier
+    /// Folding a transpose pair into one contraction changes the order the two terms are summed in.
+    [[nodiscard]] PassTier tier() const override { return PassTier::ReAssociating; }
+
     bool                                   run(Graph &graph) override;
     void                                   reset_stats() override;
     [[nodiscard]] std::vector<std::string> explain() const override;

@@ -180,6 +180,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      */
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
 
+    /// @copydoc OptimizerPass::tier
+    /// Folding A*B1 + A*B2 into A*(B1+B2) sums the operands before contracting instead of after.
+    [[nodiscard]] PassTier tier() const override { return PassTier::ReAssociating; }
+
     bool run(Graph &graph) override;
 
     [[nodiscard]] std::vector<std::string> explain() const override;

@@ -76,6 +76,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return ``"FactorizationPass"``.
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string name() const override { return "FactorizationPass"; }
 
+    /// @copydoc OptimizerPass::tier
+    /// Substitutes a fitted factorization for the tensor it approximates, under a tolerance it records through
+    /// OptimizerPass::approximate. Never eligible for a default manager, which is what this tier means.
+    [[nodiscard]] PassTier tier() const override { return PassTier::Lossy; }
+
     /// @brief Zero the per-apply counters.
     void reset_stats() override;
 

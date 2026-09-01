@@ -75,6 +75,20 @@ std::string_view pass_phase_name(PassPhase phase) {
     return "unknown";
 }
 
+std::string_view pass_tier_name(PassTier tier) {
+    switch (tier) {
+    case PassTier::BitwiseExact:
+        return "bitwise-exact";
+    case PassTier::ReAssociating:
+        return "re-associating";
+    case PassTier::Tuning:
+        return "tuning";
+    case PassTier::Lossy:
+        return "lossy";
+    }
+    return "unknown";
+}
+
 void OptimizerPass::report(int level, std::string_view message) const {
     if (_verbosity >= level) {
         fmt::print(stderr, "[{}] {}\n", name(), message);

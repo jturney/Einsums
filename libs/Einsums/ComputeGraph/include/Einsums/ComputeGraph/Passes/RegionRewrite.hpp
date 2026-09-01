@@ -255,6 +255,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return ``"RegionIdentity"``.
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string name() const override { return "RegionIdentity"; }
 
+    /// @copydoc OptimizerPass::tier
+    /// Raises every region and lowers it unchanged, so the lowered nodes run the same kernels over the same values
+    /// in the same order. The framework's identity test asserts exactly that.
+    [[nodiscard]] PassTier tier() const override { return PassTier::BitwiseExact; }
+
   protected:
     /**
      * @brief Change nothing, and say so.

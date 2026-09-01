@@ -71,7 +71,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::string name() const override { return "PermuteFusion"; }
 
     /// @copydoc OptimizerPass::phase
-    [[nodiscard]] PassPhase                phase() const override { return PassPhase::StructuralAlgebraic; }
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+
+    /// @copydoc OptimizerPass::tier
+    /// Exact in its reasoning and NOT bit-identical in practice: the fused form hands the vendor a transa flag where the
+    /// unfused form hands it a transposed copy, and those are different kernels. Bit-identical on five CI legs and one ULP
+    /// apart on Accelerate, which is why this is not the bitwise tier with a caveat.
+    [[nodiscard]] PassTier                 tier() const override { return PassTier::ReAssociating; }
     bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;

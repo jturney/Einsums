@@ -112,7 +112,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::string name() const override { return "ScaleAbsorption"; }
 
     /// @copydoc OptimizerPass::phase
-    [[nodiscard]] PassPhase                phase() const override { return PassPhase::StructuralAlgebraic; }
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+
+    /// @copydoc OptimizerPass::tier
+    /// The absorbed scale becomes the consumer's prefactor, which the consumer was already applying.
+    [[nodiscard]] PassTier                 tier() const override { return PassTier::BitwiseExact; }
     bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;

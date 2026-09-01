@@ -78,6 +78,63 @@ enum class PassPhase : std::uint8_t {
 [[nodiscard]] EINSUMS_EXPORT std::string_view pass_phase_name(PassPhase phase);
 
 /**
+ * @brief How close to the unoptimized answer a pass's output has to be.
+ *
+ * Orthogonal to @ref PassPhase, and the two are easy to conflate. Phase answers
+ * "when does this run, and may a save keep its output"; tier answers "what may
+ * it do to the numbers". `RegionIdentity` is structural-algebraic AND bitwise;
+ * `FactorizationPass` is structural-algebraic AND lossy.
+ *
+ * The membership here is MEASURED rather than declared, over the six CI legs
+ * that carry the tier report (see ``test_tier_opportunities_python.py``). That
+ * matters because the obvious classification is wrong: `PermuteFusion` is
+ * bit-identical on five of the six and differs on Accelerate, so a table
+ * written from any one machine, or from the agreeing majority, would have put
+ * it in the wrong tier.
+ *
+ * @see OptimizerPass::tier
+ */
+enum class PassTier : std::uint8_t {
+    /// Result-identical to the last bit, on every toolchain. Nothing about
+    /// which arithmetic happens, or the order it happens in, changes.
+    ///
+    /// One qualification, which is about NON-FINITE values rather than about
+    /// kernels: removing a multiplication also removes its ability to produce a
+    /// NaN, so a pass here may still change an answer where an input is
+    /// infinite. `DeltaElimination` stays in this tier because that difference
+    /// is one-directional, and the tier requires that direction rather than
+    /// literal bit equality on every input.
+    BitwiseExact,
+    /// Mathematically equivalent, not bit-identical, because floating-point
+    /// addition and multiplication are not associative. Declares a bound and is
+    /// validated against it, never against bit equality.
+    ///
+    /// A pass that is exact in its ALGEBRA but hands the vendor a different
+    /// KERNEL belongs here rather than in the tier above with a caveat
+    /// attached. `PermuteFusion` folds a transpose into a `transa` flag, which
+    /// is exact reasoning and a different BLAS path, and a tier whose members
+    /// each carry their own exception has stopped drawing the line it exists to
+    /// draw.
+    ReAssociating,
+    /// Same operations in the same order, a different schedule. Result-identical
+    /// by construction, for a FIXED configuration: a different thread count
+    /// changes a reduction tree, so this is a claim about the pass and not about
+    /// the machine.
+    Tuning,
+    /// Trades accuracy for something, under an explicit tolerance, and records
+    /// what it did. Never eligible for a default manager.
+    Lossy,
+};
+
+/**
+ * @brief Lower-case hyphenated name of a tier, for reports and test tables.
+ *
+ * @param[in] tier The tier to name.
+ * @return One of ``bitwise-exact``, ``re-associating``, ``tuning``, ``lossy``.
+ */
+[[nodiscard]] EINSUMS_EXPORT std::string_view pass_tier_name(PassTier tier);
+
+/**
  * @brief Abstract base class for optimization passes over a computation graph.
  *
  * An optimization pass inspects a Graph's node list and may modify it to improve
@@ -148,6 +205,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      *   remain valid, if not optimal, under a different one.
      */
     [[nodiscard]] virtual PassPhase phase() const { return PassPhase::Tuning; }
+
+    /**
+     * @brief What this pass may do to the numbers. See @ref PassTier.
+     *
+     * Defaults to @ref PassTier::Tuning, which is the honest default for the
+     * same reason the phase default is: a pass nobody has classified is a pass
+     * nobody has measured, and Tuning is the tier that claims least about the
+     * algebra while still promising the arithmetic is untouched.
+     *
+     * A pass that CHANGES the arithmetic must say so. Leaving this default on
+     * one that re-associates is the failure this is worth guarding against, and
+     * the tier table in ``PassPhases.cpp`` is what turns that into a test
+     * rather than a comment.
+     */
+    [[nodiscard]] virtual PassTier tier() const { return PassTier::Tuning; }
 
     /**
      * @brief Should ``PassManager`` re-invoke this pass on every sub-graph?

@@ -100,6 +100,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
 
+    /// @copydoc OptimizerPass::tier
+    /// The folded form accumulates the same terms; measured at exactly zero on all six legs.
+    [[nodiscard]] PassTier tier() const override { return PassTier::BitwiseExact; }
+
     bool run(Graph &graph) override;
 
     /// @copydoc OptimizerPass::explain

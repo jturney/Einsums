@@ -122,7 +122,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * safe to persist in a saved graph while a batching or placement decision
      * made from the same measurement is not.
      */
-    [[nodiscard]] PassPhase                phase() const override { return PassPhase::StructuralAlgebraic; }
+    [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+
+    /// @copydoc OptimizerPass::tier
+    /// Re-parenthesizing a GEMM chain is matrix-chain associativity, which is exact in the algebra and reorders every
+    /// accumulation it touches.
+    [[nodiscard]] PassTier                 tier() const override { return PassTier::ReAssociating; }
     bool                                   run(Graph &graph) override;
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
