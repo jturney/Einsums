@@ -16,6 +16,7 @@ einsums_add_pseudo_dependencies(Tests.Examples Tests.Unit.Examples.DLPNO)
 
 einsums_add_python_unit_test("Examples.DLPNO" ReferenceIO SCRIPT test_reference_io.py)
 einsums_add_python_unit_test("Examples.DLPNO" Integrals SCRIPT test_integrals.py)
+einsums_add_python_unit_test("Examples.DLPNO" AutoDF SCRIPT test_autodf.py)
 
 # The index-space annotations, and the scaling ScalingAnalysis derives from
 # them. Psi4-free for the same reason as the two above: it reads the smallest
