@@ -75,8 +75,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
-    bool                    run(Graph &graph) override;
-    void                    reset_stats() override;
+
+    /// @copydoc OptimizerPass::tier
+    /// Evaluating a node at pass time runs the same kernel over the same values and stores what it
+    /// produced, so the replay returns the number the computation would have returned.
+    [[nodiscard]] PassTier tier() const override { return PassTier::BitwiseExact; }
+    bool                   run(Graph &graph) override;
+    void                   reset_stats() override;
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;

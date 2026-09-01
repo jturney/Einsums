@@ -113,3 +113,93 @@ def test_constant_folding_rank3_user_owned_tensors_are_not_folded():
     pass_inst = cg.ConstantFolding()
     assert not _run(pass_inst, g)
     assert pass_inst.num_folded == 0
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Folding something
+#
+# Until 2026-09-01 every assertion in this file, and every num_folded assertion
+# anywhere in the tree, checked for ZERO. The pass could not fire: it counted a
+# tensor's own Alloc node as a writer, so an eagerly created graph-owned tensor
+# was never constant, and a deferred one is not materialized, which the other
+# guard rejects. Between them no tensor could ever qualify.
+#
+# These are the cases that would have caught that.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_constant_folding_folds_a_contraction_over_constants():
+    """Operands the graph owns and no node writes are constant, so the
+    contraction over them is evaluated once at pass time."""
+    rng = np.random.default_rng(20260901)
+    k = rng.standard_normal((3, 3))
+
+    out = einsums.create_zero_tensor("out", [3, 3])
+
+    g = cg.Graph("cf_folds")
+    konst = g.create_zero_tensor("konst", [3, 3], intermediate=True, dtype="float64")
+    folded = g.create_zero_tensor("folded", [3, 3], intermediate=True, dtype="float64")
+    # Filled outside capture: a node writing it would make it non-constant, and
+    # leaving it zero would fold an all-zero contraction and prove nothing.
+    np.asarray(konst)[...] = k
+
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", folded, konst, konst)
+        einsums.linalg.axpy(1.0, folded, out)
+
+    pass_inst = cg.ConstantFolding()
+    assert _run(pass_inst, g)
+    assert pass_inst.num_folded == 1
+
+    g.execute()
+    assert_close(out, k @ k)
+
+
+def test_constant_folding_replays_the_baked_value():
+    """A folded node is a no-op on replay and its value still stands.
+
+    The point of folding is that the second execute does not recompute, so this
+    is what would break if the no-op were installed without the value having
+    been evaluated first.
+    """
+    rng = np.random.default_rng(20260902)
+    k = rng.standard_normal((3, 3))
+
+    out = einsums.create_zero_tensor("out", [3, 3])
+
+    g = cg.Graph("cf_replay")
+    konst = g.create_zero_tensor("konst", [3, 3], intermediate=True, dtype="float64")
+    folded = g.create_zero_tensor("folded", [3, 3], intermediate=True, dtype="float64")
+    np.asarray(konst)[...] = k
+
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", folded, konst, konst)
+        einsums.linalg.axpy(1.0, folded, out)
+
+    assert _run(cg.ConstantFolding(), g)
+
+    g.execute()
+    first = np.asarray(out).copy()
+    np.asarray(out)[...] = 0.0
+    g.execute()
+
+    assert_close(out, k @ k)
+    assert np.array_equal(first, np.asarray(out))
+
+
+def test_constant_folding_leaves_a_written_operand_alone():
+    """The guard that makes the above safe: an operand some node writes is not
+    constant, however graph-owned it is."""
+    A = einsums.create_random_tensor("A", [3, 3])
+    out = einsums.create_zero_tensor("out", [3, 3])
+
+    g = cg.Graph("cf_written")
+    scratch = g.create_zero_tensor("scratch", [3, 3], intermediate=True, dtype="float64")
+
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", scratch, A, A)   # scratch is WRITTEN here
+        einsums.einsum("ij <- ik ; kj", out, scratch, scratch)
+
+    pass_inst = cg.ConstantFolding()
+    assert not _run(pass_inst, g)
+    assert pass_inst.num_folded == 0

@@ -38,9 +38,24 @@ bool ConstantFolding::run(Graph &graph) {
         return false;
     }
 
-    // Build the set of all tensors that are written by any node
+    // Every tensor some node WRITES A VALUE INTO.
+    //
+    // Lifecycle nodes are skipped, and skipping them is what makes this pass
+    // able to fire at all. An eagerly created graph-owned tensor gets an Alloc
+    // node whose output is that tensor, so counting Alloc as a writer made
+    // every such tensor non-constant, and a deferred one has no Alloc but is
+    // not materialized, which the guard further down rejects. Between them the
+    // two creation paths left no tensor this pass could ever call constant,
+    // which is why nothing in the tree had ever been observed to fold.
+    //
+    // `is_lifecycle` already says this is the rule: it documents its members as
+    // producing no value of their own and says passes resolving readers and
+    // writers skip them. This one was hand-rolling the set instead.
     std::unordered_set<TensorId> written_tensors;
     for (auto const &node : nodes) {
+        if (is_lifecycle(node.kind)) {
+            continue;
+        }
         for (auto tid : node.outputs) {
             written_tensors.insert(tid);
         }

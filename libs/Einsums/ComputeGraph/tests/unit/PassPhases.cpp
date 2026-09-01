@@ -121,6 +121,7 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
 std::map<std::string, cg::PassTier> const &expected_tiers() {
     static std::map<std::string, cg::PassTier> const table = {
         // Bitwise-exact: measured at EXACTLY zero on all six legs.
+        {"ConstantFolding", cg::PassTier::BitwiseExact},
         {"CSE", cg::PassTier::BitwiseExact},
         {"DeadNodeElimination", cg::PassTier::BitwiseExact},
         {"DeltaElimination", cg::PassTier::BitwiseExact},
@@ -151,14 +152,14 @@ std::map<std::string, cg::PassTier> const &expected_tiers() {
 /// pass here declares whatever ``OptimizerPass::tier`` defaults to, and that
 /// default is a statement that nobody has measured it rather than a claim about
 /// its arithmetic.
+///
+/// EMPTY as of 2026-09-01, and it is worth saying why rather than deleting the
+/// mechanism. Its one entry was ``ConstantFolding``, which was unmeasured
+/// because it could not FIRE: it counted a tensor's own Alloc as a writer, so
+/// no tensor was ever constant. That is fixed, the pass is measured, and the
+/// hook stays for the next pass that needs it.
 std::map<std::string, std::string> const &unmeasured_tiers() {
-    static std::map<std::string, std::string> const table = {
-        {"ConstantFolding",
-         "Nothing has ever been observed to fire it. Its constants must be graph-owned intermediates that are ALREADY "
-         "materialized, and those two are not simultaneously reachable: an intermediate is deferred until Materialization "
-         "runs. It also has no positive test anywhere in this tree, C++ included; every num_folded assertion checks for "
-         "zero. That makes its behaviour unknown rather than its tier unknown."},
-    };
+    static std::map<std::string, std::string> const table = {};
     return table;
 }
 

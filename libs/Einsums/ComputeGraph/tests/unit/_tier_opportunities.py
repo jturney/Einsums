@@ -191,6 +191,26 @@ def gen_symmetrized_accumulation(rng):
             [np.zeros((o, o, vv, vv)) for _ in range(3)])
 
 
+def gen_constant_folding(rng):
+    """A contraction whose operands are graph-owned and written by nothing.
+
+    The constants are FILLED outside capture, so they hold real values and no
+    node writes them. Both halves matter: a node writing them would make them
+    non-constant, and leaving them zero would fold an all-zero contraction and
+    prove nothing about the value that gets baked.
+    """
+    k = _r(rng, 3, 3)
+
+    def build(g, m, v, t, name):
+        konst = g.create_zero_tensor(f"{name}_k", [3, 3], intermediate=True, dtype="float64")
+        folded = g.create_zero_tensor(f"{name}_f", [3, 3], intermediate=True, dtype="float64")
+        np.asarray(konst)[...] = k
+        with cg.capture(g):
+            einsums.einsum(_SQ_SPEC, folded, konst, konst)
+            einsums.linalg.axpy(1.0, folded, m[0])
+    return build, [np.zeros((3, 3))], [], []
+
+
 #: Pass name to opportunity generator. A pass here is one the classification can
 #: gather evidence about.
 OPPORTUNITY_GENERATORS = {
@@ -205,16 +225,12 @@ OPPORTUNITY_GENERATORS = {
     "LoopInvariantHoisting": gen_loop_invariant_hoisting,
     "DeltaElimination": gen_delta_elimination,
     "SymmetrizedAccumulation": gen_symmetrized_accumulation,
+    "ConstantFolding": gen_constant_folding,
 }
 
 #: Passes with no generator, and why. Kept as data rather than left out, so the
 #: gap is something a reader can see rather than something they have to notice.
-NO_GENERATOR = {
-    "ConstantFolding":
-        "Its constants must be graph-owned intermediates that are already "
-        "MATERIALIZED, and those two are not simultaneously reachable from "
-        "Python: create_zero_tensor(intermediate=True) is deferred until the "
-        "Materialization pass runs, and Materialization is not bound. The pass "
-        "has no positive test anywhere in the tree either, C++ included; every "
-        "num_folded assertion in the suite checks for zero.",
-}
+#: Empty is the goal and, as of 2026-09-01, the state: ConstantFolding was the
+#: last entry, and it was here because the pass could not fire rather than
+#: because nobody had written it a shape.
+NO_GENERATOR = {}
