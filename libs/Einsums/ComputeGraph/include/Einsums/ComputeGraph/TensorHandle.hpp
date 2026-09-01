@@ -546,6 +546,26 @@ struct TensorHandle {
     std::shared_ptr<void> owner;
 
     /**
+     * @brief The tensor object it is legal to DEREFERENCE at execute time.
+     *
+     * @ref tensor_ptr is the handle's IDENTITY, which is the caller's wrapper
+     * address, and identity is deliberately not lifetime: capture adopts the
+     * operand's storage into a stand-in the graph keeps alive through @ref
+     * owner, precisely so the caller's wrapper may be destroyed before
+     * ``execute()``. Dereferencing @ref tensor_ptr after that reads freed
+     * memory.
+     *
+     * So anything that casts a handle to a tensor and USES it goes through
+     * here, and anything that identifies or compares tensors uses @ref
+     * tensor_ptr. ``Graph::live_tensor_ptr`` is the by-id spelling of this and
+     * defers to it.
+     *
+     * @return The stand-in when capture adopted one, otherwise the registered
+     *         pointer.
+     */
+    [[nodiscard]] void *live_ptr() const noexcept { return owner ? owner.get() : tensor_ptr; }
+
+    /**
      * @brief Optional validation function to check if the tensor is still alive.
      *
      * Set automatically by make_handle() at registration time. The function captures

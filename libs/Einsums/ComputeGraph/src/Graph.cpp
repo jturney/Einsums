@@ -3137,13 +3137,21 @@ namespace {
 
 /// Dispatch a binary operation on two tensors with matching dtype and rank.
 /// The Fn receives typed pointers: fn(Tensor<T,Rank>*, Tensor<T,Rank>*)
+/// Dispatch a binary operation on two tensors.
+///
+/// Both operands are reached through @ref TensorHandle::live_ptr rather than
+/// ``tensor_ptr``. These helpers back the ``make_*_executor`` family, which
+/// resolves its operands by id at REPLAY, and by then the caller's wrapper may
+/// legally be gone: capture's whole contract is that an operand's wrapper may
+/// be destroyed before ``execute()``. Reading the identity pointer there is a
+/// use-after-free, and it was one, silently, for every pass-built axpy.
 template <typename Fn>
 void dispatch_binary(TensorHandle const &a, TensorHandle const &b, Fn &&fn) {
     if (a.dtype != b.dtype || a.rank != b.rank) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_binary: dtype or rank mismatch");
     }
     // A runtime tensor's storage layout differs from Tensor<T, Rank>; casting one
-    // handle's tensor_ptr with the other's shape is type confusion. Both operands
+    // handle's pointer with the other's shape is type confusion. Both operands
     // must be the same kind (callers gate on is_runtime, so this only guards misuse).
     if (a.is_runtime != b.is_runtime) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_binary: cannot mix runtime and compile-time tensors");
@@ -3154,12 +3162,12 @@ void dispatch_binary(TensorHandle const &a, TensorHandle const &b, Fn &&fn) {
         // every rank; branch on the handle kind before the compile-time rank switch.
         if (a.is_runtime) {
             using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
-            fn(static_cast<RT *>(a.tensor_ptr), static_cast<RT *>(b.tensor_ptr));
+            fn(static_cast<RT *>(a.live_ptr()), static_cast<RT *>(b.live_ptr()));
             return;
         }
         detail::dispatch_by_rank(a.rank, [&](auto rank_tag) {
             constexpr std::size_t K = decltype(rank_tag)::value;
-            fn(static_cast<Tensor<T, K> *>(a.tensor_ptr), static_cast<Tensor<T, K> *>(b.tensor_ptr));
+            fn(static_cast<Tensor<T, K> *>(a.live_ptr()), static_cast<Tensor<T, K> *>(b.live_ptr()));
         });
     };
 
@@ -3174,12 +3182,12 @@ void dispatch_unary(TensorHandle const &a, Fn &&fn) {
         // (rank carried dynamically) rather than the compile-time Tensor<T, Rank>.
         if (a.is_runtime) {
             using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
-            fn(static_cast<RT *>(a.tensor_ptr));
+            fn(static_cast<RT *>(a.live_ptr()));
             return;
         }
         detail::dispatch_by_rank(a.rank, [&](auto rank_tag) {
             constexpr std::size_t K = decltype(rank_tag)::value;
-            fn(static_cast<Tensor<T, K> *>(a.tensor_ptr));
+            fn(static_cast<Tensor<T, K> *>(a.live_ptr()));
         });
     };
 

@@ -960,7 +960,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         if (handle == nullptr) {
             return nullptr;
         }
-        return handle->owner ? handle->owner.get() : handle->tensor_ptr;
+        return handle->live_ptr();
     }
 
     /**
