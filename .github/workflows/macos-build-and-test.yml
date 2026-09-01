@@ -100,6 +100,11 @@ jobs:
           # See the Linux workflow: stacks of every thread when a python test
           # stops making progress, which ctest's timeout report does not carry.
           EINSUMS_TEST_STACKDUMP_DIR: "${{ github.workspace }}/stackdumps"
+          # The tier measurement, per leg. This is the leg that matters most to
+          # it: Accelerate is where PermuteFusion stopped being bit-identical,
+          # which is what made a one-machine classification untrustworthy.
+          EINSUMS_TIER_REPORT_DIR: "${{ github.workspace }}/tier-reports"
+          EINSUMS_TIER_LABEL: "macos-accelerate-${{ matrix.build_type }}"
         run: ctest --rerun-failed --output-on-failure -j3
 
       - name: Upload hung-test stack dumps
@@ -112,6 +117,16 @@ jobs:
           path: "${{ github.workspace }}/stackdumps"
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Upload tier measurement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-tier-report-${{ matrix.build_type }}
+          path: "${{ github.workspace }}/tier-reports"
+          if-no-files-found: ignore
+          retention-days: 14
+
 
       - name: Generate coverage information
         working-directory: "${{github.workspace}}/build"
