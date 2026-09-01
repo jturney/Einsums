@@ -50,6 +50,30 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") ProvenanceTag {
     /// Sorted key/value attributes. Empty for a tag that needs no qualification.
     APIARY_EXPOSE APIARY_READONLY std::vector<std::pair<std::string, std::string>> attributes;
 
+    /// @brief Build a tag carrying just a vocabulary name.
+    ///
+    /// A factory rather than a constructor, and the reason is that this type is an AGGREGATE:
+    /// C++ code writes ``ProvenanceTag{.name = "eri"}``, and any user-declared constructor
+    /// would end that. Python needs some way to make one, since the binding generator gives an
+    /// exposed aggregate no constructor at all and the type was reachable but unbuildable.
+    ///
+    /// @param[in] name The vocabulary name.
+    /// @return The tag.
+    APIARY_EXPOSE [[nodiscard]] static ProvenanceTag make(std::string name) { return ProvenanceTag{.name = std::move(name)}; }
+
+    /// @brief Build a tag with attributes.
+    ///
+    /// A separate name rather than a defaulted argument on @ref make, because the generator
+    /// copies a default argument through verbatim and a braced empty one does not compile.
+    ///
+    /// @param[in] name The vocabulary name.
+    /// @param[in] attributes Key/value qualifications.
+    /// @return The tag.
+    APIARY_EXPOSE [[nodiscard]] static ProvenanceTag make_with_attributes(std::string                                      name,
+                                                                          std::vector<std::pair<std::string, std::string>> attributes) {
+        return ProvenanceTag{.name = std::move(name), .attributes = std::move(attributes)};
+    }
+
     /// @brief Whether this tag says anything at all.
     /// @return True when @ref name is non-empty.
     APIARY_EXPOSE APIARY_GETTER("valid") [[nodiscard]] bool valid() const noexcept { return !name.empty(); }

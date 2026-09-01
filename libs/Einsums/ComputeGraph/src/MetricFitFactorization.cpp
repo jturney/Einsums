@@ -45,6 +45,12 @@ RuntimeTensorView<double> named_view(TensorType const &tensor) {
 }
 } // namespace
 
+MetricFitFactorization::MetricFitFactorization(std::string tag, RuntimeTensor<double> const &three_index,
+                                               RuntimeTensor<double> const &metric, double bound, double drop_threshold, std::string name)
+    : MetricFitFactorization(std::move(tag), RuntimeTensorView<double>{three_index}, RuntimeTensorView<double>{metric}, bound,
+                             drop_threshold, std::move(name)) {
+}
+
 MetricFitFactorization::MetricFitFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric,
                                                double bound, double drop_threshold, std::string name)
     : MetricFitFactorization(std::move(tag), named_view(three_index), named_view(metric), bound, drop_threshold, std::move(name)) {

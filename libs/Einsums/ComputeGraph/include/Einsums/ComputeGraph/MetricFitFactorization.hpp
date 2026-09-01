@@ -78,7 +78,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * @see MetricFitFactorization.hpp for the mathematics and for what chemistry calls it
  * @versionadded{2.0.0}
  */
-class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT MetricFitFactorization
+    : public FactorizationProvider {
   public:
     /**
      * @brief The drop threshold a caller who states none gets.
@@ -118,6 +119,19 @@ class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
     MetricFitFactorization(std::string tag, RuntimeTensorView<double> three_index, RuntimeTensorView<double> metric, double bound,
                            double drop_threshold = default_drop_threshold, std::string name = "MetricFit");
 
+    /// @brief The same, taking runtime-rank tensors. This is the overload Python gets.
+    ///
+    /// A view converts from a @ref RuntimeTensor in C++, carrying its name, but the bindings
+    /// will not make that conversion on their own, so the type a Python caller actually holds
+    /// needs an overload of its own.
+    ///
+    /// @note The drop-threshold default is spelled with its class qualifier because the
+    ///       binding generator copies a default argument through verbatim, and an unqualified
+    ///       class-scope constant does not resolve where the generated code spells it.
+    APIARY_EXPOSE MetricFitFactorization(std::string tag, RuntimeTensor<double> const &three_index, RuntimeTensor<double> const &metric,
+                                         double bound, double drop_threshold = MetricFitFactorization::default_drop_threshold,
+                                         std::string name = "MetricFit");
+
     /// @brief The same, taking compile-time-rank tensors.
     ///
     /// Kept as its own overload rather than left to the implicit conversion, because that
@@ -149,7 +163,7 @@ class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
      * @brief The threshold below which this provider drops an auxiliary direction.
      * @return The number handed to the constructor, or @ref default_drop_threshold.
      */
-    [[nodiscard]] double drop_threshold() const noexcept { return _drop_threshold; }
+    APIARY_EXPOSE APIARY_GETTER("drop_threshold") [[nodiscard]] double drop_threshold() const noexcept { return _drop_threshold; }
 
     /**
      * @brief The parameter a fitted graph reports its dropped auxiliary directions under.
@@ -163,7 +177,7 @@ class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
      * every direction the caller supplied; anything else is accuracy lost in a way the asserted
      * bound does not describe.
      */
-    [[nodiscard]] static std::string dropped_param_name(std::string const &provider, std::string const &tensor);
+    APIARY_EXPOSE [[nodiscard]] static std::string dropped_param_name(std::string const &provider, std::string const &tensor);
 
   private:
     std::string               _tag;

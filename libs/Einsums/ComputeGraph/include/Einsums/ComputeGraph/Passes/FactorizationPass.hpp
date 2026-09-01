@@ -70,7 +70,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * @brief Use a caller-supplied registry rather than the process-wide one.
      * @param[in] registry The registry to query. Must outlive the pass.
      */
-    explicit FactorizationPass(FactorizationRegistry &registry) : _registry(&registry) {}
+    /// @note Keeps the registry alive for as long as the pass, because the pass holds a
+    ///       pointer to it and a Python caller has no other reason to keep a reference.
+    APIARY_EXPOSE APIARY_KEEP_ALIVE(1, 2) explicit FactorizationPass(FactorizationRegistry &registry) : _registry(&registry) {}
 
     /// @brief The pass name.
     /// @return ``"FactorizationPass"``.

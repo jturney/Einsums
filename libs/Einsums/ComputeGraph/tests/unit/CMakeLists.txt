@@ -181,6 +181,7 @@ set(ComputeGraphTests
     test_tier_measurement_python.py
     test_tier_opportunities_python.py
     test_pass_operand_lifetime_after_rewrite_python.py
+    test_factorization_python.py
     test_fuzz_ergonomics_python.py
     test_gemm_views_python.py
     test_gemv_views_python.py

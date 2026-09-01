@@ -142,7 +142,7 @@ struct FactorizationPlan {
  * provenance tag, costs each offer, and takes the cheapest that is actually cheaper.
  * @versionadded{2.0.0}
  */
-class EINSUMS_EXPORT FactorizationProvider {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT FactorizationProvider {
   public:
     FactorizationProvider()                                         = default;
     FactorizationProvider(FactorizationProvider const &)            = delete;
@@ -153,11 +153,11 @@ class EINSUMS_EXPORT FactorizationProvider {
 
     /// @brief This provider's name, used in reports and in the approximation record.
     /// @return The name.
-    [[nodiscard]] virtual std::string name() const = 0;
+    APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] virtual std::string name() const = 0;
 
     /// @brief The provenance tag whose tensors this provider factorizes.
     /// @return The tag name, e.g. ``"eri"``.
-    [[nodiscard]] virtual std::string tag() const = 0;
+    APIARY_EXPOSE APIARY_GETTER("tag") [[nodiscard]] virtual std::string tag() const = 0;
 
     /**
      * @brief Offer a factorization of @p tensor, or say why there is not one.
@@ -181,8 +181,10 @@ class EINSUMS_EXPORT FactorizationProvider {
  * that adds one is expected to remove it, and @ref clear exists for exactly that.
  * @versionadded{2.0.0}
  */
-class EINSUMS_EXPORT FactorizationRegistry {
+class APIARY_EXPOSE APIARY_MODULE("graph") EINSUMS_EXPORT FactorizationRegistry {
   public:
+    APIARY_EXPOSE FactorizationRegistry() = default;
+
     /**
      * @brief Register a provider.
      * @param[in] provider The provider. Held by shared_ptr and must outlive nothing in
@@ -191,31 +193,31 @@ class EINSUMS_EXPORT FactorizationRegistry {
      *         naming it. Two providers under one name would make which of them ran depend on
      *         registration order, and a pass whose result depends on that is not reproducible.
      */
-    void add(std::shared_ptr<FactorizationProvider> provider);
+    APIARY_EXPOSE void add(std::shared_ptr<FactorizationProvider> provider);
 
     /**
      * @brief Every provider claiming @p tag, in registration order.
      * @param[in] tag A provenance tag name.
      * @return The providers. Empty when nothing claims it.
      */
-    [[nodiscard]] std::vector<std::shared_ptr<FactorizationProvider>> for_tag(std::string_view tag) const;
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::shared_ptr<FactorizationProvider>> for_tag(std::string_view tag) const;
 
     /// @brief Whether any provider claims @p tag.
     /// @param[in] tag A provenance tag name.
     /// @return True when at least one does.
-    [[nodiscard]] bool claims(std::string_view tag) const;
+    APIARY_EXPOSE [[nodiscard]] bool claims(std::string_view tag) const;
 
     /// @brief Remove a provider by name.
     /// @param[in] name The provider's @ref FactorizationProvider::name.
     /// @return True when one was removed.
-    bool remove(std::string_view name);
+    APIARY_EXPOSE bool remove(std::string_view name);
 
     /// @brief Forget every provider.
-    void clear();
+    APIARY_EXPOSE void clear();
 
     /// @brief How many providers are registered.
     /// @return The count.
-    [[nodiscard]] std::size_t size() const;
+    APIARY_EXPOSE APIARY_GETTER("size") [[nodiscard]] std::size_t size() const;
 
   private:
     std::vector<std::shared_ptr<FactorizationProvider>> _providers;
@@ -226,6 +228,7 @@ class EINSUMS_EXPORT FactorizationRegistry {
  * @return The registry. Never null.
  * @versionadded{2.0.0}
  */
-[[nodiscard]] EINSUMS_EXPORT FactorizationRegistry &global_factorization_registry();
+[[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RVP(reference)
+    EINSUMS_EXPORT FactorizationRegistry &global_factorization_registry();
 
 EINSUMS_NAMESPACE_END(compute_graph)
