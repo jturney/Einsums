@@ -23,9 +23,9 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
-MetricFitFactorization::MetricFitFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric,
+MetricFitFactorization::MetricFitFactorization(std::string tag, RuntimeTensorView<double> three_index, RuntimeTensorView<double> metric,
                                                double bound, double drop_threshold, std::string name)
-    : _tag(std::move(tag)), _name(std::move(name)), _three_index(&three_index), _metric(&metric), _bound(bound),
+    : _tag(std::move(tag)), _name(std::move(name)), _three_index(std::move(three_index)), _metric(std::move(metric)), _bound(bound),
       _drop_threshold(drop_threshold) {
     if (!std::isfinite(drop_threshold) || drop_threshold < 0.0) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
@@ -33,6 +33,21 @@ MetricFitFactorization::MetricFitFactorization(std::string tag, Tensor<double, 3
                                 "positivity guard, and there is nothing a negative one could mean",
                                 drop_threshold);
     }
+}
+
+namespace {
+/// A view of @p tensor carrying its name, which the implicit conversion drops.
+template <typename TensorType>
+RuntimeTensorView<double> named_view(TensorType const &tensor) {
+    RuntimeTensorView<double> view{tensor};
+    view.set_name(tensor.name());
+    return view;
+}
+} // namespace
+
+MetricFitFactorization::MetricFitFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric,
+                                               double bound, double drop_threshold, std::string name)
+    : MetricFitFactorization(std::move(tag), named_view(three_index), named_view(metric), bound, drop_threshold, std::move(name)) {
 }
 
 std::string MetricFitFactorization::dropped_param_name(std::string const &provider, std::string const &tensor) {
@@ -48,10 +63,10 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
         return unexpected(fmt::format("a metric fit replaces a rank-4 tensor; this one is rank {}", handle->rank));
     }
 
-    std::size_t const naux = _metric->dim(0);
-    std::size_t const rows = _three_index->dim(1);
-    std::size_t const cols = _three_index->dim(2);
-    if (_metric->dim(0) != _metric->dim(1) || _three_index->dim(0) != naux) {
+    std::size_t const naux = _metric.dim(0);
+    std::size_t const rows = _three_index.dim(1);
+    std::size_t const cols = _three_index.dim(2);
+    if (_metric.dim(0) != _metric.dim(1) || _three_index.dim(0) != naux) {
         return unexpected(std::string{"the metric is not square over the three-index tensor's first axis"});
     }
     if (handle->dims[0] != rows || handle->dims[1] != cols || handle->dims[2] != rows || handle->dims[3] != cols) {
@@ -78,11 +93,11 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
 
     // The fitting, as nodes. Every step is a captured operation, so a bind that moves the
     // problem refits rather than replaying a metric inverse computed once at optimize time.
-    Tensor<double, 3> const *three_index = _three_index;
-    Tensor<double, 2> const *metric      = _metric;
-    std::string const        dropped_key = dropped_param_name(_name, handle->name);
-    double const             threshold   = _drop_threshold;
-    plan.emit_setup                      = [three_index, metric, naux, rows, cols, dropped_key, threshold](Graph &parent, Graph &body,
+    RuntimeTensorView<double> const three_index = _three_index;
+    RuntimeTensorView<double> const metric      = _metric;
+    std::string const               dropped_key = dropped_param_name(_name, handle->name);
+    double const                    threshold   = _drop_threshold;
+    plan.emit_setup = [three_index, metric, naux, rows, cols, dropped_key, threshold](Graph &parent, Graph &body,
                                                                                       std::vector<TensorId> const &factors) {
         auto *b = static_cast<RuntimeTensor<double> *>(parent.tensor(factors[0]).tensor_ptr);
 
@@ -103,7 +118,7 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
         {
             CaptureGuard const guard(body);
             // A copy, because syev destroys what it decomposes and the metric is the caller's.
-            permute("P,Q <- P,Q", 0.0, &vectors, 1.0, *metric);
+            permute("P,Q <- P,Q", 0.0, &vectors, 1.0, metric);
             syev(&vectors, &values);
             // The threshold rides in the NODE, so a graph saved here and loaded elsewhere drops
             // the same directions rather than whatever the loading process happens to think.
@@ -111,7 +126,7 @@ expected<FactorizationPlan, std::string> MetricFitFactorization::propose(Graph c
             // Column scaling, spelled as the contraction that sums over nothing.
             einsum("P,R ; R -> P,R", &scaled, vectors, values);
             einsum("P,R ; Q,R -> P,Q", &half, scaled, vectors);
-            einsum("Q,P ; P,m,n -> Q,m,n", b, half, *three_index);
+            einsum("Q,P ; P,m,n -> Q,m,n", b, half, three_index);
 
             // How many auxiliary directions this fit threw away, counted on every refit
             // rather than once, because it is a property of the metric that is bound now.

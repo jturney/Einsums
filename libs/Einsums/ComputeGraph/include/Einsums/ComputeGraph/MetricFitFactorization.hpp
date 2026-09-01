@@ -65,6 +65,7 @@
 
 #include <Einsums/ComputeGraph/Factorization.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
 #include <string>
@@ -108,6 +109,22 @@ class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
      *         kernel floors it at zero anyway, and silently running at a threshold the caller
      *         did not ask for is the failure this whole parameter exists to prevent.
      */
+    /// @note The two tensors are taken as @ref RuntimeTensorView, which any dense rank-3 and
+    ///       rank-2 double tensor converts to, ``Tensor<double, N>`` and
+    ///       ``RuntimeTensor<double>`` alike. That is what lets a Python caller register this
+    ///       provider at all, since the bindings carry runtime-rank tensors and nothing else.
+    ///       A view also holds a reference to the storage it names, where the raw pointers
+    ///       this used to keep did not.
+    MetricFitFactorization(std::string tag, RuntimeTensorView<double> three_index, RuntimeTensorView<double> metric, double bound,
+                           double drop_threshold = default_drop_threshold, std::string name = "MetricFit");
+
+    /// @brief The same, taking compile-time-rank tensors.
+    ///
+    /// Kept as its own overload rather than left to the implicit conversion, because that
+    /// conversion does not carry the NAME: a view built from a ``Tensor<double, N>`` is
+    /// anonymous, the fitting captures it as an interface tensor, and a manifest binds by
+    /// name, so two anonymous operands collide and the graph stops being saveable. This
+    /// overload names the views after the tensors it was handed.
     MetricFitFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric, double bound,
                            double drop_threshold = default_drop_threshold, std::string name = "MetricFit");
 
@@ -149,12 +166,12 @@ class EINSUMS_EXPORT MetricFitFactorization : public FactorizationProvider {
     [[nodiscard]] static std::string dropped_param_name(std::string const &provider, std::string const &tensor);
 
   private:
-    std::string              _tag;
-    std::string              _name;
-    Tensor<double, 3> const *_three_index;
-    Tensor<double, 2> const *_metric;
-    double                   _bound;
-    double                   _drop_threshold;
+    std::string               _tag;
+    std::string               _name;
+    RuntimeTensorView<double> _three_index;
+    RuntimeTensorView<double> _metric;
+    double                    _bound;
+    double                    _drop_threshold;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)
