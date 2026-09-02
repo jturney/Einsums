@@ -354,10 +354,14 @@
     - version: "2.0.0"
       text: |
         This option's name has been changed, and again later in the 2.0.0 cycle to its positive spelling.
+        Its default has also changed from on to off.
   body: |
-    Offer the chance to attach a debugger when an error is detected. On by default; turn it off with
-    ``--einsums:debug:no-attach-debugger``, which is what a test harness wants so that a failing test
-    cannot hang waiting for a human.
+    Offer the chance to attach a debugger when an error is detected.
+
+    Off by default, because the offer BLOCKS: a process that hits an error waits for a human who,
+    in a test harness or a batch job, is not there. Turn it on with
+    ``--einsums:debug:attach-debugger`` when you are at the keyboard and want the process held open
+    at the point of failure.
 
 "einsums:debug:diagnostics-on-terminate":
   added: "1.0.0"

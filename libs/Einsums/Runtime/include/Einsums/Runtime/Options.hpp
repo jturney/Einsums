@@ -26,7 +26,7 @@ inline constinit cl::ConfigOption<bool> InstallSignalHandlers = cl::config_flag(
 
 /// Offer to attach a debugger when a detected error terminates the process.
 inline constinit cl::ConfigOption<bool> AttachDebugger =
-    cl::config_flag("einsums:debug:attach-debugger", "Provide a mechanism to attach a debugger on detected errors", "Debug", true);
+    cl::config_flag("einsums:debug:attach-debugger", "Provide a mechanism to attach a debugger on detected errors", "Debug", false);
 
 /// Print extra diagnostics on the way down.
 inline constinit cl::ConfigOption<bool> DiagnosticsOnTerminate =

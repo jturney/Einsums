@@ -343,15 +343,16 @@ This is what makes generated negations behave. A flag declared in the positive
 
 .. code-block:: cpp
 
-   inline constinit cl::ConfigOption<bool> AttachDebugger =
-       cl::config_flag("einsums:debug:attach-debugger",
-                       "Offer to attach a debugger on a detected error", "Debug", true);
+   inline constinit cl::ConfigOption<bool> DiagnosticsOnTerminate =
+       cl::config_flag("einsums:debug:diagnostics-on-terminate",
+                       "Print extra diagnostics on the way down", "Debug", true);
 
-registers ``einsums:debug:no-attach-debugger`` alongside it. ``EINSUMS_DEBUG_NO_ATTACH_DEBUGGER=1``
-means *yes, do not attach*, applying the negation exactly as if it had been named on the command line,
-so ``config::get(option::AttachDebugger)`` reads false. ``=0`` means the negation was not requested,
-leaving the option at its default. Setting ``EINSUMS_DEBUG_ATTACH_DEBUGGER`` works the same way on the
-positive spelling. An ``Opt<bool>`` is unaffected by this rule: its variable supplies the value directly.
+registers ``einsums:debug:no-diagnostics-on-terminate`` alongside it.
+``EINSUMS_DEBUG_NO_DIAGNOSTICS_ON_TERMINATE=1`` means *yes, do not print them*, applying the negation
+exactly as if it had been named on the command line, so
+``config::get(option::DiagnosticsOnTerminate)`` reads false. ``=0`` means the negation was not
+requested, leaving the option at its default. Setting ``EINSUMS_DEBUG_DIAGNOSTICS_ON_TERMINATE`` works
+the same way on the positive spelling. An ``Opt<bool>`` is unaffected by this rule: its variable supplies the value directly.
 
 Mutual exclusion respects precedence
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
