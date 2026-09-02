@@ -64,6 +64,7 @@
  * - DeadNodeElimination: Remove nodes with no consumers
  * - Reorder: Memory-aware topological sort
  * - LoopInvariantHoisting: Move invariant ops out of loops
+ * - LayoutAssignment: Choose each intermediate's storage order so contractions read flat
  *
  * Analysis-only:
  * - MemoryPlanning: Tensor liveness analysis
@@ -111,6 +112,7 @@
 #include <Einsums/ComputeGraph/Passes/GPUPlacement.hpp>
 #include <Einsums/ComputeGraph/Passes/IOPrefetch.hpp>
 #include <Einsums/ComputeGraph/Passes/InplaceOptimization.hpp>
+#include <Einsums/ComputeGraph/Passes/LayoutAssignment.hpp>
 #include <Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>

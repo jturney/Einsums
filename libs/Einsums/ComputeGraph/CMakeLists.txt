@@ -51,6 +51,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/FreeInsertion.hpp
     Einsums/ComputeGraph/Passes/GEMMBatching.hpp
     Einsums/ComputeGraph/Passes/InplaceOptimization.hpp
+    Einsums/ComputeGraph/Passes/LayoutAssignment.hpp
     Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp
     Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp
     Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp
@@ -131,6 +132,7 @@ set(ComputeGraphSources
     Passes/FreeInsertion.cpp
     Passes/GEMMBatching.cpp
     Passes/InplaceOptimization.cpp
+    Passes/LayoutAssignment.cpp
     Passes/LinearCombinationContractionFolding.cpp
     Passes/StreamContractionFusion.cpp
     Passes/StreamKernelDispatch.cpp

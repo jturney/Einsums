@@ -27,6 +27,7 @@
 #include <Einsums/ComputeGraph/Passes/IOPrefetch.hpp>
 #include <Einsums/ComputeGraph/Passes/InplaceOptimization.hpp>
 #include <Einsums/ComputeGraph/Passes/InputSlicing.hpp>
+#include <Einsums/ComputeGraph/Passes/LayoutAssignment.hpp>
 #include <Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
@@ -709,6 +710,16 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // widened dependency structure, and before Materialization so the clones
     // are allocated with everything else.
     list.push_back(std::make_shared<passes::ScratchPrivatization>());
+
+    // Storage order, once the algebraic node set has settled and before anything plans against
+    // it. A contraction whose operand has no flat (M,K) reading is copied into one before the
+    // vendor call, and which intermediates have such a reading is decided by the order their
+    // axes are stored in - an order nobody promised, for a tensor the graph owns. Runs after the
+    // rewrites above because it prices the contractions that actually survive, and before
+    // ContractionPlanning / GEMMBatching / Materialization because those three plan against the
+    // index lists and the extents this may change. Shares the detected cost model, so the copy
+    // it prices and the chains they plan are judged against one machine.
+    list.push_back(std::make_shared<passes::LayoutAssignment>(cost_model));
 
     // Chain restructuring belongs in the planning phase: it rewrites GEMM
     // chains using the shared cost model and declares DEFERRED intermediates,

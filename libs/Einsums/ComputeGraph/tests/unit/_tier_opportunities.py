@@ -211,6 +211,40 @@ def gen_constant_folding(rng):
     return build, [np.zeros((3, 3))], [], []
 
 
+def gen_layout_assignment(rng):
+    """A deferred intermediate whose captured axis order costs a copy at each end.
+
+    ``W`` is written (i,j,x) and read with its contracted letter ``j`` between its
+    two free ones, which has no flat (M,K) reading at all; the producer pays for
+    it too, because C's free groups then disagree with B's. Storing W as (i,x,j)
+    removes both copies, and no local rewrite of either contraction can see the
+    other's cost - which is the whole reason this pass is not a peephole.
+
+    W is DEFERRED rather than eagerly allocated, because re-laying out a live
+    buffer is a data movement the pass does not perform and it declines one. The
+    harness runs Materialization on both sides so the graph can execute.
+    """
+    i, j, x, k, y = 4, 3, 5, 2, 3
+    a = _r(rng, i, k)
+    b = _r(rng, k, x, j)
+    d = _r(rng, j, y)
+
+    def build(g, m, v, t, name):
+        A = einsums.create_zero_tensor(f"{name}_A", [i, k], dtype="float64")
+        B = einsums.create_zero_tensor(f"{name}_B", [k, x, j], dtype="float64")
+        D = einsums.create_zero_tensor(f"{name}_D", [j, y], dtype="float64")
+        np.asarray(A)[...] = a
+        np.asarray(B)[...] = b
+        np.asarray(D)[...] = d
+        W = g.declare_tensor(f"{name}_W", [i, j, x], intermediate=True, dtype="float64")
+        R = t[0]
+        with cg.capture(g):
+            einsums.einsum("i,j,x <- i,k ; k,x,j", W, A, B)
+            einsums.einsum("i,x,y <- i,j,x ; j,y", R, W, D)
+
+    return build, [], [], [np.zeros((i, x, y))]
+
+
 #: Pass name to opportunity generator. A pass here is one the classification can
 #: gather evidence about.
 OPPORTUNITY_GENERATORS = {
@@ -226,6 +260,7 @@ OPPORTUNITY_GENERATORS = {
     "DeltaElimination": gen_delta_elimination,
     "SymmetrizedAccumulation": gen_symmetrized_accumulation,
     "ConstantFolding": gen_constant_folding,
+    "LayoutAssignment": gen_layout_assignment,
 }
 
 #: Passes with no generator, and why. Kept as data rather than left out, so the

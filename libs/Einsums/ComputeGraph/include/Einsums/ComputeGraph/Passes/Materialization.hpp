@@ -7,6 +7,7 @@
 
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Python/Annotations.hpp>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -74,9 +75,19 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - Distributed (non-replicated) tensors require their DistributionDescriptor to have been attached
  *   already by DistributionPlanning; the Materialize executor resizes to the per-rank local partition.
  */
-class EINSUMS_EXPORT Materialization : public OptimizerPass {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT Materialization : public OptimizerPass {
   public:
-    [[nodiscard]] std::string name() const override { return "Materialization"; }
+    /// @brief Default-construct.
+    ///
+    /// Reachable from Python, which every other phase-enabling pass already was. This one is
+    /// correctness-enabling rather than an optimization - a graph using ``declare_tensor`` cannot
+    /// execute without it - so a caller who wants only that had to run the whole tuning phase to
+    /// get it, and reach past four scheduling decisions they did not ask for.
+    APIARY_EXPOSE Materialization() = default;
+
+    /// @brief The pass name.
+    /// @return ``"Materialization"``.
+    APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string name() const override { return "Materialization"; }
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Tuning; }
@@ -86,8 +97,13 @@ class EINSUMS_EXPORT Materialization : public OptimizerPass {
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
 
-    [[nodiscard]] size_t num_materialized() const { return _num_materialized; }
-    [[nodiscard]] size_t num_initialized() const { return _num_initialized; }
+    /// @brief How many deferred tensors this run allocated.
+    /// @return The count.
+    APIARY_EXPOSE APIARY_GETTER("num_materialized") [[nodiscard]] size_t num_materialized() const { return _num_materialized; }
+
+    /// @brief How many of those it also filled.
+    /// @return The count.
+    APIARY_EXPOSE APIARY_GETTER("num_initialized") [[nodiscard]] size_t num_initialized() const { return _num_initialized; }
 
   private:
     size_t _num_materialized{0};

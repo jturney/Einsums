@@ -964,6 +964,7 @@ TIER_CANDIDATES = {
     "DistributiveFactoring": "num_eliminated",
     "LoopInvariantHoisting": "num_hoisted",
     "ContractionPlanning": "chains_restructured",
+    "LayoutAssignment": "num_relaid_out",
 }
 
 #: Per-pass tallies across a shard, so a run can say how much evidence it
@@ -1044,6 +1045,12 @@ def _run_program_single_pass(prog, m_arrays, v_arrays, t_arrays, name, pass_name
     pass_obj = getattr(cg, pass_name)()
     pm = cg.PassManager()
     pm.add(pass_obj)
+    # Materialization is correctness-enabling rather than an optimization: it
+    # allocates the deferred tensors a generator declared and does nothing else,
+    # and a graph holding one cannot execute without it. It runs on BOTH sides of
+    # the comparison, so it contributes nothing to the gap being measured, and it
+    # is inert for every generator that allocates its own scratch eagerly.
+    pm.add(cg.Materialization())
     pm.run(g)
 
     counts = {"m": len(mats), "v": len(vecs), "t": len(r3s)}
@@ -1064,6 +1071,10 @@ def _run_program_raw_written(prog, m_arrays, v_arrays, t_arrays, name):
     _build_for_measurement(prog, g, mats, vecs, r3s, name)
     counts = {"m": len(mats), "v": len(vecs), "t": len(r3s)}
     written = _written_pool_indices(g, counts)
+    # The other half of the pair; see the note in _run_program_single_pass.
+    pm = cg.PassManager()
+    pm.add(cg.Materialization())
+    pm.run(g)
     g.execute()
     return ([np.asarray(x).copy() for x in mats],
             [np.asarray(x).copy() for x in vecs],

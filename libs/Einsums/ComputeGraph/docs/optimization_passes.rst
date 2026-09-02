@@ -326,6 +326,48 @@ so those passes do not allocate or place tensors that are about to disappear.
 Reports ``num_candidates()``, the number of detected pairs, and
 ``num_rewrites()``, the number that passed the safety filter.
 
+LayoutAssignment
+----------------
+
+Chooses the storage order of every graph-owned intermediate so the contractions
+that touch it read their operands flat.
+
+A vendor GEMM reads ``A`` as a flat ``(M,K)`` matrix and ``B`` as a flat
+``(K,N)`` one. An operand whose contracted letters sit at one **end** of its
+index list has such a reading already, and the transpose flag settles which end.
+An operand whose contracted letters are **interleaved** with its free ones has no
+flat reading at all, so the kernel copies it into one first. That copy is a whole
+tensor of traffic per replay, it never appears as a node, and it is the only cost
+in a contraction that storage order decides.
+
+An intermediate the graph owns has no storage order anyone promised, so the order
+is free to choose:
+
+.. code-block:: text
+
+   W[i,j,x] = A[i,k]   B[k,x,j]     // C's free groups disagree with B's -> B is copied
+   R[i,x,y] = W[i,j,x] D[j,y]       // W's contracted letter is between its free ones -> W is copied
+
+Storing ``W`` as ``(i,x,j)`` removes both copies. Neither contraction can see the
+other's cost, which is why this is not a peephole: ``PermuteFusion`` is the local
+form of the same idea and declines the moment a tensor has two readers that
+disagree.
+
+Candidates
+^^^^^^^^^^
+
+A tensor is a decision variable when it is rank three or more, still deferred,
+and the escape analysis reports nothing outside the graph can observe it. Rank
+two is excluded because a matrix has two readings and BLAS takes either one
+through ``transa``, so there is nothing to win. A materialized tensor is excluded
+because re-laying out a live buffer is a data movement this pass does not
+perform. Any use it cannot rewrite - a node with no index list, an operand that
+repeats a letter, a contraction carrying a letter that is neither free,
+contracted nor batched - pins the tensor, and says so in the skip tally.
+
+Reports ``num_relaid_out()``, ``num_copies_removed()`` and
+``estimated_saving_us()``.
+
 CSE: Common Subexpression Elimination
 -------------------------------------
 
@@ -1032,28 +1074,32 @@ mock is present:
 
 .. code-block:: text
 
-    1. TiledExpansion            : lower tiled ops into per-tile dense nodes
-    2. ConstantFolding           : fold constant subexpressions
-    3. ScaleAbsorption           : absorb scale into the next operation
-    4. PermuteFusion             : fold pure axis reorders into einsum indices
-    5. CSE                       : common subexpression elimination
-    6. DeadNodeElimination       : remove unused intermediates
-    7. SymmetrizedAccumulation   : fold r += s*(t + P(t)) sites
-    8. ElementWiseFusion         : fuse consecutive element-wise ops
-    9. LinearCombinationContractionFolding : fold transpose-paired contractions
-   10. LoopInvariantHoisting     : move invariants out of loops
-   11. ScratchPrivatization      : rename reused scratch onto clones
-   12. ContractionPlanning       : multi-objective contraction ordering
-   13. GEMMBatching              : collapse groups into blas::gemm_batch
-   14. Reorder                   : memory-aware topological sort
-   15. IOPrefetch                : move DiskReads early for async overlap
-   16. DistributionPlanning      : decide replicate vs distribute
-   17. Materialization           : insert allocation nodes for deferred tensors
-   18. SymmetryPropagation       : tag intermediates whose symmetry is provable
-   19. SpacePropagation          : infer index spaces on intermediates
-   20. CrossSpaceValidation      : flag letters binding two different spaces
-   21. ScalingAnalysis           : report cost polynomials and the limiting term
-   22. StreamContractionFusion   : one pass over a streamed tensor, not N
+    1. ProvenancePropagation     : carry tensor tags across the graph
+    2. TiledExpansion            : lower tiled ops into per-tile dense nodes
+    3. DeltaElimination          : substitute away contractions with a delta
+    4. ConstantFolding           : fold constant subexpressions
+    5. ScaleAbsorption           : absorb scale into the next operation
+    6. PermuteFusion             : fold pure axis reorders into einsum indices
+    7. CSE                       : common subexpression elimination
+    8. DeadNodeElimination       : remove unused intermediates
+    9. SymmetrizedAccumulation   : fold r += s*(t + P(t)) sites
+   10. ElementWiseFusion         : fuse consecutive element-wise ops
+   11. LinearCombinationContractionFolding : fold transpose-paired contractions
+   12. DistributiveFactoring     : factor a shared operand out of a sum
+   13. LoopInvariantHoisting     : move invariants out of loops
+   14. ScratchPrivatization      : rename reused scratch onto clones
+   15. LayoutAssignment          : store intermediates so contractions read flat
+   16. ContractionPlanning       : multi-objective contraction ordering
+   17. GEMMBatching              : collapse groups into blas::gemm_batch
+   18. Reorder                   : memory-aware topological sort
+   19. IOPrefetch                : move DiskReads early for async overlap
+   20. DistributionPlanning      : decide replicate vs distribute
+   21. Materialization           : insert allocation nodes for deferred tensors
+   22. SymmetryPropagation       : tag intermediates whose symmetry is provable
+   23. SpacePropagation          : infer index spaces on intermediates
+   24. CrossSpaceValidation      : flag letters binding two different spaces
+   25. ScalingAnalysis           : report cost polynomials and the limiting term
+   26. StreamContractionFusion   : one pass over a streamed tensor, not N
        GPUPlacement             : decide CPU vs GPU per node       (GPU only)
        TransferInsertion        : insert H2D/D2H transfer nodes    (GPU only)
        TransferElimination      : remove redundant transfers       (GPU only)
@@ -1064,9 +1110,9 @@ mock is present:
        CommunicationInsertion   : insert allreduce/broadcast       (MPI only)
        CommunicationElimination : remove redundant communication   (MPI only)
        CommunicationScheduling  : overlap communication w/ compute (MPI only)
-   23. InplaceOptimization       : merge outputs into dying inputs
-   24. FreeInsertion             : insert Free nodes at last-consumer
-   25. MemoryPlanning            : liveness analysis + the host arena
+   27. InplaceOptimization       : merge outputs into dying inputs
+   28. FreeInsertion             : insert Free nodes at last-consumer
+   29. MemoryPlanning            : liveness analysis + the host arena
 
 Reading the results
 -------------------
