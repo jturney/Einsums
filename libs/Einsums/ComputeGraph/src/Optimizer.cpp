@@ -32,6 +32,7 @@
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/MemoryPlanning.hpp>
+#include <Einsums/ComputeGraph/Passes/MultiTermFactorization.hpp>
 #include <Einsums/ComputeGraph/Passes/PermuteFusion.hpp>
 #include <Einsums/ComputeGraph/Passes/ProvenancePropagation.hpp>
 #include <Einsums/ComputeGraph/Passes/Reorder.hpp>
@@ -354,6 +355,10 @@ bool PassManager::run(Graph &graph) {
         // would leave the getters reporting only the last subgraph visited.
         pass->reset_all_stats();
 
+        // Fresh per pass, per run: an allowance is what THIS pass may spend on THIS graph, and a
+        // deadline that survived a run would hand the second graph whatever the first left over.
+        pass->set_budget(pass_budget());
+
         if (analyze) {
             // Analysis-only: save node list, run pass, log results, restore.
             // Sub-graph recursion is intentionally skipped here, we only
@@ -461,6 +466,13 @@ PassManager PassManager::create_default() {
     PassManager pm;
     pm.populate_default();
     return pm;
+}
+
+SearchBudget PassManager::pass_budget() const {
+    // An explicit setting wins over the option: the more specific statement about this pipeline
+    // is the one that should, which is the same rule `enable` follows against `einsums:pass:disable`.
+    std::int64_t const allowance = _budget_explicit ? _budget_ms : config::get(option::GraphOptimizerBudget);
+    return allowance > 0 ? SearchBudget{std::chrono::milliseconds{allowance}} : SearchBudget{};
 }
 
 void PassManager::populate_filtered(std::initializer_list<PassPhase> keep) {
@@ -710,6 +722,14 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // widened dependency structure, and before Materialization so the clones
     // are allocated with everything else.
     list.push_back(std::make_shared<passes::ScratchPrivatization>());
+
+    // What to compute, before anything decides how to store or schedule it. Self-gating twice
+    // over: it declines unless `einsums:graph:structural-search` is on, and a graph with fewer
+    // than two contractions never reaches region formation. Ahead of LayoutAssignment because it
+    // decides which intermediates EXIST, and laying out a tensor that is about to be dissolved is
+    // work thrown away; ahead of ContractionPlanning because the two would otherwise re-bracket
+    // the same chains from different premises, and this one sees all the chains at once.
+    list.push_back(std::make_shared<passes::MultiTermFactorization>());
 
     // Storage order, once the algebraic node set has settled and before anything plans against
     // it. A contraction whose operand has no flat (M,K) reading is copied into one before the

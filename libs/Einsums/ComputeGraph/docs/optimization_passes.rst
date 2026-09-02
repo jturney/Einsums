@@ -326,6 +326,69 @@ so those passes do not allocate or place tensors that are about to disappear.
 Reports ``num_candidates()``, the number of detected pairs, and
 ``num_rewrites()``, the number that passed the safety filter.
 
+MultiTermFactorization
+----------------------
+
+Chooses how to bracket every product in a region and what those products may share, together
+rather than one after the other.
+
+A product of three or more tensors has many contraction orders and they differ by whole factors of
+the scaling. Several such products in one region often want the same partial product, and whether
+they can have it depends on the order each one was given:
+
+.. code-block:: text
+
+   R1[i,j] = A[i,k] B[k,l] C[l,j]
+   R2[i,j] = A[i,k] B[k,l] D[l,j]
+
+Contract both left to right and each builds ``(A B)[i,l]``, so it can be built once. Contract the
+second right to left and it builds ``(B D)[k,j]`` instead, and there is nothing to share. Neither
+order is wrong and neither is locally better; the difference shows up only when the two terms are
+looked at together.
+
+That is why ``CSE`` cannot find it. ``CSE`` matches nodes that are already identical, and the node
+to be shared here is one nobody has written. It is also not what ``DistributiveFactoring`` does,
+which factors a shared operand out of a **sum** into one output (``A B1 + A B2`` becomes
+``A (B1 + B2)``), nor what ``ContractionPlanning`` does, which re-brackets one chain at a time and
+so cannot trade a locally worse order in one term for a shared intermediate in another.
+
+How the search is bounded
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Per term, the optimal binary tree comes from the standard subset dynamic program, which is
+``3^N`` in the factor count; the factor count is capped (``max_factors()``) and a term above the
+cap is declined rather than approximated. Across terms, the candidates are **pairs** of factors
+occurring in more than one term, which keeps the candidate set quadratic. A shared subtree of
+three factors is built out of a shared pair, so committing pairs one at a time and re-solving
+finds the larger subtree over successive rounds; what that genuinely cannot reach is a shared
+triple whose every pair is unprofitable alone.
+
+Both loops check the wall-clock budget. A pass that runs out keeps the best assignment it had
+reached, applies it, and reports through ``was_cut_off()`` that it was cut off, so exhausting the
+budget costs optimization rather than correctness.
+
+Ranking
+^^^^^^^
+
+Candidates are ranked by ``SymbolicCost`` under the same conventions ``ScalingAnalysis`` reports,
+so a plan can be checked against the report rather than against a second opinion. Because the
+graph is bound, the region's extents are supplied as ``ComparisonContext::bound_extent``: that
+rung sits *below* asymptotic scale order, so an annotated program's structural verdict still
+decides and the extents only settle what would otherwise fall through to a deterministic
+tie-break.
+
+Off by default
+^^^^^^^^^^^^^^
+
+``einsums:graph:structural-search``. Every other structural-algebraic pass is a recognizer whose
+runtime is a function of the node count; this one's is a function of how many candidates the graph
+offers. The saved IR exists so a search runs once and a replay does not, so the interactive
+default is off and the capture-and-save workflow turns it on.
+``MultiTermFactorization::set_search_enabled`` overrides the option for one pipeline, which is
+also what makes two pipelines with different settings runnable at the same time.
+
+Reports ``num_inlined()``, ``num_rebracketed()``, ``num_shared()`` and ``was_cut_off()``.
+
 LayoutAssignment
 ----------------
 
@@ -1088,18 +1151,19 @@ mock is present:
    12. DistributiveFactoring     : factor a shared operand out of a sum
    13. LoopInvariantHoisting     : move invariants out of loops
    14. ScratchPrivatization      : rename reused scratch onto clones
-   15. LayoutAssignment          : store intermediates so contractions read flat
-   16. ContractionPlanning       : multi-objective contraction ordering
-   17. GEMMBatching              : collapse groups into blas::gemm_batch
-   18. Reorder                   : memory-aware topological sort
-   19. IOPrefetch                : move DiskReads early for async overlap
-   20. DistributionPlanning      : decide replicate vs distribute
-   21. Materialization           : insert allocation nodes for deferred tensors
-   22. SymmetryPropagation       : tag intermediates whose symmetry is provable
-   23. SpacePropagation          : infer index spaces on intermediates
-   24. CrossSpaceValidation      : flag letters binding two different spaces
-   25. ScalingAnalysis           : report cost polynomials and the limiting term
-   26. StreamContractionFusion   : one pass over a streamed tensor, not N
+   15. MultiTermFactorization    : contraction orders and shared intermediates (off by default)
+   16. LayoutAssignment          : store intermediates so contractions read flat
+   17. ContractionPlanning       : multi-objective contraction ordering
+   18. GEMMBatching              : collapse groups into blas::gemm_batch
+   19. Reorder                   : memory-aware topological sort
+   20. IOPrefetch                : move DiskReads early for async overlap
+   21. DistributionPlanning      : decide replicate vs distribute
+   22. Materialization           : insert allocation nodes for deferred tensors
+   23. SymmetryPropagation       : tag intermediates whose symmetry is provable
+   24. SpacePropagation          : infer index spaces on intermediates
+   25. CrossSpaceValidation      : flag letters binding two different spaces
+   26. ScalingAnalysis           : report cost polynomials and the limiting term
+   27. StreamContractionFusion   : one pass over a streamed tensor, not N
        GPUPlacement             : decide CPU vs GPU per node       (GPU only)
        TransferInsertion        : insert H2D/D2H transfer nodes    (GPU only)
        TransferElimination      : remove redundant transfers       (GPU only)
@@ -1110,9 +1174,9 @@ mock is present:
        CommunicationInsertion   : insert allreduce/broadcast       (MPI only)
        CommunicationElimination : remove redundant communication   (MPI only)
        CommunicationScheduling  : overlap communication w/ compute (MPI only)
-   27. InplaceOptimization       : merge outputs into dying inputs
-   28. FreeInsertion             : insert Free nodes at last-consumer
-   29. MemoryPlanning            : liveness analysis + the host arena
+   28. InplaceOptimization       : merge outputs into dying inputs
+   29. FreeInsertion             : insert Free nodes at last-consumer
+   30. MemoryPlanning            : liveness analysis + the host arena
 
 Reading the results
 -------------------

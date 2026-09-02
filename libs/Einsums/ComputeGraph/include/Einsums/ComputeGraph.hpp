@@ -117,6 +117,7 @@
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
 #include <Einsums/ComputeGraph/Passes/MemoryPlanning.hpp>
+#include <Einsums/ComputeGraph/Passes/MultiTermFactorization.hpp>
 #include <Einsums/ComputeGraph/Passes/PermuteFusion.hpp>
 #include <Einsums/ComputeGraph/Passes/ProvenancePropagation.hpp>
 #include <Einsums/ComputeGraph/Passes/RegionRewrite.hpp>

@@ -965,6 +965,7 @@ TIER_CANDIDATES = {
     "LoopInvariantHoisting": "num_hoisted",
     "ContractionPlanning": "chains_restructured",
     "LayoutAssignment": "num_relaid_out",
+    "MultiTermFactorization": "num_shared",
 }
 
 #: Per-pass tallies across a shard, so a run can say how much evidence it
@@ -1043,6 +1044,11 @@ def _run_program_single_pass(prog, m_arrays, v_arrays, t_arrays, name, pass_name
     _build_for_measurement(prog, g, mats, vecs, r3s, name)
 
     pass_obj = getattr(cg, pass_name)()
+    # A pass that is off by default still has to be measured, and the classification is about what
+    # the pass DOES to the numbers rather than about whether a default pipeline reaches it. The
+    # programmatic switch exists precisely so a driver need not mutate process-global config.
+    if hasattr(pass_obj, "set_search_enabled"):
+        pass_obj.set_search_enabled(True)
     pm = cg.PassManager()
     pm.add(pass_obj)
     # Materialization is correctness-enabling rather than an optimization: it

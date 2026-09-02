@@ -61,6 +61,7 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         {"ElementWiseFusion", cg::PassPhase::StructuralAlgebraic},
         {"LinearCombinationContractionFolding", cg::PassPhase::StructuralAlgebraic},
         {"LayoutAssignment", cg::PassPhase::StructuralAlgebraic},
+        {"MultiTermFactorization", cg::PassPhase::StructuralAlgebraic},
         {"DistributiveFactoring", cg::PassPhase::StructuralAlgebraic},
         {"LoopInvariantHoisting", cg::PassPhase::StructuralAlgebraic},
         {"ContractionPlanning", cg::PassPhase::StructuralAlgebraic},
@@ -120,13 +121,15 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
 /// called it bitwise. A pass added here later is not classified until it has
 /// run everywhere too.
 ///
-/// ``LayoutAssignment`` is the one entry whose legs have not reported yet, and
-/// it is here rather than in @ref unmeasured_tiers because that list requires a
-/// pass to declare the TUNING tier, which promises the same operations in the
-/// same order - and this one demonstrably reaches a different kernel, which is
-/// the whole reason it exists. Declaring less than it does would be a wrong
-/// claim in the other direction. Its generator is registered, so the legs will
-/// annotate the number the way they did for every line above it.
+/// ``LayoutAssignment`` and ``MultiTermFactorization`` are the two entries whose
+/// legs have not reported yet, and they are here rather than in @ref
+/// unmeasured_tiers because that list requires a pass to declare the TUNING
+/// tier, which promises the same operations in the same order. One of them
+/// demonstrably reaches a different kernel and the other demonstrably
+/// re-associates a sum, which is the whole reason each exists. Declaring less
+/// than they do would be a wrong claim in the other direction. Both generators
+/// are registered, so the legs will annotate the numbers the way they did for
+/// every line above.
 std::map<std::string, cg::PassTier> const &expected_tiers() {
     static std::map<std::string, cg::PassTier> const table = {
         // Bitwise-exact: measured at EXACTLY zero on all six legs.
@@ -148,6 +151,7 @@ std::map<std::string, cg::PassTier> const &expected_tiers() {
         {"LinearCombinationContractionFolding", cg::PassTier::ReAssociating}, // 1.4e-16
         {"PermuteFusion", cg::PassTier::ReAssociating},                       // 4.6e-17, Accelerate only
         {"LayoutAssignment", cg::PassTier::ReAssociating},                    // legs pending; see below
+        {"MultiTermFactorization", cg::PassTier::ReAssociating},              // legs pending; see below
 
         // Lossy: trades accuracy under a recorded tolerance, never in a default manager.
         {"FactorizationPass", cg::PassTier::Lossy},

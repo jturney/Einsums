@@ -245,6 +245,44 @@ def gen_layout_assignment(rng):
     return build, [], [], [np.zeros((i, x, y))]
 
 
+def gen_multi_term_factorization(rng):
+    """Two three-factor products, written with opposite bracketing, sharing two operands.
+
+    Neither chain is a duplicate of the other, so CSE sees nothing; neither is a
+    sum into one output, so DistributiveFactoring sees nothing. The shared
+    ``(A B)`` only exists once both terms are looked at together.
+
+    The extents make ``(A B) C`` the cheaper bracketing for both, which is what
+    makes building the shared product once worth more than the re-bracketing
+    costs: ``i*l*(k+j) < k*j*(l+i)``.
+    """
+    i, k, l, j = 3, 12, 3, 12
+    a = _r(rng, i, k)
+    b = _r(rng, k, l)
+    c = _r(rng, l, j)
+    d = _r(rng, l, j)
+
+    def build(g, m, v, t, name):
+        A = einsums.create_zero_tensor(f"{name}_A", [i, k], dtype="float64")
+        B = einsums.create_zero_tensor(f"{name}_B", [k, l], dtype="float64")
+        C = einsums.create_zero_tensor(f"{name}_C", [l, j], dtype="float64")
+        D = einsums.create_zero_tensor(f"{name}_D", [l, j], dtype="float64")
+        np.asarray(A)[...] = a
+        np.asarray(B)[...] = b
+        np.asarray(C)[...] = c
+        np.asarray(D)[...] = d
+        T1 = g.declare_tensor(f"{name}_T1", [i, l], intermediate=True, dtype="float64")
+        T2 = g.declare_tensor(f"{name}_T2", [k, j], intermediate=True, dtype="float64")
+        R1, R2 = m[0], m[1]
+        with cg.capture(g):
+            einsums.einsum("i,l <- i,k ; k,l", T1, A, B)
+            einsums.einsum("i,j <- i,l ; l,j", R1, T1, C)
+            einsums.einsum("k,j <- k,l ; l,j", T2, B, D)
+            einsums.einsum("i,j <- i,k ; k,j", R2, A, T2)
+
+    return build, [np.zeros((i, j)), np.zeros((i, j))], [], []
+
+
 #: Pass name to opportunity generator. A pass here is one the classification can
 #: gather evidence about.
 OPPORTUNITY_GENERATORS = {
@@ -261,6 +299,7 @@ OPPORTUNITY_GENERATORS = {
     "SymmetrizedAccumulation": gen_symmetrized_accumulation,
     "ConstantFolding": gen_constant_folding,
     "LayoutAssignment": gen_layout_assignment,
+    "MultiTermFactorization": gen_multi_term_factorization,
 }
 
 #: Passes with no generator, and why. Kept as data rather than left out, so the

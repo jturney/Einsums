@@ -68,6 +68,35 @@ inline constinit cl::ConfigOption<bool> GraphDumpRegions =
                     "list. Costs a rendering per region and is the first thing to turn on when a rewrite produces a wrong number",
                     "ComputeGraph Passes", false);
 
+/// Let the structural-algebraic phase run its SEARCH passes.
+///
+/// Off by default, and the default is the point rather than caution. Every other pass in that
+/// phase is a recognizer: it walks the graph once, and its runtime is a function of the node
+/// count. A search pass's runtime is a function of how many candidates the graph offers, which
+/// nobody can predict from the outside, and the whole reason the saved IR exists is so that
+/// search happens ONCE, offline or at capture, rather than every time a script is re-run.
+///
+/// So the interactive default is off and the saved-graph workflow turns it on deliberately. A
+/// caller who wants it for one pipeline sets it there rather than here; the option is the
+/// process-wide statement.
+inline constinit cl::ConfigOption<bool> GraphStructuralSearch =
+    cl::config_flag("einsums:graph:structural-search",
+                    "Let the structural-algebraic phase run its search passes. Off by default because a search pass's runtime is a "
+                    "function of how many candidates a graph offers rather than of how large it is",
+                    "ComputeGraph Passes", false);
+
+/// How long a search pass may run, in milliseconds. Zero means unlimited.
+///
+/// The number is a starting point rather than a measurement, which is what an option is for. What
+/// is NOT arbitrary is that a search pass which exhausts it keeps the best candidate it had found
+/// and reports being cut off, so exhausting the budget costs optimization rather than
+/// correctness.
+inline constinit cl::ConfigOption<std::int64_t> GraphOptimizerBudget = cl::config_opt<std::int64_t>(
+    "einsums:graph:optimizer-budget",
+    "Wall-clock allowance in milliseconds for each search pass. A pass that exhausts it keeps the best candidate it found and reports "
+    "that it was cut off. Zero means unlimited",
+    "ComputeGraph Passes", 1000);
+
 /// Break a grouped batched GEMM into one profiler zone per shape class.
 /// Deliberately CHANGES how the GEMM runs, because a per-group breakdown of one
 /// parallel loop is not obtainable any other way. See Detail/GroupedBatchedGemm.hpp.

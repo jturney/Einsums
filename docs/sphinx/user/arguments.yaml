@@ -184,6 +184,39 @@
 
     Costs one rendering per region, so it is off by default.
 
+"einsums:graph:structural-search":
+  added: "2.0.0"
+  body: |
+    Let the structural-algebraic phase run its **search** passes, which is
+    ``MultiTermFactorization`` today.
+
+    Off by default, and the default is the point rather than caution. Every other pass in that
+    phase is a recognizer: it walks the graph once and its runtime is a function of the node
+    count. A search pass's runtime is a function of how many candidates the graph offers, which
+    nobody can predict from outside, and the saved graph IR exists precisely so that a search runs
+    ONCE and a replay does not.
+
+    So the interactive default is off, and the capture-optimize-save workflow turns it on
+    deliberately. A caller who wants it for one pipeline can switch it on there instead:
+    ``MultiTermFactorization::set_search_enabled`` overrides this option in both directions, which
+    is also what makes two pipelines with different settings runnable at the same time.
+
+    See also :option:`--einsums:graph:optimizer-budget`, which bounds how long the search may run.
+
+"einsums:graph:optimizer-budget":
+  added: "2.0.0"
+  body: |
+    Wall-clock allowance in milliseconds for each search pass. Zero means unlimited.
+
+    A pass that exhausts its allowance keeps the best candidate it had found, applies it, and
+    reports that it was cut off, so running out of time costs optimization rather than correctness
+    or determinism. ``PassManager.explain()`` says which happened, because a report that could not
+    tell "this graph was already optimal" from "I ran out of time on the first candidate" would be
+    silent in exactly the case a budget exists for.
+
+    The default is a starting point rather than a measurement, which is what an option is for.
+    ``PassManager::set_optimizer_budget`` overrides it for one pipeline.
+
 "einsums:pass:analyze":
   added: "2.0.0"
   body: |

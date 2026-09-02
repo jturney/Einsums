@@ -50,6 +50,7 @@ set(ComputeGraphTests
     InterfaceManifest.cpp
     Json.cpp
     LayoutAssignment.cpp
+    MultiTermFactorization.cpp
     SaveLoad.cpp
     SetupSubgraph.cpp
     CostModel.cpp
@@ -158,6 +159,7 @@ set(ComputeGraphTests
     test_einsum_views_python.py
     test_element_transform_python.py
     test_layout_assignment_python.py
+    test_multi_term_factorization_python.py
     test_error_reporting_python.py
     test_executor_python.py
     test_einsum_rejection_python.py

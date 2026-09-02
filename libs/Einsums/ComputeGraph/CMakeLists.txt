@@ -62,6 +62,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/InputSlicing.hpp
     Einsums/ComputeGraph/Passes/IOPrefetch.hpp
     Einsums/ComputeGraph/Passes/Materialization.hpp
+    Einsums/ComputeGraph/Passes/MultiTermFactorization.hpp
     Einsums/ComputeGraph/Passes/PermuteFusion.hpp
     Einsums/ComputeGraph/Passes/RegionRewrite.hpp
     Einsums/ComputeGraph/Passes/Reorder.hpp
@@ -141,6 +142,7 @@ set(ComputeGraphSources
     Passes/InputSlicing.cpp
     Passes/IOPrefetch.cpp
     Passes/Materialization.cpp
+    Passes/MultiTermFactorization.cpp
     Passes/PermuteFusion.cpp
     Passes/RegionRewrite.cpp
     Passes/Reorder.cpp

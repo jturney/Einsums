@@ -12,6 +12,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -133,6 +134,58 @@ enum class PassTier : std::uint8_t {
  * @return One of ``bitwise-exact``, ``re-associating``, ``tuning``, ``lossy``.
  */
 [[nodiscard]] EINSUMS_EXPORT std::string_view pass_tier_name(PassTier tier);
+
+/**
+ * @brief A wall-clock allowance for one pass's run.
+ *
+ * Every pass in this library up to now has been cheap and deterministic, so nothing needed one.
+ * A SEARCH pass does: its runtime is a function of how many candidates a graph offers rather than
+ * of how many nodes it has, and a graph that offers too many is not an error condition anyone can
+ * predict from the outside. The contract is therefore that a search pass checks this, stops when
+ * it is spent, keeps the best candidate it had found, and SAYS it was cut off, so a report never
+ * reads the same for "this graph was already optimal" and "I ran out of time on the first
+ * candidate".
+ *
+ * Default-constructed means unlimited, which is what every non-searching pass gets and what a
+ * budget of zero requests explicitly.
+ *
+ * Deliberately not a thread count, a node count, or a candidate count. The thing that has to be
+ * bounded is the wait, and the other three are proxies whose relation to it changes with the
+ * machine.
+ */
+class SearchBudget {
+  public:
+    /// @brief An unlimited budget.
+    SearchBudget() = default;
+
+    /// @brief A budget of @p allowance from now.
+    /// @param[in] allowance How long the pass may take. Zero or negative means unlimited.
+    explicit SearchBudget(std::chrono::milliseconds allowance)
+        : _unlimited{allowance <= std::chrono::milliseconds::zero()}, _deadline{std::chrono::steady_clock::now() + allowance} {}
+
+    /// @brief Whether this budget bounds anything.
+    /// @return True when the pass may take as long as it likes.
+    [[nodiscard]] bool unlimited() const noexcept { return _unlimited; }
+
+    /// @brief Whether the allowance is gone.
+    /// @return True when the pass must stop. Always false for an unlimited budget.
+    [[nodiscard]] bool expired() const noexcept { return !_unlimited && std::chrono::steady_clock::now() >= _deadline; }
+
+    /// @brief What is left of the allowance.
+    /// @return The remaining time, zero once expired, and zero for an unlimited budget, which
+    ///         callers must distinguish with @ref unlimited rather than by testing this.
+    [[nodiscard]] std::chrono::milliseconds remaining() const noexcept {
+        if (_unlimited) {
+            return std::chrono::milliseconds::zero();
+        }
+        auto const left = std::chrono::duration_cast<std::chrono::milliseconds>(_deadline - std::chrono::steady_clock::now());
+        return left > std::chrono::milliseconds::zero() ? left : std::chrono::milliseconds::zero();
+    }
+
+  private:
+    bool                                  _unlimited{true};
+    std::chrono::steady_clock::time_point _deadline{};
+};
 
 /**
  * @brief Abstract base class for optimization passes over a computation graph.
@@ -372,6 +425,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
     /// @brief Current verbosity level (see set_verbosity).
     APIARY_EXPOSE APIARY_GETTER("verbosity") [[nodiscard]] int verbosity() const { return _verbosity; }
 
+    /**
+     * @brief Give this pass a wall-clock allowance for its next @ref run.
+     *
+     * ``PassManager::run`` sets one before every pass, freshly, so an allowance is per-run and
+     * not per-pipeline; a pass that kept a deadline across runs would give the second graph
+     * whatever the first one left. Passes that do not search ignore it.
+     *
+     * @param[in] budget The allowance. A default-constructed one is unlimited.
+     */
+    void set_budget(SearchBudget budget) { _budget = budget; }
+
+    /// @brief The allowance for this run.
+    /// @return The budget the manager set, or an unlimited one when nobody set anything.
+    [[nodiscard]] SearchBudget const &budget() const noexcept { return _budget; }
+
   protected:
     /**
      * @brief Emit ``[PassName] message`` to stderr when ``_verbosity >= level``.
@@ -433,7 +501,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      */
     EINSUMS_EXPORT bool approximate(Graph &graph, ApproximationRecord record) const;
 
-    int _verbosity{0};
+    int          _verbosity{0};
+    SearchBudget _budget;
 
   private:
     /// Reason -> number of candidates declined for it. Mutable so a pass can
@@ -634,6 +703,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         for (auto &pass : _passes) {
             pass->set_verbosity(level);
         }
+    }
+
+    /**
+     * @brief Give every pass in this pipeline a wall-clock allowance for its run.
+     *
+     * The programmatic half of ``einsums:graph:optimizer-budget``, and it exists for the same
+     * reason ``disable`` does: a driver that wanted to bound one pipeline would otherwise have to
+     * mutate process-global configuration to do it, which also makes it unrunnable concurrently.
+     * An explicit setting wins over the option, because the more specific statement about this
+     * pipeline is the one that should.
+     *
+     * @param[in] allowance How long each pass may take. Zero or negative means unlimited.
+     */
+    APIARY_EXPOSE void set_optimizer_budget(std::int64_t allowance_ms) {
+        _budget_ms       = allowance_ms;
+        _budget_explicit = true;
     }
 
     /**
@@ -862,6 +947,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// preserving their relative order in the default sequence.
     static PassManager filtered_default(std::initializer_list<PassPhase> keep);
 
+    /// The allowance to hand the next pass: the explicit setting when there is one, the option
+    /// otherwise.
+    [[nodiscard]] EINSUMS_EXPORT SearchBudget pass_budget() const;
+
     std::vector<std::shared_ptr<OptimizerPass>> _passes;
     int                                         _verbosity{0};
 
@@ -874,6 +963,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Written by ``run()``, read by @ref explain, which is const.
     std::vector<std::string> _last_skipped;
     std::vector<std::string> _last_unmatched;
+
+    /// Wall-clock allowance handed to each pass, in milliseconds. Consulted only when
+    /// @ref _budget_explicit; otherwise ``run`` reads the option. Zero means unlimited.
+    std::int64_t _budget_ms{0};
+    bool         _budget_explicit{false};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)
