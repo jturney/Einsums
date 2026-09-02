@@ -225,6 +225,59 @@ class SearchBudget {
 };
 
 /**
+ * @brief One of a pass's statistics, snapshotted at the top of its @ref OptimizerPass::run.
+ *
+ * @par The problem this exists for
+ * ``PassManager::run`` zeroes a pass's counters ONCE per ``apply()``, then invokes ``run()``
+ * once per SUB-GRAPH (see @ref OptimizerPass::reset_stats for why the reset cannot move into
+ * ``run``). So a counter is a running total across the whole sub-graph tree, and a ``run()``
+ * that answers ``return _num_fused > 0;`` reports THIS graph as modified whenever any EARLIER
+ * sub-graph changed something. That is silent for a single loop, whose body is visited last,
+ * and wrong the moment a graph holds a conditional or a second loop.
+ *
+ * Every pass that reports a statistic had independently discovered this and written the same
+ * three lines - a local ``_at_entry`` snapshot, a comparison, and a four-line comment
+ * explaining it - twenty times over. This is those three lines, once, where the next pass
+ * author will find them.
+ *
+ * @code
+ * bool ElementWiseFusion::run(Graph &graph) {
+ *     PassCounter const fused{_num_fused};
+ *     // ... fuse, incrementing _num_fused ...
+ *     return fused.moved();
+ * }
+ * @endcode
+ *
+ * Read-only: the pass keeps incrementing its own member as before, and this only observes.
+ * That keeps a conversion to it a two-line change per pass rather than a rewrite of every
+ * increment site.
+ *
+ * @note Holds a POINTER to the counter, so it must not outlive it. Declare it as a local in
+ *       ``run()``, which is the only place it makes sense: it is a snapshot of one invocation.
+ */
+class PassCounter {
+  public:
+    /// @brief Snapshot @p counter as it stands now.
+    /// @param[in] counter The pass member to watch. Must outlive this object.
+    explicit PassCounter(std::size_t const &counter) noexcept : _counter(&counter), _entry(counter) {}
+
+    /// @brief How much this ``run()`` has added to the counter.
+    /// @return The delta since construction.
+    ///
+    /// This is the number a per-graph report wants, where the counter itself holds the total
+    /// over every sub-graph visited so far.
+    [[nodiscard]] std::size_t delta() const noexcept { return *_counter - _entry; }
+
+    /// @brief Whether this ``run()`` moved the counter at all.
+    /// @return True when it did, which is what ``run()`` returns.
+    [[nodiscard]] bool moved() const noexcept { return delta() != 0; }
+
+  private:
+    std::size_t const *_counter;
+    std::size_t        _entry;
+};
+
+/**
  * @brief Abstract base class for optimization passes over a computation graph.
  *
  * An optimization pass inspects a Graph's node list and may modify it to improve
@@ -380,6 +433,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * last, so its count survives) and wrong the moment a graph has a
      * conditional -- the empty else-branch resets the counters to zero -- or
      * more than one loop. ``graph.explain()`` reads these getters.
+     *
+     * The corollary is that a counter is a RUNNING TOTAL inside one ``apply()``, so ``run()``
+     * cannot test it against zero to decide what it returns. @ref PassCounter is that test.
      */
     virtual void reset_stats() {}
 

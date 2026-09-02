@@ -14,7 +14,7 @@
  * A vendor GEMM reads A as a flat @c (M,K) matrix and B as a flat @c (K,N) one. An operand
  * whose contracted letters sit at one END of its index list has such a reading already, and the
  * transpose flag settles which end (@ref link_placement is the library's own statement of that
- * rule, and @c make_einsum_executor refuses the remaining case in those words). An operand whose
+ * rule, and @ref LinkPlacement::split names the remaining case). An operand whose
  * contracted letters are INTERLEAVED with its free ones has no flat reading at all, so the
  * kernel copies it into one before it can multiply. That copy is a whole tensor of traffic per
  * replay, and it is the only cost in a contraction that storage order decides.

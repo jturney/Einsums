@@ -429,17 +429,17 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
 
             ExprTerm term;
             term.kind    = TermKind::Contraction;
-            term.factor  = params != nullptr ? params->ab_pf : desc->ab_prefactor;
+            term.factor  = live_ab_prefactor(*desc);
             term.indices = indices_from(c_list, *desc);
             term.operands.push_back(leaf_for(expr, leaves, graph, node->inputs[0]));
             term.operands.push_back(leaf_for(expr, leaves, graph, node->inputs[1]));
             term.operand_indices.push_back(indices_from(a_list, *desc));
             term.operand_indices.push_back(indices_from(b_list, *desc));
-            term.conjugate.push_back(params != nullptr ? params->conj_a : desc->conj_a);
-            term.conjugate.push_back(params != nullptr ? params->conj_b : desc->conj_b);
+            term.conjugate.push_back(live_conj_a(*desc));
+            term.conjugate.push_back(live_conj_b(*desc));
             term.cost = symbolic_cost_for(*desc);
 
-            statement.target_prefactor = params != nullptr ? params->c_pf : desc->c_prefactor;
+            statement.target_prefactor = live_c_prefactor(*desc);
             statement.target_indices   = term.indices;
             statement.value            = expr.add(std::move(term));
         } else {

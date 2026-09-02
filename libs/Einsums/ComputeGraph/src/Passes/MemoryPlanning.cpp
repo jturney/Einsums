@@ -381,11 +381,7 @@ void MemoryPlanning::reset_stats() {
 }
 
 bool MemoryPlanning::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_planned_at_entry = _num_planned;
+    PassCounter const planned{_num_planned};
     // Walk the whole graph tree so loop bodies / conditional branches
     // contribute to the reported footprint. recurse_into_subgraphs() stays
     // false: this pass aggregates here rather than being re-run per
@@ -402,12 +398,12 @@ bool MemoryPlanning::run(Graph &graph) {
 
     report(1, fmt::format("peak host memory {} bytes (of {} total allocated){}", _peak_memory, _total_memory,
                           _device_peak_memory > 0 ? fmt::format(", device peak {} bytes", _device_peak_memory) : std::string{}));
-    if (_num_planned > num_planned_at_entry) {
+    if (planned.moved()) {
         report(1, fmt::format("{} arena of {} bytes for {} intermediate(s) ({} bytes of buffers shared into it)",
                               _apply_arena ? "applied" : "planned", _planned_arena_bytes, _num_planned, _planned_tensor_bytes));
     }
 
-    return _apply_arena && _num_planned > num_planned_at_entry;
+    return _apply_arena && planned.moved();
 }
 
 void MemoryPlanning::print_report(std::ostream &os) const {

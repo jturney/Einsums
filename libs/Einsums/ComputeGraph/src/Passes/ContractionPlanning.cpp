@@ -413,7 +413,7 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
     // shaped (the caller's gate), so the node is a plain
     // ``C = op(A) * op(B)`` and records as one: a GemmDescriptor plus the
     // builder, which is what makes it reconstructible - and saveable - rather
-    // than the opaque closure ``make_einsum_executor`` hands back.
+    // than an opaque closure with the dims and scalars baked at pass time.
     //
     // The transpose flags describe each operand as it is actually STORED: a
     // transposed A is (k,m), a transposed B is (n,k). The result is always

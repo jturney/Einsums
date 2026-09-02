@@ -97,8 +97,8 @@ void ScalingAnalysis::rank_nodes(SpaceRegistry const *registry) {
 }
 
 bool ScalingAnalysis::run(Graph &graph) {
-    // Per-apply state: the recursive driver calls run() once per subgraph and reset_stats() once
-    // per apply(), so everything below accumulates across levels rather than starting over.
+    // The accumulate-across-subgraphs rule @ref PassCounter states, on a COLLECTION rather than a
+    // counter: what this run() added is the tail past this mark.
     std::size_t const analyzed_at_entry = _node_costs.size();
 
     auto const *registry = &graph.space_registry();

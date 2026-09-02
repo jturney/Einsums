@@ -94,8 +94,10 @@ void CrossSpaceValidation::reset_stats() {
 }
 
 bool CrossSpaceValidation::run(Graph &graph) {
-    // Per-apply counters: the recursive driver calls run() once per subgraph and reset_stats() once
-    // per apply(), so the tallies accumulate across levels rather than starting over.
+    // The accumulate-across-subgraphs rule @ref PassCounter states, on a COLLECTION rather than a
+    // counter: what this run() added is the tail past this mark, and the mark is the index the
+    // report below starts reading from, so the snapshot is needed as a value and not only as a
+    // "did it move".
     std::size_t const findings_at_entry = _findings.size();
 
     SpaceRegistry const &registry = graph.space_registry();

@@ -37,7 +37,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
     if (ad == nullptr) {
         return nullptr;
     }
-    return ad->params ? &ad->params->beta : &ad->beta;
+    return &live_beta(*ad);
 }
 
 /**
@@ -68,8 +68,14 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
     if (auto const *beta = axpby_beta(nd)) {
         return is_zero(*beta);
     }
+    // The LIVE prefactor, not the at-capture snapshot beside it. Every writer in the library
+    // currently keeps the two in step -- ScaleAbsorption::apply_fold, CSE::fold_reader,
+    // ElementWiseFusion and Graph::update_prefactors each write both, deliberately -- so this
+    // reads the same value either way TODAY. It is spelled this way so that stays true without
+    // depending on every future writer remembering: what this predicate is asked about is what
+    // the next execute() will do, and that is the params block by definition.
     if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
-        return is_zero(e->c_prefactor);
+        return is_zero(live_c_prefactor(*e));
     }
     // A tiled einsum keeps its destination prefactor in the shared params rather
     // than in an EinsumDescriptor, so it needs its own arm. Without one it fell
@@ -78,8 +84,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
     if (auto const *t = std::get_if<TiledEinsumDescriptor>(&nd.op_data)) {
         return t->params && is_zero(t->params->c_pf);
     }
+    // Permute has no live accessor (its snapshot and its params block disagree on type; see the
+    // note in Node.hpp), so the preference is spelled out here.
     if (auto const *p = std::get_if<PermuteDescriptor>(&nd.op_data)) {
-        return p->beta == 0.0;
+        return p->params != nullptr ? is_zero(p->params->beta) : p->beta == 0.0;
     }
     if (auto const *b = std::get_if<BatchedGemmDescriptor>(&nd.op_data)) {
         return b->beta == std::complex<double>{0.0, 0.0};
@@ -117,8 +125,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
         auto const *beta = axpby_beta(nd);
         return beta == nullptr || !is_zero(*beta);
     }
+    // The LIVE prefactor; see the note in pure_overwrite above.
     if (auto const *e = std::get_if<EinsumDescriptor>(&nd.op_data)) {
-        return !is_zero(e->c_prefactor);
+        return !is_zero(live_c_prefactor(*e));
     }
     // Tiled einsum: same rule as the dense one, read through the shared params.
     // A descriptor with no params is unknowable, so assume it accumulates; that
@@ -127,7 +136,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
         return t->params == nullptr || !is_zero(t->params->c_pf);
     }
     if (auto const *p = std::get_if<PermuteDescriptor>(&nd.op_data)) {
-        return p->beta != 0.0;
+        return p->params != nullptr ? !is_zero(p->params->beta) : p->beta != 0.0;
     }
     if (auto const *b = std::get_if<BatchedGemmDescriptor>(&nd.op_data)) {
         return b->beta != std::complex<double>{0.0, 0.0};

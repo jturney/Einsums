@@ -198,7 +198,7 @@ void LayoutAssignment::reset_stats() {
 }
 
 bool LayoutAssignment::run(Graph &graph) {
-    std::size_t const relaid_at_entry = _num_relaid_out;
+    PassCounter const relaid_out{_num_relaid_out};
 
     auto &nodes = graph.nodes();
 
@@ -644,10 +644,9 @@ bool LayoutAssignment::run(Graph &graph) {
     // extent, which is what the counter is read for; see Graph::note_structural_change.
     graph.note_structural_change();
 
-    report(1, fmt::format("re-laid out {} intermediate(s), removing {} operand copy(ies) worth {:.3f} us per replay",
-                          _num_relaid_out - relaid_at_entry, copies_delta, cost_before - cost_after));
-    EINSUMS_LOG_INFO("LayoutAssignment: {} intermediate(s) re-laid out, {} operand copies removed", _num_relaid_out - relaid_at_entry,
-                     copies_delta);
+    report(1, fmt::format("re-laid out {} intermediate(s), removing {} operand copy(ies) worth {:.3f} us per replay", relaid_out.delta(),
+                          copies_delta, cost_before - cost_after));
+    EINSUMS_LOG_INFO("LayoutAssignment: {} intermediate(s) re-laid out, {} operand copies removed", relaid_out.delta(), copies_delta);
     return true;
 }
 

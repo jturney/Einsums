@@ -22,25 +22,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
-// ── Live scalar accessors ───────────────────────────────────────────────────
-//
-// A node's descriptor holds an at-capture snapshot beside a shared handle to
-// the state its executor actually reads. A pass that folded a scale wrote
-// through the handle, so comparing snapshots can disagree with what the next
-// execute() will do. Read the live value where there is one.
+// The live scalar accessors this file used to define for itself (live_c_prefactor and friends)
+// now live beside the descriptors they read, in Node.hpp: CSE was not the only caller that
+// needed them, and two copies of "prefer the shared params over the snapshot" is one too many.
 
-PrefactorScalar const &live_ab_prefactor(EinsumDescriptor const &d) {
-    return d.params ? d.params->ab_pf : d.ab_prefactor;
-}
-PrefactorScalar const &live_c_prefactor(EinsumDescriptor const &d) {
-    return d.params ? d.params->c_pf : d.c_prefactor;
-}
-bool live_conj_a(EinsumDescriptor const &d) {
-    return d.params ? d.params->conj_a : d.conj_a;
-}
-bool live_conj_b(EinsumDescriptor const &d) {
-    return d.params ? d.params->conj_b : d.conj_b;
-}
 /// Do two einsum descriptors describe the same contraction topology?
 ///
 /// Checks the at-capture ContractionSpec snapshot AND the live ParsedEinsumSpec
@@ -61,12 +46,6 @@ bool einsum_indices_equal(EinsumDescriptor const &a, EinsumDescriptor const &b) 
     auto const &sb = b.indices->spec;
     return sa.c_indices == sb.c_indices && sa.a_indices == sb.a_indices && sa.b_indices == sb.b_indices && sa.conj_a == sb.conj_a &&
            sa.conj_b == sb.conj_b;
-}
-PrefactorScalar const &live_alpha(AxpbyDescriptor const &d) {
-    return d.params ? d.params->alpha : d.alpha;
-}
-PrefactorScalar const &live_beta(AxpbyDescriptor const &d) {
-    return d.params ? d.params->beta : d.beta;
 }
 
 // ── Proportional matching ───────────────────────────────────────────────────

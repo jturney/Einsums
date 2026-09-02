@@ -311,12 +311,8 @@ bool Materialization::run(Graph &graph) {
     /// The body's own id for the buffer @p ptr names, which is what a node placed in the
     /// body has to carry: ids are per-graph and the parent's mean nothing there.
     auto body_tid_for = [](Graph &body, void const *ptr) -> std::optional<TensorId> {
-        for (auto const &[tid, handle] : body.tensors_map()) {
-            if (handle.tensor_ptr == ptr) {
-                return tid;
-            }
-        }
-        return std::nullopt;
+        TensorId const tid = body.find_tensor_id_by_ptr(ptr);
+        return tid != 0 ? std::optional<TensorId>{tid} : std::nullopt;
     };
 
     // A setup body's OWN workspace, materialized inside the body. The parent cannot see these

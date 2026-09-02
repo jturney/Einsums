@@ -7,6 +7,7 @@
 /// @brief Unit tests for the ScaleAbsorption optimization pass.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -19,6 +20,78 @@ using namespace einsums;
 using namespace einsums::tensor_algebra;
 using namespace einsums::index;
 namespace cg = einsums::compute_graph;
+
+// Every in-tree writer of a prefactor keeps the descriptor SNAPSHOT and the shared params block
+// in step -- ScaleAbsorption::apply_fold, CSE::fold_reader, ElementWiseFusion and
+// Graph::update_prefactors all write both, and each says so. These cases pin what happens when
+// that discipline is not followed, which is the reason the ``live_*`` accessors exist: a reader
+// that goes through them is correct on the value the EXECUTOR will use, without depending on
+// every present and future writer having remembered to mirror it.
+//
+// A hand-built node is the only way to reach the divergent state, and that is the point: nothing
+// captures one, so nothing would notice a writer that stopped mirroring until a fold silently
+// keyed on the stale half.
+TEST_CASE("PassUtil - the destination predicates read the live prefactor, not the snapshot", "[ComputeGraph][Passes][PassUtil]") {
+    SECTION("einsum: live says overwrite, snapshot says accumulate") {
+        cg::Node node;
+        node.kind = cg::OpKind::Einsum;
+
+        cg::EinsumDescriptor desc;
+        desc.c_prefactor  = cg::PrefactorScalar{1.0}; // the at-capture snapshot: accumulating
+        desc.params       = std::make_shared<cg::EinsumParams>();
+        desc.params->c_pf = cg::PrefactorScalar{0.0}; // what a replay would actually apply
+        node.op_data      = std::move(desc);
+
+        REQUIRE(cg::passes::pure_overwrite(node));
+        REQUIRE_FALSE(cg::passes::reads_destination(node));
+    }
+
+    SECTION("einsum: live says accumulate, snapshot says overwrite") {
+        cg::Node node;
+        node.kind = cg::OpKind::Einsum;
+
+        cg::EinsumDescriptor desc;
+        desc.c_prefactor  = cg::PrefactorScalar{0.0};
+        desc.params       = std::make_shared<cg::EinsumParams>();
+        desc.params->c_pf = cg::PrefactorScalar{2.0};
+        node.op_data      = std::move(desc);
+
+        REQUIRE_FALSE(cg::passes::pure_overwrite(node));
+        REQUIRE(cg::passes::reads_destination(node));
+    }
+
+    SECTION("permute: live wins over the snapshot in both directions") {
+        cg::Node node;
+        node.kind = cg::OpKind::Permute;
+
+        cg::PermuteDescriptor desc;
+        desc.beta         = std::complex<double>{1.0, 0.0}; // snapshot: accumulating
+        desc.params       = std::make_shared<cg::ElementwiseParams>();
+        desc.params->beta = cg::PrefactorScalar{0.0}; // live: overwriting
+        node.op_data      = desc;
+
+        REQUIRE(cg::passes::pure_overwrite(node));
+        REQUIRE_FALSE(cg::passes::reads_destination(node));
+
+        auto *live         = std::get_if<cg::PermuteDescriptor>(&node.op_data);
+        live->params->beta = cg::PrefactorScalar{3.0};
+        REQUIRE_FALSE(cg::passes::pure_overwrite(node));
+        REQUIRE(cg::passes::reads_destination(node));
+    }
+
+    SECTION("a node with no params block still reads its snapshot") {
+        cg::Node node;
+        node.kind = cg::OpKind::Einsum;
+
+        cg::EinsumDescriptor desc;
+        desc.c_prefactor = cg::PrefactorScalar{0.0};
+        desc.params      = nullptr; // a node some pass assembled by hand
+        node.op_data     = std::move(desc);
+
+        REQUIRE(cg::passes::pure_overwrite(node));
+        REQUIRE_FALSE(cg::passes::reads_destination(node));
+    }
+}
 
 TEST_CASE("ScaleAbsorption - absorbs into einsum", "[ComputeGraph][Passes]") {
     auto A = create_random_tensor<double>("A", 4, 3);

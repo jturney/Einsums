@@ -35,13 +35,9 @@ void LoopInvariantHoisting::reset_stats() {
 }
 
 bool LoopInvariantHoisting::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_hoisted_at_entry = _num_hoisted;
+    PassCounter const hoisted_count{_num_hoisted};
     run_recursive(graph);
-    return _num_hoisted > num_hoisted_at_entry;
+    return hoisted_count.moved();
 }
 
 void LoopInvariantHoisting::run_recursive(Graph &graph) {
@@ -261,7 +257,7 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             auto it = id_remap.find(body_tid);
             if (it != id_remap.end())
                 return it->second;
-            TensorHandle handle = loop_desc->body->tensor(body_tid);
+            TensorHandle const handle = loop_desc->body->tensor(body_tid);
             // If the parent already has a TensorId for this underlying buffer,
             // reuse it rather than minting a fresh one. The buffer's identity is
             // its pointer; registering a *new* id for an already-known buffer
@@ -269,21 +265,11 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             // between the hoisted node and the parent nodes that touch the same
             // tensor (the scheduler keys on TensorId), so a later pass like
             // Reorder could swap them and the wrong write would win.
-            TensorId parent_tid = 0;
-            bool     reused     = false;
-            if (handle.tensor_ptr != nullptr) {
-                for (auto const &[tid, h] : graph.tensors_map()) {
-                    if (h.tensor_ptr == handle.tensor_ptr) {
-                        parent_tid = tid;
-                        reused     = true;
-                        break;
-                    }
-                }
-            }
-            if (!reused) {
-                parent_tid = graph.register_tensor(std::move(handle));
-            }
-            id_remap[body_tid] = parent_tid;
+            //
+            // That reuse-or-mint rule is exactly Graph::find_or_register_tensor_ptr,
+            // which states the same orphan-parent-handle convention effective_io uses.
+            TensorId const parent_tid = graph.find_or_register_tensor_ptr(handle);
+            id_remap[body_tid]        = parent_tid;
             return parent_tid;
         };
 

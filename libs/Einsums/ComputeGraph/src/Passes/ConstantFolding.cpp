@@ -26,11 +26,7 @@ void ConstantFolding::reset_stats() {
 }
 
 bool ConstantFolding::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_folded_at_entry = _num_folded;
+    PassCounter const folded_count{_num_folded};
     graph.topological_sort();
 
     auto &nodes = graph.nodes();
@@ -167,12 +163,12 @@ bool ConstantFolding::run(Graph &graph) {
         _num_folded++;
     }
 
-    if (_num_folded > num_folded_at_entry) {
+    if (folded_count.moved()) {
         graph.mark_sorted();
         report(1, fmt::format("folded {} constant node(s)", _num_folded));
     }
 
-    return _num_folded > num_folded_at_entry;
+    return folded_count.moved();
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

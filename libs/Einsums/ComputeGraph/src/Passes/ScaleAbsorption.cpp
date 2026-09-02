@@ -143,11 +143,7 @@ void ScaleAbsorption::reset_stats() {
 }
 
 bool ScaleAbsorption::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_absorbed_at_entry = _num_absorbed;
+    PassCounter const absorbed{_num_absorbed};
     graph.topological_sort();
 
     auto &nodes = graph.nodes();
@@ -385,7 +381,7 @@ bool ScaleAbsorption::run(Graph &graph) {
         ++_num_absorbed;
     }
 
-    if (_num_absorbed == num_absorbed_at_entry) {
+    if (!absorbed.moved()) {
         return false;
     }
     report(1, fmt::format("eliminated {} scale(s) (dead-removed or folded into a consumer)", _num_absorbed));

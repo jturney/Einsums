@@ -107,13 +107,9 @@ void FreeInsertion::reset_stats() {
 }
 
 bool FreeInsertion::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_freed_at_entry = _num_freed;
-    auto        &nodes              = graph.nodes();
-    auto const  &tensors            = graph.tensors_map();
+    PassCounter const freed{_num_freed};
+    auto             &nodes   = graph.nodes();
+    auto const       &tensors = graph.tensors_map();
 
     if (nodes.empty())
         return false;
@@ -334,13 +330,13 @@ bool FreeInsertion::run(Graph &graph) {
         nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(ins.index), std::move(ins.node));
     }
 
-    if (_num_freed > num_freed_at_entry) {
+    if (freed.moved()) {
         graph.mark_sorted();
         EINSUMS_LOG_INFO("FreeInsertion: inserted {} Free nodes", _num_freed);
         report(1, fmt::format("inserted {} Free node(s) to cap peak memory", _num_freed));
     }
 
-    return _num_freed > num_freed_at_entry;
+    return freed.moved();
 }
 
 std::vector<std::string> FreeInsertion::explain() const {

@@ -159,25 +159,27 @@ bool Pipeline::apply(PassManager &pm) {
 
     auto register_in_graph = [&](Graph &graph) {
         for (auto const &handle : _handles) {
-            for (auto const &[tid, h] : graph.tensors_map()) {
-                if (h.tensor_ptr == handle.tensor_ptr) {
-                    auto &mutable_h = graph.tensor(tid);
+            // The stage graph's own id for this buffer, through the address index rather than a
+            // scan of its tensor table: a pipeline with many declared tensors and stages holding
+            // many tensors made the pair of loops quadratic for a lookup the graph answers in O(1).
+            TensorId const tid = graph.find_tensor_id_by_ptr(handle.tensor_ptr);
+            if (tid == 0) {
+                continue; // this stage does not touch the tensor
+            }
+            auto &mutable_h = graph.tensor(tid);
 
-                    if (materialized_in_earlier_stage.count(handle.tensor_ptr)) {
-                        // Already materialized in an earlier stage, don't re-materialize/re-initialize
-                        mutable_h.alloc_state = AllocState::Materialized;
-                        mutable_h.init_kind   = InitKind::None;
-                    } else {
-                        // First stage using this tensor, set up materialization
-                        mutable_h.alloc_state    = handle.alloc_state;
-                        mutable_h.init_kind      = handle.init_kind;
-                        mutable_h.materialize_fn = handle.materialize_fn;
-                        mutable_h.zero_fn        = handle.zero_fn;
-                        mutable_h.random_fn      = handle.random_fn;
-                        materialized_in_earlier_stage.insert(handle.tensor_ptr);
-                    }
-                    break;
-                }
+            if (materialized_in_earlier_stage.count(handle.tensor_ptr)) {
+                // Already materialized in an earlier stage, don't re-materialize/re-initialize
+                mutable_h.alloc_state = AllocState::Materialized;
+                mutable_h.init_kind   = InitKind::None;
+            } else {
+                // First stage using this tensor, set up materialization
+                mutable_h.alloc_state    = handle.alloc_state;
+                mutable_h.init_kind      = handle.init_kind;
+                mutable_h.materialize_fn = handle.materialize_fn;
+                mutable_h.zero_fn        = handle.zero_fn;
+                mutable_h.random_fn      = handle.random_fn;
+                materialized_in_earlier_stage.insert(handle.tensor_ptr);
             }
         }
     };

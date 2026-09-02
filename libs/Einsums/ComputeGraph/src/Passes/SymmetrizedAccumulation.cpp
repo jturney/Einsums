@@ -71,13 +71,9 @@ void SymmetrizedAccumulation::reset_stats() {
 }
 
 bool SymmetrizedAccumulation::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_rewritten_at_entry = _num_rewritten;
-    auto        &nodes                  = graph.nodes();
-    size_t const n                      = nodes.size();
+    PassCounter const rewritten{_num_rewritten};
+    auto             &nodes = graph.nodes();
+    size_t const      n     = nodes.size();
 
     auto const contains = [](std::vector<TensorId> const &v, TensorId t) { return std::find(v.begin(), v.end(), t) != v.end(); };
     // Generation bounds for scratch that is REUSED across sites (the CCSD body
@@ -112,17 +108,11 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         return node.kind == OpKind::Axpby && node.outputs.size() == 1 && node.outputs[0] == dst && contains(node.inputs, src) &&
                contains(node.inputs, dst);
     };
-    // The live beta of an axpby node, or null when the node carries no axpby
-    // descriptor (a pass-built node, say) and the scalar is therefore unknowable.
-    // Prefer the shared params over the descriptor snapshot: an earlier pass that
-    // folded a scale into this axpby wrote beta through the params handle, and
-    // that value -- not the at-capture snapshot -- is what the executor will read.
+    // ``passes::axpby_beta`` from PassUtil.hpp, except that it accepts a node of any kind and
+    // this caller has already established the kind. Nothing else differs.
     auto const axpby_beta = [](Node const &node) -> PrefactorScalar const * {
         auto const *ad = std::get_if<AxpbyDescriptor>(&node.op_data);
-        if (ad == nullptr) {
-            return nullptr;
-        }
-        return ad->params ? &ad->params->beta : &ad->beta;
+        return ad != nullptr ? &live_beta(*ad) : nullptr;
     };
 
     // A safely-foldable site (interference-clean). Collected in a first pass so
@@ -245,14 +235,10 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         auto const     touches_owner = [&](std::vector<TensorId> const &ids, TensorId owner) {
             return std::any_of(ids.begin(), ids.end(), [&](TensorId raw) { return graph.resolve_alias(raw) == owner; });
         };
-        // The live destination prefactor of an einsum, through the shared
-        // params when present (a pass that rewrote c_pf wrote it there).
+        // The live destination prefactor of an einsum, or null when the node is not one.
         auto const einsum_c_pf = [](Node const &node) -> PrefactorScalar const * {
             auto const *ed = std::get_if<EinsumDescriptor>(&node.op_data);
-            if (ed == nullptr) {
-                return nullptr;
-            }
-            return ed->params ? &ed->params->c_pf : &ed->c_prefactor;
+            return ed != nullptr ? &live_c_prefactor(*ed) : nullptr;
         };
 
         size_t const first = std::min({static_cast<size_t>(a1), pi, a2});
@@ -322,7 +308,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
                       fmt::format("node #{} '{}'", a2, axpby2.label));
             continue;
         }
-        sites.push_back(Site{pi, a2, tmp, r2, ad->params ? ad->params->alpha : ad->alpha, pd->a_indices, pd->c_indices});
+        sites.push_back(Site{pi, a2, tmp, r2, live_alpha(*ad), pd->a_indices, pd->c_indices});
     }
 
     // ── Rewrite (Level 1): fold each runtime-tensor site by making the permute
@@ -393,7 +379,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         ++_num_rewritten;
     }
 
-    if (_num_rewritten == num_rewritten_at_entry) {
+    if (!rewritten.moved()) {
         return false;
     }
 

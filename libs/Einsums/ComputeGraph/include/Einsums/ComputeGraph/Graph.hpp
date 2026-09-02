@@ -3122,24 +3122,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     std::function<void()> make_gemm_executor(TensorId a_id, TensorId b_id, TensorId c_id, double alpha = 1.0, double beta = 0.0);
 
     /**
-     * @brief Create an executor for an arbitrary-rank einsum from a ParsedEinsumSpec.
-     *
-     * Unlike make_gemm_executor (rank-2 only), this handles any rank via
-     * runtime dispatch through StringDispatch. Falls through to BLAS for
-     * rank-2 GEMM and uses the generic loop for higher ranks.
-     *
-     * Used by ContractionPlanning to restructure higher-rank chains.
-     */
-    std::function<void()> make_einsum_executor(TensorId a_id, TensorId b_id, TensorId c_id, ParsedEinsumSpec const &spec,
-                                               double alpha = 1.0, double beta = 0.0);
-
-    /**
      * @brief Build a FIRST-CLASS einsum node for a pass that synthesizes a contraction.
      *
-     * Unlike @ref make_einsum_executor (which hands back a bare closure with the
-     * dims, spec, and scalars all baked at pass time, paired with a descriptor-less
-     * ``OpKind::Gemm`` node), this returns a complete ``OpKind::Einsum`` node that
-     * behaves like a captured one:
+     * THE way a pass synthesizes a contraction. Its predecessor handed back a bare
+     * closure with the dims, spec and scalars all baked at pass time, paired with a
+     * descriptor-less ``OpKind::Gemm`` node; this returns a complete
+     * ``OpKind::Einsum`` node that behaves like a captured one:
      *
      * - a full @ref EinsumDescriptor, so every pass that reads the descriptor or
      *   the contraction spec (CSE, DeadNodeElimination, ScaleAbsorption,
@@ -3537,14 +3525,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
             return;
         }
 
-        // Also check tensors_ in case no slot exists yet (tensor registered but never captured via slot)
-        for (auto &[id, handle] : _tensors) {
-            if (handle.tensor_ptr == old_ptr) {
-                // Create a slot for this tensor so rebind(TensorId, ...) works
-                get_or_create_slot(old_tensor, id);
-                rebind(id, new_tensor);
-                return;
-            }
+        // Also check the tensor table in case no slot exists yet (tensor registered but never
+        // captured via slot).
+        if (TensorId const id = find_tensor_id_by_ptr(old_ptr); id != 0) {
+            // Create a slot for this tensor so rebind(TensorId, ...) works
+            get_or_create_slot(old_tensor, id);
+            rebind(id, new_tensor);
+            return;
         }
 
         EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no tensor matching '{}' found for rebind", _name, old_tensor.name());
@@ -4546,7 +4533,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// ``TensorHandle::tensor_ptr`` to id. Capture asks "is this object already
     /// registered?" for every operand, which was a linear scan of the tensor
     /// table and so quadratic over a capture; a DLPNO-MP2 graph registers ~13k
-    /// tensors. First registration wins, matching the scan it replaces.
+    /// tensors.
+    ///
+    /// LAST registration wins - @ref register_tensor uses ``insert_or_assign``, because an
+    /// address freed during a capture can be reused by a different tensor and the index has to
+    /// name the tensor that lives there NOW. That is also what makes it the right thing for
+    /// every by-address lookup to go through: a scan of @ref _tensors, which is what these
+    /// lookups used to be, returns whichever equal-keyed handle it happens to reach first, so
+    /// two handles naming one address made the answer depend on the hash order.
     std::unordered_map<void const *, TensorId> _ptr_index;
 
     bool _sorted{false};

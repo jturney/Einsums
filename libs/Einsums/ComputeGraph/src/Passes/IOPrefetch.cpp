@@ -265,13 +265,9 @@ void IOPrefetch::reset_stats() {
 }
 
 bool IOPrefetch::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_prefetched_at_entry = _num_prefetched;
-    bool const   result                  = process(graph, _num_prefetched);
-    if (_num_prefetched > num_prefetched_at_entry) {
+    PassCounter const prefetched{_num_prefetched};
+    bool const        result = process(graph, _num_prefetched);
+    if (prefetched.moved()) {
         report(1, fmt::format("prefetched {} DiskRead(s) earlier to overlap I/O with compute", _num_prefetched));
     }
     return result;

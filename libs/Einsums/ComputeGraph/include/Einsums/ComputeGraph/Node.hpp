@@ -301,6 +301,100 @@ struct ElementwiseBinaryDescriptor {
 };
 
 /**
+ * @name Live scalar accessors
+ *
+ * Every prefactor-bearing descriptor keeps TWO records of one scalar: the at-capture SNAPSHOT on
+ * the descriptor itself, and - when the node carries a shared params block - the value the
+ * executor actually reads on every call. A pass that folds a scale writes the LIVE one, so a
+ * reader that wants to know what the next ``graph.execute()`` will compute must prefer it, and
+ * fall back to the snapshot only for a node that has no block: one a pass assembled by hand, or
+ * one a loader rebuilt.
+ *
+ * That rule was written out by hand wherever it was needed - twenty-odd ternaries across the IR
+ * writer, the expression raiser, the GPU dispatch and three passes - and getting it wrong is
+ * invisible in the worst way, because the value read is merely STALE rather than absent. These
+ * are the rule, in one place.
+ *
+ * The inverse question - "what did capture record" - is still the plain member, and a few callers
+ * genuinely want that one: the IR writer's cache keys and anything comparing a node against the
+ * program as written. Reach for the member deliberately, not by forgetting these exist.
+ *
+ * @note @ref PermuteDescriptor deliberately has no accessor here. Its snapshots are
+ *       @c std::complex<double> while its params block holds @ref PrefactorScalar, so the two
+ *       halves do not share a return type - and @ref GraphIR encodes them differently depending
+ *       on which one it took. Unifying that is a change to the saved form, not a refactor.
+ * @{
+ */
+
+/// @brief The destination prefactor an einsum will actually apply.
+/// @param[in] desc The descriptor to read.
+/// @return The live value, or the snapshot when the node carries no params block.
+[[nodiscard]] inline PrefactorScalar const &live_c_prefactor(EinsumDescriptor const &desc) noexcept {
+    return desc.params != nullptr ? desc.params->c_pf : desc.c_prefactor;
+}
+
+/// @brief The product prefactor an einsum will actually apply.
+/// @param[in] desc The descriptor to read.
+/// @return The live value, or the snapshot when the node carries no params block.
+[[nodiscard]] inline PrefactorScalar const &live_ab_prefactor(EinsumDescriptor const &desc) noexcept {
+    return desc.params != nullptr ? desc.params->ab_pf : desc.ab_prefactor;
+}
+
+/// @brief Whether an einsum will actually conjugate its first operand.
+/// @param[in] desc The descriptor to read.
+/// @return The live flag, or the snapshot when the node carries no params block.
+[[nodiscard]] inline bool live_conj_a(EinsumDescriptor const &desc) noexcept {
+    return desc.params != nullptr ? desc.params->conj_a : desc.conj_a;
+}
+
+/// @brief Whether an einsum will actually conjugate its second operand.
+/// @param[in] desc The descriptor to read.
+/// @return The live flag, or the snapshot when the node carries no params block.
+[[nodiscard]] inline bool live_conj_b(EinsumDescriptor const &desc) noexcept {
+    return desc.params != nullptr ? desc.params->conj_b : desc.conj_b;
+}
+
+/// @brief The source prefactor an axpby will actually apply.
+/// @param[in] desc The descriptor to read.
+/// @return The live value, or the snapshot when the node carries no params block.
+[[nodiscard]] inline PrefactorScalar const &live_alpha(AxpbyDescriptor const &desc) noexcept {
+    return desc.params != nullptr ? desc.params->alpha : desc.alpha;
+}
+
+/// @brief The destination prefactor an axpby will actually apply.
+/// @param[in] desc The descriptor to read.
+/// @return The live value, or the snapshot when the node carries no params block.
+[[nodiscard]] inline PrefactorScalar const &live_beta(AxpbyDescriptor const &desc) noexcept {
+    return desc.params != nullptr ? desc.params->beta : desc.beta;
+}
+
+/// @brief The source prefactor a direct product / division will actually apply.
+/// @param[in] desc The descriptor to read.
+/// @return The live value, or the snapshot when the node carries no params block.
+[[nodiscard]] inline PrefactorScalar const &live_alpha(ElementwiseBinaryDescriptor const &desc) noexcept {
+    return desc.params != nullptr ? desc.params->alpha : desc.alpha;
+}
+
+/// @brief The destination prefactor a direct product / division will actually apply.
+/// @param[in] desc The descriptor to read.
+/// @return The live value, or the snapshot when the node carries no params block.
+[[nodiscard]] inline PrefactorScalar const &live_beta(ElementwiseBinaryDescriptor const &desc) noexcept {
+    return desc.params != nullptr ? desc.params->beta : desc.beta;
+}
+
+/// @brief The factor a scale will actually apply.
+/// @param[in] desc The descriptor to read.
+/// @return The live value, or the snapshot when the node carries no params block.
+///
+/// A scale uses @ref ElementwiseParams::alpha only; its ``beta`` is meaningless for an in-place
+/// multiply and is never read.
+[[nodiscard]] inline PrefactorScalar const &live_factor(ScaleDescriptor const &desc) noexcept {
+    return desc.params != nullptr ? desc.params->alpha : desc.factor;
+}
+
+/// @}
+
+/**
  * @brief Metadata for the DENSE @ref OpKind::Dot nodes.
  *
  * A dot reduces two same-shaped operands to one scalar. There is exactly one

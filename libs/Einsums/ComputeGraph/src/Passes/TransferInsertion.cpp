@@ -76,11 +76,7 @@ void TransferInsertion::reset_stats() {
 }
 
 bool TransferInsertion::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_transfers_at_entry = _num_transfers;
+    PassCounter const transfers{_num_transfers};
     graph.topological_sort();
 
     auto &nodes = graph.nodes();
@@ -148,7 +144,7 @@ bool TransferInsertion::run(Graph &graph) {
     // Final D2H: for user-visible tensors that ended up on device with no
     // later CPU consumer, insert a D2H at the end so the user can read the
     // result after execute(). Only needed when GPU nodes actually exist.
-    if (_num_transfers > num_transfers_at_entry) {
+    if (transfers.moved()) {
         for (auto const &[tid, res] : residency) {
             if (res == Residency::Device) {
                 auto &handle = graph.tensor(tid);
@@ -166,7 +162,7 @@ bool TransferInsertion::run(Graph &graph) {
     // Always assign new_nodes back, we moved all nodes into it during the loop.
     nodes = std::move(new_nodes);
 
-    if (_num_transfers == num_transfers_at_entry)
+    if (!transfers.moved())
         return false;
 
     // Rebuilt in place, so the node-set counter has to be moved by hand, and
@@ -182,7 +178,7 @@ bool TransferInsertion::run(Graph &graph) {
     graph.mark_sorted();
 
     EINSUMS_LOG_INFO("TransferInsertion: inserted {} transfer nodes", _num_transfers);
-    if (_num_transfers > num_transfers_at_entry) {
+    if (transfers.moved()) {
         report(1, fmt::format("inserted {} host/device transfer node(s)", _num_transfers));
     }
     return true;

@@ -190,11 +190,9 @@ void ScratchPrivatization::reset_stats() {
 }
 
 bool ScratchPrivatization::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero (the recursive
-    // driver calls run() once and reset_stats() once per apply).
-    size_t const rebuilt_at_entry = _num_nodes_rebuilt;
+    PassCounter const nodes_rebuilt{_num_nodes_rebuilt};
     run_recursive(graph);
-    return _num_nodes_rebuilt > rebuilt_at_entry;
+    return nodes_rebuilt.moved();
 }
 
 void ScratchPrivatization::run_recursive(Graph &graph) {

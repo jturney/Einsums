@@ -251,22 +251,18 @@ void InplaceOptimization::reset_stats() {
 }
 
 bool InplaceOptimization::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_merged_at_entry     = _num_merged;
-    size_t const num_candidates_at_entry = _num_candidates;
+    PassCounter const merged{_num_merged};
+    PassCounter const candidates{_num_candidates};
     process(graph, _num_candidates, _num_merged);
 
-    if (_num_merged > num_merged_at_entry) {
+    if (merged.moved()) {
         report(1, fmt::format("merged {} output buffer(s) into dying elementwise inputs ({} candidate(s) found)", _num_merged,
                               _num_candidates));
-    } else if (_num_candidates > num_candidates_at_entry) {
+    } else if (candidates.moved()) {
         report(1, fmt::format("found {} in-place candidate tensor(s), none safely mergeable", _num_candidates));
     }
 
-    return _num_merged > num_merged_at_entry;
+    return merged.moved();
 }
 
 std::vector<std::string> InplaceOptimization::explain() const {

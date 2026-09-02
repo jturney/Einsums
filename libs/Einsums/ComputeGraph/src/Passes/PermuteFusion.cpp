@@ -134,11 +134,7 @@ void PermuteFusion::reset_stats() {
 }
 
 bool PermuteFusion::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_rewrites_at_entry = _num_rewrites;
+    PassCounter const rewrites{_num_rewrites};
     graph.topological_sort();
 
     auto &nodes = graph.nodes();
@@ -211,7 +207,7 @@ bool PermuteFusion::run(Graph &graph) {
         }
     }
 
-    if (_num_rewrites == num_rewrites_at_entry)
+    if (!rewrites.moved())
         return false;
     report(1, fmt::format("absorbed {} permute(s) into einsum subscripts ({} candidate(s) examined)", _num_rewrites, _num_candidates));
 

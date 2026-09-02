@@ -89,11 +89,7 @@ void ElementWiseFusion::reset_stats() {
 }
 
 bool ElementWiseFusion::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_fused_at_entry = _num_fused;
+    PassCounter const fused{_num_fused};
     graph.topological_sort();
 
     auto &nodes = graph.nodes();
@@ -213,7 +209,7 @@ bool ElementWiseFusion::run(Graph &graph) {
         }
     }
 
-    if (_num_fused == num_fused_at_entry)
+    if (!fused.moved())
         return false;
     report(1, fmt::format("fused {} element-wise op chain(s)", _num_fused));
 

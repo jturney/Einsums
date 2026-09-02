@@ -96,11 +96,7 @@ void SUMMAExpansion::reset_stats() {
 }
 
 bool SUMMAExpansion::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_expanded_at_entry = _num_expanded;
+    PassCounter const expanded{_num_expanded};
     if (comm::world_size() <= 1)
         return false;
 
@@ -228,7 +224,7 @@ bool SUMMAExpansion::run(Graph &graph) {
                               grid.rows(), grid.cols()));
     }
 
-    return _num_expanded > num_expanded_at_entry;
+    return expanded.moved();
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

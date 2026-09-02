@@ -16,11 +16,7 @@ void StreamAssignment::reset_stats() {
 }
 
 bool StreamAssignment::run(Graph &graph) {
-    // Per-apply counters: compare against entry values, not zero. The
-    // recursive driver calls run() once per subgraph and reset_stats() runs
-    // only once per apply, so `_num_x > 0` would report this graph as
-    // modified whenever ANY earlier subgraph changed something.
-    size_t const num_assigned_at_entry = _num_assigned;
+    PassCounter const assigned{_num_assigned};
     for (auto &node : graph.nodes()) {
         int new_stream = 0; // default: compute stream
 
@@ -34,12 +30,12 @@ bool StreamAssignment::run(Graph &graph) {
         }
     }
 
-    if (_num_assigned > num_assigned_at_entry) {
+    if (assigned.moved()) {
         EINSUMS_LOG_INFO("StreamAssignment: assigned {} nodes to transfer stream", _num_assigned);
         report(1, fmt::format("assigned {} node(s) to the transfer stream for overlap", _num_assigned));
     }
 
-    return _num_assigned > num_assigned_at_entry;
+    return assigned.moved();
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -389,7 +389,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         auto const &desc = std::get<ScaleDescriptor>(node.op_data);
         // The LIVE scalar when the node carries one, because that is what the
         // executor reads; the snapshot beside it can be a pass's stale copy.
-        out.set("factor", write_prefactor(desc.params != nullptr ? desc.params->alpha : desc.factor));
+        out.set("factor", write_prefactor(live_factor(desc)));
         return Value{std::move(out)};
     }
     case OpKind::Permute: {
@@ -444,10 +444,10 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("target_indices", list(desc.spec.target_indices));
         out.set("all_indices", list(desc.spec.all_indices));
         out.set("scalar_output", Value{desc.spec.scalar_output});
-        out.set("conj_a", Value{desc.params != nullptr ? desc.params->conj_a : desc.conj_a});
-        out.set("conj_b", Value{desc.params != nullptr ? desc.params->conj_b : desc.conj_b});
-        out.set("c_prefactor", write_prefactor(desc.params != nullptr ? desc.params->c_pf : desc.c_prefactor));
-        out.set("ab_prefactor", write_prefactor(desc.params != nullptr ? desc.params->ab_pf : desc.ab_prefactor));
+        out.set("conj_a", Value{live_conj_a(desc)});
+        out.set("conj_b", Value{live_conj_b(desc)});
+        out.set("c_prefactor", write_prefactor(live_c_prefactor(desc)));
+        out.set("ab_prefactor", write_prefactor(live_ab_prefactor(desc)));
 
         Array letters;
         for (auto const &[letter, space] : desc.letter_spaces) {
