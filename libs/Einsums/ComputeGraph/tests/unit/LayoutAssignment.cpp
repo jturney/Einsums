@@ -22,6 +22,8 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -51,6 +53,30 @@ void capture_chain(cg::Graph &graph, RuntimeTensor<double> &R, RuntimeTensor<dou
     cg::CaptureGuard const guard(graph);
     cg::einsum(std::string_view{produce}, 0.0, &W, 1.0, A, B);
     cg::einsum(std::string_view{consume}, 0.0, &R, 1.0, W, D);
+}
+
+/// @brief The norm-relative gap between two results of the same program.
+///
+/// What a re-associating pass promises to stay inside, and deliberately NOT an element-wise
+/// relative check. A near-cancellation element is small against the tensor's norm, so its
+/// RELATIVE error is large while the answer as a whole is fine, and it is exactly that element
+/// which fails first when a different toolchain orders the fused multiply-adds differently. The
+/// element-wise form of this test passed on two platforms and failed on Windows at 2.8e-12, on an
+/// element of magnitude 3.5e-4, for a rewrite that was behaving.
+double norm_relative_gap(RuntimeTensor<double> const &got, RuntimeTensor<double> const &want) {
+    REQUIRE(got.size() == want.size());
+    double error = 0.0, reference = 0.0;
+    for (size_t i = 0; i < want.size(); i++) {
+        double const difference = got.data()[i] - want.data()[i];
+        error += difference * difference;
+        reference += want.data()[i] * want.data()[i];
+    }
+    return reference > 0.0 ? std::sqrt(error) / std::sqrt(reference) : std::sqrt(error);
+}
+
+/// @brief The bound this tier declares, which is the number the pass is validated against.
+double re_associating_bound() {
+    return cg::tier_bound(cg::PassTier::ReAssociating, std::numeric_limits<double>::epsilon());
 }
 
 std::shared_ptr<cg::passes::LayoutAssignment> only_layout(cg::Graph &graph) {
@@ -146,15 +172,10 @@ TEST_CASE("LayoutAssignment - the answer does not change", "[ComputeGraph][Layou
     // same bug twice: the chain captured directly in the order the pass chose.
     auto const by_hand = run_chain("i,x,j", kI, kX, kJ, A, B, D, /*with_layout=*/false);
 
-    for (size_t i = 0; i < kI; i++) {
-        for (size_t x = 0; x < kX; x++) {
-            for (size_t y = 0; y < kY; y++) {
-                INFO("R[" << i << "," << x << "," << y << "]");
-                CHECK_THAT(relaid(i, x, y), Catch::Matchers::WithinRel(plain(i, x, y), 1.0e-13));
-                CHECK_THAT(by_hand(i, x, y), Catch::Matchers::WithinRel(plain(i, x, y), 1.0e-13));
-            }
-        }
-    }
+    // Norm-relative against the tier's own bound; see norm_relative_gap for why an element-wise
+    // relative check is the wrong instrument for a pass in this tier.
+    CHECK(norm_relative_gap(relaid, plain) <= re_associating_bound());
+    CHECK(norm_relative_gap(by_hand, plain) <= re_associating_bound());
 }
 
 TEST_CASE("LayoutAssignment - the chosen order is already the best one", "[ComputeGraph][LayoutAssignment]") {

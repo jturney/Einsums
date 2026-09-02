@@ -24,6 +24,8 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -63,6 +65,30 @@ void capture_chains(cg::Graph &graph, Chain &t) {
     cg::einsum("i,j <- i,l ; l,j", 0.0, &t.R1, 1.0, T1, t.C);
     cg::einsum("k,j <- k,l ; l,j", 0.0, &T2, 1.0, t.B, t.D);
     cg::einsum("i,j <- i,k ; k,j", 0.0, &t.R2, 1.0, t.A, T2);
+}
+
+/// @brief The norm-relative gap between two results of the same program.
+///
+/// What a re-associating pass promises to stay inside, and deliberately NOT an element-wise
+/// relative check. A near-cancellation element is small against the tensor's norm, so its
+/// RELATIVE error is large while the answer as a whole is fine, and it is exactly that element
+/// which fails first when a different toolchain orders the fused multiply-adds differently. The
+/// element-wise form of this test passed on two platforms and failed on Windows at 2.8e-12, on an
+/// element of magnitude 3.5e-4, for a rewrite that was behaving.
+double norm_relative_gap(RuntimeTensor<double> const &got, RuntimeTensor<double> const &want) {
+    REQUIRE(got.size() == want.size());
+    double error = 0.0, reference = 0.0;
+    for (size_t i = 0; i < want.size(); i++) {
+        double const difference = got.data()[i] - want.data()[i];
+        error += difference * difference;
+        reference += want.data()[i] * want.data()[i];
+    }
+    return reference > 0.0 ? std::sqrt(error) / std::sqrt(reference) : std::sqrt(error);
+}
+
+/// @brief The bound this tier declares, which is the number the pass is validated against.
+double re_associating_bound() {
+    return cg::tier_bound(cg::PassTier::ReAssociating, std::numeric_limits<double>::epsilon());
 }
 
 std::shared_ptr<cg::passes::MultiTermFactorization> searching_pass() {
@@ -141,14 +167,11 @@ TEST_CASE("MultiTermFactorization - the answer does not change", "[ComputeGraph]
     auto const [search1, search2] = run_chains(11, /*with_search=*/true);
 
     // Re-associating, so a norm-relative bound rather than bit equality: the shared form sums the
-    // same products in a different order and that is the tier's whole definition.
-    for (size_t i = 0; i < kI; i++) {
-        for (size_t j = 0; j < kJ; j++) {
-            INFO("R[" << i << "," << j << "]");
-            CHECK_THAT(search1(i, j), Catch::Matchers::WithinRel(plain1(i, j), 1.0e-12));
-            CHECK_THAT(search2(i, j), Catch::Matchers::WithinRel(plain2(i, j), 1.0e-12));
-        }
-    }
+    // same products in a different order and that is the tier's whole definition. Held to
+    // `tier_bound` itself rather than to a number chosen here, so the test and the tier cannot
+    // drift apart.
+    CHECK(norm_relative_gap(search1, plain1) <= re_associating_bound());
+    CHECK(norm_relative_gap(search2, plain2) <= re_associating_bound());
 }
 
 TEST_CASE("MultiTermFactorization - the search is off unless it is asked for", "[ComputeGraph][MultiTermFactorization]") {
@@ -357,13 +380,8 @@ TEST_CASE("MultiTermFactorization - a four-factor term emits its whole tree", "[
     auto const [plain1, plain2]   = run(false);
     auto const [search1, search2] = run(true);
 
-    for (size_t i = 0; i < kI; i++) {
-        for (size_t j = 0; j < kJ; j++) {
-            INFO("[" << i << "," << j << "]");
-            CHECK_THAT(search1(i, j), Catch::Matchers::WithinRel(plain1(i, j), 1.0e-12));
-            CHECK_THAT(search2(i, j), Catch::Matchers::WithinRel(plain2(i, j), 1.0e-12));
-        }
-    }
+    CHECK(norm_relative_gap(search1, plain1) <= re_associating_bound());
+    CHECK(norm_relative_gap(search2, plain2) <= re_associating_bound());
 }
 
 TEST_CASE("MultiTermFactorization - a batched letter stays outermost", "[ComputeGraph][MultiTermFactorization]") {
@@ -406,13 +424,6 @@ TEST_CASE("MultiTermFactorization - a batched letter stays outermost", "[Compute
     auto const [plain1, plain2]   = run(false);
     auto const [search1, search2] = run(true);
 
-    for (size_t b = 0; b < kB; b++) {
-        for (size_t i = 0; i < kI; i++) {
-            for (size_t j = 0; j < kJ; j++) {
-                INFO("[" << b << "," << i << "," << j << "]");
-                CHECK_THAT(search1(b, i, j), Catch::Matchers::WithinRel(plain1(b, i, j), 1.0e-12));
-                CHECK_THAT(search2(b, i, j), Catch::Matchers::WithinRel(plain2(b, i, j), 1.0e-12));
-            }
-        }
-    }
+    CHECK(norm_relative_gap(search1, plain1) <= re_associating_bound());
+    CHECK(norm_relative_gap(search2, plain2) <= re_associating_bound());
 }
