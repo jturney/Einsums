@@ -6,6 +6,7 @@
 set(ComputeGraphHeaders
     Einsums/ComputeGraph.hpp
     Einsums/ComputeGraph/Approximation.hpp
+    Einsums/ComputeGraph/BisectDriver.hpp
     Einsums/ComputeGraph/Blueprints.hpp
     Einsums/ComputeGraph/Factorization.hpp
     Einsums/ComputeGraph/MetricFitFactorization.hpp
@@ -113,6 +114,7 @@ set(ComputeGraphSources
     UsageAnalysis.cpp
     EscapeAnalysis.cpp
     TensorExpr.cpp
+    BisectDriver.cpp
     CostModel.cpp
     SymbolicCost.cpp
     Node.cpp

@@ -55,6 +55,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -466,6 +467,24 @@ PassManager PassManager::create_default() {
     PassManager pm;
     pm.populate_default();
     return pm;
+}
+
+double tier_bound(PassTier tier, double epsilon) {
+    switch (tier) {
+    case PassTier::BitwiseExact:
+    case PassTier::Tuning:
+        return 0.0;
+    case PassTier::ReAssociating:
+        // Generous by design; see the header for why the constant is not delicate. A thousand
+        // epsilon is about 2.3e-13 in double, three orders above anything this tier has measured
+        // and nine below what a wrong contraction produces.
+        return 1024.0 * epsilon;
+    case PassTier::Lossy:
+        // Not a constant, and not this function's to invent: a lossy pass declares its own
+        // tolerance and the graph composes them per output.
+        return std::numeric_limits<double>::infinity();
+    }
+    return std::numeric_limits<double>::infinity();
 }
 
 SearchBudget PassManager::pass_budget() const {

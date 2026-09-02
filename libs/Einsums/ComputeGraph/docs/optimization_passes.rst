@@ -1204,3 +1204,92 @@ For an individual pass's own getters, apply it directly:
 
    auto [modified, mem] = graph.apply<cg::passes::MemoryPlanning>();
    mem.print_report(std::cout);
+
+Finding the pass that made a number wrong
+-----------------------------------------
+
+``explain()`` says what the passes did. When the answer is wrong it does not say which one did it,
+and a pipeline of twenty passes is not a report anybody can act on. ``BisectDriver`` runs the
+program once with no optimization and then once per structural pass with only that pass, and names
+the first one whose output moved past what its tier promises.
+
+.. code-block:: cpp
+
+   cg::BisectDriver driver([&](cg::Graph &graph) {
+       // Fresh tensors per call: the driver runs this once per trial, and two trials sharing an
+       // output buffer would each start from the previous trial's answer.
+       auto &T = graph.declare_runtime_tensor<double>("T", {n, n}, /*intermediate=*/true);
+       cg::CaptureGuard const capture(graph);
+       cg::einsum("i,j <- i,k ; k,j", 0.0, &T, 1.0, A, B);
+       cg::einsum("i,l <- i,j ; j,l", 0.0, &C, 1.0, T, D);
+   });
+   auto const report = driver.run();
+   if (!report.clean()) {
+       std::cout << report.to_string();
+   }
+
+.. code-block:: text
+
+   pass                    tier             norm-rel       bound  verdict
+   ConstantFolding         bitwise-exact   0.000e+00   0.000e+00  did not fire
+   PermuteFusion           re-associating  0.000e+00   2.274e-13  did not fire
+   LayoutAssignment        re-associating  4.107e-16   2.274e-13  within bound
+   MultiTermFactorization  re-associating  8.881e-01   2.274e-13  DIVERGED
+   bisect: the first pass past its bound is 'MultiTermFactorization'
+
+What each trial holds fixed
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Exactly one thing varies between the baseline and a trial: the pass under test. Every trial, the
+baseline included, also runs the **analysis** passes (they write annotations and never touch the
+node set, and several structural passes read what they write) and ``Materialization`` (a graph
+holding a deferred tensor cannot execute without it). A pass present on both sides contributes
+nothing to the gap, which is the whole of the method.
+
+Why a builder rather than a graph
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Comparing two optimizations means running the same computation twice from the same starting state,
+and ``Graph`` is non-copyable. Only the caller knows how to produce that state: an accumulating
+program reads its output tensor's initial contents, so re-running it is not replaying a graph but
+rebuilding one.
+
+What counts as divergence
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The gap is norm-relative over every interface output both runs write, measured against
+``tier_bound()`` for the pass's own tier. A bitwise-exact pass is held to bit equality; a
+re-associating one to a generous multiple of epsilon; a lossy one is not held to a constant at all,
+since it declares its own tolerance through ``Graph::approximation_tolerance()``.
+
+Two things are deliberately **not** divergence. An output the trial stops writing is excluded with
+a note, because dissolving a producer is a legitimate rewrite rather than a wrong number. And a
+pass that did not fire is never blamed, because a report pointing at a pass that never ran points
+at the wrong line.
+
+Bisecting your own pipeline
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``set_passes()`` takes the passes to try. Bisecting the pipeline you are actually running is what
+answers your question, and it is the only way to reach a pass that is off by default:
+
+.. code-block:: cpp
+
+   driver.set_passes(my_manager.passes());
+   driver.set_mode(cg::BisectMode::Cumulative);   // passes 1..k, to catch interactions
+
+``BisectMode::Individual`` (the default) asks which pass is wrong on its own.
+``BisectMode::Cumulative`` asks which is wrong *after* the ones before it, which is a different
+question and a real one: a pass can be correct alone and wrong on a node set an earlier pass
+rewrote.
+
+The whole surface is reachable from Python, where the builder is handed the graph as a non-owning
+view valid for the duration of the call:
+
+.. code-block:: python
+
+   driver = cg.BisectDriver(build)
+   driver.set_passes([cg.CSE(), cg.LayoutAssignment()])
+   report = driver.run()
+   if not report.clean:
+       print(report.text)

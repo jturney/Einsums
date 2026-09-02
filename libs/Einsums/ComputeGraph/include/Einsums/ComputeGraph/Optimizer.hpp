@@ -136,6 +136,43 @@ enum class PassTier : std::uint8_t {
 [[nodiscard]] EINSUMS_EXPORT std::string_view pass_tier_name(PassTier tier);
 
 /**
+ * @brief The norm-relative gap a pass of @p tier may open, at a dtype whose machine epsilon is
+ *        @p epsilon.
+ *
+ * @param[in] tier    The tier being held to its promise.
+ * @param[in] epsilon The element type's machine epsilon.
+ * @return The largest norm-relative difference from the unoptimized answer that is still the tier
+ *         behaving as described. Zero for the tiers that promise the same arithmetic.
+ *
+ * @par Why a tier needs a number at all
+ * ``PassTier`` was a label until something had to ACT on it. A bisect driver reporting "the first
+ * pass whose output diverges past its tier's declared bound" cannot read a label, and the numbers
+ * that existed lived in comments in a test table. This is that table's claim, stated where a
+ * program can consult it.
+ *
+ * @par Where the number comes from, and why a constant is honest here
+ * @ref PassTier::BitwiseExact and @ref PassTier::Tuning promise the same arithmetic in the same
+ * order, so their bound is zero, with the one qualification @ref PassTier::BitwiseExact already
+ * carries about non-finite inputs.
+ *
+ * @ref PassTier::ReAssociating sums the same products in a different order, and the error that
+ * opens is @c O(n) in the length of the re-associated sum, which is a property of the problem
+ * rather than of the pass. So no constant is exactly right. What makes a constant sufficient is
+ * the SEPARATION it has to detect: every measured member of this tier sits between 4.6e-17 and
+ * 6.5e-16 norm-relative (that is, at most about three epsilon), while a pass that computes the
+ * wrong thing produces an error of order one. Twelve orders of magnitude lie between those, so
+ * the bound's job is to sit somewhere in the gap rather than to be tight, and a multiple of
+ * epsilon generous enough for a long accumulation is still nowhere near a wrong answer.
+ *
+ * @ref PassTier::Lossy has no constant, and returning one would be a lie: a lossy pass declares
+ * its own tolerance and records it, so its bound is @ref Graph::approximation_tolerance and this
+ * function reports infinity to say the question belongs elsewhere.
+ *
+ * @see BisectDriver.hpp, the consumer that made this a number
+ */
+[[nodiscard]] EINSUMS_EXPORT double tier_bound(PassTier tier, double epsilon);
+
+/**
  * @brief A wall-clock allowance for one pass's run.
  *
  * Every pass in this library up to now has been cheap and deterministic, so nothing needed one.
