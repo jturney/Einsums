@@ -42,7 +42,7 @@
  * Comparing two optimizations means running the same computation twice from the same starting
  * state, and @ref Graph is non-copyable. Only the caller knows how to produce that state: an
  * accumulating program reads its output tensor's initial contents, so re-running it is not
- * replaying a graph but rebuilding one. Hence @ref BisectDriver::Builder, a callable that captures
+ * replaying a graph but rebuilding one. Hence the ``Builder`` this takes, a callable that captures
  * the program afresh. That is the same shape the differential fuzz corpus already uses, and it is
  * more general than the alternative: cloning through @ref save_graph_string and rebinding would
  * work for a saveable graph and refuse the ones holding a node the IR cannot reconstruct, which is
@@ -198,7 +198,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @brief Construct over the program @p builder captures.
     /// @param[in] builder Called once per trial. See the class note on what it must guarantee.
-    explicit BisectDriver(Builder builder);
+    ///
+    /// Spelled out rather than as @ref Builder: the documentation extractor renders a parameter's
+    /// type as written, and Sphinx's C++ domain cannot resolve an alias used in a signature. The
+    /// alias stays for callers who want to name the type.
+    explicit BisectDriver(std::function<void(Graph &)> builder);
 
     /**
      * @brief The spelling Python gets: the same builder, taking a POINTER.

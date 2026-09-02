@@ -156,7 +156,7 @@ enum class PassTier : std::uint8_t {
  * carries about non-finite inputs.
  *
  * @ref PassTier::ReAssociating sums the same products in a different order, and the error that
- * opens is @c O(n) in the length of the re-associated sum, which is a property of the problem
+ * opens is ``O(n)`` in the length of the re-associated sum, which is a property of the problem
  * rather than of the pass. So no constant is exactly right. What makes a constant sufficient is
  * the SEPARATION it has to detect: every measured member of this tier sits between 4.6e-17 and
  * 6.5e-16 norm-relative (that is, at most about three epsilon), while a pass that computes the
@@ -986,7 +986,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /// The allowance to hand the next pass: the explicit setting when there is one, the option
     /// otherwise.
-    [[nodiscard]] EINSUMS_EXPORT SearchBudget pass_budget() const;
+    ///
+    /// No EINSUMS_EXPORT: the class already carries it, and clang-cl rejects the attribute on a
+    /// member of a class that has it ("attribute 'dllexport' cannot be applied to member of
+    /// 'dllexport' class"). Harmless duplication under the Itanium ABI, which is why it built
+    /// everywhere but Windows.
+    [[nodiscard]] SearchBudget pass_budget() const;
 
     std::vector<std::shared_ptr<OptimizerPass>> _passes;
     int                                         _verbosity{0};
