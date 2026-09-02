@@ -26,10 +26,7 @@ bool CommunicationElimination::run(Graph &graph) {
     // Track which tensors have already been allreduced.
     std::unordered_set<TensorId> already_reduced;
     std::vector<bool>            remove(nodes.size(), false);
-    // Count THIS graph's removals separately: _num_eliminated is a per-apply
-    // total that the recursive driver accumulates across subgraphs, so using it
-    // to size the filtered vector below would underflow on the second call.
-    size_t eliminated_here = 0;
+    PassCounter const            eliminated{_num_eliminated};
 
     for (size_t idx = 0; idx < nodes.size(); idx++) {
         auto const &node = nodes[idx];
@@ -39,7 +36,6 @@ bool CommunicationElimination::run(Graph &graph) {
             if (desc && already_reduced.count(desc->tensor_id)) {
                 // Redundant: this tensor was already allreduced and hasn't been modified since.
                 remove[idx] = true;
-                ++eliminated_here;
                 ++_num_eliminated;
                 EINSUMS_LOG_INFO("CommunicationElimination: removed redundant Allreduce for tensor id={}", desc->tensor_id);
                 report(2, fmt::format("remove redundant Allreduce for tensor id={} (already reduced, unmodified since)", desc->tensor_id));
@@ -58,18 +54,10 @@ bool CommunicationElimination::run(Graph &graph) {
         }
     }
 
-    if (eliminated_here == 0)
+    if (!eliminated.moved())
         return false;
 
-    // Remove marked nodes.
-    std::vector<Node> filtered;
-    filtered.reserve(nodes.size() - eliminated_here);
-    for (size_t idx = 0; idx < nodes.size(); idx++) {
-        if (!remove[idx])
-            filtered.push_back(std::move(nodes[idx]));
-    }
-    nodes = std::move(filtered);
-    graph.note_structural_change();
+    graph.erase_nodes(remove);
     graph.mark_sorted();
 
     return true;

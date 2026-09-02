@@ -202,10 +202,9 @@ bool SUMMAExpansion::run(Graph &graph) {
             continue;
         }
 
-        // Build the SUMMA executor lambda
-        auto a_alloc_fn = a_handle.allreduce_sum_fn; // not used, but we need broadcast
-        // We'll use comm::broadcast directly with the row/col communicators
-
+        // Build the SUMMA executor lambda. The panels are broadcast through
+        // comm::broadcast on the row/col communicators, not through the handle's
+        // allreduce hook.
         node.execute = [&grid, panels, graph_ptr, a_id, b_id, c_id, dtype, c_pf, original_execute]() {
             void *a_ptr = graph_ptr->live_tensor_ptr(a_id);
             void *b_ptr = graph_ptr->live_tensor_ptr(b_id);

@@ -20,16 +20,6 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
-namespace {
-
-/// A node that reads its own destination is self-modifying across iterations
-/// and must never be hoisted out of a loop, hoisting drops the per-iteration
-/// update. This covers the always-accumulating ops (scale/axpy/axpby/element-
-/// transform) and any einsum/permute/batched-gemm with a *nonzero* destination
-/// prefactor (``C = c_pf*C + …`` reads the old C). A pure overwrite (prefactor
-/// zero) does not read its output and may still be hoisted.
-} // namespace
-
 void LoopInvariantHoisting::reset_stats() {
     _num_hoisted = 0;
 }

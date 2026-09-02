@@ -4113,21 +4113,6 @@ std::string escape_json(std::string const &s) {
     return out;
 }
 
-char const *scalar_type_str(packed_gemm::ScalarType dt) {
-    switch (dt) {
-    case packed_gemm::ScalarType::Float32:
-        return "float32";
-    case packed_gemm::ScalarType::Float64:
-        return "float64";
-    case packed_gemm::ScalarType::Complex64:
-        return "complex64";
-    case packed_gemm::ScalarType::Complex128:
-        return "complex128";
-    default:
-        return "unknown";
-    }
-}
-
 } // namespace
 
 std::string Graph::to_json() const {
@@ -4152,7 +4137,7 @@ std::string Graph::to_json() const {
         td.rank            = h.rank;
         td.dims            = h.dims;
         td.element_size    = h.element_size;
-        td.dtype           = scalar_type_str(h.dtype);
+        td.dtype           = scalar_type_name(h.dtype);
         td.is_intermediate = h.is_intermediate;
         data.tensors.push_back(std::move(td));
     }

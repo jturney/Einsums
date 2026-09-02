@@ -46,26 +46,18 @@ OperandAccessor resolve_operand(Graph &graph, TensorId id, OpKind kind, char con
     return resolve_operand(graph, id, scalar_context(kind), role);
 }
 
-/// The live scalar block a dense element-wise executor reads, or a private one
-/// seeded from the descriptor's snapshots when the node carries none.
-std::shared_ptr<ElementwiseParams> elementwise_params(std::shared_ptr<ElementwiseParams> const &declared, PrefactorScalar const &alpha,
-                                                      PrefactorScalar const &beta) {
+/// The live scalar block an element-wise executor reads, or a private one seeded from the
+/// descriptor's snapshots when the node carries none.
+///
+/// One function for axpby and the dense element-wise kinds, which is possible because
+/// @ref AxpbyParams and @ref ElementwiseParams are one type; it used to be two, differing only
+/// in the name each spelled that type by.
+std::shared_ptr<ElementwiseParams> live_or_private_params(std::shared_ptr<ElementwiseParams> const &declared, PrefactorScalar const &alpha,
+                                                          PrefactorScalar const &beta) {
     if (declared != nullptr) {
         return declared;
     }
     auto fresh   = std::make_shared<ElementwiseParams>();
-    fresh->alpha = alpha;
-    fresh->beta  = beta;
-    return fresh;
-}
-
-/// @copydoc elementwise_params
-std::shared_ptr<AxpbyParams> axpby_params(std::shared_ptr<AxpbyParams> const &declared, PrefactorScalar const &alpha,
-                                          PrefactorScalar const &beta) {
-    if (declared != nullptr) {
-        return declared;
-    }
-    auto fresh   = std::make_shared<AxpbyParams>();
     fresh->alpha = alpha;
     fresh->beta  = beta;
     return fresh;
@@ -81,7 +73,7 @@ std::shared_ptr<AxpbyParams> axpby_params(std::shared_ptr<AxpbyParams> const &de
 
 /// ``A *= factor``. Rank-erased; the kernel is ``linear_algebra::detail::scale``.
 std::function<void()> build_scale(packed_gemm::ScalarType dtype, ScaleDescriptor const &desc, OperandAccessor const &a) {
-    auto params = elementwise_params(desc.params, desc.factor, PrefactorScalar{double{0}});
+    auto params = live_or_private_params(desc.params, desc.factor, PrefactorScalar{double{0}});
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         return [params, a]() {
             LabeledSection("scale execute");
@@ -95,7 +87,7 @@ std::function<void()> build_scale(packed_gemm::ScalarType dtype, ScaleDescriptor
 /// overload forwards to, so the eager path and this one cannot diverge.
 std::function<void()> build_permute(packed_gemm::ScalarType dtype, PermuteDescriptor const &desc, OperandAccessor const &a,
                                     OperandAccessor const &c) {
-    auto params = elementwise_params(desc.params, PrefactorScalar{desc.alpha}, PrefactorScalar{desc.beta});
+    auto params = live_or_private_params(desc.params, PrefactorScalar{desc.alpha}, PrefactorScalar{desc.beta});
 
     // Built once. The index lists are a structural field: a pass that rewrites
     // them rebuilds the executor rather than mutating it under a replay.
@@ -148,7 +140,7 @@ std::function<void()> build_transpose(packed_gemm::ScalarType dtype, OperandAcce
 /// away from 1, so the choice belongs to the executor rather than to the kind.
 std::function<void()> build_axpby(packed_gemm::ScalarType dtype, AxpbyDescriptor const &desc, OperandAccessor const &x,
                                   OperandAccessor const &y) {
-    auto params = axpby_params(desc.params, desc.alpha, desc.beta);
+    auto params = live_or_private_params(desc.params, desc.alpha, desc.beta);
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         return [params, x, y]() {
             LabeledSection("axpby execute");
@@ -171,7 +163,7 @@ std::function<void()> build_axpby(packed_gemm::ScalarType dtype, AxpbyDescriptor
 /// descriptor they share.
 std::function<void()> build_elementwise_binary(OpKind kind, packed_gemm::ScalarType dtype, ElementwiseBinaryDescriptor const &desc,
                                                OperandAccessor const &a, OperandAccessor const &b, OperandAccessor const &c) {
-    auto       params = elementwise_params(desc.params, desc.alpha, desc.beta);
+    auto       params = live_or_private_params(desc.params, desc.alpha, desc.beta);
     bool const divide = kind == OpKind::DirectDivision;
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         if (divide) {

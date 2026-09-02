@@ -186,17 +186,36 @@ struct EinsumDescriptor {
     }
 };
 
-/// Live-mutable scalar state for axpby (Y = alpha*X + beta*Y), shared with the
-/// executor lambda - the same snapshot + shared-params pattern as EinsumParams.
+/// Live-mutable scalars for every kind whose operation is ``dst = alpha*<source> + beta*dst``,
+/// shared with the executor lambda - the same snapshot + shared-params pattern as
+/// @ref EinsumParams.
 ///
-/// The executor reads alpha/beta from here on every call, so a pass that folds a
-/// scale into an axpby writes beta through this handle and the change takes
-/// effect on the next `graph.execute()`. A snapshot-only descriptor would leave
-/// the executor reading a baked value.
-struct AxpbyParams {
-    PrefactorScalar alpha{double{1}};
-    PrefactorScalar beta{double{0}};
+/// The executor reads its prefactors from here on every call, so a pass that rewrites one
+/// writes it through this handle and the change takes effect on the next ``graph.execute()``.
+/// That is the whole point: the executors these kinds used to carry baked their scalars into a
+/// closure, so a descriptor rewrite was silently ignored at replay.
+///
+/// A descriptor also keeps an at-capture SNAPSHOT of the same scalars, which is what analysis
+/// passes read; a rewriter must write both, and the ``live_*`` accessors below are how a reader
+/// stays right about which one matters.
+///
+/// @par One type, three names
+/// Axpby, the dense element-wise kinds and the tiled element-wise kinds each used to declare
+/// their own field-for-field identical struct. They are NOT variant alternatives - each is
+/// reached through its own descriptor's ``params`` member - so nothing ever discriminated
+/// between them, and three definitions were only three things to keep in step. The aliases
+/// below keep each descriptor reading in its own vocabulary.
+///
+/// Not every kind uses both halves: a Scale is an in-place multiply with no destination
+/// prefactor, and a tiled Scale or Axpy is the same, so @ref beta stays at its default there.
+struct ElementwiseParams {
+    PrefactorScalar alpha{double{1}}; ///< Prefactor on the source operand(s).
+    PrefactorScalar beta{double{0}};  ///< Prefactor on the destination (0 = pure overwrite).
 };
+
+/// @copydoc ElementwiseParams
+/// Spelled for axpby's ``Y = alpha*X + beta*Y``.
+using AxpbyParams = ElementwiseParams;
 
 /// Metadata for Axpby nodes (Y = alpha*X + beta*Y). Prefactors are type-erased
 /// (PrefactorScalar) so complex axpby folds exactly, matching EinsumDescriptor.
@@ -204,27 +223,6 @@ struct AxpbyDescriptor {
     PrefactorScalar              alpha{double{1}}; ///< alpha snapshot (at-capture value)
     PrefactorScalar              beta{double{0}};  ///< beta snapshot (at-capture value)
     std::shared_ptr<AxpbyParams> params;           ///< live values the executor reads each call
-};
-
-/// Live-mutable scalars for the DENSE element-wise kinds - Scale, Permute,
-/// DirectProduct and DirectDivision - shared with the executor exactly as
-/// @ref AxpbyParams is with an axpby's.
-///
-/// The executor reads its prefactors from here on every call, so a pass that
-/// rewrites one writes it through this handle and the change takes effect on
-/// the next ``graph.execute()``. That is the whole point: the executors these
-/// kinds used to carry baked their scalars into a closure, so a descriptor
-/// rewrite was silently ignored at replay.
-///
-/// A descriptor also keeps an at-capture SNAPSHOT of the same scalars, which is
-/// what analysis passes read; a rewriter must write both, the rule
-/// @ref AxpbyDescriptor already states.
-///
-/// Scale uses @ref alpha only; @ref beta is meaningless for an in-place
-/// multiply and stays at its default there.
-struct ElementwiseParams {
-    PrefactorScalar alpha{double{1}}; ///< Prefactor on the source operand(s).
-    PrefactorScalar beta{double{0}};  ///< Prefactor on the destination (0 = pure overwrite).
 };
 
 /**
@@ -664,11 +662,10 @@ enum class TiledElementwiseOp : std::uint8_t {
     Divide, ///< ``C = alpha * (A / B) + beta * C``
 };
 
-/// Live scalars for a tiled elementwise node, shared with its executor.
-struct TiledElementwiseParams {
-    PrefactorScalar alpha{double{1}};
-    PrefactorScalar beta{double{0}}; ///< Divide only; unused by Scale and Axpy.
-};
+/// @copydoc ElementwiseParams
+/// Spelled for a tiled elementwise node. Only @ref TiledElementwiseOp::Divide reads
+/// @ref ElementwiseParams::beta; Scale and Axpy leave it at its default.
+using TiledElementwiseParams = ElementwiseParams;
 
 /**
  * @brief Metadata for a TILED elementwise node (scale or axpy).
