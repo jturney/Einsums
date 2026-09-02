@@ -152,6 +152,25 @@
   body: |
     Save the profile session as JSON for the imgui viewer. Empty, the default, means do not save one.
 
+"einsums:profile:server":
+  added: "2.0.0"
+  body: |
+    Run the profile server, so a viewer can attach and stream this process's profiling data.
+
+    Off by default. The server is a cost a run should opt into rather than one it pays for having
+    been built with profiling: it holds a listening socket for the life of the process and is
+    driven by the consumer thread, which services it on the same periodic tick that drains the
+    event buffers.
+
+    It streams JSON Lines over TCP, binds to ``127.0.0.1``, and accepts up to four simultaneous
+    clients. There is no authentication and no transport security of any kind, so the loopback
+    bind is what keeps it private and is not something to work around. On macOS it also advertises
+    itself over Bonjour as ``_einsums-profile._tcp``.
+
+    See :option:`--einsums:profile:port` for the port it listens on, and
+    :option:`--einsums:profile:wait-for-viewer` to hold a short run open until a viewer has
+    attached.
+
 "einsums:profile:port":
   added: "2.0.0"
   body: |

@@ -261,8 +261,11 @@ struct EINSUMS_EXPORT Profiler {
             _enabled.store(!config::get(option::ProfileDisable), std::memory_order_relaxed);
         } catch (...) { // NOLINT
         }
-        _server = std::make_unique<Server>(*_consumer, _strings, "127.0.0.1", port);
-        _consumer->set_tick_callback([this] { _server->tick(); });
+        // The callback dereferences _server on every consumer tick, so it goes inside the guard.
+        if (config::get(option::ProfileServer)) {
+            _server = std::make_unique<Server>(*_consumer, _strings, "127.0.0.1", port);
+            _consumer->set_tick_callback([this] { _server->tick(); });
+        }
         // Signal handlers are NOT installed here to avoid conflicting with
         // the Runtime module's signal handlers (set_signal_handlers in Runtime.cpp).
         // Profiler shutdown is handled by einsums::finalize() in Finalize.cpp,

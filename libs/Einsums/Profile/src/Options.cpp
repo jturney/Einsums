@@ -16,6 +16,7 @@ int register_Einsums_Profile_options() {
     cl::register_option(option::ProfileAppend);
     cl::register_option(option::ProfileDetailed);
     cl::register_option(option::ProfileSave);
+    cl::register_option(option::ProfileServer);
     cl::register_option(option::ProfilePort);
     cl::register_option(option::ProfileWaitForViewer);
     return 0;

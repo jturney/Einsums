@@ -45,6 +45,11 @@ inline constinit cl::ConfigOption<bool> ProfileDetailed =
 inline constinit cl::ConfigOption<std::string> ProfileSave =
     cl::config_opt<std::string>("einsums:profile:save", "Save the profile session as JSON for the imgui viewer", "Profile", "", "filename");
 
+/// Enable the profile server for remote viewing. The server is single-threaded and not secure, so it is only suitable for local
+/// connections.
+inline constinit cl::ConfigOption<bool> ProfileServer =
+    cl::config_flag("einsums:profile:server", "Enable the profile server for remote viewing", "Profile", false);
+
 /// The port the profile server listens on.
 inline constinit cl::ConfigOption<std::int64_t> ProfilePort =
     cl::config_opt<std::int64_t>("einsums:profile:port", "Profile server port", "Profile", 19216, "PORT");
