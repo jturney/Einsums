@@ -217,7 +217,12 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
             }
 
             TermId const other_leaf = term.operands[other_slot];
-            auto const  &source     = expr.at(other_leaf);
+            // COPIED, not referenced. `expr.add` below appends to the term arena, and a
+            // reference into a vector does not survive its reallocation. The dissolve branch
+            // reads this before any add and was always safe, which is how one reference came to
+            // be correct on one path and dangling on the other.
+            TensorId const    source_tensor = expr.at(other_leaf).tensor;
+            std::string const source_name   = expr.at(other_leaf).name;
 
             // Can the statement disappear entirely, or must it still write its target?
             //
@@ -240,13 +245,13 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 // has exactly one leaf term in this arena and rewriting it reaches every use.
                 for (auto &leaf : expr.terms) {
                     if (leaf.kind == TermKind::Leaf && leaf.tensor == statement.target) {
-                        leaf.tensor = source.tensor;
-                        leaf.name   = source.name;
+                        leaf.tensor = source_tensor;
+                        leaf.name   = source_name;
                     }
                 }
                 statement.value = invalid_term; // erased below
                 ++_num_dissolved;
-                report(2, fmt::format("dissolved '{}': its readers now take '{}' directly", statement.target_name, source.name));
+                report(2, fmt::format("dissolved '{}': its readers now take '{}' directly", statement.target_name, source_name));
             } else {
                 // Still has to be produced. A permute carries the reordering and both prefactors,
                 // which is exactly what is left once the delta is gone.
@@ -270,7 +275,7 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 statement.value        = expr.add(std::move(replacement));
                 statement.origin_label = fmt::format("permute: C[{}] = A[{}]", fmt::join(letters_of(statement.target_indices), ","),
                                                      fmt::join(letters_of(renamed), ","));
-                report(2, fmt::format("'{}' keeps a permute of '{}'; its target is not dissolvable", statement.target_name, source.name));
+                report(2, fmt::format("'{}' keeps a permute of '{}'; its target is not dissolvable", statement.target_name, source_name));
             }
 
             ++_num_eliminated;
