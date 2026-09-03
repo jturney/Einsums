@@ -21,10 +21,13 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include <array>
 #include <cctype>
 #include <complex>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -44,23 +47,6 @@ std::string scalar_context(OpKind kind) {
 /// Resolve one operand under @ref build_executor's own diagnostic wording.
 OperandAccessor resolve_operand(Graph &graph, TensorId id, OpKind kind, char const *role) {
     return resolve_operand(graph, id, scalar_context(kind), role);
-}
-
-/// The live scalar block an element-wise executor reads, or a private one seeded from the
-/// descriptor's snapshots when the node carries none.
-///
-/// One function for axpby and the dense element-wise kinds, which is possible because
-/// @ref AxpbyParams and @ref ElementwiseParams are one type; it used to be two, differing only
-/// in the name each spelled that type by.
-std::shared_ptr<ElementwiseParams> live_or_private_params(std::shared_ptr<ElementwiseParams> const &declared, PrefactorScalar const &alpha,
-                                                          PrefactorScalar const &beta) {
-    if (declared != nullptr) {
-        return declared;
-    }
-    auto fresh   = std::make_shared<ElementwiseParams>();
-    fresh->alpha = alpha;
-    fresh->beta  = beta;
-    return fresh;
 }
 
 // ── Per-kind builders ───────────────────────────────────────────────────────
@@ -643,51 +629,74 @@ std::function<void()> build_syev(packed_gemm::ScalarType dtype, SyevDescriptor c
     });
 }
 
+/// One name per @ref OpData alternative, in the variant's own declaration order.
+///
+/// Indexed by ``index()`` rather than matched by a chain of
+/// ``holds_alternative``: the chain silently answered "descriptor alternative
+/// #N" for every alternative nobody had added to it, which was most of them,
+/// and adding one to the variant left it that way with nothing complaining. The
+/// static_assert below is what complains now, at compile time.
+constexpr auto kDescriptorNames = std::to_array<std::string_view>({
+    "no descriptor",
+    "EinsumDescriptor",
+    "ScaleDescriptor",
+    "PermuteDescriptor",
+    "ConditionalDescriptor",
+    "LoopDescriptor",
+    "AllocDescriptor",
+    "TransferDescriptor",
+    "DiskIODescriptor",
+    "CommDescriptor",
+    "InitializeDescriptor",
+    "BatchedGemmDescriptor",
+    "GroupedBatchedGemmDescriptor",
+    "ViewDescriptor",
+    "WriteParamDescriptor",
+    "AxpbyDescriptor",
+    "GroupedDotDescriptor",
+    "GroupedAxpbyDescriptor",
+    "GroupedElementwiseDescriptor",
+    "GroupedSandwichDescriptor",
+    "GroupedGatherRotateDescriptor",
+    "TiledEinsumDescriptor",
+    "TiledElementwiseDescriptor",
+    "TiledPermuteDescriptor",
+    "TiledDotDescriptor",
+    "ElementwiseBinaryDescriptor",
+    "DotDescriptor",
+    "TraceDescriptor",
+    "GemmDescriptor",
+    "ElementTransformDescriptor",
+    "SetupDescriptor",
+    "SyevDescriptor",
+});
+
+static_assert(kDescriptorNames.size() == std::variant_size_v<OpData>,
+              "OpData gained or lost an alternative: add or remove its name in kDescriptorNames, in the variant's own order");
+
+/// Where @c D sits in @ref OpData's alternative list.
+template <typename D, std::size_t Index = 0>
+constexpr std::size_t alternative_index() {
+    if constexpr (std::is_same_v<D, std::variant_alternative_t<Index, OpData>>) {
+        return Index;
+    } else {
+        return alternative_index<D, Index + 1>();
+    }
+}
+
+/// The table is POSITIONAL, so a name in the wrong slot names the wrong
+/// descriptor and the size check above would not notice. These pin the slots the
+/// refusal messages are written against, at compile time.
+static_assert(kDescriptorNames[alternative_index<std::monostate>()] == "no descriptor");
+static_assert(kDescriptorNames[alternative_index<EinsumDescriptor>()] == "EinsumDescriptor");
+static_assert(kDescriptorNames[alternative_index<ScaleDescriptor>()] == "ScaleDescriptor");
+static_assert(kDescriptorNames[alternative_index<AxpbyDescriptor>()] == "AxpbyDescriptor");
+static_assert(kDescriptorNames[alternative_index<GemmDescriptor>()] == "GemmDescriptor");
+static_assert(kDescriptorNames[alternative_index<SyevDescriptor>()] == "SyevDescriptor");
+
 /// The descriptor alternative @p data holds, for a diagnostic.
-std::string descriptor_name(OpData const &data) {
-    if (std::holds_alternative<std::monostate>(data)) {
-        return "no descriptor";
-    }
-    if (std::holds_alternative<TiledElementwiseDescriptor>(data)) {
-        return "TiledElementwiseDescriptor";
-    }
-    if (std::holds_alternative<TiledPermuteDescriptor>(data)) {
-        return "TiledPermuteDescriptor";
-    }
-    if (std::holds_alternative<TiledDotDescriptor>(data)) {
-        return "TiledDotDescriptor";
-    }
-    if (std::holds_alternative<EinsumDescriptor>(data)) {
-        return "EinsumDescriptor";
-    }
-    if (std::holds_alternative<DotDescriptor>(data)) {
-        return "DotDescriptor";
-    }
-    if (std::holds_alternative<TraceDescriptor>(data)) {
-        return "TraceDescriptor";
-    }
-    if (std::holds_alternative<GemmDescriptor>(data)) {
-        return "GemmDescriptor";
-    }
-    if (std::holds_alternative<WriteParamDescriptor>(data)) {
-        return "WriteParamDescriptor";
-    }
-    if (std::holds_alternative<ElementTransformDescriptor>(data)) {
-        return "ElementTransformDescriptor";
-    }
-    if (std::holds_alternative<ConditionalDescriptor>(data)) {
-        return "ConditionalDescriptor";
-    }
-    if (std::holds_alternative<LoopDescriptor>(data)) {
-        return "LoopDescriptor";
-    }
-    if (std::holds_alternative<SetupDescriptor>(data)) {
-        return "SetupDescriptor";
-    }
-    if (std::holds_alternative<SyevDescriptor>(data)) {
-        return "SyevDescriptor";
-    }
-    return fmt::format("descriptor alternative #{}", data.index());
+std::string_view descriptor_name(OpData const &data) {
+    return kDescriptorNames[data.index()];
 }
 
 /// Complain that a kind with a builder entry carries the wrong descriptor.
@@ -700,6 +709,34 @@ std::string descriptor_name(OpData const &data) {
 [[noreturn]] void missing_operand(OpKind kind, char const *list, std::size_t needed, std::size_t have) {
     EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): needs at least {} {}, node lists {}", op_kind_name(kind), needed,
                             list, have);
+}
+
+/// @p desc's @c D alternative, or a refusal naming what it holds instead.
+///
+/// Fourteen copies of the get_if-then-null-check idiom is what this replaces,
+/// and the refusal is unchanged: @ref wrong_descriptor never returns, so the
+/// reference handed back is always to a live alternative.
+///
+/// Callers bind the result to a named reference rather than calling it inside
+/// the builder's argument list, and deliberately: argument evaluation order is
+/// unspecified, so an inline call could report an unresolvable operand where
+/// the hand-written checks reported the wrong descriptor.
+template <typename D>
+D const &expect(OpKind kind, OpData const &desc, char const *expected) {
+    D const *held = std::get_if<D>(&desc);
+    if (held == nullptr) {
+        wrong_descriptor(kind, desc, expected);
+    }
+    return *held;
+}
+
+/// Refuse when @p operands holds fewer than @p needed entries.
+///
+/// @p list is the list's name as the message spells it, "inputs" or "outputs".
+void need(OpKind kind, char const *list, std::span<TensorId const> operands, std::size_t needed) {
+    if (operands.size() < needed) {
+        missing_operand(kind, list, needed, operands.size());
+    }
 }
 
 /**
@@ -1036,187 +1073,102 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
 
     switch (kind) {
     case OpKind::Scale: {
-        if (outputs.empty()) {
-            missing_operand(kind, "outputs", 1, outputs.size());
-        }
-        auto const *d = std::get_if<ScaleDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "ScaleDescriptor");
-        }
-        return build_scale(dtype, *d, resolve_operand(graph, outputs[0], kind, "A"));
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<ScaleDescriptor>(kind, desc, "ScaleDescriptor");
+        return build_scale(dtype, d, resolve_operand(graph, outputs[0], kind, "A"));
     }
     case OpKind::Permute: {
-        if (inputs.empty()) {
-            missing_operand(kind, "inputs", 1, inputs.size());
-        }
-        if (outputs.empty()) {
-            missing_operand(kind, "outputs", 1, outputs.size());
-        }
-        auto const *d = std::get_if<PermuteDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "PermuteDescriptor");
-        }
-        return build_permute(dtype, *d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, outputs[0], kind, "C"));
+        need(kind, "inputs", inputs, 1);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<PermuteDescriptor>(kind, desc, "PermuteDescriptor");
+        return build_permute(dtype, d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, outputs[0], kind, "C"));
     }
     case OpKind::Transpose: {
-        if (inputs.empty()) {
-            missing_operand(kind, "inputs", 1, inputs.size());
-        }
-        if (outputs.empty()) {
-            missing_operand(kind, "outputs", 1, outputs.size());
-        }
+        need(kind, "inputs", inputs, 1);
+        need(kind, "outputs", outputs, 1);
         if (rank != 2) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Transpose): rank must be 2, got {}", rank);
         }
         return build_transpose(dtype, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, outputs[0], kind, "C"));
     }
     case OpKind::Axpby: {
-        if (inputs.empty()) {
-            missing_operand(kind, "inputs", 1, inputs.size());
-        }
-        if (outputs.empty()) {
-            missing_operand(kind, "outputs", 1, outputs.size());
-        }
-        auto const *d = std::get_if<AxpbyDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "AxpbyDescriptor");
-        }
-        return build_axpby(dtype, *d, resolve_operand(graph, inputs[0], kind, "X"), resolve_operand(graph, outputs[0], kind, "Y"));
+        need(kind, "inputs", inputs, 1);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<AxpbyDescriptor>(kind, desc, "AxpbyDescriptor");
+        return build_axpby(dtype, d, resolve_operand(graph, inputs[0], kind, "X"), resolve_operand(graph, outputs[0], kind, "Y"));
     }
     case OpKind::DirectProduct:
     case OpKind::DirectDivision: {
-        if (inputs.size() < 2) {
-            missing_operand(kind, "inputs", 2, inputs.size());
-        }
-        if (outputs.empty()) {
-            missing_operand(kind, "outputs", 1, outputs.size());
-        }
-        auto const *d = std::get_if<ElementwiseBinaryDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "ElementwiseBinaryDescriptor");
-        }
-        return build_elementwise_binary(kind, dtype, *d, resolve_operand(graph, inputs[0], kind, "A"),
+        need(kind, "inputs", inputs, 2);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<ElementwiseBinaryDescriptor>(kind, desc, "ElementwiseBinaryDescriptor");
+        return build_elementwise_binary(kind, dtype, d, resolve_operand(graph, inputs[0], kind, "A"),
                                         resolve_operand(graph, inputs[1], kind, "B"), resolve_operand(graph, outputs[0], kind, "C"));
     }
     case OpKind::Einsum: {
         // A repeated destination in inputs[2] is the RMW convention, not a
         // fourth operand, so only the leading two inputs are read here.
-        if (inputs.size() < 2) {
-            missing_operand(kind, "inputs", 2, inputs.size());
-        }
-        if (outputs.empty()) {
-            missing_operand(kind, "outputs", 1, outputs.size());
-        }
-        auto const *d = std::get_if<EinsumDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "EinsumDescriptor");
-        }
-        return build_einsum(dtype, *d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, inputs[1], kind, "B"),
+        need(kind, "inputs", inputs, 2);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<EinsumDescriptor>(kind, desc, "EinsumDescriptor");
+        return build_einsum(dtype, d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, inputs[1], kind, "B"),
                             resolve_operand(graph, outputs[0], kind, "C"));
     }
     case OpKind::Dot: {
-        if (inputs.size() < 2) {
-            missing_operand(kind, "inputs", 2, inputs.size());
-        }
-        if (outputs.empty()) {
-            missing_operand(kind, "outputs", 1, outputs.size());
-        }
-        auto const *d = std::get_if<DotDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "DotDescriptor");
-        }
-        return build_dot(dtype, *d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, inputs[1], kind, "B"),
+        need(kind, "inputs", inputs, 2);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<DotDescriptor>(kind, desc, "DotDescriptor");
+        return build_dot(dtype, d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, inputs[1], kind, "B"),
                          resolve_scalar_operand(graph, outputs[0], scalar_context(kind), "result"));
     }
     case OpKind::Trace: {
-        if (inputs.empty()) {
-            missing_operand(kind, "inputs", 1, inputs.size());
-        }
-        if (outputs.empty()) {
-            missing_operand(kind, "outputs", 1, outputs.size());
-        }
-        if (!std::holds_alternative<TraceDescriptor>(desc)) {
-            wrong_descriptor(kind, desc, "TraceDescriptor");
-        }
+        need(kind, "inputs", inputs, 1);
+        need(kind, "outputs", outputs, 1);
+        // The descriptor carries nothing a trace reads; it is checked so that a
+        // node holding the wrong one is refused rather than run.
+        (void)expect<TraceDescriptor>(kind, desc, "TraceDescriptor");
         return build_trace(dtype, resolve_operand(graph, inputs[0], kind, "A"),
                            resolve_scalar_operand(graph, outputs[0], scalar_context(kind), "result"));
     }
     case OpKind::WriteParam: {
-        auto const *d = std::get_if<WriteParamDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "WriteParamDescriptor");
-        }
+        auto const &d = expect<WriteParamDescriptor>(kind, desc, "WriteParamDescriptor");
         // The expression arm carries its own value and names no operand; the
         // tensor arm reads inputs[0]. Both rebuild here, and only the Callback
         // arm of the expression blocks a SAVE - see reconstruction_blocker.
-        if (d->source_expr.has_value()) {
-            return build_write_param_expr(d->name, d->source_expr.value(), graph.params_ptr());
+        if (d.source_expr.has_value()) {
+            return build_write_param_expr(d.name, d.source_expr.value(), graph.params_ptr());
         }
-        if (inputs.empty()) {
-            missing_operand(kind, "inputs", 1, inputs.size());
-        }
-        return build_write_param(*d, graph.params_ptr(), resolve_scalar_operand(graph, inputs[0], scalar_context(kind), "source"));
+        need(kind, "inputs", inputs, 1);
+        return build_write_param(d, graph.params_ptr(), resolve_scalar_operand(graph, inputs[0], scalar_context(kind), "source"));
     }
     case OpKind::Gemm: {
         // C repeated in inputs[2] is the RMW convention of an accumulating
         // gemm, not a fourth operand; only the leading two inputs are read.
-        if (inputs.size() < 2) {
-            missing_operand(kind, "inputs", 2, inputs.size());
-        }
-        if (outputs.empty()) {
-            missing_operand(kind, "outputs", 1, outputs.size());
-        }
-        auto const *d = std::get_if<GemmDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "GemmDescriptor");
-        }
-        return build_gemm(dtype, *d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, inputs[1], kind, "B"),
+        need(kind, "inputs", inputs, 2);
+        need(kind, "outputs", outputs, 1);
+        auto const &d = expect<GemmDescriptor>(kind, desc, "GemmDescriptor");
+        return build_gemm(dtype, d, resolve_operand(graph, inputs[0], kind, "A"), resolve_operand(graph, inputs[1], kind, "B"),
                           resolve_operand(graph, outputs[0], kind, "C"));
     }
     case OpKind::ElementTransform: {
-        auto const *d = std::get_if<ElementTransformDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "ElementTransformDescriptor");
-        }
-        if (outputs.empty()) {
-            missing_operand(kind, "outputs", 1, outputs.size());
-        }
-        return build_element_transform(dtype, *d, resolve_operand(graph, outputs[0], kind, "C"));
+        auto const &d = expect<ElementTransformDescriptor>(kind, desc, "ElementTransformDescriptor");
+        need(kind, "outputs", outputs, 1);
+        return build_element_transform(dtype, d, resolve_operand(graph, outputs[0], kind, "C"));
     }
     case OpKind::Syev: {
         // A is listed in BOTH lists because it is decomposed in place, so the matrix operand
         // is read from outputs[0] and never from inputs[0]: a pass that rewrote the input
         // list would otherwise silently move which buffer gets overwritten. W is outputs[1].
-        if (outputs.size() < 2) {
-            missing_operand(kind, "outputs", 2, outputs.size());
-        }
-        auto const *d = std::get_if<SyevDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "SyevDescriptor");
-        }
-        return build_syev(dtype, *d, resolve_operand(graph, outputs[0], kind, "A"), resolve_operand(graph, outputs[1], kind, "W"));
+        need(kind, "outputs", outputs, 2);
+        auto const &d = expect<SyevDescriptor>(kind, desc, "SyevDescriptor");
+        return build_syev(dtype, d, resolve_operand(graph, outputs[0], kind, "A"), resolve_operand(graph, outputs[1], kind, "W"));
     }
-    case OpKind::Conditional: {
-        auto const *d = std::get_if<ConditionalDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "ConditionalDescriptor");
-        }
-        return build_conditional(*d, graph.params_ptr());
-    }
-    case OpKind::Loop: {
-        auto const *d = std::get_if<LoopDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "LoopDescriptor");
-        }
-        return build_loop(*d, graph.params_ptr());
-    }
-    case OpKind::Setup: {
-        auto const *d = std::get_if<SetupDescriptor>(&desc);
-        if (d == nullptr) {
-            wrong_descriptor(kind, desc, "SetupDescriptor");
-        }
-        return build_setup(*d);
-    }
+    case OpKind::Conditional:
+        return build_conditional(expect<ConditionalDescriptor>(kind, desc, "ConditionalDescriptor"), graph.params_ptr());
+    case OpKind::Loop:
+        return build_loop(expect<LoopDescriptor>(kind, desc, "LoopDescriptor"), graph.params_ptr());
+    case OpKind::Setup:
+        return build_setup(expect<SetupDescriptor>(kind, desc, "SetupDescriptor"));
     default:
         break;
     }

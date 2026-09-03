@@ -390,6 +390,49 @@ struct ElementwiseBinaryDescriptor {
     return desc.params != nullptr ? desc.params->alpha : desc.factor;
 }
 
+/**
+ * @brief A fresh scalar block holding @p alpha and @p beta.
+ *
+ * @param[in] alpha Prefactor on the source operand(s).
+ * @param[in] beta  Prefactor on the destination. Defaults to the pure-overwrite
+ *                  0 that @ref ElementwiseParams itself defaults to, which is
+ *                  what a scale wants: it reads ``alpha`` only.
+ * @return The block.
+ *
+ * One function for axpby, scale and the dense element-wise kinds, which is
+ * possible because @ref AxpbyParams and @ref ElementwiseParams are one type.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline std::shared_ptr<ElementwiseParams> make_elementwise_params(PrefactorScalar const &alpha,
+                                                                                PrefactorScalar const &beta = PrefactorScalar{double{0}}) {
+    auto params   = std::make_shared<ElementwiseParams>();
+    params->alpha = alpha;
+    params->beta  = beta;
+    return params;
+}
+
+/**
+ * @brief The live scalar block a node carries, or a private one seeded from its snapshots.
+ *
+ * @param[in] declared The descriptor's ``params``, which may be null.
+ * @param[in] alpha    The descriptor's alpha snapshot, used only when @p declared is null.
+ * @param[in] beta     The descriptor's beta snapshot, used only when @p declared is null.
+ * @return A block that is never null.
+ *
+ * A node captured before the params block existed, or one a loader has just
+ * rebuilt, carries the values in the descriptor rather than behind a pointer.
+ * An executor and a reader both need one block to read either way, and this is
+ * it.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] inline std::shared_ptr<ElementwiseParams> live_or_private_params(std::shared_ptr<ElementwiseParams> const &declared,
+                                                                               PrefactorScalar const &alpha, PrefactorScalar const &beta) {
+    if (declared != nullptr) {
+        return declared;
+    }
+    return make_elementwise_params(alpha, beta);
+}
+
 /// @}
 
 /**
