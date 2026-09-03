@@ -385,12 +385,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /**
      * @brief Reuse or mint a TensorId for @p handle's buffer in this graph.
      *
-     * Scans this graph's tensors for one whose ``tensor_ptr`` matches @p
-     * handle's and returns its id; otherwise registers @p handle. Shares the
-     * orphan-parent-handle convention with effective_io: a buffer used only
-     * inside sub-graphs gets one stable parent id here, so every parent node
-     * touching it (hoisted lifecycle nodes and the control-flow node's
-     * effective I/O) resolves to the same id and a dependency edge forms.
+     * Looks @p handle's ``tensor_ptr`` up in the pointer INDEX and returns the id it
+     * names; otherwise registers @p handle. Shares the orphan-parent-handle convention
+     * with effective_io: a buffer used only inside sub-graphs gets one stable parent id
+     * here, so every parent node touching it (hoisted lifecycle nodes and the control-flow
+     * node's effective I/O) resolves to the same id and a dependency edge forms.
+     *
+     * @note It shares the CONVENTION and not the lookup, which is why effective_io scans the
+     *       tensor table instead of calling this. ``rebind_impl`` repoints a handle's
+     *       ``tensor_ptr`` without touching the index, so on a graph that has been bound the
+     *       index answers "not registered" for a buffer the table holds, and minting a second
+     *       id for it leaves the graph with two interface tensors of one name.
      *
      * @param[in] handle Handle whose tensor_ptr keys the lookup.
      * @return The existing or newly assigned TensorId.

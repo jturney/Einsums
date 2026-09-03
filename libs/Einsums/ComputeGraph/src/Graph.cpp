@@ -1777,43 +1777,13 @@ std::vector<SpaceId> const &Graph::tensor_spaces(TensorId id) const {
 
 void Graph::for_each_subgraph(std::function<void(Graph &)> const &visitor) {
     for (auto &node : _nodes) {
-        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
-            if (loop->body) {
-                visitor(*loop->body);
-            }
-        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
-            if (cond->then_branch) {
-                visitor(*cond->then_branch);
-            }
-            if (cond->else_branch) {
-                visitor(*cond->else_branch);
-            }
-        } else if (auto *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
-            if (setup->body) {
-                visitor(*setup->body);
-            }
-        }
+        for_each_child_graph(node, visitor);
     }
 }
 
 void Graph::for_each_subgraph(std::function<void(Graph const &)> const &visitor) const {
     for (auto const &node : _nodes) {
-        if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
-            if (loop->body) {
-                visitor(*loop->body);
-            }
-        } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
-            if (cond->then_branch) {
-                visitor(*cond->then_branch);
-            }
-            if (cond->else_branch) {
-                visitor(*cond->else_branch);
-            }
-        } else if (auto const *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
-            if (setup->body) {
-                visitor(*setup->body);
-            }
-        }
+        for_each_child_graph(node, visitor);
     }
 }
 
@@ -1885,27 +1855,19 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node
         sub.for_each_subgraph(collect);
     };
 
-    if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
-        if (loop->body) {
-            collect(*loop->body);
-        }
-    } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
-        if (cond->then_branch) {
-            collect(*cond->then_branch);
-        }
-        if (cond->else_branch) {
-            collect(*cond->else_branch);
-        }
-    } else if (auto const *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
-        if (setup->body) {
-            collect(*setup->body);
-        }
-    }
+    for_each_child_graph(node, collect);
 
     // Map subtree buffer pointers back to this graph's TensorIds. A buffer used
     // only inside sub-graphs has no parent TensorId yet; register one (a stable
     // shared id) so two control-flow nodes touching the same buffer resolve to
     // the same id and a dependency edge forms between them.
+    //
+    // The lookup is a scan of the tensor TABLE rather than find_or_register_tensor_ptr,
+    // which asks the pointer INDEX the same question. The two disagree after a rebind:
+    // rebind_impl repoints TensorHandle::tensor_ptr at the caller's new tensor and leaves
+    // the index naming the old address, so the index answers "not registered" for a buffer
+    // the table holds. Registering a second id for it then gives the graph two interface
+    // tensors of one name and its next manifest() refuses the graph.
     std::unordered_map<void const *, TensorId> ptr_to_tid;
     for (auto const &[tid, handle] : _tensors) {
         if (handle.tensor_ptr != nullptr) {
@@ -2466,19 +2428,15 @@ using PlanSnapshot = std::vector<std::pair<std::uint16_t, std::int64_t>>;
 
 /// Record every node's planned width and admission priority, container bodies
 /// included, in one deterministic walk order shared with apply_thread_plan.
+///
+/// Setup bodies are deliberately left out of both walks: the widths these two
+/// snapshot and restore are the ones ThreadPlanning::plan_graph writes, and that
+/// planner descends into loop bodies and conditional branches only.
 void collect_thread_plan(Graph &graph, PlanSnapshot &out) {
     for (auto &node : graph.nodes()) {
         out.emplace_back(node.thread_width, node.admission_priority);
-        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data); loop != nullptr && loop->body) {
-            collect_thread_plan(*loop->body, out);
-        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data); cond != nullptr) {
-            if (cond->then_branch) {
-                collect_thread_plan(*cond->then_branch, out);
-            }
-            if (cond->else_branch) {
-                collect_thread_plan(*cond->else_branch, out);
-            }
-        }
+        for_each_child_graph(
+            node, [&out](Graph &sub) { collect_thread_plan(sub, out); }, /*include_setup=*/false);
     }
 }
 
@@ -2490,16 +2448,8 @@ void apply_thread_plan(Graph &graph, PlanSnapshot const &plan, size_t &pos) {
         node.thread_width       = plan[pos].first;
         node.admission_priority = plan[pos].second;
         pos++;
-        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data); loop != nullptr && loop->body) {
-            apply_thread_plan(*loop->body, plan, pos);
-        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data); cond != nullptr) {
-            if (cond->then_branch) {
-                apply_thread_plan(*cond->then_branch, plan, pos);
-            }
-            if (cond->else_branch) {
-                apply_thread_plan(*cond->else_branch, plan, pos);
-            }
-        }
+        for_each_child_graph(
+            node, [&](Graph &sub) { apply_thread_plan(sub, plan, pos); }, /*include_setup=*/false);
     }
 }
 

@@ -1428,4 +1428,48 @@ struct Node {
         vd->axes, [](ViewAxis const &ax) { return !ax.lo.is_const() || (ax.kind == ViewAxis::Kind::Range && !ax.hi.is_const()); });
 }
 
+/**
+ * @brief Visit the graphs one node CONTAINS: a loop's body, a conditional's two branches,
+ *        a setup's body.
+ *
+ * @tparam NodeT ``Node`` or ``Node const``; a const node hands the visitor ``Graph const &``.
+ * @tparam F Invocable taking that graph reference.
+ * @param[in] node The node to look inside. A node holding any other descriptor has no child
+ *            graph and is visited zero times.
+ * @param[in] visit Called once per child graph that exists.
+ * @param[in] include_setup False to skip a @c Setup body. For the one caller whose walk order
+ *            has to agree with a component that descends into loops and conditionals only;
+ *            see @ref Graph::finish_replay_thread_plan.
+ *
+ * Which descriptors carry a sub-graph, and in what order, was written out at seven sites
+ * across three files. The order is part of the contract rather than a detail: the graph-IR
+ * writer interns a control-flow node's boundary tensors BY POSITION, so a walk that visited
+ * the else-branch first would place them in the dense order at indices nothing mentions them
+ * at. Empty bodies are skipped, so a visitor never sees a null graph.
+ *
+ * Visits one level. A visitor that wants the whole subtree recurses itself, which is what
+ * @ref Graph::for_each_subgraph is: this over every node of a graph.
+ */
+template <typename NodeT, typename F>
+    requires std::is_same_v<std::remove_cv_t<NodeT>, Node>
+void for_each_child_graph(NodeT &node, F &&visit, bool include_setup = true) {
+    using GraphRef  = std::conditional_t<std::is_const_v<NodeT>, Graph const, Graph> &;
+    auto const step = [&visit](std::shared_ptr<Graph> const &child) {
+        if (child) {
+            visit(static_cast<GraphRef>(*child));
+        }
+    };
+
+    if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data); loop != nullptr) {
+        step(loop->body);
+    } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data); cond != nullptr) {
+        step(cond->then_branch);
+        step(cond->else_branch);
+    } else if (include_setup) {
+        if (auto *setup = std::get_if<SetupDescriptor>(&node.op_data); setup != nullptr) {
+            step(setup->body);
+        }
+    }
+}
+
 EINSUMS_NAMESPACE_END(compute_graph)

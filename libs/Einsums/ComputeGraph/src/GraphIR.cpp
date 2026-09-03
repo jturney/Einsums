@@ -735,18 +735,7 @@ Value write_node(Node const &node, std::size_t dense_id, Graph const &graph, Gra
         // This node's own bodies, taken from its descriptor: for_each_subgraph would hand over
         // every sub-graph in the parent, and interning another node's boundary here would put
         // tensors into the dense order in a position nothing mentions them at.
-        if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data); loop != nullptr && loop->body) {
-            intern_boundary(*loop->body);
-        } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data); cond != nullptr) {
-            if (cond->then_branch) {
-                intern_boundary(*cond->then_branch);
-            }
-            if (cond->else_branch) {
-                intern_boundary(*cond->else_branch);
-            }
-        } else if (auto const *setup = std::get_if<SetupDescriptor>(&node.op_data); setup != nullptr && setup->body) {
-            intern_boundary(*setup->body);
-        }
+        for_each_child_graph(node, intern_boundary);
     }
 
     out.set("descriptor", write_descriptor(node, graph, root, frame));
