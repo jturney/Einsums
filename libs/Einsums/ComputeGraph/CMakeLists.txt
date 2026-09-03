@@ -29,6 +29,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/LuPivots.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/Detail/Json.hpp
+    Einsums/ComputeGraph/Detail/WidthGuard.hpp
     Einsums/ComputeGraph/CostModel.hpp
     Einsums/ComputeGraph/Moldability.hpp
     Einsums/ComputeGraph/Node.hpp

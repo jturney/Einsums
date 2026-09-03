@@ -209,16 +209,23 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE APIARY_HO
  * On the mock backend (single rank), behaves identically to
  * SequentialExecutor: communication nodes are no-ops.
  *
+ * That last sentence is true by construction rather than by two copies of the
+ * same loop staying in step: every rank walks the whole node sequence in
+ * topological order, which is what @ref SequentialExecutor does, so this
+ * derives from it and contributes only the name. What makes the replay
+ * distributed is the graph, not the walk: compute nodes were rewritten by the
+ * distribution passes to touch local partitions, and communication nodes carry
+ * collectives every rank enters at the same point in the sequence.
+ *
  * @par Example
  * @code
  * cg::MPIExecutor mpi_exec;
  * graph.execute(mpi_exec);  // All ranks execute the graph
  * @endcode
  */
-class MPIExecutor : public Executor {
+class MPIExecutor : public SequentialExecutor {
   public:
     [[nodiscard]] std::string name() const override { return "MPI"; }
-    void                      execute(Graph &graph) override;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

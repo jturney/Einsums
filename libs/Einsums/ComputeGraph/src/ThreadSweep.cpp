@@ -14,8 +14,8 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/CostModel.hpp>
+#include <Einsums/ComputeGraph/Detail/WidthGuard.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
@@ -28,55 +28,9 @@
 #include <functional>
 #include <vector>
 
-#ifdef _OPENMP
-#    include <omp.h>
-#endif
-
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 namespace {
-
-/// Give the calling thread @p width threads for as long as this object lives,
-/// then put back exactly what was there before.
-///
-/// The prior values are saved rather than assumed to be 1: the sweep may run on
-/// a thread somebody else already configured, and clobbering its ICV would leak
-/// into whatever runs after.
-struct WidthScope {
-    int  prior_omp{1};
-    int  prior_blas{0};
-    bool restore_blas{false};
-
-    /// @param width      Threads to request.
-    /// @param blas_width False gives BLAS a single thread while OpenMP gets
-    ///                   @p width, which is what a batched kernel wants: the
-    ///                   width goes to the loop over entries, not inside them.
-    WidthScope(unsigned width, bool blas_width) {
-#ifdef _OPENMP
-        prior_omp = omp_get_max_threads();
-        omp_set_num_threads(static_cast<int>(std::max(1u, width)));
-#else
-        (void)width;
-#endif
-        if (blas::has_per_thread_control()) {
-            prior_blas   = blas::get_num_threads_this_thread();
-            restore_blas = true;
-            blas::set_num_threads_this_thread(blas_width ? static_cast<int>(std::max(1u, width)) : 1);
-        }
-    }
-
-    ~WidthScope() {
-        if (restore_blas && prior_blas > 0) {
-            blas::set_num_threads_this_thread(prior_blas);
-        }
-#ifdef _OPENMP
-        omp_set_num_threads(prior_omp);
-#endif
-    }
-
-    WidthScope(WidthScope const &)            = delete;
-    WidthScope &operator=(WidthScope const &) = delete;
-};
 
 /// Median wall time of @p run, in seconds, after @p warmup untimed runs.
 template <typename F>
@@ -268,8 +222,11 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
 
         double baseline = 0.0;
         for (unsigned const w : rungs) {
-            WidthScope const scope(w, blas_width);
-            double const     seconds = median_seconds(options.warmup, options.repeats, run);
+            // The vendor is left free to thread here (no moldable scope): a
+            // GemmLarge cell is measuring exactly the vendor's own scaling, and
+            // a clamp would measure the clamp instead.
+            detail::WidthGuard const scope(static_cast<int>(w), blas_width, /*moldable_scope=*/false);
+            double const             seconds = median_seconds(options.warmup, options.repeats, run);
             if (w == rungs.front()) {
                 baseline = seconds;
                 // A kernel too fast to time leaves no signal to divide by; the
