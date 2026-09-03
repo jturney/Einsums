@@ -196,6 +196,17 @@ class Object {
     [[nodiscard]] Value const &value_at(std::size_t index) const;
 
   private:
+    /// What @ref index_of answers for a key the object does not hold.
+    static constexpr std::size_t npos = static_cast<std::size_t>(-1);
+
+    /// @brief Where @p key sits in insertion order.
+    /// @param[in] key The key to look for.
+    /// @return Its index, or @ref npos when absent.
+    ///
+    /// The one lookup every accessor goes through, so the search and the index
+    /// arithmetic are written once.
+    [[nodiscard]] EINSUMS_EXPORT std::size_t index_of(std::string_view key) const noexcept;
+
     std::vector<std::string> _keys;
     std::vector<Value>       _values;
 

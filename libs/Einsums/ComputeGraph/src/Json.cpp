@@ -38,32 +38,32 @@ void Object::set(std::string key, Value value) {
     _consumed.push_back(0);
 }
 
+std::size_t Object::index_of(std::string_view key) const noexcept {
+    auto const it = std::ranges::find(_keys, key);
+    return (it == _keys.end()) ? npos : static_cast<std::size_t>(it - _keys.begin());
+}
+
 bool Object::contains(std::string_view key) const noexcept {
-    return std::ranges::find(_keys, key) != _keys.end();
+    return index_of(key) != npos;
 }
 
 Value const *Object::peek(std::string_view key) const noexcept {
-    auto const it = std::ranges::find(_keys, key);
-    if (it == _keys.end()) {
-        return nullptr;
-    }
-    return &_values[static_cast<std::size_t>(it - _keys.begin())];
+    auto const index = index_of(key);
+    return (index == npos) ? nullptr : &_values[index];
 }
 
 Value const *Object::take(std::string_view key) const noexcept {
-    auto const it = std::ranges::find(_keys, key);
-    if (it == _keys.end()) {
+    auto const index = index_of(key);
+    if (index == npos) {
         return nullptr;
     }
-    auto const index = static_cast<std::size_t>(it - _keys.begin());
     _consumed[index] = 1;
     return &_values[index];
 }
 
 void Object::mark_consumed(std::string_view key) const noexcept {
-    auto const it = std::ranges::find(_keys, key);
-    if (it != _keys.end()) {
-        _consumed[static_cast<std::size_t>(it - _keys.begin())] = 1;
+    if (auto const index = index_of(key); index != npos) {
+        _consumed[index] = 1;
     }
 }
 

@@ -135,6 +135,28 @@ std::optional<double> tagged_number(Value const &value) {
     return std::nullopt;
 }
 
+/// The elements of @p range, each mapped through @p project, as a JSON array.
+///
+/// The writer had fourteen spelled-out copies of this loop, and a spelled-out
+/// loop hides which of them meant to project the element and which meant to
+/// pass it through.
+template <typename Range, typename Project>
+Value to_array(Range const &range, Project project) {
+    Array out;
+    for (auto const &item : range) {
+        out.emplace_back(project(item));
+    }
+    return Value{std::move(out)};
+}
+
+/// The elements of @p range as a JSON array, converted by @ref Value's own
+/// constructors. One of those takes a ``std::size_t``, so an extent or a dense
+/// id needs no cast at the call site.
+template <typename Range>
+Value to_array(Range const &range) {
+    return to_array(range, [](auto const &item) { return Value{item}; });
+}
+
 /// A typed scalar: a discriminated union by dtype NAME, with the real part
 /// always present and the imaginary part present exactly for the complex arms.
 ///
@@ -362,7 +384,7 @@ Value write_pred_expr(Graph const &root, PredExpr const &pred, Node const &node,
         }
         Object flag;
         flag.set("name", Value{name});
-        flag.set("index", Value{static_cast<std::int64_t>(arm->index)});
+        flag.set("index", Value{arm->index});
         out.set("flag", Value{std::move(flag)});
         return Value{std::move(out)};
     }
@@ -396,40 +418,27 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         auto const &desc = std::get<PermuteDescriptor>(node.op_data);
         out.set("alpha", desc.params != nullptr ? write_prefactor(desc.params->alpha) : write_complex(desc.alpha));
         out.set("beta", desc.params != nullptr ? write_prefactor(desc.params->beta) : write_complex(desc.beta));
-        Array c_indices;
-        for (auto const &index : desc.c_indices) {
-            c_indices.emplace_back(index);
-        }
-        Array a_indices;
-        for (auto const &index : desc.a_indices) {
-            a_indices.emplace_back(index);
-        }
-        out.set("c_indices", Value{std::move(c_indices)});
-        out.set("a_indices", Value{std::move(a_indices)});
+        out.set("c_indices", to_array(desc.c_indices));
+        out.set("a_indices", to_array(desc.a_indices));
         return Value{std::move(out)};
     }
     case OpKind::Axpby: {
         auto const &desc = std::get<AxpbyDescriptor>(node.op_data);
-        out.set("alpha", write_prefactor(desc.params != nullptr ? desc.params->alpha : desc.alpha));
-        out.set("beta", write_prefactor(desc.params != nullptr ? desc.params->beta : desc.beta));
+        // The LIVE scalars, for the reason the Scale case above states.
+        out.set("alpha", write_prefactor(live_alpha(desc)));
+        out.set("beta", write_prefactor(live_beta(desc)));
         return Value{std::move(out)};
     }
     case OpKind::DirectProduct:
     case OpKind::DirectDivision: {
         auto const &desc = std::get<ElementwiseBinaryDescriptor>(node.op_data);
-        out.set("alpha", write_prefactor(desc.params != nullptr ? desc.params->alpha : desc.alpha));
-        out.set("beta", write_prefactor(desc.params != nullptr ? desc.params->beta : desc.beta));
+        // The LIVE scalars, for the reason the Scale case above states.
+        out.set("alpha", write_prefactor(live_alpha(desc)));
+        out.set("beta", write_prefactor(live_beta(desc)));
         return Value{std::move(out)};
     }
     case OpKind::Einsum: {
         auto const &desc = std::get<EinsumDescriptor>(node.op_data);
-        auto const  list = [](std::vector<std::string> const &items) {
-            Array array;
-            for (auto const &item : items) {
-                array.emplace_back(item);
-            }
-            return Value{std::move(array)};
-        };
         // The LIVE index lists when the node shares them, for the same reason
         // the live scalars win above: the executor reads
         // ``indices->spec``, and the descriptor's own ContractionSpec beside it
@@ -437,26 +446,24 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         // ``ParsedEinsumSpec::raw`` is deliberately not written: it is a display
         // string the loader regenerates exactly as @ref build_executor does.
         bool const live = desc.indices != nullptr;
-        out.set("c_indices", list(live ? desc.indices->spec.c_indices : desc.spec.c_indices));
-        out.set("a_indices", list(live ? desc.indices->spec.a_indices : desc.spec.a_indices));
-        out.set("b_indices", list(live ? desc.indices->spec.b_indices : desc.spec.b_indices));
-        out.set("link_indices", list(live ? desc.indices->link_indices : desc.spec.link_indices));
-        out.set("target_indices", list(desc.spec.target_indices));
-        out.set("all_indices", list(desc.spec.all_indices));
+        out.set("c_indices", to_array(live ? desc.indices->spec.c_indices : desc.spec.c_indices));
+        out.set("a_indices", to_array(live ? desc.indices->spec.a_indices : desc.spec.a_indices));
+        out.set("b_indices", to_array(live ? desc.indices->spec.b_indices : desc.spec.b_indices));
+        out.set("link_indices", to_array(live ? desc.indices->link_indices : desc.spec.link_indices));
+        out.set("target_indices", to_array(desc.spec.target_indices));
+        out.set("all_indices", to_array(desc.spec.all_indices));
         out.set("scalar_output", Value{desc.spec.scalar_output});
         out.set("conj_a", Value{live_conj_a(desc)});
         out.set("conj_b", Value{live_conj_b(desc)});
         out.set("c_prefactor", write_prefactor(live_c_prefactor(desc)));
         out.set("ab_prefactor", write_prefactor(live_ab_prefactor(desc)));
 
-        Array letters;
-        for (auto const &[letter, space] : desc.letter_spaces) {
-            Object entry;
-            entry.set("letter", Value{letter});
-            entry.set("space", Value{graph.space_registry().space(space).name});
-            letters.emplace_back(std::move(entry));
-        }
-        out.set("letter_spaces", Value{std::move(letters)});
+        out.set("letter_spaces", to_array(desc.letter_spaces, [&graph](auto const &pair) {
+                    Object entry;
+                    entry.set("letter", Value{pair.first});
+                    entry.set("space", Value{graph.space_registry().space(pair.second).name});
+                    return Value{std::move(entry)};
+                }));
 
         if (desc.gemm_hint != nullptr) {
             // A hint is a PLANNING snapshot the GEMMBatching pass reads, and it
@@ -474,7 +481,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
             hint.set("trans_b", Value{std::string(1, desc.gemm_hint->trans_b)});
             auto const operand = [&frame](GemmOperand const &op) {
                 Object entry;
-                entry.set("id", Value{static_cast<std::int64_t>(frame.intern(op.id))});
+                entry.set("id", Value{frame.intern(op.id)});
                 entry.set("leading_dim", Value{static_cast<std::int64_t>(op.leading_dim)});
                 return Value{std::move(entry)};
             };
@@ -541,7 +548,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
     }
     case OpKind::Loop: {
         auto const &desc = std::get<LoopDescriptor>(node.op_data);
-        out.set("max_iterations", Value{static_cast<std::int64_t>(desc.max_iterations)});
+        out.set("max_iterations", Value{desc.max_iterations});
         out.set("condition", write_pred_expr(root, desc.condition, node, "condition"));
         if (desc.body == nullptr) {
             refuse(node, "body", "is null; a loop without a body has nothing to record");
@@ -584,7 +591,6 @@ void require_storable_dtype(std::string_view name, packed_gemm::ScalarType dtype
                                   name));
 }
 
-/// One tensor's storage-side record.
 /// Write a tensor's provenance tag into @p out, when it carries one.
 ///
 /// Shared by the two records that describe a tensor - its manifest entry and its tensor record -
@@ -611,36 +617,43 @@ void write_provenance_tag(Object &out, ProvenanceTag const &tag) {
     out.set("tag", Value{std::move(record)});
 }
 
-Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t dense, Frame const &frame) {
-    require_storable_dtype(handle.name, handle.dtype);
-    Object out;
-    out.set("id", Value{static_cast<std::int64_t>(dense)});
-    out.set("name", Value{handle.name});
-    out.set("dtype", Value{std::string(scalar_type_name(handle.dtype))});
-    out.set("rank", Value{static_cast<std::int64_t>(handle.rank)});
-
-    Array dims;
-    for (auto const dim : handle.dims) {
-        dims.emplace_back(static_cast<std::int64_t>(dim));
-    }
-    out.set("dims", Value{std::move(dims)});
-
-    Array symbols;
-    for (auto const &symbol : handle.dim_symbols) {
-        symbols.emplace_back(symbol);
-    }
-    out.set("dim_symbols", Value{std::move(symbols)});
-
-    Array spaces;
-    for (auto const space : handle.spaces) {
-        spaces.emplace_back(graph.space_registry().space(space).name);
-    }
-    out.set("spaces", Value{std::move(spaces)});
-    out.set("spaces_inferred", Value{handle.spaces_inferred});
+/// The seven keys that describe a tensor's SHAPE, in the one order both records
+/// that carry them use.
+///
+/// A tensor is described twice in a file, once by its manifest entry and once by
+/// its tensor record, and the two emitted these keys from two copies of the same
+/// code. @p spaces arrives already built because the two sides name spaces
+/// differently: a handle holds ids to resolve against the registry, a manifest
+/// entry holds the names themselves.
+///
+/// KEY ORDER IS THE FILE FORMAT here. A saved graph is compared byte for byte
+/// against a golden corpus and its content hash is taken over these bytes, so
+/// reordering this is a format change, not a cleanup.
+void write_shape(Object &out, packed_gemm::ScalarType dtype, std::size_t rank, std::vector<std::size_t> const &dims,
+                 std::vector<std::string> const &dim_symbols, Value spaces, bool spaces_inferred, ProvenanceTag const *tag) {
+    out.set("dtype", Value{std::string(scalar_type_name(dtype))});
+    out.set("rank", Value{rank});
+    out.set("dims", to_array(dims));
+    out.set("dim_symbols", to_array(dim_symbols));
+    out.set("spaces", std::move(spaces));
+    out.set("spaces_inferred", Value{spaces_inferred});
     // Provenance is SAVED structure rather than a re-derivable annotation: it is a statement
     // about the mathematics that no machine can recover, and a rewrite justified by it (a delta
     // eliminated, an integral factorized) is exactly what a saved graph keeps.
-    write_provenance_tag(out, handle.tag);
+    if (tag != nullptr) {
+        write_provenance_tag(out, *tag);
+    }
+}
+
+/// One tensor's storage-side record.
+Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t dense, Frame const &frame) {
+    require_storable_dtype(handle.name, handle.dtype);
+    Object out;
+    out.set("id", Value{dense});
+    out.set("name", Value{handle.name});
+    write_shape(out, handle.dtype, handle.rank, handle.dims, handle.dim_symbols,
+                to_array(handle.spaces, [&graph](SpaceId space) { return Value{graph.space_registry().space(space).name}; }),
+                handle.spaces_inferred, &handle.tag);
     out.set("intermediate", Value{handle.is_intermediate});
     out.set("scope", Value{std::string(tensor_ownership_name(handle.ownership))});
     out.set("init", Value{std::string(init_kind_name(handle.init_kind))});
@@ -651,7 +664,7 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
     out.set("alloc", Value{std::string(alloc_state_name(handle.alloc_state))});
 
     if (auto const outer = frame.outer_of(handle.tensor_ptr); outer.has_value()) {
-        out.set("outer", Value{static_cast<std::int64_t>(*outer)});
+        out.set("outer", Value{*outer});
     }
     return Value{std::move(out)};
 }
@@ -660,21 +673,13 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
 // NOLINTNEXTLINE(misc-no-recursion): see write_descriptor.
 Value write_node(Node const &node, std::size_t dense_id, Graph const &graph, Graph const &root, Frame &frame) {
     Object out;
-    out.set("id", Value{static_cast<std::int64_t>(dense_id)});
+    out.set("id", Value{dense_id});
     out.set("kind", Value{std::string(op_kind_name(node.kind))});
     out.set("label", Value{node.label});
 
-    Array inputs;
-    for (auto const id : node.inputs) {
-        inputs.emplace_back(static_cast<std::int64_t>(frame.intern(id)));
-    }
-    out.set("inputs", Value{std::move(inputs)});
-
-    Array outputs;
-    for (auto const id : node.outputs) {
-        outputs.emplace_back(static_cast<std::int64_t>(frame.intern(id)));
-    }
-    out.set("outputs", Value{std::move(outputs)});
+    auto const dense_of = [&frame](TensorId id) { return Value{frame.intern(id)}; };
+    out.set("inputs", to_array(node.inputs, dense_of));
+    out.set("outputs", to_array(node.outputs, dense_of));
 
     // Rank is keyed on the DESTINATION, which is the rule build_executor states;
     // a kind with no tensor destination (write_param's expression arm, the two
@@ -693,7 +698,7 @@ Value write_node(Node const &node, std::size_t dense_id, Graph const &graph, Gra
         }
     }
     out.set("dtype", Value{std::string(scalar_type_name(dtype))});
-    out.set("rank", Value{static_cast<std::int64_t>(rank)});
+    out.set("rank", Value{rank});
 
     // A control-flow node's own operand lists are EMPTY: its body is captured after the node
     // exists, so what it touches is known only through the subtree. The parent frame therefore
@@ -805,36 +810,15 @@ Object write_structure(Graph const &graph) {
     for (auto const &entry : contract.entries()) {
         require_storable_dtype(entry.name, entry.dtype);
         Object record;
-        record.set("id", Value{static_cast<std::int64_t>(frame.intern(entry.id))});
+        record.set("id", Value{frame.intern(entry.id)});
         record.set("name", Value{entry.name});
         record.set("direction", Value{std::string(manifest_direction_name(entry.direction))});
-        record.set("dtype", Value{std::string(scalar_type_name(entry.dtype))});
-        record.set("rank", Value{static_cast<std::int64_t>(entry.rank)});
-
-        Array dims;
-        for (auto const dim : entry.dims) {
-            dims.emplace_back(static_cast<std::int64_t>(dim));
-        }
-        record.set("dims", Value{std::move(dims)});
-
-        Array symbols;
-        for (auto const &symbol : entry.dim_symbols) {
-            symbols.emplace_back(symbol);
-        }
-        record.set("dim_symbols", Value{std::move(symbols)});
-
-        Array spaces;
-        for (auto const &space : entry.spaces) {
-            spaces.emplace_back(space);
-        }
-        record.set("spaces", Value{std::move(spaces)});
-        record.set("spaces_inferred", Value{entry.spaces_inferred});
-        // From the HANDLE rather than from the manifest entry, which carries no tag: a tag is a
-        // statement about the tensor, and the manifest entry is a statement about the interface
-        // slot it fills.
-        if (TensorHandle const *handle = graph.find_tensor(entry.id); handle != nullptr) {
-            write_provenance_tag(record, handle->tag);
-        }
+        // The tag comes from the HANDLE rather than from the manifest entry, which carries none:
+        // a tag is a statement about the tensor, and the manifest entry is a statement about the
+        // interface slot it fills.
+        TensorHandle const *handle = graph.find_tensor(entry.id);
+        write_shape(record, entry.dtype, entry.rank, entry.dims, entry.dim_symbols, to_array(entry.spaces), entry.spaces_inferred,
+                    handle != nullptr ? &handle->tag : nullptr);
         record.set("scope", Value{std::string(tensor_ownership_name(entry.scope))});
 
         // By NAME, never by id: an alias declaration is part of the interface
@@ -877,25 +861,19 @@ Object write_structure(Graph const &graph) {
     std::ranges::sort(space_names);
     space_names.erase(std::ranges::unique(space_names).begin(), space_names.end());
 
-    Array space_array;
-    for (auto const &name : space_names) {
-        space_array.emplace_back(name);
-    }
     std::vector<std::pair<std::string, std::string>> ties;
     for (auto const &[symbol, space] : graph.symbol_spaces()) {
         ties.emplace_back(symbol, graph.space_registry().space(space).name);
     }
     std::ranges::sort(ties);
-    Array tie_array;
-    for (auto const &[symbol, space] : ties) {
-        Object tie;
-        tie.set("symbol", Value{symbol});
-        tie.set("space", Value{space});
-        tie_array.emplace_back(std::move(tie));
-    }
     Object spaces;
-    spaces.set("names", Value{std::move(space_array)});
-    spaces.set("symbol_ties", Value{std::move(tie_array)});
+    spaces.set("names", to_array(space_names));
+    spaces.set("symbol_ties", to_array(ties, [](auto const &pair) {
+                   Object tie;
+                   tie.set("symbol", Value{pair.first});
+                   tie.set("space", Value{pair.second});
+                   return Value{std::move(tie)};
+               }));
 
     // Parameters, sorted by name: ParamTable is an unordered_map.
     std::vector<std::pair<std::string, std::int64_t>> params;
@@ -905,21 +883,19 @@ Object write_structure(Graph const &graph) {
         }
     }
     std::ranges::sort(params);
-    Array param_array;
-    for (auto const &[name, value] : params) {
+    Value const param_array = to_array(params, [](auto const &pair) {
         Object param;
-        param.set("name", Value{name});
-        param.set("value", Value{value});
-        param_array.emplace_back(std::move(param));
-    }
+        param.set("name", Value{pair.first});
+        param.set("value", Value{pair.second});
+        return Value{std::move(param)};
+    });
 
-    Array gate_flags;
-    for (auto const &[name, buffer] : graph.named_gate_flags()) {
+    Value const gate_flags = to_array(graph.named_gate_flags(), [](auto const &pair) {
         Object flags;
-        flags.set("name", Value{name});
-        flags.set("size", Value{static_cast<std::int64_t>(buffer != nullptr ? buffer->size() : 0)});
-        gate_flags.emplace_back(std::move(flags));
-    }
+        flags.set("name", Value{pair.first});
+        flags.set("size", Value{pair.second != nullptr ? pair.second->size() : std::size_t{0}});
+        return Value{std::move(flags)};
+    });
 
     // Slot redirects, sorted by dense id. Only a pair whose two ends the walk
     // already reached can be written; a redirect naming a tensor no node
@@ -935,49 +911,39 @@ Object write_structure(Graph const &graph) {
                                static_cast<std::size_t>(dense_to - frame.order().begin()));
     }
     std::ranges::sort(redirects);
-    Array redirect_array;
-    for (auto const &[from, to] : redirects) {
+    Value const redirect_array = to_array(redirects, [](auto const &pair) {
         Object redirect;
-        redirect.set("from", Value{static_cast<std::int64_t>(from)});
-        redirect.set("to", Value{static_cast<std::int64_t>(to)});
-        redirect_array.emplace_back(std::move(redirect));
-    }
+        redirect.set("from", Value{pair.first});
+        redirect.set("to", Value{pair.second});
+        return Value{std::move(redirect)};
+    });
 
     // Approximation records, in the order they were applied. Order is content here rather
     // than presentation: composition is not commutative for a relative effect, so a reader
     // re-deriving the composed bound has to see them in the order the passes ran.
-    Array approximations;
-    for (auto const &record : graph.approximations()) {
+    Value const approximations = to_array(graph.approximations(), [](auto const &record) {
         Object entry;
         entry.set("pass_name", Value{record.pass_name});
         entry.set("effect", Value{std::string(approximation_effect_name(record.effect))});
         entry.set("tolerance", Value{record.tolerance});
         entry.set("bound", Value{record.bound});
         entry.set("origin", Value{std::string(approximation_origin_name(record.origin))});
-        Array outputs;
-        for (auto const &name : record.outputs) {
-            outputs.emplace_back(name);
-        }
-        entry.set("outputs", Value{std::move(outputs)});
-        Array spaces_used;
-        for (auto const &name : record.spaces) {
-            spaces_used.emplace_back(name);
-        }
-        entry.set("spaces", Value{std::move(spaces_used)});
+        entry.set("outputs", to_array(record.outputs));
+        entry.set("spaces", to_array(record.spaces));
         entry.set("setup", Value{record.setup});
-        approximations.emplace_back(std::move(entry));
-    }
+        return Value{std::move(entry)};
+    });
 
     Object out;
     out.set(std::string(key_version), Value{std::string(graph_ir_schema_version)});
     out.set("name", Value{graph.name()});
     out.set("manifest", Value{std::move(manifest)});
     out.set("spaces", Value{std::move(spaces)});
-    out.set("approximations", Value{std::move(approximations)});
-    out.set("params", Value{std::move(param_array)});
-    out.set("gate_flags", Value{std::move(gate_flags)});
+    out.set("approximations", approximations);
+    out.set("params", param_array);
+    out.set("gate_flags", gate_flags);
     out.set("tensors", Value{std::move(tensors)});
-    out.set("slot_redirects", Value{std::move(redirect_array)});
+    out.set("slot_redirects", redirect_array);
     out.set("nodes", Value{std::move(nodes)});
     return out;
 }
@@ -996,11 +962,7 @@ Value write_provenance(Graph const &graph, SaveOptions const &options) {
     Object out;
     out.set("library_version", Value{full_version_as_string()});
     out.set("config_fingerprint", Value{fmt::format("0x{:016x}", sealed::config_fingerprint())});
-    Array passes;
-    for (auto const &pass : options.structural_passes.empty() ? graph.structural_passes() : options.structural_passes) {
-        passes.emplace_back(pass);
-    }
-    out.set("structural_passes", Value{std::move(passes)});
+    out.set("structural_passes", to_array(options.structural_passes.empty() ? graph.structural_passes() : options.structural_passes));
     return Value{std::move(out)};
 }
 
@@ -1059,40 +1021,60 @@ Value const *field(Object const &object, std::string_view key, std::string const
     return value;
 }
 
-std::string read_string(Object const &object, std::string_view key, std::string const &path, Problems &problems, json::Position where) {
+/// What @ref read_scalar needs to know about one leaf type: how to recognise it,
+/// how to read it, and how a diagnostic names it. Three near-identical readers
+/// differing only in that triple is what this replaces.
+template <typename T>
+struct ScalarLeaf;
+
+template <>
+struct ScalarLeaf<std::string> {
+    static constexpr std::string_view noun = "a string";
+    static bool                       matches(Value const &value) { return value.is_string(); }
+    static std::string                read(Value const &value) { return value.as_string(); }
+};
+
+template <>
+struct ScalarLeaf<std::int64_t> {
+    static constexpr std::string_view noun = "an integer";
+    static bool                       matches(Value const &value) { return value.is_int(); }
+    static std::int64_t               read(Value const &value) { return value.as_int(); }
+};
+
+template <>
+struct ScalarLeaf<bool> {
+    static constexpr std::string_view noun = "a bool";
+    static bool                       matches(Value const &value) { return value.is_bool(); }
+    static bool                       read(Value const &value) { return value.as_bool(); }
+};
+
+/// Consume @p key and read it as a @c T, reporting an absent key and a wrong type.
+/// A failure of either kind yields a value-initialized @c T and a problem, so a
+/// caller reads on and the load collects every fault rather than the first.
+template <typename T>
+T read_scalar(Object const &object, std::string_view key, std::string const &path, Problems &problems, json::Position where) {
     Value const *value = field(object, key, path, problems, where);
     if (value == nullptr) {
-        return {};
+        return T{};
     }
-    if (!value->is_string()) {
-        note(problems, fmt::format("{}.{}", path, key), value->position, fmt::format("expected a string, found {}", value->type_name()));
-        return {};
+    if (!ScalarLeaf<T>::matches(*value)) {
+        note(problems, fmt::format("{}.{}", path, key), value->position,
+             fmt::format("expected {}, found {}", ScalarLeaf<T>::noun, value->type_name()));
+        return T{};
     }
-    return value->as_string();
+    return ScalarLeaf<T>::read(*value);
+}
+
+std::string read_string(Object const &object, std::string_view key, std::string const &path, Problems &problems, json::Position where) {
+    return read_scalar<std::string>(object, key, path, problems, where);
 }
 
 std::int64_t read_int(Object const &object, std::string_view key, std::string const &path, Problems &problems, json::Position where) {
-    Value const *value = field(object, key, path, problems, where);
-    if (value == nullptr) {
-        return 0;
-    }
-    if (!value->is_int()) {
-        note(problems, fmt::format("{}.{}", path, key), value->position, fmt::format("expected an integer, found {}", value->type_name()));
-        return 0;
-    }
-    return value->as_int();
+    return read_scalar<std::int64_t>(object, key, path, problems, where);
 }
 
 bool read_bool(Object const &object, std::string_view key, std::string const &path, Problems &problems, json::Position where) {
-    Value const *value = field(object, key, path, problems, where);
-    if (value == nullptr) {
-        return false;
-    }
-    if (!value->is_bool()) {
-        note(problems, fmt::format("{}.{}", path, key), value->position, fmt::format("expected a bool, found {}", value->type_name()));
-        return false;
-    }
-    return value->as_bool();
+    return read_scalar<bool>(object, key, path, problems, where);
 }
 
 /// A tensor's provenance tag, or an empty one when the record carries none.
@@ -1197,33 +1179,18 @@ std::vector<std::size_t> read_extent_array(Object const &object, std::string_vie
     return out;
 }
 
-/// Resolve a by-name enumerator, reporting the string that did not resolve and
-/// what the alternatives are. This shape - the name plus the known set - is what
-/// makes an unresolvable name actionable rather than merely fatal.
-template <typename T, typename Fn>
-T read_named(Object const &object, std::string_view key, std::string const &path, Problems &problems, json::Position where, Fn &&resolve,
-             std::string_view what, T fallback) {
-    std::string const name = read_string(object, key, path, problems, where);
-    if (name.empty()) {
-        return fallback;
-    }
-    if (auto const resolved = resolve(name); resolved.has_value()) {
-        return *resolved;
-    }
-    note(problems, fmt::format("{}.{}", path, key), where, fmt::format("'{}' is not a known {}", name, what));
-    return fallback;
-}
-
-/// As @ref read_named, but for a key a file is allowed not to have.
+/// Resolve an already-fetched value as a by-name enumerator, reporting the string
+/// that did not resolve and what the alternatives are. This shape - the name plus
+/// the known set - is what makes an unresolvable name actionable rather than
+/// merely fatal.
 ///
-/// The compatibility policy lets the schema GAIN fields, with an absent one taking its
-/// documented default, so a key added after a golden was written must not be demanded of it.
-/// ``take`` rather than @ref field: it marks the key consumed for the strict unconsumed-key
-/// check without reporting a missing one as a problem.
+/// Takes the value rather than the key so that the required and the optional
+/// spelling below differ only in how they FETCH it; a null @p value is already
+/// either reported (required) or allowed (optional), so it is a silent fallback
+/// here either way.
 template <typename T, typename Fn>
-T read_named_optional(Object const &object, std::string_view key, std::string const &path, Problems &problems, Fn &&resolve,
-                      std::string_view what, T fallback) {
-    Value const *value = object.take(key);
+T resolve_named(Value const *value, std::string_view key, std::string const &path, Problems &problems, Fn &&resolve, std::string_view what,
+                T fallback) {
     if (value == nullptr) {
         return fallback;
     }
@@ -1236,6 +1203,25 @@ T read_named_optional(Object const &object, std::string_view key, std::string co
     }
     note(problems, fmt::format("{}.{}", path, key), value->position, fmt::format("'{}' is not a known {}", value->as_string(), what));
     return fallback;
+}
+
+/// A by-name enumerator under a key the file must carry.
+template <typename T, typename Fn>
+T read_named(Object const &object, std::string_view key, std::string const &path, Problems &problems, json::Position where, Fn &&resolve,
+             std::string_view what, T fallback) {
+    return resolve_named(field(object, key, path, problems, where), key, path, problems, std::forward<Fn>(resolve), what, fallback);
+}
+
+/// As @ref read_named, but for a key a file is allowed not to have.
+///
+/// The compatibility policy lets the schema GAIN fields, with an absent one taking its
+/// documented default, so a key added after a golden was written must not be demanded of it.
+/// ``take`` rather than @ref field: it marks the key consumed for the strict unconsumed-key
+/// check without reporting a missing one as a problem.
+template <typename T, typename Fn>
+T read_named_optional(Object const &object, std::string_view key, std::string const &path, Problems &problems, Fn &&resolve,
+                      std::string_view what, T fallback) {
+    return resolve_named(object.take(key), key, path, problems, std::forward<Fn>(resolve), what, fallback);
 }
 
 /// A typed scalar, back to a @ref PrefactorScalar.
@@ -1477,10 +1463,9 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
         return;
     case OpKind::Scale: {
         ScaleDescriptor desc;
-        desc.factor        = scalar("factor", PrefactorScalar{double{1}});
-        desc.params        = std::make_shared<ElementwiseParams>();
-        desc.params->alpha = desc.factor;
-        node.descriptor    = std::move(desc);
+        desc.factor     = scalar("factor", PrefactorScalar{double{1}});
+        desc.params     = make_elementwise_params(desc.factor);
+        node.descriptor = std::move(desc);
         return;
     }
     case OpKind::Permute: {
@@ -1491,31 +1476,25 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
         desc.beta               = as<std::complex<double>>(beta);
         desc.c_indices          = read_string_array(*object, "c_indices", path, problems, value.position);
         desc.a_indices          = read_string_array(*object, "a_indices", path, problems, value.position);
-        desc.params             = std::make_shared<ElementwiseParams>();
-        desc.params->alpha      = alpha;
-        desc.params->beta       = beta;
+        desc.params             = make_elementwise_params(alpha, beta);
         node.descriptor         = std::move(desc);
         return;
     }
     case OpKind::Axpby: {
         AxpbyDescriptor desc;
-        desc.alpha         = scalar("alpha", PrefactorScalar{double{1}});
-        desc.beta          = scalar("beta", PrefactorScalar{double{0}});
-        desc.params        = std::make_shared<AxpbyParams>();
-        desc.params->alpha = desc.alpha;
-        desc.params->beta  = desc.beta;
-        node.descriptor    = std::move(desc);
+        desc.alpha      = scalar("alpha", PrefactorScalar{double{1}});
+        desc.beta       = scalar("beta", PrefactorScalar{double{0}});
+        desc.params     = make_elementwise_params(desc.alpha, desc.beta);
+        node.descriptor = std::move(desc);
         return;
     }
     case OpKind::DirectProduct:
     case OpKind::DirectDivision: {
         ElementwiseBinaryDescriptor desc;
-        desc.alpha         = scalar("alpha", PrefactorScalar{double{1}});
-        desc.beta          = scalar("beta", PrefactorScalar{double{0}});
-        desc.params        = std::make_shared<ElementwiseParams>();
-        desc.params->alpha = desc.alpha;
-        desc.params->beta  = desc.beta;
-        node.descriptor    = std::move(desc);
+        desc.alpha      = scalar("alpha", PrefactorScalar{double{1}});
+        desc.beta       = scalar("beta", PrefactorScalar{double{0}});
+        desc.params     = make_elementwise_params(desc.alpha, desc.beta);
+        node.descriptor = std::move(desc);
         return;
     }
     case OpKind::Einsum: {
