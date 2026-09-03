@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/GEMMBatching.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -17,7 +18,6 @@
 #include <algorithm>
 #include <complex>
 #include <cstdint>
-#include <cstring>
 #include <map>
 #include <tuple>
 #include <unordered_set>
@@ -46,12 +46,6 @@ struct BatchKey {
                std::tie(o.m, o.n, o.k, o.trans_a, o.trans_b, o.scalar, o.alpha_bits, o.beta_bits);
     }
 };
-
-std::uint64_t bits_of(double v) {
-    std::uint64_t u = 0;
-    std::memcpy(&u, &v, sizeof(u));
-    return u;
-}
 
 } // namespace
 
@@ -190,37 +184,16 @@ bool GEMMBatching::run(Graph &graph) {
         size_t const first_pos = *std::min_element(group.begin(), group.end());
         size_t const last_pos  = *std::max_element(group.begin(), group.end());
         {
-            std::unordered_set<size_t>   member_set(group.begin(), group.end());
+            std::vector<bool>            is_member(nodes.size(), false);
             std::unordered_set<TensorId> batch_reads, batch_writes;
             for (size_t const idx : group) {
+                is_member[idx] = true;
                 for (auto tid : nodes[idx].inputs)
                     batch_reads.insert(tid);
                 for (auto tid : nodes[idx].outputs)
                     batch_writes.insert(tid);
             }
-            bool interference = false;
-            for (size_t i = first_pos + 1; i < last_pos && !interference; i++) {
-                if (member_set.count(i))
-                    continue;
-                Node const &other = nodes[i];
-                if (is_control_flow(other.kind)) {
-                    interference = true;
-                    break;
-                }
-                for (auto tid : other.outputs) {
-                    if (batch_reads.count(tid) || batch_writes.count(tid)) {
-                        interference = true;
-                        break;
-                    }
-                }
-                for (auto tid : other.inputs) {
-                    if (batch_writes.count(tid)) {
-                        interference = true;
-                        break;
-                    }
-                }
-            }
-            if (interference) {
+            if (span_interferes(nodes, first_pos, last_pos, is_member, batch_writes, batch_reads, /*reject_control_flow=*/true)) {
                 EINSUMS_LOG_INFO("GEMMBatching: group of {} einsums at level {} has an interfering node between members — not batching",
                                  group.size(), lvl);
                 note_skip("a node between the group members reads or writes one of their operands",

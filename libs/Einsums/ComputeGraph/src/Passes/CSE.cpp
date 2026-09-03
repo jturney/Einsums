@@ -52,23 +52,6 @@ bool einsum_indices_equal(EinsumDescriptor const &a, EinsumDescriptor const &b) 
 
 /// Whether @p v is exactly a power of two, sign included.
 ///
-/// Scaling by such a value only shifts an exponent, so `(r*x)*y` and `x*(r*y)`
-/// agree bit for bit. That is what lets the factor move off a producer and onto
-/// its readers without changing any arithmetic. Ratios that are exactly
-/// representable but not powers of two are declined: they would make the result
-/// depend on which of two proportional nodes the pass happened to keep, a bad
-/// property for a pass that runs by default. (DistributiveFactoring restricts
-/// its own ratios the same way, for the related reason that its factor has to
-/// distribute exactly over an assembled sum.)
-bool is_exact_power_of_two(double v) {
-    if (!std::isfinite(v) || v == 0.0) {
-        return false;
-    }
-    int          exp = 0;
-    double const m   = std::frexp(v, &exp);
-    return m == 0.5 || m == -0.5;
-}
-
 /// The r with `b == r * a`, when there is one that scales exactly.
 /// r == 1 is the ordinary identical case and falls out of the same test.
 std::optional<double> exact_ratio(double a, double b) {
@@ -401,12 +384,10 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
     };
     struct CandidateKeyHash {
         size_t operator()(CandidateKey const &k) const {
-            size_t h   = std::hash<std::uint8_t>{}(static_cast<std::uint8_t>(k.kind));
-            auto   mix = [&h](std::uint64_t v) { h ^= std::hash<std::uint64_t>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2); };
-            mix(k.num_outputs);
-            for (auto const tid : k.inputs) {
-                mix(tid);
-            }
+            size_t h = 0;
+            hash_combine(h, static_cast<std::uint8_t>(k.kind));
+            hash_combine(h, k.num_outputs);
+            hash_range(h, k.inputs);
             return h;
         }
     };

@@ -43,15 +43,14 @@ struct FoldKey {
 
 struct FoldKeyHash {
     size_t operator()(FoldKey const &k) const {
-        size_t h = std::hash<TensorId>{}(k.output_id);
-        h ^= std::hash<TensorId>{}(k.shared_id) * 2654435761ULL;
-        h ^= std::hash<TensorId>{}(k.non_shared_id) * 40503ULL;
-        h ^= std::hash<bool>{}(k.shared_is_first) * 19349663ULL;
-        for (auto const &v : {std::cref(k.c_indices), std::cref(k.shared_indices), std::cref(k.non_shared_sorted)}) {
-            for (auto const &s : v.get()) {
-                h ^= std::hash<std::string>{}(s)*16777619ULL + (h << 6) + (h >> 2);
-            }
-        }
+        size_t h = 0;
+        hash_combine(h, k.output_id);
+        hash_combine(h, k.shared_id);
+        hash_combine(h, k.non_shared_id);
+        hash_combine(h, k.shared_is_first);
+        hash_range(h, k.c_indices);
+        hash_range(h, k.shared_indices);
+        hash_range(h, k.non_shared_sorted);
         return h;
     }
 };
@@ -245,18 +244,17 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // node may read or write the output (would observe/clobber a partial
         // sum) or write the shared / non-shared operand (would change a factor
         // mid-fold). This makes the reassociation provably safe.
-        size_t lo = members.front().node_index;
-        size_t hi = members.back().node_index;
-        for (auto const &m : members) {
-            lo = std::min(lo, m.node_index);
-            hi = std::max(hi, m.node_index);
-        }
+        // vg.candidates was sorted by node index in Phase 2 and `members` is an
+        // order-preserving filter of it, so the first and last members ARE the
+        // ends of the span.
+        size_t const      lo = members.front().node_index;
+        size_t const      hi = members.back().node_index;
         std::vector<bool> is_member(nodes.size(), false);
         for (auto const &m : members) {
             is_member[m.node_index] = true;
         }
         std::unordered_set<TensorId> const operand_ids{vg.key.shared_id, vg.key.non_shared_id};
-        bool const interference = span_interferes(nodes, lo, hi, is_member, vg.key.output_id, operand_ids, /*reject_control_flow=*/false);
+        bool const interference = span_interferes(nodes, lo, hi, is_member, {vg.key.output_id}, operand_ids, /*reject_control_flow=*/false);
         if (interference) {
             auto on = tensors.find(vg.key.output_id);
             note_skip("an intervening node reads or writes the output or a folded operand",
@@ -357,7 +355,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
                 ParsedPermuteSpec pspec;
                 pspec.c_indices = canonical;
                 pspec.a_indices = m.non_shared_indices;
-                pspec.raw       = fmt::format("{} <- {}", fmt::join(canonical, ","), fmt::join(m.non_shared_indices, ","));
+                pspec.raw       = pspec.render();
                 contribs.push_back({.is_permute = true, .ab = m.ab_prefactor, .spec = std::move(pspec)});
             }
         }
@@ -367,12 +365,11 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // string_einsum reading L DIRECTLY (no slot mutation, thread-safe and
         // unambiguous when the operands are shared across the graph).
         ParsedEinsumSpec einspec;
-        einspec.c_indices           = n0_desc->spec.c_indices;
-        einspec.a_indices           = n0_desc->spec.a_indices;
-        einspec.b_indices           = n0_desc->spec.b_indices;
-        einspec.raw                 = fmt::format("{} <- {} ; {}", fmt::join(einspec.c_indices, ","), fmt::join(einspec.a_indices, ","),
-                                                  fmt::join(einspec.b_indices, ","));
-        PrefactorScalar const c_pf0 = n0_desc->c_prefactor;
+        einspec.c_indices                  = n0_desc->spec.c_indices;
+        einspec.a_indices                  = n0_desc->spec.a_indices;
+        einspec.b_indices                  = n0_desc->spec.b_indices;
+        einspec.raw                        = einspec.render();
+        PrefactorScalar const c_pf0        = n0_desc->c_prefactor;
         TensorId const        nonshared_id = vg.key.non_shared_id;
         TensorId const        shared_id    = vg.key.shared_id;
         TensorId const        out_id       = vg.key.output_id;
@@ -485,24 +482,12 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         return false;
     }
 
-    // Keep appended fused nodes (index >= orig_count); drop folded originals.
-    graph.erase_nodes(remove);
-
-    // Splice each L-builder immediately before its contraction. The recorded
-    // positions are in the pre-erase numbering, so shift each one down by the
-    // number of erased nodes that sat below it. A contraction's own slot is never
-    // erased (it took over node-0's), so the shifted position still points at it
-    // and inserting "before" lands the builder directly ahead of its consumer.
-    if (!pending_inserts.empty()) {
-        std::vector<size_t> erased_below(remove.size() + 1, 0);
-        for (size_t i = 0; i < remove.size(); ++i) {
-            erased_below[i + 1] = erased_below[i] + (remove[i] ? 1 : 0);
-        }
-        for (auto &[pos, group] : pending_inserts) {
-            pos -= erased_below[pos];
-        }
-        graph.insert_node_groups(std::move(pending_inserts));
-    }
+    // Keep appended fused nodes (index >= orig_count); drop folded originals, and
+    // splice each L-builder immediately before its contraction. A contraction's own
+    // slot is never erased (it took over node-0's), so the shifted position still
+    // points at it and inserting "before" lands the builder directly ahead of its
+    // consumer. @see Graph::replace_nodes for the position bookkeeping.
+    graph.replace_nodes(remove, std::move(pending_inserts));
     graph.topological_sort();
 
     EINSUMS_LOG_INFO("LinearCombinationContractionFolding: folded {} groups, eliminated {} nodes", _num_groups, _num_eliminated);

@@ -36,12 +36,11 @@ struct FactorKey {
 
 struct FactorKeyHash {
     size_t operator()(FactorKey const &k) const {
-        size_t h = std::hash<TensorId>{}(k.output_id);
-        h ^= std::hash<TensorId>{}(k.shared_input_id) * 2654435761ULL;
-        h ^= std::hash<bool>{}(k.shared_is_first) * 40503ULL;
-        for (auto const &s : k.non_shared_indices) {
-            h ^= std::hash<std::string>{}(s)*16777619ULL;
-        }
+        size_t h = 0;
+        hash_combine(h, k.output_id);
+        hash_combine(h, k.shared_input_id);
+        hash_combine(h, k.shared_is_first);
+        hash_range(h, k.non_shared_indices);
         return h;
     }
 };
@@ -77,21 +76,6 @@ std::vector<std::pair<TensorId, double>> sum_identity(std::vector<FactorCandidat
     }
     std::ranges::sort(key);
     return key;
-}
-
-/// Whether @p v is exactly a power of two, sign included.
-///
-/// Multiplying by such a value only shifts an exponent, so scaling a sum gives
-/// bit-for-bit what scaling every term before summing would: `r*(a+b)` equals
-/// `r*a + r*b`. That identity is what lets one built sum stand in for a
-/// proportional one without changing the arithmetic.
-bool is_exact_power_of_two(double v) {
-    if (!std::isfinite(v) || v == 0.0) {
-        return false;
-    }
-    int          exp = 0;
-    double const m   = std::frexp(v, &exp);
-    return m == 0.5 || m == -0.5;
 }
 
 /// The factor r for which @p candidate is r times @p built, term by term, when
@@ -423,8 +407,8 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
                 is_member[c.node_index] = true;
                 operand_ids.insert(c.non_shared_input);
             }
-            bool const interference =
-                span_interferes(nodes, first_pos, last_pos, is_member, vg.key.output_id, operand_ids, /*reject_control_flow=*/true);
+            bool const interference = span_interferes(nodes, first_pos, last_pos, is_member, {vg.key.output_id}, operand_ids,
+                                                      /*reject_control_flow=*/true);
             if (interference) {
                 auto on = tensors.find(vg.key.output_id);
                 report(3, fmt::format("skip factoring into '{}': an intervening node reads/writes the output or a factor operand",
@@ -611,11 +595,10 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         // that changes here: T takes the non-shared operand's place, so the
         // contraction's indices are exactly the ones the members already used.
         ParsedEinsumSpec spec;
-        spec.c_indices = first_desc->spec.c_indices;
-        spec.a_indices = first_desc->spec.a_indices;
-        spec.b_indices = first_desc->spec.b_indices;
-        spec.raw =
-            fmt::format("{} <- {} ; {}", fmt::join(spec.c_indices, ","), fmt::join(spec.a_indices, ","), fmt::join(spec.b_indices, ","));
+        spec.c_indices  = first_desc->spec.c_indices;
+        spec.a_indices  = first_desc->spec.a_indices;
+        spec.b_indices  = first_desc->spec.b_indices;
+        spec.raw        = spec.render();
         auto const c_pf = first_desc->c_prefactor;
 
         std::vector<Node> emitted;
@@ -644,27 +627,9 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             // combined contraction needs no prefactor of its own.
             for (auto const &c : available) {
                 auto nit = tensors.find(c.non_shared_input);
-                Node nd;
-                nd.id      = graph.reserve_node_id();
-                nd.kind    = OpKind::Axpby;
-                nd.label   = fmt::format("axpy({} -> {}, alpha={})", nit != tensors.end() ? nit->second.name : "?", t_name, c.ab_prefactor);
-                nd.inputs  = {c.non_shared_input, t_id};
-                nd.outputs = {t_id};
-
-                // Live scalars shared with the executor, so the accumulator this
-                // pass builds is as readable to later passes as a captured one.
-                auto params   = std::make_shared<AxpbyParams>();
-                params->alpha = PrefactorScalar{c.ab_prefactor};
-                params->beta  = PrefactorScalar{1.0};
-
-                AxpbyDescriptor desc;
-                desc.alpha  = params->alpha;
-                desc.beta   = params->beta;
-                desc.params = params;
-                nd.op_data  = desc;
-
-                nd.execute = graph.make_axpby_executor(params, c.non_shared_input, t_id);
-                emitted.push_back(std::move(nd));
+                emitted.push_back(graph.make_axpby_node(
+                    c.non_shared_input, t_id, PrefactorScalar{c.ab_prefactor}, PrefactorScalar{1.0},
+                    fmt::format("axpy({} -> {}, alpha={})", nit != tensors.end() ? nit->second.name : "?", t_name, c.ab_prefactor)));
             }
         }
 
@@ -726,24 +691,13 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         return false;
 
     // create_*_tensor_dynamic appended Alloc nodes past orig_count; pad the mask so
-    // it covers them (always kept) and so the shift table below is complete.
+    // it covers them (always kept) and so the shift table is complete.
     remove.resize(nodes.size(), false);
 
-    // Keep the appended Alloc nodes; drop the subsumed originals.
-    graph.erase_nodes(remove);
-
-    // Positions were recorded pre-erase; shift each down by the number of erased
-    // nodes below it. A group's own first-member slot IS erased, so the shifted
-    // position lands exactly where it used to be and the replacements take its
-    // place (same accounting as TiledExpansion).
-    std::vector<size_t> erased_below(remove.size() + 1, 0);
-    for (size_t i = 0; i < remove.size(); i++) {
-        erased_below[i + 1] = erased_below[i] + (remove[i] ? 1 : 0);
-    }
-    for (auto &[position, group] : inserts) {
-        position -= erased_below[position];
-    }
-    graph.insert_node_groups(std::move(inserts));
+    // Keep the appended Alloc nodes; drop the subsumed originals. A group's own
+    // first-member slot IS erased, so its replacements land exactly where it used
+    // to be. @see Graph::replace_nodes for the position bookkeeping.
+    graph.replace_nodes(remove, std::move(inserts));
 
     // Re-sort since we added/removed nodes
     graph.topological_sort();
