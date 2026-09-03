@@ -406,6 +406,39 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         std::variant<Graph, LoopNode> content; ///< Either a one-shot Graph or a LoopNode
     };
 
+    /// @brief Visit every stage in order, whichever shape it has.
+    /// @tparam F Invocable taking ``(Stage &, Graph &, LoopNode *)``.
+    /// @param[in] visit Receives the stage, the graph that carries its work (a loop stage's is
+    ///            its body) and the loop node, which is null unless the stage loops.
+    ///
+    /// "A stage is a graph, or a loop around one" was written out at every walk over
+    /// ``_stages``; this is that sentence, and a caller that does not care which shape a stage
+    /// has simply ignores the third argument.
+    template <typename F>
+    void for_each_stage(F &&visit) {
+        for (auto &stage : _stages) {
+            if (auto *graph = std::get_if<Graph>(&stage.content)) {
+                visit(stage, *graph, static_cast<LoopNode *>(nullptr));
+            } else if (auto *loop = std::get_if<LoopNode>(&stage.content)) {
+                visit(stage, loop->body, loop);
+            }
+        }
+    }
+
+    /// Publish this pipeline's hierarchy (its name, its workspace's, the stage's name, shape
+    /// and index) onto every stage graph, which is what the profiler viewer reads to nest a
+    /// replay's zones under the pipeline that ran them.
+    void propagate_stage_metadata();
+
+    /// @brief Execute every stage in order, iterating the loop stages.
+    /// @param[in] run Executes one graph; the only thing the two @ref execute overloads
+    ///            differ in, the rest of the traversal being identical.
+    ///
+    /// A loop stage runs its body until its condition says stop or it hits its iteration
+    /// limit, recording how many iterations it ran; the condition is evaluated AFTER each
+    /// iteration, so a body always runs at least once.
+    void run_stages(std::function<void(Graph &)> const &run);
+
     std::string _name;
     /// A deque, not a vector: add_stage() and add_loop() hand out references
     /// into this container, and a vector reallocating on the next push_back

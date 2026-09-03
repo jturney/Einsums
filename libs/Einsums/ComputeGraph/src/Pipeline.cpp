@@ -64,90 +64,56 @@ void Pipeline::run() {
     run(pm);
 }
 
+void Pipeline::propagate_stage_metadata() {
+    std::string const ws_name = _workspace ? _workspace->name() : "";
+
+    int si = 0;
+    for_each_stage([&](Stage &stage, Graph &g, LoopNode *loop) {
+        g.set_pipeline_name(_name);
+        g.set_workspace_name(ws_name);
+        g.set_stage_name(stage.name);
+        g.set_stage_type(loop != nullptr ? "loop" : "graph");
+        g.set_stage_index(si++);
+    });
+}
+
+void Pipeline::run_stages(std::function<void(Graph &)> const &run) {
+    for_each_stage([&](Stage &stage, Graph &graph, LoopNode *loop) {
+        if (loop == nullptr) {
+            LabeledSection("stage:{}", stage.name);
+            run(graph);
+            return;
+        }
+
+        LabeledSection("loop:{}", stage.name);
+        loop->last_iteration_count = 0;
+        for (size_t iter = 0; iter < loop->max_iterations; iter++) {
+            // The iteration zone closes before the bookkeeping below, which
+            // is what the manual push/pop pair it replaces did.
+            {
+                LabeledSection("iteration:{}", iter);
+                run(graph);
+            }
+            loop->last_iteration_count = iter + 1;
+            if (loop->condition && !loop->condition(iter)) {
+                break;
+            }
+        }
+    });
+}
+
 void Pipeline::execute() {
     LabeledSection("Pipeline::execute({})", _name);
 
-    // Propagate hierarchy metadata to child graphs for the profiler viewer
-    std::string ws_name = _workspace ? _workspace->name() : "";
-    for (int si = 0; std::cmp_less(si, _stages.size()); si++) {
-        auto &stage    = _stages[si];
-        auto  set_meta = [&](Graph &g, char const *type) {
-            g.set_pipeline_name(_name);
-            g.set_workspace_name(ws_name);
-            g.set_stage_name(stage.name);
-            g.set_stage_type(type);
-            g.set_stage_index(si);
-        };
-        if (auto *graph = std::get_if<Graph>(&stage.content)) {
-            set_meta(*graph, "graph");
-        } else if (auto *loop = std::get_if<LoopNode>(&stage.content)) {
-            set_meta(loop->body, "loop");
-        }
-    }
-
-    for (auto &stage : _stages) {
-        if (auto *graph = std::get_if<Graph>(&stage.content)) {
-            LabeledSection("stage:{}", stage.name);
-            graph->execute();
-        } else if (auto *loop = std::get_if<LoopNode>(&stage.content)) {
-            LabeledSection("loop:{}", stage.name);
-            loop->last_iteration_count = 0;
-            for (size_t iter = 0; iter < loop->max_iterations; iter++) {
-                // The iteration zone closes before the bookkeeping below, which
-                // is what the manual push/pop pair it replaces did.
-                {
-                    LabeledSection("iteration:{}", iter);
-                    loop->body.execute();
-                }
-                loop->last_iteration_count = iter + 1;
-                if (loop->condition && !loop->condition(iter)) {
-                    break;
-                }
-            }
-        }
-    }
+    propagate_stage_metadata();
+    run_stages([](Graph &graph) { graph.execute(); });
 }
 
 void Pipeline::execute(Executor &executor) {
     LabeledSection("Pipeline::execute({}, executor={})", _name, executor.name());
 
-    // Propagate hierarchy metadata to child graphs for the profiler viewer
-    std::string ws_name = _workspace ? _workspace->name() : "";
-    for (int si = 0; std::cmp_less(si, _stages.size()); si++) {
-        auto &stage    = _stages[si];
-        auto  set_meta = [&](Graph &g, char const *type) {
-            g.set_pipeline_name(_name);
-            g.set_workspace_name(ws_name);
-            g.set_stage_name(stage.name);
-            g.set_stage_type(type);
-            g.set_stage_index(si);
-        };
-        if (auto *graph = std::get_if<Graph>(&stage.content)) {
-            set_meta(*graph, "graph");
-        } else if (auto *loop = std::get_if<LoopNode>(&stage.content)) {
-            set_meta(loop->body, "loop");
-        }
-    }
-
-    for (auto &stage : _stages) {
-        if (auto *graph = std::get_if<Graph>(&stage.content)) {
-            LabeledSection("stage:{}", stage.name);
-            graph->execute(executor);
-        } else if (auto *loop = std::get_if<LoopNode>(&stage.content)) {
-            LabeledSection("loop:{}", stage.name);
-            loop->last_iteration_count = 0;
-            for (size_t iter = 0; iter < loop->max_iterations; iter++) {
-                {
-                    LabeledSection("iteration:{}", iter);
-                    loop->body.execute(executor);
-                }
-                loop->last_iteration_count = iter + 1;
-                if (loop->condition && !loop->condition(iter)) {
-                    break;
-                }
-            }
-        }
-    }
+    propagate_stage_metadata();
+    run_stages([&executor](Graph &graph) { graph.execute(executor); });
 }
 
 bool Pipeline::apply(PassManager &pm) {
@@ -184,23 +150,11 @@ bool Pipeline::apply(PassManager &pm) {
         }
     };
 
-    for (auto &stage : _stages) {
-        if (auto *graph = std::get_if<Graph>(&stage.content)) {
-            register_in_graph(*graph);
-        } else if (auto *loop = std::get_if<LoopNode>(&stage.content)) {
-            register_in_graph(loop->body);
-        }
-    }
+    for_each_stage([&](Stage &, Graph &graph, LoopNode *) { register_in_graph(graph); });
 
     // Now run passes on each stage.
     bool modified = false;
-    for (auto &stage : _stages) {
-        if (auto *graph = std::get_if<Graph>(&stage.content)) {
-            modified |= graph->apply(pm);
-        } else if (auto *loop = std::get_if<LoopNode>(&stage.content)) {
-            modified |= loop->body.apply(pm);
-        }
-    }
+    for_each_stage([&](Stage &, Graph &graph, LoopNode *) { modified |= graph.apply(pm); });
     return modified;
 }
 

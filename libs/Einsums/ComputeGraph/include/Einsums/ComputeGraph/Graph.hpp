@@ -3615,17 +3615,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     template <typename... Args>
     void bind(Args &&...args) {
-        InterfaceManifest const contract = manifest();
-
-        // Two walks over the same pairs, because a symbol is a constraint ACROSS
-        // slots: nothing may be repointed until every extent the caller supplied
-        // has been read and reconciled, or a bind that turns out inconsistent has
-        // already left half the graph pointing at the new problem.
-        DimSolution solution;
-        bind_collect(contract, solution, args...);
-        prepare_bind_solution(solution);
-        bind_apply(contract, solution, args...);
-        finish_bind_solution(solution);
+        // The pack is walked ONCE, into the same type-erased slot list bind_add builds,
+        // because the transaction below has to see every pair before it repoints any of
+        // them and a pack cannot be walked twice without writing the walk twice.
+        std::vector<PendingBind> slots;
+        slots.reserve(sizeof...(Args) / 2);
+        collect_bind_pairs(slots, args...);
+        run_bind(slots);
     }
 
     /**
@@ -3669,12 +3665,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
         // clang-format on
         void bind_add(std::string const &name, TensorType &tensor) {
-        _pending_binds.push_back(
-            PendingBind{.name    = name,
-                        .collect = [this, name, &tensor](InterfaceManifest const &contract,
-                                                         DimSolution &solution) { bind_collect_one(contract, solution, name, tensor); },
-                        .apply   = [this, name, &tensor](InterfaceManifest const &contract,
-                                                       DimSolution const       &solution) { bind_one(contract, solution, name, tensor); }});
+        _pending_binds.push_back(make_pending_bind(name, tensor));
     }
 
     /**
@@ -3683,24 +3674,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @versionadded{2.0.0}
      */
     APIARY_EXPOSE void bind_commit() {
-        // The pending list is cleared whatever happens, so a refused transaction does not
-        // leak into the next one.
-        try {
-            InterfaceManifest const contract = manifest();
-            DimSolution             solution;
-            for (auto const &pending : _pending_binds) {
-                pending.collect(contract, solution);
-            }
-            prepare_bind_solution(solution);
-            for (auto const &pending : _pending_binds) {
-                pending.apply(contract, solution);
-            }
-            finish_bind_solution(solution);
-        } catch (...) {
-            _pending_binds.clear();
-            throw;
-        }
-        _pending_binds.clear();
+        // The slots are taken off the graph BEFORE the transaction runs, which is what
+        // clears the pending list whatever happens: a refused transaction must not leak
+        // into the next one.
+        run_bind(std::exchange(_pending_binds, {}));
     }
 
     /**
@@ -4358,6 +4335,48 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         add_node(std::move(node));
     }
 
+    /// @brief Run one bind transaction over already type-erased slots.
+    /// @param[in] pending The slots, applied left to right.
+    ///
+    /// Two walks over the same slots, because a symbol is a constraint ACROSS them: nothing
+    /// may be repointed until every extent the caller supplied has been read and reconciled,
+    /// or a bind that turns out inconsistent has already left half the graph pointing at the
+    /// new problem. Both spellings of the operation are this - the variadic @ref bind, which
+    /// type-erases its pack here, and the @ref bind_begin / @ref bind_add / @ref bind_commit
+    /// transaction, whose list is already in this form.
+    void run_bind(std::vector<PendingBind> const &pending) {
+        InterfaceManifest const contract = manifest();
+
+        DimSolution solution;
+        for (auto const &slot : pending) {
+            slot.collect(contract, solution);
+        }
+        prepare_bind_solution(solution);
+        for (auto const &slot : pending) {
+            slot.apply(contract, solution);
+        }
+        finish_bind_solution(solution);
+    }
+
+    /// One ``(name, tensor)`` pair, type-erased into the two steps a bind runs over it.
+    template <GraphCapturableTensor TensorType>
+    [[nodiscard]] PendingBind make_pending_bind(std::string const &name, TensorType &tensor) {
+        return PendingBind{.name    = name,
+                           .collect = [this, name, &tensor](InterfaceManifest const &contract,
+                                                            DimSolution &solution) { bind_collect_one(contract, solution, name, tensor); },
+                           .apply   = [this, name, &tensor](InterfaceManifest const &contract,
+                                                          DimSolution const &solution) { bind_one(contract, solution, name, tensor); }};
+    }
+
+    /// Walk a @ref bind pack once, turning each ``(name, tensor)`` pair into a @ref PendingBind.
+    template <GraphCapturableTensor TensorType, typename... Rest>
+    void collect_bind_pairs(std::vector<PendingBind> &out, std::string const &name, TensorType &tensor, Rest &&...rest) {
+        out.push_back(make_pending_bind(name, tensor));
+        if constexpr (sizeof...(Rest) > 0) {
+            collect_bind_pairs(out, std::forward<Rest>(rest)...);
+        }
+    }
+
     /// First walk: validate the shape of one pair and feed its symbols to the solver.
     template <GraphCapturableTensor TensorType>
     void bind_collect_one(InterfaceManifest const &contract, DimSolution &solution, std::string const &name, TensorType &tensor) {
@@ -4375,22 +4394,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
         // Space annotations live on handles, so only a tensor this graph already
         // knows can carry one; anything else is unannotated and skipped.
-        std::weak_ptr<void> token;
-        if constexpr (requires { tensor.liveness_token(); }) {
-            token = tensor.liveness_token();
-        }
-        if (TensorId const incoming_id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), token); incoming_id != 0) {
+        if (TensorId const incoming_id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), detail::liveness_token_of(tensor));
+            incoming_id != 0) {
             validate_bind_spaces(entry, tensor_spaces(incoming_id));
-        }
-    }
-
-    /// See @ref bind_collect_one.
-    template <GraphCapturableTensor TensorType, typename... Rest>
-    void bind_collect(InterfaceManifest const &contract, DimSolution &solution, std::string const &name, TensorType &tensor,
-                      Rest &&...rest) {
-        bind_collect_one(contract, solution, name, tensor);
-        if constexpr (sizeof...(Rest) > 0) {
-            bind_collect(contract, solution, std::forward<Rest>(rest)...);
         }
     }
 
@@ -4411,16 +4417,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // symbol is repointed under exactly the public rebind's exact-extent rule.
         bool const relax = solution.extents_changed && !entry.dim_symbols.empty();
         rebind_impl(entry.id, tensor, relax);
-    }
-
-    /// Apply ``(name, tensor)`` pairs left to right against one manifest snapshot.
-    template <GraphCapturableTensor TensorType, typename... Rest>
-    void bind_apply(InterfaceManifest const &contract, DimSolution const &solution, std::string const &name, TensorType &tensor,
-                    Rest &&...rest) {
-        bind_one(contract, solution, name, tensor);
-        if constexpr (sizeof...(Rest) > 0) {
-            bind_apply(contract, solution, std::forward<Rest>(rest)...);
-        }
     }
 
     std::string                                _name;
