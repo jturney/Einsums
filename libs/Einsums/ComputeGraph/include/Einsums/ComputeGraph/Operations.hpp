@@ -70,7 +70,45 @@ inline void reject_if_capturing(char const *message) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "{}", message);
     }
 }
+
+/// A dense rank-2 copy of @p A, which the returning-form LAPACK wrappers need
+/// because they run against the compile-time-rank kernels while their own
+/// operand is runtime-rank.
+template <typename AType>
+auto to_static_matrix(AType const &A) -> Tensor<typename AType::ValueType, 2> {
+    using T = typename AType::ValueType;
+    Tensor<T, 2> out{A.name(), A.dim(0), A.dim(1)};
+    std::memcpy(out.data(), A.data(), A.size() * sizeof(T));
+    return out;
+}
+
+/// The sum of a square matrix's diagonal, the one arithmetic every spelling of
+/// the trace shares.
+template <typename AType>
+auto diagonal_sum(AType const &a) -> typename AType::ValueType {
+    typename AType::ValueType sum{};
+    for (size_t i = 0; i < a.dim(0); ++i) {
+        sum += a(i, i);
+    }
+    return sum;
+}
 } // namespace detail
+
+/// A rank-2 operand of the BLAS and LAPACK wrappers below: either a tensor that
+/// fixes rank 2 in its type, or a runtime-rank tensor whose rank the wrapper
+/// checks at the call. One body serves both families, so one constraint names
+/// both.
+template <typename T>
+concept MatrixOperand = MatrixConcept<T> || RuntimeRankTensorConcept<T>;
+
+/// The rank-1 counterpart of @ref MatrixOperand.
+template <typename T>
+concept VectorOperand = VectorConcept<T> || RuntimeRankTensorConcept<T>;
+
+/// An operand a wrapper takes at either rank, such as the right-hand side of a
+/// linear solve: one column vector or a matrix of them.
+template <typename T>
+concept MatrixOrVectorOperand = MatrixOperand<T> || VectorOperand<T>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // einsum: graph-aware, runtime-string contraction spec
@@ -1915,63 +1953,6 @@ APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<std::complex<double>>
 // gemm: C = alpha * op(A) * op(B) + beta * C
 // ─────────────────────────────────────────────────────────────────────────────
 
-template <bool TransA, bool TransB, MatrixConcept T, typename U>
-    requires requires { requires std::convertible_to<U, typename T::ValueType>; }
-void gemm(U const alpha, T const &A, T const &B, U const beta, T *C) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("gemm eager");
-        linear_algebra::gemm<TransA, TransB>(alpha, A, B, beta, C);
-        return;
-    }
-
-    LabeledSection("gemm capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    auto [c_id, c_slot] = ctx.get_slot(*C);
-
-    auto label = fmt::format("gemm<{},{}>", TransA ? "T" : "N", TransB ? "T" : "N");
-
-    // When beta != 0 the gemm accumulates into C (``C = α·A·B + β·C``), so it
-    // *reads* C as well as writing it. List C as an input in that case so the
-    // scheduler and loop-invariance analysis see the read-modify-write, without
-    // it, an accumulating gemm looks like a pure producer and can be wrongly
-    // hoisted out of a loop or reordered. A pure overwrite (beta == 0) keeps the
-    // two-input form and stays eligible for those optimizations.
-    std::vector<TensorId> inputs = {a_id, b_id};
-    if (beta != U{}) {
-        inputs.push_back(c_id);
-    }
-
-    // Dense operands only: MatrixConcept also admits a block or tiled matrix,
-    // whose gemm is a different kernel over per-block buffers.
-    if constexpr (CoreBasicTensorConcept<T>) {
-        using ValueT = typename T::ValueType;
-
-        OpData op_data(GemmDescriptor{.alpha   = PrefactorScalar{static_cast<ValueT>(alpha)},
-                                      .beta    = PrefactorScalar{static_cast<ValueT>(beta)},
-                                      .trans_a = TransA ? 't' : 'n',
-                                      .trans_b = TransB ? 't' : 'n'});
-        auto   executor = build_executor(OpKind::Gemm, packed_gemm::get_scalar_type<ValueT>(), 2, op_data, *ctx.graph(), inputs,
-                                         std::span<TensorId const>{&c_id, 1});
-
-        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor), std::move(op_data));
-    } else {
-        auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
-            LabeledSection("gemm execute");
-            ProfileAnnotate("trans", TransA ? (TransB ? "TT" : "TN") : (TransB ? "NT" : "NN"));
-            ProfileAnnotate("m", static_cast<int64_t>(static_cast<T *>(c_slot->ptr)->dim(0)));
-            ProfileAnnotate("n", static_cast<int64_t>(static_cast<T *>(c_slot->ptr)->dim(1)));
-            ProfileAnnotate("k", static_cast<int64_t>(TransA ? static_cast<T const *>(a_slot->ptr)->dim(0)
-                                                             : static_cast<T const *>(a_slot->ptr)->dim(1)));
-            linear_algebra::gemm<TransA, TransB>(alpha, *static_cast<T const *>(a_slot->ptr), *static_cast<T const *>(b_slot->ptr), beta,
-                                                 static_cast<T *>(c_slot->ptr));
-        };
-
-        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor));
-    }
-}
-
 /// Graph-aware GEMM: ``C = alpha * op(A) * op(B) + beta * C``.
 ///
 /// ``trans_a`` and ``trans_b`` (Python kwargs, default ``False``) request
@@ -1979,12 +1960,12 @@ void gemm(U const alpha, T const &A, T const &B, U const beta, T *C) {
 /// rank 2; a clear ``RankError`` is raised up front otherwise rather
 /// than letting the BLAS kernel fail mid-pipeline.
 ///
-/// A, B, C may be any combination of owning ``RuntimeTensor`` and
-/// ``RuntimeTensorView`` so long as they share an underlying element type.
-/// Views alias their parents so writes through C-view land in the parent
-/// and the optimization passes see the dependency via ``TensorHandle::aliases``.
-template <bool TransA, bool TransB, RuntimeRankTensorConcept AType, RuntimeRankTensorConcept BType, RuntimeRankTensorConcept CType,
-          typename U>
+/// A, B, C may be any combination of owning tensor and view, and of the
+/// compile-time-rank (``Tensor``) and runtime-rank (``RuntimeTensor``)
+/// families, so long as they share an underlying element type. Views alias
+/// their parents so writes through C-view land in the parent and the
+/// optimization passes see the dependency via ``TensorHandle::aliases``.
+template <bool TransA, bool TransB, MatrixOperand AType, MatrixOperand BType, MatrixOperand CType, typename U>
     requires requires {
         requires std::convertible_to<U, typename AType::ValueType>;
         requires SameUnderlying<AType, BType, CType>;
@@ -2034,8 +2015,11 @@ APIARY_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>
 APIARY_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
     // clang-format on
     void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C) {
-    if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
+    // Folds away for an operand whose type fixes rank 2; a runtime-rank one
+    // pays three comparisons and gets a clear error instead of a BLAS failure.
+    if (detail::tensor_rank(A) != 2 || detail::tensor_rank(B) != 2 || detail::tensor_rank(*C) != 2) {
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::gemm requires rank-2 tensors; got ranks {}, {}, {}.", detail::tensor_rank(A),
+                                detail::tensor_rank(B), detail::tensor_rank(*C));
     }
 
     auto &ctx = CaptureContext::current();
@@ -2197,48 +2181,11 @@ APIARY_INSTANTIATE_AS("gemm", einsums::RuntimeTensorView<std::complex<double>>, 
 // gemv: y = alpha * op(A) * z + beta * y
 // ─────────────────────────────────────────────────────────────────────────────
 
-template <bool TransA, MatrixConcept AType, VectorConcept XType, VectorConcept YType, typename U>
-    requires requires {
-        requires SameUnderlying<AType, XType, YType>;
-        requires std::convertible_to<U, typename AType::ValueType>;
-    }
-void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("gemv eager");
-        linear_algebra::gemv<TransA>(alpha, A, z, beta, y);
-        return;
-    }
-
-    LabeledSection("gemv capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [z_id, z_slot] = ctx.get_slot(z);
-    auto [y_id, y_slot] = ctx.get_slot(*y);
-
-    auto label    = fmt::format("gemv<{}>", TransA ? "T" : "N");
-    auto executor = [alpha, a_slot, z_slot, beta, y_slot]() {
-        LabeledSection("gemv execute");
-        ProfileAnnotate("trans", TransA ? "T" : "N");
-        ProfileAnnotate("m", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(1)));
-        linear_algebra::gemv<TransA>(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<XType const *>(z_slot->ptr), beta,
-                                     static_cast<YType *>(y_slot->ptr));
-    };
-
-    // beta != 0 → gemv reads y as well as writing it; list it as an input so
-    // loop-invariance and scheduling see the read (see the gemm note above).
-    std::vector<TensorId> inputs = {a_id, z_id};
-    if (beta != U{}) {
-        inputs.push_back(y_id);
-    }
-    ctx.record(OpKind::Gemv, std::move(label), std::move(inputs), {y_id}, std::move(executor));
-}
-
 /// Graph-aware GEMV: ``y = alpha * op(A) * z + beta * y``.
 ///
 /// ``trans_a`` (Python kwarg, default ``False``) transposes A. A must be
 /// rank 2 and z, y must be rank 1; a ``RankError`` is raised otherwise.
-template <bool TransA, RuntimeRankTensorConcept AType, RuntimeRankTensorConcept XType, RuntimeRankTensorConcept YType, typename U>
+template <bool TransA, MatrixOperand AType, VectorOperand XType, VectorOperand YType, typename U>
     requires(SameUnderlying<AType, XType, YType> && std::convertible_to<U, typename AType::ValueType>)
 // clang-format off
 APIARY_EXPOSE
@@ -2285,8 +2232,9 @@ APIARY_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>
 APIARY_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
     // clang-format on
     void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
-    if (A.rank() != 2 || z.rank() != 1 || y->rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::gemv requires A rank-2 and x/y rank-1; got {}, {}, {}.", A.rank(), z.rank(), y->rank());
+    if (detail::tensor_rank(A) != 2 || detail::tensor_rank(z) != 1 || detail::tensor_rank(*y) != 1) {
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::gemv requires A rank-2 and x/y rank-1; got {}, {}, {}.", detail::tensor_rank(A),
+                                detail::tensor_rank(z), detail::tensor_rank(*y));
     }
 
     auto &ctx = CaptureContext::current();
@@ -2405,40 +2353,11 @@ APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<double>>, 
 // ger: A += alpha * X * Y^T
 // ─────────────────────────────────────────────────────────────────────────────
 
-template <MatrixConcept AType, VectorConcept XType, VectorConcept YType>
-    requires SameUnderlying<AType, XType, YType>
-void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("ger eager");
-        linear_algebra::ger(alpha, X, Y, A);
-        return;
-    }
-
-    LabeledSection("ger capture");
-    auto [x_id, x_slot] = ctx.get_slot(X);
-    auto [y_id, y_slot] = ctx.get_slot(Y);
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-
-    auto executor = [alpha, x_slot, y_slot, a_slot]() {
-        LabeledSection("ger execute");
-        ProfileAnnotate("m", static_cast<int64_t>(static_cast<XType const *>(x_slot->ptr)->dim(0)));
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<YType const *>(y_slot->ptr)->dim(0)));
-        linear_algebra::ger(alpha, *static_cast<XType const *>(x_slot->ptr), *static_cast<YType const *>(y_slot->ptr),
-                            static_cast<AType *>(a_slot->ptr));
-    };
-
-    // ger always accumulates (``A += α·X·Y^T``), so it reads A as well as
-    // writing it, list A as an input so loop-invariance and scheduling see the
-    // read-modify-write (see the gemm note above).
-    ctx.record(OpKind::Ger, "ger", {x_id, y_id, a_id}, {a_id}, std::move(executor));
-}
-
 /// Graph-aware GER (rank-1 update): ``A += alpha * X * Y^T``.
 ///
 /// Outer product of vectors X and Y added to matrix A. X and Y must be
 /// rank 1; A must be rank 2.
-template <RuntimeRankTensorConcept AType, RuntimeRankTensorConcept XType, RuntimeRankTensorConcept YType>
+template <MatrixOperand AType, VectorOperand XType, VectorOperand YType>
     requires SameUnderlying<AType, XType, YType>
 // clang-format off
 APIARY_EXPOSE
@@ -2484,8 +2403,9 @@ APIARY_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,  
 APIARY_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
-    if (X.rank() != 1 || Y.rank() != 1 || A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::ger requires X/Y rank-1 and A rank-2; got {}, {}, {}.", X.rank(), Y.rank(), A->rank());
+    if (detail::tensor_rank(X) != 1 || detail::tensor_rank(Y) != 1 || detail::tensor_rank(*A) != 2) {
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::ger requires X/Y rank-1 and A rank-2; got {}, {}, {}.", detail::tensor_rank(X),
+                                detail::tensor_rank(Y), detail::tensor_rank(*A));
     }
 
     auto &ctx = CaptureContext::current();
@@ -3504,7 +3424,7 @@ APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<do
     d.lda         = static_cast<int>(a_list[0]->impl().get_lda());
     d.ldb         = static_cast<int>(b_list[0]->impl().get_lda());
     d.ldc         = static_cast<int>(c_list[0]->impl().get_lda());
-    d.scalar = blas_scalar_of<T>();
+    d.scalar      = blas_scalar_of<T>();
 
     // gemm_batch takes ONE lda/ldb/ldc and one m/n/k for the whole batch, so a
     // member that differs is not expressible. Caught here, where the caller can
@@ -3701,7 +3621,7 @@ APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::co
     d.lda         = static_cast<int>(a_list[0]->impl().get_lda());
     d.ldb         = static_cast<int>(b_list[0]->impl().get_lda());
     d.ldc         = static_cast<int>(ldc_s);
-    d.scalar = blas_scalar_of<T>();
+    d.scalar      = blas_scalar_of<T>();
 
     auto const require = [&](bool ok, size_t i, char const *what) {
         if (!ok) {
@@ -3991,7 +3911,7 @@ APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::co
     }
 
     GroupedBatchedGemmDescriptor d;
-    d.total = static_cast<int>(count);
+    d.total  = static_cast<int>(count);
     d.scalar = blas_scalar_of<T>();
     d.groups.reserve(order.size());
     d.labels.reserve(order.size());
@@ -4223,7 +4143,7 @@ APIARY_MODULE("graph")
     }
 
     GroupedBatchedGemmDescriptor d;
-    d.total = static_cast<int>(count);
+    d.total  = static_cast<int>(count);
     d.scalar = blas_scalar_of<T>();
     d.groups.reserve(order.size());
     d.labels.reserve(order.size());
@@ -5793,10 +5713,7 @@ void trace(typename AType::ValueType *result, AType const &A) {
         LabeledSection("trace eager");
         if (A.dim(0) != A.dim(1))
             EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
-        T sum = T{};
-        for (size_t i = 0; i < A.dim(0); ++i)
-            sum += A(i, i);
-        *result = sum;
+        *result = detail::diagonal_sum(A);
         return;
     }
 
@@ -5819,10 +5736,7 @@ void trace(typename AType::ValueType *result, AType const &A) {
             auto const &a = *static_cast<AType const *>(a_slot->ptr);
             if (a.dim(0) != a.dim(1))
                 EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
-            T sum = T{};
-            for (size_t i = 0; i < a.dim(0); ++i)
-                sum += a(i, i);
-            *result = sum;
+            *result = detail::diagonal_sum(a);
         };
 
         ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor));
@@ -5885,10 +5799,7 @@ APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double
         if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
             return detail::tiled_trace<T>(a);
         } else {
-            T sum = T{};
-            for (size_t i = 0; i < a.dim(0); ++i)
-                sum += a(i, i);
-            return sum;
+            return detail::diagonal_sum(a);
         }
     };
 
@@ -6052,40 +5963,6 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
 // syev (in-place form): eigendecompose A, store eigenvalues in W
 // ─────────────────────────────────────────────────────────────────────────────
 
-template <bool ComputeEigenvectors = true, MatrixConcept AType, VectorConcept WType>
-    requires requires {
-        requires InSamePlace<AType, WType>;
-        requires SameUnderlying<AType, WType>;
-        requires !Complex<AType>;
-    }
-void syev(AType *A, WType *W) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("syev eager");
-        linear_algebra::syev<ComputeEigenvectors>(A, W);
-        return;
-    }
-
-    LabeledSection("syev capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-    auto [w_id, w_slot] = ctx.get_slot(*W);
-
-    auto executor = [a_slot, w_slot]() {
-        LabeledSection("syev execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-        linear_algebra::syev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
-    };
-
-    // A is BOTH an input and an output: the decomposition overwrites it. Listing it only as
-    // an output would let a reader of the original matrix be ordered after this node, and
-    // listing it only as an input would leave the overwrite unordered against a later writer.
-    //
-    // The descriptor carries the one piece of state a saved file cannot recover from the
-    // operand lists, because it is a template argument rather than a value. See SyevDescriptor.
-    ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor),
-               OpData(SyevDescriptor{.compute_eigenvectors = ComputeEigenvectors}));
-}
-
 /// Real symmetric eigendecomposition (in-place): ``A = V * diag(W) * V^T``.
 ///
 /// On return, when ``compute_eigenvectors=True`` (the default), ``A``
@@ -6093,7 +5970,7 @@ void syev(AType *A, WType *W) {
 /// ascending order. ``A`` must be rank 2 and square; ``W`` must be
 /// rank 1 with size ``A.dim(0)``. For the returning form (allocates
 /// fresh outputs) see ``syev_eig``.
-template <bool ComputeEigenvectors = true, RuntimeRankTensorConcept AType, RuntimeRankTensorConcept WType>
+template <bool ComputeEigenvectors = true, MatrixOperand AType, VectorOperand WType>
     requires(InSamePlace<AType, WType> && SameUnderlying<AType, WType> && !Complex<AType>)
 // clang-format off
 APIARY_EXPOSE
@@ -6105,8 +5982,9 @@ APIARY_INSTANTIATE_BOOLS("syev", einsums::RuntimeTensorView<float>,  einsums::Ge
 APIARY_INSTANTIATE_BOOLS("syev", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
     // clang-format on
     void syev(AType *A, WType *W) {
-    if (A->rank() != 2 || W->rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::syev requires A rank-2 and W rank-1; got {}, {}.", A->rank(), W->rank());
+    if (detail::tensor_rank(*A) != 2 || detail::tensor_rank(*W) != 1) {
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::syev requires A rank-2 and W rank-1; got {}, {}.", detail::tensor_rank(*A),
+                                detail::tensor_rank(*W));
     }
 
     auto &ctx = CaptureContext::current();
@@ -6186,40 +6064,13 @@ APIARY_INSTANTIATE_BOOLS("syev_eig", einsums::GeneralRuntimeTensor<double, std::
 // heev: Hermitian eigendecomposition (in-place)
 // ─────────────────────────────────────────────────────────────────────────────
 
-template <bool ComputeEigenvectors = true, MatrixConcept AType, VectorConcept WType>
-    requires requires {
-        requires InSamePlace<AType, WType>;
-        requires Complex<AType>;
-        requires NotComplex<WType>;
-        requires std::is_same_v<typename WType::ValueType, RemoveComplexT<typename AType::ValueType>>;
-    }
-void heev(AType *A, WType *W) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("heev eager");
-        linear_algebra::heev<ComputeEigenvectors>(A, W);
-        return;
-    }
-
-    LabeledSection("heev capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-    auto [w_id, w_slot] = ctx.get_slot(*W);
-
-    auto executor = [a_slot, w_slot]() {
-        LabeledSection("heev execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-        linear_algebra::heev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
-    };
-    ctx.record(OpKind::Heev, "heev", {a_id}, {a_id, w_id}, std::move(executor));
-}
-
 /// Hermitian eigendecomposition (in-place): ``A = V * diag(W) * V^H``.
 ///
 /// Complex analogue of ``syev``. On return ``A`` holds eigenvectors as
 /// columns (when ``compute_eigenvectors=True``); ``W`` holds the
 /// eigenvalues in ascending order. ``W`` is real even though ``A`` is
 /// complex.
-template <bool ComputeEigenvectors = true, RuntimeRankTensorConcept AType, RuntimeRankTensorConcept WType>
+template <bool ComputeEigenvectors = true, MatrixOperand AType, VectorOperand WType>
     requires(InSamePlace<AType, WType> && Complex<AType> && NotComplex<WType> &&
              std::is_same_v<typename WType::ValueType, RemoveComplexT<typename AType::ValueType>>)
 // clang-format off
@@ -6232,8 +6083,9 @@ APIARY_INSTANTIATE_BOOLS("heev", einsums::RuntimeTensorView<std::complex<float>>
 APIARY_INSTANTIATE_BOOLS("heev", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
     // clang-format on
     void heev(AType *A, WType *W) {
-    if (A->rank() != 2 || W->rank() != 1) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::heev requires A rank-2 and W rank-1; got {}, {}.", A->rank(), W->rank());
+    if (detail::tensor_rank(*A) != 2 || detail::tensor_rank(*W) != 1) {
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::heev requires A rank-2 and W rank-1; got {}, {}.", detail::tensor_rank(*A),
+                                detail::tensor_rank(*W));
     }
 
     auto &ctx = CaptureContext::current();
@@ -6351,40 +6203,13 @@ APIARY_INSTANTIATE_AS("heev", einsums::TiledRuntimeTensor<std::complex<double>>,
 // gesv: solve AX = B
 // ─────────────────────────────────────────────────────────────────────────────
 
-template <MatrixConcept AType, TensorConcept BType>
-    requires requires {
-        requires SameUnderlying<AType, BType>;
-        requires MatrixConcept<BType> || VectorConcept<BType>;
-    }
-auto gesv(AType *A, BType *B) -> int {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("gesv eager");
-        return linear_algebra::gesv(A, B);
-    }
-
-    LabeledSection("gesv capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-    auto [b_id, b_slot] = ctx.get_slot(*B);
-
-    auto executor = [a_slot, b_slot]() {
-        LabeledSection("gesv execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-        ProfileAnnotate("nrhs", static_cast<int64_t>(static_cast<BType *>(b_slot->ptr)->dim(1)));
-        std::ignore = linear_algebra::gesv(static_cast<AType *>(a_slot->ptr), static_cast<BType *>(b_slot->ptr));
-    };
-    ctx.record(OpKind::Gesv, "gesv", {a_id, b_id}, {a_id, b_id}, std::move(executor));
-
-    return 0; // Return value not meaningful during capture
-}
-
 /// Solve the linear system ``A * X = B`` in place.
 ///
 /// On return ``B`` holds ``X`` and ``A`` holds its LU factorization.
 /// ``B`` may be rank 1 (single right-hand side) or rank 2 (multiple
 /// right-hand-side columns). Returns the LAPACK info code: 0 on
 /// success, positive ``i`` if ``A`` is singular at row ``i``.
-template <RuntimeRankTensorConcept AType, RuntimeRankTensorConcept BType>
+template <MatrixOperand AType, MatrixOrVectorOperand BType>
     requires SameUnderlying<AType, BType>
 // clang-format off
 APIARY_EXPOSE
@@ -6395,8 +6220,9 @@ APIARY_INSTANTIATE_AS("gesv", einsums::GeneralRuntimeTensor<std::complex<float>,
 APIARY_INSTANTIATE_AS("gesv", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
     // clang-format on
     auto gesv(AType *A, BType *B) -> int {
-    if (A->rank() != 2 || (B->rank() != 1 && B->rank() != 2)) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::gesv requires A rank-2 and B rank-1 or rank-2; got {}, {}.", A->rank(), B->rank());
+    if (detail::tensor_rank(*A) != 2 || (detail::tensor_rank(*B) != 1 && detail::tensor_rank(*B) != 2)) {
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::gesv requires A rank-2 and B rank-1 or rank-2; got {}, {}.", detail::tensor_rank(*A),
+                                detail::tensor_rank(*B));
     }
 
     auto &ctx = CaptureContext::current();
@@ -6432,29 +6258,6 @@ APIARY_INSTANTIATE_AS("gesv", einsums::GeneralRuntimeTensor<std::complex<double>
 // tensor has no edge holding the two together.
 // ─────────────────────────────────────────────────────────────────────────────
 
-template <MatrixConcept AType>
-auto getrf(AType *A, LuPivots *pivots) -> int {
-    auto       &ctx    = CaptureContext::current();
-    auto const &buffer = pivots->buffer();
-
-    if (!ctx.is_capturing()) {
-        LabeledSection("getrf eager");
-        return linear_algebra::getrf(A, buffer.get());
-    }
-
-    LabeledSection("getrf capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-
-    auto executor = [a_slot, buffer]() {
-        LabeledSection("getrf execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-        std::ignore = linear_algebra::getrf(static_cast<AType *>(a_slot->ptr), buffer.get());
-    };
-    ctx.record(OpKind::Getrf, "getrf", {a_id}, {a_id}, std::move(executor));
-
-    return 0; // Return value not meaningful during capture
-}
-
 /// LU-factorize ``A`` in place, recording the row interchanges in ``pivots``.
 ///
 /// On return ``A`` holds ``L`` and ``U`` in the LAPACK packing (the unit
@@ -6467,7 +6270,7 @@ auto getrf(AType *A, LuPivots *pivots) -> int {
 ///
 /// The same ``pivots`` object must be handed to the matching ``getrs``, and
 /// ordering rides on ``A`` rather than on the pivots.
-template <RuntimeRankTensorConcept AType>
+template <MatrixOperand AType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -6481,8 +6284,8 @@ APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     auto getrf(AType *A, LuPivots *pivots) -> int {
-    if (A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::getrf requires a rank-2 tensor; got rank {}.", A->rank());
+    if (detail::tensor_rank(*A) != 2) {
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::getrf requires a rank-2 tensor; got rank {}.", detail::tensor_rank(*A));
     }
 
     auto       &ctx    = CaptureContext::current();
@@ -6506,34 +6309,6 @@ APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<std::complex<double>>)
     return 0;
 }
 
-template <MatrixConcept AType, TensorConcept BType>
-    requires requires {
-        requires SameUnderlying<AType, BType>;
-        requires MatrixConcept<BType> || VectorConcept<BType>;
-    }
-auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
-    auto       &ctx    = CaptureContext::current();
-    auto const &buffer = pivots.buffer();
-
-    if (!ctx.is_capturing()) {
-        LabeledSection("getrs eager");
-        return linear_algebra::getrs(A, *buffer, B);
-    }
-
-    LabeledSection("getrs capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(*B);
-
-    auto executor = [a_slot, b_slot, buffer]() {
-        LabeledSection("getrs execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
-        std::ignore = linear_algebra::getrs(*static_cast<AType const *>(a_slot->ptr), *buffer, static_cast<BType *>(b_slot->ptr));
-    };
-    ctx.record(OpKind::Getrs, "getrs", {a_id, b_id}, {b_id}, std::move(executor));
-
-    return 0; // Return value not meaningful during capture
-}
-
 /// Solve ``A * X = B`` in place against a factorization ``getrf`` produced.
 ///
 /// ``A`` is the LU factorization and ``pivots`` the interchanges the matching
@@ -6541,7 +6316,7 @@ auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
 /// right-hand sides and any number of replays. ``B`` may be rank 1 (a single
 /// right-hand side) or rank 2 (one per column), and on return holds ``X``.
 /// Returns the LAPACK info code, which is 0 unless an argument was invalid.
-template <RuntimeRankTensorConcept AType, RuntimeRankTensorConcept BType>
+template <MatrixOperand AType, MatrixOrVectorOperand BType>
     requires SameUnderlying<AType, BType>
 // clang-format off
 APIARY_EXPOSE
@@ -6556,8 +6331,9 @@ APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<std::complex<float>
 APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
     auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
-    if (A.rank() != 2 || (B->rank() != 1 && B->rank() != 2)) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::getrs requires A rank-2 and B rank-1 or rank-2; got {}, {}.", A.rank(), B->rank());
+    if (detail::tensor_rank(A) != 2 || (detail::tensor_rank(*B) != 1 && detail::tensor_rank(*B) != 2)) {
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::getrs requires A rank-2 and B rank-1 or rank-2; got {}, {}.", detail::tensor_rank(A),
+                                detail::tensor_rank(*B));
     }
 
     auto       &ctx    = CaptureContext::current();
@@ -6708,32 +6484,12 @@ APIARY_INSTANTIATE_AS("diis_step", std::complex<double>)
 // invert: in-place matrix inverse
 // ─────────────────────────────────────────────────────────────────────────────
 
-template <MatrixConcept AType>
-void invert(AType *A) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("invert eager");
-        linear_algebra::invert(A);
-        return;
-    }
-
-    LabeledSection("invert capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-
-    auto executor = [a_slot]() {
-        LabeledSection("invert execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-        linear_algebra::invert(static_cast<AType *>(a_slot->ptr));
-    };
-    ctx.record(OpKind::Invert, "invert", {a_id}, {a_id}, std::move(executor));
-}
-
 /// In-place matrix inverse: ``A := A^-1``.
 ///
 /// ``A`` must be rank 2 and square. Internally calls ``getrf`` followed
 /// by ``getri``; raises ``RankError`` if the input rank is wrong and
 /// the LAPACK kernel raises if ``A`` is singular.
-template <RuntimeRankTensorConcept AType>
+template <MatrixOperand AType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -6743,8 +6499,8 @@ APIARY_INSTANTIATE_AS("invert", einsums::GeneralRuntimeTensor<std::complex<float
 APIARY_INSTANTIATE_AS("invert", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
     // clang-format on
     void invert(AType *A) {
-    if (A->rank() != 2) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::invert requires rank-2 tensor; got rank {}.", A->rank());
+    if (detail::tensor_rank(*A) != 2) {
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::invert requires rank-2 tensor; got rank {}.", detail::tensor_rank(*A));
     }
 
     auto &ctx = CaptureContext::current();
@@ -6804,8 +6560,7 @@ APIARY_INSTANTIATE_AS("svd", einsums::GeneralRuntimeTensor<std::complex<double>,
     using RT = einsums::GeneralRuntimeTensor<T, std::allocator<T>>;
     using RR = einsums::GeneralRuntimeTensor<R, std::allocator<R>>;
 
-    Tensor<T, 2> a_static{A.name(), A.dim(0), A.dim(1)};
-    std::memcpy(a_static.data(), A.data(), A.size() * sizeof(T));
+    auto a_static = detail::to_static_matrix(A);
 
     auto [U_opt, S_static, Vt_opt] = linear_algebra::svd(a_static);
     if (!U_opt || !Vt_opt) {
@@ -6854,8 +6609,7 @@ APIARY_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<std::complex<doubl
     using RT = einsums::GeneralRuntimeTensor<T, std::allocator<T>>;
     using RR = einsums::GeneralRuntimeTensor<R, std::allocator<R>>;
 
-    Tensor<T, 2> a_static{A.name(), A.dim(0), A.dim(1)};
-    std::memcpy(a_static.data(), A.data(), A.size() * sizeof(T));
+    auto a_static = detail::to_static_matrix(A);
 
     auto [U_opt, S_static, Vt_opt] = linear_algebra::svd_dd(a_static, job);
     if (!U_opt || !Vt_opt) {
@@ -6908,8 +6662,7 @@ APIARY_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<std::comple
     using RT = einsums::GeneralRuntimeTensor<T, std::allocator<T>>;
     using RR = einsums::GeneralRuntimeTensor<R, std::allocator<R>>;
 
-    Tensor<T, 2> a_static{A.name(), A.dim(0), A.dim(1)};
-    std::memcpy(a_static.data(), A.data(), A.size() * sizeof(T));
+    auto a_static = detail::to_static_matrix(A);
 
     auto [U_static, S_static, Vt_static] = linear_algebra::truncated_svd(a_static, k);
     return std::make_tuple(RT{std::move(U_static)}, RR{std::move(S_static)}, RT{std::move(Vt_static)});
@@ -6958,8 +6711,7 @@ APIARY_INSTANTIATE_AS("truncated_syev", einsums::GeneralRuntimeTensor<double, st
     using T  = typename AType::ValueType;
     using RT = einsums::GeneralRuntimeTensor<T, std::allocator<T>>;
 
-    Tensor<T, 2> a_static{A.name(), A.dim(0), A.dim(1)};
-    std::memcpy(a_static.data(), A.data(), A.size() * sizeof(T));
+    auto a_static = detail::to_static_matrix(A);
 
     auto [V_static, W_static] = linear_algebra::truncated_syev(a_static, k);
     return std::make_tuple(RT{std::move(V_static)}, RT{std::move(W_static)});
@@ -7000,8 +6752,7 @@ APIARY_INSTANTIATE_AS("qr", einsums::GeneralRuntimeTensor<std::complex<double>, 
     using T  = typename AType::ValueType;
     using RT = einsums::GeneralRuntimeTensor<T, std::allocator<T>>;
 
-    Tensor<T, 2> a_static{A.name(), A.dim(0), A.dim(1)};
-    std::memcpy(a_static.data(), A.data(), A.size() * sizeof(T));
+    auto a_static = detail::to_static_matrix(A);
 
     auto [Q_static, R_static] = linear_algebra::qr(a_static);
     return std::make_tuple(RT{std::move(Q_static)}, RT{std::move(R_static)});
@@ -7044,8 +6795,7 @@ APIARY_INSTANTIATE_AS("pow", einsums::GeneralRuntimeTensor<double, std::allocato
     using T  = typename AType::ValueType;
     using RT = einsums::GeneralRuntimeTensor<T, std::allocator<T>>;
 
-    Tensor<T, 2> a_static{A.name(), A.dim(0), A.dim(1)};
-    std::memcpy(a_static.data(), A.data(), A.size() * sizeof(T));
+    auto a_static = detail::to_static_matrix(A);
 
     auto result_static = linear_algebra::pow(a_static, alpha, cutoff);
     return RT{std::move(result_static)};
@@ -7081,28 +6831,10 @@ APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<std::complex<double>,
         EINSUMS_THROW_EXCEPTION(RankError, "cg::det requires square rank-2 input; got rank {}.", A.rank());
     }
 
-    using T                        = typename AType::ValueType;
-    AType                     temp = A;
-    BufferVector<blas::int_t> pivots;
-    int const                 singular = linear_algebra::getrf(&temp, &pivots);
-    if (singular > 0) {
-        return T{0.0};
-    }
-
-    T   ret{1.0};
-    int parity = 0;
-    for (size_t i = 0; i < A.dim(0); ++i) {
-        if (std::cmp_not_equal(pivots[i], i + 1)) {
-            ++parity;
-        }
-    }
-    for (size_t i = 0; i < A.dim(0); ++i) {
-        ret *= temp(i, i);
-    }
-    if ((parity & 1) != 0) {
-        ret = -ret;
-    }
-    return ret;
+    // The arithmetic is linear_algebra::det's, verbatim: one getrf, the pivot
+    // parity, then the serial diagonal product. Reproducing it here only gave
+    // it a second place to drift.
+    return linear_algebra::det(detail::to_static_matrix(A));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
