@@ -404,6 +404,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     }
 
     /**
+     * @brief The handle of the tensor that lives at @p ptr NOW, or null when none is registered there.
+     *
+     * The lookup for a tensor this graph has just allocated or declared and needs the
+     * handle of. It goes through the pointer index rather than a first-match scan of the
+     * tensor table, because an address does not identify a tensor across a destruction:
+     * capture lets a caller's wrapper die while its handle, whose @ref TensorHandle::tensor_ptr
+     * is that wrapper's address, stays registered, and the next allocation of the same size
+     * can land on the freed address. A scan then finds two handles at one address and returns
+     * whichever the table happens to iterate first, which under the MSVC STL is the STALE
+     * one. The index has no such ambiguity: @ref register_tensor reassigns it to the tensor
+     * that lives there now.
+     */
+    [[nodiscard]] TensorHandle *find_tensor_by_ptr(void const *ptr) noexcept { return find_tensor(find_tensor_id_by_ptr(ptr)); }
+
+    /**
      * @brief Look up a tensor handle by its TensorId.
      * @param[in] id The tensor identifier.
      * @return Reference to the TensorHandle.
@@ -2681,11 +2696,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                     GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims,
                                                                                 bool intermediate = false) {
         auto &t = declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);
-        for (auto &[tid, handle] : _tensors) {
-            if (handle.tensor_ptr == &t) {
-                handle.init_kind = InitKind::Zero;
-                break;
-            }
+        if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
+            handle->init_kind = InitKind::Zero;
         }
         t.set_pending_init(PendingInit::Zero);
         return t;
@@ -2899,12 +2911,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         requires(sizeof...(Dims) == Rank)
     Tensor<T, Rank> &declare_zero_tensor(std::string name, Dims... dims) {
         auto &t = declare_tensor<T, Rank>(std::move(name), dims...);
-        // Set init_kind on the handle (just registered, so it's the last one)
-        for (auto &[tid, handle] : _tensors) {
-            if (handle.tensor_ptr == &t) {
-                handle.init_kind = InitKind::Zero;
-                break;
-            }
+        if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
+            handle->init_kind = InitKind::Zero;
         }
         return t;
     }
@@ -2935,11 +2943,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         requires(sizeof...(Dims) == Rank)
     Tensor<T, Rank> &scratch(std::string name, Dims... dims) {
         auto &t = declare_tensor<T, Rank>(std::move(name), dims...);
-        for (auto &[tid, handle] : _tensors) {
-            if (handle.tensor_ptr == &t) {
-                handle.is_intermediate = true;
-                break;
-            }
+        if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
+            handle->is_intermediate = true;
         }
         return t;
     }
@@ -2950,11 +2955,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         requires(sizeof...(Dims) == Rank)
     Tensor<T, Rank> &scratch_zero(std::string name, Dims... dims) {
         auto &t = declare_zero_tensor<T, Rank>(std::move(name), dims...);
-        for (auto &[tid, handle] : _tensors) {
-            if (handle.tensor_ptr == &t) {
-                handle.is_intermediate = true;
-                break;
-            }
+        if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
+            handle->is_intermediate = true;
         }
         return t;
     }
@@ -3009,15 +3011,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }(std::make_index_sequence<Rank>{});
         auto *ptr     = &t;
         auto  fill_fn = std::forward<FillFn>(fill);
-        for (auto &[tid, handle] : _tensors) {
-            if (handle.tensor_ptr == ptr) {
-                handle.init_kind = InitKind::Zero; // Triggers an init node
-                handle.zero_fn   = [ptr, fill_fn]() {
-                    ptr->materialize();
-                    fill_fn(*ptr);
-                };
-                break;
-            }
+        if (auto *handle = find_tensor_by_ptr(ptr); handle != nullptr) {
+            handle->init_kind = InitKind::Zero; // Triggers an init node
+            handle->zero_fn   = [ptr, fill_fn]() {
+                ptr->materialize();
+                fill_fn(*ptr);
+            };
         }
         return t;
     }

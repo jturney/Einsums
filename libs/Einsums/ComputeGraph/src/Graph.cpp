@@ -3061,14 +3061,6 @@ expected<std::pair<TensorId, void *>, GraphError> Graph::create_tensor_dynamic(s
         return unexpected(GraphError::type_error("create_tensor_dynamic: dims must not be empty"));
     }
 
-    auto find_id = [&](void *ptr) -> TensorId {
-        for (auto const &[id, h] : _tensors) {
-            if (h.tensor_ptr == ptr)
-                return id;
-        }
-        return 0;
-    };
-
     // Typed-tensor create-by-rank dispatch. Caps at rank 8 because the
     // typed Tensor<T, K> family requires a compile-time switch case per
     // rank; passes that consume the void* result static_cast it back to
@@ -3081,35 +3073,35 @@ expected<std::pair<TensorId, void *>, GraphError> Graph::create_tensor_dynamic(s
         switch (dims.size()) {
         case 1: {
             auto &t = create_zero_tensor<T, 1>(std::move(name), dims[0]);
-            return std::pair{find_id(&t), static_cast<void *>(&t)};
+            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
         }
         case 2: {
             auto &t = create_zero_tensor<T, 2>(std::move(name), dims[0], dims[1]);
-            return std::pair{find_id(&t), static_cast<void *>(&t)};
+            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
         }
         case 3: {
             auto &t = create_zero_tensor<T, 3>(std::move(name), dims[0], dims[1], dims[2]);
-            return std::pair{find_id(&t), static_cast<void *>(&t)};
+            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
         }
         case 4: {
             auto &t = create_zero_tensor<T, 4>(std::move(name), dims[0], dims[1], dims[2], dims[3]);
-            return std::pair{find_id(&t), static_cast<void *>(&t)};
+            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
         }
         case 5: {
             auto &t = create_zero_tensor<T, 5>(std::move(name), dims[0], dims[1], dims[2], dims[3], dims[4]);
-            return std::pair{find_id(&t), static_cast<void *>(&t)};
+            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
         }
         case 6: {
             auto &t = create_zero_tensor<T, 6>(std::move(name), dims[0], dims[1], dims[2], dims[3], dims[4], dims[5]);
-            return std::pair{find_id(&t), static_cast<void *>(&t)};
+            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
         }
         case 7: {
             auto &t = create_zero_tensor<T, 7>(std::move(name), dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6]);
-            return std::pair{find_id(&t), static_cast<void *>(&t)};
+            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
         }
         case 8: {
             auto &t = create_zero_tensor<T, 8>(std::move(name), dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7]);
-            return std::pair{find_id(&t), static_cast<void *>(&t)};
+            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
         }
         default:
             return unexpected(GraphError::type_error(
@@ -3249,18 +3241,9 @@ expected<std::pair<TensorId, void *>, GraphError> Graph::create_zero_runtime_ten
         return unexpected(GraphError::type_error("create_zero_runtime_tensor_dynamic: dims must not be empty"));
     }
 
-    auto find_id = [&](void *ptr) -> TensorId {
-        for (auto const &[id, h] : _tensors) {
-            if (h.tensor_ptr == ptr) {
-                return id;
-            }
-        }
-        return 0;
-    };
-
     auto make = [&]<typename T>(T /*tag*/) -> std::pair<TensorId, void *> {
         auto &t = create_zero_runtime_tensor<T, std::allocator<T>>(std::move(name), dims, /*intermediate=*/true);
-        return {find_id(&t), static_cast<void *>(&t)};
+        return {find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
     };
 
     switch (dtype) {

@@ -178,12 +178,7 @@ TensorId declare_clone(Graph &graph, TensorHandle const &handle, std::string nam
     if (ptr == nullptr) {
         return 0;
     }
-    for (auto const &[tid, h] : graph.tensors_map()) {
-        if (h.tensor_ptr == ptr) {
-            return tid;
-        }
-    }
-    return 0;
+    return graph.find_tensor_id_by_ptr(ptr);
 }
 
 } // namespace

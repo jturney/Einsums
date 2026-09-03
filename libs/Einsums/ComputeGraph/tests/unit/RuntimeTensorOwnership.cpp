@@ -15,6 +15,11 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
+#include <fmt/format.h>
+
+#include <cstddef>
+#include <new>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -95,4 +100,76 @@ TEST_CASE("Workspace::declare_zero_runtime_tensor — zero init via handle", "[C
     for (size_t i = 0; i < 2; i++)
         for (size_t j = 0; j < 3; j++)
             REQUIRE(t(i, j) == 0.0f);
+}
+
+TEST_CASE("Graph::create_zero_runtime_tensor_dynamic — allocated over a dead operand's address, it gets its own id",
+          "[ComputeGraph][RuntimeTensor]") {
+    // Capture adopts an operand's storage into a stand-in, so the caller's wrapper may die
+    // while its handle, whose tensor_ptr is the wrapper's address, stays registered. A
+    // graph-owned tensor of the same type allocated afterwards can land on that freed
+    // address, and the id lookup behind the dynamic creators then has two handles at one
+    // address to choose between. It used to take the first the tensor table iterated, which
+    // is the dead operand's under the MSVC STL and the new tensor's under libc++ and
+    // libstdc++: DistributiveFactoring's sum then took a consumed operand's id on Windows,
+    // its zero-and-accumulate chain ran over that operand's storage, and one term of the
+    // contraction went missing. The lookup now goes through the pointer index, which
+    // registration keeps pointing at the tensor that lives at the address NOW.
+    cg::Graph graph("recycled_address");
+
+    auto              *wrapper      = new RuntimeTensor<double>("operand", std::vector<size_t>{4, 4});
+    void const *const  dead_address = wrapper;
+    cg::TensorId const dead_id      = graph.register_operand(*wrapper);
+    REQUIRE(graph.find_tensor(dead_id)->owner != nullptr); // adopted, so the wrapper is free to die
+    delete wrapper;
+
+    // Allocate until one lands on the freed address. A free-list allocator hands the block
+    // straight back on the first try; mimalloc serves a page's never-used blocks first and
+    // recycles freed ones only once those run out, a few hundred allocations of this size,
+    // so the bound is sized to exhaust a page rather than to be patient.
+    bool reused = false;
+    for (int i = 0; i < 4096 && !reused; ++i) {
+        auto const t_name = fmt::format("sum_{}", i);
+        auto       made   = graph.create_zero_runtime_tensor_dynamic(t_name, packed_gemm::ScalarType::Float64, {4, 4});
+        REQUIRE(made);
+        auto const [id, ptr] = made.value();
+        reused               = ptr == dead_address;
+
+        CAPTURE(i, reused);
+        REQUIRE(id != dead_id);
+        auto const *handle = graph.find_tensor(id);
+        REQUIRE(handle != nullptr);
+        CHECK(handle->tensor_ptr == ptr);
+        CHECK(handle->is_intermediate);
+        CHECK(handle->name == t_name);
+    }
+    if (!reused) {
+        SKIP("the allocator never handed the freed address back, so the ambiguity this test pins did not arise");
+    }
+}
+
+TEST_CASE("Graph::find_tensor_by_ptr — names the tensor that lives at an address now, not the one that died there",
+          "[ComputeGraph][RuntimeTensor]") {
+    // The allocator-independent form of the case above: two tensors built in one storage
+    // slot, the first registered, destroyed, and replaced. Its handle keeps the address as
+    // identity, so the table holds two handles at one address, and the lookup the creators
+    // and declarers use has to return the live one.
+    cg::Graph graph("same_slot");
+
+    alignas(RuntimeTensor<double>) std::byte slot[sizeof(RuntimeTensor<double>)];
+    auto                                    *first    = new (slot) RuntimeTensor<double>("first", std::vector<size_t>{4, 4});
+    cg::TensorId const                       first_id = graph.register_operand(*first);
+    first->~GeneralRuntimeTensor();
+
+    auto *second = new (slot) RuntimeTensor<double>("second", std::vector<size_t>{4, 4});
+    REQUIRE(static_cast<void *>(second) == static_cast<void *>(slot));
+    cg::TensorId const second_id = graph.register_operand(*second);
+    REQUIRE(second_id != first_id); // the liveness token told the two apart
+
+    auto const *live = graph.find_tensor_by_ptr(second);
+    REQUIRE(live != nullptr);
+    CHECK(live->id == second_id);
+    CHECK(live->name == "second");
+    CHECK(graph.find_tensor(first_id)->name == "first"); // the dead one keeps its handle
+
+    second->~GeneralRuntimeTensor();
 }

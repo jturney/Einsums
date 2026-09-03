@@ -17,6 +17,17 @@ pass-built executors resolved their operands by id at replay and dereferenced
 stand-in, so they read freed memory and segfaulted. The fix routes the dispatch
 helpers through ``TensorHandle::live_ptr``.
 
+A second hole was in the id lookup behind ``create_zero_runtime_tensor_dynamic``,
+which found the sum's handle by scanning the tensor table for its address. The
+dead wrappers' handles keep their addresses as identity, and the sum is
+allocated right after those wrappers die, at their size, so it can land on one
+of their addresses; the scan then returned whichever handle the table iterated
+first, the stale one under the MSVC STL. The sum took a consumed operand's id,
+its zero-and-accumulate chain ran over that operand's storage, and on Windows
+one term went missing about one run in three. The lookup now goes through the
+graph's pointer index, which registration keeps pointing at the tensor that
+lives at an address now.
+
 These build inside a function and drop the references on purpose. That is the
 shape ordinary code has, and it is what nothing else in the suite exercised.
 """
@@ -61,11 +72,12 @@ def _diagnose(actual, a, b1, b2):
     """
     candidates = {
         "a@b1 + a@b2 (correct)": a @ b1 + a @ b2,
-        "a@b2 alone (b1's axpy contributed nothing)": a @ b2,
-        "a@b1 alone (b2's axpy contributed nothing)": a @ b1,
-        "2*a@b1 (b1 accumulated twice)": 2 * (a @ b1),
+        "a@b2 alone (b1's axpy contributed nothing, or the sum was built in b1's storage)": a @ b2,
+        "a@b1 alone (b2's axpy contributed nothing, or the sum was built in b2's storage)": a @ b1,
+        "2*a@b1 (b1 accumulated twice, or the sum was built in b2's storage)": 2 * (a @ b1),
         "2*a@b2 (b2 accumulated twice)": 2 * (a @ b2),
         "a@(b1+b2) with no scaling": a @ (b1 + b2),
+        "(b1+b2)@(b1+b2) (the sum was built in a's storage)": (b1 + b2) @ (b1 + b2),
     }
     hits = [name for name, want in candidates.items() if np.allclose(np.asarray(actual), want)]
     return f"the graph computed {hits[0]}" if hits else "the graph computed none of the expected forms"
