@@ -694,6 +694,25 @@ void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<No
     mark_sorted();
 }
 
+size_t Graph::replace_nodes(std::vector<bool> const &remove, std::vector<std::pair<std::size_t, std::vector<Node>>> inserts) {
+    size_t const removed = erase_nodes(remove);
+
+    // The positions in `inserts` are in the PRE-ERASE numbering, so each one has
+    // to come down by the number of nodes erased below it. A prefix-sum table
+    // rather than a per-position count, because a pass can record one group per
+    // subsumed node and the quadratic version shows up on long chains.
+    std::vector<size_t> erased_below(remove.size() + 1, 0);
+    for (size_t i = 0; i < remove.size(); ++i) {
+        erased_below[i + 1] = erased_below[i] + (remove[i] ? 1 : 0);
+    }
+    for (auto &[position, group] : inserts) {
+        position -= erased_below[std::min(position, remove.size())];
+    }
+
+    insert_node_groups(std::move(inserts));
+    return removed;
+}
+
 namespace {
 
 /// Half-open byte span of a handle's storage, or false when it has none that
@@ -3357,6 +3376,31 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     node.op_data = std::move(desc);
     node.execute = build_executor(OpKind::Einsum, dtype, c_h.rank, node.op_data, *this, std::span<TensorId const>{node.inputs},
                                   std::span<TensorId const>{node.outputs});
+    return node;
+}
+
+Node Graph::make_axpby_node(TensorId x, TensorId y, PrefactorScalar alpha, PrefactorScalar beta, std::string label) {
+    // Live scalars shared with the executor, the same contract a captured axpby
+    // has: the descriptor is what downstream passes read AND what the executor
+    // uses, so a fold into alpha reaches the replay. A descriptor the executor
+    // ignored would be worse than none.
+    auto params   = std::make_shared<AxpbyParams>();
+    params->alpha = alpha;
+    params->beta  = beta;
+
+    AxpbyDescriptor desc;
+    desc.alpha  = params->alpha;
+    desc.beta   = params->beta;
+    desc.params = params;
+
+    Node node;
+    node.id      = reserve_node_id();
+    node.kind    = OpKind::Axpby;
+    node.label   = std::move(label);
+    node.inputs  = {x, y};
+    node.outputs = {y};
+    node.op_data = std::move(desc);
+    node.execute = make_axpby_executor(std::move(params), x, y);
     return node;
 }
 

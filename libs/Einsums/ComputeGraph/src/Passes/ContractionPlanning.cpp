@@ -4,13 +4,13 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Comm/Runtime.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/ContractionPlanning.hpp>
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
@@ -64,8 +64,6 @@ bool analyze_contraction(EinsumDescriptor const &desc, Graph const &graph, Node 
 
     // Build index sets
     std::set<std::string> const link_set(spec.link_indices.begin(), spec.link_indices.end());
-    std::set<std::string> const a_set(spec.a_indices.begin(), spec.a_indices.end());
-    std::set<std::string> const b_set(spec.b_indices.begin(), spec.b_indices.end());
 
     // K = product of link dimensions (from A's perspective)
     K = 1;
@@ -100,15 +98,12 @@ bool analyze_contraction(EinsumDescriptor const &desc, Graph const &graph, Node 
 
 /// Information about one contraction in a chain.
 struct ContractionInfo {
-    size_t    node_idx;
-    size_t    M, K, N;      ///< Effective GEMM dimensions after index flattening
-    size_t    output_elems; ///< Total elements in the output tensor
-    TensorId  output_tid;
-    TensorId  input_a_tid;
-    TensorId  input_b_tid;
-    Target    target;
-    Residency a_residency;
-    Residency b_residency;
+    size_t   node_idx;
+    size_t   M, K, N; ///< Effective GEMM dimensions after index flattening
+    TensorId output_tid;
+    TensorId input_a_tid;
+    TensorId input_b_tid;
+    Target   target;
 };
 
 /// Find chains of contractions where each feeds the next.
@@ -116,7 +111,6 @@ std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &g
     auto const                               &nodes = graph.nodes();
     std::vector<bool>                         in_chain(nodes.size(), false);
     std::vector<std::vector<ContractionInfo>> chains;
-    auto const                               &tensors = graph.tensors_map();
 
     auto make_info = [&](size_t idx, size_t M, size_t K, size_t N) -> ContractionInfo {
         ContractionInfo ci;
@@ -128,13 +122,6 @@ std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &g
         ci.input_a_tid = nodes[idx].inputs[0];
         ci.input_b_tid = nodes[idx].inputs[1];
         ci.target      = nodes[idx].target;
-
-        ci.output_elems = M * N;
-
-        auto a_it      = tensors.find(ci.input_a_tid);
-        auto b_it      = tensors.find(ci.input_b_tid);
-        ci.a_residency = (a_it != tensors.end()) ? a_it->second.residency : Residency::Host;
-        ci.b_residency = (b_it != tensors.end()) ? b_it->second.residency : Residency::Host;
         return ci;
     };
 
@@ -312,27 +299,13 @@ std::optional<std::vector<bool>> chain_leaf_orientations(std::vector<Contraction
 /// MemoryPlanning's arena manage its buffer like any other intermediate.
 /// Returns 0 if the dtype is unsupported.
 TensorId declare_chain_intermediate(Graph &graph, std::string name, packed_gemm::ScalarType dtype, size_t rows, size_t cols) {
-    // A typed Tensor<T,2>. The executor reaches it rank-erased through its
-    // impl, so a runtime tensor would serve as well; the typed one is kept
-    // because passes downstream (DistributiveFactoring's slot-redirect trick)
-    // cast these back to Tensor<T,2>*.
-    void const *ptr = nullptr;
-    switch (dtype) {
-    case packed_gemm::ScalarType::Float32:
-        ptr = &graph.declare_tensor<float, 2>(std::move(name), rows, cols);
-        break;
-    case packed_gemm::ScalarType::Float64:
-        ptr = &graph.declare_tensor<double, 2>(std::move(name), rows, cols);
-        break;
-    case packed_gemm::ScalarType::Complex64:
-        ptr = &graph.declare_tensor<std::complex<float>, 2>(std::move(name), rows, cols);
-        break;
-    case packed_gemm::ScalarType::Complex128:
-        ptr = &graph.declare_tensor<std::complex<double>, 2>(std::move(name), rows, cols);
-        break;
-    default:
-        return 0;
-    }
+    // A typed Tensor<T,2>. The executor reaches it rank-erased through its impl,
+    // so a runtime tensor would serve as well; the typed one is what the chain
+    // rebuild has always declared and its shape is known to be a matrix.
+    // ScalarType::Unknown is refused by the caller before it gets here, so the
+    // dispatcher's throw is unreachable.
+    void const *ptr = detail::dispatch_scalar_type(
+        dtype, [&]<typename T>(T /*tag*/) -> void const * { return &graph.declare_tensor<T, 2>(std::move(name), rows, cols); });
     // declare_tensor defaults to user-visible; these are pass-created
     // scratch the memory passes should manage.
     if (auto *handle = graph.find_tensor_by_ptr(ptr); handle != nullptr) {
@@ -443,17 +416,6 @@ Target determine_target(CostModel const &cost_model, size_t M, size_t N, size_t 
     return (gpu_time < cpu_time * 0.8) ? Target::GPU : Target::CPU;
 }
 
-double transfer_cost_us(CostModel const &cost_model, size_t bytes, Residency current, Target needed) {
-    if (needed == Target::GPU) {
-        if (current == Residency::Device || current == Residency::Both)
-            return 0.0;
-    } else {
-        if (current == Residency::Host || current == Residency::Both)
-            return 0.0;
-    }
-    return cost_model.estimate_transfer_time_us(bytes);
-}
-
 } // namespace
 
 ContractionPlanning::ContractionPlanning() : _cost_model(CostModel::detect_default()) {
@@ -495,16 +457,6 @@ bool ContractionPlanning::run(Graph &graph) {
             if (it != tensors.end()) {
                 element_size = it->second.element_size;
                 dtype        = it->second.dtype;
-            }
-        }
-
-        // Device memory budget
-        size_t device_budget = 0;
-        if (_cost_model.has_gpu()) {
-            device_budget = gpu::available_device_memory();
-            for (auto const &node : graph.nodes()) {
-                if (node.target == Target::GPU)
-                    device_budget -= std::min(device_budget, node.estimated_bytes);
             }
         }
 
@@ -750,35 +702,19 @@ bool ContractionPlanning::run(Graph &graph) {
                                  inter_count);
 
                 if (!new_nodes.empty()) {
-                    // Mark original chain nodes for removal
-                    auto                      &nodes = graph.nodes();
-                    std::unordered_set<size_t> remove_indices;
+                    size_t const new_node_count = new_nodes.size();
+
+                    // Drop the chain's original contractions and put the reconstructed
+                    // tree where the first of them stood. That slot is itself erased, so
+                    // the shifted insert position lands exactly where it used to be.
+                    // @see Graph::replace_nodes for the position bookkeeping.
+                    std::vector<bool> remove(graph.nodes().size(), false);
                     for (auto const &ci : chain)
-                        remove_indices.insert(ci.node_idx);
+                        remove[ci.node_idx] = true;
 
-                    // Find insertion point (where first chain node was)
-                    size_t const insert_pos = chain[0].node_idx;
-
-                    // Build new node list
-                    std::vector<Node> result;
-                    result.reserve(nodes.size() - remove_indices.size() + new_nodes.size());
-
-                    for (size_t idx = 0; idx < nodes.size(); idx++) {
-                        if (idx == insert_pos) {
-                            for (auto &nn : new_nodes)
-                                result.push_back(std::move(nn));
-                        }
-                        if (remove_indices.count(idx) == 0) {
-                            result.push_back(std::move(nodes[idx]));
-                        }
-                    }
-
-                    nodes = std::move(result);
-                    // Rebuilt in place rather than through erase_nodes/
-                    // insert_node_groups, so the node-set counter has to be
-                    // moved by hand. @see Graph::note_structural_change
-                    graph.note_structural_change();
-                    graph.mark_sorted();
+                    std::vector<std::pair<std::size_t, std::vector<Node>>> inserts;
+                    inserts.emplace_back(chain[0].node_idx, std::move(new_nodes));
+                    graph.replace_nodes(remove, std::move(inserts));
 
                     report.intermediates_created = inter_count;
                     _intermediates_created += inter_count;
@@ -787,9 +723,8 @@ bool ContractionPlanning::run(Graph &graph) {
                     restructured_this_scan = true;
 
                     EINSUMS_LOG_INFO("ContractionPlanning: restructured chain — {} new GEMM nodes, {} intermediates created",
-                                     new_nodes.size(), inter_count);
-                    this->report(2,
-                                 fmt::format("restructure GEMM chain into {} node(s), {} intermediate(s)", new_nodes.size(), inter_count));
+                                     new_node_count, inter_count);
+                    this->report(2, fmt::format("restructure GEMM chain into {} node(s), {} intermediate(s)", new_node_count, inter_count));
                 }
             }
 

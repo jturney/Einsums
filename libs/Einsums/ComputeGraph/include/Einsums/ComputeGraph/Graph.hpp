@@ -1487,6 +1487,40 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     void insert_node_groups(std::vector<std::pair<std::size_t, std::vector<Node>>> groups);
 
+    /**
+     * @brief Erase the flagged nodes and splice @p inserts into the gaps they leave.
+     *
+     * The rewrite every reassociating pass performs: it walks the ORIGINAL node
+     * list, marks the nodes it subsumes in @p remove, and records replacement
+     * groups against the positions it saw them at. Both are expressed in the
+     * pre-erase numbering, which is the only numbering a pass that has not
+     * mutated anything yet can speak. This does the translation once:
+     *
+     *   - @p remove is applied by @ref erase_nodes (positions at or past its
+     *     end are kept, so a mask sized to a prefix keeps the tail; a caller
+     *     that appended Alloc nodes while planning relies on that),
+     *   - each insert position is shifted down by the number of erased nodes
+     *     BELOW it, and
+     *   - the shifted groups go through @ref insert_node_groups, which splices
+     *     each one immediately before its position.
+     *
+     * The consequence worth stating once, because every caller depends on it:
+     * when a group's own position IS erased, the shifted position lands exactly
+     * where that node used to be, so the replacements take its place. When the
+     * position is NOT erased (a pass that leaves a consumer standing and only
+     * builds an operand for it), the shifted position still names that same
+     * node, so the group lands directly ahead of it.
+     *
+     * Leaves the graph marked sorted, as @ref insert_node_groups does. A caller
+     * that appended nodes out of order should follow with @ref topological_sort.
+     *
+     * @param[in] remove  Removal mask in the pre-erase numbering.
+     * @param[in] inserts (pre-erase position, nodes to splice before it) pairs.
+     * @return The number of nodes erased.
+     * @versionadded{2.0.0}
+     */
+    size_t replace_nodes(std::vector<bool> const &remove, std::vector<std::pair<std::size_t, std::vector<Node>>> inserts);
+
     /// Read-only access to the tensor registry (TensorId → TensorHandle map).
     /// @brief Durable slot redirects, child id to the terminal id its slot resolves to.
     /// @return The map, empty on a graph no merge has rewritten.
@@ -3155,6 +3189,37 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     Node make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, ParsedEinsumSpec const &spec, PrefactorScalar c_pf,
                           PrefactorScalar ab_pf, bool conj_a = false, bool conj_b = false, std::string label = {});
+
+    /**
+     * @brief Build a ready-to-splice ``Y = alpha*X + beta*Y`` node.
+     *
+     * The counterpart to @ref make_einsum_node for the passes that assemble an
+     * accumulator (DistributiveFactoring's summed operand, TiledExpansion's
+     * per-tile axpy). Each of them used to reserve the id, set the kind and the
+     * dataflow, allocate an @ref AxpbyParams, mirror the scalars into an
+     * @ref AxpbyDescriptor and build the executor by hand, which is five chances
+     * to let the descriptor and the executor disagree about what replay computes.
+     *
+     * The scalars live in the shared params the executor reads on every replay,
+     * with the descriptor holding the same handle, so a later pass that folds a
+     * scale into @p alpha reaches the replay rather than being silently ignored.
+     * The executor is @ref make_axpby_executor, which keeps the BLAS axpy fast
+     * path whenever beta is one.
+     *
+     * @param[in] x     Source operand.
+     * @param[in] y     Destination, read when @p beta is nonzero and written always.
+     * @param[in] alpha Scale applied to @p x.
+     * @param[in] beta  Scale applied to @p y before accumulating.
+     * @param[in] label Node label.
+     * @return A node with a reserved id and its inputs/outputs set.
+     *
+     * @note @p y appears among the inputs unconditionally, which is the RMW
+     *       convention the schedulers read (see @ref make_einsum_node). Callers
+     *       building a pure overwrite (@p beta zero) should say so by leaving
+     *       @p y out, which this helper does not express: no pass needs it yet.
+     * @versionadded{2.0.0}
+     */
+    Node make_axpby_node(TensorId x, TensorId y, PrefactorScalar alpha, PrefactorScalar beta, std::string label);
 
     /**
      * @brief Create an executor lambda that zeros a tensor.

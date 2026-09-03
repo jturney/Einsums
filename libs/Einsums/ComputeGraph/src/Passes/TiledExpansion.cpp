@@ -288,48 +288,6 @@ bool TiledExpansion::run(Graph &graph) {
         return sc;
     };
 
-    // One dense `y_tile += alpha * x_tile`. Recorded as a real OpKind::Axpby with
-    // the destination among its inputs, so the liveness and hoisting passes read
-    // it as the accumulation it is.
-    auto emit_tile_axpy = [&graph](TensorId xt, TensorId yt, PrefactorScalar alpha, packed_gemm::ScalarType dt, std::string label) {
-        Node nd;
-        nd.id      = graph.reserve_node_id();
-        nd.kind    = OpKind::Axpby;
-        nd.label   = std::move(label);
-        nd.inputs  = {xt, yt};
-        nd.outputs = {yt};
-
-        // Live scalars shared with the executor, same contract as a captured
-        // axpby: the descriptor is what downstream passes read AND what the
-        // executor uses, so a fold into alpha reaches the replay. A descriptor
-        // the executor ignored would be worse than none.
-        auto params   = std::make_shared<AxpbyParams>();
-        params->alpha = alpha;
-        params->beta  = PrefactorScalar{1.0};
-
-        AxpbyDescriptor desc;
-        desc.alpha  = params->alpha;
-        desc.beta   = params->beta;
-        desc.params = params;
-        nd.op_data  = desc;
-
-        Graph *g   = &graph;
-        nd.execute = [g, xt, yt, params, dt]() {
-            detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
-                using Dense      = GeneralRuntimeTensor<T, std::allocator<T>>;
-                auto const *xptr = static_cast<Dense const *>(g->live_tensor_ptr(xt));
-                auto       *yptr = static_cast<Dense *>(g->live_tensor_ptr(yt));
-                auto const  b    = as<T>(params->beta);
-                if (b == T{1}) {
-                    linear_algebra::axpy(as<T>(params->alpha), *xptr, yptr);
-                } else {
-                    linear_algebra::axpby(as<T>(params->alpha), *xptr, b, yptr);
-                }
-            });
-        };
-        return nd;
-    };
-
     // One dense `c_tile = beta*c_tile + alpha*P(a_tile)` through string_permute
     // (HPTT). Attaches a real PermuteDescriptor only when the scalars are
     // representable in its plain doubles, the same honesty rule as the scale.
@@ -864,7 +822,7 @@ bool TiledExpansion::run(Graph &graph) {
                 p.beta            = pdesc->beta;
                 p.pspec.c_indices = pdesc->c_indices;
                 p.pspec.a_indices = pdesc->a_indices;
-                p.pspec.raw       = fmt::format("{} <- {}", fmt::join(pdesc->c_indices, ","), fmt::join(pdesc->a_indices, ","));
+                p.pspec.raw       = p.pspec.render();
                 p.a_coords        = std::move(sources);
                 p.c_coords        = std::move(targets);
                 // Stored C tiles the permutation never reaches still take beta.
@@ -1126,7 +1084,7 @@ bool TiledExpansion::run(Graph &graph) {
             per_tile.c_indices = cidx;
             per_tile.a_indices = aidx;
             per_tile.b_indices = bidx;
-            per_tile.raw       = fmt::format("{} <- {} ; {}", fmt::join(cidx, ","), fmt::join(aidx, ","), fmt::join(bidx, ","));
+            per_tile.raw       = per_tile.render();
 
             // Index roles, so each tile contraction can be priced as a GEMM: an index
             // in C came from A or from B (M or N); one absent from C is contracted (K).
@@ -1658,8 +1616,11 @@ bool TiledExpansion::run(Graph &graph) {
                 break;
             }
             for (auto const &coord : pl.coords) {
-                emitted.push_back(emit_tile_axpy(pl.src_a.tile_id(coord), pl.dst.tile_id(coord), pl.alpha, pl.dtype,
-                                                 fmt::format("tile_axpy({})", fmt::join(coord, ","))));
+                // One dense `y_tile += alpha * x_tile`, recorded as a real
+                // OpKind::Axpby with the destination among its inputs so the
+                // liveness and hoisting passes read it as the accumulation it is.
+                emitted.push_back(graph.make_axpby_node(pl.src_a.tile_id(coord), pl.dst.tile_id(coord), pl.alpha, PrefactorScalar{1.0},
+                                                        fmt::format("tile_axpy({})", fmt::join(coord, ","))));
             }
             break;
         case Plan::Kind::Permute: {
@@ -1738,19 +1699,9 @@ bool TiledExpansion::run(Graph &graph) {
         return false;
     }
 
-    graph.erase_nodes(remove);
-
-    // Positions were recorded pre-erase; shift each down by the number of erased
-    // nodes below it. The expanded node's own slot IS erased, so the shifted
-    // position lands where it used to be and the replacements take its place.
-    std::vector<size_t> erased_below(remove.size() + 1, 0);
-    for (size_t i = 0; i < remove.size(); ++i) {
-        erased_below[i + 1] = erased_below[i] + (remove[i] ? 1 : 0);
-    }
-    for (auto &[position, group] : inserts) {
-        position -= erased_below[position];
-    }
-    graph.insert_node_groups(std::move(inserts));
+    // The expanded node's own slot IS erased, so its replacements land exactly
+    // where it used to be. @see Graph::replace_nodes for the position bookkeeping.
+    graph.replace_nodes(remove, std::move(inserts));
     graph.topological_sort();
 
     EINSUMS_LOG_INFO("TiledExpansion: expanded {} tiled einsum(s) into {} per-tile nodes ({} declined)", _num_expanded, _num_tile_nodes,
