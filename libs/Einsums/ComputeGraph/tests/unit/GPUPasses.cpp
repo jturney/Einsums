@@ -146,8 +146,8 @@ TEST_CASE("GPUPlacement - small operation stays on CPU", "[ComputeGraph][GPU]") 
         cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
     }
 
-    // High thresholds, 2x2 won't qualify.
-    cg::passes::GPUPlacement pass(1000000, 1000000);
+    // High threshold, 2x2 won't qualify.
+    cg::passes::GPUPlacement pass(1000000);
     bool const               modified = pass.run(graph);
 
     CHECK_FALSE(modified);

@@ -139,23 +139,25 @@ std::vector<std::pair<std::string, std::size_t>> OptimizerPass::skip_reasons() c
 namespace {
 
 /// Parse a comma-separated list of pass names into a set.
+///
+/// The read is a lock-free load of the descriptor's slot, safe before the option
+/// is registered (it yields the declared default) and incapable of failing, so
+/// there is nothing here to guard against.
 std::set<std::string> parse_disabled_passes() {
     std::set<std::string> disabled;
-    try {
-        auto const disabled_str = config::get(option::PassDisable);
-        if (!disabled_str.empty()) {
-            std::istringstream ss(disabled_str);
-            std::string        token;
-            while (std::getline(ss, token, ',')) {
-                // Trim whitespace
-                auto start = token.find_first_not_of(' ');
-                auto end   = token.find_last_not_of(' ');
-                if (start != std::string::npos) {
-                    disabled.insert(token.substr(start, end - start + 1));
-                }
-            }
+    auto const            disabled_str = config::get(option::PassDisable);
+    if (disabled_str.empty()) {
+        return disabled;
+    }
+    std::istringstream ss(disabled_str);
+    std::string        token;
+    while (std::getline(ss, token, ',')) {
+        // Trim whitespace
+        auto start = token.find_first_not_of(' ');
+        auto end   = token.find_last_not_of(' ');
+        if (start != std::string::npos) {
+            disabled.insert(token.substr(start, end - start + 1));
         }
-    } catch (...) { // NOLINT
     }
     return disabled;
 }

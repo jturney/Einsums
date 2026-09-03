@@ -19,10 +19,10 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
-GPUPlacement::GPUPlacement(size_t min_flops, size_t min_bytes) : _min_flops(min_flops), _min_bytes(min_bytes) {
+GPUPlacement::GPUPlacement(size_t min_bytes) : _min_bytes(min_bytes) {
 }
 
-GPUPlacement::GPUPlacement(CostModel const &cost_model, size_t min_flops, size_t min_bytes) : _min_flops(min_flops), _min_bytes(min_bytes) {
+GPUPlacement::GPUPlacement(CostModel const &cost_model, size_t min_bytes) : _min_bytes(min_bytes) {
     cpu_throughput_gflops = cost_model.cpu.peak_gflops_fp64;
     if (cost_model.has_gpu()) {
         gpu_throughput_gflops  = cost_model.gpu.peak_gflops_fp64;
@@ -138,14 +138,12 @@ bool GPUPlacement::run(Graph &graph) {
         return false;
     }
 
-    // Check --einsums:gpu:disable runtime flag.
-    try {
-        if (config::get(option::GpuDisable)) {
-            EINSUMS_LOG_INFO("GPUPlacement: disabled via --einsums:gpu:disable");
-            return false;
-        }
-    } catch (...) { // NOLINT
-        // Config not available (e.g., in unit tests), proceed normally.
+    // Check --einsums:gpu:disable runtime flag. A read is a lock-free load of the
+    // descriptor's slot, safe before registration (it yields the declared default)
+    // and incapable of failing, so there is nothing here to guard against.
+    if (config::get(option::GpuDisable)) {
+        EINSUMS_LOG_INFO("GPUPlacement: disabled via --einsums:gpu:disable");
+        return false;
     }
 
     // Phase 1: Identify candidates across the whole graph tree (loop

@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/IOPrefetch.hpp>
@@ -17,28 +18,6 @@
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
-
-/// Count real (non-lifecycle) writers of each tensor across @p g and every
-/// descendant sub-graph, keyed by the tensor's underlying pointer (stable
-/// across graphs, unlike per-graph TensorIds). A DiskRead is hoistable only
-/// when its destination has exactly one such writer anywhere in the loop's
-/// subtree (the read itself), that proves nothing, at any nesting depth,
-/// overwrites the loaded data. Reads of the destination don't count, so a
-/// nested loop merely *reading* the loaded tensor doesn't block hoisting.
-void count_subtree_writers_by_ptr(Graph const &g, std::unordered_map<void const *, int> &writers) {
-    for (auto const &n : g.nodes()) {
-        if (is_lifecycle(n.kind)) {
-            continue;
-        }
-        for (auto tid : n.outputs) {
-            auto it = g.tensors_map().find(tid);
-            if (it != g.tensors_map().end() && it->second.tensor_ptr != nullptr) {
-                writers[it->second.tensor_ptr]++;
-            }
-        }
-    }
-    g.for_each_subgraph([&](Graph const &sub) { count_subtree_writers_by_ptr(sub, writers); });
-}
 
 /// Move each DiskRead in @p graph as early as legally possible. "Legal"
 /// means after (a) every producer of the read's inputs and (b) every prior
@@ -152,9 +131,10 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
 /// the body's consumers share.
 bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t &num_prefetched) {
     // Single-writer test by pointer across the whole loop subtree: a read is
-    // hoistable iff nothing, at any depth, overwrites its destination.
-    std::unordered_map<void const *, int> writers;
-    count_subtree_writers_by_ptr(child, writers);
+    // hoistable iff nothing, at any depth, overwrites its destination. Reads do
+    // not count, so a nested loop merely READING the loaded tensor does not
+    // block the hoist; lifecycle nodes do not count either.
+    EscapeAnalysis const writers = EscapeAnalysis::over(child);
 
     auto       &body_nodes = child.nodes();
     auto const &body_map   = child.tensors_map();
@@ -172,10 +152,9 @@ bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t 
         if (dest == body_map.end())
             continue;
 
-        void const *dest_ptr = dest->second.tensor_ptr;
-        if (dest_ptr == nullptr)
-            continue;
-        if (auto it = writers.find(dest_ptr); it == writers.end() || it->second != 1)
+        // A destination with no pointer yet is counted by nobody, so it answers
+        // zero here and declines, which is the conservative direction.
+        if (writers.subtree_writer_count(out_tid) != 1)
             continue; // overwritten somewhere in the subtree, re-read each iteration matters.
 
         // Only hoist when the destination is already materialized (eager).

@@ -88,10 +88,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
   public:
     /**
-     * @param[in] min_flops  Minimum estimated FLOPs for a node to be placed on GPU (size-threshold mode).
      * @param[in] min_bytes  Minimum estimated memory traffic (bytes) for GPU placement.
      */
-    explicit GPUPlacement(size_t min_flops = 100000, size_t min_bytes = 65536);
+    explicit GPUPlacement(size_t min_bytes = 65536);
 
     /**
      * @brief Construct with a CostModel for cost model parameters.
@@ -99,7 +98,7 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
      * The cost_model's CPU and GPU device data replace the hardcoded cost
      * model parameters (cpu_throughput_gflops, gpu_throughput_gflops, etc.).
      */
-    explicit GPUPlacement(CostModel const &cost_model, size_t min_flops = 100000, size_t min_bytes = 65536);
+    explicit GPUPlacement(CostModel const &cost_model, size_t min_bytes = 65536);
 
     [[nodiscard]] std::string name() const override { return "GPUPlacement"; }
 
@@ -119,7 +118,6 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
     double gpu_launch_overhead_us{10.0};  ///< GPU kernel launch overhead (microseconds)
 
   private:
-    size_t _min_flops;
     size_t _min_bytes;
     size_t _num_placed{0};
 };

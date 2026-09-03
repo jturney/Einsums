@@ -5,6 +5,7 @@
 
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferNode.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -19,32 +20,18 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
-/// Check if a tensor's input value is dead, it appears in both inputs and outputs
-/// of the node, but the operation semantics overwrite it completely.
-/// Currently recognized: Einsum with c_prefactor == 0.0, Scale with factor == 0.0.
+/// True when @p tid's incoming value is dead at @p node: the node names it as a
+/// destination and overwrites it without reading it, so there is nothing to
+/// transfer in.
+///
+/// The overwrite question is @ref passes::pure_overwrite, which reads the LIVE
+/// prefactor a pass may have folded rather than the at-capture snapshot, and
+/// which knows the kinds beyond Einsum and Permute that carry one. The extra
+/// kinds it admits (Axpby, BatchedGemm, TiledEinsum at a zero destination
+/// prefactor) change nothing here: a node that does not list @p tid among its
+/// outputs is rejected before the question is asked.
 bool is_dead_input(Node const &node, TensorId tid) {
-    // Must be in both inputs and outputs.
-    bool in_outputs = false;
-    for (auto out_tid : node.outputs) {
-        if (out_tid == tid) {
-            in_outputs = true;
-            break;
-        }
-    }
-    if (!in_outputs)
-        return false;
-
-    // Check operation semantics.
-    if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data)) {
-        // C = c_pf * C + ab_pf * A * B. When c_pf == 0, old C is not read.
-        return is_zero(desc->c_prefactor);
-    }
-    if (auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data)) {
-        // D = beta * D + alpha * permute(S). When beta == 0, old D is not read.
-        return desc->beta == 0.0;
-    }
-
-    return false;
+    return std::ranges::find(node.outputs, tid) != node.outputs.end() && pure_overwrite(node);
 }
 
 /// Check if any node after position `start` reads tensor_id and targets CPU.

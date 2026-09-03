@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/SpacePropagation.hpp>
@@ -37,21 +38,12 @@ namespace {
 ///     Loop node doesn't list its body's writes).
 /// The guards make the pass strictly conservative and therefore safe to
 /// recurse into loop bodies.
-struct InferGuard {
-    std::unordered_map<TensorId, int> writer_count;
-    std::unordered_set<void const *>  subtree_ptrs;
-
-    [[nodiscard]] bool safe(Graph const &graph, TensorId tid) const {
-        if (auto it = writer_count.find(tid); it == writer_count.end() || it->second != 1) {
-            return false;
-        }
-        auto it = graph.tensors_map().find(tid);
-        if (it == graph.tensors_map().end()) {
-            return false;
-        }
-        return it->second.tensor_ptr == nullptr || subtree_ptrs.count(it->second.tensor_ptr) == 0;
-    }
-};
+/// Both conditions in one call: exactly one value-writer in this graph, and no
+/// descendant sub-graph touching the buffer. Shared with SymmetryPropagation,
+/// LoopInvariantHoisting and the region framework rather than counted a fourth
+/// time here, because several derivations of one relation disagreeing in the
+/// corner nobody tested is this module's signature bug.
+using InferGuard = EscapeAnalysis;
 
 /// What one rule did with one node. A rule declines far more often than it
 /// fires, and the interesting declines (operands that disagree about a letter)
@@ -78,7 +70,7 @@ bool apply_inferred(Graph &graph, TensorId out_tid, std::vector<SpaceId> spaces,
     if (!handle.is_intermediate) {
         return false; // Never mutate user-owned tensor state.
     }
-    if (!guard.safe(graph, out_tid)) {
+    if (!guard.stable(out_tid)) {
         return false; // Could be rebound later / by a child body, don't annotate.
     }
     if (spaces.size() != handle.rank) {
@@ -261,22 +253,9 @@ bool SpacePropagation::run(Graph &graph) {
 
     auto const &nodes = graph.nodes();
 
-    // Build the soundness guard for this graph: writer counts plus the set of
-    // tensor pointers referenced by child sub-graphs.
-    InferGuard guard;
-    for (auto const &node : nodes) {
-        // Lifecycle nodes (Alloc/Free/Materialize/Initialize) list the tensor as
-        // an output but bind none of its slots, a freshly created or zeroed
-        // tensor is then filled by exactly one real op. Count only
-        // value-producing nodes.
-        if (is_lifecycle(node.kind)) {
-            continue;
-        }
-        for (auto tid : node.outputs) {
-            guard.writer_count[tid]++;
-        }
-    }
-    graph.collect_subtree_referenced_ptrs(guard.subtree_ptrs);
+    // The soundness guard for this graph: writer counts plus the buffers child
+    // sub-graphs reference.
+    InferGuard const guard = EscapeAnalysis::over(graph);
 
     // One sweep in topological order is a fixpoint for forward propagation: a
     // node is visited after every node that writes its inputs, so an
