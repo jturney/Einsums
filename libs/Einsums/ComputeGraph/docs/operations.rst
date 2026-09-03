@@ -255,9 +255,9 @@ dependency tracking:
 
 .. code-block:: cpp
 
-   cg::custom("compute_ERI", {}, {&ERI}, [&]() {
+   cg::custom("compute_ERI", [&]() {
        compute_two_electron_integrals(basis, ERI);
-   });
+   }, &ERI);
 
    // Full form with explicit input/output tuples:
    cg::custom("fock_build",

@@ -3308,6 +3308,51 @@ APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<doubl
 // batched_gemm: many independent GEMMs as ONE node
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace detail {
+
+/// The half of a BatchedGemmDescriptor that does not depend on where the
+/// destinations live: the transpose flags, the prefactors, the batch count,
+/// the scalar tag, and the geometry member 0 fixes for the whole batch.
+///
+/// @ref batched_gemm and @ref batched_gemm_blocked disagree only about the
+/// destination, so only @p m, @p n and @p ldc are the caller's to supply.
+template <typename T, typename AType, typename BType>
+BatchedGemmDescriptor make_batched_descriptor(bool trans_a, bool trans_b, double alpha, double beta, size_t count, AType const &a0,
+                                              BType const &b0, int m, int n, int ldc) {
+    BatchedGemmDescriptor d;
+    d.trans_a     = trans_a ? 'T' : 'N';
+    d.trans_b     = trans_b ? 'T' : 'N';
+    d.alpha       = std::complex<double>{alpha, 0.0};
+    d.beta        = std::complex<double>{beta, 0.0};
+    d.batch_count = static_cast<int>(count);
+    d.m           = m;
+    d.n           = n;
+    d.k           = static_cast<int>(trans_a ? a0.dim(0) : a0.dim(1));
+    d.lda         = static_cast<int>(a0.impl().get_lda());
+    d.ldb         = static_cast<int>(b0.impl().get_lda());
+    d.ldc         = ldc;
+    d.scalar      = blas_scalar_of<T>();
+    return d;
+}
+
+/// The uniform-batch check both batched forms make, so both phrase it alike.
+///
+/// gemm_batch takes ONE lda/ldb/ldc and one m/n/k for the whole batch, so a
+/// member that differs is not expressible. Caught at the call, where the caller
+/// can see which member and why, rather than as corruption at execute time.
+inline auto batched_gemm_requirer(char const *who) {
+    return [who](bool ok, size_t i, char const *what) {
+        if (!ok) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "{}: member {} disagrees on {}; every member must share m/n/k and leading dimensions "
+                                    "because gemm_batch takes them once for the whole batch",
+                                    who, i, what);
+        }
+    };
+}
+
+} // namespace detail
+
 /// @brief Emit one `blas::gemm_batch` over a batch of independent GEMMs:
 /// ``C_i = alpha * op(A_i) op(B_i) + beta * C_i`` for every i.
 ///
@@ -3412,31 +3457,11 @@ APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<do
         }
     }
 
-    BatchedGemmDescriptor d;
-    d.trans_a     = trans_a ? 'T' : 'N';
-    d.trans_b     = trans_b ? 'T' : 'N';
-    d.alpha       = std::complex<double>{alpha, 0.0};
-    d.beta        = std::complex<double>{beta, 0.0};
-    d.batch_count = static_cast<int>(count);
-    d.m           = static_cast<int>(c_list[0]->dim(0));
-    d.n           = static_cast<int>(c_list[0]->dim(1));
-    d.k           = static_cast<int>(trans_a ? a_list[0]->dim(0) : a_list[0]->dim(1));
-    d.lda         = static_cast<int>(a_list[0]->impl().get_lda());
-    d.ldb         = static_cast<int>(b_list[0]->impl().get_lda());
-    d.ldc         = static_cast<int>(c_list[0]->impl().get_lda());
-    d.scalar      = blas_scalar_of<T>();
+    auto const d = detail::make_batched_descriptor<T>(trans_a, trans_b, alpha, beta, count, *a_list[0], *b_list[0],
+                                                      static_cast<int>(c_list[0]->dim(0)), static_cast<int>(c_list[0]->dim(1)),
+                                                      static_cast<int>(c_list[0]->impl().get_lda()));
 
-    // gemm_batch takes ONE lda/ldb/ldc and one m/n/k for the whole batch, so a
-    // member that differs is not expressible. Caught here, where the caller can
-    // see which member and why, rather than as corruption at execute time.
-    auto const require = [&](bool ok, size_t i, char const *what) {
-        if (!ok) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                    "cg::batched_gemm: member {} disagrees on {}; every member must share m/n/k and leading dimensions "
-                                    "because gemm_batch takes them once for the whole batch",
-                                    i, what);
-        }
-    };
+    auto const require = detail::batched_gemm_requirer("cg::batched_gemm");
     for (size_t i = 1; i < count; ++i) {
         require(static_cast<int>(c_list[i]->dim(0)) == d.m, i, "m");
         require(static_cast<int>(c_list[i]->dim(1)) == d.n, i, "n");
@@ -3609,28 +3634,10 @@ APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::co
         }
     }
 
-    BatchedGemmDescriptor d;
-    d.trans_a     = trans_a ? 'T' : 'N';
-    d.trans_b     = trans_b ? 'T' : 'N';
-    d.alpha       = std::complex<double>{alpha, 0.0};
-    d.beta        = std::complex<double>{beta, 0.0};
-    d.batch_count = static_cast<int>(count);
-    d.m           = static_cast<int>(c_rows);
-    d.n           = static_cast<int>(c_cols);
-    d.k           = static_cast<int>(trans_a ? a_list[0]->dim(0) : a_list[0]->dim(1));
-    d.lda         = static_cast<int>(a_list[0]->impl().get_lda());
-    d.ldb         = static_cast<int>(b_list[0]->impl().get_lda());
-    d.ldc         = static_cast<int>(ldc_s);
-    d.scalar      = blas_scalar_of<T>();
+    auto const d = detail::make_batched_descriptor<T>(trans_a, trans_b, alpha, beta, count, *a_list[0], *b_list[0],
+                                                      static_cast<int>(c_rows), static_cast<int>(c_cols), static_cast<int>(ldc_s));
 
-    auto const require = [&](bool ok, size_t i, char const *what) {
-        if (!ok) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                    "cg::batched_gemm_blocked: member {} disagrees on {}; every member must share m/n/k and leading "
-                                    "dimensions because gemm_batch takes them once for the whole batch",
-                                    i, what);
-        }
-    };
+    auto const require = detail::batched_gemm_requirer("cg::batched_gemm_blocked");
     for (size_t i = 0; i < count; ++i) {
         require(static_cast<int>(trans_a ? a_list[i]->dim(1) : a_list[i]->dim(0)) == d.m, i, "m against A");
         require(static_cast<int>(trans_a ? a_list[i]->dim(0) : a_list[i]->dim(1)) == d.k, i, "k");
@@ -3709,6 +3716,68 @@ struct GemmShapeKey {
 
     auto operator<=>(GemmShapeKey const &) const = default;
 };
+
+/// Sort @p keys into shape groups and build the descriptor over them, returning
+/// it with the flattened member order its group offsets index.
+///
+/// Groups appear first-appearance first and members of one group keep their
+/// relative order, which is what makes a single-shape call identical to
+/// @ref batched_gemm rather than merely equivalent to it.
+///
+/// @ref grouped_batched_gemm and @ref grouped_batched_gemm_blocked differ in
+/// where a member's destination lives, not in how the batch is grouped, so the
+/// grouping lives here and @p label_suffix is the whole of what they disagree
+/// about.
+template <typename T>
+std::pair<GroupedBatchedGemmDescriptor, std::vector<size_t>>
+group_gemm_shapes(std::vector<GemmShapeKey> const &keys, bool trans_a, bool trans_b, double alpha, double beta, char const *label_suffix) {
+    size_t const                     count = keys.size();
+    std::map<GemmShapeKey, size_t>   index_of;
+    std::vector<GemmShapeKey>        order;
+    std::vector<std::vector<size_t>> members;
+    for (size_t i = 0; i < count; ++i) {
+        auto const [it, inserted] = index_of.try_emplace(keys[i], order.size());
+        if (inserted) {
+            order.push_back(keys[i]);
+            members.emplace_back();
+        }
+        members[it->second].push_back(i);
+    }
+
+    GroupedBatchedGemmDescriptor d;
+    d.total  = static_cast<int>(count);
+    d.scalar = blas_scalar_of<T>();
+    d.groups.reserve(order.size());
+    d.labels.reserve(order.size());
+
+    int first = 0;
+    for (size_t g = 0; g < order.size(); ++g) {
+        auto const &key = order[g];
+        d.groups.push_back(GemmGroup{.m       = key.m,
+                                     .n       = key.n,
+                                     .k       = key.k,
+                                     .lda     = key.lda,
+                                     .ldb     = key.ldb,
+                                     .ldc     = key.ldc,
+                                     .trans_a = static_cast<char>(trans_a ? 'T' : 'N'),
+                                     .trans_b = static_cast<char>(trans_b ? 'T' : 'N'),
+                                     .alpha   = std::complex<double>{alpha, 0.0},
+                                     .beta    = std::complex<double>{beta, 0.0},
+                                     .count   = static_cast<int>(members[g].size()),
+                                     .first   = first});
+        d.labels.push_back(fmt::format("gemm {}x{}x{} trans={}{} x{}{}", key.m, key.k, key.n, trans_a ? 'T' : 'N', trans_b ? 'T' : 'N',
+                                       members[g].size(), label_suffix));
+        first += static_cast<int>(members[g].size());
+    }
+
+    // The flattened member order the descriptor's offsets index.
+    std::vector<size_t> flat;
+    flat.reserve(count);
+    for (auto const &m : members) {
+        flat.insert(flat.end(), m.begin(), m.end());
+    }
+    return {std::move(d), std::move(flat)};
+}
 
 /// Reject a run in which two members would write the same destination tensor.
 ///
@@ -3895,53 +3964,7 @@ APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::co
                    .ldc = static_cast<int>(c_list[i]->impl().get_lda())};
     }
 
-    // Group by shape, first appearance first. Members of one shape keep their
-    // relative order, which is what makes a single-shape call identical to
-    // batched_gemm rather than merely equivalent to it.
-    std::map<detail::GemmShapeKey, size_t> index_of;
-    std::vector<detail::GemmShapeKey>      order;
-    std::vector<std::vector<size_t>>       members;
-    for (size_t i = 0; i < count; ++i) {
-        auto const [it, inserted] = index_of.try_emplace(keys[i], order.size());
-        if (inserted) {
-            order.push_back(keys[i]);
-            members.emplace_back();
-        }
-        members[it->second].push_back(i);
-    }
-
-    GroupedBatchedGemmDescriptor d;
-    d.total  = static_cast<int>(count);
-    d.scalar = blas_scalar_of<T>();
-    d.groups.reserve(order.size());
-    d.labels.reserve(order.size());
-
-    int first = 0;
-    for (size_t g = 0; g < order.size(); ++g) {
-        auto const &key = order[g];
-        d.groups.push_back(GemmGroup{.m       = key.m,
-                                     .n       = key.n,
-                                     .k       = key.k,
-                                     .lda     = key.lda,
-                                     .ldb     = key.ldb,
-                                     .ldc     = key.ldc,
-                                     .trans_a = static_cast<char>(trans_a ? 'T' : 'N'),
-                                     .trans_b = static_cast<char>(trans_b ? 'T' : 'N'),
-                                     .alpha   = std::complex<double>{alpha, 0.0},
-                                     .beta    = std::complex<double>{beta, 0.0},
-                                     .count   = static_cast<int>(members[g].size()),
-                                     .first   = first});
-        d.labels.push_back(
-            fmt::format("gemm {}x{}x{} trans={}{} x{}", key.m, key.k, key.n, trans_a ? 'T' : 'N', trans_b ? 'T' : 'N', members[g].size()));
-        first += static_cast<int>(members[g].size());
-    }
-
-    // The flattened member order the descriptor's offsets index.
-    std::vector<size_t> flat;
-    flat.reserve(count);
-    for (auto const &m : members) {
-        flat.insert(flat.end(), m.begin(), m.end());
-    }
+    auto [d, flat] = detail::group_gemm_shapes<T>(keys, trans_a, trans_b, alpha, beta, "");
 
     // Two members sharing a destination race, because the call gives no
     // ordering between them. @ref batched_gemm carries the same contract and
@@ -4130,49 +4153,7 @@ APIARY_MODULE("graph")
         }
     }
 
-    std::map<detail::GemmShapeKey, size_t> index_of;
-    std::vector<detail::GemmShapeKey>      order;
-    std::vector<std::vector<size_t>>       members;
-    for (size_t i = 0; i < count; ++i) {
-        auto const [it, inserted] = index_of.try_emplace(keys[i], order.size());
-        if (inserted) {
-            order.push_back(keys[i]);
-            members.emplace_back();
-        }
-        members[it->second].push_back(i);
-    }
-
-    GroupedBatchedGemmDescriptor d;
-    d.total  = static_cast<int>(count);
-    d.scalar = blas_scalar_of<T>();
-    d.groups.reserve(order.size());
-    d.labels.reserve(order.size());
-
-    int first = 0;
-    for (size_t g = 0; g < order.size(); ++g) {
-        auto const &key = order[g];
-        d.groups.push_back(GemmGroup{.m       = key.m,
-                                     .n       = key.n,
-                                     .k       = key.k,
-                                     .lda     = key.lda,
-                                     .ldb     = key.ldb,
-                                     .ldc     = key.ldc,
-                                     .trans_a = static_cast<char>(trans_a ? 'T' : 'N'),
-                                     .trans_b = static_cast<char>(trans_b ? 'T' : 'N'),
-                                     .alpha   = std::complex<double>{alpha, 0.0},
-                                     .beta    = std::complex<double>{beta, 0.0},
-                                     .count   = static_cast<int>(members[g].size()),
-                                     .first   = first});
-        d.labels.push_back(fmt::format("gemm {}x{}x{} trans={}{} x{} into blocks", key.m, key.k, key.n, trans_a ? 'T' : 'N',
-                                       trans_b ? 'T' : 'N', members[g].size()));
-        first += static_cast<int>(members[g].size());
-    }
-
-    std::vector<size_t> flat;
-    flat.reserve(count);
-    for (auto const &m : members) {
-        flat.insert(flat.end(), m.begin(), m.end());
-    }
+    auto [d, flat] = detail::group_gemm_shapes<T>(keys, trans_a, trans_b, alpha, beta, " into blocks");
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -7659,41 +7640,28 @@ void parallel_reduce(std::string name, size_t begin, size_t end, Acc *result, In
 // ===========================================================================
 
 /**
- * @brief Record a custom (user-defined) operation in the graph.
+ * @brief Record a custom (user-defined) operation that writes the given tensors.
  *
- * Use this for operations that don't have a built-in graph wrapper,
- * such as computing integrals, applying custom transformations, etc.
+ * Use this for operations that have no built-in graph wrapper, such as
+ * computing integrals or applying a transformation the library does not model.
+ * The node declares no inputs, so use the tuple form below whenever the
+ * operation reads a tensor the graph also produces.
  *
  * @param label     Human-readable name for profiling and debugging.
- * @param inputs    Tensors read by this operation.
- * @param outputs   Tensors written by this operation.
  * @param executor  Lambda that performs the computation.
+ * @param outputs   Tensors written by this operation.
  *
  * @code
  * cg::Graph graph("scf");
  * {
  *     cg::CaptureGuard guard(graph);
  *
- *     cg::custom("compute_ERI", {}, {&ERI}, [&]() {
- *         compute_two_electron_integrals(basis, ERI);
- *     });
+ *     cg::custom("compute_ERI", [&]() { compute_two_electron_integrals(basis, ERI); }, &ERI);
  *
  *     cg::einsum("ijkl;kl->ij", 0.0, &F, 1.0, ERI, D);
  * }
  * @endcode
  */
-template <typename F, CoreBasicTensorConcept... InputTensors, CoreBasicTensorConcept... OutputTensors>
-void custom(std::string label, std::initializer_list<void const *> input_ptrs, std::initializer_list<void *> output_ptrs, F &&executor) {
-    // This overload takes raw pointers, prefer the typed overload below.
-    // Provided for cases where tensor types are heterogeneous.
-    (void)input_ptrs;
-    (void)output_ptrs;
-
-    auto &ctx = CaptureContext::current();
-    ctx.record(OpKind::Custom, std::move(label), {}, {}, std::forward<F>(executor));
-}
-
-/// @brief Record a custom operation with typed tensor inputs/outputs.
 template <typename F, CoreBasicTensorConcept... Outputs>
 void custom(std::string label, F &&executor, Outputs *...outputs) {
     auto &ctx = CaptureContext::current();

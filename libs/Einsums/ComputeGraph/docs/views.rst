@@ -113,7 +113,7 @@ Method (MOM), level shifting, or integer-occupation excited-state SCF, use
 
        // ... compute new occupation index from MO energies ...
        int64_t n_occ_new = 0;
-       cg::custom("compute_mom_n_occ", /*inputs=*/{C_id, eps_id}, /*outputs=*/{},
+       cg::custom("compute_mom_n_occ", std::tie(C, eps), std::tuple<>{},
                   [&]{ n_occ_new = compute_mom(C, eps); });
 
        // Push the new value into the param table — explicit dataflow edge:
