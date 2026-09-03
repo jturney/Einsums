@@ -97,6 +97,20 @@ inline constinit cl::ConfigOption<bool> GraphFactorizationCache =
                     "pipeline whose stages present the same program searches once",
                     "ComputeGraph Passes", true);
 
+/// The relative accuracy a Laplace-transform quadrature is built to.
+///
+/// A TOLERANCE and not a point count, because a tolerance is what composes with the accuracy
+/// budget and what an approximation record can state, while a count is a means: the same count
+/// over a wider spectral range is a different approximation and says nothing about what the
+/// result is worth. The count is derived from this and from the range the bound energies have,
+/// and it reaches the setup node's descriptor so a saved graph means the same thing wherever
+/// it is loaded.
+inline constinit cl::ConfigOption<double> GraphLaplaceEpsilon = cl::config_opt<double>(
+    "einsums:graph:laplace-epsilon",
+    "Target relative accuracy for the quadrature LaplaceTransform substitutes for a tagged energy denominator. Tightening it grows the "
+    "point count and the emitted arithmetic with it",
+    "ComputeGraph Passes", 1.0e-6, "EPS");
+
 /// How long a search pass may run, in milliseconds. Zero means unlimited.
 ///
 /// The number is a starting point rather than a measurement, which is what an option is for. What

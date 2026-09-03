@@ -245,6 +245,34 @@
     ``clear_cache`` empties it. Switch it off when bisecting a wrong number: two supposedly
     identical graphs getting one plan is the first thing to rule out.
 
+"einsums:graph:laplace-epsilon":
+  added: "2.0.0"
+  body: |
+    Target relative accuracy for the quadrature ``LaplaceTransform`` substitutes for a tagged
+    energy denominator.
+
+    A *tolerance* rather than a point count, deliberately. A tolerance composes with the accuracy
+    budget and is what an approximation record can state; a count is a means, and the same count
+    over a wider spectral range is a different approximation that says nothing about what the
+    result is worth. The count is derived from this option together with the range of the signed
+    energy sum the bound orbital energies form, and it reaches the setup node's descriptor, so a
+    graph saved here means the same thing wherever it is loaded.
+
+    The rule is the truncated trapezoidal sum of the exponential integral on a logarithmic grid.
+    Its three error terms, the discretization and the two truncations, are each bounded
+    analytically and are given half, a quarter and a quarter of the target between them, which
+    is what fixes the grid. Tightening the tolerance shrinks the step, so the point count and the
+    arithmetic the rewrite emits both grow roughly with the logarithm of the reciprocal
+    tolerance; on a typical orbital-energy range, ``1e-4`` needs around twenty points and
+    ``1e-6`` around forty.
+
+    ``LaplaceTransform::set_epsilon`` overrides this for one pipeline, and
+    ``LaplaceTransform::set_points`` overrides the derived count outright, which exists for
+    reproducing a published number rather than for ordinary use. The error the rule actually
+    reaches is measured rather than assumed: it is recorded on the graph as an approximation
+    record, and it is measured again on every bind into the tensor
+    ``LaplaceTransform::error_tensor_name`` names.
+
 "einsums:graph:optimizer-budget":
   added: "2.0.0"
   body: |

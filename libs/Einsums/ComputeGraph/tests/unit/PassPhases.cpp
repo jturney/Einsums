@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph.hpp>
 // Not reached through the umbrella header, which does not carry this pass.
 #include <Einsums/ComputeGraph/Passes/FactorizationPass.hpp>
+#include <Einsums/ComputeGraph/Passes/LaplaceTransform.hpp>
 #include <Einsums/ComputeGraphTypes/Spaces.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
@@ -102,6 +103,12 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         // is the phase a save keeps, and a factorization a reload quietly dropped would change
         // what the graph computes.
         {"FactorizationPass", cg::PassPhase::StructuralAlgebraic},
+
+        // The other lossy pass, and outside the default pipeline for the same reason: it does
+        // nothing until a caller tags a denominator. Structural-algebraic because substituting
+        // a quadrature is a statement about the arithmetic, and one a reload quietly dropped
+        // would change what the graph computes.
+        {"LaplaceTransform", cg::PassPhase::StructuralAlgebraic},
     };
     return table;
 }
@@ -155,6 +162,7 @@ std::map<std::string, cg::PassTier> const &expected_tiers() {
 
         // Lossy: trades accuracy under a recorded tolerance, never in a default manager.
         {"FactorizationPass", cg::PassTier::Lossy},
+        {"LaplaceTransform", cg::PassTier::Lossy},
     };
     return table;
 }
@@ -342,6 +350,10 @@ TEST_CASE("pass tiers - the passes outside the default pipeline are classified t
     cg::passes::FactorizationPass const factorization;
     CHECK(factorization.tier() == cg::PassTier::Lossy);
     CHECK(expected_tiers().at(factorization.name()) == factorization.tier());
+
+    cg::passes::LaplaceTransform const laplace;
+    CHECK(laplace.tier() == cg::PassTier::Lossy);
+    CHECK(expected_tiers().at(laplace.name()) == laplace.tier());
 }
 
 TEST_CASE("pass tiers - an unclassified pass claims the least", "[ComputeGraph][Phases]") {
@@ -392,6 +404,10 @@ TEST_CASE("pass phases - a pass outside the default pipeline is classified too",
     cg::passes::FactorizationPass const factorization;
     CHECK(factorization.phase() == cg::PassPhase::StructuralAlgebraic);
     CHECK(expected_phases().at(factorization.name()) == factorization.phase());
+
+    cg::passes::LaplaceTransform const laplace;
+    CHECK(laplace.phase() == cg::PassPhase::StructuralAlgebraic);
+    CHECK(expected_phases().at(laplace.name()) == laplace.phase());
 }
 
 TEST_CASE("pass phases - the unclassified default is the never-saved one", "[ComputeGraph][Phases]") {
