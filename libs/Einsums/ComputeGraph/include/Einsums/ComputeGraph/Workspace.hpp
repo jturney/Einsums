@@ -88,13 +88,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
         auto *ptr        = new TensorType(typename TensorType::DeferredAlloc{}, std::move(tensor_name), dims...);
         _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
 
-        auto handle            = make_handle(*ptr, 0);
-        handle.alloc_state     = AllocState::Deferred;
-        handle.is_intermediate = false;
-        handle.materialize_fn  = [ptr]() { ptr->materialize(); };
-        handle.zero_fn         = make_zero_fn(ptr);
-        handle.random_fn       = make_random_fn(ptr);
-        _handles.push_back(std::move(handle));
+        _handles.push_back(make_deferred_handle(ptr));
         note_workspace_scope(ptr);
 
         return *ptr;
@@ -150,13 +144,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
         auto *ptr        = new TensorType(typename TensorType::DeferredAlloc{}, std::move(tensor_name), std::move(dims));
         _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
 
-        auto handle            = make_handle(*ptr, 0);
-        handle.alloc_state     = AllocState::Deferred;
-        handle.is_intermediate = false;
-        handle.materialize_fn  = [ptr]() { ptr->materialize(); };
-        handle.zero_fn         = make_zero_fn(ptr);
-        handle.random_fn       = make_random_fn(ptr);
-        _handles.push_back(std::move(handle));
+        _handles.push_back(make_deferred_handle(ptr));
         note_workspace_scope(ptr);
 
         return *ptr;

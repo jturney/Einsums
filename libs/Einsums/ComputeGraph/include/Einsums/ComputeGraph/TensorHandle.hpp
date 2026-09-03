@@ -149,6 +149,22 @@ inline bool same_tensor(std::weak_ptr<void> const &a, std::weak_ptr<void> const 
     return !a.owner_before(b) && !b.owner_before(a);
 }
 
+/// @brief The liveness token @p tensor publishes, or an untracked token when its type
+///        publishes none.
+///
+/// Every by-address lookup pairs a pointer with one of these, because an address does not
+/// identify a tensor across a destruction. The types that expose no token keep the
+/// pre-existing behaviour through @ref same_tensor, which matches an untracked token
+/// against anything.
+template <typename TensorType>
+[[nodiscard]] std::weak_ptr<void> liveness_token_of(TensorType const &tensor) noexcept {
+    if constexpr (requires { tensor.liveness_token(); }) {
+        return tensor.liveness_token();
+    } else {
+        return {};
+    }
+}
+
 /**
  * @brief Half-open BYTE span of a strided buffer.
  *
@@ -885,12 +901,9 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
     // check (they were unchecked before too). `life_token` is empty for those,
     // and `has_life_token` gates the .expired() probe so an empty weak_ptr (which
     // reports expired) is never mistaken for a destroyed tensor.
-    constexpr bool      has_life_token = requires { tensor_mut->liveness_token(); };
-    std::weak_ptr<void> life_token;
-    if constexpr (has_life_token) {
-        life_token = tensor_mut->liveness_token();
-    }
-    h.validator = [tensor_mut, life_token, expected_hash = h.name_hash]() -> bool {
+    constexpr bool            has_life_token = requires { tensor_mut->liveness_token(); };
+    std::weak_ptr<void> const life_token     = detail::liveness_token_of(tensor);
+    h.validator                              = [tensor_mut, life_token, expected_hash = h.name_hash]() -> bool {
         try {
             if constexpr (has_life_token) {
                 if (life_token.expired())
@@ -902,6 +915,55 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
         }
     };
 
+    return h;
+}
+
+/**
+ * @brief Construct the handle a DEFERRED declaration registers.
+ *
+ * @tparam TensorType The tensor's type.
+ * @param[in] tensor The shell tensor. Must outlive the handle.
+ * @return The handle, ready for whatever the declaring site adds to it (its ownership scope,
+ *         its intermediate flag, its @ref TensorHandle::init_kind, a rank-specific resize or
+ *         distribution hook).
+ *
+ * @ref make_handle plus the two things a declaration knows and a handle built from the tensor
+ * alone cannot:
+ *
+ * - the state is DEFERRED because the declaration says so, not because the tensor currently
+ *   reads as unmaterialized. A zero-extent tensor reports itself materialized from
+ *   construction, and taking that answer would leave it outside the lifecycle its declaration
+ *   asked for;
+ * - the initialization hooks are installed unconditionally. ``make_handle`` installs them from
+ *   the tensor's @ref PendingInit tag, and a declaration sets that tag AFTER this handle exists
+ *   (``declare_zero_tensor`` is ``declare_tensor`` plus a tag), so the handle a declaration
+ *   registers would otherwise have no way to initialize itself.
+ *
+ * Everything else a deferred declaration needs - ``materialize_fn``, ``release_fn``,
+ * ``is_materialized_fn``, ``allreduce_sum_fn`` - is what ``make_handle`` already installs for
+ * any tensor type exposing the method behind it. Five declaration sites across three headers
+ * restated those closures on top of it.
+ *
+ * @see make_handle
+ * @versionadded{2.0.0}
+ */
+template <GraphCapturableTensor TensorType>
+[[nodiscard]] TensorHandle make_deferred_handle(TensorType *tensor) {
+    TensorHandle h = make_handle(*tensor, 0);
+    h.alloc_state  = AllocState::Deferred;
+    if constexpr (requires(TensorType &t) {
+                      t.materialize();
+                      t.zero();
+                  }) {
+        h.zero_fn = make_zero_fn(tensor);
+    }
+    if constexpr (requires(TensorType &t) {
+                      t.materialize();
+                      t.data();
+                      t.size();
+                  }) {
+        h.random_fn = make_random_fn(tensor);
+    }
     return h;
 }
 

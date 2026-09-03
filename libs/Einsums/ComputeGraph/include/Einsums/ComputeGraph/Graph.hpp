@@ -597,16 +597,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
         // clang-format on
         [[nodiscard]] std::vector<SpaceId> const &tensor_spaces(TensorType const &tensor) const {
-        std::weak_ptr<void> token;
-        if constexpr (requires { tensor.liveness_token(); }) {
-            token = tensor.liveness_token();
-        }
-        TensorId const id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), token);
-        if (id == 0) {
-            EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': tensor '{}' is not registered, so it carries no index spaces", _name,
-                                    tensor.name());
-        }
-        return tensor_spaces(id);
+        return tensor_spaces(registered_id_or_throw(tensor, "index spaces"));
     }
 
     // ── Provenance ──────────────────────────────────────────────────────────
@@ -700,16 +691,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
         // clang-format on
         [[nodiscard]] ProvenanceTag const &tensor_tag(TensorType const &tensor) const {
-        std::weak_ptr<void> token;
-        if constexpr (requires { tensor.liveness_token(); }) {
-            token = tensor.liveness_token();
-        }
-        TensorId const id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), token);
-        if (id == 0) {
-            EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': tensor '{}' is not registered, so it carries no provenance tag", _name,
-                                    tensor.name());
-        }
-        return tensor_tag(id);
+        return tensor_tag(registered_id_or_throw(tensor, "provenance tag"));
     }
 
     // ── Space-typed dimensions (prototype) ──────────────────────────────────
@@ -933,16 +915,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
         // clang-format on
         [[nodiscard]] std::vector<std::string> const &tensor_dim_symbols(TensorType const &tensor) const {
-        std::weak_ptr<void> token;
-        if constexpr (requires { tensor.liveness_token(); }) {
-            token = tensor.liveness_token();
-        }
-        TensorId const id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), token);
-        if (id == 0) {
-            EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': tensor '{}' is not registered, so it carries no dim symbols", _name,
-                                    tensor.name());
-        }
-        return tensor_dim_symbols(id);
+        return tensor_dim_symbols(registered_id_or_throw(tensor, "dim symbols"));
     }
 
     /**
@@ -2371,29 +2344,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     template <typename T, size_t Rank, typename... Dims>
     Tensor<T, Rank> &create_tensor(std::string name, Dims... dims) {
-        auto *ptr = new Tensor<T, Rank>(name, static_cast<size_t>(dims)...);
-        _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<Tensor<T, Rank> *>(p); });
-        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
+        auto *ptr = own_tensor<Tensor<T, Rank>>(name, static_cast<size_t>(dims)...);
 
         auto handle            = make_handle(*ptr, 0);
         handle.is_intermediate = true;
         auto id                = register_tensor(std::move(handle));
 
-        AllocDescriptor desc;
-        desc.tensor_id   = id;
-        desc.size_bytes  = ptr->size() * sizeof(T);
-        desc.tensor_name = name;
-
-        Node node;
-        ProfileMemAlloc(desc.size_bytes);
-
-        node.kind    = OpKind::Alloc;
-        node.label   = fmt::format("alloc({})", name);
-        node.execute = []() {};
-        node.outputs = {id};
-        node.op_data = std::move(desc);
-
-        add_node(std::move(node));
+        add_alloc_node(id, name, ptr->size() * sizeof(T));
         return *ptr;
     }
 
@@ -2437,9 +2394,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                     GeneralRuntimeTensor<T, Alloc> &create_runtime_tensor(std::string name, std::vector<size_t> dims,
                                                                           bool intermediate = true) {
         using TensorType = GeneralRuntimeTensor<T, Alloc>;
-        auto *ptr        = new TensorType(name, std::move(dims));
-        _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
-        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
+        auto *ptr        = own_tensor<TensorType>(name, std::move(dims));
 
         // ``intermediate`` controls DeadNodeElimination: a graph-owned
         // intermediate with no in-graph consumer is prunable, but a
@@ -2450,21 +2405,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         handle.is_intermediate = intermediate;
         auto id                = register_tensor(std::move(handle));
 
-        AllocDescriptor desc;
-        desc.tensor_id   = id;
-        desc.size_bytes  = ptr->size() * sizeof(T);
-        desc.tensor_name = name;
-
-        Node node;
-        ProfileMemAlloc(desc.size_bytes);
-
-        node.kind    = OpKind::Alloc;
-        node.label   = fmt::format("alloc({})", name);
-        node.execute = []() {};
-        node.outputs = {id};
-        node.op_data = std::move(desc);
-
-        add_node(std::move(node));
+        add_alloc_node(id, name, ptr->size() * sizeof(T));
         return *ptr;
     }
 
@@ -2577,23 +2518,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                     GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<size_t> dims,
                                                                            bool intermediate = false) {
         using TensorType = GeneralRuntimeTensor<T, Alloc>;
-        auto *ptr        = new TensorType(typename TensorType::DeferredAlloc{}, name, std::move(dims));
-        _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
-        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
+        auto *ptr        = own_tensor<TensorType>(typename TensorType::DeferredAlloc{}, name, std::move(dims));
 
-        auto handle            = make_handle(*ptr, 0);
+        auto handle            = make_deferred_handle(ptr);
         handle.is_intermediate = intermediate;
-        handle.alloc_state     = AllocState::Deferred;
-        handle.materialize_fn  = [ptr]() { ptr->materialize(); };
-        handle.release_fn      = [ptr]() { ptr->release(); };
         // Without this a bind CANNOT move this tensor's extents, whatever its dim symbols
         // say: resize_derived_extent requires the hook as well as the deferred state, so a
         // runtime-rank intermediate that lacked it was refused with a message blaming the
         // storage. The static-rank declare_tensor has always installed one.
         handle.resize_deferred_fn = [ptr](std::vector<size_t> const &new_dims) { ptr->resize_deferred(new_dims); };
-        handle.is_materialized_fn = [ptr]() { return ptr->is_materialized(); };
-        handle.zero_fn            = make_zero_fn(ptr);
-        handle.random_fn          = make_random_fn(ptr);
         register_tensor(std::move(handle));
         // No Alloc node, MaterializationPass inserts Materialize + Initialize.
         return *ptr;
@@ -2789,15 +2722,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                     TiledRuntimeTensor<T> &declare_zero_tiled_tensor(std::string name, std::vector<std::vector<int>> tile_sizes,
                                                                      bool intermediate = false) {
         using TensorType = TiledRuntimeTensor<T>;
-        auto *ptr        = new TensorType(std::move(name), std::move(tile_sizes));
-        _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
-        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
+        auto *ptr        = own_tensor<TensorType>(std::move(name), std::move(tile_sizes));
 
-        auto handle            = make_handle(*ptr, 0);
+        // An empty shell reads as vacuously materialized, which is one of the two things
+        // make_deferred_handle is here to override.
+        auto handle            = make_deferred_handle(ptr);
         handle.is_intermediate = intermediate;
-        handle.alloc_state     = AllocState::Deferred; // empty shell reads as vacuously materialized; force the lifecycle
         handle.init_kind       = InitKind::Zero;
-        handle.zero_fn         = make_zero_fn(ptr);
         register_tensor(std::move(handle));
         // No Alloc node, MaterializationPass inserts Materialize + Initialize.
         return *ptr;
@@ -2882,22 +2813,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         requires(sizeof...(Dims) == Rank)
     Tensor<T, Rank> &declare_tensor(std::string name, Dims... dims) {
         using TensorType = Tensor<T, Rank>;
-        auto *ptr        = new TensorType(typename TensorType::DeferredAlloc{}, std::move(name), dims...);
-        _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
-        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
+        auto *ptr        = own_tensor<TensorType>(typename TensorType::DeferredAlloc{}, std::move(name), dims...);
 
-        auto handle            = make_handle(*ptr, 0);
-        handle.is_intermediate = false; // User-visible by default. Use create_tensor for intermediates.
+        auto handle = make_deferred_handle(ptr);
         // Graph scope: user-visible, but scoped to this graph and not carried
-        // between stages. This is the manifest's default and its most common case.
-        handle.ownership        = TensorOwnership::Graph;
-        handle.alloc_state      = AllocState::Deferred;
-        handle.materialize_fn   = [ptr]() { ptr->materialize(); };
-        handle.release_fn       = [ptr]() { ptr->release(); };
-        handle.allreduce_sum_fn = [ptr]() {
-            auto span = std::span<T>(ptr->data(), ptr->size());
-            (void)comm::allreduce_inplace<T>(span, comm::ReduceOp::Sum);
-        };
+        // between stages. This is the manifest's default and its most common case,
+        // and is_intermediate stays false for the same reason: use create_tensor or
+        // scratch for an intermediate.
+        handle.ownership          = TensorOwnership::Graph;
         handle.resize_deferred_fn = [ptr](std::vector<size_t> const &new_dims) {
             Dim<Rank> d;
             for (size_t i = 0; i < Rank && i < new_dims.size(); i++)
@@ -2912,8 +2835,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                 off[i] = offsets[i];
             ptr->set_distribution(gd, off);
         };
-        handle.zero_fn   = make_zero_fn(ptr);
-        handle.random_fn = make_random_fn(ptr);
         register_tensor(std::move(handle));
 
         // No Alloc node inserted, MaterializationPass will insert
@@ -3434,10 +3355,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     TensorId register_operand(TensorType const &tensor) {
         void *ptr = const_cast<void *>(static_cast<void const *>(&tensor));
 
-        std::weak_ptr<void> token;
-        if constexpr (requires { tensor.liveness_token(); }) {
-            token = tensor.liveness_token();
-        }
+        std::weak_ptr<void> const token = detail::liveness_token_of(tensor);
 
         if (TensorId const existing = live_tensor_id_by_ptr(ptr, token); existing != 0) {
             return existing;
@@ -4378,6 +4296,67 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Check that every node's operands still agree about their shared extents, so an
     /// under-annotated graph fails here rather than at the kernel.
     void validate_node_extents() const;
+
+    /// @brief The id this graph holds for @p tensor, refusing a tensor it has never seen.
+    /// @param[in] tensor The caller's object, checked against its liveness token so a
+    ///            recycled address does not answer for the tensor that used to live there.
+    /// @param[in] what The metadata the caller was about to read; completes the message.
+    /// @return The registered id, never 0.
+    /// @throws std::out_of_range When the graph does not know the tensor.
+    ///
+    /// The shared prologue of the by-object metadata readers, which are const and register
+    /// nothing: a tensor the graph has never seen has no handle to carry an annotation.
+    template <GraphCapturableTensor TensorType>
+    [[nodiscard]] TensorId registered_id_or_throw(TensorType const &tensor, std::string_view what) const {
+        TensorId const id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), detail::liveness_token_of(tensor));
+        if (id == 0) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': tensor '{}' is not registered, so it carries no {}", _name,
+                                    tensor.name(), what);
+        }
+        return id;
+    }
+
+    /// @brief Heap-allocate a tensor the graph owns and destroys.
+    /// @tparam TensorType The tensor type to construct.
+    /// @tparam Args Its constructor arguments.
+    /// @param[in] args Forwarded to the constructor.
+    /// @return The tensor, owned by this graph for the rest of its life.
+    ///
+    /// The three steps every graph-owned tensor needs - the allocation, the type-erased
+    /// deleter that gives the graph the destruction back, and the address set that tells
+    /// ``adopt_operand`` this buffer is already the graph's own - written once.
+    template <typename TensorType, typename... Args>
+    TensorType *own_tensor(Args &&...args) {
+        auto *ptr = new TensorType(std::forward<Args>(args)...);
+        _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
+        _owned_tensor_ptrs.insert(static_cast<void const *>(ptr));
+        return ptr;
+    }
+
+    /// @brief Append the Alloc node that marks an eagerly allocated tensor's lifetime start.
+    /// @param[in] id The registered tensor.
+    /// @param[in] name The tensor's name, which labels the node.
+    /// @param[in] size_bytes The allocation, reported to the profiler and read by MemoryPlanning.
+    ///
+    /// The node executes nothing: the storage exists before the graph runs. It is a marker,
+    /// and @ref free_tensor's is the matching one at the other end.
+    void add_alloc_node(TensorId id, std::string const &name, size_t size_bytes) {
+        AllocDescriptor desc;
+        desc.tensor_id   = id;
+        desc.size_bytes  = size_bytes;
+        desc.tensor_name = name;
+
+        Node node;
+        ProfileMemAlloc(desc.size_bytes);
+
+        node.kind    = OpKind::Alloc;
+        node.label   = fmt::format("alloc({})", name);
+        node.execute = []() {};
+        node.outputs = {id};
+        node.op_data = std::move(desc);
+
+        add_node(std::move(node));
+    }
 
     /// First walk: validate the shape of one pair and feed its symbols to the solver.
     template <GraphCapturableTensor TensorType>

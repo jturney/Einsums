@@ -207,10 +207,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
         // tells the two apart. (Callers used to dodge this by keeping every
         // captured temporary alive for the whole capture; operand adoption
         // removed the reason to, which is what exposed it.)
-        std::weak_ptr<void> token;
-        if constexpr (requires { tensor.liveness_token(); }) {
-            token = tensor.liveness_token();
-        }
+        std::weak_ptr<void> const token = detail::liveness_token_of(tensor);
 
         // Check capture-local cache first
         auto it = _ptr_to_id.find(ptr);
