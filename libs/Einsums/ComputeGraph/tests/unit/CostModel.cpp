@@ -778,6 +778,14 @@ TEST_CASE("CostModel - JSON round-trip preserves network params", "[ComputeGraph
     CHECK(loaded.cpu.peak_gflops_fp64 == Catch::Approx(42.0));
     CHECK(loaded.gpu.name == "Test GPU");
 
+    // The case has always been titled after the network parameters and never
+    // checked one, which is how the writer came to omit all three: a measured
+    // fabric reloaded as the struct defaults and every collective was priced
+    // against a machine that had not been measured.
+    CHECK(loaded.cpu.inter_node_bandwidth_gbps == Catch::Approx(25.0));
+    CHECK(loaded.cpu.inter_node_latency_us == Catch::Approx(3.5));
+    CHECK(loaded.gpu.nccl_bandwidth_gbps == Catch::Approx(100.0));
+
     std::remove(path.c_str());
 }
 

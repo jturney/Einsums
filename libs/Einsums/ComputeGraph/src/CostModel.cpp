@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
+#include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors.hpp>
@@ -19,8 +20,10 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -403,249 +406,165 @@ CostModel CostModel::detect_default() {
 
 namespace {
 
-void write_device_profile_json(std::ostream &f, DeviceProfile const &p, std::string const &indent) {
-    f << indent << "{\n";
-    f << indent << fmt::format("  \"name\": \"{}\",\n", p.name);
-    f << indent << fmt::format("  \"device_type\": \"{}\",\n", p.device_type == DeviceType::GPU ? "gpu" : "cpu");
-    f << indent << fmt::format("  \"brand_family\": \"{}\",\n", p.brand_family);
+/// The number at @p key, or @p fallback when the key is missing or is not a number.
+double number_or(json::Object const &obj, std::string_view key, double fallback) {
+    auto const *value = obj.peek(key);
+    return (value != nullptr && value->is_number()) ? value->as_double() : fallback;
+}
 
-    f << indent << "  \"match_patterns\": [";
-    for (size_t i = 0; i < p.match_patterns.size(); i++) {
-        if (i > 0)
-            f << ", ";
-        f << fmt::format("\"{}\"", p.match_patterns[i]);
+/// The string at @p key, or "" when the key is missing or is not a string.
+std::string string_or(json::Object const &obj, std::string_view key) {
+    auto const *value = obj.peek(key);
+    return (value != nullptr && value->is_string()) ? value->as_string() : std::string{};
+}
+
+/// Call @p on_object once per object element of the array at @p key.
+///
+/// A key that is absent, or holds something other than an array, contributes
+/// nothing; a non-object element is skipped. That leniency is deliberate and is
+/// the one place this file departs from the strict, consumed-key policy the rest
+/// of the graph IR follows: a profile is a machine measurement someone may have
+/// written by hand or with an older build, and a row this build cannot price is
+/// dropped rather than turned into a load failure.
+void for_each_object(json::Object const &obj, std::string_view key, auto const &on_object) {
+    auto const *value = obj.peek(key);
+    if (value == nullptr || !value->is_array()) {
+        return;
     }
-    f << "],\n";
-
-    f << indent << fmt::format("  \"peak_gflops_fp64\": {:.1f},\n", p.peak_gflops_fp64);
-    f << indent << fmt::format("  \"peak_gflops_fp32\": {:.1f},\n", p.peak_gflops_fp32);
-    f << indent << fmt::format("  \"mem_bandwidth_gbps\": {:.1f},\n", p.mem_bandwidth_gbps);
-    f << indent << fmt::format("  \"kernel_launch_overhead_us\": {:.2f},\n", p.kernel_launch_overhead_us);
-    f << indent << fmt::format("  \"alloc_overhead_us\": {:.2f},\n", p.alloc_overhead_us);
-    f << indent << fmt::format("  \"device_bandwidth_gbps\": {:.1f},\n", p.device_bandwidth_gbps);
-    f << indent << fmt::format("  \"pcie_bandwidth_gbps\": {:.1f},\n", p.pcie_bandwidth_gbps);
-    f << indent << fmt::format("  \"gpu_launch_latency_us\": {:.2f},\n", p.gpu_launch_latency_us);
-
-    f << indent << "  \"caches\": [";
-    for (size_t i = 0; i < p.caches.size(); i++) {
-        if (i > 0)
-            f << ",";
-        // Two decimals: an L1 latency is under a nanosecond, so one decimal
-        // quantizes it away.
-        f << fmt::format("\n{}    {{\"size_bytes\": {}, \"bandwidth_gbps\": {:.2f}, \"latency_ns\": {:.2f}}}", indent,
-                         p.caches[i].size_bytes, p.caches[i].bandwidth_gbps, p.caches[i].latency_ns);
+    for (auto const &item : value->as_array()) {
+        if (item.is_object()) {
+            on_object(item.as_object());
+        }
     }
-    f << "\n" << indent << "  ],\n";
+}
 
-    f << indent << "  \"gemm_efficiency\": [";
-    for (size_t i = 0; i < p.gemm_efficiency.size(); i++) {
-        if (i > 0)
-            f << ",";
-        auto const &pt = p.gemm_efficiency[i];
-        f << fmt::format("\n{}    {{\"M\": {}, \"N\": {}, \"K\": {}, \"gflops\": {:.1f}}}", indent, pt.M, pt.N, pt.K, pt.gflops);
+json::Object write_profile(DeviceProfile const &p) {
+    json::Object obj;
+    obj.set("name", p.name);
+    obj.set("device_type", p.device_type == DeviceType::GPU ? "gpu" : "cpu");
+    obj.set("brand_family", p.brand_family);
+
+    json::Array patterns;
+    for (auto const &pattern : p.match_patterns) {
+        patterns.emplace_back(pattern);
     }
-    f << "\n" << indent << "  ],\n";
+    obj.set("match_patterns", json::Value{std::move(patterns)});
 
-    f << indent << "  \"permute_efficiency\": [";
-    for (size_t i = 0; i < p.permute_efficiency.size(); i++) {
-        if (i > 0)
-            f << ",";
-        auto const &pt = p.permute_efficiency[i];
-        f << fmt::format("\n{}    {{\"bytes\": {}, \"rank\": {}, \"gbps\": {:.1f}}}", indent, pt.bytes, pt.rank, pt.gbps);
+    obj.set("peak_gflops_fp64", p.peak_gflops_fp64);
+    obj.set("peak_gflops_fp32", p.peak_gflops_fp32);
+    obj.set("mem_bandwidth_gbps", p.mem_bandwidth_gbps);
+    obj.set("kernel_launch_overhead_us", p.kernel_launch_overhead_us);
+    obj.set("alloc_overhead_us", p.alloc_overhead_us);
+    obj.set("device_bandwidth_gbps", p.device_bandwidth_gbps);
+    obj.set("pcie_bandwidth_gbps", p.pcie_bandwidth_gbps);
+    obj.set("gpu_launch_latency_us", p.gpu_launch_latency_us);
+
+    obj.set("inter_node_bandwidth_gbps", p.inter_node_bandwidth_gbps);
+    obj.set("inter_node_latency_us", p.inter_node_latency_us);
+    obj.set("nccl_bandwidth_gbps", p.nccl_bandwidth_gbps);
+
+    json::Array caches;
+    for (auto const &level : p.caches) {
+        json::Object entry;
+        entry.set("size_bytes", level.size_bytes);
+        entry.set("bandwidth_gbps", level.bandwidth_gbps);
+        entry.set("latency_ns", level.latency_ns);
+        caches.emplace_back(std::move(entry));
     }
-    f << "\n" << indent << "  ],\n";
+    obj.set("caches", json::Value{std::move(caches)});
 
-    f << indent << fmt::format("  \"max_threads\": {},\n", p.max_threads);
+    json::Array gemm;
+    for (auto const &pt : p.gemm_efficiency) {
+        json::Object entry;
+        entry.set("M", pt.M);
+        entry.set("N", pt.N);
+        entry.set("K", pt.K);
+        entry.set("gflops", pt.gflops);
+        gemm.emplace_back(std::move(entry));
+    }
+    obj.set("gemm_efficiency", json::Value{std::move(gemm)});
 
-    // One object per (family, size class, width) rather than one per curve with
-    // a nested widths array: the reader scans an array of flat objects, and a
-    // nested array would end its scan at the inner closing bracket.
-    f << indent << "  \"thread_efficiency\": [";
-    bool first_point = true;
+    json::Array permute;
+    for (auto const &pt : p.permute_efficiency) {
+        json::Object entry;
+        entry.set("bytes", pt.bytes);
+        entry.set("rank", pt.rank);
+        entry.set("gbps", pt.gbps);
+        permute.emplace_back(std::move(entry));
+    }
+    obj.set("permute_efficiency", json::Value{std::move(permute)});
+
+    obj.set("max_threads", static_cast<std::int64_t>(p.max_threads));
+
+    // One row per (family, size class, width) rather than one object per curve
+    // with a nested widths array. The shape is kept for the sake of profile
+    // files already on disk, and it reads no worse: a row names everything it
+    // needs, so a reader that does not know a family drops that row alone.
+    json::Array curves;
     for (auto const &curve : p.thread_efficiency) {
         if (!curve.valid()) {
             continue;
         }
         for (size_t i = 0; i < curve.widths.size(); i++) {
-            if (!first_point)
-                f << ",";
-            first_point = false;
-            // Four decimals: a speedup barely above 1 is the interesting case,
-            // and one decimal quantizes it into "no change".
-            f << fmt::format("\n{}    {{\"family\": \"{}\", \"size_class\": \"{}\", \"width\": {}, \"speedup\": {:.4f}}}", indent,
-                             to_string(curve.family), to_string(curve.size_class), curve.widths[i], curve.speedup[i]);
+            json::Object entry;
+            entry.set("family", to_string(curve.family));
+            entry.set("size_class", to_string(curve.size_class));
+            entry.set("width", static_cast<std::int64_t>(curve.widths[i]));
+            entry.set("speedup", curve.speedup[i]);
+            curves.emplace_back(std::move(entry));
         }
     }
-    f << "\n" << indent << "  ]\n";
-    f << indent << "}";
+    obj.set("thread_efficiency", json::Value{std::move(curves)});
+
+    return obj;
 }
 
-/// Call @p on_sub once per `{...}` object inside the array that follows @p key,
-/// with the object's own text. The scan stops at the array's first `]`, so the
-/// objects it walks must be flat.
-void for_each_json_object_raw(std::string const &obj, std::string const &key, auto const &on_sub) {
-    auto const key_pos = obj.find("\"" + key + "\"");
-    if (key_pos == std::string::npos) {
-        return;
-    }
-    auto const arr_start = obj.find('[', key_pos);
-    auto const arr_end   = obj.find(']', arr_start);
-    if (arr_start == std::string::npos || arr_end == std::string::npos) {
-        return;
-    }
-    std::string const arr    = obj.substr(arr_start, arr_end - arr_start + 1);
-    size_t            search = 0;
-    while (true) {
-        auto const os = arr.find('{', search);
-        if (os == std::string::npos) {
-            break;
-        }
-        auto const oe = arr.find('}', os);
-        if (oe == std::string::npos) {
-            break;
-        }
-        on_sub(arr.substr(os, oe - os + 1));
-        search = oe + 1;
-    }
-}
-
-/// The numeric value of @p field in a flat JSON object, or 0 when absent.
-double json_number_field(std::string const &sub, std::string const &field) {
-    auto fp = sub.find("\"" + field + "\"");
-    if (fp == std::string::npos) {
-        return 0;
-    }
-    fp = sub.find(':', fp);
-    if (fp == std::string::npos) {
-        return 0;
-    }
-    try {
-        return std::stod(sub.substr(fp + 1));
-    } catch (...) {
-        return 0;
-    }
-}
-
-/// The string value of @p field in a flat JSON object, or "" when absent.
-std::string json_string_field(std::string const &sub, std::string const &field) {
-    auto pos = sub.find("\"" + field + "\"");
-    if (pos == std::string::npos) {
-        return "";
-    }
-    pos = sub.find(':', pos);
-    if (pos == std::string::npos) {
-        return "";
-    }
-    auto const open = sub.find('\"', pos);
-    if (open == std::string::npos) {
-        return "";
-    }
-    auto const close = sub.find('\"', open + 1);
-    if (close == std::string::npos) {
-        return "";
-    }
-    return sub.substr(open + 1, close - open - 1);
-}
-
-/// Call @p on_object once per `{...}` object inside the array that follows
-/// @p key. Shared by the measured-point arrays; each of them used to carry its
-/// own copy of this scan, which is how `caches` came to be written but never
-/// read back.
-void for_each_json_object(std::string const &obj, std::string const &key, auto const &on_object) {
-    for_each_json_object_raw(obj, key, [&](std::string const &sub) {
-        on_object([&sub](std::string const &field) -> double {
-            auto fp = sub.find("\"" + field + "\"");
-            if (fp == std::string::npos) {
-                return 0;
-            }
-            fp = sub.find(':', fp);
-            try {
-                return std::stod(sub.substr(fp + 1));
-            } catch (...) {
-                return 0;
-            }
-        });
-    });
-}
-
-DeviceProfile parse_device_profile_json(std::string const &obj) {
+DeviceProfile read_profile(json::Object const &obj) {
     DeviceProfile p;
 
-    auto extract_string = [&](std::string const &key) -> std::string {
-        auto pos = obj.find("\"" + key + "\"");
-        if (pos == std::string::npos)
-            return "";
-        pos = obj.find('\"', pos + key.size() + 2);
-        if (pos == std::string::npos)
-            return "";
-        pos++;
-        auto end = obj.find('\"', pos);
-        return obj.substr(pos, end - pos);
-    };
+    p.name                      = string_or(obj, "name");
+    p.brand_family              = string_or(obj, "brand_family");
+    p.device_type               = (string_or(obj, "device_type") == "gpu") ? DeviceType::GPU : DeviceType::CPU;
+    p.peak_gflops_fp64          = number_or(obj, "peak_gflops_fp64", 50.0);
+    p.peak_gflops_fp32          = number_or(obj, "peak_gflops_fp32", 100.0);
+    p.mem_bandwidth_gbps        = number_or(obj, "mem_bandwidth_gbps", 40.0);
+    p.kernel_launch_overhead_us = number_or(obj, "kernel_launch_overhead_us", 0.5);
+    p.alloc_overhead_us         = number_or(obj, "alloc_overhead_us", 2.0);
+    p.device_bandwidth_gbps     = number_or(obj, "device_bandwidth_gbps", 0.0);
+    p.pcie_bandwidth_gbps       = number_or(obj, "pcie_bandwidth_gbps", 0.0);
+    p.gpu_launch_latency_us     = number_or(obj, "gpu_launch_latency_us", 0.0);
 
-    auto extract_double = [&](std::string const &key, double def) -> double {
-        auto pos = obj.find("\"" + key + "\"");
-        if (pos == std::string::npos)
-            return def;
-        pos = obj.find(':', pos);
-        if (pos == std::string::npos)
-            return def;
-        try {
-            return std::stod(obj.substr(pos + 1));
-        } catch (...) {
-            return def;
-        }
-    };
+    // The three network figures used to be dropped on the floor: the writer
+    // never emitted them, so a calibrated profile carrying a measured fabric
+    // reloaded with the struct defaults and every collective was priced wrong.
+    p.inter_node_bandwidth_gbps = number_or(obj, "inter_node_bandwidth_gbps", 0.0);
+    p.inter_node_latency_us     = number_or(obj, "inter_node_latency_us", 1.0);
+    p.nccl_bandwidth_gbps       = number_or(obj, "nccl_bandwidth_gbps", 0.0);
 
-    p.name                      = extract_string("name");
-    p.brand_family              = extract_string("brand_family");
-    p.device_type               = (extract_string("device_type") == "gpu") ? DeviceType::GPU : DeviceType::CPU;
-    p.peak_gflops_fp64          = extract_double("peak_gflops_fp64", 50.0);
-    p.peak_gflops_fp32          = extract_double("peak_gflops_fp32", 100.0);
-    p.mem_bandwidth_gbps        = extract_double("mem_bandwidth_gbps", 40.0);
-    p.kernel_launch_overhead_us = extract_double("kernel_launch_overhead_us", 0.5);
-    p.alloc_overhead_us         = extract_double("alloc_overhead_us", 2.0);
-    p.device_bandwidth_gbps     = extract_double("device_bandwidth_gbps", 0.0);
-    p.pcie_bandwidth_gbps       = extract_double("pcie_bandwidth_gbps", 0.0);
-    p.gpu_launch_latency_us     = extract_double("gpu_launch_latency_us", 0.0);
-
-    // Parse match_patterns
-    auto mp_pos = obj.find("\"match_patterns\"");
-    if (mp_pos != std::string::npos) {
-        auto arr_start = obj.find('[', mp_pos);
-        auto arr_end   = obj.find(']', arr_start);
-        if (arr_start != std::string::npos && arr_end != std::string::npos) {
-            std::string const arr    = obj.substr(arr_start + 1, arr_end - arr_start - 1);
-            size_t            search = 0;
-            while (true) {
-                auto qs = arr.find('\"', search);
-                if (qs == std::string::npos)
-                    break;
-                auto qe = arr.find('\"', qs + 1);
-                if (qe == std::string::npos)
-                    break;
-                p.match_patterns.push_back(arr.substr(qs + 1, qe - qs - 1));
-                search = qe + 1;
+    if (auto const *patterns = obj.peek("match_patterns"); patterns != nullptr && patterns->is_array()) {
+        for (auto const &item : patterns->as_array()) {
+            if (item.is_string()) {
+                p.match_patterns.push_back(item.as_string());
             }
         }
     }
 
-    for_each_json_object(obj, "gemm_efficiency", [&](auto const &field) {
+    for_each_object(obj, "gemm_efficiency", [&](json::Object const &entry) {
         GemmEfficiencyPoint pt;
-        pt.M      = static_cast<size_t>(field("M"));
-        pt.N      = static_cast<size_t>(field("N"));
-        pt.K      = static_cast<size_t>(field("K"));
-        pt.gflops = field("gflops");
+        pt.M      = static_cast<size_t>(number_or(entry, "M", 0.0));
+        pt.N      = static_cast<size_t>(number_or(entry, "N", 0.0));
+        pt.K      = static_cast<size_t>(number_or(entry, "K", 0.0));
+        pt.gflops = number_or(entry, "gflops", 0.0);
         if (pt.M > 0 && pt.gflops > 0) {
             p.gemm_efficiency.push_back(pt);
         }
     });
 
-    for_each_json_object(obj, "permute_efficiency", [&](auto const &field) {
+    for_each_object(obj, "permute_efficiency", [&](json::Object const &entry) {
         PermuteEfficiencyPoint pt;
-        pt.bytes = static_cast<size_t>(field("bytes"));
-        pt.rank  = static_cast<size_t>(field("rank"));
-        pt.gbps  = field("gbps");
+        pt.bytes = static_cast<size_t>(number_or(entry, "bytes", 0.0));
+        pt.rank  = static_cast<size_t>(number_or(entry, "rank", 0.0));
+        pt.gbps  = number_or(entry, "gbps", 0.0);
         if (pt.bytes > 0 && pt.gbps > 0) {
             p.permute_efficiency.push_back(pt);
         }
@@ -654,31 +573,31 @@ DeviceProfile parse_device_profile_json(std::string const &obj) {
     // The cache array was written but never read back, so a calibrated profile
     // silently lost its cache sizes on reload and fell back to whatever the
     // detector reported for the machine doing the loading.
-    for_each_json_object(obj, "caches", [&](auto const &field) {
+    for_each_object(obj, "caches", [&](json::Object const &entry) {
         CacheLevel level;
-        level.size_bytes     = static_cast<size_t>(field("size_bytes"));
-        level.bandwidth_gbps = field("bandwidth_gbps");
-        level.latency_ns     = field("latency_ns");
+        level.size_bytes     = static_cast<size_t>(number_or(entry, "size_bytes", 0.0));
+        level.bandwidth_gbps = number_or(entry, "bandwidth_gbps", 0.0);
+        level.latency_ns     = number_or(entry, "latency_ns", 0.0);
         if (level.size_bytes > 0) {
             p.caches.push_back(level);
         }
     });
 
-    p.max_threads = static_cast<unsigned>(extract_double("max_threads", 0.0));
+    p.max_threads = static_cast<unsigned>(number_or(obj, "max_threads", 0.0));
 
     // Flat (family, size class, width, speedup) rows regrouped into curves.
     // Rows naming a family or size class this build does not know are dropped:
     // pricing them as something else would be worse than pricing them from the
     // default model.
     std::map<std::pair<std::uint8_t, std::uint8_t>, EfficiencyCurve> curves;
-    for_each_json_object_raw(obj, "thread_efficiency", [&](std::string const &sub) {
+    for_each_object(obj, "thread_efficiency", [&](json::Object const &entry) {
         KernelFamily family{};
         SizeClass    size_class{};
-        if (!kernel_family_from_string(json_string_field(sub, "family"), family) ||
-            !size_class_from_string(json_string_field(sub, "size_class"), size_class)) {
+        if (!kernel_family_from_string(string_or(entry, "family"), family) ||
+            !size_class_from_string(string_or(entry, "size_class"), size_class)) {
             return;
         }
-        auto const width = static_cast<std::uint32_t>(json_number_field(sub, "width"));
+        auto const width = static_cast<std::uint32_t>(number_or(entry, "width", 0.0));
         if (width == 0) {
             return;
         }
@@ -686,7 +605,7 @@ DeviceProfile parse_device_profile_json(std::string const &obj) {
         curve.family     = family;
         curve.size_class = size_class;
         curve.widths.push_back(width);
-        curve.speedup.push_back(json_number_field(sub, "speedup"));
+        curve.speedup.push_back(number_or(entry, "speedup", 0.0));
     });
 
     for (auto &[key, curve] : curves) {
@@ -713,140 +632,97 @@ DeviceProfile parse_device_profile_json(std::string const &obj) {
     return p;
 }
 
-} // namespace
-
-expected<void, GraphError> CostModel::save_json(std::string const &path) const {
+/// Write @p document to @p path, laid out one key per line.
+expected<void, GraphError> write_document(std::string const &path, json::Value const &document, std::string_view what) {
     std::ofstream f(path);
     if (!f) {
-        return unexpected(GraphError::io(fmt::format("CostModel::save_json: cannot open '{}'", path)));
+        return unexpected(GraphError::io(fmt::format("{}: cannot open '{}'", what, path)));
     }
-
-    f << "{\n";
-    f << fmt::format("  \"source\": \"{}\",\n", source);
-    f << "  \"cpu\": ";
-    write_device_profile_json(f, cpu, "  ");
-    f << ",\n";
-    f << "  \"gpu\": ";
-    write_device_profile_json(f, gpu, "  ");
-    f << "\n}\n";
+    f << json::emit(document, json::EmitOptions{.style = json::EmitStyle::Pretty});
+    if (!f) {
+        return unexpected(GraphError::io(fmt::format("{}: could not write '{}'", what, path)));
+    }
     return {};
 }
 
-expected<CostModel, GraphError> CostModel::load_json(std::string const &path) {
+/// Read @p path and parse it as a JSON object.
+expected<json::Value, GraphError> read_document(std::string const &path, std::string_view what) {
     std::ifstream f(path);
     if (!f) {
-        return unexpected(GraphError::io(fmt::format("CostModel::load_json: cannot open '{}'", path)));
+        return unexpected(GraphError::io(fmt::format("{}: cannot open '{}'", what, path)));
     }
-    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    std::string const content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+
+    auto document = json::parse(content);
+    if (!document) {
+        return unexpected(GraphError::parse(fmt::format("{}: '{}' is not valid JSON: {}", what, path, document.error().to_string())));
+    }
+    if (!document->is_object()) {
+        return unexpected(GraphError::parse(
+            fmt::format("{}: '{}' holds a {} where an object was expected", what, path, json::Value::type_name(document->type()))));
+    }
+    return std::move(*document);
+}
+
+} // namespace
+
+expected<void, GraphError> CostModel::save_json(std::string const &path) const {
+    json::Object root;
+    root.set("source", source);
+    root.set("cpu", write_profile(cpu));
+    root.set("gpu", write_profile(gpu));
+    return write_document(path, json::Value{std::move(root)}, "CostModel::save_json");
+}
+
+expected<CostModel, GraphError> CostModel::load_json(std::string const &path) {
+    auto document = read_document(path, "CostModel::load_json");
+    if (!document) {
+        return unexpected(document.error());
+    }
+    auto const &root = document->as_object();
 
     CostModel p;
-
-    // Extract source
-    auto src_pos = content.find("\"source\"");
-    if (src_pos != std::string::npos) {
-        auto q1 = content.find('\"', src_pos + 8);
-        if (q1 != std::string::npos) {
-            q1++;
-            auto q2  = content.find('\"', q1);
-            p.source = content.substr(q1, q2 - q1);
-        }
+    // Only when the file names one: an absent key leaves the struct default
+    // ("default") rather than blanking it.
+    if (auto const *named = root.peek("source"); named != nullptr && named->is_string()) {
+        p.source = named->as_string();
     }
-
-    // Extract cpu and gpu sub-objects
-    auto extract_sub = [&](std::string const &key) -> std::string {
-        auto pos = content.find("\"" + key + "\"");
-        if (pos == std::string::npos)
-            return "";
-        auto obj_start = content.find('{', pos);
-        if (obj_start == std::string::npos)
-            return "";
-        // Find matching closing brace (handle nested braces)
-        int  depth = 1;
-        auto idx   = obj_start + 1;
-        while (idx < content.size() && depth > 0) {
-            if (content[idx] == '{')
-                depth++;
-            else if (content[idx] == '}')
-                depth--;
-            idx++;
-        }
-        return content.substr(obj_start, idx - obj_start);
-    };
-
-    std::string const cpu_json = extract_sub("cpu");
-    std::string const gpu_json = extract_sub("gpu");
-
-    if (!cpu_json.empty())
-        p.cpu = parse_device_profile_json(cpu_json);
-    if (!gpu_json.empty())
-        p.gpu = parse_device_profile_json(gpu_json);
-
+    if (auto const *cpu_obj = root.peek("cpu"); cpu_obj != nullptr && cpu_obj->is_object()) {
+        p.cpu = read_profile(cpu_obj->as_object());
+    }
+    if (auto const *gpu_obj = root.peek("gpu"); gpu_obj != nullptr && gpu_obj->is_object()) {
+        p.gpu = read_profile(gpu_obj->as_object());
+    }
     return p;
 }
 
 expected<void, GraphError> DeviceProfileDB::save_json(std::string const &path) const {
-    std::ofstream f(path);
-    if (!f) {
-        return unexpected(GraphError::io(fmt::format("DeviceProfileDB::save_json: cannot open '{}'", path)));
+    json::Array profiles;
+    for (auto const &profile : _profiles) {
+        profiles.emplace_back(write_profile(profile));
     }
 
-    f << "{\n";
-    f << "  \"version\": 1,\n";
-    f << "  \"profiles\": [\n";
-    for (size_t i = 0; i < _profiles.size(); i++) {
-        if (i > 0)
-            f << ",\n";
-        write_device_profile_json(f, _profiles[i], "    ");
-    }
-    f << "\n  ]\n}\n";
-    return {};
+    json::Object root;
+    root.set("version", std::int64_t{1});
+    root.set("profiles", json::Value{std::move(profiles)});
+    return write_document(path, json::Value{std::move(root)}, "DeviceProfileDB::save_json");
 }
 
 expected<DeviceProfileDB, GraphError> DeviceProfileDB::load_json(std::string const &path) {
-    std::ifstream f(path);
-    if (!f) {
-        return unexpected(GraphError::io(fmt::format("DeviceProfileDB::load_json: cannot open '{}'", path)));
+    auto document = read_document(path, "DeviceProfileDB::load_json");
+    if (!document) {
+        return unexpected(document.error());
     }
-    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
     DeviceProfileDB db = load_defaults(); // Start with defaults, overlay from file
 
-    // Find "profiles" array
-    auto arr_pos = content.find("\"profiles\"");
-    if (arr_pos == std::string::npos)
-        return db;
-
-    auto arr_start = content.find('[', arr_pos);
-    if (arr_start == std::string::npos)
-        return db;
-
-    // Extract each { ... } object in the array
-    size_t search = arr_start + 1;
-    while (true) {
-        auto os = content.find('{', search);
-        if (os == std::string::npos)
-            break;
-        // Find matching }
-        int    depth = 1;
-        size_t idx   = os + 1;
-        while (idx < content.size() && depth > 0) {
-            if (content[idx] == '{')
-                depth++;
-            else if (content[idx] == '}')
-                depth--;
-            idx++;
-        }
-        if (depth != 0)
-            break;
-
-        std::string const obj = content.substr(os, idx - os);
-        auto              p   = parse_device_profile_json(obj);
+    for_each_object(document->as_object(), "profiles", [&](json::Object const &entry) {
+        auto p = read_profile(entry);
         if (!p.name.empty()) {
             p.source = "database";
             db.upsert(std::move(p));
         }
-        search = idx;
-    }
+    });
 
     return db;
 }
