@@ -7654,20 +7654,6 @@ void custom(std::string label, std::tuple<Inputs const &...> inputs, std::tuple<
  *
  * Records a graph node that runs ``executor`` with no declared
  * input/output tensor dependencies. Outside a capture context the
- * executor runs immediately. This is the simplest way to splice a
- * Python (or arbitrary C++) callable into a graph as a compute step;
- * for read-modify-write patterns prefer the tensor-tagged overload
- * below so the optimizer can see the dependency.
- *
- * @code
- * cg::custom("debug_print", []() { fmt::print("hello\n"); });
- * @endcode
- */
-/**
- * @brief No-dependency custom node, Python-friendly overload.
- *
- * Records a graph node that runs ``executor`` with no declared
- * input/output tensor dependencies. Outside a capture context the
  * executor runs immediately. Use the tensor-tagged overload below for
  * read-modify-write patterns where the optimizer should see the
  * dependency.
