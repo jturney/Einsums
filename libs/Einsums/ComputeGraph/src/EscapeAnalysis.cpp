@@ -6,10 +6,12 @@
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraphTypes/EnumNames.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include <algorithm>
+#include <array>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -37,26 +39,24 @@ void count_subtree_writers(Graph const &graph, std::unordered_map<void const *, 
     graph.for_each_subgraph([&](Graph const &sub) { count_subtree_writers(sub, writers); });
 }
 
+/// One table, both directions. See EnumNames.hpp for why that is not two. The
+/// spellings here are sentences rather than tokens because they are read as the
+/// reason half of a diagnostic, never parsed back.
+constexpr EnumNames kEscapeReasons{std::array<std::pair<Escape, std::string_view>, 7>{{
+                                       {Escape::Dissolvable, "nothing outside the region can observe it"},
+                                       {Escape::UserOwned, "the tensor is user-owned, not a graph intermediate"},
+                                       {Escape::WrittenOutside, "a node outside the region writes it"},
+                                       {Escape::ReadOutside, "a node outside the region reads it"},
+                                       {Escape::AliasedFromOutside, "another tensor over the same buffer escapes the region"},
+                                       {Escape::TouchedBySubgraph, "a loop body or conditional branch touches its buffer"},
+                                       {Escape::Unknown, "the graph does not know this tensor"},
+                                   }},
+                                   "unclassified"};
+
 } // namespace
 
 std::string_view escape_reason(Escape reason) {
-    switch (reason) {
-    case Escape::Dissolvable:
-        return "nothing outside the region can observe it";
-    case Escape::UserOwned:
-        return "the tensor is user-owned, not a graph intermediate";
-    case Escape::WrittenOutside:
-        return "a node outside the region writes it";
-    case Escape::ReadOutside:
-        return "a node outside the region reads it";
-    case Escape::AliasedFromOutside:
-        return "another tensor over the same buffer escapes the region";
-    case Escape::TouchedBySubgraph:
-        return "a loop body or conditional branch touches its buffer";
-    case Escape::Unknown:
-        return "the graph does not know this tensor";
-    }
-    return "unclassified";
+    return kEscapeReasons.name(reason);
 }
 
 EscapeAnalysis EscapeAnalysis::over(Graph const &graph) {

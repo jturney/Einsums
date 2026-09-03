@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/InterfaceManifest.hpp>
 #include <Einsums/ComputeGraph/UsageAnalysis.hpp>
+#include <Einsums/ComputeGraphTypes/EnumNames.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 
@@ -13,83 +14,71 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <array>
 #include <mutex>
 #include <optional>
 #include <ranges>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
+namespace {
+
+/// One table per enum: the spelling and its parse come from the same array, so
+/// the two directions cannot drift the way a naming switch and a separately
+/// written enumerator list do.
+constexpr EnumNames kDirectionNames{std::array<std::pair<ManifestDirection, std::string_view>, 3>{{
+                                        {ManifestDirection::Input, "input"},
+                                        {ManifestDirection::Output, "output"},
+                                        {ManifestDirection::InOut, "inout"},
+                                    }},
+                                    "unknown"};
+
+constexpr EnumNames kOwnershipNames{std::array<std::pair<TensorOwnership, std::string_view>, 3>{{
+                                        {TensorOwnership::Graph, "graph"},
+                                        {TensorOwnership::Pipeline, "pipeline"},
+                                        {TensorOwnership::Workspace, "workspace"},
+                                    }},
+                                    "unknown"};
+
+constexpr EnumNames kScalarTypeNames{std::array<std::pair<packed_gemm::ScalarType, std::string_view>, 5>{{
+                                         {packed_gemm::ScalarType::Float32, "float32"},
+                                         {packed_gemm::ScalarType::Float64, "float64"},
+                                         {packed_gemm::ScalarType::Complex64, "complex64"},
+                                         {packed_gemm::ScalarType::Complex128, "complex128"},
+                                         {packed_gemm::ScalarType::Unknown, "unknown"},
+                                     }},
+                                     "unknown"};
+
+} // namespace
+
 std::string_view manifest_direction_name(ManifestDirection direction) noexcept {
-    switch (direction) {
-    case ManifestDirection::Input:
-        return "input";
-    case ManifestDirection::Output:
-        return "output";
-    case ManifestDirection::InOut:
-        return "inout";
-    }
-    return "unknown";
+    return kDirectionNames.name(direction);
 }
 
 std::string_view tensor_ownership_name(TensorOwnership scope) noexcept {
-    switch (scope) {
-    case TensorOwnership::Graph:
-        return "graph";
-    case TensorOwnership::Pipeline:
-        return "pipeline";
-    case TensorOwnership::Workspace:
-        return "workspace";
-    }
-    return "unknown";
+    return kOwnershipNames.name(scope);
 }
 
 std::string_view scalar_type_name(packed_gemm::ScalarType dtype) noexcept {
-    switch (dtype) {
-    case packed_gemm::ScalarType::Float32:
-        return "float32";
-    case packed_gemm::ScalarType::Float64:
-        return "float64";
-    case packed_gemm::ScalarType::Complex64:
-        return "complex64";
-    case packed_gemm::ScalarType::Complex128:
-        return "complex128";
-    case packed_gemm::ScalarType::Unknown:
-        return "unknown";
-    }
-    return "unknown";
+    return kScalarTypeNames.name(dtype);
 }
 
 std::optional<ManifestDirection> manifest_direction_from_name(std::string_view name) noexcept {
-    for (auto const direction : {ManifestDirection::Input, ManifestDirection::Output, ManifestDirection::InOut}) {
-        if (manifest_direction_name(direction) == name) {
-            return direction;
-        }
-    }
-    return std::nullopt;
+    return kDirectionNames.from_name(name);
 }
 
 std::optional<TensorOwnership> tensor_ownership_from_name(std::string_view name) noexcept {
-    for (auto const scope : {TensorOwnership::Graph, TensorOwnership::Pipeline, TensorOwnership::Workspace}) {
-        if (tensor_ownership_name(scope) == name) {
-            return scope;
-        }
-    }
-    return std::nullopt;
+    return kOwnershipNames.from_name(name);
 }
 
 std::optional<packed_gemm::ScalarType> scalar_type_from_name(std::string_view name) noexcept {
-    for (auto const dtype : {packed_gemm::ScalarType::Float32, packed_gemm::ScalarType::Float64, packed_gemm::ScalarType::Complex64,
-                             packed_gemm::ScalarType::Complex128, packed_gemm::ScalarType::Unknown}) {
-        if (scalar_type_name(dtype) == name) {
-            return dtype;
-        }
-    }
-    return std::nullopt;
+    return kScalarTypeNames.from_name(name);
 }
 
 // ── InterfaceManifest ──────────────────────────────────────────────────────

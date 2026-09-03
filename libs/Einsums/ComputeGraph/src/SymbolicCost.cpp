@@ -5,11 +5,13 @@
 
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/SymbolicCost.hpp>
+#include <Einsums/ComputeGraphTypes/EnumNames.hpp>
 #include <Einsums/ComputeGraphTypes/Spaces.hpp>
 
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -603,30 +605,32 @@ std::string SymbolicPoly::to_string(SpaceRegistry const *registry) const {
     return out;
 }
 
+namespace {
+
+/// One table, both directions. See EnumNames.hpp for why that is not two.
+constexpr EnumNames kCompareRungNames{std::array<std::pair<CompareRung, std::string_view>, 4>{{
+                                          {CompareRung::ScaleOrder, "ScaleOrder"},
+                                          {CompareRung::TypicalExtent, "TypicalExtent"},
+                                          {CompareRung::BoundExtent, "BoundExtent"},
+                                          {CompareRung::Lexicographic, "Lexicographic"},
+                                      }},
+                                      "Lexicographic"};
+
+constexpr EnumNames kCostComponentNames{std::array<std::pair<CostComponent, std::string_view>, 3>{{
+                                            {CostComponent::Flops, "Flops"},
+                                            {CostComponent::Traffic, "Traffic"},
+                                            {CostComponent::Resident, "Resident"},
+                                        }},
+                                        "Flops"};
+
+} // namespace
+
 std::string_view compare_rung_name(CompareRung rung) noexcept {
-    switch (rung) {
-    case CompareRung::ScaleOrder:
-        return "ScaleOrder";
-    case CompareRung::TypicalExtent:
-        return "TypicalExtent";
-    case CompareRung::BoundExtent:
-        return "BoundExtent";
-    case CompareRung::Lexicographic:
-        return "Lexicographic";
-    }
-    return "Lexicographic";
+    return kCompareRungNames.name(rung);
 }
 
 std::string_view cost_component_name(CostComponent component) noexcept {
-    switch (component) {
-    case CostComponent::Flops:
-        return "Flops";
-    case CostComponent::Traffic:
-        return "Traffic";
-    case CostComponent::Resident:
-        return "Resident";
-    }
-    return "Flops";
+    return kCostComponentNames.name(component);
 }
 
 PolyComparison compare_explain(SymbolicPoly const &lhs, SymbolicPoly const &rhs, ComparisonContext const &ctx) {

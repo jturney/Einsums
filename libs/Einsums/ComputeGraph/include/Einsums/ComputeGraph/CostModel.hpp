@@ -10,14 +10,18 @@
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/Node.hpp> // Target enum
+#include <Einsums/ComputeGraphTypes/EnumNames.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -62,60 +66,53 @@ enum class SizeClass : std::uint8_t {
 /// Number of entries in @ref SizeClass.
 inline constexpr std::size_t kSizeClassCount = 4;
 
-[[nodiscard]] inline char const *to_string(KernelFamily family) {
-    switch (family) {
-    case KernelFamily::GemmSmall:
-        return "gemm_small";
-    case KernelFamily::GemmLarge:
-        return "gemm_large";
-    case KernelFamily::BatchedGemm:
-        return "batched_gemm";
-    case KernelFamily::Permute:
-        return "permute";
-    case KernelFamily::Elementwise:
-        return "elementwise";
-    }
-    return "gemm_large";
+/// The one @ref KernelFamily name table; both directions read it.
+inline constexpr EnumNames kKernelFamilyNames{std::array<std::pair<KernelFamily, std::string_view>, kKernelFamilyCount>{{
+                                                  {KernelFamily::GemmSmall, "gemm_small"},
+                                                  {KernelFamily::GemmLarge, "gemm_large"},
+                                                  {KernelFamily::BatchedGemm, "batched_gemm"},
+                                                  {KernelFamily::Permute, "permute"},
+                                                  {KernelFamily::Elementwise, "elementwise"},
+                                              }},
+                                              "gemm_large"};
+
+/// The one @ref SizeClass name table; both directions read it.
+inline constexpr EnumNames kSizeClassNames{std::array<std::pair<SizeClass, std::string_view>, kSizeClassCount>{{
+                                               {SizeClass::L1Resident, "l1"},
+                                               {SizeClass::L2Resident, "l2"},
+                                               {SizeClass::LLCResident, "llc"},
+                                               {SizeClass::Streaming, "streaming"},
+                                           }},
+                                           "streaming"};
+
+[[nodiscard]] inline std::string_view to_string(KernelFamily family) {
+    return kKernelFamilyNames.name(family);
 }
 
-[[nodiscard]] inline char const *to_string(SizeClass size_class) {
-    switch (size_class) {
-    case SizeClass::L1Resident:
-        return "l1";
-    case SizeClass::L2Resident:
-        return "l2";
-    case SizeClass::LLCResident:
-        return "llc";
-    case SizeClass::Streaming:
-        return "streaming";
-    }
-    return "streaming";
+[[nodiscard]] inline std::string_view to_string(SizeClass size_class) {
+    return kSizeClassNames.name(size_class);
 }
 
 /// Parse a @ref KernelFamily name. Returns false and leaves @p out alone when
 /// the name is not one of the five; an unknown family in a profile file is
 /// dropped rather than silently priced as something else.
 [[nodiscard]] inline bool kernel_family_from_string(std::string_view name, KernelFamily &out) {
-    for (std::uint8_t idx = 0; idx < kKernelFamilyCount; idx++) {
-        auto const candidate = static_cast<KernelFamily>(idx);
-        if (name == to_string(candidate)) {
-            out = candidate;
-            return true;
-        }
+    auto const family = kKernelFamilyNames.from_name(name);
+    if (!family) {
+        return false;
     }
-    return false;
+    out = *family;
+    return true;
 }
 
 /// Parse a @ref SizeClass name. Same contract as @ref kernel_family_from_string.
 [[nodiscard]] inline bool size_class_from_string(std::string_view name, SizeClass &out) {
-    for (std::uint8_t idx = 0; idx < kSizeClassCount; idx++) {
-        auto const candidate = static_cast<SizeClass>(idx);
-        if (name == to_string(candidate)) {
-            out = candidate;
-            return true;
-        }
+    auto const size_class = kSizeClassNames.from_name(name);
+    if (!size_class) {
+        return false;
     }
-    return false;
+    out = *size_class;
+    return true;
 }
 
 /**

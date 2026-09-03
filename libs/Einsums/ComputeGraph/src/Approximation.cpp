@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/Approximation.hpp>
+#include <Einsums/ComputeGraphTypes/EnumNames.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include <array>
@@ -17,54 +18,36 @@ namespace {
 
 /// The one name table. A spelling and its parse come from the same array, so the two cannot
 /// drift the way two switch statements do.
-constexpr std::array<std::pair<ApproximationEffect, std::string_view>, 3> effect_names{{
-    {ApproximationEffect::ElementWise, "element-wise"},
-    {ApproximationEffect::NormRelative, "norm-relative"},
-    {ApproximationEffect::EnergyLike, "energy-like"},
-}};
+constexpr EnumNames effect_names{std::array<std::pair<ApproximationEffect, std::string_view>, 3>{{
+                                     {ApproximationEffect::ElementWise, "element-wise"},
+                                     {ApproximationEffect::NormRelative, "norm-relative"},
+                                     {ApproximationEffect::EnergyLike, "energy-like"},
+                                 }},
+                                 "unknown"};
 
 /// The origin name table, a table for the same reason the effect one is.
-constexpr std::array<std::pair<ApproximationOrigin, std::string_view>, 2> origin_names{{
-    {ApproximationOrigin::Measured, "measured"},
-    {ApproximationOrigin::Asserted, "asserted"},
-}};
+constexpr EnumNames origin_names{std::array<std::pair<ApproximationOrigin, std::string_view>, 2>{{
+                                     {ApproximationOrigin::Measured, "measured"},
+                                     {ApproximationOrigin::Asserted, "asserted"},
+                                 }},
+                                 "unknown"};
 
 } // namespace
 
 std::string_view approximation_effect_name(ApproximationEffect effect) noexcept {
-    for (auto const &[value, name] : effect_names) {
-        if (value == effect) {
-            return name;
-        }
-    }
-    return "unknown";
+    return effect_names.name(effect);
 }
 
 std::optional<ApproximationEffect> approximation_effect_from_name(std::string_view name) noexcept {
-    for (auto const &[value, spelling] : effect_names) {
-        if (spelling == name) {
-            return value;
-        }
-    }
-    return std::nullopt;
+    return effect_names.from_name(name);
 }
 
 std::string_view approximation_origin_name(ApproximationOrigin origin) noexcept {
-    for (auto const &[value, name] : origin_names) {
-        if (value == origin) {
-            return name;
-        }
-    }
-    return "unknown";
+    return origin_names.name(origin);
 }
 
 std::optional<ApproximationOrigin> approximation_origin_from_name(std::string_view name) noexcept {
-    for (auto const &[value, spelling] : origin_names) {
-        if (spelling == name) {
-            return value;
-        }
-    }
-    return std::nullopt;
+    return origin_names.from_name(name);
 }
 
 ApproximationRecord make_approximation_record(std::string pass_name, ApproximationEffect effect, double tolerance, double bound,

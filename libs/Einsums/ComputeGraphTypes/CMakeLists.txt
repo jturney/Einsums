@@ -5,6 +5,7 @@
 
 set(ComputeGraphTypesHeaders
     Einsums/ComputeGraphTypes.hpp
+    Einsums/ComputeGraphTypes/EnumNames.hpp
     Einsums/ComputeGraphTypes/Enums.hpp
     Einsums/ComputeGraphTypes/Ids.hpp
     Einsums/ComputeGraphTypes/Descriptors.hpp

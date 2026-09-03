@@ -7,6 +7,7 @@
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/InterfaceManifest.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
+#include <Einsums/ComputeGraphTypes/EnumNames.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/Error.hpp>
 #include <Einsums/Logging.hpp>
@@ -15,10 +16,12 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -214,16 +217,17 @@ double epsilon_of_outputs(Graph &graph) {
     return worst;
 }
 
+/// One table, both directions. See EnumNames.hpp for why that is not two.
+constexpr EnumNames kBisectModeNames{std::array<std::pair<BisectMode, std::string_view>, 2>{{
+                                         {BisectMode::Individual, "individual"},
+                                         {BisectMode::Cumulative, "cumulative"},
+                                     }},
+                                     "individual"};
+
 } // namespace
 
 std::string_view bisect_mode_name(BisectMode mode) {
-    switch (mode) {
-    case BisectMode::Individual:
-        return "individual";
-    case BisectMode::Cumulative:
-        return "cumulative";
-    }
-    return "individual";
+    return kBisectModeNames.name(mode);
 }
 
 std::size_t BisectReport::first_divergence() const {
