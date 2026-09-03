@@ -82,7 +82,7 @@ struct EnumNames {
     }
 };
 
-/// Deduce @c E and @c N from the table an @ref EnumNames is built over.
+// Deduce E and N from the table an EnumNames is built over.
 template <typename E, std::size_t N>
 EnumNames(std::array<std::pair<E, std::string_view>, N>, std::string_view) -> EnumNames<E, N>;
 
