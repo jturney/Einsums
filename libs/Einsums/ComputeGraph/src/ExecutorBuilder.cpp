@@ -733,20 +733,6 @@ bool layout_matches_flag(::einsums::detail::TensorImpl<T> const &impl) {
     return true;
 }
 
-/// The @ref BlasScalar tag naming @p T.
-template <typename T>
-constexpr BlasScalar blas_scalar_of() {
-    if constexpr (std::is_same_v<T, float>) {
-        return BlasScalar::Float;
-    } else if constexpr (std::is_same_v<T, double>) {
-        return BlasScalar::Double;
-    } else if constexpr (std::is_same_v<T, std::complex<float>>) {
-        return BlasScalar::ComplexFloat;
-    } else {
-        return BlasScalar::ComplexDouble;
-    }
-}
-
 } // namespace
 
 OperandAccessor try_resolve_operand(Graph &graph, TensorId id) {

@@ -3317,12 +3317,15 @@ APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<doubl
             effective_coeffs[k] = static_cast<T>(coefficients[k]);
     }
 
-    auto apply = [vectors, effective_coeffs, N](ResultType *r) {
+    // Takes the vector list as a parameter rather than capturing it, so the
+    // executor can hand it the pointers rebound from the live slots while the
+    // eager path hands it the caller's originals.
+    auto apply = [effective_coeffs, N](ResultType *r, std::vector<VectorType const *> const &vecs) {
         // Dim check (deferred from capture time so view operands can resolve).
         for (size_t k = 0; k < N; ++k) {
-            if (vectors[k]->dim(0) != r->dim(k)) {
+            if (vecs[k]->dim(0) != r->dim(k)) {
                 EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: vector[{}] length ({}) doesn't match result dim {} ({})", k,
-                                        vectors[k]->dim(0), k, r->dim(k));
+                                        vecs[k]->dim(0), k, r->dim(k));
             }
         }
         size_t const        total = r->size();
@@ -3336,7 +3339,7 @@ APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<doubl
         for (size_t count = 0; count < total; ++count) {
             T sum{};
             for (size_t k = 0; k < N; ++k) {
-                sum += effective_coeffs[k] * vectors[k]->data()[idx[k]];
+                sum += effective_coeffs[k] * vecs[k]->data()[idx[k]];
             }
             size_t offset = 0;
             for (size_t k = 0; k < N; ++k)
@@ -3354,7 +3357,7 @@ APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<doubl
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("outer_sum eager");
-        apply(result);
+        apply(result, vectors);
         return;
     }
 
@@ -3370,43 +3373,12 @@ APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<doubl
     }
     auto [r_id, r_slot] = ctx.get_slot(*result);
 
-    auto executor = [v_slots, r_slot, effective_coeffs, N]() {
+    auto executor = [v_slots, r_slot, apply, N]() {
         LabeledSection("outer_sum execute");
-        auto                           *r_ptr = static_cast<ResultType *>(r_slot->ptr);
         std::vector<VectorType const *> rebound(N);
         for (size_t k = 0; k < N; ++k)
             rebound[k] = static_cast<VectorType const *>(v_slots[k]->ptr);
-
-        // Dim check (deferred from capture time so view operands can resolve).
-        for (size_t k = 0; k < N; ++k) {
-            if (rebound[k]->dim(0) != r_ptr->dim(k)) {
-                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: vector[{}] length ({}) doesn't match result dim {} ({})", k,
-                                        rebound[k]->dim(0), k, r_ptr->dim(k));
-            }
-        }
-        size_t const        total = r_ptr->size();
-        std::vector<size_t> idx(N, 0);
-        std::vector<size_t> dims(N), strides(N);
-        for (size_t k = 0; k < N; ++k) {
-            dims[k]    = r_ptr->dim(k);
-            strides[k] = r_ptr->stride(k);
-        }
-        T *out = r_ptr->data();
-        for (size_t count = 0; count < total; ++count) {
-            T sum{};
-            for (size_t k = 0; k < N; ++k) {
-                sum += effective_coeffs[k] * rebound[k]->data()[idx[k]];
-            }
-            size_t offset = 0;
-            for (size_t k = 0; k < N; ++k)
-                offset += idx[k] * strides[k];
-            out[offset] = sum;
-            for (size_t k = 0; k < N; ++k) {
-                if (++idx[k] < dims[k])
-                    break;
-                idx[k] = 0;
-            }
-        }
+        apply(static_cast<ResultType *>(r_slot->ptr), rebound);
     };
 
     ctx.record(OpKind::Custom, "outer_sum", in_ids, {r_id}, std::move(executor));
@@ -3532,15 +3504,7 @@ APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<do
     d.lda         = static_cast<int>(a_list[0]->impl().get_lda());
     d.ldb         = static_cast<int>(b_list[0]->impl().get_lda());
     d.ldc         = static_cast<int>(c_list[0]->impl().get_lda());
-    if constexpr (std::is_same_v<T, float>) {
-        d.scalar = BlasScalar::Float;
-    } else if constexpr (std::is_same_v<T, double>) {
-        d.scalar = BlasScalar::Double;
-    } else if constexpr (std::is_same_v<T, std::complex<float>>) {
-        d.scalar = BlasScalar::ComplexFloat;
-    } else {
-        d.scalar = BlasScalar::ComplexDouble;
-    }
+    d.scalar = blas_scalar_of<T>();
 
     // gemm_batch takes ONE lda/ldb/ldc and one m/n/k for the whole batch, so a
     // member that differs is not expressible. Caught here, where the caller can
@@ -3737,15 +3701,7 @@ APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::co
     d.lda         = static_cast<int>(a_list[0]->impl().get_lda());
     d.ldb         = static_cast<int>(b_list[0]->impl().get_lda());
     d.ldc         = static_cast<int>(ldc_s);
-    if constexpr (std::is_same_v<T, float>) {
-        d.scalar = BlasScalar::Float;
-    } else if constexpr (std::is_same_v<T, double>) {
-        d.scalar = BlasScalar::Double;
-    } else if constexpr (std::is_same_v<T, std::complex<float>>) {
-        d.scalar = BlasScalar::ComplexFloat;
-    } else {
-        d.scalar = BlasScalar::ComplexDouble;
-    }
+    d.scalar = blas_scalar_of<T>();
 
     auto const require = [&](bool ok, size_t i, char const *what) {
         if (!ok) {
@@ -3833,6 +3789,55 @@ struct GemmShapeKey {
 
     auto operator<=>(GemmShapeKey const &) const = default;
 };
+
+/// Reject a run in which two members would write the same destination tensor.
+///
+/// These forms thread over their members, so a shared destination is a data
+/// race with no ordering to fall back on - the contract
+/// @ref grouped_batched_gemm states, for the same reason. Like that check this
+/// compares the operand handles, so two DISTINCT views of one buffer pass it;
+/// splitting a tensor across members is the caller's promise either way.
+template <typename CType>
+void require_distinct_destinations(std::vector<CType *> const &c_list, char const *who) {
+    std::vector<CType const *> seen(c_list.begin(), c_list.end());
+    std::sort(seen.begin(), seen.end());
+    if (std::adjacent_find(seen.begin(), seen.end()) != seen.end()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "{}: two members share a destination tensor. Members run concurrently, so they would "
+                                "race; split them into separate calls",
+                                who);
+    }
+}
+
+/// Run @p member over every index as one OpenMP team, carrying the first
+/// exception out by hand: one may not cross a region boundary.
+template <typename F>
+void run_grouped_members(size_t count, F &&member) {
+    // A run of one IS the call the grouped form replaces, and forking a team
+    // for it costs more than the member does. Worth the branch because a gated
+    // capture is full of them: a conditional over one entity still wants the
+    // grouped spelling, so that the ungated capture beside it can be the same
+    // emitter with a longer list.
+    if (count == 1) {
+        member(size_t{0});
+        return;
+    }
+    std::exception_ptr first;
+    EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
+    for (size_t i = 0; i < count; i++) {
+        try {
+            member(i);
+        } catch (...) {
+            EINSUMS_OMP_PRAGMA(critical(grouped_elementwise_failure))
+            if (!first) {
+                first = std::current_exception();
+            }
+        }
+    }
+    if (first) {
+        std::rethrow_exception(first);
+    }
+}
 
 } // namespace detail
 
@@ -3987,15 +3992,7 @@ APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::co
 
     GroupedBatchedGemmDescriptor d;
     d.total = static_cast<int>(count);
-    if constexpr (std::is_same_v<T, float>) {
-        d.scalar = BlasScalar::Float;
-    } else if constexpr (std::is_same_v<T, double>) {
-        d.scalar = BlasScalar::Double;
-    } else if constexpr (std::is_same_v<T, std::complex<float>>) {
-        d.scalar = BlasScalar::ComplexFloat;
-    } else {
-        d.scalar = BlasScalar::ComplexDouble;
-    }
+    d.scalar = blas_scalar_of<T>();
     d.groups.reserve(order.size());
     d.labels.reserve(order.size());
 
@@ -4032,16 +4029,7 @@ APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::co
     // used to be separate, and merging two that accumulate into one C is
     // exactly the mistake it makes newly reachable. Cheap to catch here, and
     // silently wrong if it is not.
-    {
-        std::vector<CType const *> seen(c_list.begin(), c_list.end());
-        std::sort(seen.begin(), seen.end());
-        auto const dup = std::adjacent_find(seen.begin(), seen.end());
-        if (dup != seen.end()) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                    "cg::grouped_batched_gemm: two members share a destination tensor. The batch gives no ordering "
-                                    "between members, so they would race; split them into separate calls");
-        }
-    }
+    detail::require_distinct_destinations(c_list, "cg::grouped_batched_gemm");
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -4236,15 +4224,7 @@ APIARY_MODULE("graph")
 
     GroupedBatchedGemmDescriptor d;
     d.total = static_cast<int>(count);
-    if constexpr (std::is_same_v<T, float>) {
-        d.scalar = BlasScalar::Float;
-    } else if constexpr (std::is_same_v<T, double>) {
-        d.scalar = BlasScalar::Double;
-    } else if constexpr (std::is_same_v<T, std::complex<float>>) {
-        d.scalar = BlasScalar::ComplexFloat;
-    } else {
-        d.scalar = BlasScalar::ComplexDouble;
-    }
+    d.scalar = blas_scalar_of<T>();
     d.groups.reserve(order.size());
     d.labels.reserve(order.size());
 
@@ -4664,59 +4644,6 @@ APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<std::complex<d
 // grouped_permute / grouped_direct_product / grouped_direct_division:
 // many independent ELEMENT-WISE members as ONE node
 // ─────────────────────────────────────────────────────────────────────────────
-
-namespace detail {
-
-/// Reject a run in which two members would write the same destination tensor.
-///
-/// These forms thread over their members, so a shared destination is a data
-/// race with no ordering to fall back on - the contract
-/// @ref grouped_batched_gemm states, for the same reason. Like that check this
-/// compares the operand handles, so two DISTINCT views of one buffer pass it;
-/// splitting a tensor across members is the caller's promise either way.
-template <typename CType>
-void require_distinct_destinations(std::vector<CType *> const &c_list, char const *who) {
-    std::vector<CType const *> seen(c_list.begin(), c_list.end());
-    std::sort(seen.begin(), seen.end());
-    if (std::adjacent_find(seen.begin(), seen.end()) != seen.end()) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                "{}: two members share a destination tensor. Members run concurrently, so they would "
-                                "race; split them into separate calls",
-                                who);
-    }
-}
-
-/// Run @p member over every index as one OpenMP team, carrying the first
-/// exception out by hand: one may not cross a region boundary.
-template <typename F>
-void run_grouped_members(size_t count, F &&member) {
-    // A run of one IS the call the grouped form replaces, and forking a team
-    // for it costs more than the member does. Worth the branch because a gated
-    // capture is full of them: a conditional over one entity still wants the
-    // grouped spelling, so that the ungated capture beside it can be the same
-    // emitter with a longer list.
-    if (count == 1) {
-        member(size_t{0});
-        return;
-    }
-    std::exception_ptr first;
-    EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
-    for (size_t i = 0; i < count; i++) {
-        try {
-            member(i);
-        } catch (...) {
-            EINSUMS_OMP_PRAGMA(critical(grouped_elementwise_failure))
-            if (!first) {
-                first = std::current_exception();
-            }
-        }
-    }
-    if (first) {
-        std::rethrow_exception(first);
-    }
-}
-
-} // namespace detail
 
 /// @brief One node holding many independent permutes:
 /// ``C_i = c_pfs[i] * C_i + a_pfs[i] * permute(A_i)`` for every member, all of
@@ -5275,21 +5202,7 @@ APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::RuntimeTensorView<float>, ein
         // an OpenMP team, never a caller-created thread pool (trap 7). An
         // exception may not cross the region boundary (that terminates), so
         // the first one is carried out by hand.
-        std::exception_ptr first;
-        EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
-        for (size_t i = 0; i < count; i++) {
-            try {
-                run_member(c_list[i], a_list[i], m_list[i], p_list[i], s_list[i]);
-            } catch (...) {
-                EINSUMS_OMP_PRAGMA(critical(grouped_sandwich_failure))
-                if (!first) {
-                    first = std::current_exception();
-                }
-            }
-        }
-        if (first) {
-            std::rethrow_exception(first);
-        }
+        detail::run_grouped_members(count, [&](size_t i) { run_member(c_list[i], a_list[i], m_list[i], p_list[i], s_list[i]); });
         return;
     }
 
@@ -5328,24 +5241,11 @@ APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::RuntimeTensorView<float>, ein
     auto executor = [run_member, c_slots = std::move(c_slots), a_slots = std::move(a_slots), m_slots = std::move(m_slots),
                      p_slots = std::move(p_slots), s_slots = std::move(s_slots)]() {
         LabeledSection("grouped_sandwich execute");
-        size_t const       n = c_slots.size();
-        std::exception_ptr first;
-        EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
-        for (size_t i = 0; i < n; i++) {
-            try {
-                run_member(static_cast<CType *>(c_slots[i]->ptr), static_cast<AType const *>(a_slots[i]->ptr),
-                           static_cast<MType const *>(m_slots[i]->ptr), static_cast<PType const *>(p_slots[i]->ptr),
-                           static_cast<SType const *>(s_slots[i]->ptr));
-            } catch (...) {
-                EINSUMS_OMP_PRAGMA(critical(grouped_sandwich_failure))
-                if (!first) {
-                    first = std::current_exception();
-                }
-            }
-        }
-        if (first) {
-            std::rethrow_exception(first);
-        }
+        detail::run_grouped_members(c_slots.size(), [&](size_t i) {
+            run_member(static_cast<CType *>(c_slots[i]->ptr), static_cast<AType const *>(a_slots[i]->ptr),
+                       static_cast<MType const *>(m_slots[i]->ptr), static_cast<PType const *>(p_slots[i]->ptr),
+                       static_cast<SType const *>(s_slots[i]->ptr));
+        });
     };
 
     GroupedSandwichDescriptor d;
@@ -5615,15 +5515,7 @@ APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<float>
     // between them - the same contract @ref grouped_batched_gemm carries, and
     // the same reason: this entry point exists to MERGE calls that used to be
     // separate.
-    {
-        std::vector<CType const *> seen(c_list.begin(), c_list.end());
-        std::sort(seen.begin(), seen.end());
-        if (std::adjacent_find(seen.begin(), seen.end()) != seen.end()) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                    "cg::grouped_gather_rotate: two members share a destination tensor. The run gives no ordering "
-                                    "between members, so they would race; split them into separate calls");
-        }
-    }
+    detail::require_distinct_destinations(c_list, "cg::grouped_gather_rotate");
 
     auto run_member = [](CType *c, SrcType const *s, XType const *x, std::vector<size_t> const &qs, std::vector<size_t> const &us) {
         auto const  &si = s->impl();
@@ -5654,21 +5546,7 @@ APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<float>
         // never a caller-created thread pool. An exception may not cross the
         // region boundary (that terminates, and takes a libomp worker with it),
         // so the first one is carried out by hand.
-        std::exception_ptr first;
-        EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
-        for (size_t i = 0; i < count; i++) {
-            try {
-                run_member(c_list[i], &src, x_list[i], q_list[i], u_list[i]);
-            } catch (...) {
-                EINSUMS_OMP_PRAGMA(critical(grouped_gather_rotate_failure))
-                if (!first) {
-                    first = std::current_exception();
-                }
-            }
-        }
-        if (first) {
-            std::rethrow_exception(first);
-        }
+        detail::run_grouped_members(count, [&](size_t i) { run_member(c_list[i], &src, x_list[i], q_list[i], u_list[i]); });
         return;
     }
 
@@ -5679,10 +5557,7 @@ APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<float>
     outputs.reserve(count);
     c_slots.reserve(count);
     x_slots.reserve(count);
-    auto [s_id, s_binding] = ctx.get_slot(src);
-    // Copied out of the structured binding: a lambda that opens an OpenMP
-    // region may not capture one.
-    TensorSlot *const s_slot = s_binding;
+    auto [s_id, s_slot] = ctx.get_slot(src);
     inputs.push_back(s_id);
     for (size_t i = 0; i < count; i++) {
         auto [x_id, x_slot] = ctx.get_slot(*x_list[i]);
@@ -5699,23 +5574,10 @@ APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<float>
     // captured node outlives the call, and every replay reads them again.
     auto executor = [run_member, s_slot, c_slots = std::move(c_slots), x_slots = std::move(x_slots), q_list, u_list]() {
         LabeledSection("grouped_gather_rotate execute");
-        size_t const       n = c_slots.size();
-        std::exception_ptr first;
-        EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
-        for (size_t i = 0; i < n; i++) {
-            try {
-                run_member(static_cast<CType *>(c_slots[i]->ptr), static_cast<SrcType const *>(s_slot->ptr),
-                           static_cast<XType const *>(x_slots[i]->ptr), q_list[i], u_list[i]);
-            } catch (...) {
-                EINSUMS_OMP_PRAGMA(critical(grouped_gather_rotate_failure))
-                if (!first) {
-                    first = std::current_exception();
-                }
-            }
-        }
-        if (first) {
-            std::rethrow_exception(first);
-        }
+        detail::run_grouped_members(c_slots.size(), [&](size_t i) {
+            run_member(static_cast<CType *>(c_slots[i]->ptr), static_cast<SrcType const *>(s_slot->ptr),
+                       static_cast<XType const *>(x_slots[i]->ptr), q_list[i], u_list[i]);
+        });
     };
 
     GroupedGatherRotateDescriptor d;
@@ -7602,14 +7464,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
                         flat_batch *= static_cast<std::int64_t>(A.dim(p));
 
                     BatchedGemmDescriptor d;
-                    if constexpr (std::is_same_v<T, float>)
-                        d.scalar = BlasScalar::Float;
-                    else if constexpr (std::is_same_v<T, double>)
-                        d.scalar = BlasScalar::Double;
-                    else if constexpr (std::is_same_v<T, std::complex<float>>)
-                        d.scalar = BlasScalar::ComplexFloat;
-                    else if constexpr (std::is_same_v<T, std::complex<double>>)
-                        d.scalar = BlasScalar::ComplexDouble;
+                    d.scalar = blas_scalar_of<T>();
 
                     char natural_trans_a = (a_rest[0] == link) ? 'T' : 'N';
                     char natural_trans_b = (b_rest[1] == link) ? 'T' : 'N';

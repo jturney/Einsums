@@ -12,6 +12,7 @@
 #include <complex>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -53,6 +54,26 @@ enum class BlasScalar : std::uint8_t {
     ComplexFloat,
     ComplexDouble,
 };
+
+/**
+ * @brief The @ref BlasScalar tag naming @p T.
+ *
+ * Every producer of a descriptor carrying a `scalar` field has to answer the
+ * same question, and answering it in place invites the four branches to drift
+ * apart. @p T is one of the four types `blas::gemm_batch` accepts.
+ */
+template <typename T>
+constexpr BlasScalar blas_scalar_of() {
+    if constexpr (std::is_same_v<T, float>) {
+        return BlasScalar::Float;
+    } else if constexpr (std::is_same_v<T, double>) {
+        return BlasScalar::Double;
+    } else if constexpr (std::is_same_v<T, std::complex<float>>) {
+        return BlasScalar::ComplexFloat;
+    } else {
+        return BlasScalar::ComplexDouble;
+    }
+}
 
 /**
  * @brief Metadata for BatchedGemm nodes produced by the GEMMBatching pass.
