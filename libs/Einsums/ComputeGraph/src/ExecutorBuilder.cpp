@@ -94,7 +94,7 @@ std::function<void()> build_permute(packed_gemm::ScalarType dtype, PermuteDescri
     ParsedPermuteSpec parsed;
     parsed.c_indices = desc.c_indices;
     parsed.a_indices = desc.a_indices;
-    parsed.raw       = fmt::format("{} <- {}", fmt::join(desc.c_indices, ","), fmt::join(desc.a_indices, ","));
+    parsed.raw       = parsed.render();
 
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         return [params, parsed, a, c]() {
@@ -224,8 +224,7 @@ std::function<void()> build_einsum(packed_gemm::ScalarType dtype, EinsumDescript
         indices->spec.a_indices = desc.spec.a_indices;
         indices->spec.b_indices = desc.spec.b_indices;
         indices->spec.c_indices = desc.spec.c_indices;
-        indices->spec.raw       = fmt::format("{} <- {} ; {}", fmt::join(desc.spec.c_indices, ","), fmt::join(desc.spec.a_indices, ","),
-                                              fmt::join(desc.spec.b_indices, ","));
+        indices->spec.raw       = indices->spec.render();
         indices->link_indices   = desc.spec.link_indices;
     }
 

@@ -2245,8 +2245,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
             einsum->indices->spec.conj_b = einsum->conj_b;
             // Regenerated exactly as build_executor regenerates it for a node
             // with no live block, so a loaded node's diagnostics read the same.
-            einsum->indices->spec.raw = fmt::format("{} <- {} ; {}", fmt::join(einsum->spec.c_indices, ","),
-                                                    fmt::join(einsum->spec.a_indices, ","), fmt::join(einsum->spec.b_indices, ","));
+            einsum->indices->spec.raw = einsum->indices->spec.render();
             einsum->site              = std::make_shared<packed_gemm::ContractionSite>();
             if (einsum->gemm_hint != nullptr) {
                 if (spec.hint_ids.size() != 3) {

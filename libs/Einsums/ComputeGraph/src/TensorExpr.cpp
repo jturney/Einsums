@@ -520,8 +520,7 @@ expected<void, RaiseFailure> lower_region(Graph &graph, Region const &region, Te
             spec.a_indices = letters(term.operand_indices[0]);
             spec.b_indices = letters(term.operand_indices[1]);
             spec.c_indices = letters(statement.target_indices);
-            spec.raw       = fmt::format("{} <- {} ; {}", fmt::join(spec.c_indices, ","), fmt::join(spec.a_indices, ","),
-                                         fmt::join(spec.b_indices, ","));
+            spec.raw       = spec.render();
 
             auto const &a_leaf = expr.at(term.operands[0]);
             auto const &b_leaf = expr.at(term.operands[1]);

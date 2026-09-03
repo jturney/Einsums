@@ -7,6 +7,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <cctype>
 #include <functional>
@@ -160,6 +161,14 @@ expected<ParsedEinsumSpec, GraphError> parse_einsum_spec(std::string_view spec) 
     }
 
     return result;
+}
+
+std::string ParsedEinsumSpec::render() const {
+    return fmt::format("{} <- {} ; {}", fmt::join(c_indices, ","), fmt::join(a_indices, ","), fmt::join(b_indices, ","));
+}
+
+std::string ParsedPermuteSpec::render() const {
+    return fmt::format("{} <- {}", fmt::join(c_indices, ","), fmt::join(a_indices, ","));
 }
 
 std::vector<std::string> ParsedEinsumSpec::link_indices() const {

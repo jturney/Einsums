@@ -58,6 +58,21 @@ struct EINSUMS_EXPORT ParsedEinsumSpec {
     bool                     conj_a{false}; ///< A wrapped in conj(...) in the spec
     bool                     conj_b{false}; ///< B wrapped in conj(...) in the spec
 
+    /**
+     * @brief The canonical `"c <- a ; b"` spelling of these index lists.
+     *
+     * @ref raw holds whatever string the spec was parsed from, which for a spec a
+     * pass or the IR loader assembled from index lists is nothing at all. Every
+     * such producer used to format the join by hand, and the spelling has to agree
+     * across all of them: it is what an execute-time diagnostic quotes, and the IR
+     * round-trip goldens compare byte for byte.
+     *
+     * Multi-character indices are comma-separated, which parses back to the same
+     * lists under either notation.
+     * @versionadded{2.0.0}
+     */
+    [[nodiscard]] std::string render() const;
+
     /// Compute link indices (in both A and B, not in C).
     [[nodiscard]] std::vector<std::string> link_indices() const;
 
@@ -377,6 +392,11 @@ struct ParsedPermuteSpec {
     std::vector<std::string> c_indices; ///< Output (C) indices
     std::vector<std::string> a_indices; ///< Input (A) indices
     std::string              raw;       ///< Original specification string
+
+    /// The canonical `"c <- a"` spelling of these index lists.
+    /// @see ParsedEinsumSpec::render
+    /// @versionadded{2.0.0}
+    [[nodiscard]] EINSUMS_EXPORT std::string render() const;
 };
 
 /**

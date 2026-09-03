@@ -627,8 +627,7 @@ bool LayoutAssignment::run(Graph &graph) {
         // The raw spelling is a display string, but it is the one an execute-time diagnostic
         // quotes, so it is regenerated in the same form the IR loader writes rather than left
         // describing the captured axes.
-        desc->indices->spec.raw = fmt::format("{} <- {} ; {}", fmt::join(desc->spec.c_indices, ","), fmt::join(desc->spec.a_indices, ","),
-                                              fmt::join(desc->spec.b_indices, ","));
+        desc->indices->spec.raw = desc->indices->spec.render();
         report(2, fmt::format("node {} now reads {}", nodes[site.node].id, desc->indices->spec.raw));
     }
 

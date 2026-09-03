@@ -120,7 +120,7 @@ void rebuild_node(Graph &graph, Node &nd, TensorId old_id, TensorId new_id) {
         ParsedPermuteSpec pspec;
         pspec.c_indices = d->c_indices;
         pspec.a_indices = d->a_indices;
-        pspec.raw       = fmt::format("{} <- {}", fmt::join(d->c_indices, ","), fmt::join(d->a_indices, ","));
+        pspec.raw       = pspec.render();
 
         // PrefactorScalar, not the raw complex<double>: `as<T>` narrows to the
         // element type exactly and throws rather than silently dropping a
