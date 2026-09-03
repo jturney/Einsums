@@ -2553,18 +2553,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // storage. The static-rank declare_tensor has always installed one.
         handle.resize_deferred_fn = [ptr](std::vector<size_t> const &new_dims) { ptr->resize_deferred(new_dims); };
         handle.is_materialized_fn = [ptr]() { return ptr->is_materialized(); };
-        handle.zero_fn            = [ptr]() {
-            ptr->materialize();
-            ptr->zero();
-        };
-        handle.random_fn = [ptr]() {
-            ptr->materialize();
-            auto *data = ptr->data();
-            for (size_t idx = 0; idx < ptr->size(); idx++) {
-                // NOLINTNEXTLINE(misc-predictable-rand)
-                data[idx] = static_cast<T>(static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0);
-            }
-        };
+        handle.zero_fn            = make_zero_fn(ptr);
+        handle.random_fn          = make_random_fn(ptr);
         register_tensor(std::move(handle));
         // No Alloc node, MaterializationPass inserts Materialize + Initialize.
         return *ptr;
@@ -2768,10 +2758,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         handle.is_intermediate = intermediate;
         handle.alloc_state     = AllocState::Deferred; // empty shell reads as vacuously materialized; force the lifecycle
         handle.init_kind       = InitKind::Zero;
-        handle.zero_fn         = [ptr]() {
-            ptr->materialize();
-            ptr->zero();
-        };
+        handle.zero_fn         = make_zero_fn(ptr);
         register_tensor(std::move(handle));
         // No Alloc node, MaterializationPass inserts Materialize + Initialize.
         return *ptr;
@@ -2886,18 +2873,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                 off[i] = offsets[i];
             ptr->set_distribution(gd, off);
         };
-        handle.zero_fn = [ptr]() {
-            ptr->materialize();
-            ptr->zero();
-        };
-        handle.random_fn = [ptr]() {
-            ptr->materialize();
-            auto *data = ptr->data();
-            for (size_t idx = 0; idx < ptr->size(); idx++) {
-                // NOLINTNEXTLINE(misc-predictable-rand)
-                data[idx] = static_cast<T>(static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0);
-            }
-        };
+        handle.zero_fn   = make_zero_fn(ptr);
+        handle.random_fn = make_random_fn(ptr);
         register_tensor(std::move(handle));
 
         // No Alloc node inserted, MaterializationPass will insert

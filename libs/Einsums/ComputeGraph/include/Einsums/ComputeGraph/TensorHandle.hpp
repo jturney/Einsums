@@ -626,6 +626,60 @@ struct TensorHandle {
 };
 
 /**
+ * @brief The post-materialize zero fill a deferred tensor's @ref TensorHandle::zero_fn runs.
+ *
+ * @tparam TensorType The tensor's type. Must expose ``materialize()`` and ``zero()``.
+ * @param[in] tensor The tensor to fill. Must outlive the handle.
+ * @return The callable.
+ *
+ * Materializing first is the whole reason this is not simply ``zero()``: a deferred tensor has
+ * no storage until the @ref passes::Materialization pass reaches it, and an Initialize node runs
+ * against whatever the handle was given at declaration time.
+ *
+ * Written out identically at seven sites across four headers before this existed. That is the
+ * shape worth naming rather than the count: a declaration site's job is to say WHICH
+ * initialization a tensor gets, and it was restating what each one IS every time.
+ *
+ * @see make_random_fn
+ */
+template <typename TensorType>
+[[nodiscard]] std::function<void()> make_zero_fn(TensorType *tensor) {
+    return [tensor]() {
+        tensor->materialize();
+        tensor->zero();
+    };
+}
+
+/**
+ * @brief The post-materialize random fill a deferred tensor's @ref TensorHandle::random_fn runs.
+ *
+ * @tparam TensorType The tensor's type. Must expose ``materialize()``, ``data()`` and ``size()``.
+ * @param[in] tensor The tensor to fill. Must outlive the handle.
+ * @return The callable.
+ *
+ * Uniform on ``[-1, 1)`` through @c std::rand, which is what every ``declare_random_*`` spelled
+ * inline. Deliberately NOT the library's seeded generator: this is scratch initialization whose
+ * values nothing reads for their distribution, and the six copies it replaces all used
+ * @c std::rand, so keeping it is what makes the consolidation a refactor rather than a change of
+ * what a random workspace tensor contains.
+ *
+ * @see make_zero_fn
+ */
+template <typename TensorType>
+[[nodiscard]] std::function<void()> make_random_fn(TensorType *tensor) {
+    return [tensor]() {
+        using Value = typename std::remove_cvref_t<TensorType>::ValueType;
+        tensor->materialize();
+        auto        *data = tensor->data();
+        size_t const size = tensor->size();
+        for (size_t idx = 0; idx < size; idx++) {
+            // NOLINTNEXTLINE(misc-predictable-rand)
+            data[idx] = static_cast<Value>(static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0);
+        }
+    };
+}
+
+/**
  * @brief Construct a TensorHandle from a typed tensor.
  *
  * Extracts metadata (name, rank, dims, strides, dtype) from the tensor and
@@ -774,31 +828,19 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
                               t.materialize();
                               t.zero();
                           }) {
-                h.zero_fn = [tensor_mut]() {
-                    tensor_mut->materialize();
-                    tensor_mut->zero();
-                };
+                h.zero_fn = make_zero_fn(tensor_mut);
             }
             break;
         case PendingInit::Random:
             h.init_kind = InitKind::Random;
-            // Random fill matches Workspace::declare_random_*'s inline loop:
-            // uniform on [-1, 1) using ``std::rand``. Done here so a
-            // body-resident handle can self-initialize without consulting
-            // workspace.
+            // Installed here so a body-resident handle can self-initialize without consulting
+            // the workspace that declared the tensor.
             if constexpr (requires(CleanTensor &t) {
                               t.materialize();
                               t.data();
                               t.size();
                           }) {
-                h.random_fn = [tensor_mut]() {
-                    tensor_mut->materialize();
-                    auto *data = tensor_mut->data();
-                    for (size_t idx = 0; idx < tensor_mut->size(); idx++) {
-                        // NOLINTNEXTLINE(misc-predictable-rand)
-                        data[idx] = static_cast<ValType>(static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0);
-                    }
-                };
+                h.random_fn = make_random_fn(tensor_mut);
             }
             break;
         case PendingInit::None:

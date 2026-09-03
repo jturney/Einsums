@@ -329,18 +329,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         handle.alloc_state     = AllocState::Deferred;
         handle.is_intermediate = false;
         handle.materialize_fn  = [ptr]() { ptr->materialize(); };
-        handle.zero_fn         = [ptr]() {
-            ptr->materialize();
-            ptr->zero();
-        };
-        handle.random_fn = [ptr]() {
-            ptr->materialize();
-            auto *data = ptr->data();
-            for (size_t idx = 0; idx < ptr->size(); idx++) {
-                // NOLINTNEXTLINE(misc-predictable-rand)
-                data[idx] = static_cast<T>(static_cast<double>(std::rand()) / RAND_MAX * 2.0 - 1.0);
-            }
-        };
+        handle.zero_fn         = make_zero_fn(ptr);
+        handle.random_fn       = make_random_fn(ptr);
         _handles.push_back(std::move(handle));
         _handles.back().ownership = TensorOwnership::Pipeline;
         _scopes->insert_or_assign(static_cast<void const *>(ptr), TensorOwnership::Pipeline);
