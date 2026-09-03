@@ -7,6 +7,7 @@
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -75,7 +76,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
     auto             &nodes = graph.nodes();
     size_t const      n     = nodes.size();
 
-    auto const contains = [](std::vector<TensorId> const &v, TensorId t) { return std::find(v.begin(), v.end(), t) != v.end(); };
+    auto const contains = [](std::vector<TensorId> const &v, TensorId t) { return std::ranges::find(v, t) != v.end(); };
     // Generation bounds for scratch that is REUSED across sites (the CCSD body
     // recycles one tmp/tmpP for every symacc term, so whole-graph
     // writer/reader-uniqueness rejected every site of a shared buffer). A
@@ -108,13 +109,6 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         return node.kind == OpKind::Axpby && node.outputs.size() == 1 && node.outputs[0] == dst && contains(node.inputs, src) &&
                contains(node.inputs, dst);
     };
-    // ``passes::axpby_beta`` from PassUtil.hpp, except that it accepts a node of any kind and
-    // this caller has already established the kind. Nothing else differs.
-    auto const axpby_beta = [](Node const &node) -> PrefactorScalar const * {
-        auto const *ad = std::get_if<AxpbyDescriptor>(&node.op_data);
-        return ad != nullptr ? &live_beta(*ad) : nullptr;
-    };
-
     // A safely-foldable site (interference-clean). Collected in a first pass so
     // the rewrite does not mutate `nodes` mid-scan.
     struct Site {
@@ -348,7 +342,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         ParsedPermuteSpec pspec;
         pspec.c_indices = s.c_indices;
         pspec.a_indices = s.a_indices;
-        pspec.raw       = fmt::format("{} <- {}", fmt::join(s.c_indices, ","), fmt::join(s.a_indices, ","));
+        pspec.raw       = pspec.render();
 
         TensorId const        r2  = s.r2;
         TensorId const        tmp = s.tmp;

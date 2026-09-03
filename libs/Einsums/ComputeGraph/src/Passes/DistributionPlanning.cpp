@@ -127,6 +127,19 @@ bool DistributionPlanning::run(Graph &graph) {
         size_t                              node_idx;
         std::string                         role; // "C", "A", "B"
         packed_gemm::ContractionSpec const *spec;
+
+        /// The index list this tensor carries in that contraction. Anything that
+        /// is not "C" or "A" is the B operand, which is the only other role the
+        /// map below ever records.
+        [[nodiscard]] std::vector<std::string> const &indices() const {
+            if (role == "C") {
+                return spec->c_indices;
+            }
+            if (role == "A") {
+                return spec->a_indices;
+            }
+            return spec->b_indices;
+        }
     };
     std::unordered_map<TensorId, std::vector<TensorRole>> tensor_usage;
 
@@ -232,18 +245,12 @@ bool DistributionPlanning::run(Graph &graph) {
         auto const &usage = it->second[0];
         auto        cls   = classify_indices(*usage.spec);
 
-        // Determine which indices this tensor carries
-        std::vector<std::string> const *tensor_indices = nullptr;
-        if (usage.role == "C")
-            tensor_indices = &usage.spec->c_indices;
-        else if (usage.role == "A")
-            tensor_indices = &usage.spec->a_indices;
-        else
-            tensor_indices = &usage.spec->b_indices;
+        // Which indices this tensor carries.
+        auto const &tensor_indices = usage.indices();
 
         // Use SUMMA when enabled and we have a true 2D square grid
         bool const use_summa = _enable_summa && (grid.rows() > 1 && grid.cols() > 1 && grid.rows() == grid.cols());
-        auto       desc      = build_descriptor(*tensor_indices, handle.dims, cls, &grid, usage.role, use_summa);
+        auto       desc      = build_descriptor(tensor_indices, handle.dims, cls, &grid, usage.role, use_summa);
 
         // Conflict resolution: check ALL usages of this tensor. If a dimension's
         // index is a link (contraction) index in ANY other einsum, it must NOT be
@@ -254,26 +261,20 @@ bool DistributionPlanning::run(Graph &graph) {
             auto                                  other_cls   = classify_indices(*other_usage.spec);
             std::unordered_set<std::string> const other_link(other_cls.link.begin(), other_cls.link.end());
 
-            // Get this tensor's indices in the other einsum
-            std::vector<std::string> const *other_tensor_indices = nullptr;
-            if (other_usage.role == "C")
-                other_tensor_indices = &other_usage.spec->c_indices;
-            else if (other_usage.role == "A")
-                other_tensor_indices = &other_usage.spec->a_indices;
-            else
-                other_tensor_indices = &other_usage.spec->b_indices;
+            // This tensor's indices in the other einsum.
+            auto const &other_tensor_indices = other_usage.indices();
 
             // For each dimension, check if its index is a link in the other einsum
-            for (size_t d = 0; d < tensor_indices->size() && d < other_tensor_indices->size(); d++) {
+            for (size_t d = 0; d < tensor_indices.size() && d < other_tensor_indices.size(); d++) {
                 if (desc.dim_to_axis[d] == comm::GridAxis::None)
                     continue;
                 // The tensor's dim d has index name tensor_indices[d].
                 // In the other einsum, the same dim d has index name other_tensor_indices[d].
                 // If that index is a link index there, we can't distribute this dim.
-                if (other_link.count((*other_tensor_indices)[d]) > 0) {
+                if (other_link.count(other_tensor_indices[d]) > 0) {
                     EINSUMS_LOG_INFO("DistributionPlanning: '{}' dim {} ({}) conflicts — link index '{}' in another einsum, downgrading to "
                                      "None",
-                                     handle.name, d, (*tensor_indices)[d], (*other_tensor_indices)[d]);
+                                     handle.name, d, tensor_indices[d], other_tensor_indices[d]);
                     desc.dim_to_axis[d] = comm::GridAxis::None;
                 }
             }
@@ -298,8 +299,8 @@ bool DistributionPlanning::run(Graph &graph) {
                 if (inp_desc->dim_to_axis[id] == comm::GridAxis::None)
                     continue;
                 // Find this index in the current tensor's indices
-                for (size_t td = 0; td < tensor_indices->size(); td++) {
-                    if ((*tensor_indices)[td] == inp_indices[id]) {
+                for (size_t td = 0; td < tensor_indices.size(); td++) {
+                    if (tensor_indices[td] == inp_indices[id]) {
                         desc.dim_to_axis[td] = inp_desc->dim_to_axis[id];
                     }
                 }

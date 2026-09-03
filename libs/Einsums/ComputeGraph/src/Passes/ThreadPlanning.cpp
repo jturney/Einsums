@@ -37,38 +37,82 @@ struct NodeCost {
     bool         frozen{false};                     ///< Width is 1 and stays 1
 };
 
-/// Which speedup curve a node's kernel scales along.
-KernelFamily family_for(Node const &node, std::size_t bytes, DeviceProfile const &profile, double flops) {
-    switch (node.kind) {
+/// How a node's kind behaves, for the two questions this pass asks of it: which
+/// speedup curve it scales along, and how its serial time is modeled.
+///
+/// One partition rather than two. The two switches used to be written out
+/// separately and they drifted: the batched kinds were listed here but not
+/// there, and the planner priced the CC residual's dominant kernel as a memcpy
+/// until that was noticed.
+enum class KindClass {
+    Gemm,        ///< A single dense contraction, priced from its GEMM shape.
+    BatchedGemm, ///< Many small contractions behind one launch, priced from their flops.
+    Permute,     ///< A physical reordering, priced from bytes and rank.
+    TileMove,    ///< A tile gather/scatter: scales like a permute, priced as plain traffic.
+    ControlFlow, ///< Loop / Conditional, priced by the body it runs.
+    Other        ///< Elementwise and everything else, priced as the traffic it moves.
+};
+
+KindClass kind_class(OpKind kind) {
+    switch (kind) {
     case OpKind::Einsum:
     case OpKind::Gemm:
     case OpKind::SymmGemm:
     case OpKind::Gemv:
     case OpKind::Ger:
     case OpKind::Dot:
+        return KindClass::Gemm;
+
+    case OpKind::BatchedGemm:
+    case OpKind::GroupedBatchedGemm:
+    case OpKind::GroupedSandwich:
+    case OpKind::GroupedGatherRotate:
+        return KindClass::BatchedGemm;
+
+    case OpKind::Permute:
+    case OpKind::GroupedPermute:
+    case OpKind::Transpose:
+    case OpKind::HPTTPermute:
+        return KindClass::Permute;
+
+    case OpKind::TileGather:
+    case OpKind::TileScatter:
+        return KindClass::TileMove;
+
+    case OpKind::Loop:
+    case OpKind::Conditional:
+        return KindClass::ControlFlow;
+
+    default:
+        return KindClass::Other;
+    }
+}
+
+/// Which speedup curve a node's kernel scales along.
+KernelFamily family_for(Node const &node, std::size_t bytes, DeviceProfile const &profile, double flops) {
+    switch (kind_class(node.kind)) {
+    case KindClass::Gemm:
         // Small and large GEMM are different code, not the same code on less
         // data, so the flop count picks between two curves rather than a size
         // class within one.
         return flops > 0.0 ? (flops < DeviceProfile::kGemmSmallFlops ? KernelFamily::GemmSmall : KernelFamily::GemmLarge)
                : profile.size_class_for_bytes(bytes) == SizeClass::L1Resident ? KernelFamily::GemmSmall
                                                                               : KernelFamily::GemmLarge;
-    case OpKind::BatchedGemm:
-    case OpKind::GroupedBatchedGemm:
-    case OpKind::GroupedSandwich:
-    case OpKind::GroupedGatherRotate:
+    case KindClass::BatchedGemm:
         return KernelFamily::BatchedGemm;
 
-    case OpKind::Permute:
-    case OpKind::GroupedPermute:
-    case OpKind::Transpose:
-    case OpKind::HPTTPermute:
-    case OpKind::TileGather:
-    case OpKind::TileScatter:
+    case KindClass::Permute:
+    case KindClass::TileMove:
+        // A tile gather/scatter scales the way a permute does, so it shares the
+        // curve. It is still PRICED as plain traffic below: the two questions
+        // have different answers for this one class, deliberately.
         return KernelFamily::Permute;
 
-    default:
-        return KernelFamily::Elementwise;
+    case KindClass::ControlFlow:
+    case KindClass::Other:
+        break;
     }
+    return KernelFamily::Elementwise;
 }
 
 /// The bytes a node touches: every distinct buffer it reads or writes, counted
@@ -462,36 +506,21 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
             _num_from_timings++;
         } else {
             _num_from_model++;
-            switch (node.kind) {
-            case OpKind::Loop:
-            case OpKind::Conditional:
+            switch (kind_class(node.kind)) {
+            case KindClass::ControlFlow:
                 // Priced by the body it runs, so a loop full of fat work sits
                 // on the critical path where it belongs even though the
                 // container itself is width 1.
                 c.t1_us = body_serial_us[i];
                 break;
-            case OpKind::Einsum:
-            case OpKind::Gemm:
-            case OpKind::SymmGemm:
-            case OpKind::Gemv:
-            case OpKind::Ger:
-            case OpKind::Dot:
+            case KindClass::Gemm:
                 c.t1_us = shape.valid() ? profile.estimate_gemm_time_us(shape.m, shape.n, shape.k, 1)
                                         : (bytes > 0 ? profile.estimate_memory_time_us(bytes, 1) : 0.0);
                 break;
-            case OpKind::BatchedGemm:
-            case OpKind::GroupedBatchedGemm:
-            case OpKind::GroupedSandwich:
-            case OpKind::GroupedGatherRotate:
-                // A batch is arithmetic, not traffic. Without these two cases
-                // both fell to the default below and were priced as the bytes
-                // they move, which is the wrong dimension entirely: the flops
-                // scale with the members' m*n*k while the bytes only scale with
-                // the operands. family_for() above already knows these kinds -
-                // it returns KernelFamily::BatchedGemm for them - so the two
-                // switches disagreed about whether a batched GEMM was a
-                // recognised node, and the planner priced the CC residual's
-                // dominant kernel as a memcpy.
+            case KindClass::BatchedGemm:
+                // A batch is arithmetic, not traffic. Pricing it as the bytes it
+                // moves is the wrong dimension entirely: the flops scale with the
+                // members' m*n*k while the bytes only scale with the operands.
                 //
                 // One batched call pays ONE launch and then does every member's
                 // arithmetic, so the per-member estimate has its launch term
@@ -500,10 +529,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
                 c.t1_us = batched_gemm_us(node, profile);
                 break;
 
-            case OpKind::Permute:
-            case OpKind::GroupedPermute:
-            case OpKind::Transpose:
-            case OpKind::HPTTPermute: {
+            case KindClass::Permute: {
                 auto const &map  = graph.tensors_map();
                 std::size_t rank = 2;
                 if (!node.inputs.empty()) {
@@ -514,7 +540,8 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
                 c.t1_us = bytes > 0 ? profile.estimate_permute_time_us(bytes, rank, 1) : 0.0;
                 break;
             }
-            default:
+            case KindClass::TileMove:
+            case KindClass::Other:
                 // Everything else - elementwise, axpby, scale, the tiled
                 // lowerings, Custom - is priced as the traffic it moves. A node
                 // whose buffers the graph does not know moves no bytes it can

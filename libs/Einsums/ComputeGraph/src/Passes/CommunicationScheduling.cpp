@@ -20,6 +20,7 @@ void CommunicationScheduling::reset_stats() {
 }
 
 bool CommunicationScheduling::run(Graph &graph) {
+    PassCounter const scheduled{_num_scheduled};
     if (comm::world_size() <= 1)
         return false;
 
@@ -33,8 +34,6 @@ bool CommunicationScheduling::run(Graph &graph) {
     //
     // This enables overlapping communication with computation when the graph
     // has independent work available after the allreduce.
-
-    bool modified = false;
 
     for (auto &node : nodes) {
         if (node.kind != OpKind::Allreduce)
@@ -73,13 +72,12 @@ bool CommunicationScheduling::run(Graph &graph) {
         node.execute = nullptr;
 
         _num_scheduled++;
-        modified = true;
 
         EINSUMS_LOG_INFO("CommunicationScheduling: converted allreduce({}) to async (iallreduce + wait)", handle.name);
         report(2, fmt::format("split Allreduce('{}') into async iallreduce + wait for compute overlap", handle.name));
     }
 
-    return modified;
+    return scheduled.moved();
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

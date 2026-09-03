@@ -109,25 +109,24 @@ std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid)
     return out;
 }
 
-// Walks descendants of @p graph (loop bodies, conditional branches) and
-// every sub-graph nested inside them, in post-order. For each deferred
-// tensor it finds, appends the (graph-that-owns-handle, tensor-id) pair
-// to @p out so the caller can build hoisted lifecycle nodes for it. Does
-// NOT collect @p graph's own deferred tensors, that's the caller's job.
+// One deferred tensor, paired with the graph whose registry owns its handle.
 struct DeferredEntry {
     Graph   *handle_owner;
     TensorId tid;
 };
 
-void collect_descendant_deferred(Graph &graph, std::vector<DeferredEntry> &out) {
-    graph.for_each_subgraph([&](Graph &sub) {
-        for (auto const &[tid, handle] : sub.tensors_map()) {
-            if (handle.alloc_state == AllocState::Deferred) {
-                out.push_back({.handle_owner = &sub, .tid = tid});
-            }
+// Appends every deferred tensor of @p graph and of every sub-graph nested under
+// it (loop bodies, conditional branches, and their nesting), each paired with
+// the graph that owns its handle, so the caller can build hoisted lifecycle
+// nodes for it. @p graph's own tensors come first, then each sub-graph's in
+// turn, depth first.
+void collect_deferred(Graph &graph, std::vector<DeferredEntry> &out) {
+    for (auto const &[tid, handle] : graph.tensors_map()) {
+        if (handle.alloc_state == AllocState::Deferred) {
+            out.push_back({.handle_owner = &graph, .tid = tid});
         }
-        collect_descendant_deferred(sub, out);
-    });
+    }
+    graph.for_each_subgraph([&out](Graph &sub) { collect_deferred(sub, out); });
 }
 
 /// Whether @p graph already holds a Materialize node for the tensor named @p name.
@@ -185,14 +184,9 @@ bool Materialization::run(Graph &graph) {
         Node const &node = parent_nodes[i];
 
         auto collect_from = [&](Graph &child) {
-            for (auto const &[tid, handle] : child.tensors_map()) {
-                if (handle.alloc_state == AllocState::Deferred) {
-                    hoists.push_back({.owning_node_index = i, .handle_owner = &child, .tid = tid});
-                }
-            }
-            std::vector<DeferredEntry> nested;
-            collect_descendant_deferred(child, nested);
-            for (auto const &e : nested) {
+            std::vector<DeferredEntry> found;
+            collect_deferred(child, found);
+            for (auto const &e : found) {
                 hoists.push_back({.owning_node_index = i, .handle_owner = e.handle_owner, .tid = e.tid});
             }
         };
@@ -315,6 +309,26 @@ bool Materialization::run(Graph &graph) {
         return tid != 0 ? std::optional<TensorId>{tid} : std::nullopt;
     };
 
+    // build_lifecycle_nodes plus the two counters that always move with it: every
+    // lifecycle this pass emits materializes one tensor, and initializes it as well
+    // when the handle asks for it. Kept together so the three cannot drift.
+    auto lifecycle_for = [this](TensorHandle &handle, TensorId emit_tid) {
+        auto built = build_lifecycle_nodes(handle, emit_tid);
+        _num_materialized++;
+        if (handle.init_kind != InitKind::None) {
+            _num_initialized++;
+        }
+        return built;
+    };
+
+    // Splice a lifecycle to the front of a sub-graph, which is where it has to run:
+    // the body's own nodes are all consumers of it.
+    auto insert_at_front = [](Graph &target, std::vector<Node> lifecycle) {
+        std::vector<std::pair<std::size_t, std::vector<Node>>> group;
+        group.emplace_back(0, std::move(lifecycle));
+        target.insert_node_groups(std::move(group));
+    };
+
     // A setup body's OWN workspace, materialized inside the body. The parent cannot see these
     // through either path above: they are not its tensors, and the hoist walk deliberately
     // covers only loop bodies and conditional branches, where a hoisted lifecycle is what
@@ -352,19 +366,13 @@ bool Materialization::run(Graph &graph) {
             if (already_materialized_in(body, handle.name)) {
                 continue;
             }
-            for (auto &node : build_lifecycle_nodes(handle, tid)) {
+            for (auto &node : lifecycle_for(handle, tid)) {
                 body_lifecycle.push_back(std::move(node));
-            }
-            _num_materialized++;
-            if (handle.init_kind != InitKind::None) {
-                _num_initialized++;
             }
             report(2, fmt::format("materialize setup-body scratch '{}' inside '{}'", handle.name, nodes[i].label));
         }
         if (!body_lifecycle.empty()) {
-            std::vector<std::pair<std::size_t, std::vector<Node>>> group;
-            group.emplace_back(0, std::move(body_lifecycle));
-            body.insert_node_groups(std::move(group));
+            insert_at_front(body, std::move(body_lifecycle));
         }
     }
 
@@ -373,15 +381,9 @@ bool Materialization::run(Graph &graph) {
 
         if (Graph *body = setup_body_writing(r.position, handle.tensor_ptr); body != nullptr) {
             if (auto const body_tid = body_tid_for(*body, handle.tensor_ptr); body_tid.has_value()) {
-                auto body_nodes = build_lifecycle_nodes(handle, *body_tid);
-                _num_materialized++;
-                if (handle.init_kind != InitKind::None) {
-                    _num_initialized++;
-                }
+                auto body_nodes = lifecycle_for(handle, *body_tid);
                 report(2, fmt::format("materialize deferred tensor '{}' inside setup body '{}'", handle.name, nodes[r.position].label));
-                std::vector<std::pair<std::size_t, std::vector<Node>>> body_group;
-                body_group.emplace_back(0, std::move(body_nodes));
-                body->insert_node_groups(std::move(body_group));
+                insert_at_front(*body, std::move(body_nodes));
                 continue;
             }
         }
@@ -391,11 +393,7 @@ bool Materialization::run(Graph &graph) {
         // has not yet), so the Loop / Conditional node gets a RAW edge after
         // these lifecycle nodes instead of floating as an edgeless root.
         TensorId const emit_tid  = r.owns_tid ? r.tid : graph.find_or_register_tensor_ptr(handle);
-        auto           new_nodes = build_lifecycle_nodes(handle, emit_tid);
-        _num_materialized++;
-        if (handle.init_kind != InitKind::None) {
-            _num_initialized++;
-        }
+        auto           new_nodes = lifecycle_for(handle, emit_tid);
         EINSUMS_LOG_INFO("Materialization: materialize({}) at position {} (owns_tid={})", handle.name, r.position, r.owns_tid);
         report(2, fmt::format("materialize deferred tensor '{}' at position {}{}", handle.name, r.position,
                               handle.init_kind != InitKind::None ? " (+initialize)" : ""));

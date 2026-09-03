@@ -59,42 +59,42 @@ bool already_has_materialize_named(std::vector<Node> const &nodes, std::string c
     return std::ranges::any_of(nodes, [&](Node const &n) { return n.kind == OpKind::Materialize && n.label == want; });
 }
 
-// Collect freeable intermediates from every descendant of `graph` (loop
-// bodies, conditional branches, and any nesting underneath), in
-// post-order. A body-scoped intermediate is live across every iteration
-// of the loop that contains it, so its single Free belongs in the parent
-// *after* the outermost enclosing loop, never inside the body, which
-// would free-then-reuse each iteration.
+// One freeable intermediate, paired with the graph whose registry owns it.
 struct DescendantFreeable {
     Graph   *owner;
     TensorId tid;
 };
 
-void collect_descendant_freeable(Graph &graph, size_t min_bytes, std::vector<DescendantFreeable> &out) {
-    // Written out rather than delegated to ``Graph::for_each_subgraph``, which visits every
-    // sub-graph including a Setup body. A setup body's storage must not be reclaimed here
-    // for the reason the Part B comment gives, and the visitor cannot see which node handed
-    // it the graph, so the exclusion has to happen where the descent is chosen.
-    auto descend = [&](Graph &sub) {
-        for (auto const &[tid, handle] : sub.tensors_map()) {
-            if (handle.is_intermediate && handle.release_fn && handle.aliases == 0 && handle.total_bytes() >= min_bytes) {
-                out.push_back({.owner = &sub, .tid = tid});
-            }
+// Collect the freeable intermediates of `graph` and of every descendant (loop
+// bodies, conditional branches, and any nesting underneath): the graph's own
+// first, then each child's in turn, depth first. A body-scoped intermediate is
+// live across every iteration of the loop that contains it, so its single Free
+// belongs in the parent *after* the outermost enclosing loop, never inside the
+// body, which would free-then-reuse each iteration.
+//
+// The descent is written out rather than delegated to ``Graph::for_each_subgraph``,
+// which visits every sub-graph including a Setup body. A setup body's storage must
+// not be reclaimed here for the reason the Part B comment gives, and the visitor
+// cannot see which node handed it the graph, so the exclusion has to happen where
+// the descent is chosen.
+void collect_freeable(Graph &graph, size_t min_bytes, std::vector<DescendantFreeable> &out) {
+    for (auto const &[tid, handle] : graph.tensors_map()) {
+        if (handle.is_intermediate && handle.release_fn && handle.aliases == 0 && handle.total_bytes() >= min_bytes) {
+            out.push_back({.owner = &graph, .tid = tid});
         }
-        collect_descendant_freeable(sub, min_bytes, out);
-    };
+    }
 
     for (auto &node : graph.nodes()) {
         if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
             if (loop->body) {
-                descend(*loop->body);
+                collect_freeable(*loop->body, min_bytes, out);
             }
         } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
             if (cond->then_branch) {
-                descend(*cond->then_branch);
+                collect_freeable(*cond->then_branch, min_bytes, out);
             }
             if (cond->else_branch) {
-                descend(*cond->else_branch);
+                collect_freeable(*cond->else_branch, min_bytes, out);
             }
         }
     }
@@ -215,12 +215,7 @@ bool FreeInsertion::run(Graph &graph) {
 
         auto collect_from = [&](Graph &child) {
             std::vector<DescendantFreeable> found;
-            for (auto const &[tid, handle] : child.tensors_map()) {
-                if (handle.is_intermediate && handle.release_fn && handle.aliases == 0 && handle.total_bytes() >= _min_bytes) {
-                    found.push_back({.owner = &child, .tid = tid});
-                }
-            }
-            collect_descendant_freeable(child, _min_bytes, found);
+            collect_freeable(child, _min_bytes, found);
 
             for (auto const &f : found) {
                 auto const &handle = f.owner->tensor(f.tid);
