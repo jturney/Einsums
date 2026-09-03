@@ -92,6 +92,41 @@ auto diagonal_sum(AType const &a) -> typename AType::ValueType {
     }
     return sum;
 }
+
+/// Record a one-in one-out Custom node whose executor is just a call to @p apply.
+///
+/// A dozen ops below share this shape exactly: take the slots for source and
+/// destination, build an executor that types both back and calls the kernel,
+/// record it. The executor re-reads both pointers from their slots on every run
+/// rather than baking them in, because Graph::rebind and the MemoryPlanning
+/// arena can each move a tensor's storage between executions.
+///
+/// @p apply is called as ``apply(dst, src)``, the same way each call site's
+/// eager branch calls it, so the two paths run one kernel and cannot drift.
+/// @p reads_dst lists the destination as an input as well, for the ops that
+/// read it before writing.
+///
+/// @p execute_label names the executor's profiling zone. The zone site it
+/// interns is a function-local static of THIS instantiation, and @p apply's
+/// closure type is unique to its call site, so each op keeps a site of its own
+/// under its own name, exactly as it did when the zone was written out inline.
+template <typename DstType, typename SrcType, typename Fn>
+void record_unary_custom(char const *name, char const *execute_label, DstType *dst, SrcType const &src, Fn apply, bool reads_dst = false) {
+    auto &ctx           = CaptureContext::current();
+    auto [s_id, s_slot] = ctx.get_slot(src);
+    auto [d_id, d_slot] = ctx.get_slot(*dst);
+
+    auto executor = [s_slot, d_slot, apply, execute_label]() {
+        LabeledSection(execute_label);
+        apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr));
+    };
+
+    std::vector<TensorId> inputs{s_id};
+    if (reads_dst) {
+        inputs.push_back(d_id);
+    }
+    ctx.record(OpKind::Custom, name, std::move(inputs), {d_id}, std::move(executor));
+}
 } // namespace detail
 
 /// A rank-2 operand of the BLAS and LAPACK wrappers below: either a tensor that
@@ -297,26 +332,20 @@ APIARY_INSTANTIATE_AS("real", einsums::TiledRuntimeTensor<double>, einsums::Tile
         };
         ctx.record(OpKind::Custom, "real", {a_id}, {r_id}, std::move(executor));
     } else {
-        auto compute = [](AType const &a, ResultType *o) {
+        auto compute = [](ResultType *o, AType const *a) {
             if constexpr (IsComplexV<typename AType::ValueType>) {
-                einsums::detail::impl_real(a.impl(), o->impl());
+                einsums::detail::impl_real(a->impl(), o->impl());
             } else {
-                einsums::detail::impl_copy(a.impl(), o->impl()); // Re(x) == x for real x
+                einsums::detail::impl_copy(a->impl(), o->impl()); // Re(x) == x for real x
             }
         };
         if (!ctx.is_capturing()) {
             LabeledSection("real eager");
-            compute(A, out);
+            compute(out, &A);
             return;
         }
         LabeledSection("real capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [r_id, r_slot] = ctx.get_slot(*out);
-        auto executor       = [a_slot, r_slot, compute]() {
-            LabeledSection("real execute");
-            compute(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
-        };
-        ctx.record(OpKind::Custom, "real", {a_id}, {r_id}, std::move(executor));
+        detail::record_unary_custom("real", "real execute", out, A, compute);
     }
 }
 
@@ -358,29 +387,23 @@ APIARY_INSTANTIATE_AS("imag", einsums::TiledRuntimeTensor<double>, einsums::Tile
         };
         ctx.record(OpKind::Custom, "imag", {a_id}, {r_id}, std::move(executor));
     } else {
-        auto compute = [](AType const &a, ResultType *o) {
+        auto compute = [](ResultType *o, AType const *a) {
             if constexpr (IsComplexV<typename AType::ValueType>) {
-                einsums::detail::impl_imag(a.impl(), o->impl());
+                einsums::detail::impl_imag(a->impl(), o->impl());
             } else {
                 // Im(x) == 0 for real x: copy then scale by zero (avoids reading
                 // uninitialized output the way a bare scal(0) would).
-                einsums::detail::impl_copy(a.impl(), o->impl());
+                einsums::detail::impl_copy(a->impl(), o->impl());
                 einsums::detail::impl_scal(typename ResultType::ValueType{0}, o->impl());
             }
         };
         if (!ctx.is_capturing()) {
             LabeledSection("imag eager");
-            compute(A, out);
+            compute(out, &A);
             return;
         }
         LabeledSection("imag capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [r_id, r_slot] = ctx.get_slot(*out);
-        auto executor       = [a_slot, r_slot, compute]() {
-            LabeledSection("imag execute");
-            compute(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
-        };
-        ctx.record(OpKind::Custom, "imag", {a_id}, {r_id}, std::move(executor));
+        detail::record_unary_custom("imag", "imag execute", out, A, compute);
     }
 }
 
@@ -423,19 +446,14 @@ APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<double>, einsums::Tiled
         };
         ctx.record(OpKind::Custom, "abs", {a_id}, {r_id}, std::move(executor));
     } else {
+        auto compute = [](ResultType *o, AType const *a) { einsums::detail::impl_abs(a->impl(), o->impl()); };
         if (!ctx.is_capturing()) {
             LabeledSection("abs eager");
-            einsums::detail::impl_abs(A.impl(), out->impl());
+            compute(out, &A);
             return;
         }
         LabeledSection("abs capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [r_id, r_slot] = ctx.get_slot(*out);
-        auto executor       = [a_slot, r_slot]() {
-            LabeledSection("abs execute");
-            einsums::detail::impl_abs(static_cast<AType const *>(a_slot->ptr)->impl(), static_cast<ResultType *>(r_slot->ptr)->impl());
-        };
-        ctx.record(OpKind::Custom, "abs", {a_id}, {r_id}, std::move(executor));
+        detail::record_unary_custom("abs", "abs execute", out, A, compute);
     }
 }
 
@@ -714,14 +732,7 @@ APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<doub
     }
 
     LabeledSection("block_copy capture");
-    auto [s_id, s_slot] = ctx.get_slot(src);
-    auto [d_id, d_slot] = ctx.get_slot(*dst);
-
-    auto executor = [s_slot, d_slot, apply]() {
-        LabeledSection("block_copy execute");
-        apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr));
-    };
-    ctx.record(OpKind::Custom, "block_copy", {s_id}, {d_id}, std::move(executor));
+    detail::record_unary_custom("block_copy", "block_copy execute", dst, src, apply);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -877,14 +888,7 @@ APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>
     }
 
     LabeledSection("gather capture");
-    auto [s_id, s_slot] = ctx.get_slot(src);
-    auto [d_id, d_slot] = ctx.get_slot(*dst);
-
-    auto executor = [s_slot, d_slot, apply]() {
-        LabeledSection("gather execute");
-        apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr));
-    };
-    ctx.record(OpKind::Custom, "gather", {s_id}, {d_id}, std::move(executor));
+    detail::record_unary_custom("gather", "gather execute", dst, src, apply);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -996,17 +1000,10 @@ APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<double>
     }
 
     LabeledSection("scatter capture");
-    auto [s_id, s_slot] = ctx.get_slot(src);
-    auto [d_id, d_slot] = ctx.get_slot(*dst);
-
     // dst is BOTH an input and an output: a scatter leaves everything outside
     // the selection untouched, so whatever wrote those elements has to be
     // ordered before this node.
-    auto executor = [s_slot, d_slot, apply]() {
-        LabeledSection("scatter execute");
-        apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr));
-    };
-    ctx.record(OpKind::Custom, "scatter", {s_id, d_id}, {d_id}, std::move(executor));
+    detail::record_unary_custom("scatter", "scatter execute", dst, src, apply, /*reads_dst=*/true);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1088,13 +1085,7 @@ APIARY_INSTANTIATE_AS("sqrt", einsums::GeneralRuntimeTensor<double, std::allocat
         return;
     }
     LabeledSection("sqrt capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [r_id, r_slot] = ctx.get_slot(*out);
-    auto executor       = [a_slot, r_slot, apply]() {
-        LabeledSection("sqrt execute");
-        apply(static_cast<ResultType *>(r_slot->ptr), static_cast<AType const *>(a_slot->ptr));
-    };
-    ctx.record(OpKind::Custom, "sqrt", {a_id}, {r_id}, std::move(executor));
+    detail::record_unary_custom("sqrt", "sqrt execute", out, A, apply);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1202,13 +1193,7 @@ APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<dou
         return;
     }
     LabeledSection("sum_axes capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [r_id, r_slot] = ctx.get_slot(*out);
-    auto executor       = [a_slot, r_slot, apply]() {
-        LabeledSection("sum_axes execute");
-        apply(static_cast<ResultType *>(r_slot->ptr), static_cast<AType const *>(a_slot->ptr));
-    };
-    ctx.record(OpKind::Custom, "sum_axes", {a_id}, {r_id}, std::move(executor));
+    detail::record_unary_custom("sum_axes", "sum_axes execute", out, A, apply);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1304,13 +1289,7 @@ APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<std::complex<doub
         return;
     }
     LabeledSection("reshape capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [r_id, r_slot] = ctx.get_slot(*out);
-    auto executor       = [a_slot, r_slot, apply]() {
-        LabeledSection("reshape execute");
-        apply(static_cast<ResultType *>(r_slot->ptr), static_cast<AType const *>(a_slot->ptr));
-    };
-    ctx.record(OpKind::Custom, "reshape", {a_id}, {r_id}, std::move(executor));
+    detail::record_unary_custom("reshape", "reshape execute", out, A, apply);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1363,13 +1342,7 @@ APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<std::complex<dou
         return;
     }
     LabeledSection("diagonal capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [r_id, r_slot] = ctx.get_slot(*out);
-    auto executor       = [a_slot, r_slot, apply]() {
-        LabeledSection("diagonal execute");
-        apply(static_cast<ResultType *>(r_slot->ptr), static_cast<AType const *>(a_slot->ptr));
-    };
-    ctx.record(OpKind::Custom, "diagonal", {a_id}, {r_id}, std::move(executor));
+    detail::record_unary_custom("diagonal", "diagonal execute", out, A, apply);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1448,14 +1421,8 @@ APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<
         return;
     }
     LabeledSection("scatter_add capture");
-    auto [s_id, s_slot] = ctx.get_slot(src);
-    auto [d_id, d_slot] = ctx.get_slot(*dst);
-    auto executor       = [s_slot, d_slot, apply]() {
-        LabeledSection("scatter_add execute");
-        apply(static_cast<DstType *>(d_slot->ptr), static_cast<SrcType const *>(s_slot->ptr));
-    };
     // dst is read as well as written: this accumulates onto what is there.
-    ctx.record(OpKind::Custom, "scatter_add", {s_id, d_id}, {d_id}, std::move(executor));
+    detail::record_unary_custom("scatter_add", "scatter_add execute", dst, src, apply, /*reads_dst=*/true);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2884,20 +2851,18 @@ APIARY_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<std::complex<double>,
 
     auto compute = [](AType const &a) -> T { return detail::reduce_elements(a, T{0}, [](T acc, T x) { return acc + x; }); };
 
+    // The reduction writes one element, so it fits the same one-in one-out node
+    // every other elementwise op records.
+    auto apply = [compute](ResultType *r, AType const *a) { r->data()[0] = compute(*a); };
+
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("sum_python eager");
-        result->data()[0] = compute(A);
+        apply(result, &A);
         return;
     }
     LabeledSection("sum_python capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [r_id, r_slot] = ctx.get_slot(*result);
-    auto executor       = [a_slot, r_slot, compute]() {
-        LabeledSection("sum_python execute");
-        static_cast<ResultType *>(r_slot->ptr)->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr));
-    };
-    ctx.record(OpKind::Custom, "sum", {a_id}, {r_id}, std::move(executor));
+    detail::record_unary_custom("sum", "sum_python execute", result, A, apply);
 }
 
 /// Graph-aware maximum element (real dtypes), written into ``result->data()[0]``.
@@ -2929,20 +2894,18 @@ APIARY_INSTANTIATE_AS("max", einsums::GeneralRuntimeTensor<double, std::allocato
                                        [](T acc, T x) { return (std::isnan(x) || x > acc) ? x : acc; });
     };
 
+    // The reduction writes one element, so it fits the same one-in one-out node
+    // every other elementwise op records.
+    auto apply = [compute](ResultType *r, AType const *a) { r->data()[0] = compute(*a); };
+
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("max_python eager");
-        result->data()[0] = compute(A);
+        apply(result, &A);
         return;
     }
     LabeledSection("max_python capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [r_id, r_slot] = ctx.get_slot(*result);
-    auto executor       = [a_slot, r_slot, compute]() {
-        LabeledSection("max_python execute");
-        static_cast<ResultType *>(r_slot->ptr)->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr));
-    };
-    ctx.record(OpKind::Custom, "max", {a_id}, {r_id}, std::move(executor));
+    detail::record_unary_custom("max", "max_python execute", result, A, apply);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

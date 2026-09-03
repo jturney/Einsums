@@ -13,6 +13,10 @@
  * patterns. They work both inside capture blocks (recorded into the graph)
  * and outside (executed immediately).
  *
+ * Each blueprint runs ONE sequence of ``cg::`` calls, which already choose
+ * between recording and executing; the only thing capture changes here is who
+ * owns a temporary, so that is the only thing these branch on.
+ *
  * @code
  * cg::Graph graph("example");
  * {
@@ -27,10 +31,39 @@
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <optional>
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::blueprints)
 
-using einsums::Indices;
-namespace index = einsums::index;
+namespace detail {
+
+/// A scratch matrix a blueprint can hand to the ``cg::`` ops either way.
+///
+/// A captured node outlives the call that recorded it, so a temporary it writes
+/// through has to outlive it too: under capture the graph owns the tensor, and
+/// outside capture a local is enough. Owning the choice here is what lets the
+/// blueprint below run one code path instead of two.
+template <typename T>
+class ScratchMatrix {
+  public:
+    ScratchMatrix(CaptureContext &ctx, char const *name, size_t n) {
+        if (ctx.is_capturing()) {
+            _ptr = &ctx.graph()->template create_tensor<T, 2>(name, n, n);
+        } else {
+            _owned.emplace(name, n, n);
+            _ptr = &*_owned;
+        }
+    }
+
+    Tensor<T, 2> &operator*() const { return *_ptr; }
+    Tensor<T, 2> *get() const { return _ptr; }
+
+  private:
+    std::optional<Tensor<T, 2>> _owned;
+    Tensor<T, 2>               *_ptr{nullptr};
+};
+
+} // namespace detail
 
 /**
  * @brief Symmetrize a rank-2 tensor in-place: A = 0.5 * (A + A^T).
@@ -47,24 +80,10 @@ void symmetrize(MatType *A) {
     using T        = typename MatType::ValueType;
     size_t const n = A->dim(0);
 
-    // A = 0.5 * A + 0.5 * A^T
-    // We need a temporary for A^T
-    // Since blueprints should be self-contained, create a local temp
-    // This works both inside and outside capture
-    auto &ctx = CaptureContext::current();
-    if (ctx.is_capturing()) {
-        // Inside capture: use the graph's create_tensor for the temp
-        auto &At = ctx.graph()->create_tensor<T, 2>("_sym_tmp", n, n);
-        permute("ji <- ij", T{0}, &At, T{1}, *A);
-        scale(T{0.5}, A);
-        axpy(T{0.5}, At, A);
-    } else {
-        // Outside capture: use stack-allocated temp
-        auto At = Tensor<T, 2>("_sym_tmp", n, n);
-        tensor_algebra::permute(T{0}, Indices{index::j, index::i}, &At, T{1}, Indices{index::i, index::j}, *A);
-        linear_algebra::scale(T{0.5}, A);
-        linear_algebra::axpy(T{0.5}, At, A);
-    }
+    detail::ScratchMatrix<T> const At(CaptureContext::current(), "_sym_tmp", n);
+    permute("ji <- ij", T{0}, At.get(), T{1}, *A);
+    scale(T{0.5}, A);
+    axpy(T{0.5}, *At, A);
 }
 
 /**
@@ -82,18 +101,10 @@ void antisymmetrize(MatType *A) {
     using T        = typename MatType::ValueType;
     size_t const n = A->dim(0);
 
-    auto &ctx = CaptureContext::current();
-    if (ctx.is_capturing()) {
-        auto &At = ctx.graph()->create_tensor<T, 2>("_asym_tmp", n, n);
-        permute("ji <- ij", T{0}, &At, T{1}, *A);
-        scale(T{0.5}, A);
-        axpy(T{-0.5}, At, A);
-    } else {
-        auto At = Tensor<T, 2>("_asym_tmp", n, n);
-        tensor_algebra::permute(T{0}, Indices{index::j, index::i}, &At, T{1}, Indices{index::i, index::j}, *A);
-        linear_algebra::scale(T{0.5}, A);
-        linear_algebra::axpy(T{-0.5}, At, A);
-    }
+    detail::ScratchMatrix<T> const At(CaptureContext::current(), "_asym_tmp", n);
+    permute("ji <- ij", T{0}, At.get(), T{1}, *A);
+    scale(T{0.5}, A);
+    axpy(T{-0.5}, *At, A);
 }
 
 /**
@@ -101,6 +112,7 @@ void antisymmetrize(MatType *A) {
  *
  * Stores the result in a rank-1 tensor with one element.
  *
+ * @tparam ResultType Rank-1 destination tensor type.
  * @tparam MatType Matrix tensor type.
  * @param[out] result Rank-1 tensor with at least 1 element. result(0) = Tr(A).
  * @param[in] A The matrix to trace.
@@ -113,40 +125,11 @@ void antisymmetrize(MatType *A) {
  */
 template <VectorConcept ResultType, MatrixConcept MatType>
 void tensor_trace(ResultType *result, MatType const &A) {
-    // Tr(A) = sum_i A(i,i) = einsum(" <- ii", result, A) but we don't have
-    // single-operand einsum. Use dot with identity-like approach:
-    // Tr(A) = sum_i A(i,i), compute manually outside graph, or use
-    // einsum with a unit vector trick.
-    // Simplest correct approach: element_transform to sum diagonal
-    using T        = typename MatType::ValueType;
-    size_t const n = A.dim(0);
-
-    auto &ctx = CaptureContext::current();
-    if (ctx.is_capturing()) {
-        // Inside capture: record a custom operation
-        auto *res_ptr = result;
-        auto *a_slot  = &A; // Will be captured by lambda
-
-        // Create a custom node that computes the trace
-        TensorId r_id = ctx.get_or_register(*result);
-        TensorId a_id = ctx.get_or_register(A);
-
-        auto executor = [res_ptr, a_slot, n]() {
-            typename MatType::ValueType sum{0};
-            for (size_t ii = 0; ii < n; ii++) {
-                sum += (*a_slot)(ii, ii);
-            }
-            (*res_ptr)(0) = sum;
-        };
-
-        ctx.record(OpKind::Custom, "tensor_trace", {a_id}, {r_id}, std::move(executor));
-    } else {
-        T sum{0};
-        for (size_t ii = 0; ii < n; ii++) {
-            sum += A(ii, ii);
-        }
-        (*result)(0) = sum;
-    }
+    // cg::trace is this operation. Writing the diagonal walk out again here
+    // also baked the operand addresses into the recorded closure, so a rebind
+    // moved the tensors out from under the node; going through cg::trace picks
+    // up its slot-based executor as well.
+    trace(result->data(), A);
 }
 
 /**
@@ -167,61 +150,34 @@ void matrix_exponential(MatType *expA, MatType const &A, size_t order = 10) {
     size_t const n = A.dim(0);
 
     auto &ctx = CaptureContext::current();
+
+    detail::ScratchMatrix<T> const term(ctx, "_exp_term", n);
+    detail::ScratchMatrix<T> const tmp(ctx, "_exp_tmp", n);
+
+    // Both series accumulators start at the identity, expA because the k = 0
+    // term is I and term because it carries A^k / k! forward from there.
+    auto set_identity = [n](auto *m) {
+        m->zero();
+        for (size_t ii = 0; ii < n; ii++) {
+            (*m)(ii, ii) = T{1};
+        }
+    };
     if (ctx.is_capturing()) {
-        auto &term = ctx.graph()->create_tensor<T, 2>("_exp_term", n, n);
-        auto &tmp  = ctx.graph()->create_tensor<T, 2>("_exp_tmp", n, n);
-
-        // expA = I (identity)
-        // We need to set expA to identity, use a custom node
-        auto    *exp_ptr = expA;
-        TensorId exp_id  = ctx.get_or_register(*expA);
-        TensorId a_id    = ctx.get_or_register(A);
-        ctx.record(OpKind::Custom, "set_identity", {}, {exp_id}, [exp_ptr, n]() {
-            exp_ptr->zero();
-            for (size_t ii = 0; ii < n; ii++) {
-                (*exp_ptr)(ii, ii) = typename std::remove_pointer_t<decltype(exp_ptr)>::ValueType{1};
-            }
-        });
-
-        // term = I (will hold A^k / k!)
-        TensorId term_id = ctx.get_or_register(term);
-        ctx.record(OpKind::Custom, "set_identity_term", {}, {term_id}, [&term, n]() {
-            term.zero();
-            for (size_t ii = 0; ii < n; ii++) {
-                term(ii, ii) = T{1};
-            }
-        });
-
-        // For each Taylor term: term = term * A / k, expA += term
-        for (size_t k = 1; k <= order; k++) {
-            T factor = T{1} / static_cast<T>(k);
-            // tmp = term * A
-            einsum("ik;kj->ij", &tmp, term, A);
-            // term = tmp * factor
-            permute("ij <- ij", T{0}, &term, factor, tmp);
-            // expA += term
-            axpy(T{1}, term, expA);
-        }
+        TensorId const exp_id = ctx.get_or_register(*expA);
+        ctx.record(OpKind::Custom, "set_identity", {}, {exp_id}, [expA, set_identity]() { set_identity(expA); });
+        TensorId const term_id = ctx.get_or_register(*term);
+        ctx.record(OpKind::Custom, "set_identity_term", {}, {term_id}, [t = term.get(), set_identity]() { set_identity(t); });
     } else {
-        // Direct computation
-        expA->zero();
-        for (size_t ii = 0; ii < n; ii++) {
-            (*expA)(ii, ii) = T{1};
-        }
+        set_identity(expA);
+        set_identity(term.get());
+    }
 
-        auto term = Tensor<T, 2>("_exp_term", n, n);
-        auto tmp  = Tensor<T, 2>("_exp_tmp", n, n);
-        term.zero();
-        for (size_t ii = 0; ii < n; ii++) {
-            term(ii, ii) = T{1};
-        }
-
-        for (size_t k = 1; k <= order; k++) {
-            T factor = T{1} / static_cast<T>(k);
-            tensor_algebra::einsum(Indices{index::i, index::j}, &tmp, Indices{index::i, index::k}, term, Indices{index::k, index::j}, A);
-            tensor_algebra::permute(T{0}, Indices{index::i, index::j}, &term, factor, Indices{index::i, index::j}, tmp);
-            linear_algebra::axpy(T{1}, term, expA);
-        }
+    // For each Taylor term: term = term * A / k, expA += term
+    for (size_t k = 1; k <= order; k++) {
+        T const factor = T{1} / static_cast<T>(k);
+        einsum("ik;kj->ij", tmp.get(), *term, A);
+        permute("ij <- ij", T{0}, term.get(), factor, *tmp);
+        axpy(T{1}, *term, expA);
     }
 }
 
