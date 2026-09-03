@@ -193,10 +193,23 @@ TEST_CASE("ExecutorBuilder - the reconstructible set holds every kind converted 
     // If a change to this list is deliberate, the argument for it belongs in
     // the commit message, not in a quiet edit here.
     std::vector<cg::OpKind> const converted{
-        cg::OpKind::Scale,         cg::OpKind::Permute,        cg::OpKind::Transpose, cg::OpKind::Axpby,
-        cg::OpKind::DirectProduct, cg::OpKind::DirectDivision, cg::OpKind::Einsum,    cg::OpKind::Dot,
-        cg::OpKind::Trace,         cg::OpKind::WriteParam,     cg::OpKind::Gemm,      cg::OpKind::ElementTransform,
-        cg::OpKind::Conditional,   cg::OpKind::Loop,           cg::OpKind::Setup,     cg::OpKind::Syev,
+        cg::OpKind::Scale,
+        cg::OpKind::Permute,
+        cg::OpKind::Transpose,
+        cg::OpKind::Axpby,
+        cg::OpKind::DirectProduct,
+        cg::OpKind::DirectDivision,
+        cg::OpKind::Einsum,
+        cg::OpKind::Dot,
+        cg::OpKind::Trace,
+        cg::OpKind::WriteParam,
+        cg::OpKind::Gemm,
+        cg::OpKind::ElementTransform,
+        cg::OpKind::Conditional,
+        cg::OpKind::Loop,
+        cg::OpKind::Setup,
+        cg::OpKind::Syev,
+        cg::OpKind::LaplaceQuadrature,
     };
 
     for (auto kind : converted) {

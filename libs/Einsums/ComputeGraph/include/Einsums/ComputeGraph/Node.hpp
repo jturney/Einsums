@@ -863,6 +863,38 @@ struct SetupDescriptor {
 };
 
 /**
+ * @brief Metadata for @ref OpKind::LaplaceQuadrature nodes.
+ *
+ * The node reads one orbital-energy vector per axis, works out the spectral range of the
+ * signed sum they form, builds the exponential-grid rule for the reciprocal of that sum, and
+ * writes the points, the weights, the measured relative error and one exponential matrix per
+ * axis. It exists as a node rather than as a chain of captured element operations because the
+ * range is a REDUCTION over bound data and the grid is a transcendental function of it,
+ * neither of which the node set can express; and as a node rather than as a closure because a
+ * closure has nothing a file can hold.
+ *
+ * Everything here is data, so a graph carrying one saves, loads and REFITS: a bind that moves
+ * the energies moves the rule, at the point count this descriptor fixes.
+ *
+ * @see LaplaceQuadrature.hpp for the rule and its error bound
+ * @see passes::LaplaceTransform for the rewrite that emits one
+ * @versionadded{2.0.0}
+ */
+struct LaplaceQuadratureDescriptor {
+    /// The relative accuracy the rule was built for. Fixes where the grid is truncated, and
+    /// therefore what @ref points buys.
+    double epsilon{1.0e-6};
+
+    /// How many quadrature points. STRUCTURE rather than a bind-time decision, because the
+    /// node set the rewrite emits is sized by it; a bind refits the rule at this count.
+    std::int64_t points{2};
+
+    /// Per axis, whether that axis's energy enters the denominator added (@c +1) or subtracted
+    /// (@c -1). One entry per input, in operand order.
+    std::vector<std::int8_t> signs;
+};
+
+/**
  * @brief Per-axis specification for a @c View op.
  *
  * Each axis of the parent tensor maps to one of:
@@ -1263,13 +1295,13 @@ build_letter_spaces(std::span<LetterSpaceOperand const> operands, SpaceRegistry 
 /// reinterpret an old file - but keeping the order append-only costs nothing
 /// and keeps every debug dump that prints ``op_data.index()`` comparable
 /// across builds.
-using OpData =
-    std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
-                 AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor, BatchedGemmDescriptor,
-                 GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, GroupedDotDescriptor,
-                 GroupedAxpbyDescriptor, GroupedElementwiseDescriptor, GroupedSandwichDescriptor, GroupedGatherRotateDescriptor,
-                 TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor, ElementwiseBinaryDescriptor,
-                 DotDescriptor, TraceDescriptor, GemmDescriptor, ElementTransformDescriptor, SetupDescriptor, SyevDescriptor>;
+using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
+                            AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor,
+                            BatchedGemmDescriptor, GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor,
+                            GroupedDotDescriptor, GroupedAxpbyDescriptor, GroupedElementwiseDescriptor, GroupedSandwichDescriptor,
+                            GroupedGatherRotateDescriptor, TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor,
+                            TiledDotDescriptor, ElementwiseBinaryDescriptor, DotDescriptor, TraceDescriptor, GemmDescriptor,
+                            ElementTransformDescriptor, SetupDescriptor, SyevDescriptor, LaplaceQuadratureDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.

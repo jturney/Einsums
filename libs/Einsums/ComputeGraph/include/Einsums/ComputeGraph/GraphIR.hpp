@@ -20,13 +20,13 @@
  * be, which is why it refuses a graph it cannot write instead of writing a
  * partial one.
  *
- * @par The schema: ``einsums_graph_ir``, semver, currently 1.3.0
+ * @par The schema: ``einsums_graph_ir``, semver, currently 1.4.0
  * One JSON object with a FIXED top-level key order, so a tool can validate the
  * interface before it parses a single node:
  *
  * @code{.json}
  * {
- *   "einsums_graph_ir": "1.3.0",
+ *   "einsums_graph_ir": "1.4.0",
  *   "provenance":       { ... },
  *   "name":             "ccsd_doubles",
  *   "manifest":         [ ... ],
@@ -56,6 +56,15 @@
  * default is not a constant in this file: an absent key means the default the
  * NAMED op's registration documents, so an older file keeps computing what it
  * computed and a reader has one place to look up what it will run at.
+ *
+ * @ref OpKind::LaplaceQuadrature arrived at 1.4.0. All three of its keys are
+ * REQUIRED rather than defaulted, which is the same reasoning
+ * @ref OpKind::Syev's job flag was read under: no file predates the kind, so an
+ * absent key is a malformed document rather than an older one, and a guessed
+ * tolerance, point count or axis sign is a different approximation wearing the
+ * same graph. A new KIND is additive in the sense the compatibility policy
+ * means, since an older reader refuses the whole file by version rather than
+ * mistaking the node for something else.
  *
  * @par The hash domain
  * @ref Graph::content_hash digests the canonical bytes of that object with
@@ -190,7 +199,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.3.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.4.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

@@ -83,6 +83,9 @@ enum class APIARY_EXPOSE OpKind : std::uint8_t {
     Loop,        ///< While/for loop with body subgraph
     Setup,       ///< Body computed once per bound problem, skipped by later replays
 
+    // Quadrature
+    LaplaceQuadrature, ///< Laplace-transform points, weights and per-axis exponentials, refit per bind
+
     // Memory management
     Alloc, ///< Tensor allocation (marks lifetime start)
     Free,  ///< Tensor deallocation (marks lifetime end)
@@ -268,6 +271,8 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "Loop";
     case OpKind::Setup:
         return "Setup";
+    case OpKind::LaplaceQuadrature:
+        return "LaplaceQuadrature";
     case OpKind::Alloc:
         return "Alloc";
     case OpKind::Free:

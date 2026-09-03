@@ -11,6 +11,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Factorization.hpp
     Einsums/ComputeGraph/MetricFitFactorization.hpp
     Einsums/ComputeGraph/Passes/FactorizationPass.hpp
+    Einsums/ComputeGraph/LaplaceQuadrature.hpp
     Einsums/ComputeGraph/Blueprints/Orthogonalization.hpp
     Einsums/ComputeGraph/Blueprints/TensorAlgebra.hpp
     Einsums/ComputeGraph/BoundExpr.hpp
@@ -126,6 +127,7 @@ set(ComputeGraphSources
     Passes/ContractionPlanning.cpp
     Passes/DeltaElimination.cpp
     Passes/FactorizationPass.cpp
+    LaplaceQuadrature.cpp
     Passes/ProvenancePropagation.cpp
     Passes/ConstantFolding.cpp
     Passes/DistributionPlanning.cpp

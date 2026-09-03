@@ -408,6 +408,7 @@ class ScalarAccessor {
     case OpKind::Loop:
     case OpKind::Setup:
     case OpKind::Syev:
+    case OpKind::LaplaceQuadrature:
         return true;
     default:
         return false;

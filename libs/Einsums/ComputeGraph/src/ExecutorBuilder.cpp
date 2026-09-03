@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/ComputeGraph/LaplaceQuadrature.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
@@ -21,8 +22,10 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +37,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -490,6 +494,133 @@ std::function<void()> build_setup(SetupDescriptor const &desc) {
 }
 
 /**
+ * @brief The Laplace quadrature, refitted from whatever energies are bound now.
+ *
+ * Everything the node needs is either in the descriptor or in the operands, which is what
+ * makes the kind saveable: the rule is a closed-form function of the spectral range, so a
+ * loaded graph rebuilds exactly the rule the capture would have.
+ *
+ * The exponentials are written rather than the points alone because the points are useless on
+ * their own. What the rewrite consumes is one matrix per axis, and forming those from the
+ * points would need an outer product and an elementwise exponential per axis, which is four
+ * more nodes per axis to compute what this already has in registers.
+ */
+std::function<void()> build_laplace_quadrature(packed_gemm::ScalarType dtype, LaplaceQuadratureDescriptor const &desc, Graph &graph,
+                                               std::span<TensorId const> inputs, std::span<TensorId const> outputs) {
+    std::size_t const axes = inputs.size();
+    if (axes == 0 || desc.signs.size() != axes || outputs.size() != axes + 3) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "build_executor(LaplaceQuadrature): {} energy vector(s), {} sign(s) and {} output(s); the node wants one "
+                                "energy vector and one sign per axis, and points, weights, the measured error and one exponential "
+                                "matrix per axis as outputs",
+                                axes, desc.signs.size(), outputs.size());
+    }
+    if (desc.points < 2) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "build_executor(LaplaceQuadrature): the descriptor asks for {} point(s); a "
+                                "trapezoidal rule needs at least two",
+                                desc.points);
+    }
+
+    std::vector<OperandAccessor> energies;
+    std::vector<OperandAccessor> exponentials;
+    energies.reserve(axes);
+    exponentials.reserve(axes);
+    for (std::size_t axis = 0; axis < axes; ++axis) {
+        energies.push_back(resolve_operand(graph, inputs[axis], OpKind::LaplaceQuadrature, "energy"));
+        exponentials.push_back(resolve_operand(graph, outputs[axis + 3], OpKind::LaplaceQuadrature, "exponentials"));
+    }
+    OperandAccessor const points  = resolve_operand(graph, outputs[0], OpKind::LaplaceQuadrature, "points");
+    OperandAccessor const weights = resolve_operand(graph, outputs[1], OpKind::LaplaceQuadrature, "weights");
+    OperandAccessor const error   = resolve_operand(graph, outputs[2], OpKind::LaplaceQuadrature, "error");
+
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        if constexpr (!std::is_floating_point_v<T>) {
+            // A complex denominator has no spectral range to bound and no exponential integral
+            // representing its reciprocal. The refusal is at the BUILD rather than in the loop
+            // so that a file describing one is rejected when it is read.
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "build_executor(LaplaceQuadrature): a complex element type reached the real-only quadrature");
+        } else {
+            return [desc, energies, exponentials, points, weights, error]() {
+                LabeledSection("laplace_quadrature execute");
+
+                std::vector<double> low;
+                std::vector<double> high;
+                std::vector<int>    signs;
+                low.reserve(energies.size());
+                high.reserve(energies.size());
+                signs.reserve(energies.size());
+                for (std::size_t axis = 0; axis < energies.size(); ++axis) {
+                    auto const *impl = energies[axis].impl<T>();
+                    if (impl == nullptr || impl->rank() != 1 || impl->dim(0) == 0) {
+                        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                                "laplace_quadrature: axis {}'s energy operand is not a non-empty vector", axis);
+                    }
+                    T const          *data     = impl->data();
+                    std::size_t const inc      = impl->stride(0);
+                    T                 smallest = data[0];
+                    T                 largest  = data[0];
+                    for (std::size_t i = 1; i < impl->dim(0); ++i) {
+                        smallest = std::min(smallest, data[i * inc]);
+                        largest  = std::max(largest, data[i * inc]);
+                    }
+                    low.push_back(static_cast<double>(smallest));
+                    high.push_back(static_cast<double>(largest));
+                    signs.push_back(desc.signs[axis] >= 0 ? 1 : -1);
+                }
+
+                laplace::SpectralRange const  range = laplace::spectral_range(low, high, signs);
+                laplace::QuadratureGrid const grid  = laplace::build_quadrature(range, desc.epsilon, static_cast<std::size_t>(desc.points));
+
+                auto *point_impl  = points.impl<T>();
+                auto *weight_impl = weights.impl<T>();
+                auto *error_impl  = error.impl<T>();
+                if (point_impl == nullptr || weight_impl == nullptr || error_impl == nullptr) {
+                    EINSUMS_THROW_EXCEPTION(std::invalid_argument, "laplace_quadrature: an output tensor has no storage");
+                }
+                if (point_impl->size() != grid.points.size() || weight_impl->size() != grid.points.size() || error_impl->size() < 1) {
+                    EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                            "laplace_quadrature: the rule has {} point(s) and the outputs hold {} and {}",
+                                            grid.points.size(), point_impl->size(), weight_impl->size());
+                }
+                for (std::size_t j = 0; j < grid.points.size(); ++j) {
+                    point_impl->data()[j * point_impl->stride(0)]   = static_cast<T>(grid.points[j]);
+                    weight_impl->data()[j * weight_impl->stride(0)] = static_cast<T>(grid.weights[j]);
+                }
+                error_impl->data()[0] = static_cast<T>(laplace::measure_quadrature_error(grid));
+
+                for (std::size_t axis = 0; axis < energies.size(); ++axis) {
+                    auto const *energy = energies[axis].impl<T>();
+                    auto       *target = exponentials[axis].impl<T>();
+                    if (target == nullptr || target->rank() != 2 || target->dim(0) != grid.points.size() ||
+                        target->dim(1) != energy->dim(0)) {
+                        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "laplace_quadrature: axis {}'s exponential matrix is not [{} x {}]",
+                                                axis, grid.points.size(), energy == nullptr ? 0 : energy->dim(0));
+                    }
+                    // The sign the exponent carries is the one the rule was built with. A
+                    // uniformly negative denominator is represented by the rule for its
+                    // negation, so every axis flips with it and the minus sign rides on the
+                    // weights, which is what keeps the caller's own sign convention.
+                    double const      sign = (desc.signs[axis] >= 0 ? 1.0 : -1.0) * (grid.negated ? -1.0 : 1.0);
+                    T const          *e    = energy->data();
+                    std::size_t const einc = energy->stride(0);
+                    for (std::size_t j = 0; j < grid.points.size(); ++j) {
+                        // Only the FIRST axis carries the weights, so the product over axes
+                        // applies each weight exactly once.
+                        double const scale = axis == 0 ? grid.weights[j] : 1.0;
+                        for (std::size_t i = 0; i < energy->dim(0); ++i) {
+                            double const exponent = -sign * grid.points[j] * static_cast<double>(e[i * einc]);
+                            target->data()[j * target->stride(0) + i * target->stride(1)] = static_cast<T>(scale * std::exp(exponent));
+                        }
+                    }
+                }
+            };
+        }
+    });
+}
+
+/**
  * @brief ``params[name] = int64(source)``, the TENSOR arm of ``cg::write_param``.
  *
  * The source address is read on every call rather than closed over, which is
@@ -669,6 +800,7 @@ constexpr auto kDescriptorNames = std::to_array<std::string_view>({
     "ElementTransformDescriptor",
     "SetupDescriptor",
     "SyevDescriptor",
+    "LaplaceQuadratureDescriptor",
 });
 
 static_assert(kDescriptorNames.size() == std::variant_size_v<OpData>,
@@ -693,6 +825,7 @@ static_assert(kDescriptorNames[alternative_index<ScaleDescriptor>()] == "ScaleDe
 static_assert(kDescriptorNames[alternative_index<AxpbyDescriptor>()] == "AxpbyDescriptor");
 static_assert(kDescriptorNames[alternative_index<GemmDescriptor>()] == "GemmDescriptor");
 static_assert(kDescriptorNames[alternative_index<SyevDescriptor>()] == "SyevDescriptor");
+static_assert(kDescriptorNames[alternative_index<LaplaceQuadratureDescriptor>()] == "LaplaceQuadratureDescriptor");
 
 /// The descriptor alternative @p data holds, for a diagnostic.
 std::string_view descriptor_name(OpData const &data) {
@@ -994,6 +1127,17 @@ std::string reconstruction_blocker(Node const &node) {
                    : fmt::format("Syev: expected a SyevDescriptor, found {}; the tiled variant records none, and its per-block "
                                  "decomposition has no builder entry",
                                  descriptor_name(node.op_data));
+    case OpKind::LaplaceQuadrature: {
+        auto const *desc = std::get_if<LaplaceQuadratureDescriptor>(&node.op_data);
+        if (desc == nullptr) {
+            return fmt::format("LaplaceQuadrature: expected a LaplaceQuadratureDescriptor, found {}", descriptor_name(node.op_data));
+        }
+        // The whole node is the descriptor plus its operands, and every field of it is a
+        // number. That is the point of the kind existing: the rule it refits is a closed-form
+        // function of the bound energies, so nothing about it has to be remembered by the
+        // process that reads the file.
+        return {};
+    }
     case OpKind::Setup: {
         auto const *desc = std::get_if<SetupDescriptor>(&node.op_data);
         if (desc == nullptr) {
@@ -1169,6 +1313,9 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
         return build_loop(expect<LoopDescriptor>(kind, desc, "LoopDescriptor"), graph.params_ptr());
     case OpKind::Setup:
         return build_setup(expect<SetupDescriptor>(kind, desc, "SetupDescriptor"));
+    case OpKind::LaplaceQuadrature:
+        return build_laplace_quadrature(dtype, expect<LaplaceQuadratureDescriptor>(kind, desc, "LaplaceQuadratureDescriptor"), graph,
+                                        inputs, outputs);
     default:
         break;
     }

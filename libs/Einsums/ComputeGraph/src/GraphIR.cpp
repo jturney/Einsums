@@ -556,6 +556,17 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("body", write_fragment(*desc.body, root, &frame, fmt::format("loop({})", node.label)));
         return Value{std::move(out)};
     }
+    case OpKind::LaplaceQuadrature: {
+        auto const &desc = std::get<LaplaceQuadratureDescriptor>(node.op_data);
+        // All three, and all three REQUIRED on the way back in. A rule read at a different
+        // tolerance, a different point count or a different sign per axis is a different
+        // approximation, and none of the three has a default that could stand in for a
+        // caller's choice.
+        out.set("epsilon", number_or_tag(desc.epsilon));
+        out.set("points", Value{desc.points});
+        out.set("signs", to_array(desc.signs, [](std::int8_t sign) { return Value{static_cast<std::int64_t>(sign)}; }));
+        return Value{std::move(out)};
+    }
     case OpKind::Setup: {
         auto const &desc = std::get<SetupDescriptor>(node.op_data);
         if (desc.body == nullptr) {
@@ -1156,6 +1167,34 @@ std::vector<std::string> read_string_array(Object const &object, std::string_vie
     return out;
 }
 
+/// An array of signed integers, for a descriptor whose entries are not extents.
+///
+/// Separate from @ref read_extent_array rather than a relaxation of it: an extent that came
+/// back negative is a corrupt document and is reported as one, and a helper that accepted both
+/// would have to stop saying so.
+std::vector<std::int64_t> read_int_array(Object const &object, std::string_view key, std::string const &path, Problems &problems,
+                                         json::Position where) {
+    std::vector<std::int64_t> out;
+    Value const              *value = field(object, key, path, problems, where);
+    if (value == nullptr) {
+        return out;
+    }
+    std::string const child = fmt::format("{}.{}", path, key);
+    Array const      *items = as_array(*value, child, problems);
+    if (items == nullptr) {
+        return out;
+    }
+    for (std::size_t i = 0; i < items->size(); ++i) {
+        if (!(*items)[i].is_int()) {
+            note(problems, fmt::format("{}[{}]", child, i), (*items)[i].position, "expected an integer");
+            out.push_back(0);
+            continue;
+        }
+        out.push_back((*items)[i].as_int());
+    }
+    return out;
+}
+
 std::vector<std::size_t> read_extent_array(Object const &object, std::string_view key, std::string const &path, Problems &problems,
                                            json::Position where) {
     std::vector<std::size_t> out;
@@ -1661,6 +1700,26 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
         }
         if (Value const *body = field(*object, "body", path, problems, value.position); body != nullptr) {
             node.body = std::make_shared<IrFragment>(read_fragment(*body, fmt::format("{}.body", path), problems, gates, registry));
+        }
+        node.descriptor = std::move(desc);
+        return;
+    }
+    case OpKind::LaplaceQuadrature: {
+        LaplaceQuadratureDescriptor desc;
+        // Required rather than defaulted, and for the reason Syev's job flag is: no file
+        // predates the kind, so an absent key is a malformed document rather than an older
+        // one, and a guessed tolerance or point count is a different approximation wearing
+        // the same graph.
+        if (Value const *epsilon = field(*object, "epsilon", path, problems, value.position); epsilon != nullptr) {
+            if (auto const parsed = tagged_number(*epsilon); parsed.has_value()) {
+                desc.epsilon = *parsed;
+            } else {
+                note(problems, fmt::format("{}.epsilon", path), epsilon->position, "expected a number");
+            }
+        }
+        desc.points = read_int(*object, "points", path, problems, value.position);
+        for (std::int64_t sign : read_int_array(*object, "signs", path, problems, value.position)) {
+            desc.signs.push_back(static_cast<std::int8_t>(sign >= 0 ? 1 : -1));
         }
         node.descriptor = std::move(desc);
         return;
