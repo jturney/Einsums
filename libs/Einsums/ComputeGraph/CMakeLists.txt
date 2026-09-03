@@ -213,6 +213,7 @@ einsums_add_module(
     Einsums_TaskPool
     Einsums_Tensor
     Einsums_TensorAlgebra
+    Einsums_TypeSupport
   CMAKE_SUBDIRS examples tests tools
 )
 

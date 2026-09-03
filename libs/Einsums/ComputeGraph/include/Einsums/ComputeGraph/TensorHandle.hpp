@@ -632,13 +632,6 @@ struct TensorHandle {
      * @return element_size * product(dims), or 0 if dims is empty.
      */
     [[nodiscard]] size_t total_bytes() const { return element_size * total_elems(); }
-
-    /**
-     * @brief Check if the tensor's dimensions match the given dimensions.
-     * @param[in] other_dims Dimensions to compare against.
-     * @return True if dimensions are identical.
-     */
-    [[nodiscard]] bool dims_match(std::vector<size_t> const &other_dims) const { return dims == other_dims; }
 };
 
 /**

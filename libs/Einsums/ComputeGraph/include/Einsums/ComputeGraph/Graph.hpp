@@ -1239,12 +1239,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void verify_level_independence() const;
 
     /**
-     * @brief Check that all registered tensors still have their capture-time dimensions.
-     * @return True if all shapes match. (Currently a placeholder, always returns true.)
-     */
-    [[nodiscard]] bool validate_shapes() const;
-
-    /**
      * @brief Export the graph in GraphViz DOT format.
      *
      * Tensor nodes are drawn as rectangles, operation nodes as ellipses.

@@ -23,6 +23,7 @@
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TaskPool/WidthBudget.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #include <fmt/format.h>
 
@@ -3993,16 +3994,6 @@ bool Graph::optimize(OptLevel level) {
     return modified;
 }
 
-bool Graph::validate_shapes() const {
-    // For each registered tensor that has a valid pointer, check that its
-    // current dimensions still match what was recorded at capture time.
-    // Since tensors are type-erased, we can only check by stored metadata.
-    // A more thorough check would re-read dims from the tensor, but that
-    // requires type info. For now, we trust the handles are up-to-date.
-    // This is a placeholder for future extension.
-    return true;
-}
-
 void Graph::print_dot(std::ostream &os) const {
     os << "digraph \"" << _name << "\" {\n";
     os << "  rankdir=TB;\n";
@@ -4011,13 +4002,7 @@ void Graph::print_dot(std::ostream &os) const {
     for (auto const &[id, handle] : _tensors) {
         os << fmt::format("  T{} [shape=box, label=\"{}\\n", id, handle.name);
         if (!handle.dims.empty()) {
-            os << "(";
-            for (size_t i = 0; i < handle.dims.size(); i++) {
-                if (i > 0)
-                    os << "x";
-                os << handle.dims[i];
-            }
-            os << ")";
+            os << fmt::format("({})", fmt::join(handle.dims, "x"));
         }
         os << "\"];\n";
     }
@@ -4050,64 +4035,31 @@ void Graph::print_dot(std::ostream &os) const {
 }
 
 void Graph::print_summary(std::ostream &os) const {
+    // The names an operand list reads as, with the placeholder for an id this graph has no
+    // handle for. Both lists print the same way, so the join is written once.
+    auto const name_list = [this](std::vector<TensorId> const &ids) {
+        std::vector<std::string_view> names;
+        names.reserve(ids.size());
+        for (auto const tid : ids) {
+            auto const it = _tensors.find(tid);
+            names.emplace_back(it != _tensors.end() ? std::string_view{it->second.name} : std::string_view{"?"});
+        }
+        return fmt::format("{}", fmt::join(names, ", "));
+    };
+
     os << fmt::format("Graph '{}': {} nodes, {} tensors\n", _name, _nodes.size(), _tensors.size());
     for (auto const &node : _nodes) {
         os << fmt::format("  [{}] {} ({})\n", node.id, node.label, op_kind_name(node.kind));
         if (!node.inputs.empty()) {
-            os << "    inputs: ";
-            for (size_t i = 0; i < node.inputs.size(); i++) {
-                if (i > 0)
-                    os << ", ";
-                auto it = _tensors.find(node.inputs[i]);
-                os << (it != _tensors.end() ? it->second.name : "?");
-            }
-            os << "\n";
+            os << fmt::format("    inputs: {}\n", name_list(node.inputs));
         }
         if (!node.outputs.empty()) {
-            os << "    outputs: ";
-            for (size_t i = 0; i < node.outputs.size(); i++) {
-                if (i > 0)
-                    os << ", ";
-                auto it = _tensors.find(node.outputs[i]);
-                os << (it != _tensors.end() ? it->second.name : "?");
-            }
-            os << "\n";
+            os << fmt::format("    outputs: {}\n", name_list(node.outputs));
         }
     }
 }
 
 // ── JSON serialization ─────────────────────────────────────────────────────
-
-namespace {
-
-std::string escape_json(std::string const &s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (char const c : s) {
-        switch (c) {
-        case '"':
-            out += "\\\"";
-            break;
-        case '\\':
-            out += "\\\\";
-            break;
-        case '\n':
-            out += "\\n";
-            break;
-        case '\r':
-            out += "\\r";
-            break;
-        case '\t':
-            out += "\\t";
-            break;
-        default:
-            out += c;
-        }
-    }
-    return out;
-}
-
-} // namespace
 
 std::string Graph::to_json() const {
     std::scoped_lock const lock(*_content_mutex);
@@ -4234,7 +4186,7 @@ std::string Graph::to_json() const {
     std::string j;
     j.reserve(4096);
 
-    auto esc = [](std::string const &s) -> std::string { return escape_json(s); };
+    auto esc = [](std::string const &s) -> std::string { return json_escape(s); };
 
     j += R"({"name":")" + esc(data.name) + "\"";
     if (!data.pipeline_name.empty())
@@ -4254,11 +4206,7 @@ std::string Graph::to_json() const {
         if (i > 0)
             j += ",";
         j += fmt::format(R"({{"id":{},"name":"{}","rank":{},"dims":[)", t.id, esc(t.name), t.rank);
-        for (size_t d = 0; d < t.dims.size(); d++) {
-            if (d > 0)
-                j += ",";
-            j += std::to_string(t.dims[d]);
-        }
+        j += fmt::format("{}", fmt::join(t.dims, ","));
         j += fmt::format(R"(],"element_size":{},"dtype":"{}","is_intermediate":{}}})", t.element_size, esc(t.dtype),
                          t.is_intermediate ? "true" : "false");
     }
@@ -4271,20 +4219,8 @@ std::string Graph::to_json() const {
             j += ",";
         j += fmt::format(R"({{"id":{},"kind":"{}","label":"{}","target":"{}","stream_id":{})", n.id, esc(n.kind), esc(n.label),
                          esc(n.target), n.stream_id);
-        j += ",\"inputs\":[";
-        for (size_t k = 0; k < n.inputs.size(); k++) {
-            if (k > 0)
-                j += ",";
-            j += std::to_string(n.inputs[k]);
-        }
-        j += "]";
-        j += ",\"outputs\":[";
-        for (size_t k = 0; k < n.outputs.size(); k++) {
-            if (k > 0)
-                j += ",";
-            j += std::to_string(n.outputs[k]);
-        }
-        j += "]";
+        j += fmt::format(R"(,"inputs":[{}])", fmt::join(n.inputs, ","));
+        j += fmt::format(R"(,"outputs":[{}])", fmt::join(n.outputs, ","));
         if (n.timing_ms >= 0)
             j += fmt::format(",\"timing_ms\":{:.6f}", n.timing_ms);
         if (n.c_prefactor != 0.0 || n.ab_prefactor != 1.0)
