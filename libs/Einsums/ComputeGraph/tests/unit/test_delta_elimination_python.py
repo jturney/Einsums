@@ -225,3 +225,116 @@ def test_provenance_propagation_crosses_a_permute():
 
     assert pass_.num_propagated == 1
     assert g.tensor_tag(swapped).name == "identity"
+
+
+# ── The zero-block half ───────────────────────────────────────────────────────
+#
+# A letter summed over two spaces that share no element has no term to sum, so
+# the contraction contributes exactly nothing. Like the delta half, the claim
+# rests on a declaration, and like the delta half the data here honours it: the
+# operand whose block would be summed is zero, so the captured program and the
+# rewritten one can be compared bitwise instead of one of them measuring the
+# annotation's falsehood.
+
+
+def _disjoint_registry():
+    """occ and virt share no element; pno lives inside virt.
+
+    Both are declarations. The registry infers nothing, so what it can prove is
+    exactly what was written down.
+    """
+    registry = cg.SpaceRegistry()
+    occ = registry.register_space(cg.index_space("occ", "o", 4.0))
+    virt = registry.register_space(cg.index_space("virt", "v", 4.0))
+    registry.register_space(cg.index_space("aux", "x", 4.0))
+    pno = registry.register_space(cg.index_space("pno", "p", 4.0))
+    registry.declare_disjoint(occ, virt)
+    registry.declare_contained(pno, virt)
+    return registry
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_a_contraction_over_disjoint_spaces_keeps_only_its_prefactor(dtype):
+    rng = np.random.default_rng(23)
+    a = rng.standard_normal((4, 4))
+    c0 = rng.standard_normal((4, 4))
+
+    def build(graph):
+        graph.set_space_registry(_disjoint_registry())
+        A = _tensor("A", a, dtype)
+        B = _tensor("B", np.zeros((4, 4)), dtype)
+        C = _tensor("C", c0, dtype)
+        with cg.capture(graph):
+            einsums.einsum("i,j <- i,k ; k,j", C, A, B, c_pf=2.0)
+        cg.annotate(A, ("aux", "occ"), graph=graph)
+        cg.annotate(B, ("virt", "aux"), graph=graph)
+        return C
+
+    plain = cg.Graph("plain-zero")
+    expected_out = build(plain)
+    plain.execute()
+    expected = np.asarray(expected_out).copy()
+
+    rewritten = cg.Graph("rewritten-zero")
+    actual_out = build(rewritten)
+
+    pass_ = cg.DeltaElimination()
+    pm = cg.PassManager()
+    pm.add(pass_)
+    assert pm.run(rewritten), "the pass reported no change on a contraction over disjoint spaces"
+    rewritten.execute()
+
+    assert pass_.num_zero_blocks == 1
+    assert pass_.num_eliminated == 0
+    np.testing.assert_array_equal(np.asarray(actual_out), expected)
+    np.testing.assert_array_equal(np.asarray(actual_out), (2.0 * c0).astype(dtype))
+
+
+def test_an_unrelated_pair_of_spaces_is_declined():
+    """Unknown is treated exactly as No.
+
+    The registry holds only what was declared, and a rewrite on the strength of
+    a relation nobody wrote down would be a rewrite on the strength of a guess.
+    """
+    rng = np.random.default_rng(29)
+    A = _tensor("A", rng.standard_normal((4, 4)), "float64")
+    B = _tensor("B", rng.standard_normal((4, 4)), "float64")
+    C = _tensor("C", np.zeros((4, 4)), "float64")
+
+    g = cg.Graph("unrelated")
+    g.set_space_registry(_disjoint_registry())
+    with cg.capture(g):
+        einsums.einsum("i,j <- i,k ; k,j", C, A, B)
+    cg.annotate(A, ("virt", "occ"), graph=g)
+    cg.annotate(B, ("aux", "virt"), graph=g)
+
+    pass_ = cg.DeltaElimination()
+    pm = cg.PassManager()
+    pm.add(pass_)
+    pm.set_verbosity(2)  # the skip tally is what a decline is read through
+    assert not pm.run(g)
+    assert pass_.num_zero_blocks == 0
+    assert "nothing declared makes a shared letter's two spaces disjoint" in pm.explain()
+
+
+def test_a_batched_letter_over_disjoint_spaces_is_declined():
+    """A batched letter is walked, not summed, so disjointness does not make it zero."""
+    rng = np.random.default_rng(31)
+    A = _tensor("A", rng.standard_normal((3, 4, 4)), "float64")
+    B = _tensor("B", rng.standard_normal((3, 4, 4)), "float64")
+    C = _tensor("C", np.zeros((3, 4, 4)), "float64")
+
+    g = cg.Graph("batched-zero")
+    g.set_space_registry(_disjoint_registry())
+    with cg.capture(g):
+        einsums.einsum("b,i,j <- b,i,k ; b,k,j", C, A, B)
+    cg.annotate(A, ("occ", "aux", "aux"), graph=g)
+    cg.annotate(B, ("virt", "aux", "aux"), graph=g)
+
+    pass_ = cg.DeltaElimination()
+    pm = cg.PassManager()
+    pm.add(pass_)
+    pm.set_verbosity(2)
+    assert not pm.run(g)
+    assert pass_.num_zero_blocks == 0
+    assert "batched rather than summed" in pm.explain()

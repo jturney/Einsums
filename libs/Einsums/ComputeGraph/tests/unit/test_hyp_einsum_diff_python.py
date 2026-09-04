@@ -110,7 +110,8 @@ def _einsum_problem(draw):
             ab_pf = draw(st.sampled_from([1.0, -2.0]))
         return (a_idx, b_idx, c_idx, extent, draw(st.booleans()),
                 dt, c_pf, ab_pf,
-                draw(st.booleans()), draw(st.booleans()), draw(st.booleans()), draw(st.booleans()))
+                draw(st.booleans()), draw(st.booleans()), draw(st.booleans()), draw(st.booleans()),
+                draw(st.booleans()))
 
     n_batch = draw(st.integers(0, 1))
     # 0 is drawable for both: an absent M or N is a GEMV- or batch-dot-shaped
@@ -214,8 +215,9 @@ def _einsum_problem(draw):
         ab_pf = draw(st.sampled_from([1.0, -2.0]))
     return (a_idx, b_idx, c_idx, extent, alias_ab,
             dt, c_pf, ab_pf,
-            # view_a, view_b, passes, eager
-            draw(st.booleans()), draw(st.booleans()), draw(st.booleans()), draw(st.booleans()))
+            # view_a, view_b, passes, eager, disjoint
+            draw(st.booleans()), draw(st.booleans()), draw(st.booleans()), draw(st.booleans()),
+            draw(st.booleans()))
 
 
 def _run_einsum_diff(prob, exact):
@@ -229,7 +231,20 @@ def _run_einsum_diff(prob, exact):
     The drawn dtype's complex-ness and the prefactors' accumulate/sign
     structure are preserved through the snap.
     """
-    a_idx, b_idx, c_idx, extent, alias_ab, dt, c_pf, ab_pf, view_a, view_b, passes, eager = prob
+    # ``*rest`` so the pinned @example tuples, which predate the disjoint-space
+    # draw, keep working without every one of them growing a field.
+    (a_idx, b_idx, c_idx, extent, alias_ab, dt, c_pf, ab_pf,
+     view_a, view_b, passes, eager, *rest) = prob
+    disjoint = bool(rest[0]) if rest else False
+    # A summed letter is one both operands carry once and the output does not.
+    # Only such a letter can make the contraction zero; a batched one is walked
+    # rather than summed, and a repeated one has no single annotated slot.
+    links = [x for x in a_idx
+             if x in b_idx and x not in c_idx and a_idx.count(x) == 1 and b_idx.count(x) == 1]
+    # Views are excluded rather than handled: the annotation goes on the tensor a
+    # permute_view produced, and pinning down which axis order it then carries is
+    # a separate question from the one this draw is asking.
+    disjoint = disjoint and bool(links) and not eager and not alias_ab and not view_a and not view_b
     rng = np.random.default_rng(0)
     if exact:
         dt    = "complex128" if dt.startswith("complex") else "float64"
@@ -240,6 +255,13 @@ def _run_einsum_diff(prob, exact):
         gen = lambda shape: _rnd(shape, dt, rng)
     A0 = gen([extent[x] for x in a_idx])
     B0 = A0 if alias_ab else gen([extent[x] for x in b_idx])
+    if disjoint:
+        # The declaration says the summed letter ranges over two spaces that share
+        # no element, so the contraction has no term to sum. Held TRUE in the data
+        # by zeroing B: a rewrite justified by a declaration can only be compared
+        # against arithmetic that honours it, and comparing against arithmetic that
+        # does not would measure the annotation's falsehood rather than the rewrite.
+        B0 = np.zeros_like(B0)
     # An empty index list on C means a scalar result. numpy returns a 0-d
     # array for it; einsums writes through C->data()[0], so the sink here is a
     # one-element rank-1 tensor and the oracle broadcasts onto it.
@@ -259,8 +281,23 @@ def _run_einsum_diff(prob, exact):
         einsums.einsum(es_spec, Ct, At, Bt, c_pf=c_pf, ab_pf=ab_pf)
     else:
         g = cg.Graph(_nm())
+        if disjoint:
+            reg = cg.SpaceRegistry()
+            occ = reg.register_space(cg.index_space("occ", "o", 4.0))
+            virt = reg.register_space(cg.index_space("virt", "v", 4.0))
+            reg.register_space(cg.index_space("aux", "x", 4.0))
+            reg.declare_disjoint(occ, virt)
+            g.set_space_registry(reg)
         with cg.capture(g):
             einsums.einsum(es_spec, Ct, At, Bt, c_pf=c_pf, ab_pf=ab_pf)
+        if disjoint:
+            # Annotated AFTER capture, which is the surface a Python caller has and
+            # the one the descriptor's capture-time space map never sees. Every
+            # other axis gets one shared space, so only the summed letter carries a
+            # declared disjointness.
+            link = links[0]
+            cg.annotate(At, tuple("occ" if x == link else "aux" for x in a_idx), graph=g)
+            cg.annotate(Bt, tuple("virt" if x == link else "aux" for x in b_idx), graph=g)
         if passes:
             g.apply(cg.default_pass_manager())
         g.execute()
@@ -271,7 +308,8 @@ def _run_einsum_diff(prob, exact):
         np.testing.assert_allclose(
             np.asarray(Ct), oracle, rtol=rt, atol=at,
             err_msg=f"einsums '{es_spec}' dt={dt} c_pf={c_pf} ab_pf={ab_pf} "
-                    f"view_a={view_a} view_b={view_b} passes={passes} eager={eager} extents={extent}")
+                    f"view_a={view_a} view_b={view_b} passes={passes} eager={eager} "
+                    f"disjoint={disjoint} extents={extent}")
 
 
 @given(prob=_einsum_problem())

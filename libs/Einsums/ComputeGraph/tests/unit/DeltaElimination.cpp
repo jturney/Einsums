@@ -553,3 +553,292 @@ TEST_CASE("the structural report says what the rewrite cost, before and after", 
     CHECK(before != after);
     CHECK(before.size() > after.size()); // a term went away
 }
+
+// ── The zero-block half ───────────────────────────────────────────────────────────────────────
+//
+// The second thing a declaration can make provable. A letter summed over two spaces that share no
+// element has no term to sum, so the contraction contributes exactly nothing and only the
+// destination's own prefactor is left.
+//
+// The numeric cases below hold the declaration TRUE in the data, by giving the block that would be
+// summed a zero operand. That is the same discipline the delta cases follow with a real identity
+// matrix: a rewrite justified by a declaration can only be compared against arithmetic that
+// honours it, and comparing against arithmetic that does not would measure the annotation's
+// falsehood rather than the rewrite.
+
+namespace {
+
+/// The spaces the zero-block cases draw from, in a registry each case owns.
+struct DisjointSpaces {
+    cg::SpaceRegistry registry;
+    cg::SpaceId       occ, virt, aux, pno;
+
+    DisjointSpaces() {
+        occ  = registry.register_space(cg::IndexSpace{.name = "occ", .scale_symbol = "o", .typical_extent = 4.0});
+        virt = registry.register_space(cg::IndexSpace{.name = "virt", .scale_symbol = "v", .typical_extent = 4.0});
+        aux  = registry.register_space(cg::IndexSpace{.name = "aux", .scale_symbol = "x", .typical_extent = 4.0});
+        pno  = registry.register_space(cg::IndexSpace{.name = "pno", .scale_symbol = "p", .typical_extent = 4.0});
+        registry.declare_disjoint(occ, virt);
+        registry.declare_contained(pno, virt);
+    }
+};
+
+bool skip_mentions(std::vector<std::pair<std::string, std::size_t>> const &reasons, std::string_view text) {
+    return std::ranges::any_of(reasons, [text](auto const &entry) { return entry.first.find(text) != std::string::npos; });
+}
+
+} // namespace
+
+TEST_CASE("a contraction over disjoint spaces keeps only its prefactor", "[ComputeGraph][DeltaElimination][Spaces]") {
+    DisjointSpaces spaces;
+
+    // A's second axis ranges over occ and B's first over virt, and the two share no element, so
+    // the sum has no terms. B is zero, which is what makes that declaration true of the data and
+    // lets the rewritten graph be compared bitwise against the captured one.
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_zero_tensor<double>("B", 4, 4);
+    auto C = create_random_tensor<double>("C", 4, 4);
+
+    auto build = [&](cg::Graph &graph) {
+        graph.set_space_registry(spaces.registry);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", 2.0, &C, 1.0, A, B);
+        }
+        graph.annotate_spaces(A, {spaces.aux, spaces.occ});
+        graph.annotate_spaces(B, {spaces.virt, spaces.aux});
+    };
+
+    std::vector<double> const seed(C.data(), C.data() + C.size());
+
+    cg::Graph plain("plain");
+    build(plain);
+    plain.execute();
+    auto const expected = flatten(C);
+
+    std::ranges::copy(seed, C.data());
+    cg::Graph rewritten("rewritten");
+    build(rewritten);
+
+    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
+    cg::PassManager pm;
+    pm.add(pass);
+    REQUIRE(pm.run(rewritten));
+    CHECK(pass->num_zero_blocks() == 1);
+    CHECK(pass->num_eliminated() == 0);
+
+    rewritten.execute();
+    auto const actual = flatten(C);
+
+    // Bitwise against the captured program, which is what the claim is worth: both forms leave
+    // 2*C and the rewritten one gets there without the GEMM.
+    REQUIRE(actual.size() == expected.size());
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        INFO("element " << i);
+        CHECK(actual[i] == expected[i]);
+    }
+    // And the value really is the destination's prefactor applied to what was there, not a
+    // coincidence between two runs of the same wrong thing.
+    for (std::size_t i = 0; i < seed.size(); ++i) {
+        INFO("element " << i);
+        CHECK(C.data()[i] == 2.0 * seed[i]);
+    }
+
+    // The GEMM really is gone rather than merely cheaper.
+    std::size_t contractions = 0;
+    for (auto const &node : rewritten.nodes()) {
+        contractions += node.kind == cg::OpKind::Einsum ? 1 : 0;
+    }
+    CHECK(contractions == 0);
+}
+
+TEST_CASE("a zero block into a buffer nothing reads leaves no node", "[ComputeGraph][DeltaElimination][Spaces]") {
+    DisjointSpaces spaces;
+
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_zero_tensor<double>("B", 4, 4);
+
+    cg::Graph graph("dead-zero");
+    graph.set_space_registry(spaces.registry);
+    auto &tmp = graph.create_zero_runtime_tensor<double>("tmp", {4, 4}, true);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &tmp, A, B);
+    }
+    graph.annotate_spaces(A, {spaces.aux, spaces.occ});
+    graph.annotate_spaces(B, {spaces.virt, spaces.aux});
+
+    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
+    cg::PassManager pm;
+    pm.add(pass);
+    REQUIRE(pm.run(graph));
+
+    CHECK(pass->num_zero_blocks() == 1);
+    // The destination is overwritten, is the region's own, and nothing reads it, so there is no
+    // value left to produce and no node left to emit.
+    std::size_t contractions = 0, scales = 0;
+    for (auto const &node : graph.nodes()) {
+        contractions += node.kind == cg::OpKind::Einsum ? 1 : 0;
+        scales += node.kind == cg::OpKind::Scale ? 1 : 0;
+    }
+    CHECK(contractions == 0);
+    CHECK(scales == 0);
+}
+
+TEST_CASE("an overwriting zero block assigns zero rather than multiplying by it", "[ComputeGraph][DeltaElimination][Spaces]") {
+    DisjointSpaces spaces;
+
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_zero_tensor<double>("B", 4, 4);
+    auto C = create_random_tensor<double>("C", 4, 4);
+    // The destination holds an infinity going in. A rewrite that emitted `C *= 0` would leave a
+    // NaN where the captured program leaves a clean zero, which is the direction this pass is
+    // never allowed to move in.
+    C(0, 0) = std::numeric_limits<double>::infinity();
+
+    cg::Graph graph("assign-zero");
+    graph.set_space_registry(spaces.registry);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+    }
+    graph.annotate_spaces(A, {spaces.aux, spaces.occ});
+    graph.annotate_spaces(B, {spaces.virt, spaces.aux});
+
+    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
+    cg::PassManager pm;
+    pm.add(pass);
+    REQUIRE(pm.run(graph));
+    CHECK(pass->num_zero_blocks() == 1);
+
+    graph.execute();
+    for (auto const value : flatten(C)) {
+        CHECK(value == 0.0);
+    }
+}
+
+TEST_CASE("an unrelated pair of spaces is declined", "[ComputeGraph][DeltaElimination][Spaces]") {
+    DisjointSpaces spaces;
+
+    // occ and aux: nothing declared relates them, and Unknown is treated exactly as No.
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+
+    cg::Graph graph("unrelated");
+    graph.set_space_registry(spaces.registry);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+    graph.annotate_spaces(A, {spaces.virt, spaces.occ});
+    graph.annotate_spaces(B, {spaces.aux, spaces.virt});
+
+    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
+    cg::PassManager pm;
+    pm.add(pass);
+    CHECK_FALSE(pm.run(graph));
+    CHECK(pass->num_zero_blocks() == 0);
+    CHECK(skip_mentions(pass->skip_reasons(), "nothing declared makes a shared letter's two spaces disjoint"));
+}
+
+TEST_CASE("a letter annotated on one operand only is declined", "[ComputeGraph][DeltaElimination][Spaces]") {
+    DisjointSpaces spaces;
+
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+
+    cg::Graph graph("half-annotated");
+    graph.set_space_registry(spaces.registry);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+    // B says nothing at all, so nothing is provable about the letter the two share.
+    graph.annotate_spaces(A, {spaces.aux, spaces.occ});
+
+    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
+    cg::PassManager pm;
+    pm.add(pass);
+    CHECK_FALSE(pm.run(graph));
+    CHECK(pass->num_zero_blocks() == 0);
+    CHECK(skip_mentions(pass->skip_reasons(), "annotated on one operand and not the other"));
+}
+
+TEST_CASE("a batched letter over disjoint spaces is declined", "[ComputeGraph][DeltaElimination][Spaces]") {
+    DisjointSpaces spaces;
+
+    // 'b' is on both operands AND on the output, so it is walked rather than summed. Disjointness
+    // then says the pairing is meaningless, which is a diagnosis, and NOT that the answer is zero.
+    auto A = create_random_tensor<double>("A", 3, 4, 4);
+    auto B = create_random_tensor<double>("B", 3, 4, 4);
+    auto C = create_zero_tensor<double>("C", 3, 4, 4);
+
+    cg::Graph graph("batched");
+    graph.set_space_registry(spaces.registry);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("b,i,j <- b,i,k ; b,k,j", 0.0, &C, 1.0, A, B);
+    }
+    graph.annotate_spaces(A, {spaces.occ, spaces.aux, spaces.aux});
+    graph.annotate_spaces(B, {spaces.virt, spaces.aux, spaces.aux});
+
+    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
+    cg::PassManager pm;
+    pm.add(pass);
+    CHECK_FALSE(pm.run(graph));
+    CHECK(pass->num_zero_blocks() == 0);
+    CHECK(skip_mentions(pass->skip_reasons(), "batched rather than summed"));
+}
+
+TEST_CASE("a contained pair of spaces is not disjoint", "[ComputeGraph][DeltaElimination][Spaces]") {
+    DisjointSpaces spaces;
+
+    // pno lives inside virt, which is a restriction rather than an empty intersection.
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+
+    cg::Graph graph("contained");
+    graph.set_space_registry(spaces.registry);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+    graph.annotate_spaces(A, {spaces.aux, spaces.pno});
+    graph.annotate_spaces(B, {spaces.virt, spaces.aux});
+
+    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
+    cg::PassManager pm;
+    pm.add(pass);
+    CHECK_FALSE(pm.run(graph));
+    CHECK(pass->num_zero_blocks() == 0);
+}
+
+TEST_CASE("a graph with no declared disjointness never forms a region", "[ComputeGraph][DeltaElimination][Spaces]") {
+    // The gate that keeps this pass free on every graph in the default pipeline. A registry with
+    // spaces but no disjointness declared cannot produce a candidate, so nothing is raised.
+    cg::SpaceRegistry registry;
+    auto const        occ = registry.register_space(cg::IndexSpace{.name = "occ", .scale_symbol = "o", .typical_extent = 4.0});
+    auto const        aux = registry.register_space(cg::IndexSpace{.name = "aux", .scale_symbol = "x", .typical_extent = 4.0});
+
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+
+    cg::Graph graph("no-relations");
+    graph.set_space_registry(registry);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+    graph.annotate_spaces(A, {aux, occ});
+    graph.annotate_spaces(B, {occ, aux});
+
+    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
+    cg::PassManager pm;
+    pm.add(pass);
+    CHECK_FALSE(pm.run(graph));
+    CHECK(pass->regions_formed() == 0);
+}

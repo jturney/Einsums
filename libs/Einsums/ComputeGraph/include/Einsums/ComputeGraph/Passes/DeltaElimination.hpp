@@ -46,14 +46,51 @@
  * contents would be written into a file and wrong on the next problem, which is precisely what
  * the phase rule exists to prevent.
  *
+ * @par The second rewrite: a contraction that sums over nothing
+ * @code
+ * graph.space_registry().declare_disjoint(occ, virt);
+ * graph.annotate_spaces(A, {any, occ});      // A's 'k' ranges over occ
+ * graph.annotate_spaces(B, {virt, any});     // B's 'k' ranges over virt
+ * C[i,j] = A[i,k] B[k,j]              ->     C[i,j] = 0
+ * @endcode
+ *
+ * A letter summed over two spaces that share no element has no term to sum, so the contraction
+ * contributes exactly nothing and what is left is the destination's own prefactor. The node
+ * becomes a @c Scale of the destination by that prefactor, and disappears entirely when the
+ * prefactor is zero and nothing reads the destination.
+ *
+ * Scaling by exactly zero ASSIGNS zero rather than multiplying, which is what makes the
+ * overwriting case exact on a destination the program never wrote: a multiply would let an @c Inf
+ * already in the buffer survive as a @c NaN.
+ *
+ * @par Where the exactness claim comes from, and the same hole
+ * Both rewrites rest on a DECLARATION rather than on the data, and both are exact given that the
+ * declaration is true. `sum_k A[i,k] I[k,j]` is exact because every other product is an exact
+ * zero; `sum_{k in occ and virt} A[i,k] B[k,j]` is exact because the sum has no terms at all. And
+ * the same one-directional hole applies: the captured form multiplies through values a rewritten
+ * form never touches, so a non-finite operand poisons the sum where the rewrite returns a clean
+ * number. The rewrite only ever removes a NaN and can never introduce one.
+ *
+ * @ref CrossSpaceValidation reports the same fact as an error, on the grounds that a contraction
+ * over disjoint spaces is essentially never what an author meant. The two are one observation with
+ * two responses, and running both is the intended combination: one says the result is zero and the
+ * other says you probably did not mean to write it.
+ *
  * @par What it declines
  * A delta whose two letters are both free in the output, or both contracted, is not a rename:
  * the first is a diagonal extraction and the second a trace, and both are real arithmetic this
  * pass does not do. A delta whose surviving letter already appears in the other operand would
- * rename two distinct letters into one, turning a contraction into a diagonal. Every one of
- * these is reported through the skip tally rather than attempted.
+ * rename two distinct letters into one, turning a contraction into a diagonal.
+ *
+ * For the zero half: a shared letter annotated on one operand and not the other, a shared letter
+ * whose spaces nothing declared relates, a letter over disjoint spaces that is BATCHED rather than
+ * summed (which makes the pairing meaningless, not the answer zero), a shared letter that repeats
+ * within an operand and so has no single annotated slot, and disjointness resting on an annotation
+ * @ref SpacePropagation INFERRED rather than one somebody declared. Every one of these is reported
+ * through the skip tally rather than attempted.
  *
  * @see RegionRewrite.hpp for the framework this is a client of
+ * @see CrossSpaceValidation.hpp for the diagnostic over the same fact
  * @see TensorHandle::tag
  */
 
@@ -64,6 +101,7 @@
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -99,6 +137,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_dissolved") [[nodiscard]] std::size_t num_dissolved() const { return _num_dissolved; }
 
+    /// @brief How many contractions summed over provably disjoint spaces and so were reduced to
+    ///        their destination's own prefactor.
+    /// @return The count.
+    APIARY_EXPOSE APIARY_GETTER("num_zero_blocks") [[nodiscard]] std::size_t num_zero_blocks() const { return _num_zero_blocks; }
+
     /// @brief Zero the per-apply counters.
     void reset_stats() override;
 
@@ -128,8 +171,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] bool applicable(Graph const &graph) const override;
 
   private:
+    /**
+     * @brief The summed letter that makes @p term identically zero, if it has one.
+     *
+     * @param[in] graph     The graph, read for its space registry and its CURRENT annotations.
+     * @param[in] expr      The algebra, read for the operands' tensors.
+     * @param[in] term      The contraction. Two operands, checked by the caller.
+     * @param[in] statement The statement it is the value of.
+     * @return The letter, or nothing. Everything it could not prove goes through the skip tally.
+     */
+    [[nodiscard]] std::optional<std::string> zero_block_letter(Graph const &graph, TensorExpr const &expr, ExprTerm const &term,
+                                                               ExprStatement const &statement) const;
+
     std::size_t _num_eliminated{0};
     std::size_t _num_dissolved{0};
+    std::size_t _num_zero_blocks{0};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

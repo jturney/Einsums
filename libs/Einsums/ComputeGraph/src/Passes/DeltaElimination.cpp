@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/TensorExpr.hpp>
 #include <Einsums/ComputeGraph/TensorHandle.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
+#include <Einsums/ComputeGraphTypes/Spaces.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -119,23 +120,182 @@ std::optional<Substitution> substitution_for(std::vector<ExprIndex> const &delta
     return std::nullopt;
 }
 
+/// One operand slot's index-space annotation, as the graph carries it NOW.
+struct SlotSpace {
+    SpaceId space;
+    bool    inferred{false};
+};
+
+/// The space annotated on @p tensor's axis @p axis, or nothing when that axis says nothing.
+///
+/// Read from the HANDLE rather than from the raised @ref ExprIndex, because the raised space
+/// comes from the descriptor's capture-time map, and that map holds nothing for a program
+/// annotated after capture, which is every program annotated from Python. The two diagnostic
+/// passes re-derive from the handles for the same reason.
+std::optional<SlotSpace> annotated_space(Graph const &graph, TensorId tensor, std::size_t axis) {
+    TensorHandle const *handle = graph.find_tensor(tensor);
+    if (handle == nullptr || axis >= handle->spaces.size() || !handle->spaces[axis].valid()) {
+        return std::nullopt;
+    }
+    return SlotSpace{.space = handle->spaces[axis], .inferred = handle->spaces_inferred};
+}
+
+/// A relation query that answers Unknown rather than throwing on an id this registry cannot
+/// resolve, which is what a handle annotated against a different registry produces.
+Tristate safe_disjoint(SpaceRegistry const &registry, SpaceId first, SpaceId second) {
+    if (!first.valid() || !second.valid() || first.value() >= registry.size() || second.value() >= registry.size()) {
+        return Tristate::Unknown;
+    }
+    return registry.is_disjoint(first, second);
+}
+
+/// The position of @p letter in @p indices, which the caller has already checked appears once.
+std::size_t axis_of(std::vector<ExprIndex> const &indices, std::string const &letter) {
+    for (std::size_t axis = 0; axis < indices.size(); ++axis) {
+        if (indices[axis].letter == letter) {
+            return axis;
+        }
+    }
+    return indices.size();
+}
+
+/// The arena's single leaf for @p tensor, created only if this expression has none.
+///
+/// @ref raise_region interns one leaf per tensor, and finding that one rather than adding a second
+/// is what keeps a rewrite of the leaf reaching every use of the tensor.
+TermId leaf_for(TensorExpr &expr, TensorId tensor, std::string const &name) {
+    for (std::size_t id = 0; id < expr.terms.size(); ++id) {
+        if (expr.terms[id].kind == TermKind::Leaf && expr.terms[id].tensor == tensor) {
+            return static_cast<TermId>(id);
+        }
+    }
+    ExprTerm leaf;
+    leaf.kind   = TermKind::Leaf;
+    leaf.tensor = tensor;
+    leaf.name   = name;
+    return expr.add(std::move(leaf));
+}
+
+/// Whether any statement other than @p self reads @p tensor.
+bool read_elsewhere(TensorExpr const &expr, TensorId tensor, ExprStatement const &self) {
+    for (auto const &statement : expr.statements) {
+        if (&statement == &self || statement.value == invalid_term) {
+            continue;
+        }
+        for (auto const operand : expr.at(statement.value).operands) {
+            auto const &leaf = expr.at(operand);
+            if (leaf.kind == TermKind::Leaf && leaf.tensor == tensor) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 void DeltaElimination::reset_stats() {
-    _num_eliminated = 0;
-    _num_dissolved  = 0;
+    _num_eliminated  = 0;
+    _num_dissolved   = 0;
+    _num_zero_blocks = 0;
 }
 
 std::vector<std::string> DeltaElimination::describe() const {
-    if (_num_eliminated == 0) {
-        return {};
+    std::vector<std::string> lines;
+    if (_num_eliminated != 0) {
+        lines.push_back(fmt::format("DeltaElimination: removed {} contraction(s) against a Kronecker delta, dissolving {} intermediate(s)",
+                                    _num_eliminated, _num_dissolved));
     }
-    return {fmt::format("DeltaElimination: removed {} contraction(s) against a Kronecker delta, dissolving {} intermediate(s)",
-                        _num_eliminated, _num_dissolved)};
+    if (_num_zero_blocks != 0) {
+        lines.push_back(
+            fmt::format("DeltaElimination: reduced {} contraction(s) over disjoint spaces to their prefactor", _num_zero_blocks));
+    }
+    return lines;
 }
 
 bool DeltaElimination::applicable(Graph const &graph) const {
-    return std::ranges::any_of(graph.tensors_map(), [](auto const &entry) { return entry.second.tag.name == provenance_identity; });
+    if (std::ranges::any_of(graph.tensors_map(), [](auto const &entry) { return entry.second.tag.name == provenance_identity; })) {
+        return true;
+    }
+
+    // The zero-block half needs three things at once, and a graph missing any of them cannot
+    // produce a candidate. Asked here because this pass is in the default pipeline: it runs on
+    // every graph anyone optimizes, and almost none of them declare a space at all.
+    SpaceRegistry const &registry = graph.space_registry();
+    auto const           ids      = registry.ids();
+    bool                 disjoint = false;
+    for (std::size_t first = 0; first < ids.size() && !disjoint; ++first) {
+        for (std::size_t second = first + 1; second < ids.size(); ++second) {
+            if (registry.is_disjoint(ids[first], ids[second]) == Tristate::Yes) {
+                disjoint = true;
+                break;
+            }
+        }
+    }
+    return disjoint && std::ranges::any_of(graph.tensors_map(), [](auto const &entry) {
+               return std::ranges::any_of(entry.second.spaces, [](SpaceId id) { return id.valid(); });
+           });
+}
+
+std::optional<std::string> DeltaElimination::zero_block_letter(Graph const &graph, TensorExpr const &expr, ExprTerm const &term,
+                                                               ExprStatement const &statement) const {
+    SpaceRegistry const &registry = graph.space_registry();
+
+    TensorId const left  = expr.at(term.operands[0]).tensor;
+    TensorId const right = expr.at(term.operands[1]).tensor;
+
+    for (auto const &index : term.operand_indices[0]) {
+        std::string const &letter = index.letter;
+        if (count_letter(term.operand_indices[1], letter) == 0) {
+            continue; // not shared, so nothing is being summed over two spaces
+        }
+
+        auto const on_left  = count_letter(term.operand_indices[0], letter);
+        auto const on_right = count_letter(term.operand_indices[1], letter);
+        auto const on_out   = count_letter(statement.target_indices, letter);
+
+        // Both slots must be findable before anything can be said about them, and a letter that
+        // survives into the output is not summed at all.
+        if (on_left != 1 || on_right != 1) {
+            note_skip("a shared letter repeats within an operand, so it has no single annotated slot",
+                      fmt::format("target '{}'", statement.target_name));
+            continue;
+        }
+
+        auto const first  = annotated_space(graph, left, axis_of(term.operand_indices[0], letter));
+        auto const second = annotated_space(graph, right, axis_of(term.operand_indices[1], letter));
+        if (!first.has_value() && !second.has_value()) {
+            continue; // an ordinary unannotated contraction, and not a decline worth counting
+        }
+        if (!first.has_value() || !second.has_value()) {
+            note_skip("a shared letter is annotated on one operand and not the other",
+                      fmt::format("target '{}' letter '{}'", statement.target_name, letter));
+            continue;
+        }
+        if (safe_disjoint(registry, first->space, second->space) != Tristate::Yes) {
+            note_skip("nothing declared makes a shared letter's two spaces disjoint",
+                      fmt::format("target '{}' letter '{}'", statement.target_name, letter));
+            continue;
+        }
+        if (on_out != 0) {
+            // A batched letter walks matrices side by side rather than summing over them, so
+            // disjointness says the pairing is meaningless and NOT that the answer is zero.
+            // Diagnosing that is CrossSpaceValidation's business; declining it is this pass's.
+            note_skip("a letter over disjoint spaces is batched rather than summed, so the result is not zero",
+                      fmt::format("target '{}' letter '{}'", statement.target_name, letter));
+            continue;
+        }
+        if (first->inferred || second->inferred) {
+            // An inference is a derivation from someone else's declaration, and this pass's
+            // output is what a saved graph keeps. A rewrite is a stronger response than a
+            // diagnostic, so it waits for two declarations.
+            note_skip("a summed letter's disjointness rests on an inferred annotation",
+                      fmt::format("target '{}' letter '{}'", statement.target_name, letter));
+            continue;
+        }
+        return letter;
+    }
+    return std::nullopt;
 }
 
 bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &expr) {
@@ -154,6 +314,62 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
             }
             auto &term = expr.at(statement.value);
             if (term.kind != TermKind::Contraction || term.operands.size() != 2 || term.operand_indices.size() != 2) {
+                continue;
+            }
+
+            // ── Provably zero ──────────────────────────────────────────────────────────
+            //
+            // A letter summed over two spaces that share no element has no term to sum, so the
+            // contraction contributes exactly nothing and what is left is the destination's own
+            // prefactor. Asked before the delta search, because a zero block subsumes whatever
+            // else the statement was doing.
+            if (zero_block_letter(graph, expr, term, statement).has_value()) {
+                TensorId const target = statement.target;
+
+                bool const  internal    = std::ranges::find(region.internal, target) != region.internal.end();
+                bool const  overwritten = is_zero(statement.target_prefactor);
+                std::size_t writers     = 0;
+                for (auto const &other_statement : expr.statements) {
+                    if (other_statement.target == target && other_statement.value != invalid_term) {
+                        ++writers;
+                    }
+                }
+
+                if (overwritten && internal && writers == 1 && !read_elsewhere(expr, target, statement)) {
+                    // Zero into a buffer nothing reads and nothing outside can see. There is no
+                    // value left to produce, so there is no node left to emit.
+                    statement.value = invalid_term; // erased below
+                    report(2, fmt::format("'{}' is a contraction over disjoint spaces into a buffer nothing reads; it is gone",
+                                          statement.target_name));
+                } else {
+                    // Still has to be produced. `scale` by exactly zero ASSIGNS zero rather than
+                    // multiplying, which is what makes this exact on a destination the program
+                    // never wrote: a multiply would let an Inf already in the buffer survive.
+                    ScaleDescriptor scale;
+                    scale.factor = statement.target_prefactor;
+
+                    ExprTerm replacement;
+                    replacement.kind         = TermKind::Elementwise;
+                    replacement.element_kind = OpKind::Scale;
+                    replacement.descriptor   = OpData(std::move(scale));
+                    replacement.indices      = statement.target_indices;
+                    if (!overwritten) {
+                        // The RMW convention: a node that READS its destination lists it among
+                        // its inputs, and the schedulers rely on that to order it.
+                        replacement.operands.push_back(leaf_for(expr, target, statement.target_name));
+                        replacement.operand_indices.push_back(statement.target_indices);
+                    }
+
+                    statement.value            = expr.add(std::move(replacement));
+                    statement.origin_kind      = OpKind::Scale;
+                    statement.target_prefactor = overwritten ? PrefactorScalar{double{0}} : PrefactorScalar{double{1}};
+                    statement.origin_label     = fmt::format("scale: '{}' keeps only its own prefactor", statement.target_name);
+                    report(2, fmt::format("'{}' contracts over disjoint spaces; it keeps only its own prefactor", statement.target_name));
+                }
+
+                ++_num_zero_blocks;
+                changed  = true;
+                progress = true;
                 continue;
             }
 
