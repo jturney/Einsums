@@ -463,8 +463,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * DID, `skip_reasons()` says what it declined and why. A pipeline that
      * looks inert usually has a full skip tally - that is the useful signal,
      * and reading it should not require rebuilding with a debugger attached.
+     *
+     * @return One (reason, count) pair per distinct reason.
+     *
+     * Exposed because "reading it should not require a debugger" is a claim
+     * about every language the library is used from, and the passes whose whole
+     * behaviour is a list of refusals are the ones a caller most needs it for.
+     * The report @ref PassManager::explain builds carries the REGION-level
+     * declines only, so a per-candidate reason is otherwise reachable from C++
+     * and nowhere else.
      */
-    [[nodiscard]] EINSUMS_EXPORT std::vector<std::pair<std::string, std::size_t>> skip_reasons() const;
+    APIARY_EXPOSE APIARY_GETTER("skip_reasons") [[nodiscard]] EINSUMS_EXPORT std::vector<std::pair<std::string, std::size_t>>
+                                                                             skip_reasons() const;
 
     /**
      * @brief What this pass did on its last run, for @ref PassManager::explain.
