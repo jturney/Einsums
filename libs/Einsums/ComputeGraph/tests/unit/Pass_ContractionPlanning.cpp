@@ -782,11 +782,22 @@ TEST_CASE("ContractionPlanning - a restructured chain carries its prefactors", "
     REQUIRE(pass.chains_restructured() == 1);
     g.execute();
 
+    // Norm-relative, not element-wise. The re-bracketing sums the same products in a different
+    // order, so an element where they cancel agrees to a few ulps of the TERMS and to nothing at
+    // all of itself; an element-wise relative bound there measures the cancellation rather than
+    // the rewrite, and does it on whichever element happened to come out smallest.
+    double error = 0.0;
+    double scale = 0.0;
     for (size_t r = 0; r < n; r++) {
         for (size_t c = 0; c < n; c++) {
-            REQUIRE_THAT(R(r, c), Catch::Matchers::WithinRel(Rr(r, c), 1e-12));
+            error += (R(r, c) - Rr(r, c)) * (R(r, c) - Rr(r, c));
+            scale += Rr(r, c) * Rr(r, c);
         }
     }
+    CHECK(std::sqrt(error) <= 1e-12 * std::sqrt(scale));
+    // And the prefactor itself, which is the discrete claim: a dropped one is off by a FACTOR,
+    // four orders above any bound a re-association needs.
+    CHECK(std::sqrt(scale) > 0.0);
 }
 
 TEST_CASE("ContractionPlanning - a conjugated operand declines the fold", "[ComputeGraph][Passes][CP]") {
