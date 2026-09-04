@@ -222,6 +222,29 @@
 
     See also :option:`--einsums:graph:optimizer-budget`, which bounds how long the search may run.
 
+"einsums:graph:factorization-cache":
+  added: "2.0.0"
+  body: |
+    Keep each search pass's chosen plan in memory and replay it when a structurally identical
+    graph comes back. On by default.
+
+    The search ``MultiTermFactorization`` runs is a pure function of the region's structure, so
+    its answer is worth keeping. An entry is keyed on :cpp:func:`Graph::content_hash` together
+    with the region's node span and the factor cap, and it holds a *plan* rather than a graph: the
+    shared pairs that were committed, in order, and the contraction tree chosen for each term,
+    written as positions rather than as tensor identities so a plan found on one graph applies to
+    another that hashes the same.
+
+    The case it pays for is a pipeline whose stages present the same program under the same name:
+    the first stage searches and the rest replay. It does not pay for re-running a script, which
+    is a new process with an empty cache; that case is what saving the optimized graph IR is for.
+    A search that ran out of its budget is never kept, so a plan that comes back out is one an
+    unbounded search would have found.
+
+    ``MultiTermFactorization::set_cache_enabled`` overrides this for one pipeline and
+    ``clear_cache`` empties it. Switch it off when bisecting a wrong number: two supposedly
+    identical graphs getting one plan is the first thing to rule out.
+
 "einsums:graph:optimizer-budget":
   added: "2.0.0"
   body: |

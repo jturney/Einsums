@@ -17,6 +17,7 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -26,6 +27,7 @@
 #include <ranges>
 #include <set>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -359,14 +361,26 @@ std::optional<std::pair<PairKey, PairSite>> describe_pair(Term const &term, std:
 } // namespace
 
 void MultiTermFactorization::reset_stats() {
-    _num_rebracketed = 0;
-    _num_shared      = 0;
-    _num_inlined     = 0;
-    _cut_off         = false;
+    // The framework's counters too. Without this the region tallies were never zeroed and a pass
+    // instance used for a second apply reported "rewrote 2 of 1 region(s)", which is the shape a
+    // running total takes when nothing resets it.
+    RegionRewrite::reset_stats();
+    _num_rebracketed  = 0;
+    _num_shared       = 0;
+    _num_inlined      = 0;
+    _num_cache_hits   = 0;
+    _num_cache_misses = 0;
+    _cut_off          = false;
+    // The cache itself is NOT cleared here. It is the one piece of state whose whole value is
+    // that it outlives an apply, and `clear_cache` is how a caller asks for it to go.
 }
 
 bool MultiTermFactorization::search_enabled() const {
     return _search_explicit ? _search_enabled : config::get(option::GraphStructuralSearch);
+}
+
+bool MultiTermFactorization::cache_enabled() const {
+    return _cache_explicit ? _cache_enabled : config::get(option::GraphFactorizationCache);
 }
 
 bool MultiTermFactorization::applicable(Graph const &graph) const {
@@ -382,6 +396,21 @@ bool MultiTermFactorization::applicable(Graph const &graph) const {
         note_skip("fewer than two contractions to search over", fmt::format("{} contraction(s)", contractions));
         return false;
     }
+
+    // Taken here because this is the one hook called exactly once per graph, and taken BEFORE any
+    // region has been rewritten: the regions are visited back to front, so a hash read at the
+    // second one would digest a graph the first had already moved.
+    _graph_key_valid = false;
+    if (cache_enabled()) {
+        try {
+            _graph_key       = graph.content_hash();
+            _graph_key_valid = true;
+        } catch (std::exception const &error) {
+            // A graph with no canonical form has no hash, which is a reason to search rather than
+            // an error: nothing is cached and everything else proceeds.
+            note_skip("the graph has no canonical form, so no plan can be keyed on it", error.what());
+        }
+    }
     return true;
 }
 
@@ -392,6 +421,10 @@ std::vector<std::string> MultiTermFactorization::describe() const {
                                     "introduced {} shared intermediate(s)",
                                     _num_inlined, _num_rebracketed, _num_shared));
     }
+    if (_num_cache_hits != 0 || _num_cache_misses != 0) {
+        lines.push_back(fmt::format("MultiTermFactorization: {} region(s) replayed a kept plan and {} searched; {} plan(s) held",
+                                    _num_cache_hits, _num_cache_misses, _cache.size()));
+    }
     if (_cut_off) {
         // Said out loud, because a report that could not tell this apart from "already optimal"
         // would be silent in exactly the case the budget exists for.
@@ -401,6 +434,28 @@ std::vector<std::string> MultiTermFactorization::describe() const {
 }
 
 bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorExpr &expr) {
+    // ── The kept plan, if this region has one ──────────────────────────────────────────────
+    //
+    // Asked before anything is computed, because the answer "nothing here is worth rewriting"
+    // costs a whole search to reach and is worth keeping for exactly that reason.
+    PlanKey const            key{_graph_key, region.first, region.last, _max_factors};
+    FactorizationPlan const *cached = nullptr;
+    if (_graph_key_valid) {
+        if (auto const it = _cache.find(key); it != _cache.end()) {
+            cached = &it->second;
+            _num_cache_hits++;
+            report(2, fmt::format("region [{},{}) replays a plan a structurally identical graph already found", region.first, region.last));
+            if (!cached->rewrites) {
+                note_skip("a structurally identical region was already searched and offered nothing",
+                          fmt::format("region [{},{})", region.first, region.last));
+                return false;
+            }
+        } else {
+            _num_cache_misses++;
+        }
+    }
+    bool const cut_off_on_entry = _cut_off;
+
     ComparisonContext ctx;
     ctx.registry = &graph.space_registry();
 
@@ -579,7 +634,19 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     for (auto const s : folded) {
         terms[s].searchable = false;
     }
+
+    // Every store goes through here, so the one rule that matters is stated once: a search cut
+    // off by its budget is a partial answer and is never kept, which is also why the budget is
+    // not part of the key.
+    auto keep = [&](FactorizationPlan plan) {
+        bool const cut_off_here = _cut_off && !cut_off_on_entry;
+        if (_graph_key_valid && !cut_off_here && cached == nullptr) {
+            _cache.insert_or_assign(key, std::move(plan));
+        }
+    };
+
     if (std::ranges::none_of(terms, [](Term const &term) { return term.searchable; })) {
+        keep({});
         return false;
     }
 
@@ -608,9 +675,6 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     // rung decide on a subset, which is the discipline SymbolicCost.hpp asks callers for.
     ctx.bound_extent = table.lookup();
 
-    std::vector<TreePlan> plans    = solve_all();
-    SymbolicCost const    original = total_cost(plans);
-
     /// One committed shared intermediate, in emission order.
     struct Shared {
         TensorId               tensor{};
@@ -620,7 +684,166 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     };
     std::vector<Shared> shared;
 
-    for (;;) {
+    /// The occurrences of each committed pair, in commit order, as the plan records them.
+    std::vector<std::vector<std::array<std::size_t, 3>>> commit_log;
+
+    // Declare the intermediate one committed pair needs and rewrite its occurrences onto it. The
+    // search reaches this after picking a winner and a replay reaches it straight away, which is
+    // what makes the two produce the same graph rather than two graphs that agree on a test.
+    auto commit_pair = [&](std::vector<PairSite> const &sites, std::string_view label) -> bool {
+        auto const  &first = sites.front();
+        Factor const left  = terms[first.term].factors[first.left];
+        Factor const right = terms[first.term].factors[first.right];
+
+        std::vector<std::size_t> dims;
+        std::vector<SpaceId>     spaces;
+        std::vector<std::string> symbols;
+        bool                     every_axis_symbolic = true;
+        dims.reserve(first.result.size());
+        for (auto const &index : first.result) {
+            auto const extent = table.extent.find(index.letter);
+            if (extent == table.extent.end()) {
+                every_axis_symbolic = false;
+                break;
+            }
+            dims.push_back(extent->second);
+            spaces.push_back(index.space);
+            std::string symbol;
+            if (index.space.valid() && index.space.value() < graph.space_registry().size()) {
+                symbol = graph.space_registry().space(index.space).dim_symbol;
+            }
+            every_axis_symbolic = every_axis_symbolic && !symbol.empty();
+            symbols.push_back(std::move(symbol));
+        }
+        if (dims.size() != first.result.size()) {
+            note_skip("a shared candidate has an axis with no known extent", std::string{label});
+            return false;
+        }
+
+        TensorHandle const *model = graph.find_tensor(left.tensor);
+        if (model == nullptr) {
+            return false;
+        }
+        // The tensor is declared now, because a committed intermediate is one this pass will
+        // emit, and a declaration for a candidate it merely considered would leave the graph
+        // holding shells nothing writes.
+        TensorId const shared_id = detail::dispatch_scalar_type(model->dtype, [&]<typename T>(T /*tag*/) {
+            auto &tensor = graph.declare_runtime_tensor<T>(fmt::format("mtf_shared{}", shared.size()), dims, /*intermediate=*/true);
+            return graph.find_tensor_id_by_ptr(&tensor);
+        });
+        if (shared_id == 0) {
+            return false;
+        }
+        if (std::ranges::any_of(spaces, [](SpaceId id) { return id.valid(); })) {
+            graph.annotate_spaces(shared_id, spaces);
+        }
+        if (every_axis_symbolic) {
+            // Only when EVERY axis has a symbol: a partial annotation is what makes a bind move
+            // some extents and not others, which is worse than none at all.
+            graph.annotate_dims(shared_id, symbols);
+        }
+
+        std::vector<std::array<std::size_t, 3>> record;
+        record.reserve(sites.size());
+        for (auto const &site : sites) {
+            record.push_back({site.term, site.left, site.right});
+            Term               &term = terms[site.term];
+            Factor              placeholder{.tensor = shared_id, .indices = site.result, .conjugate = false};
+            std::vector<Factor> kept;
+            kept.reserve(term.factors.size() - 1);
+            for (std::size_t f = 0; f < term.factors.size(); f++) {
+                if (f != site.left && f != site.right) {
+                    kept.push_back(term.factors[f]);
+                }
+            }
+            kept.push_back(std::move(placeholder));
+            term.factors = std::move(kept);
+        }
+        commit_log.push_back(std::move(record));
+        shared.push_back(Shared{.tensor = shared_id, .left = left, .right = right, .result = first.result});
+        _num_shared++;
+        report(2, fmt::format("share {} across {} term(s)", label, sites.size()));
+        return true;
+    };
+
+    std::vector<TreePlan> plans;
+    SymbolicCost          original;
+
+    // ── Replay, when a structurally identical region already answered this ─────────────────
+    //
+    // The commits are checked against this region's shapes before any of them is applied, so a
+    // plan that does not fit is a miss rather than a half-applied rewrite. It cannot happen for a
+    // plan keyed on this graph's content hash, and checking is cheaper than proving it cannot.
+    bool replayed = false;
+    if (cached != nullptr) {
+        std::vector<std::size_t> factor_count(terms.size(), 0);
+        for (std::size_t t = 0; t < terms.size(); t++) {
+            factor_count[t] = terms[t].factors.size();
+        }
+        bool fits = cached->trees.size() == terms.size();
+        for (auto const &commit : cached->commits) {
+            fits = fits && !commit.empty();
+            for (auto const &site : commit) {
+                fits = fits && site[0] < terms.size() && terms[site[0]].searchable && factor_count[site[0]] >= 3 && site[1] < site[2] &&
+                       site[2] < factor_count[site[0]];
+                if (!fits) {
+                    break;
+                }
+                factor_count[site[0]]--;
+            }
+            if (!fits) {
+                break;
+            }
+        }
+
+        if (!fits) {
+            // Only reachable through a hash collision, and a wrong plan is worse than a slow one.
+            note_skip("a kept plan does not describe this region, so it was dropped",
+                      fmt::format("region [{},{})", region.first, region.last));
+            _cache.erase(key);
+            cached = nullptr;
+        } else {
+            replayed = true;
+            for (auto const &commit : cached->commits) {
+                std::vector<PairSite> sites;
+                sites.reserve(commit.size());
+                for (auto const &site : commit) {
+                    auto described = describe_pair(terms[site[0]], site[1], site[2], site[0]);
+                    if (!described.has_value()) {
+                        replayed = false;
+                        break;
+                    }
+                    sites.push_back(std::move(described->second));
+                }
+                if (!replayed || !commit_pair(sites, "a kept plan's shared pair")) {
+                    replayed = false;
+                    break;
+                }
+            }
+            if (replayed) {
+                plans.resize(terms.size());
+                for (std::size_t t = 0; t < terms.size(); t++) {
+                    plans[t].ok       = cached->trees[t].ok;
+                    plans[t].split    = cached->trees[t].split;
+                    plans[t].resolved = cached->trees[t].resolved;
+                }
+            } else {
+                note_skip("a kept plan could not be replayed onto this region", fmt::format("region [{},{})", region.first, region.last));
+                return false;
+            }
+        }
+    }
+
+    if (replayed) {
+        // The plan is only kept when the search decided the region was worth rewriting, so the
+        // captured cost the emit gate compares against is not needed and is not computed.
+        original = SymbolicCost{};
+    } else {
+        plans    = solve_all();
+        original = total_cost(plans);
+    }
+
+    while (!replayed) {
         if (budget().expired()) {
             _cut_off = true;
             note_skip("the wall-clock budget ran out mid-search", "the best assignment found so far was kept");
@@ -718,83 +941,18 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             break;
         }
 
-        // Commit. The tensor is declared now, because a committed intermediate is one this pass
-        // will emit, and a declaration for a candidate it merely considered would leave the graph
-        // holding shells nothing writes.
-        auto const  &sites = candidates.at(*best_key);
-        auto const  &first = sites.front();
-        Factor const left  = terms[first.term].factors[first.left];
-        Factor const right = terms[first.term].factors[first.right];
-
-        std::vector<std::size_t> dims;
-        std::vector<SpaceId>     spaces;
-        std::vector<std::string> symbols;
-        bool                     every_axis_symbolic = true;
-        dims.reserve(first.result.size());
-        for (auto const &index : first.result) {
-            auto const extent = table.extent.find(index.letter);
-            if (extent == table.extent.end()) {
-                every_axis_symbolic = false;
-                break;
-            }
-            dims.push_back(extent->second);
-            spaces.push_back(index.space);
-            std::string symbol;
-            if (index.space.valid() && index.space.value() < graph.space_registry().size()) {
-                symbol = graph.space_registry().space(index.space).dim_symbol;
-            }
-            every_axis_symbolic = every_axis_symbolic && !symbol.empty();
-            symbols.push_back(std::move(symbol));
-        }
-        if (dims.size() != first.result.size()) {
-            note_skip("a shared candidate has an axis with no known extent", best_key->text);
+        if (!commit_pair(candidates.at(*best_key), best_key->text)) {
             break;
         }
-
-        TensorHandle const *model = graph.find_tensor(left.tensor);
-        if (model == nullptr) {
-            break;
-        }
-        TensorId const shared_id = detail::dispatch_scalar_type(model->dtype, [&]<typename T>(T /*tag*/) {
-            auto &tensor = graph.declare_runtime_tensor<T>(fmt::format("mtf_shared{}", shared.size()), dims, /*intermediate=*/true);
-            return graph.find_tensor_id_by_ptr(&tensor);
-        });
-        if (shared_id == 0) {
-            break;
-        }
-        if (std::ranges::any_of(spaces, [](SpaceId id) { return id.valid(); })) {
-            graph.annotate_spaces(shared_id, spaces);
-        }
-        if (every_axis_symbolic) {
-            // Only when EVERY axis has a symbol: a partial annotation is what makes a bind move
-            // some extents and not others, which is worse than none at all.
-            graph.annotate_dims(shared_id, symbols);
-        }
-
-        for (auto const &site : sites) {
-            Term               &term = terms[site.term];
-            Factor              placeholder{.tensor = shared_id, .indices = site.result, .conjugate = false};
-            std::vector<Factor> kept;
-            kept.reserve(term.factors.size() - 1);
-            for (std::size_t f = 0; f < term.factors.size(); f++) {
-                if (f != site.left && f != site.right) {
-                    kept.push_back(term.factors[f]);
-                }
-            }
-            kept.push_back(std::move(placeholder));
-            term.factors = std::move(kept);
-        }
-        shared.push_back(Shared{.tensor = shared_id, .left = left, .right = right, .result = first.result});
-        _num_shared++;
         plans = std::move(best_plans);
-        report(2, fmt::format("share {} across {} term(s)", best_key->text, sites.size()));
     }
 
     // ── Emit ───────────────────────────────────────────────────────────────────────────────
     //
     // Nothing above touched the expression, so a decision to leave it alone costs nothing.
-    if (shared.empty() && compare(total_cost(plans), original, ctx) >= 0) {
+    if (!replayed && shared.empty() && compare(total_cost(plans), original, ctx) >= 0) {
         note_skip("no re-bracketing or sharing beats the captured form", fmt::format("{} term(s) examined", terms.size()));
+        keep({});
         return false;
     }
 
@@ -938,8 +1096,21 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
 
     if (!ok) {
         note_skip("a term's tree could not be emitted", "the region is left as it was");
+        keep({});
         return false;
     }
+
+    // The plan, in the vocabulary a replay needs: which pairs were committed, in order, and the
+    // tree each term ended with. Nothing here names a tensor or a node, which is what lets it
+    // apply to another graph that hashes the same.
+    FactorizationPlan plan;
+    plan.rewrites = true;
+    plan.commits  = commit_log;
+    plan.trees.reserve(plans.size());
+    for (auto const &tree : plans) {
+        plan.trees.push_back(FactorizationPlan::Tree{.ok = tree.ok, .split = tree.split, .resolved = tree.resolved});
+    }
+    keep(std::move(plan));
 
     expr.statements = std::move(emitted);
     // Counted here rather than where the folding happened: every return above leaves the

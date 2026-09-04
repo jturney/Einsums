@@ -85,6 +85,18 @@ inline constinit cl::ConfigOption<bool> GraphStructuralSearch =
                     "function of how many candidates a graph offers rather than of how large it is",
                     "ComputeGraph Passes", false);
 
+/// Keep a search pass's result and replay it for a structurally identical graph.
+///
+/// On by default, because the cost is a content hash of a graph a search was about to be run over
+/// and the saving is the search. It is an option rather than a constant for the reason every
+/// rewrite knob is one: a wrong number under an optimizer is bisected by turning things off, and a
+/// cache is the first thing to suspect when two supposedly identical graphs get different plans.
+inline constinit cl::ConfigOption<bool> GraphFactorizationCache =
+    cl::config_flag("einsums:graph:factorization-cache",
+                    "Keep each search pass's chosen plan in memory and replay it when a structurally identical graph comes back, so a "
+                    "pipeline whose stages present the same program searches once",
+                    "ComputeGraph Passes", true);
+
 /// How long a search pass may run, in milliseconds. Zero means unlimited.
 ///
 /// The number is a starting point rather than a measurement, which is what an option is for. What

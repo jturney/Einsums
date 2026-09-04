@@ -45,26 +45,64 @@ struct Chain {
     RuntimeTensor<double> A, B, C, D, R1, R2;
 };
 
-Chain make_chain(unsigned seed) {
+/// The four extents of the chain, so a case can present the same program at a different size.
+struct ChainDims {
+    size_t i{kI}, k{kK}, l{kL}, j{kJ};
+};
+
+Chain make_chain_of(unsigned seed, ChainDims d) {
     einsums::seed_random(seed);
-    return Chain{.A  = create_random_tensor<double>("A", kI, kK),
-                 .B  = create_random_tensor<double>("B", kK, kL),
-                 .C  = create_random_tensor<double>("C", kL, kJ),
-                 .D  = create_random_tensor<double>("D", kL, kJ),
-                 .R1 = create_zero_tensor<double>("R1", kI, kJ),
-                 .R2 = create_zero_tensor<double>("R2", kI, kJ)};
+    return Chain{.A  = create_random_tensor<double>("A", d.i, d.k),
+                 .B  = create_random_tensor<double>("B", d.k, d.l),
+                 .C  = create_random_tensor<double>("C", d.l, d.j),
+                 .D  = create_random_tensor<double>("D", d.l, d.j),
+                 .R1 = create_zero_tensor<double>("R1", d.i, d.j),
+                 .R2 = create_zero_tensor<double>("R2", d.i, d.j)};
+}
+
+Chain make_chain(unsigned seed) {
+    return make_chain_of(seed, ChainDims{});
 }
 
 /// Capture the two chains of the file note into @p graph.
-void capture_chains(cg::Graph &graph, Chain &t) {
-    auto &T1 = graph.declare_runtime_tensor<double>("T1", {kI, kL}, /*intermediate=*/true);
-    auto &T2 = graph.declare_runtime_tensor<double>("T2", {kK, kJ}, /*intermediate=*/true);
+void capture_chains_of(cg::Graph &graph, Chain &t, ChainDims d) {
+    auto &T1 = graph.declare_runtime_tensor<double>("T1", {d.i, d.l}, /*intermediate=*/true);
+    auto &T2 = graph.declare_runtime_tensor<double>("T2", {d.k, d.j}, /*intermediate=*/true);
 
     cg::CaptureGuard const guard(graph);
     cg::einsum("i,l <- i,k ; k,l", 0.0, &T1, 1.0, t.A, t.B);
     cg::einsum("i,j <- i,l ; l,j", 0.0, &t.R1, 1.0, T1, t.C);
     cg::einsum("k,j <- k,l ; l,j", 0.0, &T2, 1.0, t.B, t.D);
     cg::einsum("i,j <- i,k ; k,j", 0.0, &t.R2, 1.0, t.A, T2);
+}
+
+void capture_chains(cg::Graph &graph, Chain &t) {
+    capture_chains_of(graph, t, ChainDims{});
+}
+
+/// Everything about the graph a rewrite decides: which nodes, in which order, reading what.
+///
+/// The comparison a replayed plan has to satisfy, and deliberately not a count: two rewrites can
+/// agree on how many contractions there are and disagree on every index list in them.
+std::vector<std::string> rewrite_fingerprint(cg::Graph const &graph) {
+    std::vector<std::string> out;
+    for (auto const &node : graph.nodes()) {
+        std::string line = fmt::format("{}|{}", static_cast<int>(node.kind), node.label);
+        if (auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data); desc != nullptr) {
+            line += fmt::format("|{}<-{};{}", fmt::join(desc->spec.c_indices, ","), fmt::join(desc->spec.a_indices, ","),
+                                fmt::join(desc->spec.b_indices, ","));
+        }
+        for (auto const id : node.inputs) {
+            cg::TensorHandle const *handle = graph.find_tensor(id);
+            line += fmt::format("|in {}", handle == nullptr ? std::string{"?"} : handle->name);
+        }
+        for (auto const id : node.outputs) {
+            cg::TensorHandle const *handle = graph.find_tensor(id);
+            line += fmt::format("|out {}", handle == nullptr ? std::string{"?"} : handle->name);
+        }
+        out.push_back(std::move(line));
+    }
+    return out;
 }
 
 /// @brief The norm-relative gap between two results of the same program.
@@ -220,6 +258,192 @@ TEST_CASE("MultiTermFactorization - the same graph gets the same plan", "[Comput
             first = labels;
         }
         CHECK(labels == first);
+    }
+}
+
+// ── The result cache ──────────────────────────────────────────────────────────────────────────
+//
+// The case it exists for is a pipeline whose stages present the same program: one search, then a
+// replay per stage. The cases below are that, plus the three ways an entry must NOT be reused.
+
+TEST_CASE("MultiTermFactorization - a structurally identical graph replays the plan", "[ComputeGraph][MultiTermFactorization]") {
+    auto pass = searching_pass();
+
+    Chain     first_operands = make_chain(17);
+    cg::Graph first("cache");
+    capture_chains(first, first_operands);
+
+    cg::PassManager pm;
+    pm.add(pass);
+    REQUIRE(pm.run(first));
+    CHECK(pass->num_cache_misses() == 1);
+    CHECK(pass->num_cache_hits() == 0);
+    CHECK(pass->cache_size() == 1);
+    auto const searched = rewrite_fingerprint(first);
+
+    // The same program again, on the same pass instance. Different tensor objects and different
+    // TensorIds, which is exactly why the plan is written in positions.
+    Chain     second_operands = make_chain(29);
+    cg::Graph second("cache");
+    capture_chains(second, second_operands);
+    REQUIRE(pm.run(second));
+
+    CHECK(pass->num_cache_hits() == 1);
+    CHECK(pass->num_cache_misses() == 0);
+    CHECK(pass->cache_size() == 1);
+    // Not a count of nodes: two rewrites can agree on how many contractions there are and
+    // disagree on every index list in them.
+    CHECK(rewrite_fingerprint(second) == searched);
+    CHECK(pass->num_shared() == 1);
+    CHECK(pass->num_rebracketed() == 2);
+}
+
+TEST_CASE("MultiTermFactorization - the replayed plan computes the same numbers", "[ComputeGraph][MultiTermFactorization]") {
+    auto pass = searching_pass();
+
+    auto run = [&](unsigned seed) {
+        Chain     t = make_chain_of(seed, ChainDims{});
+        cg::Graph graph("cache-run");
+        capture_chains(graph, t);
+        cg::PassManager pm;
+        pm.add(pass);
+        pm.add<cg::passes::Materialization>();
+        graph.apply(pm);
+        graph.execute();
+        return std::pair{std::move(t.R1), std::move(t.R2)};
+    };
+
+    auto const [searched1, searched2] = run(31);
+    REQUIRE(pass->cache_size() == 1);
+    auto const [replayed1, replayed2] = run(31);
+    REQUIRE(pass->num_cache_hits() == 1);
+
+    // The same operands through the same plan: the same kernels over the same values in the same
+    // order, so anything short of identical is a defect rather than a rounding difference.
+    REQUIRE(searched1.size() == replayed1.size());
+    for (size_t element = 0; element < searched1.size(); element++) {
+        REQUIRE(searched1.data()[element] == replayed1.data()[element]);
+        REQUIRE(searched2.data()[element] == replayed2.data()[element]);
+    }
+}
+
+TEST_CASE("MultiTermFactorization - different extents are a different plan", "[ComputeGraph][MultiTermFactorization]") {
+    auto pass = searching_pass();
+
+    Chain     small = make_chain(19);
+    cg::Graph first("cache-size");
+    capture_chains(first, small);
+
+    cg::PassManager pm;
+    pm.add(pass);
+    REQUIRE(pm.run(first));
+    REQUIRE(pass->cache_size() == 1);
+
+    // The same statements at a different size. The extents are an input to the ranking, so a plan
+    // chosen at one size is not the plan for another and the entry must not be reused.
+    ChainDims const larger{.i = kI, .k = kK, .l = kL + 2, .j = kJ};
+    Chain           big = make_chain_of(19, larger);
+    cg::Graph       second("cache-size");
+    capture_chains_of(second, big, larger);
+    pm.run(second);
+
+    CHECK(pass->num_cache_hits() == 0);
+    CHECK(pass->num_cache_misses() == 1);
+    CHECK(pass->cache_size() == 2);
+}
+
+TEST_CASE("MultiTermFactorization - a changed cap is a different plan", "[ComputeGraph][MultiTermFactorization]") {
+    auto pass = searching_pass();
+
+    Chain     t = make_chain(23);
+    cg::Graph first("cache-cap");
+    capture_chains(first, t);
+
+    cg::PassManager pm;
+    pm.add(pass);
+    REQUIRE(pm.run(first));
+    REQUIRE(pass->cache_size() == 1);
+
+    // The cap bounds what the search may consider, so it is part of what an answer was an answer
+    // to. Changing it must not read back the previous cap's plan.
+    pass->set_max_factors(4);
+    Chain     again = make_chain(23);
+    cg::Graph second("cache-cap");
+    capture_chains(second, again);
+    REQUIRE(pm.run(second));
+
+    CHECK(pass->num_cache_hits() == 0);
+    CHECK(pass->num_cache_misses() == 1);
+    CHECK(pass->cache_size() == 2);
+}
+
+TEST_CASE("MultiTermFactorization - a renamed graph is a different plan", "[ComputeGraph][MultiTermFactorization]") {
+    auto pass = searching_pass();
+
+    Chain     t = make_chain(43);
+    cg::Graph first("cache-name-one");
+    capture_chains(first, t);
+
+    cg::PassManager pm;
+    pm.add(pass);
+    REQUIRE(pm.run(first));
+
+    // The same statements under a different graph name. `Graph::content_hash` covers the name, so
+    // two stages share a plan only when they present the same program AND call it the same thing.
+    // Pinned rather than left to be rediscovered: it is the shape of the case the cache serves.
+    Chain     again = make_chain(43);
+    cg::Graph second("cache-name-two");
+    capture_chains(second, again);
+    REQUIRE(pm.run(second));
+
+    CHECK(pass->num_cache_hits() == 0);
+    CHECK(pass->cache_size() == 2);
+}
+
+TEST_CASE("MultiTermFactorization - the cache can be switched off and cleared", "[ComputeGraph][MultiTermFactorization]") {
+    auto pass = searching_pass();
+    pass->set_cache_enabled(false);
+    CHECK_FALSE(pass->cache_enabled());
+
+    Chain     t = make_chain(37);
+    cg::Graph first("cache-switch");
+    capture_chains(first, t);
+
+    cg::PassManager pm;
+    pm.add(pass);
+    REQUIRE(pm.run(first));
+    // Nothing keyed, so nothing counted either way: a miss is a lookup that failed, not a lookup
+    // that was never made.
+    CHECK(pass->cache_size() == 0);
+    CHECK(pass->num_cache_misses() == 0);
+
+    pass->set_cache_enabled(true);
+    Chain     again = make_chain(37);
+    cg::Graph second("cache-switch");
+    capture_chains(second, again);
+    REQUIRE(pm.run(second));
+    CHECK(pass->cache_size() == 1);
+
+    pass->clear_cache();
+    CHECK(pass->cache_size() == 0);
+}
+
+TEST_CASE("MultiTermFactorization - the report says what the cache did", "[ComputeGraph][MultiTermFactorization]") {
+    auto pass = searching_pass();
+
+    for (int trial = 0; trial < 2; trial++) {
+        Chain     t = make_chain(41);
+        cg::Graph graph("cache-report");
+        capture_chains(graph, t);
+        cg::PassManager pm;
+        pm.add(pass);
+        pm.set_verbosity(2);
+        REQUIRE(pm.run(graph));
+        if (trial == 1) {
+            auto const report = pm.explain();
+            INFO(report);
+            CHECK(report.find("replayed a kept plan") != std::string::npos);
+        }
     }
 }
 

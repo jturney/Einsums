@@ -109,6 +109,67 @@ def test_the_search_is_off_unless_it_is_asked_for():
     assert "structural search is switched off" in pm.explain()
 
 
+def test_the_second_identical_graph_replays_the_plan():
+    """The case the cache exists for: one search, then a replay per stage."""
+    a, b, c, d = _operands()
+
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    assert mtf.cache_enabled
+    pm = cg.PassManager()
+    pm.add(mtf)
+
+    first = cg.Graph("mtf-cache")
+    _R1, _R2, _pool = _build(first, a, b, c, d, "float64")
+    assert pm.run(first)
+    assert mtf.num_cache_misses == 1
+    assert mtf.num_cache_hits == 0
+    assert mtf.cache_size == 1
+
+    # The same program under the same name, with fresh tensors and fresh ids. The plan is written
+    # in positions, which is what lets it apply.
+    second = cg.Graph("mtf-cache")
+    R1, R2, _pool2 = _build(second, a, b, c, d, "float64")
+    assert pm.run(second)
+    assert mtf.num_cache_hits == 1
+    assert mtf.num_cache_misses == 0
+    assert mtf.num_shared == 1
+    assert mtf.num_rebracketed == 2
+
+    pm2 = cg.PassManager()
+    pm2.add(cg.Materialization())
+    pm2.run(second)
+    second.execute()
+    want1, want2 = _expected(a, b, c, d)
+    assert_close(np.asarray(R1), want1, dtype="float64")
+    assert_close(np.asarray(R2), want2, dtype="float64")
+
+
+def test_the_cache_can_be_switched_off_and_cleared():
+    a, b, c, d = _operands()
+
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    mtf.set_cache_enabled(False)
+    assert not mtf.cache_enabled
+    pm = cg.PassManager()
+    pm.add(mtf)
+
+    graph = cg.Graph("mtf-cache-off")
+    _R1, _R2, _pool = _build(graph, a, b, c, d, "float64")
+    assert pm.run(graph)
+    assert mtf.cache_size == 0
+
+    mtf.set_cache_enabled(True)
+    again = cg.Graph("mtf-cache-off")
+    _R3, _R4, _pool2 = _build(again, a, b, c, d, "float64")
+    assert pm.run(again)
+    assert mtf.cache_size == 1
+
+    mtf.clear_cache()
+    assert mtf.cache_size == 0
+
+
 def test_the_report_names_what_it_shared():
     a, b, c, d = _operands()
 

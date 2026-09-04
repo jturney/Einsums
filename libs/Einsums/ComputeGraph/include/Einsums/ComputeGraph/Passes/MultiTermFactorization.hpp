@@ -60,6 +60,26 @@
  * search runs once and a replay does not, so the interactive default is off and the
  * capture-and-save workflow turns it on.
  *
+ * @par The result cache
+ * The search is the expensive thing this pass does and it is a pure function of the region's
+ * structure, so its answer is kept and replayed when a structurally identical region comes back.
+ * The key is @ref Graph::content_hash together with the region's node span and the factor cap;
+ * everything a plan depends on is inside those. The entry holds a PLAN and not a graph: the shared
+ * pairs that were committed, in commit order, and the contraction tree chosen for each term. Both
+ * are written as positions and bitmasks rather than as `TensorId`s, which is what lets a plan
+ * found on one graph apply to another that hashes the same, and it is the same discipline the
+ * saved IR uses for exactly the same reason.
+ *
+ * The case it pays for is a `Pipeline` whose stages present the same program: the second stage
+ * flattens, replays, and emits, and never runs the subset program at all. It does NOT pay for
+ * re-running a script, which is a new process with an empty cache; that case is what saving the
+ * optimized IR is for. The cache lives on the pass instance and is cleared with
+ * @ref clear_cache, rather than being a process-global table, for the reason the per-pipeline
+ * budget override exists: a shared mutable table makes two pipelines unrunnable at once.
+ *
+ * A search that ran out of budget is never stored, so a plan that comes back out is one an
+ * unbounded search would have found and the budget does not belong in the key.
+ *
  * @par Why the tier is re-associating
  * Re-bracketing a product changes the order the sums are accumulated in, which is the definition
  * of this tier. The pass declares a norm-relative bound rather than bit equality, and is validated
@@ -76,11 +96,42 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
+#include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
+
+/**
+ * @brief What one region's search decided, written so a structurally identical region can replay it.
+ *
+ * Positions and bitmasks, never a @c TensorId and never a node. Two graphs that hash the same
+ * flatten to the same terms in the same order, so a factor's position identifies it across both,
+ * where its tensor id does not: the IR's own dense numbering makes the same argument.
+ */
+struct FactorizationPlan {
+    /// @brief One term's contraction tree, as the subset program left it.
+    struct Tree {
+        bool                       ok{false}; ///< Whether a tree was found for this term.
+        std::vector<std::uint32_t> split;     ///< split[mask] is the left half chosen for that mask.
+        std::vector<std::uint8_t>  resolved;  ///< Whether split[mask] means anything.
+    };
+
+    /// Whether the search found anything worth emitting. False is worth caching too: it is the
+    /// answer that took the whole search to reach.
+    bool rewrites{false};
+
+    /// Committed shared pairs in commit order. Each entry lists its occurrences as
+    /// ``(term, left factor, right factor)``, in the factor numbering left by the previous commits.
+    std::vector<std::vector<std::array<std::size_t, 3>>> commits;
+
+    /// One entry per term, in the order the region flattens them.
+    std::vector<Tree> trees;
+};
 
 /**
  * @brief Jointly choose contraction orders and shared intermediates over one region.
@@ -179,6 +230,45 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE APIARY_GETTER("num_inlined") [[nodiscard]] std::size_t num_inlined() const { return _num_inlined; }
 
     /**
+     * @brief Keep and replay plans on this pipeline whatever ``einsums:graph:factorization-cache``
+     *        says.
+     *
+     * The programmatic half of the option, for the reason @ref set_search_enabled is: a driver
+     * that had only the option would have to mutate process-global configuration to exercise one
+     * pipeline. An explicit setting wins over the option in both directions, and switching the
+     * cache off does not discard what it already holds; @ref clear_cache does that.
+     *
+     * @param[in] on Whether to cache.
+     */
+    APIARY_EXPOSE void set_cache_enabled(bool on) {
+        _cache_enabled  = on;
+        _cache_explicit = true;
+    }
+
+    /// @brief Whether plans will be kept, taking the explicit setting over the option.
+    /// @return True when this pass will store and replay plans.
+    APIARY_EXPOSE APIARY_GETTER("cache_enabled") [[nodiscard]] bool cache_enabled() const;
+
+    /// @brief Forget every plan this pass has kept.
+    ///
+    /// The explicit clear the cache is specified to have. Nothing invalidates an entry on its own,
+    /// because nothing can: an entry is keyed on the content hash of the graph that produced it,
+    /// so a changed graph misses rather than reading a stale plan.
+    APIARY_EXPOSE void clear_cache() { _cache.clear(); }
+
+    /// @brief How many regions replayed a plan instead of searching, this apply.
+    /// @return The count.
+    APIARY_EXPOSE APIARY_GETTER("num_cache_hits") [[nodiscard]] std::size_t num_cache_hits() const { return _num_cache_hits; }
+
+    /// @brief How many regions searched because no plan was held for them, this apply.
+    /// @return The count.
+    APIARY_EXPOSE APIARY_GETTER("num_cache_misses") [[nodiscard]] std::size_t num_cache_misses() const { return _num_cache_misses; }
+
+    /// @brief How many plans are held.
+    /// @return The count, which survives @ref reset_stats and is zeroed only by @ref clear_cache.
+    APIARY_EXPOSE APIARY_GETTER("cache_size") [[nodiscard]] std::size_t cache_size() const { return _cache.size(); }
+
+    /**
      * @brief Whether the last run stopped because its wall-clock allowance ran out.
      *
      * A report that could not distinguish this from "the graph was already optimal" would be
@@ -215,13 +305,32 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::size_t min_region_nodes() const override { return 2; }
 
   private:
+    /// @brief A cached plan's identity: which graph, which region of it, under which cap.
+    ///
+    /// The region is named by its node span rather than by an ordinal, because a span is what the
+    /// content hash already covers and an ordinal would silently rename every region after one
+    /// that failed to raise.
+    using PlanKey = std::tuple<std::uint64_t, std::size_t, std::size_t, std::size_t>;
+
     bool        _search_enabled{false};
     bool        _search_explicit{false};
+    bool        _cache_enabled{true};
+    bool        _cache_explicit{false};
     std::size_t _max_factors{8};
     std::size_t _num_rebracketed{0};
     std::size_t _num_shared{0};
     std::size_t _num_inlined{0};
+    std::size_t _num_cache_hits{0};
+    std::size_t _num_cache_misses{0};
     bool        _cut_off{false};
+
+    std::map<PlanKey, FactorizationPlan> _cache;
+
+    /// The hash of the graph this apply is running over, taken in @ref applicable before any
+    /// region has been rewritten. Mutable because that hook is the only one called exactly once
+    /// per graph, and taking the hash later would digest a graph an earlier region already moved.
+    mutable std::uint64_t _graph_key{0};
+    mutable bool          _graph_key_valid{false};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)
