@@ -4,11 +4,13 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
 #include <cmath>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -206,4 +208,70 @@ TEST_CASE("update_prefactors - changes computation", "[ComputeGraph][Rebind]") {
             REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < 1e-12);
         }
     }
+}
+
+TEST_CASE("Rebind - the pointer index follows the rebound tensor", "[ComputeGraph][Rebind]") {
+    // Every by-address lookup on a Graph goes through the pointer index, and a
+    // rebind moves what a slot names. The index used to be left behind: it went
+    // on naming the tensor the graph was captured over and answered "not
+    // registered" for the one it had just been rebound to, so a caller who
+    // rebound and then asked the graph about the new tensor was told the graph
+    // had never seen it.
+    auto A1 = create_random_tensor<double>("A1", 4, 3);
+    auto A2 = create_random_tensor<double>("A2", 4, 3);
+    auto B  = create_random_tensor<double>("B", 3, 5);
+    auto C  = create_zero_tensor<double>("C", 4, 5);
+
+    cg::Graph graph("rebind_ptr_index");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A1, B);
+    }
+
+    cg::TensorId const a_id = graph.find_tensor_id_by_ptr(&A1);
+    REQUIRE(a_id != 0);
+
+    graph.rebind(A1, A2);
+
+    // The index answers about the storage the slot names NOW,
+    CHECK(graph.find_tensor_id_by_ptr(&A2) == a_id);
+    // and stops claiming the address it was moved off is registered.
+    CHECK(graph.find_tensor_id_by_ptr(&A1) == cg::TensorId{0});
+    // The handle and the index agree, which is the invariant every by-address
+    // lookup relies on.
+    auto const *handle = graph.find_tensor_by_ptr(&A2);
+    REQUIRE(handle != nullptr);
+    CHECK(handle->id == a_id);
+    CHECK(handle->tensor_ptr == static_cast<void *>(&A2));
+}
+
+TEST_CASE("Rebind - a rebound tensor answers the liveness-checked lookup", "[ComputeGraph][Rebind]") {
+    // The by-object metadata readers pair the address with the caller's liveness
+    // token, so that a tensor allocated on top of a dead one does not inherit its
+    // id. A rebind moved the address and left the token, which made the pair name
+    // a tensor that never existed: the new object with the previous object's
+    // lifetime. The graph then disowned the very tensor it had just been rebound
+    // to, and reading an annotation off it threw "is not registered".
+    RuntimeTensor<double> A1("A1", std::vector<size_t>{4, 3});
+    RuntimeTensor<double> A2("A2", std::vector<size_t>{4, 3});
+    RuntimeTensor<double> B("B", std::vector<size_t>{3, 5});
+    RuntimeTensor<double> C("C", std::vector<size_t>{4, 5});
+    A1.zero();
+    A2.zero();
+    B.zero();
+    C.zero();
+
+    cg::Graph graph("rebind_live_lookup");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A1, B);
+    }
+
+    cg::TensorId const a_id = graph.live_tensor_id_by_ptr(&A1, A1.liveness_token());
+    REQUIRE(a_id != 0);
+
+    graph.rebind(A1, A2);
+
+    CHECK(graph.live_tensor_id_by_ptr(&A2, A2.liveness_token()) == a_id);
+    CHECK(graph.live_tensor_id_by_ptr(&A1, A1.liveness_token()) == cg::TensorId{0});
 }

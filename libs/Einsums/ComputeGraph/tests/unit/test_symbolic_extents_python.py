@@ -354,3 +354,38 @@ def test_load_graph_into_a_private_registry(tmp_path):
     cg.bind(loaded, {"amp": amp2, "out": out2})
     loaded.optimize()
     loaded.execute()
+
+
+def test_a_bound_tensor_is_addressable_by_the_object_bound_to_it():
+    """The whole point of symbolic extents is a graph a caller can rebind, and
+    after that rebind the caller has to be able to ASK the graph about the
+    tensor it just handed over.
+
+    Every by-object lookup on a Graph resolves through an address index, and a
+    rebind used to leave that index behind: it went on naming the tensor the
+    graph was captured over, so the graph reported the tensor it had just been
+    bound to as one it had never seen, while happily answering about storage it
+    no longer used.
+    """
+    reg, occ, virt = _spaces()
+
+    A = einsums.create_random_tensor("A", [4, 8])
+    out = einsums.create_zero_tensor("out", [4, 8])
+
+    g = cg.Graph("bind_by_object")
+    g.set_space_registry(reg)
+    g.annotate_spaces(A, [occ, virt])
+    g.annotate_dims(A, ["no", "nv"])
+    with cg.capture(g):
+        einsums.permute("i,j <- i,j", out, A, c_pf=0.0, a_pf=1.0)
+
+    A2 = einsums.create_random_tensor("A", [4, 8])
+    cg.bind(g, {"A": A2, "out": out})
+
+    # A2 took A's slot, so it is the tensor the annotations are about now.
+    assert g.tensor_spaces(A2) == [occ, virt]
+    assert g.tensor_dim_symbols(A2) == ["no", "nv"]
+
+    # And the graph no longer claims to know the tensor it was moved off.
+    with pytest.raises(Exception, match="is not registered"):
+        g.tensor_spaces(A)

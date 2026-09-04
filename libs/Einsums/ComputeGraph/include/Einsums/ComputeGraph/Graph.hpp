@@ -386,16 +386,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @brief Reuse or mint a TensorId for @p handle's buffer in this graph.
      *
      * Looks @p handle's ``tensor_ptr`` up in the pointer INDEX and returns the id it
-     * names; otherwise registers @p handle. Shares the orphan-parent-handle convention
-     * with effective_io: a buffer used only inside sub-graphs gets one stable parent id
-     * here, so every parent node touching it (hoisted lifecycle nodes and the control-flow
+     * names; otherwise registers @p handle. This is the orphan-parent-handle convention,
+     * and effective_io, LoopInvariantHoisting, Materialization, FreeInsertion and IOPrefetch
+     * all reach it through here: a buffer used only inside sub-graphs gets one stable parent
+     * id, so every parent node touching it (hoisted lifecycle nodes and the control-flow
      * node's effective I/O) resolves to the same id and a dependency edge forms.
-     *
-     * @note It shares the CONVENTION and not the lookup, which is why effective_io scans the
-     *       tensor table instead of calling this. ``rebind_impl`` repoints a handle's
-     *       ``tensor_ptr`` without touching the index, so on a graph that has been bound the
-     *       index answers "not registered" for a buffer the table holds, and minting a second
-     *       id for it leaves the graph with two interface tensors of one name.
      *
      * @param[in] handle Handle whose tensor_ptr keys the lookup.
      * @return The existing or newly assigned TensorId.
@@ -4047,7 +4042,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // Update the TensorHandle too
         auto th_it = _tensors.find(id);
         if (th_it != _tensors.end()) {
+            // The pointer index is keyed on ``tensor_ptr``, so a repoint has to move this
+            // handle's entry with it: leaving it behind makes the index answer about the
+            // storage the graph was captured over and report the storage it was just
+            // rebound to as unregistered, and every by-address lookup on this class reads
+            // that index. The old key is dropped only while it still names THIS id -
+            // register_tensor's last-registration-wins rule (see @ref _ptr_index) means an
+            // address freed during a capture may already have been reassigned to another
+            // tensor, and that later registration is the one that must survive.
+            if (void *const previous_ptr = th_it->second.tensor_ptr; previous_ptr != nullptr) {
+                if (auto const stale = _ptr_index.find(previous_ptr); stale != _ptr_index.end() && stale->second == id) {
+                    _ptr_index.erase(stale);
+                }
+            }
             th_it->second.tensor_ptr = slot->ptr;
+            if (th_it->second.tensor_ptr != nullptr) {
+                _ptr_index.insert_or_assign(th_it->second.tensor_ptr, id);
+            }
+            // The token is the LIFETIME of whatever ``tensor_ptr`` names, so it moves with
+            // the pointer or the pair describes a tensor that never existed: the new
+            // object's address paired with the previous object's lifetime. Every by-object
+            // lookup checks the two together (see live_tensor_id_by_ptr), so a handle left
+            // holding the old token disowns the tensor it was just rebound to.
+            th_it->second.caller_token = detail::liveness_token_of(new_tensor);
             // ``impl_fn`` was baked over the OLD tensor object, so leaving it
             // alone hands every pass-built executor that reads through it (see
             // ``make_einsum_node``) a rebound node's PREVIOUS storage. It is
@@ -4557,6 +4574,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// every by-address lookup to go through: a scan of @ref _tensors, which is what these
     /// lookups used to be, returns whichever equal-keyed handle it happens to reach first, so
     /// two handles naming one address made the answer depend on the hash order.
+    ///
+    /// ``rebind_impl`` maintains it too, for the same reason: a repoint moves a handle's
+    /// ``tensor_ptr``, and an index that did not follow went on naming storage a bound graph
+    /// no longer uses while reporting the storage it was rebound to as unregistered.
     std::unordered_map<void const *, TensorId> _ptr_index;
 
     bool _sorted{false};

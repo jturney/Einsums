@@ -1863,27 +1863,13 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node
     // shared id) so two control-flow nodes touching the same buffer resolve to
     // the same id and a dependency edge forms between them.
     //
-    // The lookup is a scan of the tensor TABLE rather than find_or_register_tensor_ptr,
-    // which asks the pointer INDEX the same question. The two disagree after a rebind:
-    // rebind_impl repoints TensorHandle::tensor_ptr at the caller's new tensor and leaves
-    // the index naming the old address, so the index answers "not registered" for a buffer
-    // the table holds. Registering a second id for it then gives the graph two interface
-    // tensors of one name and its next manifest() refuses the graph.
-    std::unordered_map<void const *, TensorId> ptr_to_tid;
-    for (auto const &[tid, handle] : _tensors) {
-        if (handle.tensor_ptr != nullptr) {
-            ptr_to_tid.emplace(handle.tensor_ptr, tid);
-        }
-    }
-    auto resolve = [&](void const *ptr) -> TensorId {
-        auto it = ptr_to_tid.find(ptr);
-        if (it != ptr_to_tid.end()) {
-            return it->second;
-        }
-        TensorId const tid = register_tensor(rep_handle.at(ptr));
-        ptr_to_tid.emplace(ptr, tid);
-        return tid;
-    };
+    // That reuse-or-mint rule is find_or_register_tensor_ptr, and going through it rather
+    // than through a private scan of the tensor table is what keeps this agreeing with the
+    // hoisting and lifecycle passes, which mint their parent ids the same way. It also
+    // settles an ambiguity a scan has: a capture can leave two handles naming one address
+    // (a caller's wrapper dies and the next allocation lands there), and a scan returns
+    // whichever the table iterates first, which is the stale one under the MSVC STL.
+    auto resolve = [&](void const *ptr) -> TensorId { return find_or_register_tensor_ptr(rep_handle.at(ptr)); };
 
     // Collect the mapped TensorIds into ordered sets so the appended order is
     // deterministic (the dependency edge set is order-independent, but a stable
