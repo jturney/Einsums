@@ -14,6 +14,7 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <span>
@@ -433,6 +434,13 @@ void ContractionPlanning::reset_stats() {
 bool ContractionPlanning::run(Graph &graph) {
     bool modified = false;
 
+    // One run's worth of chain reports, cleared here and nowhere else. It used to
+    // be cleared at the top of every fixpoint scan below, which threw away the
+    // report for every chain the run actually restructured: a scan stops at the
+    // chain it restructured, and the scan that keeps its reports is by
+    // construction the LAST one, the one that found nothing left to fold.
+    _reports.clear();
+
     // Restructuring a chain rebuilds the node vector, which invalidates every
     // OTHER chain's recorded absolute node_idx. So restructure at most one chain
     // per scan and re-find against the fresh vector. A folded chain becomes Gemm
@@ -440,7 +448,11 @@ bool ContractionPlanning::run(Graph &graph) {
     // progress and terminates.
     for (;;) {
         graph.topological_sort();
-        _reports.clear();
+
+        // This scan's reports. A scan that restructures re-finds every chain it
+        // did NOT touch on the next pass, so keeping them all here would report
+        // an untouched chain once per fixpoint iteration; see the harvest below.
+        std::vector<ChainReport> scan_reports;
 
         auto chains = find_contraction_chains(graph);
         if (chains.empty())
@@ -562,7 +574,7 @@ bool ContractionPlanning::run(Graph &graph) {
             if (speedup < 1.05) {
                 EINSUMS_LOG_DEBUG("ContractionPlanning: chain of {} contractions [eff. dims {}], speedup {:.2f}x — below threshold", n,
                                   fmt::join(p, "x"), speedup);
-                _reports.push_back(std::move(report));
+                scan_reports.push_back(std::move(report));
                 continue;
             }
 
@@ -596,7 +608,7 @@ bool ContractionPlanning::run(Graph &graph) {
                 EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions [eff. dims {}], {:.1f}us → {:.1f}us ({:.2f}x speedup) — "
                                  "analysis only (not rank-2 shaped, needs folding)",
                                  n, fmt::join(p, "x"), original_time, optimal_time, speedup);
-                _reports.push_back(std::move(report));
+                scan_reports.push_back(std::move(report));
                 continue;
             }
 
@@ -610,7 +622,7 @@ bool ContractionPlanning::run(Graph &graph) {
                 EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (cannot be expressed as a left-to-right "
                                  "GEMM chain: permuted output, interleaved link indices, or the running product is not input_a)",
                                  n);
-                _reports.push_back(std::move(report));
+                scan_reports.push_back(std::move(report));
                 continue;
             }
 
@@ -619,7 +631,7 @@ bool ContractionPlanning::run(Graph &graph) {
             // failure mid-rebuild.
             if (dtype == packed_gemm::ScalarType::Unknown) {
                 EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (unknown dtype)", n);
-                _reports.push_back(std::move(report));
+                scan_reports.push_back(std::move(report));
                 continue;
             }
 
@@ -681,7 +693,7 @@ bool ContractionPlanning::run(Graph &graph) {
                                      "read outside the chain; restructuring would elide an observable write)",
                                      n);
                     this->report(3, fmt::format("skip chain of {} — interior output is observable", n));
-                    _reports.push_back(std::move(report));
+                    scan_reports.push_back(std::move(report));
                     continue;
                 }
             }
@@ -728,19 +740,31 @@ bool ContractionPlanning::run(Graph &graph) {
                 }
             }
 
-            _reports.push_back(std::move(report));
+            scan_reports.push_back(std::move(report));
 
             if (restructured_this_scan)
                 break; // the remaining chains' node indices are now stale; re-find
         }
 
-        if (!restructured_this_scan)
+        // Harvest exactly once per chain. A scan that restructured keeps only the
+        // report for the chain it restructured (the last one it pushed, since the
+        // push above is immediately followed by the break); the chains it merely
+        // priced before reaching that one are re-found by the next scan and
+        // reported there. A scan that restructured nothing is the final one, and
+        // every chain it priced is reported here.
+        if (restructured_this_scan) {
+            if (!scan_reports.empty()) {
+                _reports.push_back(std::move(scan_reports.back()));
+            }
+        } else {
+            _reports.insert(_reports.end(), std::make_move_iterator(scan_reports.begin()), std::make_move_iterator(scan_reports.end()));
             break;
+        }
     } // restructure-until-fixpoint
 
     // Carry this graph's reports into the per-apply tally before returning:
-    // the recursive driver calls run() once per subgraph, and _reports is
-    // rebuilt from scratch each fixpoint iteration.
+    // the recursive driver calls run() once per subgraph, and _reports covers
+    // one run.
     _apply_reports.insert(_apply_reports.end(), _reports.begin(), _reports.end());
 
     if (!_reports.empty()) {

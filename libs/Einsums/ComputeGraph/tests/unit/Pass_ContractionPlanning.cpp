@@ -655,3 +655,92 @@ TEST_CASE("ContractionPlanning - second run is a no-op", "[ComputeGraph][Passes]
         for (size_t jj = 0; jj < 100; jj++)
             CHECK(T4(ii, jj) == Catch::Approx(T4r(ii, jj)).margin(1e-8));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Reporting: what a run restructured has to survive the run
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("ContractionPlanning - a restructured chain reaches chain_reports and explain", "[ComputeGraph][Passes][CP]") {
+    // The chain that actually folds is the one a user wants to read about, and
+    // it was the one chain the pass could not tell them about: the restructure
+    // loop cleared its report vector at the top of every fixpoint scan, so only
+    // the LAST scan survived - and the last scan is by construction the one that
+    // found nothing left to restructure. A pipeline that folded a four-GEMM
+    // chain into a cheaper parenthesization reported an empty explain(), which
+    // reads as a pass that did nothing.
+    auto A  = create_random_tensor<double>("A", 100, 1);
+    auto B  = create_random_tensor<double>("B", 1, 100);
+    auto C  = create_random_tensor<double>("C", 100, 100);
+    auto D  = create_random_tensor<double>("D", 100, 1);
+    auto E  = create_random_tensor<double>("E", 1, 100);
+    auto T4 = create_zero_tensor<double>("T4", 100, 100);
+
+    cg::Graph graph("cp_reports");
+    auto     &T1 = graph.create_zero_tensor<double, 2>("T1", 100, 100);
+    auto     &T2 = graph.create_zero_tensor<double, 2>("T2", 100, 100);
+    auto     &T3 = graph.create_zero_tensor<double, 2>("T3", 100, 1);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &T2, 1.0, T1, C);
+        cg::einsum("ik;kj->ij", 0.0, &T3, 1.0, T2, D);
+        cg::einsum("ik;kj->ij", 0.0, &T4, 1.0, T3, E);
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    REQUIRE(pass.run(graph));
+    REQUIRE(pass.chains_restructured() == 1);
+
+    // One chain touched, one report, and it is the restructured chain's: four
+    // GEMMs and the intermediates the fold created.
+    REQUIRE(pass.chain_reports().size() == 1);
+    CHECK(pass.chain_reports()[0].chain_length == 4);
+    CHECK(pass.chain_reports()[0].intermediates_created == pass.intermediates_created());
+    CHECK(pass.chain_reports()[0].speedup > 1.05);
+
+    auto const lines = pass.explain();
+    REQUIRE_FALSE(lines.empty());
+    CHECK_THAT(lines[0], Catch::Matchers::ContainsSubstring("restructured 1 of 1 GEMM chain"));
+}
+
+TEST_CASE("ContractionPlanning - each chain a run touched is reported exactly once", "[ComputeGraph][Passes][CP]") {
+    // Two chains fold in two separate fixpoint scans, and a chain re-found by a
+    // later scan must not be reported again for it. The graph is the one from
+    // the stale-node-index regression above: a scale of the first chain's
+    // output keeps the two chains ordered but distinct.
+    auto A1 = create_random_tensor<double>("A1", 100, 1);
+    auto B1 = create_random_tensor<double>("B1", 1, 100);
+    auto C1 = create_random_tensor<double>("C1", 100, 100);
+    auto D1 = create_random_tensor<double>("D1", 100, 1);
+
+    auto G2 = create_random_tensor<double>("G2", 1, 100);
+    auto H2 = create_random_tensor<double>("H2", 100, 100);
+    auto I2 = create_random_tensor<double>("I2", 100, 1);
+    auto Y  = create_zero_tensor<double>("Y", 100, 1);
+
+    cg::Graph graph("cp_reports_two_chains");
+    auto     &X1 = graph.create_zero_tensor<double, 2>("X1", 100, 100);
+    auto     &X2 = graph.create_zero_tensor<double, 2>("X2", 100, 100);
+    auto     &X  = graph.create_zero_tensor<double, 2>("X", 100, 1);
+    auto     &Y1 = graph.create_zero_tensor<double, 2>("Y1", 100, 100);
+    auto     &Y2 = graph.create_zero_tensor<double, 2>("Y2", 100, 100);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &X1, 1.0, A1, B1);
+        cg::einsum("ik;kj->ij", 0.0, &X2, 1.0, X1, C1);
+        cg::einsum("ik;kj->ij", 0.0, &X, 1.0, X2, D1);
+        cg::scale(2.0, &X);
+        cg::einsum("ik;kj->ij", 0.0, &Y1, 1.0, X, G2);
+        cg::einsum("ik;kj->ij", 0.0, &Y2, 1.0, Y1, H2);
+        cg::einsum("ik;kj->ij", 0.0, &Y, 1.0, Y2, I2);
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    REQUIRE(pass.run(graph));
+    REQUIRE(pass.chains_restructured() == 2);
+    CHECK(pass.chain_reports().size() == 2);
+
+    auto const lines = pass.explain();
+    REQUIRE_FALSE(lines.empty());
+    CHECK_THAT(lines[0], Catch::Matchers::ContainsSubstring("restructured 2 of 2 GEMM chain"));
+}
