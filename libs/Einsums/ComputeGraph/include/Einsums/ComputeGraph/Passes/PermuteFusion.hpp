@@ -60,6 +60,18 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   einsum without it, or a slot whose rank disagrees with the permute output rank, is skipped defensively.
  * - The producer kind must be `Permute` or `Transpose`; the fusion never introduces a permute, only removes one.
  *
+ * @par What this still owns after @ref LayoutAssignment
+ * @ref LayoutAssignment deletes a permute by choosing its output's storage order so the copy
+ * becomes an identity, which reaches the shared-temporary case this pass declines. It does not
+ * replace this one. Four shapes are fused here and pinned there, each because the layout pass
+ * only ever moves a tensor it could equally have declared differently in the first place:
+ * a **rank-two** copy (a layout decision variable is rank three and up, since BLAS reads a matrix
+ * either way through `transa`), an `OpKind::Transpose` (no descriptor, and rank two by
+ * definition), a copy the **caller owns** (its axis order is part of what the caller asked for),
+ * and a copy whose **storage is already allocated** rather than a deferred declaration. A chain
+ * of two permutes is likewise fused here one link at a time and folded there not at all, since
+ * the layout pass pins a permute's source.
+ *
  * @par Future improvements
  * - Extend fusion to non-einsum consumers (e.g. gemm/BatchedGemm slots) and to permutes feeding operand positions beyond A/B.
  * - Handle a permute with multiple consumers by fusing into each reader instead of bailing on the shared-temporary case.

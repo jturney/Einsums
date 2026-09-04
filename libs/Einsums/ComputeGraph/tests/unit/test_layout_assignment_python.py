@@ -32,6 +32,9 @@ import einsums.graph as cg
 from einsums.testing import ALL_DTYPES, assert_close
 
 I, J, X, K, Y = 6, 5, 7, 3, 4
+# The permute cases below bind a tensor to the name ``X`` inside their own scope, so the
+# extent needs a spelling that survives that.
+X_DIM = X
 
 
 def _tensor(name, array, dtype):
@@ -118,6 +121,74 @@ def test_a_caller_owned_tensor_is_never_moved():
 
     # W's axis order is part of what the caller asked for, so the copies stay.
     assert pass_.num_relaid_out == 0
+
+
+def _permuted_chain(graph, x, u, v, dtype, copy_is_the_callers=False):
+    """T = permute(X), read by two contractions.
+
+    PermuteFusion declines this shape: the permuted copy has two readers and a
+    peephole has no way to choose between them. Storing the copy the way its
+    source is stored makes the permute an identity, which is a node to delete.
+    """
+    X = _tensor("X", x, dtype)
+    U = _tensor("U", u, dtype)
+    V = _tensor("V", v, dtype)
+    R1 = _tensor("R1", np.zeros((I, Y)), dtype)
+    R2 = _tensor("R2", np.zeros((I, K)), dtype)
+    if copy_is_the_callers:
+        T = _tensor("T", np.zeros((J, X_DIM, I)), dtype)
+    else:
+        T = graph.declare_tensor("T", [J, X_DIM, I], intermediate=True, dtype=dtype)
+    with cg.capture(graph):
+        einsums.permute("jxi <- ijx", T, X)
+        einsums.einsum("iy <- jxi ; jxy", R1, T, U)
+        einsums.einsum("ik <- jxi ; jxk", R2, T, V)
+    return R1, R2, (X, U, V, T)
+
+
+def _permuted_operands(seed=11):
+    rng = np.random.default_rng(seed)
+    return (
+        rng.standard_normal((I, J, X_DIM)),
+        rng.standard_normal((J, X_DIM, Y)),
+        rng.standard_normal((J, X_DIM, K)),
+    )
+
+
+def test_a_redundant_permute_is_folded_away():
+    x, u, v = _permuted_operands()
+
+    graph = cg.Graph("layout-fold")
+    R1, R2, _pool = _permuted_chain(graph, x, u, v, "float64")
+
+    pass_ = cg.LayoutAssignment()
+    pm = cg.PassManager()
+    pm.add(pass_)
+    pm.populate_tuning()
+    assert pm.run(graph), "the pass reported no change on a chain whose permute it should have folded"
+    graph.execute()
+
+    assert pass_.num_permutes_folded == 1
+    assert pass_.num_relaid_out == 1
+
+    t = np.einsum("ijx->jxi", x)
+    assert_close(np.asarray(R1), np.einsum("jxi,jxy->iy", t, u), dtype="float64")
+    assert_close(np.asarray(R2), np.einsum("jxi,jxk->ik", t, v), dtype="float64")
+
+
+def test_a_permuted_copy_the_caller_owns_is_not_dissolved():
+    x, u, v = _permuted_operands()
+
+    graph = cg.Graph("layout-fold-user")
+    _R1, _R2, _pool = _permuted_chain(graph, x, u, v, "float64", copy_is_the_callers=True)
+
+    pass_ = cg.LayoutAssignment()
+    pm = cg.PassManager()
+    pm.add(pass_)
+    pm.run(graph)
+
+    # The caller holds the permuted copy and expects a value in it.
+    assert pass_.num_permutes_folded == 0
 
 
 def test_the_order_it_picks_is_the_one_a_hand_capture_would_use():

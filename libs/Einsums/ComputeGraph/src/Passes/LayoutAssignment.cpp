@@ -16,7 +16,9 @@
 
 #include <algorithm>
 #include <array>
+#include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <numeric>
 #include <unordered_map>
 #include <unordered_set>
@@ -27,6 +29,13 @@ namespace {
 
 /// Where a tensor sits in a contraction. The array index everywhere below.
 enum Role : std::size_t { RoleA = 0, RoleB = 1, RoleC = 2, RoleCount = 3 };
+
+/// @brief What kind of node a layout decision is being priced against.
+///
+/// A contraction pays for an operand it cannot read flat, and a permute pays for the whole tensor
+/// it copies. The two are the same question asked of the same decision variable, which is why they
+/// share one site list rather than being solved one after the other.
+enum class SiteKind : std::uint8_t { Contraction, Permutation };
 
 /// @brief A permutation of a tensor's axes: new axis @c i holds the axis capture put at
 ///        ``order[i]``.
@@ -47,6 +56,19 @@ std::vector<std::string> relabel(std::vector<std::string> const &captured, AxisO
     std::vector<std::string> out;
     out.reserve(order.size());
     for (auto axis : order) {
+        out.push_back(captured[axis]);
+    }
+    return out;
+}
+
+/// @brief Read @p captured through @p order, for extents rather than letters.
+std::vector<std::size_t> relabel_dims(std::vector<std::size_t> const &captured, AxisOrder const &order) {
+    std::vector<std::size_t> out;
+    out.reserve(order.size());
+    for (auto axis : order) {
+        if (axis >= captured.size()) {
+            return {};
+        }
         out.push_back(captured[axis]);
     }
     return out;
@@ -88,12 +110,17 @@ std::vector<std::string> subsequence(std::vector<std::string> const &indices, st
     return out;
 }
 
-/// @brief One contraction, reduced to what a layout decision needs from it.
+/// @brief One node, reduced to what a layout decision needs from it.
 ///
-/// The four letter groups are properties of the SPEC and not of any layout: relaying an operand
-/// out permutes its axes and leaves its letter set alone. That is what makes the groups constant
-/// through the search, and it is why the solver only ever recomputes sequences.
+/// For a contraction, the four letter groups are properties of the SPEC and not of any layout:
+/// relaying an operand out permutes its axes and leaves its letter set alone. That is what makes
+/// the groups constant through the search, and it is why the solver only ever recomputes
+/// sequences.
+///
+/// A permutation site uses only @c RoleA (the source) and @c RoleC (the copy), and its letter
+/// groups stay empty: what it prices is not a reading but whether the copy is an identity.
 struct Site {
+    SiteKind                                        kind{SiteKind::Contraction};
     std::size_t                                     node{0};
     std::array<TensorId, RoleCount>                 ids{};
     std::array<std::vector<std::string>, RoleCount> captured{}; ///< Index lists as captured.
@@ -101,7 +128,33 @@ struct Site {
     std::array<std::size_t, RoleCount>              rank{};
     std::unordered_set<std::string>                 links, m_group, n_group, batch;
     bool                                            modelled{false};
+    /// Permutation sites only: the order that stores the copy exactly as its source is stored.
+    AxisOrder fold_order;
+    /// Permutation sites only: is the copy a tensor this pass is allowed to store differently?
+    /// False leaves the node priced as the copy it will still be making after the pass runs.
+    bool foldable{false};
 };
+
+/// @brief Does @p desc reorder axes and nothing else?
+///
+/// A prefactor, an accumulation, or a repeated letter each make the node compute something a
+/// deletion would not, whatever storage order its output is given.
+bool is_pure_reordering(PermuteDescriptor const &desc) {
+    if (desc.alpha != std::complex<double>{1.0, 0.0} || desc.beta != std::complex<double>{0.0, 0.0}) {
+        return false;
+    }
+    if (desc.a_indices.empty() || desc.a_indices.size() != desc.c_indices.size()) {
+        return false;
+    }
+    auto sorted_a = desc.a_indices;
+    auto sorted_c = desc.c_indices;
+    std::ranges::sort(sorted_a);
+    std::ranges::sort(sorted_c);
+    if (sorted_a != sorted_c) {
+        return false;
+    }
+    return std::ranges::adjacent_find(sorted_c) == sorted_c.end();
+}
 
 /// @brief How one operand's axes decompose, under a chosen order.
 struct Reading {
@@ -151,6 +204,14 @@ std::vector<std::string> indices_of(Site const &site, Role role, Assignment cons
     return relabel(site.captured[role], it->second);
 }
 
+/// @brief Does @p site's permute copy its source axis for axis under @p assignment?
+///
+/// The copy and the source are then stored identically, so the node writes the bytes it read and
+/// a reader of the copy can read the source instead with the index list it already has.
+bool permute_is_identity(Site const &site, Assignment const &assignment) {
+    return indices_of(site, RoleC, assignment) == indices_of(site, RoleA, assignment);
+}
+
 /// @brief The copies @p site must make, one bit per role.
 ///
 /// C names the order of the free groups and A names the order of the contracted one. That
@@ -158,8 +219,20 @@ std::vector<std::string> indices_of(Site const &site, Role role, Assignment cons
 /// two operands that each read flat on their own but disagree on which letter of a multi-index
 /// group varies fastest cannot be walked in lockstep, so one of them is copied, and a model that
 /// blamed neither would price a real copy at zero.
-std::array<bool, RoleCount> copies_at(Site const &site, Assignment const &assignment) {
+///
+/// @p folds_allowed distinguishes the two questions the caller asks of the same site. With it
+/// false the answer describes the program AS CAPTURED, where a permute node exists and copies a
+/// whole tensor whatever order its output is stored in. With it true the answer describes the
+/// program the pass would leave behind, where a permute whose copy became an identity is gone.
+/// Pricing the captured program with folds allowed would report an already-redundant permute as
+/// free and then take credit for deleting it.
+std::array<bool, RoleCount> copies_at(Site const &site, Assignment const &assignment, bool folds_allowed = true) {
     std::array<bool, RoleCount> copies{false, false, false};
+
+    if (site.kind == SiteKind::Permutation) {
+        copies[RoleC] = !(folds_allowed && site.foldable && permute_is_identity(site, assignment));
+        return copies;
+    }
 
     auto const a = indices_of(site, RoleA, assignment);
     auto const b = indices_of(site, RoleB, assignment);
@@ -179,8 +252,9 @@ std::array<bool, RoleCount> copies_at(Site const &site, Assignment const &assign
 struct Plan {
     std::vector<Site>                                      sites;
     Assignment                                             assignment;
-    std::unordered_map<TensorId, std::vector<std::size_t>> uses;  ///< Candidate tensor -> its sites.
-    std::vector<TensorId>                                  order; ///< Candidates, ascending, for determinism.
+    std::unordered_map<TensorId, std::vector<std::size_t>> uses;         ///< Candidate tensor -> its sites.
+    std::vector<TensorId>                                  order;        ///< Candidates, ascending, for determinism.
+    std::unordered_map<TensorId, std::size_t>              permute_copy; ///< Permute output -> its site index.
 };
 
 } // namespace
@@ -193,14 +267,27 @@ LayoutAssignment::LayoutAssignment(CostModel cost_model) : _cost_model(std::move
 
 void LayoutAssignment::reset_stats() {
     _num_relaid_out      = 0;
+    _num_permutes_folded = 0;
     _num_copies_removed  = 0;
     _estimated_saving_us = 0.0;
 }
 
 bool LayoutAssignment::run(Graph &graph) {
     PassCounter const relaid_out{_num_relaid_out};
+    PassCounter const folded{_num_permutes_folded};
+
+    // Program order is what the fold's safety argument is stated in, so make the node list say
+    // it rather than assuming capture already did.
+    graph.topological_sort();
 
     auto &nodes = graph.nodes();
+
+    auto const                 escapes = EscapeAnalysis::over(graph);
+    std::unordered_set<NodeId> whole_graph;
+    whole_graph.reserve(nodes.size());
+    for (auto const &node : nodes) {
+        whole_graph.insert(node.id);
+    }
 
     // ── Collect the contractions, and with them the tensors that might move ────────────────
     //
@@ -215,6 +302,54 @@ bool LayoutAssignment::run(Graph &graph) {
         }
     };
 
+    // May the copy a permute at @p nd writes into @p copy be replaced by its source @p source?
+    //
+    // Three questions, and each of them is a way for a locally correct deletion to change a
+    // number elsewhere. The copy must be written only by this permute, or the value a reader
+    // sees is not the one the source holds. The source must not be written again while the copy
+    // is still live, because a copy is a snapshot and its source is not. And a sub-graph's writes
+    // do not appear in this node list at all, so a program with one after the permute cannot be
+    // reasoned about from here.
+    auto fold_is_safe = [&](TensorId copy, TensorId source, std::size_t nd) -> bool {
+        if (copy == 0 || source == 0 || copy == source) {
+            return false;
+        }
+        // Asked here rather than at the commit, because the copy's ONLY alternative to the order
+        // it was captured in is the one that deletes this node. A site admitted now and refused
+        // later would leave the copy re-laid out with the permute still writing it.
+        if (graph.find_slot(copy) == nullptr || graph.find_slot(source) == nullptr) {
+            note_skip("the permute's source or copy has no slot to redirect", fmt::format("permute node {}", nodes[nd].id));
+            return false;
+        }
+        if (escapes.writer_count(copy) != 1) {
+            note_skip("more than one node writes the permuted copy", fmt::format("permute node {}", nodes[nd].id));
+            return false;
+        }
+        if (escapes.touched_by_subtree(source)) {
+            note_skip("a loop body or conditional branch touches the permute's source", fmt::format("permute node {}", nodes[nd].id));
+            return false;
+        }
+        TensorId const root = graph.resolve_alias(source);
+        for (std::size_t later = nd + 1; later < nodes.size(); later++) {
+            if (is_control_flow(nodes[later].kind)) {
+                note_skip("a sub-graph runs after the permute, and what it writes is not in this node list",
+                          fmt::format("permute node {}", nodes[nd].id));
+                return false;
+            }
+            if (is_lifecycle(nodes[later].kind)) {
+                continue;
+            }
+            for (auto const out : nodes[later].outputs) {
+                if (graph.resolve_alias(out) == root) {
+                    note_skip("the permute's source is written again after the copy is taken",
+                              fmt::format("permute node {}", nodes[nd].id));
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+
     for (std::size_t nd = 0; nd < nodes.size(); nd++) {
         Node const &node = nodes[nd];
 
@@ -226,6 +361,52 @@ bool LayoutAssignment::run(Graph &graph) {
             node.kind == OpKind::Initialize) {
             continue;
         }
+
+        // A permute is the one non-contraction this pass does not simply pin, because its cost
+        // IS a layout question: storing its output the way its input is stored makes it an
+        // identity copy, and an identity copy is a node to delete rather than one to run.
+        if (node.kind == OpKind::Permute) {
+            Site permutation;
+            permutation.kind   = SiteKind::Permutation;
+            permutation.node   = nd;
+            auto const *desc   = std::get_if<PermuteDescriptor>(&node.op_data);
+            bool        usable = desc != nullptr && node.inputs.size() == 1 && node.outputs.size() == 1;
+            if (usable && !is_pure_reordering(*desc)) {
+                note_skip("permute is not a pure axis reordering, so no storage order makes it an identity",
+                          fmt::format("permute node {}", node.id));
+                usable = false;
+            }
+            if (usable) {
+                permutation.ids[RoleA]      = node.inputs[0];
+                permutation.ids[RoleC]      = node.outputs[0];
+                permutation.captured[RoleA] = desc->a_indices;
+                permutation.captured[RoleC] = desc->c_indices;
+                permutation.fold_order      = order_reading(desc->c_indices, desc->a_indices);
+
+                TensorHandle const *copy   = graph.find_tensor(permutation.ids[RoleC]);
+                TensorHandle const *source = graph.find_tensor(permutation.ids[RoleA]);
+                usable = copy != nullptr && source != nullptr && !permutation.fold_order.empty() && copy->rank == desc->c_indices.size() &&
+                         copy->rank == source->rank && copy->dtype == source->dtype && copy->element_size == source->element_size &&
+                         relabel_dims(copy->dims, permutation.fold_order) == source->dims;
+                if (usable) {
+                    permutation.rank[RoleC] = copy->rank;
+                    permutation.bytes[RoleC] =
+                        copy->element_size * std::accumulate(copy->dims.begin(), copy->dims.end(), std::size_t{1}, std::multiplies<>{});
+                    usable = fold_is_safe(permutation.ids[RoleC], permutation.ids[RoleA], nd);
+                }
+            }
+            if (usable) {
+                // The source keeps the axes it was captured with. Freeing it would make the
+                // order that folds this permute a moving target, and the permute's own index
+                // lists are not live-mutable, so a permute this pass does not delete is one it
+                // must leave reading exactly what it read.
+                pin(permutation.ids[RoleA]);
+                plan.permute_copy.emplace(permutation.ids[RoleC], plan.sites.size());
+                plan.sites.push_back(std::move(permutation));
+                continue;
+            }
+        }
+
         if (node.kind != OpKind::Einsum) {
             for (auto id : node.inputs) {
                 pin(id);
@@ -336,13 +517,6 @@ bool LayoutAssignment::run(Graph &graph) {
     }
 
     // ── Decide which tensors may move ──────────────────────────────────────────────────────
-    auto const                 escapes = EscapeAnalysis::over(graph);
-    std::unordered_set<NodeId> whole_graph;
-    whole_graph.reserve(nodes.size());
-    for (auto const &node : nodes) {
-        whole_graph.insert(node.id);
-    }
-
     auto eligible = [&](TensorId id) -> bool {
         if (pinned.count(id) != 0) {
             return false;
@@ -396,11 +570,14 @@ bool LayoutAssignment::run(Graph &graph) {
                 plan.uses[plan.sites[s].ids[role]].push_back(s);
             }
         }
+        // A permute whose copy the eligibility rules pinned keeps making its copy whatever this
+        // pass decides, so it is priced as one and never deleted.
+        plan.sites[s].foldable = plan.sites[s].kind == SiteKind::Permutation && plan.assignment.count(plan.sites[s].ids[RoleC]) != 0;
     }
 
     // ── Search ─────────────────────────────────────────────────────────────────────────────
-    auto cost_of_site = [&](Site const &site, Assignment const &assignment) -> double {
-        auto const copies = copies_at(site, assignment);
+    auto cost_of_site = [&](Site const &site, Assignment const &assignment, bool folds_allowed = true) -> double {
+        auto const copies = copies_at(site, assignment, folds_allowed);
         double     total  = 0.0;
         for (std::size_t role = 0; role < RoleCount; role++) {
             if (copies[role]) {
@@ -427,6 +604,15 @@ bool LayoutAssignment::run(Graph &graph) {
                 out.push_back(std::move(order));
             }
         };
+        // A permute's copy has exactly two readings on offer, and a third would be unreachable
+        // rather than merely unexamined: the order capture wrote, which is what the surviving
+        // permute node produces, and the order that makes that node an identity and deletes it.
+        // Any other order would need the permute rewritten, and its index lists are a structural
+        // field an executor bakes at build time.
+        if (auto const copy = plan.permute_copy.find(id); copy != plan.permute_copy.end()) {
+            offer(plan.sites[copy->second].fold_order);
+            return out;
+        }
         for (auto s : plan.uses.at(id)) {
             Site const &site = plan.sites[s];
             auto const  a    = indices_of(site, RoleA, assignment);
@@ -517,7 +703,7 @@ bool LayoutAssignment::run(Graph &graph) {
     std::size_t copies_before = 0, copies_after = 0;
     double      cost_before = 0.0, cost_after = 0.0;
     for (auto const &site : plan.sites) {
-        auto const was = copies_at(site, captured_assignment);
+        auto const was = copies_at(site, captured_assignment, /*folds_allowed=*/false);
         auto const now = copies_at(site, plan.assignment);
         for (std::size_t role = 0; role < RoleCount; role++) {
             double const price = _cost_model.estimate_permute_time_us(site.bytes[role], site.rank[role], Target::CPU);
@@ -534,9 +720,27 @@ bool LayoutAssignment::run(Graph &graph) {
             moved.push_back(id);
         }
     }
-    if (moved.empty()) {
+
+    // The permutes the assignment turned into identity copies. A node this list names is deleted
+    // rather than re-laid out, which is why it is counted separately from `moved`: an identity
+    // permute the author wrote by hand is folded away without any tensor moving at all.
+    std::vector<std::size_t> folds;
+    for (std::size_t s = 0; s < plan.sites.size(); s++) {
+        Site const &site = plan.sites[s];
+        if (site.kind != SiteKind::Permutation || !site.foldable) {
+            continue;
+        }
+        if (!permute_is_identity(site, plan.assignment)) {
+            note_skip("no storage order of the permuted copy is cheaper than the permute itself",
+                      fmt::format("permute node {}", nodes[site.node].id));
+            continue;
+        }
+        folds.push_back(s);
+    }
+
+    if (moved.empty() && folds.empty()) {
         note_skip("no reordering of an eligible intermediate removes a copy",
-                  fmt::format("{} candidate tensor(s) over {} contraction(s)", plan.order.size(), plan.sites.size()));
+                  fmt::format("{} candidate tensor(s) over {} node(s)", plan.order.size(), plan.sites.size()));
         return false;
     }
     // The search only ever takes a strict improvement per tensor, so a total that went the other
@@ -594,6 +798,9 @@ bool LayoutAssignment::run(Graph &graph) {
     // permutation of an operand's axes leaves alone. So they are correct after this loop without
     // being touched by it, and rebuilding them would only invite the two spellings to disagree.
     for (auto const &site : plan.sites) {
+        if (site.kind != SiteKind::Contraction) {
+            continue; // a permute's index lists are never rewritten; see the fold below
+        }
         auto *desc    = std::get_if<EinsumDescriptor>(&nodes[site.node].op_data);
         bool  touched = false;
         for (std::size_t role = 0; role < RoleCount; role++) {
@@ -631,6 +838,60 @@ bool LayoutAssignment::run(Graph &graph) {
         report(2, fmt::format("node {} now reads {}", nodes[site.node].id, desc->indices->spec.raw));
     }
 
+    // ── Fold the permutes the assignment made redundant ────────────────────────────────────
+    //
+    // The only node-set rewrite in this pass, and the reason it is one rather than another change
+    // of declaration: a copy that stores its source's bytes in its source's order computes
+    // nothing, and what a reader of it wants is the source. Every reader already reads the copy
+    // through the index list the loop above rewrote, and that list is now the source's own, so
+    // repointing is an id substitution and not an index rewrite.
+    std::vector<bool> remove(nodes.size(), false);
+    for (auto s : folds) {
+        Site const    &site   = plan.sites[s];
+        TensorId const copy   = site.ids[RoleC];
+        TensorId const source = site.ids[RoleA];
+
+        // The durable redirect, not a pointer copy: an executor built before this pass resolves
+        // its operand through the slot on every call, and a later rebind of the source has to
+        // reach anything still naming the copy.
+        // Both slots exist: a site whose ends could not be redirected was never admitted.
+        TensorSlot const *source_slot = graph.find_slot(source);
+        TensorSlot       *copy_slot   = graph.find_slot(copy);
+        graph.redirect_slot(copy, source);
+        copy_slot->rank = source_slot->rank;
+        copy_slot->dims = source_slot->dims;
+        copy_slot->name = source_slot->name;
+
+        for (std::size_t nd = 0; nd < nodes.size(); nd++) {
+            if (nd == site.node) {
+                continue;
+            }
+            for (auto &id : nodes[nd].inputs) {
+                if (id == copy) {
+                    id = source;
+                }
+            }
+            // The Alloc and Free that bracket the copy name a tensor nothing computes any more.
+            // They are removed here rather than left to DeadNodeElimination, which runs earlier
+            // in the default pipeline: a stranded Alloc would otherwise reach Materialization and
+            // allocate a buffer for a tensor whose slot points somewhere else entirely.
+            bool const only_the_copy = is_lifecycle(nodes[nd].kind) && !(nodes[nd].inputs.empty() && nodes[nd].outputs.empty()) &&
+                                       std::ranges::all_of(nodes[nd].inputs, [copy](TensorId id) { return id == copy; }) &&
+                                       std::ranges::all_of(nodes[nd].outputs, [copy](TensorId id) { return id == copy; });
+            if (only_the_copy) {
+                remove[nd] = true;
+            }
+        }
+        remove[site.node] = true;
+        _num_permutes_folded++;
+        report(2, fmt::format("permute node {} copies '{}' into its own storage order; delete it and read '{}'", nodes[site.node].id,
+                              source_slot->name, source_slot->name));
+    }
+    if (folded.moved()) {
+        graph.erase_nodes(remove);
+        graph.mark_sorted();
+    }
+
     // Signed, because a cheaper assignment can make MORE copies: one large operand traded for
     // two small ones is a win on the quantity being minimized and a loss on the count. The
     // counter reports copies and the search minimizes time, so they are allowed to disagree and
@@ -643,18 +904,21 @@ bool LayoutAssignment::run(Graph &graph) {
     // extent, which is what the counter is read for; see Graph::note_structural_change.
     graph.note_structural_change();
 
-    report(1, fmt::format("re-laid out {} intermediate(s), removing {} operand copy(ies) worth {:.3f} us per replay", relaid_out.delta(),
-                          copies_delta, cost_before - cost_after));
-    EINSUMS_LOG_INFO("LayoutAssignment: {} intermediate(s) re-laid out, {} operand copies removed", relaid_out.delta(), copies_delta);
+    report(1, fmt::format("re-laid out {} intermediate(s) and folded away {} permute(s), removing {} operand copy(ies) worth {:.3f} us "
+                          "per replay",
+                          relaid_out.delta(), folded.delta(), copies_delta, cost_before - cost_after));
+    EINSUMS_LOG_INFO("LayoutAssignment: {} intermediate(s) re-laid out, {} permute(s) folded, {} operand copies removed",
+                     relaid_out.delta(), folded.delta(), copies_delta);
     return true;
 }
 
 std::vector<std::string> LayoutAssignment::explain() const {
-    if (_num_relaid_out == 0) {
+    if (_num_relaid_out == 0 && _num_permutes_folded == 0) {
         return {};
     }
-    return {fmt::format("LayoutAssignment: re-laid out {} intermediate(s), removing {} operand copy(ies) modelled at {:.3f} us per replay",
-                        _num_relaid_out, _num_copies_removed, _estimated_saving_us)};
+    return {fmt::format("LayoutAssignment: re-laid out {} intermediate(s) and folded away {} permute(s), removing {} operand copy(ies) "
+                        "modelled at {:.3f} us per replay",
+                        _num_relaid_out, _num_permutes_folded, _num_copies_removed, _estimated_saving_us)};
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

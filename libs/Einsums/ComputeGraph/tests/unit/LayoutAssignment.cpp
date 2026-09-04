@@ -305,6 +305,186 @@ TEST_CASE("LayoutAssignment - the same graph gets the same assignment", "[Comput
     }
 }
 
+// ── Folding an explicit permute away ──────────────────────────────────────────────────────────
+//
+// The second shape this pass reasons about, and the one where its decision removes a node:
+//
+//   T[j,x,i] = permute(X[i,j,x])       // an explicit copy, in an order capture chose
+//   R1[i,y]  = T[j,x,i] U[j,x,y]
+//   R2[i,z]  = T[j,x,i] V[j,x,z]
+//
+// Storing T the way X is stored makes the permute copy its source into its source's own order,
+// which computes nothing, so the node goes and the contractions read X. PermuteFusion declines
+// this exact shape because the copy has two readers and a peephole has no way to choose between
+// them; the layout question does not care how many there are.
+
+namespace {
+
+constexpr size_t kZ = 2;
+
+size_t count_permutes(cg::Graph const &graph) {
+    size_t seen = 0;
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == cg::OpKind::Permute) {
+            seen++;
+        }
+    }
+    return seen;
+}
+
+/// The permuted chain above, with @p copy_is_the_callers deciding who owns T.
+void capture_permuted_chain(cg::Graph &graph, RuntimeTensor<double> &R1, RuntimeTensor<double> &R2, RuntimeTensor<double> const &X,
+                            RuntimeTensor<double> const &U, RuntimeTensor<double> const &V, RuntimeTensor<double> *callers_copy = nullptr) {
+    RuntimeTensor<double> *T =
+        callers_copy != nullptr ? callers_copy : &graph.declare_runtime_tensor<double>("T", {kJ, kX, kI}, /*intermediate=*/true);
+
+    cg::CaptureGuard const guard(graph);
+    cg::permute("jxi <- ijx", T, X);
+    cg::einsum("iy <- jxi ; jxy", 0.0, &R1, 1.0, *T, U);
+    cg::einsum("iz <- jxi ; jxz", 0.0, &R2, 1.0, *T, V);
+}
+
+} // namespace
+
+TEST_CASE("LayoutAssignment - a permute the layout choice makes redundant is deleted", "[ComputeGraph][LayoutAssignment]") {
+    RuntimeTensor<double> X  = create_random_tensor<double>("X", kI, kJ, kX);
+    RuntimeTensor<double> U  = create_random_tensor<double>("U", kJ, kX, kY);
+    RuntimeTensor<double> V  = create_random_tensor<double>("V", kJ, kX, kZ);
+    RuntimeTensor<double> R1 = create_zero_tensor<double>("R1", kI, kY);
+    RuntimeTensor<double> R2 = create_zero_tensor<double>("R2", kI, kZ);
+
+    cg::Graph graph("fold");
+    capture_permuted_chain(graph, R1, R2, X, U, V);
+    REQUIRE(count_permutes(graph) == 1);
+
+    auto pass = only_layout(graph);
+
+    CHECK(pass->num_permutes_folded() == 1);
+    CHECK(pass->num_relaid_out() == 1);
+    CHECK(count_permutes(graph) == 0);
+    // Both readers index X directly now, in the order X is stored.
+    CHECK(spec_of(graph, 0)[1] == std::vector<std::string>{"i", "j", "x"});
+    CHECK(spec_of(graph, 1)[1] == std::vector<std::string>{"i", "j", "x"});
+
+    cg::TensorId const x_id = graph.find_tensor_id_by_ptr(&X);
+    REQUIRE(x_id != 0);
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == cg::OpKind::Einsum) {
+            CHECK(node.inputs[0] == x_id);
+        }
+    }
+}
+
+TEST_CASE("LayoutAssignment - the folded chain computes what the captured one did", "[ComputeGraph][LayoutAssignment]") {
+    RuntimeTensor<double> X = create_random_tensor<double>("X", kI, kJ, kX);
+    RuntimeTensor<double> U = create_random_tensor<double>("U", kJ, kX, kY);
+    RuntimeTensor<double> V = create_random_tensor<double>("V", kJ, kX, kZ);
+
+    auto run = [&](bool with_layout) {
+        RuntimeTensor<double> R1 = create_zero_tensor<double>("R1", kI, kY);
+        RuntimeTensor<double> R2 = create_zero_tensor<double>("R2", kI, kZ);
+        cg::Graph             graph("fold-run");
+        capture_permuted_chain(graph, R1, R2, X, U, V);
+        cg::PassManager pm;
+        if (with_layout) {
+            pm.add<cg::passes::LayoutAssignment>();
+        }
+        pm.add<cg::passes::Materialization>();
+        graph.apply(pm);
+        graph.execute();
+        return std::pair{R1, R2};
+    };
+
+    auto const [plain1, plain2]   = run(false);
+    auto const [folded1, folded2] = run(true);
+    CHECK(norm_relative_gap(folded1, plain1) <= re_associating_bound());
+    CHECK(norm_relative_gap(folded2, plain2) <= re_associating_bound());
+}
+
+TEST_CASE("LayoutAssignment - a permute that already copies in place is deleted", "[ComputeGraph][LayoutAssignment]") {
+    RuntimeTensor<double> X = create_random_tensor<double>("X", kI, kJ, kX);
+    RuntimeTensor<double> U = create_random_tensor<double>("U", kJ, kX, kY);
+    RuntimeTensor<double> R = create_zero_tensor<double>("R", kI, kY);
+
+    cg::Graph graph("identity-permute");
+    {
+        auto                  &T = graph.declare_runtime_tensor<double>("T", {kI, kJ, kX}, /*intermediate=*/true);
+        cg::CaptureGuard const guard(graph);
+        cg::permute("ijx <- ijx", &T, X);
+        cg::einsum("iy <- ijx ; jxy", 0.0, &R, 1.0, T, U);
+    }
+
+    auto pass = only_layout(graph);
+
+    // Nothing moves: the copy is already stored the way its source is. The saving is the node.
+    CHECK(pass->num_relaid_out() == 0);
+    CHECK(pass->num_permutes_folded() == 1);
+    CHECK(count_permutes(graph) == 0);
+    CHECK(pass->estimated_saving_us() > 0.0);
+}
+
+TEST_CASE("LayoutAssignment - a copy the caller owns is not dissolved", "[ComputeGraph][LayoutAssignment]") {
+    RuntimeTensor<double> X  = create_random_tensor<double>("X", kI, kJ, kX);
+    RuntimeTensor<double> U  = create_random_tensor<double>("U", kJ, kX, kY);
+    RuntimeTensor<double> V  = create_random_tensor<double>("V", kJ, kX, kZ);
+    RuntimeTensor<double> R1 = create_zero_tensor<double>("R1", kI, kY);
+    RuntimeTensor<double> R2 = create_zero_tensor<double>("R2", kI, kZ);
+    // The caller holds T and expects the permuted copy in it, so the node stays even though the
+    // contractions would be no worse without it. This is one of the cases PermuteFusion still
+    // owns rather than a case both passes decline.
+    RuntimeTensor<double> T = create_zero_tensor<double>("T", kJ, kX, kI);
+
+    cg::Graph graph("user-copy");
+    capture_permuted_chain(graph, R1, R2, X, U, V, &T);
+
+    auto pass = only_layout(graph);
+    CHECK(pass->num_permutes_folded() == 0);
+    CHECK(count_permutes(graph) == 1);
+}
+
+TEST_CASE("LayoutAssignment - a source written after the copy pins the permute", "[ComputeGraph][LayoutAssignment]") {
+    RuntimeTensor<double> X  = create_random_tensor<double>("X", kI, kJ, kX);
+    RuntimeTensor<double> U  = create_random_tensor<double>("U", kJ, kX, kY);
+    RuntimeTensor<double> A  = create_random_tensor<double>("A", kI, kK);
+    RuntimeTensor<double> B  = create_random_tensor<double>("B", kK, kJ, kX);
+    RuntimeTensor<double> R1 = create_zero_tensor<double>("R1", kI, kY);
+
+    cg::Graph graph("source-rewritten");
+    {
+        auto                  &T = graph.declare_runtime_tensor<double>("T", {kJ, kX, kI}, /*intermediate=*/true);
+        cg::CaptureGuard const guard(graph);
+        cg::permute("jxi <- ijx", &T, X);
+        cg::einsum("iy <- jxi ; jxy", 0.0, &R1, 1.0, T, U);
+        // A copy is a snapshot and its source is not. Reading X where the program reads T would
+        // hand the contraction the value written here.
+        cg::einsum("ijx <- ik ; kjx", 0.0, &X, 1.0, A, B);
+    }
+
+    auto pass = only_layout(graph);
+    CHECK(pass->num_permutes_folded() == 0);
+    CHECK(count_permutes(graph) == 1);
+}
+
+TEST_CASE("LayoutAssignment - a reader with no index list pins the copy", "[ComputeGraph][LayoutAssignment]") {
+    RuntimeTensor<double> X  = create_random_tensor<double>("X", kI, kJ, kX);
+    RuntimeTensor<double> U  = create_random_tensor<double>("U", kJ, kX, kY);
+    RuntimeTensor<double> R1 = create_zero_tensor<double>("R1", kI, kY);
+    RuntimeTensor<double> Tc = create_zero_tensor<double>("Tc", kJ, kX, kI);
+
+    cg::Graph graph("pinned-copy");
+    {
+        auto                  &T = graph.declare_runtime_tensor<double>("T", {kJ, kX, kI}, /*intermediate=*/true);
+        cg::CaptureGuard const guard(graph);
+        cg::permute("jxi <- ijx", &T, X);
+        cg::einsum("iy <- jxi ; jxy", 0.0, &R1, 1.0, T, U);
+        cg::axpby(1.0, T, 0.0, &Tc);
+    }
+
+    auto pass = only_layout(graph);
+    CHECK(pass->num_permutes_folded() == 0);
+    CHECK(count_permutes(graph) == 1);
+}
+
 TEST_CASE("LayoutAssignment - it reports what it did", "[ComputeGraph][LayoutAssignment]") {
     RuntimeTensor<double> A = create_random_tensor<double>("A", kI, kK);
     RuntimeTensor<double> B = create_random_tensor<double>("B", kK, kX, kJ);

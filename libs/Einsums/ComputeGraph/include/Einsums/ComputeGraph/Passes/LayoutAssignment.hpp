@@ -31,6 +31,19 @@
  * @ref CostModel and takes the assignment with the lowest total, so a tensor with three
  * consumers that disagree gets the layout the expensive one wanted and the cheap ones pay.
  *
+ * @par An explicit permute is a layout question too
+ * A @c Permute node writes a copy of its source in a different axis order. Storing that copy the
+ * way its source is stored makes the node an identity, and an identity copy is a node to delete
+ * rather than one to run, so the permute joins the same cost total as the contractions: it is
+ * priced at one tensor-sized copy while it survives and at nothing once it is gone. That makes
+ * the deletion the OUTCOME of a layout choice rather than a separate peephole, and it reaches the
+ * case a peephole cannot, a permuted copy several contractions read.
+ *
+ * The copy's source keeps the axes it was captured with. A permute's index lists are a structural
+ * field an executor bakes at build time, so a permute this pass does not delete is one it must
+ * leave reading exactly what it read, which leaves the copy two orders to choose between: the
+ * captured one, and the one that deletes the node.
+ *
  * @code
  * // W is captured as (m,b,e,j). The two consumers want opposite groupings, and
  * // whichever one the capture happened to suit, the other one copies.
@@ -124,9 +137,12 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   exhaustive one over @c r! orders per tensor. A layout nobody wants cannot beat one that at
  *   least one node does, which is what makes the restriction defensible rather than merely
  *   cheap; it is not a proof of optimality, and the pass does not claim one.
- * - Explicit @c Permute nodes pin what they touch. Folding a permute away is the layout choice
- *   that makes it an identity copy, so it belongs here, but removing the node is a node-set
- *   rewrite and is left to a later step.
+ * - A @c Permute is folded away only when its copy is one of the decision variables above, which
+ *   is where @ref PermuteFusion still has cases of its own: a rank-two copy, a copy the caller
+ *   owns, a copy already allocated, and a copy read by something other than a contraction are
+ *   each pinned here and each still absorbed there. A @c Transpose carries no descriptor and is
+ *   rank two by definition, so it is never a candidate.
+ * - The copy's source keeps its captured axes, so a chain of two permutes folds neither.
  * - A contraction with a repeated letter in one operand (a diagonal) is not modelled, and pins
  *   its tensors.
  */
@@ -168,6 +184,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_relaid_out") [[nodiscard]] std::size_t num_relaid_out() const { return _num_relaid_out; }
 
+    /// @brief How many @c Permute nodes the chosen layout turned into identity copies and deleted.
+    /// @return The count.
+    APIARY_EXPOSE APIARY_GETTER("num_permutes_folded") [[nodiscard]] std::size_t num_permutes_folded() const {
+        return _num_permutes_folded;
+    }
+
     /// @brief How many operand copies the chosen assignment removes, per replay.
     /// @return The count, over every contraction the pass modelled.
     APIARY_EXPOSE APIARY_GETTER("num_copies_removed") [[nodiscard]] std::size_t num_copies_removed() const { return _num_copies_removed; }
@@ -179,6 +201,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
   private:
     CostModel   _cost_model;
     std::size_t _num_relaid_out{0};
+    std::size_t _num_permutes_folded{0};
     std::size_t _num_copies_removed{0};
     double      _estimated_saving_us{0.0};
 };
