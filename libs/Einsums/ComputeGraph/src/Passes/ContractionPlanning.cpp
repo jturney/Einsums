@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/ContractionPlanning.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -26,6 +27,20 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
+/// The prefactors a node's executor will actually read.
+///
+/// ``EinsumDescriptor::c_prefactor`` and ``ab_prefactor`` are the at-capture
+/// SNAPSHOTS; the CPU executors read ``params`` on every call and that is what a
+/// pass rewriting scalars (ScaleAbsorption) writes. A chain fold that consulted
+/// the snapshot would carry a value the graph had already replaced.
+PrefactorScalar const &live_c_pf(EinsumDescriptor const &desc) {
+    return desc.params ? desc.params->c_pf : desc.c_prefactor;
+}
+
+PrefactorScalar const &live_ab_pf(EinsumDescriptor const &desc) {
+    return desc.params ? desc.params->ab_pf : desc.ab_prefactor;
+}
+
 /**
  * Analyze an einsum contraction of arbitrary rank and compute the effective
  * GEMM dimensions (M, K, N) that the contraction maps to when flattened.
@@ -41,7 +56,16 @@ bool analyze_contraction(EinsumDescriptor const &desc, Graph const &graph, Node 
     auto const &spec = desc.spec;
 
     // Must be a pure multiplication (c_prefactor == 0, i.e., C = ab_pf * A * B)
-    if (!is_zero(desc.c_prefactor))
+    if (!is_zero(live_c_pf(desc)))
+        return false;
+
+    // A conjugated operand is a value the rebuilt GEMM has nowhere to put: the
+    // node it emits carries a GemmDescriptor with transpose flags and no
+    // conjugation, so restructuring would silently drop the flag and compute a
+    // different number on a complex tensor. Declined rather than handled,
+    // because the transpose flags are what the rebuild reasons in and a
+    // conjugate-transpose is a third reading it does not model.
+    if (desc.conj_a || desc.conj_b || (desc.params && (desc.params->conj_a || desc.params->conj_b)))
         return false;
 
     // Must have at least one link index (something to contract over)
@@ -99,12 +123,13 @@ bool analyze_contraction(EinsumDescriptor const &desc, Graph const &graph, Node 
 
 /// Information about one contraction in a chain.
 struct ContractionInfo {
-    size_t   node_idx;
-    size_t   M, K, N; ///< Effective GEMM dimensions after index flattening
-    TensorId output_tid;
-    TensorId input_a_tid;
-    TensorId input_b_tid;
-    Target   target;
+    size_t          node_idx;
+    size_t          M, K, N; ///< Effective GEMM dimensions after index flattening
+    TensorId        output_tid;
+    TensorId        input_a_tid;
+    TensorId        input_b_tid;
+    Target          target;
+    PrefactorScalar ab_prefactor; ///< The scalar this member multiplies its product by
 };
 
 /// Find chains of contractions where each feeds the next.
@@ -123,6 +148,14 @@ std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &g
         ci.input_a_tid = nodes[idx].inputs[0];
         ci.input_b_tid = nodes[idx].inputs[1];
         ci.target      = nodes[idx].target;
+        // The chain computes the product of its members' scalars, and the
+        // rebuild owes that product; analyze_contraction has already refused
+        // anything but a pure multiply, so nothing else of the node's arithmetic
+        // survives here.
+        ci.ab_prefactor = PrefactorScalar{double{1}};
+        if (auto const *desc = std::get_if<EinsumDescriptor>(&nodes[idx].op_data); desc != nullptr) {
+            ci.ab_prefactor = live_ab_pf(*desc);
+        }
         return ci;
     };
 
@@ -323,8 +356,8 @@ TensorId declare_chain_intermediate(Graph &graph, std::string name, packed_gemm:
 /// For larger ranges, splits at s[i][j] and recurses.
 TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> const &split, std::vector<TensorId> const &leaves, // NOLINT
                           std::vector<bool> const &leaf_transposed, std::vector<size_t> const &p, Graph &graph,
-                          packed_gemm::ScalarType dtype, size_t element_size, TensorId final_output_tid, std::vector<Node> &new_nodes,
-                          size_t &intermediates_created) {
+                          packed_gemm::ScalarType dtype, size_t element_size, TensorId final_output_tid, PrefactorScalar const &chain_alpha,
+                          std::vector<Node> &new_nodes, size_t &intermediates_created) {
     // Base case: single leaf
     if (i == j)
         return leaves[i];
@@ -332,10 +365,10 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
     size_t const k = split[i][j];
 
     // Recursively build left and right sub-results
-    TensorId const left_id =
-        reconstruct_tree(i, k, split, leaves, leaf_transposed, p, graph, dtype, element_size, 0, new_nodes, intermediates_created);
-    TensorId const right_id =
-        reconstruct_tree(k + 1, j, split, leaves, leaf_transposed, p, graph, dtype, element_size, 0, new_nodes, intermediates_created);
+    TensorId const left_id  = reconstruct_tree(i, k, split, leaves, leaf_transposed, p, graph, dtype, element_size, 0, chain_alpha,
+                                               new_nodes, intermediates_created);
+    TensorId const right_id = reconstruct_tree(k + 1, j, split, leaves, leaf_transposed, p, graph, dtype, element_size, 0, chain_alpha,
+                                               new_nodes, intermediates_created);
 
     // An operand is read transposed only when it is a raw leaf that was
     // captured that way. A sub-result is one of this pass's own intermediates,
@@ -349,7 +382,8 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
     size_t   out_N = p[j + 1];
     size_t   K_dim = p[k + 1];
 
-    if (i == 0 && j == leaves.size() - 1 && final_output_tid != 0) {
+    bool const is_root = i == 0 && j == leaves.size() - 1 && final_output_tid != 0;
+    if (is_root) {
         // This is the top-level result → use the original output tensor
         out_id = final_output_tid;
     } else {
@@ -398,8 +432,15 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
     node.label   = fmt::format("cp_gemm{}{}({}x{}x{})", trans_a ? "T" : "N", trans_b ? "T" : "N", out_M, K_dim, out_N);
     node.inputs  = {left_id, right_id};
     node.outputs = {out_id};
-    node.op_data = GemmDescriptor{
-        .alpha = PrefactorScalar{1.0}, .beta = PrefactorScalar{0.0}, .trans_a = trans_a ? 't' : 'n', .trans_b = trans_b ? 't' : 'n'};
+    // The chain's scalars ride on the ROOT and nowhere else. Each member multiplied its product
+    // by one, every member is a pure multiply, so the chain computes their product times the raw
+    // product of the leaves; putting the whole thing on the last GEMM is one multiply-add's worth
+    // of arithmetic rather than a scaling of every intermediate. An interior node carries one,
+    // which is what makes the tree it builds the plain product the DP priced.
+    node.op_data         = GemmDescriptor{.alpha   = is_root ? chain_alpha : PrefactorScalar{1.0},
+                                          .beta    = PrefactorScalar{0.0},
+                                          .trans_a = trans_a ? 't' : 'n',
+                                          .trans_b = trans_b ? 't' : 'n'};
     node.execute         = build_executor(OpKind::Gemm, dtype, 2, node.op_data, graph, std::span<TensorId const>{node.inputs},
                                           std::span<TensorId const>{node.outputs});
     node.estimated_flops = 2 * out_M * K_dim * out_N;
@@ -710,8 +751,13 @@ bool ContractionPlanning::run(Graph &graph) {
                 TensorId const    final_tid = chain.back().output_tid;
 
                 // reconstruct_tree indices are 0..num_leaves-1 (leaf indices)
-                reconstruct_tree(0, num_leaves - 1, s, leaves, *leaf_transposed, p, graph, dtype, element_size, final_tid, new_nodes,
-                                 inter_count);
+                PrefactorScalar chain_alpha{double{1}};
+                for (auto const &ci : chain) {
+                    chain_alpha = multiply_prefactors(chain_alpha, ci.ab_prefactor);
+                }
+
+                reconstruct_tree(0, num_leaves - 1, s, leaves, *leaf_transposed, p, graph, dtype, element_size, final_tid, chain_alpha,
+                                 new_nodes, inter_count);
 
                 if (!new_nodes.empty()) {
                     size_t const new_node_count = new_nodes.size();

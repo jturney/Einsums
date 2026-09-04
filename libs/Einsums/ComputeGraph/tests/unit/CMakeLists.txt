@@ -208,6 +208,7 @@ set(ComputeGraphTests
     test_hyp_linalg_diff_python.py
     test_hyp_metamorphic_python.py
     test_hyp_program_diff_python.py
+    test_hyp_region_passes_python.py
     test_hyp_symmgemm_diff_python.py
     test_hyp_tiled_diff_python.py
     test_lapack_python.py

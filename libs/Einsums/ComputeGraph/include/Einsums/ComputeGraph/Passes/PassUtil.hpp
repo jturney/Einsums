@@ -58,6 +58,35 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 }
 
 /**
+ * @brief ``lhs * rhs`` over two type-erased prefactors.
+ *
+ * Needed wherever a pass collapses several scaled operations into one and has to
+ * carry the scalars it removed: ContractionPlanning folds a chain of
+ * contractions into a tree of GEMMs and owes the product of the prefactors the
+ * chain carried. The arithmetic is done in ``complex<double>`` and the result
+ * narrowed back, so precision is lost only where the inputs were already single
+ * and an imaginary part only appears where one of the inputs had one.
+ */
+[[nodiscard]] inline PrefactorScalar multiply_prefactors(PrefactorScalar const &lhs, PrefactorScalar const &rhs) {
+    // Alternative order is float, double, complex<float>, complex<double>: index
+    // >= 2 is complex, and an even index is single precision.
+    bool const complex_result = lhs.index() >= 2 || rhs.index() >= 2;
+    bool const single_result  = (lhs.index() % 2 == 0) && (rhs.index() % 2 == 0);
+
+    std::complex<double> const product = as<std::complex<double>>(lhs) * as<std::complex<double>>(rhs);
+    if (complex_result) {
+        if (single_result) {
+            return PrefactorScalar{std::complex<float>{static_cast<float>(product.real()), static_cast<float>(product.imag())}};
+        }
+        return PrefactorScalar{product};
+    }
+    if (single_result) {
+        return PrefactorScalar{static_cast<float>(product.real())};
+    }
+    return PrefactorScalar{product.real()};
+}
+
+/**
  * @brief Whether @p v is exactly a power of two, sign included.
  *
  * Multiplying by such a value only shifts an exponent, so the arithmetic is

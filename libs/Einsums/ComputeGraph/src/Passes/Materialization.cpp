@@ -282,6 +282,18 @@ bool Materialization::run(Graph &graph) {
             report(2, fmt::format("deferred tensor '{}' is used by no node; left unallocated", handle.name));
             continue;
         }
+        // A tensor another pass already gave a lifecycle to is not this pass's to give a second
+        // one. ContractionPlanning emits its own Materialize for the scratch it declares, so that
+        // a standalone application of it produces an executable graph, and this pass then found
+        // the same deferred declaration and emitted another. Two allocations of one buffer is
+        // survivable only because materialize_fn happens to be idempotent, which is a property of
+        // today's hook rather than a contract, and the node it adds carries an edge that serializes
+        // the chain against itself for nothing. Name-keyed, matching what the setup-body arm above
+        // already does through already_materialized_in and for the same reason.
+        if (already_materialized_in(graph, handle.name)) {
+            report(2, fmt::format("deferred tensor '{}' already has a Materialize node; left to it", handle.name));
+            continue;
+        }
         add_req(handle.tensor_ptr, insert_pos, /*owns_tid=*/true, &graph, tid);
     }
     for (auto const &h : hoists) {
