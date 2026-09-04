@@ -120,6 +120,10 @@ TEST_CASE("UsageAnalysis - lifecycle filters (Alloc creation, Free scheduling ed
         cg::einsum("ik;kj->ij", &out, tmp, B);
     }
     auto pm = cg::PassManager::create_default();
+    // ContractionPlanning would re-plan the chain through its own scratch and leave tmp with no
+    // consumer at all, and a deferred tensor nothing uses is no longer allocated. The lifecycle
+    // this case reads has to be tmp's own.
+    pm.disable("ContractionPlanning");
     graph.apply(pm);
     graph.topological_sort();
 

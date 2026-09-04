@@ -493,6 +493,15 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     handle.is_intermediate          = true;
     handle.name                     = fmt::format("view_rt({})", parent.name());
     handle.aliases                  = parent_id;
+    // The sentinel base above is for the placeholder's dims, not for the handle. A parent with no
+    // address gives its views none either: registering sentinel-plus-offset as one would put two
+    // views of two different deferred tensors, sliced at the same offset, on IDENTICAL byte
+    // spans, and the pointer-derived alias linking then merges their parents into one root. The
+    // typed path keeps a null base for the same reason; the alias to the parent above is what
+    // the hazard scan reads for a view, and it needs no address.
+    if (auto const *parent_handle = graph->find_tensor(parent_id); parent_handle != nullptr && parent_handle->data_ptr == nullptr) {
+        handle.data_ptr = nullptr;
+    }
     detail::bind_holder_liveness(handle, holder);
 
     TensorId const slice_id = graph->register_tensor(std::move(handle));

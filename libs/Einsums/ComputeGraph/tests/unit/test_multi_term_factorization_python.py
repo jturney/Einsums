@@ -23,6 +23,8 @@ terms are looked at together.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -221,3 +223,90 @@ def test_the_factor_cap_declines_rather_than_approximating():
     pm.set_verbosity(2)
     assert not pm.run(graph)
     assert "not a product this pass can model" in pm.explain()
+
+
+# The CCSD doubles residual receives one three-factor product twice, once through each of two
+# intermediates that bracket it differently. Wmnij contracts tau with the integrals over the
+# virtual pair first and holds an o^4 tensor; Wabef contracts over the occupied pair first and
+# holds a v^4 one. Hand-optimized codes move the whole term into Wmnij; the pass has to find that
+# from the graph. The spin-orbital equations are in examples/toy/ccsd_t_spinorbital_toy.py.
+O, V = 4, 10
+
+
+def _ccsd_operands(seed=7):
+    rng = np.random.default_rng(seed)
+    return rng.standard_normal((O, O, V, V)), rng.standard_normal((O, O, V, V))
+
+
+def _build_ccsd_tau_terms(graph, tau_np, oovv_np, dtype):
+    tau = _tensor("tau", tau_np, dtype)
+    oovv = _tensor("oovv", oovv_np, dtype)
+    t2n = _tensor("t2n", np.zeros((O, O, V, V)), dtype)
+    Wmnij = graph.declare_tensor("Wmnij_tau", [O, O, O, O], intermediate=True, dtype=dtype)
+    Wabef = graph.declare_tensor("Wabef_tau", [V, V, V, V], intermediate=True, dtype=dtype)
+    with cg.capture(graph):
+        einsums.einsum("m,n,i,j <- i,j,e,f ; m,n,e,f", Wmnij, tau, oovv)
+        einsums.einsum("i,j,a,b <- m,n,a,b ; m,n,i,j", t2n, tau, Wmnij, ab_pf=0.125)
+        einsums.einsum("a,b,e,f <- m,n,a,b ; m,n,e,f", Wabef, tau, oovv)
+        einsums.einsum("i,j,a,b <- i,j,e,f ; a,b,e,f", t2n, tau, Wabef, c_pf=1.0, ab_pf=0.125)
+    return t2n, (tau, oovv, Wmnij, Wabef)
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_the_ccsd_tau_terms_share_the_occupied_intermediate(dtype):
+    tau_np, oovv_np = _ccsd_operands()
+    graph = cg.Graph("ccsd-tau")
+    t2n, _pool = _build_ccsd_tau_terms(graph, tau_np, oovv_np, dtype)
+
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    mat = cg.Materialization()
+    pm = cg.PassManager()
+    pm.add(mtf)
+    pm.add(mat)
+    assert pm.run(graph)
+    assert mtf.num_inlined == 2
+    assert mtf.num_shared == 1
+    assert mtf.num_rebracketed == 2
+    assert not mtf.was_cut_off
+
+    # Both routes now go through one o^4 intermediate, and the v^4 one is gone.
+    ir = json.loads(graph.to_json())
+    dims = {t["name"]: t["dims"] for t in ir["tensors"]}
+    assert [name for name in dims if name.startswith("mtf_shared")] == ["mtf_shared0"]
+    assert dims["mtf_shared0"] == [O, O, O, O]
+    assert sum(1 for n in ir["nodes"] if n["kind"] == "Einsum") == 3
+
+    # Gone means not allocated either. The dissolved declarations stay, since the caller holds
+    # them, but a buffer for a tensor nothing writes is exactly the v^4 cost the rewrite removed.
+    assert {n["label"] for n in ir["nodes"] if n["kind"] == "Materialize"} == {"materialize(mtf_shared0)"}
+    assert mat.num_unused == 2
+
+    # The report prices the rewrite it emitted: the v^4 loop space is on the before side only,
+    # and the after side is not an empty region.
+    cost_line = next(line for line in pm.explain().splitlines() if "MultiTermFactorization" in line and " cost " in line)
+    before, after = cost_line.split(" cost ", 1)[1].split(" -> ")
+    assert "?a*?b*?e*?f" in before
+    assert "?a*?b*?e*?f" not in after
+    assert after.strip() != "0"
+
+    graph.execute()
+
+    # Re-associating, so the bar is the tier's norm-relative bound against the same program run
+    # without the search in the same dtype, as the C++ cases hold it: the shared form sums the
+    # same products in a different order, and an elementwise tolerance on a sum of 1600 terms
+    # with cancellation would fail on where the small values landed rather than on the answer.
+    # The constant is tier_bound(ReAssociating), which is 1024 epsilon.
+    plain = cg.Graph("ccsd-tau-plain")
+    t2n_plain, _pool_plain = _build_ccsd_tau_terms(plain, tau_np, oovv_np, dtype)
+    pm_plain = cg.PassManager()
+    pm_plain.add(cg.Materialization())
+    pm_plain.run(plain)
+    plain.execute()
+    got, reference = np.asarray(t2n), np.asarray(t2n_plain)
+    assert np.linalg.norm(got - reference) / np.linalg.norm(reference) <= 1024 * np.finfo(np.dtype(dtype)).eps
+
+    # And one anchor in double against numpy, so the two graphs cannot agree on a wrong prefactor.
+    if dtype == "float64":
+        want = 0.25 * np.einsum("ijef,mnef,mnab->ijab", tau_np, oovv_np, tau_np)
+        assert_close(got, want, dtype=dtype)

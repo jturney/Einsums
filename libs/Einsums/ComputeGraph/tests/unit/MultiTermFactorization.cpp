@@ -27,6 +27,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -461,6 +462,35 @@ TEST_CASE("MultiTermFactorization - it reports what it did", "[ComputeGraph][Mul
     CHECK(report.find("MultiTermFactorization") != std::string::npos);
     CHECK(report.find("shared intermediate") != std::string::npos);
     CHECK(report.find("structural-algebraic") != std::string::npos);
+}
+
+TEST_CASE("MultiTermFactorization - the report prices what it emitted", "[ComputeGraph][MultiTermFactorization]") {
+    Chain     t = make_chain(17);
+    cg::Graph graph("priced");
+    capture_chains(graph, t);
+
+    cg::PassManager pm;
+    pm.add(searching_pass());
+    REQUIRE(pm.run(graph));
+
+    // The region line reads "cost <before> -> <after>". An emitted term that carried no cost made
+    // the after side read as zero, which offered a rewrite to nothing as evidence the search paid.
+    auto const report = pm.explain();
+    INFO(report);
+    std::string        after;
+    std::istringstream lines(report);
+    for (std::string line; std::getline(lines, line);) {
+        auto const at = line.find(" cost ");
+        if (at == std::string::npos || line.find("MultiTermFactorization") == std::string::npos) {
+            continue;
+        }
+        auto const arrow = line.find(" -> ", at);
+        REQUIRE(arrow != std::string::npos);
+        after = line.substr(arrow + 4);
+    }
+    REQUIRE_FALSE(after.empty());
+    CHECK(after != "0");
+    CHECK(after.find('?') != std::string::npos);
 }
 
 TEST_CASE("MultiTermFactorization - a factor cap is a decline, not an approximation", "[ComputeGraph][MultiTermFactorization]") {

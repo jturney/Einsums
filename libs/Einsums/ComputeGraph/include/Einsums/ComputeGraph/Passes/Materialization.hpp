@@ -105,9 +105,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_initialized") [[nodiscard]] size_t num_initialized() const { return _num_initialized; }
 
+    /// @brief How many graph-owned deferred tensors no node uses, and which were therefore left unallocated.
+    ///
+    /// A structural rewrite that dissolves an intermediate keeps its declaration, because a caller
+    /// may still hold the handle; what it must not keep is the storage.
+    /// @return The count.
+    APIARY_EXPOSE APIARY_GETTER("num_unused") [[nodiscard]] size_t num_unused() const { return _num_unused; }
+
   private:
     size_t _num_materialized{0};
     size_t _num_initialized{0};
+    size_t _num_unused{0};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

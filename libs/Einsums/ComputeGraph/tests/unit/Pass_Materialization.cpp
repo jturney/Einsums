@@ -375,3 +375,40 @@ TEST_CASE("Materialization - nested body-declared deferred scratch each hoist on
     REQUIRE(mat_tids.size() == 2);
     CHECK(mat_tids[0] != mat_tids[1]);
 }
+
+TEST_CASE("Materialization - a graph-owned deferred tensor no node uses is left unallocated", "[ComputeGraph][Materialization]") {
+    // What a structural rewrite leaves behind when it dissolves an intermediate: the declaration
+    // stays, because a caller may still hold the handle, and the storage must not follow it.
+    cg::Graph g("unused");
+    auto      A      = create_random_tensor<double>("A", 4, 4);
+    auto      R      = create_zero_tensor<double>("R", 4, 4);
+    auto     &used   = g.declare_runtime_tensor<double>("used", {4, 4}, /*intermediate=*/true);
+    auto     &unused = g.declare_runtime_tensor<double>("unused", {16, 16, 16, 16}, /*intermediate=*/true);
+    {
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", 0.0, &used, 1.0, A, A);
+        cg::einsum("ik;kj->ij", 0.0, &R, 1.0, used, A);
+    }
+
+    cg::passes::Materialization mat;
+    REQUIRE(mat.run(g));
+    CHECK(mat.num_materialized() == 1);
+    CHECK(mat.num_unused() == 1);
+    REQUIRE(count_nodes(g, cg::OpKind::Materialize) == 1);
+    for (auto const &node : g.nodes()) {
+        if (node.kind == cg::OpKind::Materialize) {
+            REQUIRE(node.outputs.size() == 1);
+            CHECK(node.outputs.front() == g.find_tensor_id_by_ptr(&used));
+        }
+    }
+    CHECK(g.find_tensor(g.find_tensor_id_by_ptr(&unused))->alloc_state == cg::AllocState::Deferred);
+    g.execute();
+
+    // A graph whose only deferred tensor is unused gets no node at all, and says so.
+    cg::Graph none("nothing");
+    none.declare_runtime_tensor<double>("shell", {8, 8}, /*intermediate=*/true);
+    cg::passes::Materialization second;
+    CHECK_FALSE(second.run(none));
+    CHECK(second.num_materialized() == 0);
+    CHECK(second.num_unused() == 1);
+}

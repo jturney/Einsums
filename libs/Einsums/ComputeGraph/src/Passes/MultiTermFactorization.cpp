@@ -978,6 +978,14 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         term.operand_indices = {a.indices, b.indices};
         term.conjugate       = {a.conjugate, b.conjugate};
         term.factor          = factor;
+        // Priced the way a raised term is, so the region's before-and-after compares like with
+        // like. An emitted term with no cost reads as free, and the report then offers a rewrite
+        // to nothing as evidence that the search was worth making.
+        std::set<std::string> out_letters;
+        for (auto const &index : target_indices) {
+            out_letters.insert(index.letter);
+        }
+        term.cost = contraction_cost(letters_of(a), letters_of(b), out_letters, table);
 
         ExprStatement statement;
         statement.target           = target;

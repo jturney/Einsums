@@ -152,6 +152,7 @@ std::vector<std::string> Materialization::explain() const {
 void Materialization::reset_stats() {
     _num_materialized = 0;
     _num_initialized  = 0;
+    _num_unused       = 0;
 }
 
 bool Materialization::run(Graph &graph) {
@@ -264,10 +265,22 @@ bool Materialization::run(Graph &graph) {
     for (auto tid : own_deferred) {
         auto  &handle     = graph.tensor(tid);
         size_t insert_pos = 0;
+        bool   used       = false;
         if (auto const *use = ua.find_owner(tid)) {
             if (size_t const fu = use->first_use(); fu != TensorUsage::npos) {
                 insert_pos = fu;
+                used       = true;
             }
+        }
+        // A graph-owned intermediate that no node reads or writes, here or in any sub-graph, has
+        // no value to hold. A structural pass that dissolved the intermediate leaves its
+        // declaration behind, since a caller may still hold the handle, and allocating storage
+        // for it would spend memory on a tensor whose whole point was to stop existing: for the
+        // CCSD tau terms that is a v^4 buffer nobody writes.
+        if (!used && handle.is_intermediate) {
+            _num_unused++;
+            report(2, fmt::format("deferred tensor '{}' is used by no node; left unallocated", handle.name));
+            continue;
         }
         add_req(handle.tensor_ptr, insert_pos, /*owns_tid=*/true, &graph, tid);
     }
@@ -344,6 +357,7 @@ bool Materialization::run(Graph &graph) {
     // allocation is a resource decision that the design says is re-derived on load rather than
     // saved. Doing it at capture baked a resource decision into structure and made the fitting
     // unsaveable, which is the one thing a factorization exists to avoid.
+    bool modified = false;
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         auto *setup = std::get_if<SetupDescriptor>(&nodes[i].op_data);
         if (setup == nullptr || !setup->body) {
@@ -373,6 +387,7 @@ bool Materialization::run(Graph &graph) {
         }
         if (!body_lifecycle.empty()) {
             insert_at_front(body, std::move(body_lifecycle));
+            modified = true;
         }
     }
 
@@ -406,10 +421,14 @@ bool Materialization::run(Graph &graph) {
     for (auto &ins : insertions) {
         groups.emplace_back(ins.position, std::move(ins.new_nodes));
     }
-    graph.insert_node_groups(std::move(groups));
+    if (!groups.empty()) {
+        graph.insert_node_groups(std::move(groups));
+        modified = true;
+    }
 
-    report(1, fmt::format("materialized {} deferred tensor(s) ({} initialized)", _num_materialized, _num_initialized));
-    return true;
+    report(1, fmt::format("materialized {} deferred tensor(s) ({} initialized, {} unused and left unallocated)", _num_materialized,
+                          _num_initialized, _num_unused));
+    return modified;
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)
