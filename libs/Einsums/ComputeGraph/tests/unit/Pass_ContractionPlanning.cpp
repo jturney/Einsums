@@ -744,3 +744,111 @@ TEST_CASE("ContractionPlanning - each chain a run touched is reported exactly on
     REQUIRE_FALSE(lines.empty());
     CHECK_THAT(lines[0], Catch::Matchers::ContainsSubstring("restructured 2 of 2 GEMM chain"));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// What the rebuilt chain owes: the scalars, the conjugations, and a name
+//
+// The pass gates on ``c_prefactor == 0`` and then rebuilds the chain as plain
+// GEMMs. Everything else a chain member carried has to be carried across or
+// declined, and two of them were neither. A differential fuzz over
+// multi-statement contraction programs is what found the first.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("ContractionPlanning - a restructured chain carries its prefactors", "[ComputeGraph][Passes][CP]") {
+    // Every member's ab prefactor multiplies the chain's product, so the fold owes their product.
+    // It emitted alpha = 1 on every GEMM instead, which is a wrong number rather than a slower
+    // one, in the default pipeline, on any chain whose scalars are not all one.
+    constexpr size_t n = 100;
+    auto             A = create_random_tensor<double>("A", n, n);
+    auto             B = create_random_tensor<double>("B", n, 1);
+    auto             C = create_random_tensor<double>("C", 1, n);
+    auto             R = create_zero_tensor<double>("R", n, n);
+
+    auto T1r = create_zero_tensor<double>("T1r", n, n);
+    auto Rr  = create_zero_tensor<double>("Rr", n, n);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 0.5, Indices{i, k}, B, Indices{k, j}, C);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &Rr, -2.0, Indices{i, k}, T1r, Indices{k, j}, A);
+
+    cg::Graph g("cp_prefactors");
+    auto     &T1 = g.create_zero_tensor<double, 2>("T1", n, n);
+    {
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 0.5, B, C);
+        cg::einsum("ik;kj->ij", 0.0, &R, -2.0, T1, A);
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    REQUIRE(pass.run(g));
+    REQUIRE(pass.chains_restructured() == 1);
+    g.execute();
+
+    for (size_t r = 0; r < n; r++) {
+        for (size_t c = 0; c < n; c++) {
+            REQUIRE_THAT(R(r, c), Catch::Matchers::WithinRel(Rr(r, c), 1e-12));
+        }
+    }
+}
+
+TEST_CASE("ContractionPlanning - a conjugated operand declines the fold", "[ComputeGraph][Passes][CP]") {
+    // The node the rebuild emits is a GemmDescriptor with transpose flags and no conjugation, so
+    // restructuring a conjugated member would drop the flag. Declined rather than handled: a
+    // conjugate transpose is a third reading the rebuild does not model.
+    constexpr size_t n = 100;
+    using C64          = std::complex<double>;
+    auto A             = create_random_tensor<C64>("A", n, n);
+    auto B             = create_random_tensor<C64>("B", n, 1);
+    auto C             = create_random_tensor<C64>("C", 1, n);
+    auto R             = create_zero_tensor<C64>("R", n, n);
+
+    cg::Graph g("cp_conjugated");
+    auto     &T1 = g.create_zero_tensor<C64, 2>("T1", n, n);
+    {
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", C64{0.0}, &T1, C64{1.0}, B, C, /*conj_a=*/true);
+        cg::einsum("ik;kj->ij", C64{0.0}, &R, C64{1.0}, T1, A);
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    pass.run(g);
+    CHECK(pass.chains_restructured() == 0);
+    CHECK(count_kind(g, cg::OpKind::Gemm) == 0);
+}
+
+TEST_CASE("ContractionPlanning - two chains of one shape get two scratch names", "[ComputeGraph][Passes][CP]") {
+    // The scratch was named `_cp_<M>x<N>_<n>` from a counter that restarted at zero for every
+    // chain, so two chains of one shape in one graph both declared `_cp_100x100_0` and the graph
+    // held two distinct tensors under one name. Harmless in the arithmetic and a trap in
+    // everything around it: every question this module asks about a lifecycle is name-keyed.
+    constexpr size_t n = 100;
+    auto             A = create_random_tensor<double>("A", n, n);
+    auto             B = create_random_tensor<double>("B", n, 1);
+    auto             C = create_random_tensor<double>("C", 1, n);
+    auto             R = create_zero_tensor<double>("R", n, n);
+    auto             S = create_zero_tensor<double>("S", n, n);
+
+    cg::Graph g("cp_two_chains");
+    auto     &T1 = g.create_zero_tensor<double, 2>("T1", n, n);
+    auto     &T2 = g.create_zero_tensor<double, 2>("T2", n, n);
+    {
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, B, C);
+        cg::einsum("ik;kj->ij", 0.0, &R, 1.0, T1, A);
+        cg::einsum("ik;kj->ij", 0.0, &T2, 1.0, B, C);
+        cg::einsum("ik;kj->ij", 0.0, &S, 1.0, T2, A);
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    REQUIRE(pass.run(g));
+    REQUIRE(pass.chains_restructured() == 2);
+
+    std::set<std::string> names;
+    size_t                scratch = 0;
+    for (auto const &[tid, handle] : g.tensors_map()) {
+        if (handle.name.starts_with("_cp_")) {
+            scratch++;
+            names.insert(handle.name);
+        }
+    }
+    CHECK(scratch == 2);
+    CHECK(names.size() == scratch);
+}

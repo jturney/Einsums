@@ -412,3 +412,175 @@ TEST_CASE("Materialization - a graph-owned deferred tensor no node uses is left 
     CHECK(second.num_materialized() == 0);
     CHECK(second.num_unused() == 1);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// The two storage invariants, and the audit that states them
+//
+// Neither moves a number, which is why both of the defects behind them shipped:
+// a buffer allocated for a tensor a rewrite dissolved costs memory, and a second
+// lifecycle for one tensor re-runs an allocation that happens to be idempotent.
+// The audit is what the differential fuzzers call, so it is tested here on
+// graphs whose answer is known rather than only exercised through them.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+/// A Materialize node for @p tid, of the shape the pass emits, spliced at @p position.
+///
+/// Planting one is how a test shows the audit BITES. Every other way of producing the
+/// violation has been fixed, which is the point, and an invariant nothing can fail is
+/// indistinguishable from an invariant nobody wrote.
+void plant_materialize(cg::Graph &graph, std::string const &name, cg::TensorId tid, std::size_t position) {
+    cg::Node planted;
+    planted.kind    = cg::OpKind::Materialize;
+    planted.label   = fmt::format("materialize({})", name);
+    planted.outputs = {tid};
+    planted.execute = []() {};
+
+    std::vector<std::pair<std::size_t, std::vector<cg::Node>>> group;
+    group.emplace_back(position, std::vector<cg::Node>{std::move(planted)});
+    graph.insert_node_groups(std::move(group));
+}
+
+} // namespace
+
+TEST_CASE("Materialization - the storage invariants hold across control flow and views", "[ComputeGraph][Materialization][audit]") {
+    // The shapes the audit has to see through: a scratch used only inside a loop body, whose
+    // lifecycle is HOISTED to the parent and whose use is therefore in a different graph from its
+    // Materialize; and a scratch written only through a view, whose use names a handle the
+    // Materialize does not.
+    constexpr size_t n = 6;
+    auto             A = create_random_tensor<double>("A", n, n);
+    auto             R = create_zero_tensor<double>("R", n, n);
+
+    cg::Graph g("audit_ok");
+    auto     &sliced = g.declare_zero_runtime_tensor<double>("sliced", {n, n}, /*intermediate=*/true);
+    {
+        cg::CaptureGuard const guard(g);
+        auto                  &block = cg::view_runtime(sliced, {cg::ViewAxis::range(0, 2), cg::ViewAxis::full()});
+        cg::axpby(1.0, A(Range{0, 2}, Range{0, n}), 0.0, &block);
+    }
+    auto &body = g.add_loop("iter", 2, [](size_t it) { return it < 2; });
+    {
+        cg::CaptureGuard const guard(body);
+        auto                  &W = body.scratch_zero<double, 2>("W", n, n);
+        cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, A);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, W, A);
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::Materialization>();
+    REQUIRE(pm.run(g));
+
+    // Both invariants, on a graph where every deferred tensor is genuinely used.
+    CHECK(cg::passes::duplicate_materializations(g).empty());
+    CHECK(cg::passes::stranded_materializations(g).empty());
+    g.execute();
+}
+
+TEST_CASE("Materialization - the audit names a Materialize nothing uses", "[ComputeGraph][Materialization][audit]") {
+    cg::Graph g("audit_stranded");
+    auto      A      = create_random_tensor<double>("A", 4, 4);
+    auto      R      = create_zero_tensor<double>("R", 4, 4);
+    auto     &used   = g.declare_runtime_tensor<double>("used", {4, 4}, /*intermediate=*/true);
+    auto     &orphan = g.declare_runtime_tensor<double>("orphan", {4, 4}, /*intermediate=*/true);
+    {
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", 0.0, &used, 1.0, A, A);
+        cg::einsum("ik;kj->ij", 0.0, &R, 1.0, used, A);
+    }
+
+    cg::passes::Materialization mat;
+    REQUIRE(mat.run(g));
+    REQUIRE(cg::passes::stranded_materializations(g).empty());
+
+    // The state a dissolving rewrite used to leave: the orphan's declaration stays, and a buffer
+    // for it does too.
+    plant_materialize(g, "orphan", g.find_tensor_id_by_ptr(&orphan), 0);
+    auto const stranded = cg::passes::stranded_materializations(g);
+    REQUIRE(stranded.size() == 1);
+    CHECK(stranded.front() == "orphan");
+    // Named because it is a graph-owned INTERMEDIATE. A caller-owned deferred tensor is one the
+    // caller may read after the graph runs, so allocating an unused one is deliberate.
+    CHECK(cg::passes::duplicate_materializations(g).empty());
+}
+
+TEST_CASE("Materialization - the audit names a tensor with two Materialize nodes", "[ComputeGraph][Materialization][audit]") {
+    cg::Graph g("audit_duplicate");
+    auto      A    = create_random_tensor<double>("A", 4, 4);
+    auto      R    = create_zero_tensor<double>("R", 4, 4);
+    auto     &used = g.declare_runtime_tensor<double>("used", {4, 4}, /*intermediate=*/true);
+    {
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", 0.0, &used, 1.0, A, A);
+        cg::einsum("ik;kj->ij", 0.0, &R, 1.0, used, A);
+    }
+
+    cg::passes::Materialization mat;
+    REQUIRE(mat.run(g));
+    REQUIRE(cg::passes::duplicate_materializations(g).empty());
+
+    plant_materialize(g, "used", g.find_tensor_id_by_ptr(&used), 0);
+    auto const duplicated = cg::passes::duplicate_materializations(g);
+    REQUIRE(duplicated.size() == 1);
+    CHECK(duplicated.front() == "used");
+}
+
+TEST_CASE("Materialization - a tensor another pass already gave a lifecycle gets no second one",
+          "[ComputeGraph][Materialization][ContractionPlanning]") {
+    // ContractionPlanning emits a Materialize for the scratch it declares, so that applying it
+    // standalone produces an executable graph, and this pass then found the same deferred
+    // declaration and emitted another.
+    //
+    // Tolerated on the grounds that materialize_fn is idempotent, and that is the wrong test:
+    // idempotence is a property of today's hook rather than a contract, the second node carries a
+    // dependency edge that serializes the chain against itself, and every question this module
+    // asks about a lifecycle is name-keyed, so a graph holding two of them has no single answer to
+    // "who materializes this". Materialization now leaves a tensor that already has one alone,
+    // which is what already_materialized_in was already doing for setup bodies.
+    constexpr size_t n = 100;
+    auto             A = create_random_tensor<double>("A", n, n);
+    auto             B = create_random_tensor<double>("B", n, 1);
+    auto             C = create_random_tensor<double>("C", 1, n);
+    auto             R = create_zero_tensor<double>("R", n, n);
+
+    // Captured as (B C) A, which builds an n x n intermediate and then does an n^3 contraction;
+    // B (C A) is two n^2 ones. So the pass has a reason to re-bracket and a scratch to declare for
+    // it. The running product goes in the A slot of the later member, which is the shape the chain
+    // finder recognizes.
+    cg::Graph g("cp_then_materialization");
+    auto     &T1 = g.create_zero_tensor<double, 2>("T1", n, n);
+    {
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, B, C);
+        cg::einsum("ik;kj->ij", 0.0, &R, 1.0, T1, A);
+    }
+
+    cg::CostModel model;
+    model.cpu.peak_gflops_fp64          = 100.0;
+    model.cpu.mem_bandwidth_gbps        = 40.0;
+    model.cpu.kernel_launch_overhead_us = 0.1;
+    model.cpu.name                      = "TestCPU";
+
+    cg::passes::ContractionPlanning planning(model);
+    REQUIRE(planning.run(g));
+    REQUIRE(planning.chains_restructured() == 1);
+    size_t const from_planning = count_nodes(g, cg::OpKind::Materialize);
+    REQUIRE(from_planning >= 1);
+
+    cg::passes::Materialization mat;
+    mat.run(g);
+    CHECK(count_nodes(g, cg::OpKind::Materialize) == from_planning);
+    CHECK(cg::passes::duplicate_materializations(g).empty());
+    CHECK(cg::passes::stranded_materializations(g).empty());
+
+    // One lifecycle per chain scratch, and the scratch is real: the graph runs.
+    size_t chain_scratch = 0;
+    for (auto const &[tid, handle] : g.tensors_map()) {
+        if (handle.name.starts_with("_cp_")) {
+            chain_scratch++;
+        }
+    }
+    CHECK(from_planning == chain_scratch);
+    g.execute();
+}
