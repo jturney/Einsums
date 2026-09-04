@@ -115,6 +115,13 @@ def test_the_whole_loop_from_python():
     assert [record.pass_name for record in g.approximations()] == ["MetricFit"]
 
     g.apply(cg.default_pass_manager())
+
+    # One lifecycle per tensor, including the ones only the setup body writes. The
+    # fitting used to get two Materialize nodes apiece and allocate each twice,
+    # which no numeric oracle can see: the answer was right either way.
+    assert not cg.duplicate_materializations(g)
+    assert not cg.stranded_materializations(g)
+
     g.execute()
     assert_close(C, np.einsum("mnpq,pq->mn", dense, operand), atol=1e-12, rtol=1e-10)
 

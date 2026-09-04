@@ -438,10 +438,46 @@ bool Materialization::run(Graph &graph) {
         target.insert_node_groups(std::move(group));
     };
 
+    bool modified = false;
+
+    for (auto const &r : reqs) {
+        auto &handle = r.owner->tensor(r.tid);
+
+        if (Graph *body = setup_body_writing(r.position, handle.tensor_ptr); body != nullptr) {
+            if (auto const body_tid = body_tid_for(*body, handle.tensor_ptr); body_tid.has_value()) {
+                auto body_nodes = lifecycle_for(handle, *body_tid);
+                report(2, fmt::format("materialize deferred tensor '{}' inside setup body '{}'", handle.name, nodes[r.position].label));
+                insert_at_front(*body, std::move(body_nodes));
+                continue;
+            }
+        }
+
+        // A parent-owned request emits its own id; a hoisted body request
+        // resolves the buffer to a parent id (minting one if effective_io
+        // has not yet), so the Loop / Conditional node gets a RAW edge after
+        // these lifecycle nodes instead of floating as an edgeless root.
+        TensorId const emit_tid  = r.owns_tid ? r.tid : graph.find_or_register_tensor_ptr(handle);
+        auto           new_nodes = lifecycle_for(handle, emit_tid);
+        EINSUMS_LOG_INFO("Materialization: materialize({}) at position {} (owns_tid={})", handle.name, r.position, r.owns_tid);
+        report(2, fmt::format("materialize deferred tensor '{}' at position {}{}", handle.name, r.position,
+                              handle.init_kind != InitKind::None ? " (+initialize)" : ""));
+        insertions.push_back({.position = r.position, .new_nodes = std::move(new_nodes)});
+    }
+
     // A setup body's OWN workspace, materialized inside the body. The parent cannot see these
     // through either path above: they are not its tensors, and the hoist walk deliberately
     // covers only loop bodies and conditional branches, where a hoisted lifecycle is what
     // stops an allocation happening per iteration.
+    //
+    // AFTER the request loop, deliberately, and the ordering is a fix rather than a tidy-up.
+    // The comment below says a body's copy of a parent-declared tensor carries no allocating
+    // hook and is therefore skipped here; that is false for a deferred runtime tensor, which
+    // capture adopts into the body complete with one. So a setup output the parent declared
+    // got a lifecycle from BOTH arms, and every graph with a setup body has carried two
+    // Materialize nodes per fitting since setup bodies shipped. Running second means the
+    // name-keyed guard below sees the request loop's node, which is the one built from the
+    // PARENT's handle and is the one that has to win: it allocates the buffer the parent's
+    // readers hold.
     //
     // Inside rather than hoisted, because a setup body runs once per bound problem and is
     // skipped by every replay after. A parent-placed Materialize would allocate the fitting's
@@ -453,7 +489,6 @@ bool Materialization::run(Graph &graph) {
     // allocation is a resource decision that the design says is re-derived on load rather than
     // saved. Doing it at capture baked a resource decision into structure and made the fitting
     // unsaveable, which is the one thing a factorization exists to avoid.
-    bool modified = false;
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         auto *setup = std::get_if<SetupDescriptor>(&nodes[i].op_data);
         if (setup == nullptr || !setup->body) {
@@ -485,30 +520,6 @@ bool Materialization::run(Graph &graph) {
             insert_at_front(body, std::move(body_lifecycle));
             modified = true;
         }
-    }
-
-    for (auto const &r : reqs) {
-        auto &handle = r.owner->tensor(r.tid);
-
-        if (Graph *body = setup_body_writing(r.position, handle.tensor_ptr); body != nullptr) {
-            if (auto const body_tid = body_tid_for(*body, handle.tensor_ptr); body_tid.has_value()) {
-                auto body_nodes = lifecycle_for(handle, *body_tid);
-                report(2, fmt::format("materialize deferred tensor '{}' inside setup body '{}'", handle.name, nodes[r.position].label));
-                insert_at_front(*body, std::move(body_nodes));
-                continue;
-            }
-        }
-
-        // A parent-owned request emits its own id; a hoisted body request
-        // resolves the buffer to a parent id (minting one if effective_io
-        // has not yet), so the Loop / Conditional node gets a RAW edge after
-        // these lifecycle nodes instead of floating as an edgeless root.
-        TensorId const emit_tid  = r.owns_tid ? r.tid : graph.find_or_register_tensor_ptr(handle);
-        auto           new_nodes = lifecycle_for(handle, emit_tid);
-        EINSUMS_LOG_INFO("Materialization: materialize({}) at position {} (owns_tid={})", handle.name, r.position, r.owns_tid);
-        report(2, fmt::format("materialize deferred tensor '{}' at position {}{}", handle.name, r.position,
-                              handle.init_kind != InitKind::None ? " (+initialize)" : ""));
-        insertions.push_back({.position = r.position, .new_nodes = std::move(new_nodes)});
     }
 
     // ── 5. Apply all insertions (Graph orders them descending and re-sorts) ─

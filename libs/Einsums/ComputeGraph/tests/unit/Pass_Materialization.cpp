@@ -584,3 +584,44 @@ TEST_CASE("Materialization - a tensor another pass already gave a lifecycle gets
     CHECK(from_planning == chain_scratch);
     g.execute();
 }
+
+TEST_CASE("Materialization - a setup body's output gets ONE lifecycle, not two", "[ComputeGraph][Passes][Materialization]") {
+    // Two arms of this pass place a lifecycle inside a setup body: the one that follows a
+    // parent-declared tensor to the node that writes it, and the one that covers the body's
+    // own workspace. The second used to run first, and its comment says a body's copy of a
+    // parent-declared tensor carries no allocating hook and is therefore skipped there. That
+    // is false for a deferred RUNTIME tensor, which capture adopts into the body complete
+    // with a hook, so every graph with a setup body carried two Materialize nodes per output
+    // and allocated each of them twice.
+    //
+    // Fixed by running the workspace arm second, where its name-keyed guard sees the node the
+    // first arm placed. That node is the one that has to survive: it is built from the
+    // PARENT's handle, and the parent's readers hold the buffer it allocates.
+    auto out  = create_zero_tensor<double>("out", 3, 3);
+    auto one  = create_zero_tensor<double>("one", 3, 3);
+    one(0, 0) = 1.0;
+
+    cg::Graph g("setup_lifecycle");
+    auto     &fitted = g.declare_runtime_tensor<double>("fitted", {3, 3}, /*intermediate=*/true);
+    {
+        auto                  &body = g.add_setup("fit");
+        cg::CaptureGuard const guard(body);
+        // A body-declared scratch beside the parent-declared output, so both arms have work.
+        auto &scratch = body.declare_runtime_tensor<double>("fit_scratch", {3, 3}, /*intermediate=*/true);
+        cg::permute("ij <- ij", 0.0, &scratch, 1.0, one);
+        cg::permute("ij <- ij", 0.0, &fitted, 1.0, scratch);
+    }
+    {
+        cg::CaptureGuard const guard(g);
+        cg::permute("ij <- ij", 0.0, &out, 1.0, fitted);
+    }
+
+    auto pm = cg::PassManager::create_default();
+    g.apply(pm);
+
+    CHECK(cg::passes::duplicate_materializations(g).empty());
+    CHECK(cg::passes::stranded_materializations(g).empty());
+
+    g.execute();
+    CHECK(out(0, 0) == Catch::Approx(1.0));
+}
