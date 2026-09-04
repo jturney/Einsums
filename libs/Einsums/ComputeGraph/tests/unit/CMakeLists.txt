@@ -144,6 +144,7 @@ set(ComputeGraphTests
     test_grouped_gather_rotate_python.py
     test_block_copy_python.py
     test_capture_parity_gaps_python.py
+    test_binding_reachability_python.py
     test_bisect_driver_python.py
     test_capture_python.py
     test_approximation_python.py

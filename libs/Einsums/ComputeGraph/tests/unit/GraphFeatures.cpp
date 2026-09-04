@@ -1012,3 +1012,147 @@ TEST_CASE("explain - a pass that did nothing stays silent", "[ComputeGraph][Opti
 
     CHECK(pm.explain() == "  (no optimizations applied)\n");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Every member survives a move
+//
+// Graph::move_members_from enumerates the members by hand, and every load goes
+// through it: load_graph returns a Graph by value. A member missing from that
+// list is dropped in silence, which is how seven of them once were, and the
+// sharpest of those defaulted to TRUE ("the alias relation is up to date"), so a
+// graph moved out of a state that needed relinking arrived claiming it did not.
+//
+// A test naming one feature at a time would be a list to keep in step with the
+// member list, which is the failure this is about. So this builds a graph that
+// exercises every feature that HAS a member, snapshots the two whole-graph
+// summaries and every accessor, moves it, and compares.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("Graph - a move carries every member", "[ComputeGraph][Move]") {
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 5);
+    auto C = create_zero_tensor<double>("C", 4, 5);
+
+    cg::SpaceRegistry registry;
+    auto const        occ = registry.register_space(cg::make_index_space("occ", "o", 4.0));
+    auto const        vir = registry.register_space(cg::make_index_space("vir", "v", 8.0));
+
+    cg::Graph original("moved_graph");
+    original.set_space_registry(registry);
+    original.set_pipeline_name("pipe");
+    original.set_workspace_name("ws");
+    original.set_stage_name("stage");
+    original.set_stage_type("scf");
+    original.set_stage_index(3);
+    original.set_setup_key("a-setup-key");
+    original.note_structural_pass("DeltaElimination");
+    original.note_structural_pass("MultiTermFactorization");
+    original.set_accuracy_budget(cg::ApproximationEffect::NormRelative, 1e-3);
+    original.note_approximation(
+        cg::make_approximation_record("MetricFitFactorization", cg::ApproximationEffect::NormRelative, 1e-5, 1e-6, {"C"}, {"occ"}, "fit"));
+    original.name_gate_flags("live", std::make_shared<std::vector<std::uint8_t>>(std::vector<std::uint8_t>{1, 0, 1}));
+
+    auto params = std::make_shared<cg::ParamTable>();
+    params->set("iteration", 7);
+    original.set_params_ptr(params);
+
+    {
+        cg::CaptureGuard const guard(original);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+
+    // Annotations go on after the capture, which is the surface a caller has and the one that
+    // writes both the per-handle spaces and the graph-level symbol table.
+    cg::TensorId const a_id = original.find_tensor_id_by_ptr(&A);
+    cg::TensorId const b_id = original.find_tensor_id_by_ptr(&B);
+    cg::TensorId const c_id = original.find_tensor_id_by_ptr(&C);
+    REQUIRE(a_id != 0);
+    REQUIRE(b_id != 0);
+    REQUIRE(c_id != 0);
+    original.annotate_spaces(a_id, {occ, vir});
+    // Axis at a time on C, whole-annotation on A: both spellings write the same member, and a
+    // PARTIAL annotation is refused by the manifest, so C gets both of its axes.
+    original.annotate_space_axis(c_id, 0, occ);
+    original.annotate_space_axis(c_id, 1, vir);
+    original.annotate_dims(a_id, {"nocc", "nvir"});
+    original.annotate_tag(b_id, cg::ProvenanceTag::make_with_attributes("eri", {{"basis", "cc-pvdz"}}));
+    original.declare_alias(c_id, a_id);
+    // A ragged extent table hangs off a manifest entry, so the dim has to be annotated ragged
+    // before it can be bound; the tensor's own name is its interface name.
+    original.annotate_ragged_dim(C, 0, "occ");
+    original.bind_ragged_extents("C", 0, {2, 3, 5});
+
+    original.topological_sort();
+
+    // The two whole-graph summaries, plus every accessor a member has.
+    std::uint64_t const hash_before           = original.content_hash();
+    std::string const   json_before           = original.to_json();
+    auto const          name_before           = original.name();
+    auto const          pipeline_before       = original.pipeline_name();
+    auto const          workspace_before      = original.workspace_name();
+    auto const          stage_before          = original.stage_name();
+    auto const          stage_type_before     = original.stage_type();
+    int const           stage_index_before    = original.stage_index();
+    auto const          setup_before          = original.setup_key();
+    auto const          passes_before         = original.structural_passes();
+    auto const          budget_before         = original.accuracy_budget();
+    auto const          approximations_before = original.approximations();
+    auto const          symbols_before        = original.symbol_spaces();
+    auto const          gate_before           = original.named_gate_flags();
+    auto const          tag_before            = original.tensor_tag(b_id);
+    auto const          spaces_before         = original.tensor(a_id).spaces;
+    auto const          nodes_before          = original.num_nodes();
+    auto const          tensors_before        = original.tensors_map().size();
+    auto const          edges_before          = original.dependencies().successors;
+    auto const          levels_before         = original.schedule_level_sizes();
+    auto const          alias_root_before     = original.resolve_alias(c_id);
+    auto const         *ragged_before         = original.find_ragged_extents("C", 0);
+    REQUIRE(ragged_before != nullptr);
+    auto const ragged_extents_before = ragged_before->extents;
+    auto const registry_before       = &original.space_registry();
+
+    cg::Graph moved(std::move(original));
+
+    // The summaries first: a member that changes anything either of these renders is caught
+    // without this test naming it, which is the point of comparing them rather than a field list.
+    CHECK(moved.content_hash() == hash_before);
+    CHECK(moved.to_json() == json_before);
+
+    CHECK(moved.name() == name_before);
+    CHECK(moved.pipeline_name() == pipeline_before);
+    CHECK(moved.workspace_name() == workspace_before);
+    CHECK(moved.stage_name() == stage_before);
+    CHECK(moved.stage_type() == stage_type_before);
+    CHECK(moved.stage_index() == stage_index_before);
+    CHECK(moved.setup_key() == setup_before);
+    CHECK(moved.structural_passes() == passes_before);
+    REQUIRE(moved.accuracy_budget().has_value());
+    CHECK(moved.accuracy_budget()->first == budget_before->first);
+    CHECK(moved.accuracy_budget()->second == budget_before->second);
+    REQUIRE(moved.approximations().size() == approximations_before.size());
+    CHECK(moved.approximations().front().pass_name == approximations_before.front().pass_name);
+    CHECK(moved.approximations().front().bound == approximations_before.front().bound);
+    CHECK(moved.approximations().front().spaces == approximations_before.front().spaces);
+    CHECK(moved.symbol_spaces() == symbols_before);
+    REQUIRE(moved.named_gate_flags().size() == gate_before.size());
+    CHECK(moved.named_gate_flags().front().first == gate_before.front().first);
+    CHECK(*moved.named_gate_flags().front().second == *gate_before.front().second);
+    CHECK(moved.tensor_tag(b_id).name == tag_before.name);
+    CHECK(moved.tensor_tag(b_id).attributes == tag_before.attributes);
+    CHECK(moved.tensor(a_id).spaces == spaces_before);
+    CHECK(moved.num_nodes() == nodes_before);
+    CHECK(moved.tensors_map().size() == tensors_before);
+    CHECK(moved.dependencies().successors == edges_before);
+    CHECK(moved.schedule_level_sizes() == levels_before);
+    CHECK(moved.resolve_alias(c_id) == alias_root_before);
+    REQUIRE(moved.find_ragged_extents("C", 0) != nullptr);
+    CHECK(moved.find_ragged_extents("C", 0)->extents == ragged_extents_before);
+    CHECK(moved.ragged_extent_tables().size() == 1);
+    // A reference member, so the identity is the thing that has to survive rather than a value.
+    CHECK(&moved.space_registry() == registry_before);
+    REQUIRE(moved.params_ptr() != nullptr);
+    CHECK(moved.params_ptr()->get("iteration") == 7);
+
+    // And it still runs, which is the property every one of those exists to serve.
+    moved.execute();
+}
