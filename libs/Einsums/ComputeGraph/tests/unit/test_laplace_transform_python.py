@@ -237,3 +237,199 @@ def test_the_tag_helper_and_the_names_are_reachable():
     with pytest.raises(Exception):
         laplace.set_epsilon(0.0)
     laplace.clear_energies()
+
+
+# ── The proving ground ──────────────────────────────────────────────────────
+
+_MP2_NOCC, _MP2_NVIR = 3, 4
+
+
+def _mp2_problem(seed=20260904):
+    """Orbital energies with a realistic gap, and an integral tensor with the right symmetry.
+
+    Synthetic rather than from a fixture, because what the case is about is the
+    denominator and not the integrals: the gaps run from about 1.0 to 5.9
+    Hartree, which is the range a small closed-shell molecule actually has, and
+    the denominator is uniformly negative, which is the sign convention half of
+    every MP2 expression written down.
+    """
+    rng = np.random.default_rng(seed)
+    eo = np.array([-0.9 + 0.225 * i for i in range(_MP2_NOCC)])
+    ev = np.array([0.05 + 0.5 * a for a in range(_MP2_NVIR)])
+
+    # (ia|jb) with the permutational symmetry the expression assumes, built from
+    # a three-index tensor so it is a real integral-shaped object rather than noise.
+    naux = 5
+    three = rng.standard_normal((naux, _MP2_NOCC, _MP2_NVIR))
+    eri = np.einsum("Qia,Qjb->iajb", three, three)
+
+    denominator = 1.0 / (
+        eo[:, None, None, None] + eo[None, None, :, None] - ev[None, :, None, None] - ev[None, None, None, :]
+    )
+    return eo, ev, eri, denominator
+
+
+def _mp2_tag():
+    return {
+        "name": "laplace_denominator",
+        "axis0": "eps_o", "sign0": "+",
+        "axis1": "eps_v", "sign1": "-",
+        "axis2": "eps_o", "sign2": "+",
+        "axis3": "eps_v", "sign3": "-",
+    }
+
+
+def test_mp2_in_the_full_axis_form_survives_the_substitution():
+    """The proving ground: MP2 written over all four indices, tagged and transformed.
+
+    ``E = sum_iajb (2 (ia|jb) - (ib|ja)) (ia|jb) / (e_i + e_j - e_a - e_b)``, with
+    the denominator formed as a four-axis reciprocal rather than folded into a
+    pair prefactor, which is the form this pass is specified for and the reason
+    the psi4-bridge example is declined.
+
+    The numerator's product is spelled as an einsum rather than a direct product
+    on purpose: the rewrite pushes the per-axis exponentials onto the OPERANDS of
+    a contraction, so a numerator that is itself an elementwise node has nothing
+    for them to ride on and is declined. Writing it as the contraction it
+    mathematically is costs nothing and is what the pass recognizes.
+    """
+    eo, ev, eri, denom = _mp2_problem()
+    tolerance = 1e-8
+
+    exchange = np.ascontiguousarray(eri.transpose(0, 3, 2, 1))  # (ib|ja)
+    shape = (_MP2_NOCC, _MP2_NVIR, _MP2_NOCC, _MP2_NVIR)
+
+    def build(graph, out):
+        K = einsums.asarray(eri)
+        Kx = einsums.asarray(exchange)
+        D = einsums.asarray(denom)
+        numerator = graph.scratch("mp2_numerator", list(shape), "float64")
+        combination = graph.scratch("mp2_combination", list(shape), "float64")
+        with cg.capture(graph):
+            einsums.linalg.axpby(2.0, K, 0.0, combination)
+            einsums.linalg.axpby(-1.0, Kx, 1.0, combination)
+            einsums.einsum("i,a,j,b ; i,a,j,b -> i,a,j,b", numerator, combination, K)
+            einsums.linalg.direct_product(1.0, numerator, D, 0.0, out)
+        return D
+
+    exact = einsums.zeros(shape, dtype="float64")
+    reference = cg.Graph("mp2_reference")
+    build(reference, exact)
+    reference.apply(cg.default_pass_manager())
+    reference.execute()
+
+    out = einsums.zeros(shape, dtype="float64")
+    graph = cg.Graph("mp2_laplace")
+    D = build(graph, out)
+    cg.annotate(D, tag=_mp2_tag(), graph=graph)
+
+    laplace = cg.LaplaceTransform()
+    laplace.set_epsilon(tolerance)
+    laplace.add_energy("eps_o", einsums.asarray(eo))
+    laplace.add_energy("eps_v", einsums.asarray(ev))
+    pm = cg.PassManager()
+    pm.add(laplace)
+    assert graph.apply(pm), f"declined: {laplace.skip_reasons}"
+    assert laplace.num_transformed == 1
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+
+    record = graph.approximations()[0]
+    assert record.origin == _G.ApproximationOrigin.Measured
+    assert record.bound <= tolerance
+
+    # numpy, which owes nothing to either arm, and the correlation energy the
+    # whole expression exists to produce.
+    oracle = (2.0 * eri - exchange) * eri * denom
+    got = np.asarray(out)
+    scale = float(np.max(np.abs(oracle)))
+    assert float(np.max(np.abs(got - np.asarray(exact)))) <= (record.bound + 1e-13) * scale
+    assert float(np.max(np.abs(got - oracle))) <= (record.bound + 1e-13) * scale
+
+    energy_exact = float(np.sum(oracle))
+    energy_laplace = float(np.sum(got))
+    assert abs(energy_laplace - energy_exact) <= record.bound * float(np.sum(np.abs(oracle)))
+
+
+def test_two_lossy_records_land_on_one_output():
+    """A density fit and a Laplace transform, composed on the same result.
+
+    The composition rule of the accuracy contract is per effect, and both
+    records here are norm-relative, so the graph reports them composed rather
+    than summed. What this pins is that the two passes CAN run on one program:
+    the fit rewrites the contraction that forms the numerator, and the transform
+    then rides on the operands the fit left behind.
+    """
+    rng = np.random.default_rng(4)
+    naux, nbf = 3, 4
+    three = rng.standard_normal((naux, nbf, nbf))
+    metric = rng.standard_normal((naux, naux))
+    metric = metric @ metric.T + naux * np.eye(naux)
+    dense = np.einsum("pmn,pq,qab->mnab", three, np.linalg.inv(metric), three)
+    operand = rng.standard_normal((nbf, nbf))
+
+    # A denominator over the two axes the contraction leaves free.
+    row = np.array([-0.9 + 0.2 * i for i in range(nbf)])
+    col = np.array([0.4 + 0.35 * i for i in range(nbf)])
+    denom = 1.0 / (col[None, :] - row[:, None])
+
+    def build(graph, out):
+        M = einsums.asarray(dense)
+        T = einsums.asarray(operand)
+        D = einsums.asarray(denom)
+        numerator = graph.scratch("df_numerator", [nbf, nbf], "float64")
+        with cg.capture(graph):
+            einsums.einsum("m,n,p,q ; p,q -> m,n", numerator, M, T)
+            einsums.linalg.direct_product(1.0, numerator, D, 0.0, out)
+        return M, D
+
+    exact = einsums.zeros((nbf, nbf), dtype="float64")
+    reference = cg.Graph("df_laplace_reference")
+    build(reference, exact)
+    reference.apply(cg.default_pass_manager())
+    reference.execute()
+
+    out = einsums.zeros((nbf, nbf), dtype="float64")
+    graph = cg.Graph("df_laplace")
+    M, D = build(graph, out)
+    graph.annotate_tag(M, _G.ProvenanceTag.make("eri"))
+    cg.annotate(D, tag={"name": "laplace_denominator", "axis0": "eps_row", "sign0": "-",
+                        "axis1": "eps_col", "sign1": "+"}, graph=graph)
+
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.MetricFitFactorization(
+        "eri", einsums.asarray(three), einsums.asarray(metric), 1e-12))
+    factorization = _G.FactorizationPass(registry)
+
+    laplace = cg.LaplaceTransform()
+    laplace.set_epsilon(1e-9)
+    laplace.add_energy("eps_row", einsums.asarray(row))
+    laplace.add_energy("eps_col", einsums.asarray(col))
+
+    pm = cg.PassManager()
+    pm.add(factorization)
+    pm.add(laplace)
+    assert graph.apply(pm)
+    assert factorization.num_factorized == 1, "the fit did not fire, so nothing composed"
+    assert laplace.num_transformed == 1, f"the transform declined: {laplace.skip_reasons}"
+
+    names = sorted(r.pass_name for r in graph.approximations())
+    assert names == ["LaplaceTransform", "MetricFit"]
+
+    # Composed, not summed: both are relative, so the bound is e1 + e2 + e1*e2.
+    # Either record's outputs list is empty, which means every output, so the
+    # question can be asked under any name.
+    tolerance = graph.approximation_tolerance("result")
+    bounds = [r.bound for r in graph.approximations()]
+    composed = bounds[0] + bounds[1] + bounds[0] * bounds[1]
+    assert tolerance.relative == pytest.approx(composed)
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+
+    oracle = np.einsum("mnpq,pq->mn", dense, operand) * denom
+    got = np.asarray(out)
+    scale = float(np.max(np.abs(oracle)))
+    assert float(np.max(np.abs(got - oracle))) <= (composed + 1e-12) * scale
+    assert float(np.max(np.abs(got - np.asarray(exact)))) <= (composed + 1e-12) * scale

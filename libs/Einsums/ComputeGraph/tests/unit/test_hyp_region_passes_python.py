@@ -576,3 +576,200 @@ def test_the_pinned_ccsd_case_still_shares_the_occupied_intermediate():
     assert f"materialize({v4})" not in materialized
     assert all(after != "0" for after in _mtf_after_costs(pm))
     assert_materialization_invariants(graph, "pinned CCSD tau terms")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The lossy arm: a tagged energy denominator
+#
+# LaplaceTransform is a region rewrite like the others, and it is the only one
+# whose oracle is a TOLERANCE rather than a re-association bound, so it draws
+# its own programs rather than joining the roll above. Joining it would also
+# renumber every program the shard has ever generated, which is the reason
+# `rich_views` was added behind a flag in the differential shards.
+#
+# What varies is the shape the pass has to recognize: which operand of the
+# numerator carries each axis of the denominator, the extents, the sign of each
+# axis, and whether the denominator comes out positive or negative. What is
+# fixed is the comparison: the transformed graph against the same program with
+# the pass off, held to the error the pass itself RECORDED.
+# ──────────────────────────────────────────────────────────────────────────
+
+_LAPLACE_LETTERS = ("i", "a", "j", "b")
+
+
+class LaplaceProgram(NamedTuple):
+    """One drawn denominator problem.
+
+    ``sides`` says, per axis of the denominator, which operand of the numerator
+    carries that axis; ``link`` is the extent of the contracted index the two
+    operands share, or zero for a numerator that is a pure outer product.
+    """
+
+    extents: tuple
+    sides: tuple
+    signs: tuple
+    link: int
+    negative: bool
+    epsilon: float
+
+
+@st.composite
+def _laplace_programs(draw):
+    rank = draw(st.integers(min_value=2, max_value=4))
+    extents = tuple(draw(st.integers(min_value=2, max_value=4)) for _ in range(rank))
+    # At least one axis on each side where the rank allows it, so the drawn
+    # corpus actually exercises the split rather than always piling every
+    # exponential onto one operand.
+    sides = tuple(draw(st.integers(min_value=0, max_value=1)) for _ in range(rank))
+    signs = tuple(draw(st.sampled_from((1, -1))) for _ in range(rank))
+    link = draw(st.integers(min_value=0, max_value=3))
+    negative = draw(st.booleans())
+    epsilon = draw(st.sampled_from((1e-3, 1e-5, 1e-7)))
+    return LaplaceProgram(extents, sides, signs, link, negative, epsilon)
+
+
+def _laplace_arrays(prog, seed):
+    """Energies whose signed sum is uniformly one sign, and the numerator's operands."""
+    rng = np.random.default_rng(seed)
+    energies = []
+    for axis, extent in enumerate(prog.extents):
+        # Positive and bounded away from zero, so the signed sum's range is set
+        # by the signs rather than by an accident of the draw.
+        base = np.array([0.4 + 0.35 * k for k in range(extent)])
+        energies.append(base * (1.0 if prog.signs[axis] > 0 else 1.0))
+
+    total = np.zeros(prog.extents)
+    for axis, energy in enumerate(energies):
+        shape = [1] * len(prog.extents)
+        shape[axis] = prog.extents[axis]
+        total = total + prog.signs[axis] * energy.reshape(shape)
+
+    # A uniform shift moves the whole sum to one side of zero without touching
+    # its width, which is what the quadrature needs and what a real denominator
+    # of orbital energies has.
+    span = float(total.max() - total.min())
+    shift = (-float(total.min()) + 0.5 + span) if not prog.negative else (-float(total.max()) - 0.5 - span)
+    axis0_sign = prog.signs[0]
+    energies[0] = energies[0] + shift / axis0_sign
+    total = total + shift
+
+    denominator = 1.0 / total
+
+    left = [prog.extents[k] for k in range(len(prog.extents)) if prog.sides[k] == 0]
+    right = [prog.extents[k] for k in range(len(prog.extents)) if prog.sides[k] == 1]
+    if prog.link:
+        left = left + [prog.link]
+        right = [prog.link] + right
+    a = rng.standard_normal(left if left else [1])
+    b = rng.standard_normal(right if right else [1])
+    return energies, denominator, a, b
+
+
+def _laplace_spec(prog):
+    """The einsum the numerator is formed by, in the drawn letter assignment."""
+    letters = _LAPLACE_LETTERS[: len(prog.extents)]
+    left = [letters[k] for k in range(len(letters)) if prog.sides[k] == 0]
+    right = [letters[k] for k in range(len(letters)) if prog.sides[k] == 1]
+    if prog.link:
+        left = left + ["q"]
+        right = ["q"] + right
+    if not left:
+        left = ["z"]
+    if not right:
+        right = ["z"]
+    return ",".join(left), ",".join(right), ",".join(letters)
+
+
+def _run_laplace(prog, seed):
+    energies, denominator, a, b, = _laplace_arrays(prog, seed)
+    a_spec, b_spec, c_spec = _laplace_spec(prog)
+    shape = list(prog.extents)
+
+    def build(graph, out):
+        A = einsums.asarray(np.ascontiguousarray(a))
+        B = einsums.asarray(np.ascontiguousarray(b))
+        D = einsums.asarray(np.ascontiguousarray(denominator))
+        numerator = graph.scratch(_nm("lap_num"), shape, "float64")
+        with cg.capture(graph):
+            einsums.einsum(f"{a_spec} ; {b_spec} -> {c_spec}", numerator, A, B)
+            einsums.linalg.direct_product(1.0, numerator, D, 0.0, out)
+        return D
+
+    exact = einsums.zeros(shape, dtype="float64")
+    reference = cg.Graph(_nm("lap_ref"))
+    build(reference, exact)
+    reference.apply(cg.default_pass_manager())
+    reference.execute()
+
+    out = einsums.zeros(shape, dtype="float64")
+    graph = cg.Graph(_nm("lap"))
+    D = build(graph, out)
+    tag = {"name": "laplace_denominator"}
+    names = []
+    for axis in range(len(prog.extents)):
+        tag[f"axis{axis}"] = f"eps{axis}"
+        tag[f"sign{axis}"] = "+" if prog.signs[axis] > 0 else "-"
+        names.append(f"eps{axis}")
+    cg.annotate(D, tag=tag, graph=graph)
+
+    laplace = cg.LaplaceTransform()
+    laplace.set_epsilon(prog.epsilon)
+    for axis, name in enumerate(names):
+        laplace.add_energy(name, einsums.asarray(np.ascontiguousarray(energies[axis])))
+    pm = cg.PassManager()
+    pm.add(laplace)
+    changed = graph.apply(pm)
+    assert changed, f"the pass declined a drawn program: {laplace.skip_reasons}"
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    assert_materialization_invariants(graph, "laplace")
+    return np.asarray(out), np.asarray(exact), graph.approximations()[0], laplace
+
+
+@given(prog=_laplace_programs())
+@settings(max_examples=sanitizer_examples(60), deadline=None,
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
+def test_the_quadrature_keeps_the_answer_inside_its_own_record(prog):
+    got, want, record, laplace = _run_laplace(prog, seed=0)
+    assert record.pass_name == "LaplaceTransform"
+    assert record.bound <= prog.epsilon
+    assert laplace.last_point_count >= 2
+
+    scale = float(np.max(np.abs(want)))
+    if scale == 0.0:
+        return
+    # The recorded bound, plus the double-precision rounding of an accumulation
+    # over the quadrature points, which the record does not claim to cover.
+    slack = 64.0 * float(np.finfo(np.float64).eps) * laplace.last_point_count
+    assert float(np.max(np.abs(got - want))) <= (record.bound + slack) * scale
+
+
+def test_the_drawn_corpus_reaches_both_sides_of_the_split():
+    """A corpus that always piled every exponential onto one operand would prove nothing."""
+    both = one_sided = negative = 0
+    for seed in range(40):
+        rng = np.random.default_rng(seed)
+        prog = LaplaceProgram(
+            extents=tuple(int(rng.integers(2, 5)) for _ in range(int(rng.integers(2, 5)))),
+            sides=(),
+            signs=(),
+            link=int(rng.integers(0, 4)),
+            negative=bool(rng.integers(0, 2)),
+            epsilon=1e-5,
+        )
+        rank = len(prog.extents)
+        prog = prog._replace(
+            sides=tuple(int(rng.integers(0, 2)) for _ in range(rank)),
+            signs=tuple(1 if rng.integers(0, 2) else -1 for _ in range(rank)),
+        )
+        if 0 in prog.sides and 1 in prog.sides:
+            both += 1
+        else:
+            one_sided += 1
+        if prog.negative:
+            negative += 1
+        _run_laplace(prog, seed=seed)
+    assert both > 0, "no drawn program ever split the axes across the two operands"
+    assert one_sided > 0, "no drawn program ever put every axis on one operand"
+    assert negative > 0, "no drawn program ever had a negative denominator"
