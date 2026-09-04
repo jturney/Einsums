@@ -28,8 +28,7 @@ extern void FC_GLOBAL(ctrsyl, CTRSYL)(char *, char *, int_t *, int_t *, int_t *,
 
 #define TRSYL(Type, lc, uc)                                                                                                                \
     auto lc##trsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, const Type *a, int_t lda, const Type *b, int_t ldb, Type *c,      \
-                   int_t ldc, Type *scale)                                                                                                 \
-        ->int_t {                                                                                                                          \
+                   int_t ldc, Type *scale) -> int_t {                                                                                      \
         LabeledSection0();                                                                                                                 \
         int_t info = 0;                                                                                                                    \
         /* Check leading dimensions */                                                                                                     \
@@ -60,8 +59,7 @@ extern void FC_GLOBAL(ctrsyl, CTRSYL)(char *, char *, int_t *, int_t *, int_t *,
 
 #define TRSYL_complex(Type, lc, uc)                                                                                                        \
     auto lc##trsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, const std::complex<Type> *a, int_t lda,                           \
-                   const std::complex<Type> *b, int_t ldb, std::complex<Type> *c, int_t ldc, Type *scale)                                  \
-        ->int_t {                                                                                                                          \
+                   const std::complex<Type> *b, int_t ldb, std::complex<Type> *c, int_t ldc, Type *scale) -> int_t {                       \
         LabeledSection0();                                                                                                                 \
         int_t info = 0;                                                                                                                    \
         /* Check leading dimensions */                                                                                                     \

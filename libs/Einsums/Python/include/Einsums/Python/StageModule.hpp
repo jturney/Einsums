@@ -66,29 +66,29 @@
 ///
 /// @p name must be the module's importable name, since that is the key
 /// `einsums.sealed` looks up. Call once, first, in the module body.
-#define EINSUMS_STAGE_MODULE(m, name)                                                                                                      \
-    do {                                                                                                                                   \
-        ::einsums::sealed::register_stage_module(name);                                                                                    \
-                                                                                                                                           \
-        ::einsums::sealed::WorldInfo const &_einsums_w = ::einsums::sealed::world();                                                       \
-                                                                                                                                           \
-        (m).attr("__einsums_world__") = reinterpret_cast<std::uintptr_t>(_einsums_w.identity);                                             \
-                                                                                                                                           \
-        ::pybind11::dict _einsums_info;                                                                                                    \
-        /* Computed HERE, from the headers this module sees, which is the whole  */                                                        \
-        /* point: world() would report the library's own values and always agree. */                                                       \
-        _einsums_info["config_fingerprint"] = ::einsums::sealed::config_fingerprint();                                                     \
-        _einsums_info["layout_fingerprint"] = ::einsums::sealed::layout_fingerprint();                                                     \
-        /* Descriptive, for the error message rather than the decision - but    */                                                         \
-        /* header-derived for the same reason the fingerprints are. Reporting   */                                                         \
-        /* the library's own version back at it would print the same string on  */                                                         \
-        /* both lines of a stale-headers refusal, which is the one place the    */                                                         \
-        /* reader most needs them to differ.                                    */                                                         \
-        _einsums_info["version"] = ::std::to_string(EINSUMS_VERSION_MAJOR) + "." + ::std::to_string(EINSUMS_VERSION_MINOR) + "." +         \
-                                   ::std::to_string(EINSUMS_VERSION_PATCH);                                                                \
-        _einsums_info["compiler"]          = ::std::string(EINSUMS_DETAIL_STAGE_COMPILER);                                                 \
-        _einsums_info["cplusplus"]         = static_cast<long>(__cplusplus);                                                               \
-        _einsums_info["library_path"]      = ::std::string(_einsums_w.library_path);                                                       \
-        _einsums_info["module"]            = ::std::string(name);                                                                          \
-        (m).attr("__einsums_world_info__") = _einsums_info;                                                                                \
+#define EINSUMS_STAGE_MODULE(m, name)                                                                                                        \
+    do {                                                                                                                                     \
+        ::einsums::sealed::register_stage_module(name);                                                                                      \
+                                                                                                                                             \
+        ::einsums::sealed::WorldInfo const &_einsums_w = ::einsums::sealed::world();                                                         \
+                                                                                                                                             \
+        (m).attr("__einsums_world__") = reinterpret_cast<std::uintptr_t>(_einsums_w.identity);                                               \
+                                                                                                                                             \
+        ::pybind11::dict _einsums_info;                                                                                                      \
+        /* Computed HERE, from the headers this module sees, which is the whole  */                                                          \
+        /* point: world() would report the library's own values and always agree. */                                                         \
+        _einsums_info["config_fingerprint"] = ::einsums::sealed::config_fingerprint();                                                       \
+        _einsums_info["layout_fingerprint"] = ::einsums::sealed::layout_fingerprint();                                                       \
+        /* Descriptive, for the error message rather than the decision - but    */                                                           \
+        /* header-derived for the same reason the fingerprints are. Reporting   */                                                           \
+        /* the library's own version back at it would print the same string on  */                                                           \
+        /* both lines of a stale-headers refusal, which is the one place the    */                                                           \
+        /* reader most needs them to differ.                                    */                                                           \
+        _einsums_info["version"]           = ::std::to_string(EINSUMS_VERSION_MAJOR) + "." + ::std::to_string(EINSUMS_VERSION_MINOR) + "." + \
+                                             ::std::to_string(EINSUMS_VERSION_PATCH);                                                        \
+        _einsums_info["compiler"]          = ::std::string(EINSUMS_DETAIL_STAGE_COMPILER);                                                   \
+        _einsums_info["cplusplus"]         = static_cast<long>(__cplusplus);                                                                 \
+        _einsums_info["library_path"]      = ::std::string(_einsums_w.library_path);                                                         \
+        _einsums_info["module"]            = ::std::string(name);                                                                            \
+        (m).attr("__einsums_world_info__") = _einsums_info;                                                                                  \
     } while (false)

@@ -166,30 +166,30 @@ CpuFeatures detect() {
     CpuFeatures f;
     f.neon = true;
 
-    unsigned long const hwcap  = getauxval(AT_HWCAP);
+    unsigned long const hwcap = getauxval(AT_HWCAP);
 #        if defined(HWCAP_ASIMDHP)
-    f.neon_fp16                = (hwcap & HWCAP_ASIMDHP) != 0;
+    f.neon_fp16 = (hwcap & HWCAP_ASIMDHP) != 0;
 #        endif
 #        if defined(HWCAP_ASIMDDP)
-    f.neon_dotprod             = (hwcap & HWCAP_ASIMDDP) != 0;
+    f.neon_dotprod = (hwcap & HWCAP_ASIMDDP) != 0;
 #        endif
 
 #        if defined(AT_HWCAP2)
     unsigned long const hwcap2 = getauxval(AT_HWCAP2);
 #            if defined(HWCAP2_BF16)
-    f.neon_bf16                = (hwcap2 & HWCAP2_BF16) != 0;
+    f.neon_bf16 = (hwcap2 & HWCAP2_BF16) != 0;
 #            endif
 #            if defined(HWCAP2_I8MM)
-    f.neon_i8mm                = (hwcap2 & HWCAP2_I8MM) != 0;
+    f.neon_i8mm = (hwcap2 & HWCAP2_I8MM) != 0;
 #            endif
 #            if defined(HWCAP2_SME)
-    f.sme                      = (hwcap2 & HWCAP2_SME) != 0;
+    f.sme = (hwcap2 & HWCAP2_SME) != 0;
 #            endif
 #            if defined(HWCAP2_SME2)
-    f.sme2                     = (hwcap2 & HWCAP2_SME2) != 0;
+    f.sme2 = (hwcap2 & HWCAP2_SME2) != 0;
 #            endif
 #            if defined(HWCAP2_SME_F64F64)
-    f.sme_f64f64               = (hwcap2 & HWCAP2_SME_F64F64) != 0;
+    f.sme_f64f64 = (hwcap2 & HWCAP2_SME_F64F64) != 0;
 #            endif
 #        endif
 

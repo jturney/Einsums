@@ -48,7 +48,7 @@ The windows-cross leg cross-compiles the whole tree with clang-cl (compile+link 
 
 Pre-commit hooks enforce formatting; install with `pre-commit install`.
 
-- **C++**: clang-format v16, LLVM-based style, 4-space indent, 140-column limit (`.clang-format`)
+- **C++**: clang-format v22, LLVM-based style, 4-space indent, 140-column limit (`.clang-format`)
 - **CMake**: cmake-format (`.cmake-format.py`); **license headers** auto-inserted in `.cpp`, `.hpp`, `.cmake`, `.py`
 - When the clang-format hook reports "files were modified", re-`git add` the same paths and re-commit; the second run passes.
 

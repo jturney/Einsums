@@ -185,7 +185,7 @@ Server::Server(Consumer &consumer, StringTable &strings, std::string const &bind
     setsockopt(_listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     set_nonblocking(_listen_fd);
 
-    struct sockaddr_in addr {};
+    struct sockaddr_in addr{};
     addr.sin_family = AF_INET;
     inet_pton(AF_INET, bind_addr.c_str(), &addr.sin_addr);
 
@@ -307,7 +307,7 @@ void Server::tick() {
 void Server::accept_clients() {
 #    ifndef _WIN32
     while (static_cast<int>(_client_fds.size()) < kMaxClients) {
-        struct sockaddr_in addr {};
+        struct sockaddr_in addr{};
         socklen_t          len = sizeof(addr);
         int                fd  = accept(_listen_fd, reinterpret_cast<struct sockaddr *>(&addr), &len);
         if (fd < 0)

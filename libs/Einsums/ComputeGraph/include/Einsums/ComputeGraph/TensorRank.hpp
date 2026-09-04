@@ -29,7 +29,7 @@ concept HasCompileTimeRank = requires {
 // Used as the dispatch tag for cg::einsum and other ComputeGraph operations
 // when they need a code path that doesn't bake rank into the type.
 template <typename T>
-concept RuntimeRankTensorConcept = BasicTensorConcept<T> && (!HasCompileTimeRank<T>)&&requires(T const &t) {
+concept RuntimeRankTensorConcept = BasicTensorConcept<T> && (!HasCompileTimeRank<T>) && requires(T const &t) {
     { t.rank() } -> std::convertible_to<std::size_t>;
 };
 

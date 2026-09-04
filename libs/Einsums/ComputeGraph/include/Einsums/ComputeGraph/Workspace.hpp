@@ -136,10 +136,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
      */
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = float, Alloc = std::allocator<float>)
-        APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = double, Alloc = std::allocator<double>)
-            APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
-                    GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string tensor_name, std::vector<size_t> dims) {
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<double>,
+                                 Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
+    declare_runtime_tensor(std::string tensor_name, std::vector<size_t> dims) {
         using TensorType = GeneralRuntimeTensor<T, Alloc>;
         auto *ptr        = new TensorType(typename TensorType::DeferredAlloc{}, std::move(tensor_name), std::move(dims));
         _owned_tensors.emplace_back(ptr, [](void *p) { delete static_cast<TensorType *>(p); });
@@ -153,10 +154,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
     /// Runtime-rank analog of declare_zero_tensor().
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = float, Alloc = std::allocator<float>)
-        APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = double, Alloc = std::allocator<double>)
-            APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
-                    GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string tensor_name, std::vector<size_t> dims) {
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<double>,
+                                 Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
+    declare_zero_runtime_tensor(std::string tensor_name, std::vector<size_t> dims) {
         auto &t                   = declare_runtime_tensor<T, Alloc>(std::move(tensor_name), std::move(dims));
         _handles.back().init_kind = InitKind::Zero;
         t.set_pending_init(PendingInit::Zero);
@@ -166,11 +168,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE Workspace
     /// Runtime-rank analog of declare_random_tensor().
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = float, Alloc = std::allocator<float>)
-        APIARY_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = double, Alloc = std::allocator<double>)
-            APIARY_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                APIARY_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = std::complex<double>,
-                                             Alloc = std::allocator<std::complex<double>>)
-                    GeneralRuntimeTensor<T, Alloc> &declare_random_runtime_tensor(std::string tensor_name, std::vector<size_t> dims) {
+    APIARY_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_random_tensor", T = std::complex<double>,
+                                 Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
+    declare_random_runtime_tensor(std::string tensor_name, std::vector<size_t> dims) {
         auto &t                   = declare_runtime_tensor<T, Alloc>(std::move(tensor_name), std::move(dims));
         _handles.back().init_kind = InitKind::Random;
         t.set_pending_init(PendingInit::Random);

@@ -22,8 +22,7 @@ TEST_CASE("cg::parallel_for - basic capture and execute", "[ComputeGraph][Parall
     cg::Graph graph("pf_basic");
     {
         cg::CaptureGuard const guard(graph);
-        cg::parallel_for(
-            "fill", 0, 100, [&A](size_t i) { A(i) = static_cast<double>(i); }, &A);
+        cg::parallel_for("fill", 0, 100, [&A](size_t i) { A(i) = static_cast<double>(i); }, &A);
     }
 
     REQUIRE(graph.num_nodes() == 1);
@@ -81,8 +80,7 @@ TEST_CASE("cg::parallel_for - replay", "[ComputeGraph][ParallelFor]") {
     cg::Graph graph("pf_replay");
     {
         cg::CaptureGuard const guard(graph);
-        cg::parallel_for(
-            "fill", 0, 50, [&A](size_t i) { A(i) = static_cast<double>(i * i); }, &A);
+        cg::parallel_for("fill", 0, 50, [&A](size_t i) { A(i) = static_cast<double>(i * i); }, &A);
     }
 
     graph.execute();
@@ -143,8 +141,7 @@ TEST_CASE("cg::parallel_for + einsum + parallel_reduce in one graph", "[ComputeG
     {
         cg::CaptureGuard const guard(graph);
         // Step 1: parallel_for fills J
-        cg::parallel_for(
-            "fill_J", 0, N * N, [&J, &D, N](size_t flat) { J(flat / N, flat % N) = D(flat / N, flat % N) * 2.0; }, &J);
+        cg::parallel_for("fill_J", 0, N * N, [&J, &D, N](size_t flat) { J(flat / N, flat % N) = D(flat / N, flat % N) * 2.0; }, &J);
         // Step 2: einsum F = J * D
         cg::einsum("ik;kj->ij", &F, J, D);
         // Step 3: parallel_reduce energy = sum(D * F)
@@ -164,8 +161,7 @@ TEST_CASE("cg::parallel_for - outside capture executes immediately", "[ComputeGr
     auto A = create_zero_tensor<double>("A", 20);
 
     // No capture guard, should execute immediately via TaskPool
-    cg::parallel_for(
-        "fill", 0, 20, [&A](size_t i) { A(i) = static_cast<double>(i); }, &A);
+    cg::parallel_for("fill", 0, 20, [&A](size_t i) { A(i) = static_cast<double>(i); }, &A);
 
     for (size_t i = 0; i < 20; i++) {
         REQUIRE_THAT(A(i), Catch::Matchers::WithinRel(static_cast<double>(i), 1e-12));

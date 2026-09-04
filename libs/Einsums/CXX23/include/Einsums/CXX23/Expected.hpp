@@ -253,7 +253,7 @@ class expected<void, E> {
     constexpr expected &operator=(expected const &) = default;
     constexpr expected &operator=(expected &&)      = default;
 
-    [[nodiscard]] constexpr bool has_value() const noexcept { return has_val_; }
+    [[nodiscard]] constexpr bool     has_value() const noexcept { return has_val_; }
     [[nodiscard]] constexpr explicit operator bool() const noexcept { return has_val_; }
 
     [[nodiscard]] constexpr E &error() & {

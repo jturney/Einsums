@@ -616,9 +616,9 @@ APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("view", einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_python(
-        ParentT &parent, std::vector<std::pair<std::int64_t, std::int64_t>> const &ranges) {
+// clang-format on
+RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &
+view_python(ParentT &parent, std::vector<std::pair<std::int64_t, std::int64_t>> const &ranges) {
     if (ranges.size() != parent.rank()) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::view: ranges length ({}) must equal parent rank ({})", ranges.size(),
                                 parent.rank());
@@ -658,9 +658,9 @@ APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("view_indexed", einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_indexed_python(
-        ParentT &parent, std::vector<std::tuple<int, std::int64_t, std::int64_t>> const &specs) {
+// clang-format on
+RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &
+view_indexed_python(ParentT &parent, std::vector<std::tuple<int, std::int64_t, std::int64_t>> const &specs) {
     if (specs.size() != parent.rank()) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::view_indexed: specs length ({}) must equal parent rank ({})", specs.size(),
                                 parent.rank());
@@ -712,9 +712,9 @@ APIARY_INSTANTIATE_AS("views", einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("views", einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("views", einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("views", einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    std::vector<RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> *> views_python(
-        ParentT &parent, std::vector<std::vector<std::tuple<int, std::int64_t, std::int64_t>>> const &specs) {
+// clang-format on
+std::vector<RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> *>
+views_python(ParentT &parent, std::vector<std::vector<std::tuple<int, std::int64_t, std::int64_t>>> const &specs) {
     std::vector<RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> *> out;
     out.reserve(specs.size());
     for (auto const &spec : specs) {
@@ -750,9 +750,8 @@ APIARY_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("permute_view", einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &permute_view_python(ParentT                   &parent,
-                                                                                             std::vector<size_t> const &perm) {
+// clang-format on
+RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &permute_view_python(ParentT &parent, std::vector<size_t> const &perm) {
     if (perm.size() != parent.rank()) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::permute_view: perm length ({}) must equal parent rank ({})", perm.size(),
                                 parent.rank());
@@ -805,8 +804,8 @@ APIARY_INSTANTIATE_AS("tile_view", einsums::TiledRuntimeTensor<float>)
 APIARY_INSTANTIATE_AS("tile_view", einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("tile_view", einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("tile_view", einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &tile_view_python(ParentT &parent, std::vector<int> const &coord) {
+// clang-format on
+RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &tile_view_python(ParentT &parent, std::vector<int> const &coord) {
     using T      = typename std::remove_cvref_t<ParentT>::ValueType;
     using Holder = detail::RuntimeViewHolder<T>;
 

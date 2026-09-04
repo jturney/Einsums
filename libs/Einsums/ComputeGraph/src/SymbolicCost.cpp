@@ -706,9 +706,9 @@ SymbolicCost symbolic_cost_for(EinsumDescriptor const &desc) {
     LetterVars const vars{desc.letter_spaces};
 
     SymbolicCost cost;
-    cost.flops   = symbolic_size_for(desc.spec.all_indices, vars) * 2.0;
-    cost.traffic = symbolic_size_for(desc.spec.c_indices, vars) + symbolic_size_for(desc.spec.a_indices, vars) +
-                   symbolic_size_for(desc.spec.b_indices, vars);
+    cost.flops    = symbolic_size_for(desc.spec.all_indices, vars) * 2.0;
+    cost.traffic  = symbolic_size_for(desc.spec.c_indices, vars) + symbolic_size_for(desc.spec.a_indices, vars) +
+                    symbolic_size_for(desc.spec.b_indices, vars);
     cost.resident = cost.traffic;
     return cost;
 }

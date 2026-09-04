@@ -75,9 +75,8 @@ void bench_rank3(int N) {
     ProfileAnnotate("dtype", "double");
     ProfileAnnotate("N", int64_t(N));
     ProfileAnnotate("elements", int64_t(N) * int64_t(N) * int64_t(N));
-    auto t = time_us("einsum-rank3", [&] {
-        tensor_algebra::einsum(0.0, Indices{i, j, l}, &C, 1.0, Indices{i, j, k}, A, Indices{l, k}, B);
-    });
+    auto t =
+        time_us("einsum-rank3", [&] { tensor_algebra::einsum(0.0, Indices{i, j, l}, &C, 1.0, Indices{i, j, k}, A, Indices{l, k}, B); });
     publish_benchmark_result("einsum-rank3", "t_einsum", N, t);
 }
 

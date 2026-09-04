@@ -87,8 +87,8 @@ int einsums_main() {
             auto                  &stage = pipe.add_stage("zero_head");
             cg::CaptureGuard const g(stage);
             auto                  &head = cg::view<double, 2>(A,
-                                             cg::ViewAxis::full(),             // all rows
-                                             cg::ViewAxis::range(0, "n_occ")); // cols 0..n_occ
+                                                              cg::ViewAxis::full(),             // all rows
+                                                              cg::ViewAxis::range(0, "n_occ")); // cols 0..n_occ
             cg::scale(0.0, &head);
         }
 

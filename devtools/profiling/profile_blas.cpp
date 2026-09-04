@@ -121,7 +121,7 @@ void fill_random(std::vector<double> &buffer, Generator &generator) {
     }
 }
 
-int         main(int argc, char **argv) {
+int main(int argc, char **argv) {
 #pragma omp parallel
     {
 #pragma omp single

@@ -228,7 +228,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") EINSUMS_EXPORT FactorizationRegistry 
  * @return The registry. Never null.
  * @versionadded{2.0.0}
  */
-[[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RVP(reference)
-    EINSUMS_EXPORT FactorizationRegistry &global_factorization_registry();
+[[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RVP(reference) EINSUMS_EXPORT FactorizationRegistry &
+global_factorization_registry();
 
 EINSUMS_NAMESPACE_END(compute_graph)

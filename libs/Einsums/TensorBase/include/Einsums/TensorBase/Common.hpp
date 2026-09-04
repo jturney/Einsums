@@ -42,8 +42,7 @@ inline constexpr int dynamic_rank = -1;
     template <std::size_t Rank>                                                                                                            \
     struct Name : std::array<std::int64_t, Rank> {                                                                                         \
         template <typename... Args>                                                                                                        \
-        constexpr explicit Name(Args... args) : std::array<std::int64_t, Rank>{static_cast<std::int64_t>(args)...} {                       \
-        }                                                                                                                                  \
+        constexpr explicit Name(Args... args) : std::array<std::int64_t, Rank>{static_cast<std::int64_t>(args)...} {}                      \
     };                                                                                                                                     \
     template <typename... Args>                                                                                                            \
     Name(Args... args)->Name<sizeof...(Args)>

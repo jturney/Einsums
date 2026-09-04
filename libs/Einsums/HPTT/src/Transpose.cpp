@@ -466,7 +466,7 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
     // blockingB (buffer-tile) predicate is not a store-alignment constraint and stays at 64 B.
     constexpr size_t stream_align       = einsums::simd::native_bits / 8 < 32 ? 32 : einsums::simd::native_bits / 8;
     bool const       useStreamingStores = useStreamingStores_ && betaIsZero && (blockingB * sizeof(floatType)) % 64 == 0 &&
-                                    ((uint64_t)B) % stream_align == 0 && (ldb * sizeof(floatType)) % stream_align == 0;
+                                          ((uint64_t)B) % stream_align == 0 && (ldb * sizeof(floatType)) % stream_align == 0;
 
     floatType *Btmp    = B;
     size_t     ldb_tmp = ldb;

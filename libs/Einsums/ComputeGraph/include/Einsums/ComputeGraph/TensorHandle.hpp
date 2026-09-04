@@ -117,7 +117,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") ProvenanceTag {
  * @versionadded{2.0.0}
  */
 [[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("provenance_tag") inline ProvenanceTag
-    make_provenance_tag(std::string name, std::vector<std::pair<std::string, std::string>> attributes) {
+make_provenance_tag(std::string name, std::vector<std::pair<std::string, std::string>> attributes) {
     return ProvenanceTag{.name = std::move(name), .attributes = std::move(attributes)};
 }
 

@@ -331,8 +331,8 @@ struct SaveOptions {
  * @throws std::runtime_error With the refusal's message.
  * @versionadded{2.0.0}
  */
-APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("save_graph")
-    EINSUMS_EXPORT void save_graph_file(Graph const &graph, std::string const &path);
+APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("save_graph") EINSUMS_EXPORT void save_graph_file(Graph const       &graph,
+                                                                                                     std::string const &path);
 
 /**
  * @brief Read @p path back as a runnable graph, throwing on failure.
@@ -342,8 +342,8 @@ APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("save_graph")
  * @throws std::runtime_error With the failure's message.
  * @versionadded{2.0.0}
  */
-APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("load_graph") APIARY_RVP(take_ownership)
-    [[nodiscard]] EINSUMS_EXPORT Graph *load_graph_file(std::string const &path);
+APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("load_graph") APIARY_RVP(take_ownership) [[nodiscard]] EINSUMS_EXPORT Graph *
+load_graph_file(std::string const &path);
 
 /**
  * @brief Read @p path back against @p registry, throwing on failure. The Python spelling.
@@ -360,8 +360,8 @@ APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("load_graph") APIARY_RVP(take
  * start-string, and the docs build treats that warning as an error.
  * @versionadded{2.0.0}
  */
-APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("load_graph_into") APIARY_RVP(take_ownership) APIARY_KEEP_ALIVE(0, 2)
-    [[nodiscard]] EINSUMS_EXPORT Graph *load_graph_file_into(std::string const &path, SpaceRegistry &registry);
+APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("load_graph_into") APIARY_RVP(take_ownership) APIARY_KEEP_ALIVE(0, 2) [[nodiscard]]
+EINSUMS_EXPORT Graph *load_graph_file_into(std::string const &path, SpaceRegistry &registry);
 
 /**
  * @brief Check @p path, throwing with every problem when it is not valid.

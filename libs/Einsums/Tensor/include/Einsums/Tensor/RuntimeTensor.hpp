@@ -1435,17 +1435,16 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
  */
 template <typename T>
 struct APIARY_EXPOSE
-    // Same Plan C protocol surface as GeneralRuntimeTensor: zero-copy numpy
-    // interop via buffer protocol, Python iter, scalar subscript, and
-    // slice/partial-tuple subscript. at_view returns a nested
-    // RuntimeTensorView, so a view slices just like a full tensor.
-    APIARY_BUFFER_PROTOCOL APIARY_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride, element_type = T)
-        APIARY_INDEX_PROTOCOL_STD(element_type = T, rank = rank, dim = dim, at_element = at_element, set_element = set_element,
-                                  at_view = at_view, view_type = einsums::RuntimeTensorView<T>)
-            APIARY_INSTANTIATE_AS("RuntimeTensorViewF", RuntimeTensorView<float>)
-                APIARY_INSTANTIATE_AS("RuntimeTensorViewD", RuntimeTensorView<double>)
-                    APIARY_INSTANTIATE_AS("RuntimeTensorViewC", RuntimeTensorView<std::complex<float>>)
-                        APIARY_INSTANTIATE_AS("RuntimeTensorViewZ", RuntimeTensorView<std::complex<double>>) RuntimeTensorView
+// Same Plan C protocol surface as GeneralRuntimeTensor: zero-copy numpy
+// interop via buffer protocol, Python iter, scalar subscript, and
+// slice/partial-tuple subscript. at_view returns a nested
+// RuntimeTensorView, so a view slices just like a full tensor.
+APIARY_BUFFER_PROTOCOL APIARY_BUFFER_PROTOCOL_STD(data = data, rank = rank, dim = dim, stride = stride, element_type = T)
+APIARY_INDEX_PROTOCOL_STD(element_type = T, rank = rank, dim = dim, at_element = at_element, set_element = set_element, at_view = at_view,
+                          view_type = einsums::RuntimeTensorView<T>) APIARY_INSTANTIATE_AS("RuntimeTensorViewF", RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("RuntimeTensorViewD", RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("RuntimeTensorViewC", RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("RuntimeTensorViewZ", RuntimeTensorView<std::complex<double>>) RuntimeTensorView
     : public tensor_base::CoreTensor,
       public tensor_base::RuntimeTensorNoType,
       public tensor_base::RuntimeTensorViewNoType,

@@ -33,7 +33,7 @@ repos:
         always_run: true
 
   - repo: https://github.com/pre-commit/mirrors-clang-format
-    rev: v16.0.6
+    rev: v22.1.8
     hooks:
       - id: clang-format
         name: Ensure C++ files are formatted correctly

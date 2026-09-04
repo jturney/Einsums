@@ -2422,8 +2422,7 @@ using PlanSnapshot = std::vector<std::pair<std::uint16_t, std::int64_t>>;
 void collect_thread_plan(Graph &graph, PlanSnapshot &out) {
     for (auto &node : graph.nodes()) {
         out.emplace_back(node.thread_width, node.admission_priority);
-        for_each_child_graph(
-            node, [&out](Graph &sub) { collect_thread_plan(sub, out); }, /*include_setup=*/false);
+        for_each_child_graph(node, [&out](Graph &sub) { collect_thread_plan(sub, out); }, /*include_setup=*/false);
     }
 }
 
@@ -2435,8 +2434,7 @@ void apply_thread_plan(Graph &graph, PlanSnapshot const &plan, size_t &pos) {
         node.thread_width       = plan[pos].first;
         node.admission_priority = plan[pos].second;
         pos++;
-        for_each_child_graph(
-            node, [&](Graph &sub) { apply_thread_plan(sub, plan, pos); }, /*include_setup=*/false);
+        for_each_child_graph(node, [&](Graph &sub) { apply_thread_plan(sub, plan, pos); }, /*include_setup=*/false);
     }
 }
 
@@ -3920,8 +3918,8 @@ void Graph::execute(Executor &executor) {
         // returned std::string - this fired on every replay regardless of
         // profiler state.
         static profile::ZoneSite const site{"ComputeGraph::execute(executor)", __FILE__, __LINE__, __func__};
-        profile::ScopedZone const      _zone(site,
-                                             [&]() { return fmt::format("ComputeGraph::execute({}, executor={})", _name, executor.name()); });
+        profile::ScopedZone const _zone(site,
+                                        [&]() { return fmt::format("ComputeGraph::execute({}, executor={})", _name, executor.name()); });
         executor.execute(*this);
     }
     _executed = true;

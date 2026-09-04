@@ -270,17 +270,17 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
     /// what the Python surface exposes; this is the C++ convenience form.
     [[nodiscard]] MemoryPoolStats stats() const noexcept;
 
-    APIARY_EXPOSE APIARY_GETTER("bytes_reserved") [[nodiscard]] size_t bytes_reserved() const noexcept;
-    APIARY_EXPOSE APIARY_GETTER("bytes_used") [[nodiscard]] size_t bytes_used() const noexcept;
-    APIARY_EXPOSE APIARY_GETTER("high_water") [[nodiscard]] size_t high_water() const noexcept;
-    APIARY_EXPOSE APIARY_GETTER("live_borrows") [[nodiscard]] size_t live_borrows() const noexcept;
-    APIARY_EXPOSE APIARY_GETTER("arenas") [[nodiscard]] size_t arenas() const noexcept;
-    APIARY_EXPOSE APIARY_GETTER("epoch_depth") [[nodiscard]] size_t epoch_depth() const noexcept;
+    APIARY_EXPOSE APIARY_GETTER("bytes_reserved") [[nodiscard]] size_t   bytes_reserved() const noexcept;
+    APIARY_EXPOSE APIARY_GETTER("bytes_used") [[nodiscard]] size_t       bytes_used() const noexcept;
+    APIARY_EXPOSE APIARY_GETTER("high_water") [[nodiscard]] size_t       high_water() const noexcept;
+    APIARY_EXPOSE APIARY_GETTER("live_borrows") [[nodiscard]] size_t     live_borrows() const noexcept;
+    APIARY_EXPOSE APIARY_GETTER("arenas") [[nodiscard]] size_t           arenas() const noexcept;
+    APIARY_EXPOSE APIARY_GETTER("epoch_depth") [[nodiscard]] size_t      epoch_depth() const noexcept;
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string const &name() const noexcept;
 
     /// Usage threshold that logs a one-shot warning when crossed; zero disables it.
     APIARY_EXPOSE APIARY_GETTER("warn_bytes") [[nodiscard]] size_t warn_bytes() const noexcept;
-    APIARY_EXPOSE APIARY_SETTER("warn_bytes") void set_warn_bytes(size_t bytes) noexcept;
+    APIARY_EXPOSE APIARY_SETTER("warn_bytes") void                 set_warn_bytes(size_t bytes) noexcept;
 
     /**
      * @brief Place a runtime-rank tensor of type @p TensorT on this pool.

@@ -38,7 +38,7 @@ void PerfCounterBackend::open_thread_counters() {
         return;
 
     // perf event types for our 4 slots
-    static const uint32_t event_types[kNumCounterSlots] = {
+    static uint32_t const event_types[kNumCounterSlots] = {
         PERF_COUNT_HW_CPU_CYCLES,
         PERF_COUNT_HW_INSTRUCTIONS,
         PERF_COUNT_HW_CACHE_MISSES,
@@ -47,7 +47,7 @@ void PerfCounterBackend::open_thread_counters() {
 
     int group_fd = -1;
     for (int i = 0; i < kNumCounterSlots; ++i) {
-        struct perf_event_attr pe {};
+        struct perf_event_attr pe{};
         pe.type           = PERF_TYPE_HARDWARE;
         pe.size           = sizeof(pe);
         pe.config         = event_types[i];
@@ -106,7 +106,7 @@ void PerfCounterBackend::read(std::array<uint64_t, kNumCounterSlots> &values) {
 }
 
 auto PerfCounterBackend::slot_name(int slot) const -> std::string {
-    static const std::array<std::string, kNumCounterSlots> names = {{"cycles", "instructions", "cache-misses", "branch-misses"}};
+    static std::array<std::string, kNumCounterSlots> const names = {{"cycles", "instructions", "cache-misses", "branch-misses"}};
     return names[slot];
 }
 

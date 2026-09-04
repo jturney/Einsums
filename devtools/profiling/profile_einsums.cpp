@@ -100,7 +100,7 @@ void register_args() {
     einsums::cl::register_option(option::Csv);
 }
 
-int         main(int argc, char **argv) {
+int main(int argc, char **argv) {
 #pragma omp parallel
     {
 #pragma omp single

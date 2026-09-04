@@ -471,8 +471,8 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // operand occupied.
         TensorId const a_operand = shared_first ? shared_id : l_id;
         TensorId const b_operand = shared_first ? l_id : shared_id;
-        Node           fused     = graph.make_einsum_node(a_operand, b_operand, out_id, einspec, c_pf0, ab0, /*conj_a=*/false,
-                                                          /*conj_b=*/false, fmt::format("lccf({} terms via _lccf_L_{})", members.size(), _num_groups));
+        Node fused = graph.make_einsum_node(a_operand, b_operand, out_id, einspec, c_pf0, ab0, /*conj_a=*/false,
+                                            /*conj_b=*/false, fmt::format("lccf({} terms via _lccf_L_{})", members.size(), _num_groups));
         // Keep node-0's id: state keyed by NodeId (profiler payload strings, the
         // program-order validator's observed-writes map) refers to it, and node-0 is
         // the node being replaced, so no duplicate arises.

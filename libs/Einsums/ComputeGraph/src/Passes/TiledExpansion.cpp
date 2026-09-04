@@ -1181,7 +1181,7 @@ bool TiledExpansion::run(Graph &graph) {
                 // dense buffer and accumulated into its tiles.
                 size_t const bytes = elem_size * (dM * dK + dK * dN + 2 * dM * dN);
                 plan.est_dense_us  = _cost_model.estimate_total_gemm_time_us(dM, dN, dK, elem_size, Target::CPU) +
-                                    _cost_model.estimate_memory_time_us(bytes, Target::CPU);
+                                     _cost_model.estimate_memory_time_us(bytes, Target::CPU);
             }
 
             // Pre-existing output tiles that received NO contribution are still scaled by

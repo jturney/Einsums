@@ -257,9 +257,8 @@ double measure_permute_rank4_gbps(size_t N, size_t warmup, size_t repeats) {
     auto A = create_random_tensor<double>("A", N, N, N, N);
     auto C = Tensor<double, 4>("C", N, N, N, N);
 
-    double const seconds = median_seconds(warmup, repeats, [&] {
-        tensor_algebra::permute(Indices{j, i, l, k}, &C, Indices{i, j, k, l}, A);
-    });
+    double const seconds =
+        median_seconds(warmup, repeats, [&] { tensor_algebra::permute(Indices{j, i, l, k}, &C, Indices{i, j, k, l}, A); });
 
     double const bytes = 2.0 * std::pow(static_cast<double>(N), 4.0) * sizeof(double);
     return bytes / (seconds * 1e9);

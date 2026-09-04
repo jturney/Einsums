@@ -65,7 +65,7 @@ TEST_CASE("Pipeline - loop with early exit", "[ComputeGraph][Pipeline]") {
                                                              /*condition=*/[&](size_t iter) -> bool {
                                                 actual_iterations = iter + 1;
                                                 return value(0) >= threshold; // continue if above threshold
-                                            });
+                                                             });
         cg::CaptureGuard const guard(loop_body);
         cg::scale(0.5, &value);
     }
@@ -89,7 +89,7 @@ TEST_CASE("Pipeline - loop hits max iterations", "[ComputeGraph][Pipeline]") {
                                                              /*max_iterations=*/10,
                                                              /*condition=*/[](size_t) -> bool {
                                                 return true; // never converge
-                                            });
+                                                             });
         cg::CaptureGuard const guard(loop_body);
         cg::scale(0.9, &value);
     }
@@ -124,7 +124,7 @@ TEST_CASE("Pipeline - setup + loop + postprocess", "[ComputeGraph][Pipeline]") {
                                                              /*condition=*/[&](size_t iter) -> bool {
                                                 loop_count = iter + 1;
                                                 return iter < 4; // run exactly 5 iterations (0..4)
-                                            });
+                                                             });
         cg::CaptureGuard const guard(loop_body);
         cg::axpy(1.0, C, &acc);
     }

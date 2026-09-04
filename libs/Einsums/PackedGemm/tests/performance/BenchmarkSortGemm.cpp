@@ -821,17 +821,11 @@ TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=8", "[packed-ge
     // --- Timing ---
     int reps = 10;
 
-    auto t_generic = time_us(
-        [&]() {
-            run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B);
-        },
-        reps);
+    auto t_generic =
+        time_us([&]() { run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B); }, reps);
 
-    auto t_packed = time_us(
-        [&]() {
-            run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B);
-        },
-        reps);
+    auto t_packed =
+        time_us([&]() { run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B); }, reps);
 
     auto t_sort_gemm = time_us(
         [&]() {
@@ -867,17 +861,11 @@ TEST_CASE("Sort+GEMM: rank-5 C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] N=16", "[packed-g
 
     int reps = 5;
 
-    auto t_generic = time_us(
-        [&]() {
-            run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B);
-        },
-        reps);
+    auto t_generic =
+        time_us([&]() { run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B); }, reps);
 
-    auto t_packed = time_us(
-        [&]() {
-            run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B);
-        },
-        reps);
+    auto t_packed =
+        time_us([&]() { run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B); }, reps);
 
     auto t_sort_gemm = time_us(
         [&]() {
@@ -942,17 +930,11 @@ TEST_CASE("Sort+GEMM: rank-5 rect C[i,j]+=A[i,k,l,m,n]*B[j,n,m,l,k] (32x32x16x8x
     // --- Timing ---
     int reps = 5;
 
-    auto t_generic = time_us(
-        [&]() {
-            run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B);
-        },
-        reps);
+    auto t_generic =
+        time_us([&]() { run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B); }, reps);
 
-    auto t_packed = time_us(
-        [&]() {
-            run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B);
-        },
-        reps);
+    auto t_packed =
+        time_us([&]() { run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n}, A, Indices{j, n, m, l, k}, B); }, reps);
 
     auto t_sort_gemm = time_us(
         [&]() {
@@ -1014,17 +996,11 @@ TEST_CASE("Sort+GEMM: rank-5 scrambled C[j,i]+=A[l,i,k,m,n]*B[n,j,m,l,k] N=8", "
     // --- Timing ---
     int reps = 10;
 
-    auto t_generic = time_us(
-        [&]() {
-            run_generic(0.0, Indices{j, i}, C, 1.0, Indices{l, i, k, m, n}, A, Indices{n, j, m, l, k}, B);
-        },
-        reps);
+    auto t_generic =
+        time_us([&]() { run_generic(0.0, Indices{j, i}, C, 1.0, Indices{l, i, k, m, n}, A, Indices{n, j, m, l, k}, B); }, reps);
 
-    auto t_packed = time_us(
-        [&]() {
-            run_packed_gemm(0.0, Indices{j, i}, C, 1.0, Indices{l, i, k, m, n}, A, Indices{n, j, m, l, k}, B);
-        },
-        reps);
+    auto t_packed =
+        time_us([&]() { run_packed_gemm(0.0, Indices{j, i}, C, 1.0, Indices{l, i, k, m, n}, A, Indices{n, j, m, l, k}, B); }, reps);
 
     // Sort + GEMM.
     Tensor<double, 5> A_s{"A_s", N, N, N, N, N}; // i, k, l, m, n
@@ -1102,17 +1078,11 @@ TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=6", "[packe
     // --- Timing ---
     int reps = 10;
 
-    auto t_generic = time_us(
-        [&]() {
-            run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-        },
-        reps);
+    auto t_generic =
+        time_us([&]() { run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B); }, reps);
 
-    auto t_packed = time_us(
-        [&]() {
-            run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-        },
-        reps);
+    auto t_packed =
+        time_us([&]() { run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B); }, reps);
 
     auto t_sort_gemm = time_us(
         [&]() {
@@ -1121,12 +1091,9 @@ TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=6", "[packe
         },
         reps);
 
-    auto alg      = run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-    auto t_einsum = time_us(
-        [&]() {
-            run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-        },
-        reps);
+    auto alg = run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
+    auto t_einsum =
+        time_us([&]() { run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B); }, reps);
 
     report_paths("Rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k]", N, t_generic, t_packed, t_sort_gemm, t_einsum);
     REQUIRE(t_packed.avg > 0.0);
@@ -1152,17 +1119,11 @@ TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=8", "[packe
 
     int reps = 5;
 
-    auto t_generic = time_us(
-        [&]() {
-            run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-        },
-        reps);
+    auto t_generic =
+        time_us([&]() { run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B); }, reps);
 
-    auto t_packed = time_us(
-        [&]() {
-            run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-        },
-        reps);
+    auto t_packed =
+        time_us([&]() { run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B); }, reps);
 
     auto t_sort_gemm = time_us(
         [&]() {
@@ -1171,12 +1132,9 @@ TEST_CASE("Sort+GEMM: rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] N=8", "[packe
         },
         reps);
 
-    auto alg      = run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-    auto t_einsum = time_us(
-        [&]() {
-            run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-        },
-        reps);
+    auto alg = run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
+    auto t_einsum =
+        time_us([&]() { run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B); }, reps);
 
     report_paths("Rank-6 C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k]", N, t_generic, t_packed, t_sort_gemm, t_einsum);
     REQUIRE(t_packed.avg > 0.0);
@@ -1222,17 +1180,11 @@ TEST_CASE("Sort+GEMM: rank-6 rect C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] (16x16x8
     // --- Timing ---
     int reps = 5;
 
-    auto t_generic = time_us(
-        [&]() {
-            run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-        },
-        reps);
+    auto t_generic =
+        time_us([&]() { run_generic(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B); }, reps);
 
-    auto t_packed = time_us(
-        [&]() {
-            run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-        },
-        reps);
+    auto t_packed =
+        time_us([&]() { run_packed_gemm(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B); }, reps);
 
     // Sort + GEMM.
     Tensor<double, 6> B_s{"B_s", Nj, Nk, Nl, Nm, Nn, No};
@@ -1243,12 +1195,9 @@ TEST_CASE("Sort+GEMM: rank-6 rect C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] (16x16x8
         },
         reps);
 
-    auto alg      = run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-    auto t_einsum = time_us(
-        [&]() {
-            run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
-        },
-        reps);
+    auto alg = run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B);
+    auto t_einsum =
+        time_us([&]() { run_einsum(0.0, Indices{i, j}, C, 1.0, Indices{i, k, l, m, n, o}, A, Indices{j, o, n, m, l, k}, B); }, reps);
 
     report_paths("Rank-6 rect C[i,j]+=A[i,k,l,m,n,o]*B[j,o,n,m,l,k] (16x16x8x8x4x4x4)", 0, t_generic, t_packed, t_sort_gemm, t_einsum);
     REQUIRE(t_packed.avg > 0.0);

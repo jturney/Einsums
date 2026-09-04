@@ -15,7 +15,7 @@ concept Scalar = requires(T a) {
     T{0};
     T{1};
     a + a;
-    a *a;
+    a * a;
 };
 
 EINSUMS_NAMESPACE_END()

@@ -62,18 +62,11 @@ EINSUMS_TEST_CASE("Bench SmallElementwise: per-call floor", "[LinearAlgebra][Sma
         auto X = create_random_tensor<double>(std::string("X"), n);
         auto Y = create_random_tensor<double>(std::string("Y"), n);
 
-        row("axpy", n,
-            time_us(
-                "axpy", [&]() { linear_algebra::axpy(1.5, X, &Y); }, kReps));
-        row("scale", n,
-            time_us(
-                "scale", [&]() { linear_algebra::scale(0.99, &Y); }, kReps));
-        row("direct_division", n,
-            time_us(
-                "div", [&]() { linear_algebra::direct_division(1.0, X, X, 0.0, &Y); }, kReps));
+        row("axpy", n, time_us("axpy", [&]() { linear_algebra::axpy(1.5, X, &Y); }, kReps));
+        row("scale", n, time_us("scale", [&]() { linear_algebra::scale(0.99, &Y); }, kReps));
+        row("direct_division", n, time_us("div", [&]() { linear_algebra::direct_division(1.0, X, X, 0.0, &Y); }, kReps));
         row("element_transform", n,
-            time_us(
-                "et", [&]() { tensor_algebra::element_transform(&Y, [](double v) { return v * 0.5; }); }, kReps));
+            time_us("et", [&]() { tensor_algebra::element_transform(&Y, [](double v) { return v * 0.5; }); }, kReps));
     }
 
     // Permute is the other elementwise-family entry point, and it is the one a
@@ -81,13 +74,7 @@ EINSUMS_TEST_CASE("Bench SmallElementwise: per-call floor", "[LinearAlgebra][Sma
     for (size_t n : {8UL, 24UL, 64UL}) {
         auto A = create_random_tensor<double>(std::string("A"), n, n);
         auto B = create_zero_tensor<double>(std::string("B"), n, n);
-        row("permute ji<-ij", n * n,
-            time_us(
-                "permute",
-                [&]() {
-                    tensor_algebra::permute(Indices{j, i}, &B, Indices{i, j}, A);
-                },
-                kReps));
+        row("permute ji<-ij", n * n, time_us("permute", [&]() { tensor_algebra::permute(Indices{j, i}, &B, Indices{i, j}, A); }, kReps));
     }
 
     // Tensor-level elementwise operators, which reach the TensorImpl kernels
@@ -95,11 +82,7 @@ EINSUMS_TEST_CASE("Bench SmallElementwise: per-call floor", "[LinearAlgebra][Sma
     for (size_t n : {64UL, 4096UL}) {
         auto P = create_random_tensor<double>(std::string("P"), n);
         auto Q = create_random_tensor<double>(std::string("Q"), n);
-        row("tensor A *= B", n,
-            time_us(
-                "mult", [&]() { Q *= P; }, kReps));
-        row("tensor A /= B", n,
-            time_us(
-                "div", [&]() { Q /= P; }, kReps));
+        row("tensor A *= B", n, time_us("mult", [&]() { Q *= P; }, kReps));
+        row("tensor A /= B", n, time_us("div", [&]() { Q /= P; }, kReps));
     }
 }

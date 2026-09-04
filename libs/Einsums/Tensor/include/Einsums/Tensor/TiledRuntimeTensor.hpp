@@ -208,7 +208,7 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     [[nodiscard]] bool full_view_of_underlying() const noexcept { return true; }
 
     [[nodiscard]] APIARY_GETTER("name") std::string const &name() const noexcept { return _name; }
-    APIARY_SETTER("name") void set_name(std::string const &new_name) { _name = new_name; }
+    APIARY_SETTER("name") void                             set_name(std::string const &new_name) { _name = new_name; }
 
     [[nodiscard]] bool is_row_major() const noexcept { return _row_major; }
 

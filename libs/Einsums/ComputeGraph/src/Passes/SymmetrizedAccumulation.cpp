@@ -268,8 +268,8 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
             // A plain `r2 += something_else` between the halves is the
             // commuting accumulation it looks like, so read its beta rather
             // than treating every intervening write as interference.
-            PrefactorScalar const *beta           = axpby_beta(nodes[i]);
-            bool                   additive_accum = beta != nullptr && is_one(*beta) && nodes[i].inputs.size() == 2 &&
+            PrefactorScalar const *beta = axpby_beta(nodes[i]);
+            bool additive_accum = beta != nullptr && is_one(*beta) && nodes[i].inputs.size() == 2 &&
                                   graph.resolve_alias(nodes[i].inputs[0]) != r2_owner && touches_owner(nodes[i].outputs, r2_owner) &&
                                   touches_owner(nodes[i].inputs, r2_owner);
             if (!additive_accum && nodes[i].kind == OpKind::Einsum) {

@@ -143,8 +143,8 @@ uint64_t DistributedTensorFile::compute_distributed_offset(size_t local_bytes) {
     MPI_Allreduce(&aligned_bytes, &total_bytes, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
     next_data_offset_ = align_up(next_data_offset_, ETN_DATA_ALIGNMENT) + total_bytes;
 #else
-    my_offset                  = align_up(_next_data_offset, ETN_DATA_ALIGNMENT);
-    _next_data_offset          = my_offset + aligned_bytes;
+    my_offset         = align_up(_next_data_offset, ETN_DATA_ALIGNMENT);
+    _next_data_offset = my_offset + aligned_bytes;
 #endif
 
     return my_offset;

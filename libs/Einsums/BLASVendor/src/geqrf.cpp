@@ -26,7 +26,7 @@ extern void FC_GLOBAL(zgeqrf, ZGEQRF)(int_t *, int_t *, std::complex<double> *, 
 }
 
 #define GEQRF(Type, lc, uc)                                                                                                                \
-    auto lc##geqrf(int_t m, int_t n, Type *a, int_t lda, Type *tau)->int_t {                                                               \
+    auto lc##geqrf(int_t m, int_t n, Type *a, int_t lda, Type *tau) -> int_t {                                                             \
         LabeledSection0();                                                                                                                 \
                                                                                                                                            \
         int_t info{0};                                                                                                                     \
@@ -50,7 +50,7 @@ extern void FC_GLOBAL(zgeqrf, ZGEQRF)(int_t *, int_t *, std::complex<double> *, 
     } /**/
 
 #define GEQRF_complex(Type, lc, uc)                                                                                                        \
-    auto lc##geqrf(int_t m, int_t n, Type *a, int_t lda, Type *tau)->int_t {                                                               \
+    auto lc##geqrf(int_t m, int_t n, Type *a, int_t lda, Type *tau) -> int_t {                                                             \
         LabeledSection0();                                                                                                                 \
                                                                                                                                            \
         int_t info{0};                                                                                                                     \

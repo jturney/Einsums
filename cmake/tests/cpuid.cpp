@@ -22,7 +22,7 @@ struct registers_t {
 };
 
 #if defined __GNUC__
-void        __cpuid(registers_t &CPUInfo, uint32_t InfoType) {
+void __cpuid(registers_t &CPUInfo, uint32_t InfoType) {
     __asm__ __volatile__("cpuid" : "=a"(CPUInfo.eax), "=b"(CPUInfo.ebx), "=c"(CPUInfo.ecx), "=d"(CPUInfo.edx) : "a"(InfoType));
 }
 
@@ -48,7 +48,7 @@ struct matcher {
                          {0x0000'0001U, &registers_t::ecx, 19, "sse4.1"},  {0x0000'0001U, &registers_t::ecx, 20, "sse4.2"},
                          {0x0000'0001U, &registers_t::ecx, 28, "avx"},     {0x8000'0001U, &registers_t::edx, 11, "xop"},
                          {0x8000'0001U, &registers_t::edx, 16, "fma4"}};
-const size_t noptions = sizeof options / sizeof options[0];
+size_t const noptions = sizeof options / sizeof options[0];
 
 int main(int argc, char **argv) {
     registers_t registers;

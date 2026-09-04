@@ -145,9 +145,8 @@ AlgorithmChoice einsum_generic_default(ValueTypeT<CType> const C_prefactor, std:
     constexpr auto B_indices = std::tuple<BIndices...>();
     constexpr auto C_indices = std::tuple<CIndices...>();
 
-    if constexpr (IsAlgebraTensorV<AType> && IsAlgebraTensorV<BType> &&
-                  (IsAlgebraTensorV<CType> || !IsTensorV<CType>)&&(!IsBasicTensorV<AType> || !IsBasicTensorV<BType> ||
-                                                                   (!IsBasicTensorV<CType> && IsTensorV<CType>))) {
+    if constexpr (IsAlgebraTensorV<AType> && IsAlgebraTensorV<BType> && (IsAlgebraTensorV<CType> || !IsTensorV<CType>) &&
+                  (!IsBasicTensorV<AType> || !IsBasicTensorV<BType> || (!IsBasicTensorV<CType> && IsTensorV<CType>))) {
         if constexpr (!DryRun) {
             einsum_special_dispatch<OnlyUseGenericAlgorithm, ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices,
                                                                            B);
@@ -1529,17 +1528,25 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
         if constexpr (!einsums::detail::IsBasicTensorV<AType> && !einsums::detail::IsBasicTensorV<BType>) {
             auto testA = Tensor<ADataType, ARank>(A);
             auto testB = Tensor<BDataType, BRank>(B);
-            { detail::einsum<true, false, ConjA, ConjB>(C_prefactor, C_indices, &testC, AB_prefactor, A_indices, testA, B_indices, testB); }
+            {
+                detail::einsum<true, false, ConjA, ConjB>(C_prefactor, C_indices, &testC, AB_prefactor, A_indices, testA, B_indices, testB);
+            }
         } else if constexpr (!einsums::detail::IsBasicTensorV<AType>) {
             auto testA = Tensor<ADataType, ARank>(A);
-            { detail::einsum<true, false, ConjA, ConjB>(C_prefactor, C_indices, &testC, AB_prefactor, A_indices, testA, B_indices, B); }
+            {
+                detail::einsum<true, false, ConjA, ConjB>(C_prefactor, C_indices, &testC, AB_prefactor, A_indices, testA, B_indices, B);
+            }
         } else if constexpr (!einsums::detail::IsBasicTensorV<BType>) {
             auto testB = Tensor<BDataType, BRank>(B);
-            { detail::einsum<true, false, ConjA, ConjB>(C_prefactor, C_indices, &testC, AB_prefactor, A_indices, A, B_indices, testB); }
+            {
+                detail::einsum<true, false, ConjA, ConjB>(C_prefactor, C_indices, &testC, AB_prefactor, A_indices, A, B_indices, testB);
+            }
         } else {
             // Perform the einsum using only the generic algorithm
             // #pragma omp task depend(in: A, B) depend(inout: testC)
-            { detail::einsum<true, false, ConjA, ConjB>(C_prefactor, C_indices, &testC, AB_prefactor, A_indices, A, B_indices, B); }
+            {
+                detail::einsum<true, false, ConjA, ConjB>(C_prefactor, C_indices, &testC, AB_prefactor, A_indices, A, B_indices, B);
+            }
             // #pragma omp taskwait depend(in: testC)
         }
     }

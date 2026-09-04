@@ -106,10 +106,11 @@ std::unique_ptr<TensorT> new_pooled(MemoryPool &pool, std::string name, std::vec
  */
 template <typename T, typename Alloc = std::allocator<T>>
 APIARY_EXPOSE APIARY_INSTANTIATE_AS("pool_empty", float, std::allocator<float>)
-    APIARY_INSTANTIATE_AS("pool_empty", double, std::allocator<double>) APIARY_INSTANTIATE_AS("pool_empty", std::complex<float>,
-                                                                                              std::allocator<std::complex<float>>)
-        APIARY_INSTANTIATE_AS("pool_empty", std::complex<double>, std::allocator<std::complex<double>>)
-            std::unique_ptr<GeneralRuntimeTensor<T, Alloc>> pool_new_empty(MemoryPool &pool, std::string name, std::vector<size_t> dims) {
+APIARY_INSTANTIATE_AS("pool_empty", double, std::allocator<double>)
+APIARY_INSTANTIATE_AS("pool_empty", std::complex<float>, std::allocator<std::complex<float>>)
+APIARY_INSTANTIATE_AS("pool_empty", std::complex<double>,
+                      std::allocator<std::complex<double>>) std::unique_ptr<GeneralRuntimeTensor<T, Alloc>>
+pool_new_empty(MemoryPool &pool, std::string name, std::vector<size_t> dims) {
     return detail::new_pooled<GeneralRuntimeTensor<T, Alloc>>(pool, std::move(name), dims, /*zero=*/false);
 }
 
@@ -120,10 +121,11 @@ APIARY_EXPOSE APIARY_INSTANTIATE_AS("pool_empty", float, std::allocator<float>)
  */
 template <typename T, typename Alloc = std::allocator<T>>
 APIARY_EXPOSE APIARY_INSTANTIATE_AS("pool_zeros", float, std::allocator<float>)
-    APIARY_INSTANTIATE_AS("pool_zeros", double, std::allocator<double>) APIARY_INSTANTIATE_AS("pool_zeros", std::complex<float>,
-                                                                                              std::allocator<std::complex<float>>)
-        APIARY_INSTANTIATE_AS("pool_zeros", std::complex<double>, std::allocator<std::complex<double>>)
-            std::unique_ptr<GeneralRuntimeTensor<T, Alloc>> pool_new_zeros(MemoryPool &pool, std::string name, std::vector<size_t> dims) {
+APIARY_INSTANTIATE_AS("pool_zeros", double, std::allocator<double>)
+APIARY_INSTANTIATE_AS("pool_zeros", std::complex<float>, std::allocator<std::complex<float>>)
+APIARY_INSTANTIATE_AS("pool_zeros", std::complex<double>,
+                      std::allocator<std::complex<double>>) std::unique_ptr<GeneralRuntimeTensor<T, Alloc>>
+pool_new_zeros(MemoryPool &pool, std::string name, std::vector<size_t> dims) {
     return detail::new_pooled<GeneralRuntimeTensor<T, Alloc>>(pool, std::move(name), dims, /*zero=*/true);
 }
 

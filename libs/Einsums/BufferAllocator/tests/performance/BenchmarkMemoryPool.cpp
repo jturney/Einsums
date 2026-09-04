@@ -147,8 +147,7 @@ void run_regime(size_t count, size_t bytes, bool do_touch) {
     report(kSystemLabel, count, bytes, fill(count, bytes, system_alloc, system_free, do_touch));
 
     report("mimalloc (default heap)", count, bytes,
-           fill(
-               count, bytes, [](size_t n) { return memory::aligned_alloc(n); }, [](void *p) { memory::aligned_free(p); }, do_touch));
+           fill(count, bytes, [](size_t n) { return memory::aligned_alloc(n); }, [](void *p) { memory::aligned_free(p); }, do_touch));
 
     {
         // Reserved for the whole fill up front, which is how a caller with a

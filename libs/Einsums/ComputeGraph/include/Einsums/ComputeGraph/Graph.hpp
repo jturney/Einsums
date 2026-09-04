@@ -550,8 +550,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::TiledRuntimeTensor<double>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
-        // clang-format on
-        void annotate_spaces(TensorType const &tensor, std::vector<SpaceId> spaces) {
+    // clang-format on
+    void annotate_spaces(TensorType const &tensor, std::vector<SpaceId> spaces) {
         annotate_spaces(register_operand(tensor), std::move(spaces));
     }
 
@@ -590,8 +590,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::TiledRuntimeTensor<double>)
     APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
-        // clang-format on
-        [[nodiscard]] std::vector<SpaceId> const &tensor_spaces(TensorType const &tensor) const {
+    // clang-format on
+    [[nodiscard]] std::vector<SpaceId> const &tensor_spaces(TensorType const &tensor) const {
         return tensor_spaces(registered_id_or_throw(tensor, "index spaces"));
     }
 
@@ -644,8 +644,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::TiledRuntimeTensor<double>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
-        // clang-format on
-        void annotate_tag(TensorType const &tensor, ProvenanceTag tag) {
+    // clang-format on
+    void annotate_tag(TensorType const &tensor, ProvenanceTag tag) {
         annotate_tag(register_operand(tensor), std::move(tag));
     }
 
@@ -684,8 +684,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::TiledRuntimeTensor<double>)
     APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
-        // clang-format on
-        [[nodiscard]] ProvenanceTag const &tensor_tag(TensorType const &tensor) const {
+    // clang-format on
+    [[nodiscard]] ProvenanceTag const &tensor_tag(TensorType const &tensor) const {
         return tensor_tag(registered_id_or_throw(tensor, "provenance tag"));
     }
 
@@ -814,8 +814,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::TiledRuntimeTensor<double>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
-        // clang-format on
-        void annotate_dims(TensorType const &tensor, std::vector<std::string> symbols) {
+    // clang-format on
+    void annotate_dims(TensorType const &tensor, std::vector<std::string> symbols) {
         annotate_dims(register_operand(tensor), std::move(symbols));
     }
 
@@ -868,8 +868,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::TiledRuntimeTensor<double>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
-        // clang-format on
-        void annotate_ragged_dim(TensorType const &tensor, std::size_t axis, std::string_view space_name) {
+    // clang-format on
+    void annotate_ragged_dim(TensorType const &tensor, std::size_t axis, std::string_view space_name) {
         annotate_ragged_dim(register_operand(tensor), axis, space_name);
     }
 
@@ -908,8 +908,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::TiledRuntimeTensor<double>)
     APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
-        // clang-format on
-        [[nodiscard]] std::vector<std::string> const &tensor_dim_symbols(TensorType const &tensor) const {
+    // clang-format on
+    [[nodiscard]] std::vector<std::string> const &tensor_dim_symbols(TensorType const &tensor) const {
         return tensor_dim_symbols(registered_id_or_throw(tensor, "dim symbols"));
     }
 
@@ -2377,11 +2377,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = float, Alloc = std::allocator<float>)
-        APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = double, Alloc = std::allocator<double>)
-            APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
-                    GeneralRuntimeTensor<T, Alloc> &create_runtime_tensor(std::string name, std::vector<size_t> dims,
-                                                                          bool intermediate = true) {
+    APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<double>,
+                                 Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
+    create_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = true) {
         using TensorType = GeneralRuntimeTensor<T, Alloc>;
         auto *ptr        = own_tensor<TensorType>(name, std::move(dims));
 
@@ -2401,11 +2401,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Runtime-rank analog of create_zero_tensor().
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = float, Alloc = std::allocator<float>)
-        APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = double, Alloc = std::allocator<double>)
-            APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
-                    GeneralRuntimeTensor<T, Alloc> &create_zero_runtime_tensor(std::string name, std::vector<size_t> dims,
-                                                                               bool intermediate = true) {
+    APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<double>,
+                                 Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
+    create_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = true) {
         auto &t = create_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);
         t.zero();
         return t;
@@ -2477,9 +2477,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor_over", T = double, Alloc = std::allocator<double>)
     APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor_over", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor_over", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
-        // clang-format on
-        GeneralRuntimeTensor<T, Alloc> &create_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
-                                                                   bool intermediate = true) {
+    // clang-format on
+    GeneralRuntimeTensor<T, Alloc> &create_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
+                                                               bool intermediate = true) {
         auto  resolved = resolve_space_shape(shape, name, /*need_symbols=*/false);
         auto &t        = create_zero_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
         resolved.symbols.clear();
@@ -2501,11 +2501,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = float, Alloc = std::allocator<float>)
-        APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = double, Alloc = std::allocator<double>)
-            APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
-                    GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<size_t> dims,
-                                                                           bool intermediate = false) {
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<double>,
+                                 Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
+    declare_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = false) {
         using TensorType = GeneralRuntimeTensor<T, Alloc>;
         auto *ptr        = own_tensor<TensorType>(typename TensorType::DeferredAlloc{}, name, std::move(dims));
 
@@ -2601,9 +2601,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor_over", T = double, Alloc = std::allocator<double>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor_over", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor_over", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
-        // clang-format on
-        GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
-                                                                    bool intermediate = false) {
+    // clang-format on
+    GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
+                                                                bool intermediate = false) {
         auto const resolved = resolve_space_shape(shape, name);
         auto      &t        = declare_zero_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
         apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
@@ -2628,9 +2628,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("declare_tensor_over", T = double, Alloc = std::allocator<double>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_tensor_over", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_tensor_over", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
-        // clang-format on
-        GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
-                                                               bool intermediate = false) {
+    // clang-format on
+    GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
+                                                           bool intermediate = false) {
         auto const resolved = resolve_space_shape(shape, name);
         auto      &t        = declare_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
         apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
@@ -2641,11 +2641,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// at materialize time).
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = float, Alloc = std::allocator<float>)
-        APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = double, Alloc = std::allocator<double>)
-            APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
-                    GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims,
-                                                                                bool intermediate = false) {
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<double>,
+                                 Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
+    declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = false) {
         auto &t = declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);
         if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
             handle->init_kind = InitKind::Zero;
@@ -2705,11 +2705,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// iteration are zeroed, not kept).
     template <typename T>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = float)
-        APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = double)
-            APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = std::complex<float>)
-                APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = std::complex<double>)
-                    TiledRuntimeTensor<T> &declare_zero_tiled_tensor(std::string name, std::vector<std::vector<int>> tile_sizes,
-                                                                     bool intermediate = false) {
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = double)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = std::complex<float>)
+    APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = std::complex<double>) TiledRuntimeTensor<T> &
+    declare_zero_tiled_tensor(std::string name, std::vector<std::vector<int>> tile_sizes, bool intermediate = false) {
         using TensorType = TiledRuntimeTensor<T>;
         auto *ptr        = own_tensor<TensorType>(std::move(name), std::move(tile_sizes));
 
@@ -2770,9 +2769,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor_over", T = double)
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor_over", T = std::complex<float>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor_over", T = std::complex<double>)
-        // clang-format on
-        TiledRuntimeTensor<T> &declare_zero_tiled_tensor(std::string name, std::vector<SpaceTiling> const &shape,
-                                                         bool intermediate = false) {
+    // clang-format on
+    TiledRuntimeTensor<T> &declare_zero_tiled_tensor(std::string name, std::vector<SpaceTiling> const &shape, bool intermediate = false) {
         auto const         resolved = resolve_tiled_shape(shape, name);
         auto              &t        = declare_zero_tiled_tensor<T>(std::move(name), resolved.tile_sizes, intermediate);
         ResolvedSpaceShape carried;
@@ -2890,20 +2888,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Runtime-rank scratch (see scratch(); pybind-facing analog).
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("scratch", T = float, Alloc = std::allocator<float>)
-        APIARY_INSTANTIATE_MEMBER_AS("scratch", T = double, Alloc = std::allocator<double>)
-            APIARY_INSTANTIATE_MEMBER_AS("scratch", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                APIARY_INSTANTIATE_MEMBER_AS("scratch", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
-                    GeneralRuntimeTensor<T, Alloc> &scratch_runtime(std::string name, std::vector<size_t> dims) {
+    APIARY_INSTANTIATE_MEMBER_AS("scratch", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("scratch", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("scratch", T = std::complex<double>,
+                                 Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc>                                                                            &
+    scratch_runtime(std::string name, std::vector<size_t> dims) {
         return declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), /*intermediate=*/true);
     }
 
     /// Runtime-rank zero-initialized scratch.
     template <typename T, typename Alloc = std::allocator<T>>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = float, Alloc = std::allocator<float>)
-        APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = double, Alloc = std::allocator<double>)
-            APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
-                APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
-                    GeneralRuntimeTensor<T, Alloc> &scratch_zero_runtime(std::string name, std::vector<size_t> dims) {
+    APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = double, Alloc = std::allocator<double>)
+    APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
+    APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = std::complex<double>,
+                                 Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
+    scratch_zero_runtime(std::string name, std::vector<size_t> dims) {
         return declare_zero_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), /*intermediate=*/true);
     }
 
@@ -3652,8 +3652,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::RuntimeTensorView<double>)
     APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
-        // clang-format on
-        void bind_add(std::string const &name, TensorType &tensor) {
+    // clang-format on
+    void bind_add(std::string const &name, TensorType &tensor) {
         _pending_binds.push_back(make_pending_bind(name, tensor));
     }
 
@@ -3693,8 +3693,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("bind", TensorType = einsums::RuntimeTensorView<double>)
     APIARY_INSTANTIATE_MEMBER_AS("bind", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("bind", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
-        // clang-format on
-        void bind_slot(std::string const &name, TensorType &tensor) {
+    // clang-format on
+    void bind_slot(std::string const &name, TensorType &tensor) {
         bind(name, tensor);
     }
 
@@ -4376,7 +4376,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                            .collect = [this, name, &tensor](InterfaceManifest const &contract,
                                                             DimSolution &solution) { bind_collect_one(contract, solution, name, tensor); },
                            .apply   = [this, name, &tensor](InterfaceManifest const &contract,
-                                                          DimSolution const &solution) { bind_one(contract, solution, name, tensor); }};
+                                                            DimSolution const &solution) { bind_one(contract, solution, name, tensor); }};
     }
 
     /// Walk a @ref bind pack once, turning each ``(name, tensor)`` pair into a @ref PendingBind.

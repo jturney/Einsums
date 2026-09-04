@@ -721,7 +721,7 @@ bool StreamContractionFusion::run(Graph &graph) {
         Graph *graph_ptr = &graph;
         auto   fused_fn  = [graph_ptr, s_id, members, unique_outs, dtype, allowed_axes]() {
             detail::dispatch_scalar_type(dtype,
-                                            [&](auto tag) { run_stream<decltype(tag)>(graph_ptr, s_id, members, unique_outs, allowed_axes); });
+                                         [&](auto tag) { run_stream<decltype(tag)>(graph_ptr, s_id, members, unique_outs, allowed_axes); });
         };
 
         Node fused;

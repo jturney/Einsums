@@ -92,7 +92,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         return _num_tensors_privatized;
     }
     APIARY_EXPOSE APIARY_GETTER("num_copies_created") [[nodiscard]] size_t num_copies_created() const { return _num_copies_created; }
-    APIARY_EXPOSE APIARY_GETTER("num_nodes_rebuilt") [[nodiscard]] size_t num_nodes_rebuilt() const { return _num_nodes_rebuilt; }
+    APIARY_EXPOSE APIARY_GETTER("num_nodes_rebuilt") [[nodiscard]] size_t  num_nodes_rebuilt() const { return _num_nodes_rebuilt; }
 
   private:
     /// Innermost-first: privatize inside nested bodies/branches before this level.

@@ -36,13 +36,9 @@ EINSUMS_NAMESPACE_END(index)
     struct x : public LabelBase {                                                                                                          \
         static constexpr const char *letter = #x;                                                                                          \
         constexpr x()                       = default;                                                                                     \
-        size_t operator()(std::va_list args) const {                                                                                       \
-            return va_arg(args, size_t);                                                                                                   \
-        }                                                                                                                                  \
+        size_t operator()(std::va_list args) const { return va_arg(args, size_t); }                                                        \
                                                                                                                                            \
-        size_t operator()(size_t index) const {                                                                                            \
-            return index;                                                                                                                  \
-        }                                                                                                                                  \
+        size_t operator()(size_t index) const { return index; }                                                                            \
                                                                                                                                            \
         template <typename T, typename Alloc>                                                                                              \
         size_t operator()(std::vector<T, Alloc> *args) const {                                                                             \
@@ -200,7 +196,7 @@ struct Indices : std::tuple<Args...> {
     /**
      * Construct a new Indices object using the given indices.
      */
-    Indices(Args... args) : std::tuple<Args...>(args...){};
+    Indices(Args... args) : std::tuple<Args...>(args...) {};
 };
 
 EINSUMS_NAMESPACE_END()

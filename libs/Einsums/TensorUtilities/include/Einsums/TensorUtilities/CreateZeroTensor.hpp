@@ -80,10 +80,8 @@ auto create_zero_tensor(RowMajor row_major, std::string const &name, MultiIndex.
  */
 template <typename T = double>
 APIARY_EXPOSE APIARY_INSTANTIATE_AS("create_zero_tensor", double) APIARY_INSTANTIATE_AS("create_zero_tensor", float)
-    APIARY_INSTANTIATE_AS("create_zero_tensor", std::complex<double>)
-        APIARY_INSTANTIATE_AS("create_zero_tensor", std::complex<float>) auto create_zero_tensor(std::string const         &name,
-                                                                                                 std::vector<size_t> const &dims)
-            -> RuntimeTensor<T> {
+APIARY_INSTANTIATE_AS("create_zero_tensor", std::complex<double>) APIARY_INSTANTIATE_AS("create_zero_tensor", std::complex<float>) auto
+create_zero_tensor(std::string const &name, std::vector<size_t> const &dims) -> RuntimeTensor<T> {
     EINSUMS_LOG_TRACE("creating zero runtime tensor {} (rank {})", name, dims.size());
     RuntimeTensor<T> A(name, dims);
     return A;

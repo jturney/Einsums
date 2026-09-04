@@ -713,9 +713,8 @@ EINSUMS_TEST_CASE("Benchmark: scalar output s+=A[i,j]*B[i,j] N=128", "[mlir][ben
                                                                            B);
     });
 
-    auto t_einsum = time_us("einsum", [&]() {
-        einsums::tensor_algebra::einsum(0.0, Indices{}, &result, 1.0, Indices{i, j}, A, Indices{i, j}, B);
-    });
+    auto t_einsum =
+        time_us("einsum", [&]() { einsums::tensor_algebra::einsum(0.0, Indices{}, &result, 1.0, Indices{i, j}, A, Indices{i, j}, B); });
 
     publish_benchmark_result("generic-Scalar s+=A[i,j]*B[i,j]", "t_generic", N, t_generic);
     publish_benchmark_result("einsum-Scalar s+=A[i,j]*B[i,j]", "t_einsum", N, t_einsum);
@@ -759,9 +758,8 @@ EINSUMS_TEST_CASE("Benchmark: scalar output s+=A[i,j,k]*B[i,j,k] N=32", "[mlir][
                                                                            Indices{i, j, k}, B);
     });
 
-    auto t_einsum = time_us("einsum", [&]() {
-        einsums::tensor_algebra::einsum(0.0, Indices{}, &result, 1.0, Indices{i, j, k}, A, Indices{i, j, k}, B);
-    });
+    auto t_einsum = time_us(
+        "einsum", [&]() { einsums::tensor_algebra::einsum(0.0, Indices{}, &result, 1.0, Indices{i, j, k}, A, Indices{i, j, k}, B); });
 
     publish_benchmark_result("generic-Scalar s+=A[i,j,k]*B[i,j,k]", "t_generic", N, t_generic);
     publish_benchmark_result("einsum-Scalar s+=A[i,j,k]*B[i,j,k]", "t_einsum", N, t_einsum);

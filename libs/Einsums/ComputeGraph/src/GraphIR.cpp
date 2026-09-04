@@ -1378,7 +1378,7 @@ IrTensor read_tensor(Value const &value, std::string const &path, Problems &prob
     out.id          = static_cast<std::size_t>(std::max<std::int64_t>(id, 0));
     out.name        = read_string(*object, "name", path, problems, value.position);
     out.dtype       = read_named<packed_gemm::ScalarType>(*object, "dtype", path, problems, value.position, scalar_type_from_name, "dtype",
-                                                    packed_gemm::ScalarType::Float64);
+                                                          packed_gemm::ScalarType::Float64);
     out.rank        = static_cast<std::size_t>(std::max<std::int64_t>(read_int(*object, "rank", path, problems, value.position), 0));
     out.dims        = read_extent_array(*object, "dims", path, problems, value.position);
     out.dim_symbols = read_string_array(*object, "dim_symbols", path, problems, value.position);
@@ -1400,7 +1400,7 @@ IrTensor read_tensor(Value const &value, std::string const &path, Problems &prob
     } else {
         out.intermediate = read_bool(*object, "intermediate", path, problems, value.position);
         out.init         = read_named<InitKind>(*object, "init", path, problems, value.position, init_kind_from_name, "initialization kind",
-                                        InitKind::None);
+                                                InitKind::None);
         // Optional: a file written before this key existed means Materialized, which is what
         // its graph's intermediates were.
         out.alloc = read_named_optional<AllocState>(*object, "alloc", path, problems, alloc_state_from_name, "allocation state",
@@ -1717,7 +1717,7 @@ IrNode read_node(Value const &value, std::string const &path, Problems &problems
     out.inputs  = ids("inputs");
     out.outputs = ids("outputs");
     out.dtype   = read_named<packed_gemm::ScalarType>(*object, "dtype", path, problems, value.position, scalar_type_from_name, "dtype",
-                                                    packed_gemm::ScalarType::Unknown);
+                                                      packed_gemm::ScalarType::Unknown);
     out.rank    = static_cast<std::size_t>(std::max<std::int64_t>(read_int(*object, "rank", path, problems, value.position), 0));
 
     if (Value const *descriptor = field(*object, "descriptor", path, problems, value.position); descriptor != nullptr) {
@@ -1942,7 +1942,7 @@ IrDocument read_document(Value const &root, Problems &problems, SpaceRegistry co
                 // and reading it as evidence would promote a guess by nothing more than a
                 // newer build having opened it.
                 record.origin  = read_named_optional<ApproximationOrigin>(*entry, "origin", path, problems, approximation_origin_from_name,
-                                                                         "approximation origin", ApproximationOrigin::Asserted);
+                                                                          "approximation origin", ApproximationOrigin::Asserted);
                 record.outputs = read_string_array(*entry, "outputs", path, problems, (*items)[i].position);
                 record.spaces  = read_string_array(*entry, "spaces", path, problems, (*items)[i].position);
                 record.setup   = read_string(*entry, "setup", path, problems, (*items)[i].position);

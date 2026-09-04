@@ -166,7 +166,7 @@ TEST_CASE("TaskPool - parallel_reduce accumulator slots are disjoint", "[TaskPoo
                 w.shared = true;
             }
             // Keep the chunk from finishing instantly.
-            volatile double sink = 0.0;
+            double volatile sink = 0.0;
             for (int r = 0; r < 40; r++) {
                 sink += static_cast<double>(i) * 0.5;
             }
@@ -182,8 +182,7 @@ TEST_CASE("TaskPool - dataflow void input", "[TaskPool]") {
     std::atomic<int> step{0};
 
     auto a = pool.submit("step1", [&step]() { step.store(1); });
-    auto b = pool.dataflow(
-        "step2", [&step]() { step.store(2); }, a);
+    auto b = pool.dataflow("step2", [&step]() { step.store(2); }, a);
 
     b.wait();
     REQUIRE(step.load() == 2);
@@ -245,8 +244,7 @@ TEST_CASE("TaskPool - typed dataflow (async, non-blocking)", "[TaskPool]") {
     auto b = pool.submit("compute_b", []() { return 20.0; });
 
     // Dataflow: combines a and b when both are ready (no blocking!)
-    auto result = pool.dataflow(
-        "combine", [](int x, double y) { return static_cast<double>(x) + y; }, a, b);
+    auto result = pool.dataflow("combine", [](int x, double y) { return static_cast<double>(x) + y; }, a, b);
 
     REQUIRE_THAT(result.get(), Catch::Matchers::WithinRel(30.0, 1e-12));
 }
@@ -258,8 +256,7 @@ TEST_CASE("TaskPool - typed dataflow chain", "[TaskPool]") {
     auto y = pool.submit("y", []() { return 7; });
 
     // Step 1: sum x and y
-    auto sum = pool.dataflow(
-        "sum", [](int a, int b) { return a + b; }, x, y);
+    auto sum = pool.dataflow("sum", [](int a, int b) { return a + b; }, x, y);
 
     // Step 2: double the sum (single typed input)
     auto doubled = sum.then("double", [](int s) { return s * 2; });
@@ -274,8 +271,7 @@ TEST_CASE("TaskPool - typed dataflow with 3 inputs", "[TaskPool]") {
     auto b = pool.submit("b", []() { return 2.0; });
     auto c = pool.submit("c", []() { return 3.0; });
 
-    auto result = pool.dataflow(
-        "sum3", [](double x, double y, double z) { return x + y + z; }, a, b, c);
+    auto result = pool.dataflow("sum3", [](double x, double y, double z) { return x + y + z; }, a, b, c);
 
     REQUIRE_THAT(result.get(), Catch::Matchers::WithinRel(6.0, 1e-12));
 }
@@ -297,8 +293,8 @@ TEST_CASE("TaskPool - work stealing under imbalance", "[TaskPool]") {
     for (int i = 0; i < N; i++) {
         handles.push_back(pool.submit("imbalanced", [i, &completed]() {
             // Every 10th task does 100x more work
-            volatile double sum   = 0.0;
-            int             iters = (i % 10 == 0) ? 100000 : 1000;
+            double volatile sum = 0.0;
+            int iters           = (i % 10 == 0) ? 100000 : 1000;
             for (int j = 0; j < iters; j++) {
                 sum += static_cast<double>(j) * 0.001;
             }

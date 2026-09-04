@@ -153,8 +153,8 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
  * aggregate initialization (Python) builds one through.
  */
 [[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("index_space") inline IndexSpace
-    make_index_space(std::string name, std::string scale_symbol, double typical_extent = 0.0, GrowthClass growth = GrowthClass::linear(),
-                     std::string dim_symbol = std::string{}) {
+make_index_space(std::string name, std::string scale_symbol, double typical_extent = 0.0, GrowthClass growth = GrowthClass::linear(),
+                 std::string dim_symbol = std::string{}) {
     return IndexSpace{.name           = std::move(name),
                       .scale_symbol   = std::move(scale_symbol),
                       .dim_symbol     = std::move(dim_symbol),

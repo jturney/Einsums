@@ -61,7 +61,7 @@ TEST_CASE("HPTT half_t 2D transpose round-trip", "[hptt][half]") {
     int const    perm[2] = {1, 0};
     size_t const size[2] = {N, N};
     auto         plan    = einsums::hptt::create_plan<half_t>(perm, 2, alpha, A.data(), size, nullptr, beta, B.data(), nullptr,
-                                                   einsums::hptt::ESTIMATE, hptt_test_threads());
+                                                              einsums::hptt::ESTIMATE, hptt_test_threads());
     plan->execute();
 
     // Column-major: B(j,i) = A(i,j) → B[j + i*N] = A[i + j*N].
@@ -90,7 +90,7 @@ TEST_CASE("HPTT half_t 2D transpose with alpha", "[hptt][half]") {
     int const    perm[2] = {1, 0};
     size_t const size[2] = {N, N};
     auto         plan    = einsums::hptt::create_plan<half_t>(perm, 2, alpha, A.data(), size, nullptr, beta, B.data(), nullptr,
-                                                   einsums::hptt::ESTIMATE, hptt_test_threads());
+                                                              einsums::hptt::ESTIMATE, hptt_test_threads());
     plan->execute();
 
     for (size_t i = 0; i < N; ++i) {
@@ -122,7 +122,7 @@ TEST_CASE("HPTT bfloat16_t 2D transpose round-trip", "[hptt][bfloat]") {
     int const    perm[2] = {1, 0};
     size_t const size[2] = {N, N};
     auto         plan    = einsums::hptt::create_plan<bf16_t>(perm, 2, alpha, A.data(), size, nullptr, beta, B.data(), nullptr,
-                                                   einsums::hptt::ESTIMATE, hptt_test_threads());
+                                                              einsums::hptt::ESTIMATE, hptt_test_threads());
     plan->execute();
 
     // BF16 has only ~2 decimal digits of precision; loose threshold matches the format.
@@ -151,7 +151,7 @@ TEST_CASE("HPTT bfloat16_t 2D transpose with alpha", "[hptt][bfloat]") {
     int const    perm[2] = {1, 0};
     size_t const size[2] = {N, N};
     auto         plan    = einsums::hptt::create_plan<bf16_t>(perm, 2, alpha, A.data(), size, nullptr, beta, B.data(), nullptr,
-                                                   einsums::hptt::ESTIMATE, hptt_test_threads());
+                                                              einsums::hptt::ESTIMATE, hptt_test_threads());
     plan->execute();
 
     for (size_t i = 0; i < N; ++i) {

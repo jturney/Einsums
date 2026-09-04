@@ -102,12 +102,10 @@ void bench_one(std::vector<std::string> const &a_idx, std::vector<std::string> c
     // large one does not dominate the suite.
     int const reps = elements > (1u << 22) ? 3 : (elements > (1u << 18) ? 10 : (elements > (1u << 12) ? 50 : 2000));
 
-    auto t_generic = time_us(
-        "generic", [&]() { cgd::generic_string_einsum(c.parsed, c.links, 1.0, &c.C, 1.0, c.A, c.B); }, reps);
+    auto t_generic = time_us("generic", [&]() { cgd::generic_string_einsum(c.parsed, c.links, 1.0, &c.C, 1.0, c.A, c.B); }, reps);
 
     bool const packed_ran = run_packed(c);
-    auto       t_packed   = time_us(
-        "packed", [&]() { (void)run_packed(c); }, reps);
+    auto       t_packed   = time_us("packed", [&]() { (void)run_packed(c); }, reps);
 
     double const per_element_generic = t_generic.avg * 1e3 / static_cast<double>(elements);
     if (packed_ran) {

@@ -224,8 +224,7 @@ PYBIND11_MODULE(_core, m) {
         "cli_options: extra ``--einsums:*`` flags, appended after the rc-derived\n"
         "ones so they take precedence.");
 
-    m.def(
-        "_is_initialized", []() { return einsums::is_running(); }, "Returns True if the einsums runtime has been initialized.");
+    m.def("_is_initialized", []() { return einsums::is_running(); }, "Returns True if the einsums runtime has been initialized.");
 
     // The registry as data, so a test can hold einsums/rc.py up against the
     // descriptors it was generated from. rc.py is generated from the headers

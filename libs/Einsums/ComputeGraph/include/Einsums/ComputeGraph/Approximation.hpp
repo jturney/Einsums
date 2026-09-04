@@ -237,9 +237,9 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") ApproximationTolerance {
  * @versionadded{2.0.0}
  */
 APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("approximation_record") [[nodiscard]] EINSUMS_EXPORT ApproximationRecord
-    make_approximation_record(std::string pass_name, ApproximationEffect effect, double tolerance, double bound,
-                              std::vector<std::string> outputs = std::vector<std::string>{},
-                              std::vector<std::string> spaces = std::vector<std::string>{}, std::string setup = "",
-                              ApproximationOrigin origin = ApproximationOrigin::Asserted);
+make_approximation_record(std::string pass_name, ApproximationEffect effect, double tolerance, double bound,
+                          std::vector<std::string> outputs = std::vector<std::string>{},
+                          std::vector<std::string> spaces = std::vector<std::string>{}, std::string setup = "",
+                          ApproximationOrigin origin = ApproximationOrigin::Asserted);
 
 EINSUMS_NAMESPACE_END(compute_graph)

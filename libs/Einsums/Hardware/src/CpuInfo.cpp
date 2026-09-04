@@ -175,9 +175,11 @@ double measure_omp_region_cost_ns() {
     constexpr int kReps   = 200;
     constexpr int kTrials = 5;
     int volatile sink     = 0;
-    auto        once      = [&sink]() {
+    auto once             = [&sink]() {
 #    pragma omp parallel
-        { sink = omp_get_thread_num(); }
+        {
+            sink = omp_get_thread_num();
+        }
     };
     for (int i = 0; i < kReps; ++i) {
         once();
@@ -483,7 +485,7 @@ ResolvedRegionCost const &region_cost_for_current_team() {
 #ifdef _OPENMP
     int const threads = omp_get_max_threads();
 #else
-    int const threads     = 1;
+    int const threads = 1;
 #endif
 
     std::lock_guard<std::mutex> const guard(memo_mutex);

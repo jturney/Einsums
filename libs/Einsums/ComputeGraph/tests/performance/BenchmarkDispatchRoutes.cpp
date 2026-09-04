@@ -65,8 +65,7 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: scalar-output full contraction", "[Compu
         auto s = create_zero_tensor<double>(std::string("s"), size_t{1});
 
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-        auto t = time_us(
-            "scalar-out", [&]() { cg::einsum("<- ij ; ij", &s, A, B); }, kReps);
+        auto t = time_us("scalar-out", [&]() { cg::einsum("<- ij ; ij", &s, A, B); }, kReps);
         report(fmt::format("scalar-output rank-2 n={}", n), n * n, t);
     }
 }
@@ -84,8 +83,7 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: elementwise rank-3", "[ComputeGraph][Dis
         auto C = create_zero_tensor<double>(std::string("C"), n, n, n);
 
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-        auto t = time_us(
-            "elementwise", [&]() { cg::einsum("ijk <- ijk ; ijk", &C, A, B); }, kReps);
+        auto t = time_us("elementwise", [&]() { cg::einsum("ijk <- ijk ; ijk", &C, A, B); }, kReps);
         report(fmt::format("elementwise rank-3 n={}", n), n * n * n, t);
     }
 }
@@ -104,8 +102,7 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: conjugated full contraction", "[ComputeG
         auto s = create_zero_tensor<C64>(std::string("s"), size_t{1});
 
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-        auto t = time_us(
-            "conj-dot", [&]() { cg::einsum("<- conj(i) ; i", &s, x, y); }, kReps);
+        auto t = time_us("conj-dot", [&]() { cg::einsum("<- conj(i) ; i", &s, x, y); }, kReps);
         report(fmt::format("conjugated full contraction n={}", n), n, t);
     }
 }
@@ -125,8 +122,7 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: mixed typed/runtime GEMM", "[ComputeGrap
         RuntimeTensor<double> B(B_t);
 
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-        auto t = time_us(
-            "mixed-gemm", [&]() { cg::einsum("ij <- ik ; kj", &C, A, B); }, kReps);
+        auto t = time_us("mixed-gemm", [&]() { cg::einsum("ij <- ik ; kj", &C, A, B); }, kReps);
         report(fmt::format("mixed typed/runtime GEMM n={}", n), n * n * n, t);
     }
 }
@@ -161,14 +157,10 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: elementwise crossover", "[ComputeGraph][
         auto C = create_zero_tensor<double>(std::string("C"), n, n, n);
 
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-        auto t_full = time_us(
-            "full", [&]() { cg::einsum("ijk <- ijk ; ijk", &C, A, B); }, 50);
-        auto t_route = time_us(
-            "dispatch", [&]() { cgd::string_einsum(parsed.value(), 0.0, &C, 1.0, A, B); }, 50);
-        auto t_loop = time_us(
-            "generic", [&]() { cgd::generic_string_einsum(parsed.value(), no_links, 0.0, &C, 1.0, A, B); }, 50);
-        auto t_kernel = time_us(
-            "kernel", [&]() { linear_algebra::direct_product(1.0, A, B, 0.0, &C); }, 50);
+        auto t_full   = time_us("full", [&]() { cg::einsum("ijk <- ijk ; ijk", &C, A, B); }, 50);
+        auto t_route  = time_us("dispatch", [&]() { cgd::string_einsum(parsed.value(), 0.0, &C, 1.0, A, B); }, 50);
+        auto t_loop   = time_us("generic", [&]() { cgd::generic_string_einsum(parsed.value(), no_links, 0.0, &C, 1.0, A, B); }, 50);
+        auto t_kernel = time_us("kernel", [&]() { linear_algebra::direct_product(1.0, A, B, 0.0, &C); }, 50);
 
         fmt::println("[DispatchRoute elementwise crossover] {:>10d} {:>10.2f} {:>10.2f} {:>10.2f} {:>10.2f} {:>8.2f}x", n * n * n,
                      t_full.avg, t_route.avg, t_kernel.avg, t_loop.avg, t_loop.avg / t_route.avg);

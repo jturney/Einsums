@@ -40,22 +40,22 @@ template EINSUMS_EXPORT void impl_direct_division<std::complex<double>, std::com
     einsums::detail::TensorImpl<std::complex<double>> *C);
 
 template EINSUMS_EXPORT float  impl_dot<float, float>(einsums::detail::TensorImpl<float> const &a,
-                                                     einsums::detail::TensorImpl<float> const &b);
+                                                      einsums::detail::TensorImpl<float> const &b);
 template EINSUMS_EXPORT double impl_dot<double, double>(einsums::detail::TensorImpl<double> const &a,
                                                         einsums::detail::TensorImpl<double> const &b);
 template EINSUMS_EXPORT        std::complex<float>
-                               impl_dot<std::complex<float>, std::complex<float>>(einsums::detail::TensorImpl<std::complex<float>> const &a,
+impl_dot<std::complex<float>, std::complex<float>>(einsums::detail::TensorImpl<std::complex<float>> const &a,
                                                    einsums::detail::TensorImpl<std::complex<float>> const &b);
-template EINSUMS_EXPORT        std::complex<double>
+template EINSUMS_EXPORT std::complex<double>
 impl_dot<std::complex<double>, std::complex<double>>(einsums::detail::TensorImpl<std::complex<double>> const &a,
                                                      einsums::detail::TensorImpl<std::complex<double>> const &b);
 
 template EINSUMS_EXPORT float  impl_true_dot<float, float>(einsums::detail::TensorImpl<float> const &a,
-                                                          einsums::detail::TensorImpl<float> const &b);
+                                                           einsums::detail::TensorImpl<float> const &b);
 template EINSUMS_EXPORT double impl_true_dot<double, double>(einsums::detail::TensorImpl<double> const &a,
                                                              einsums::detail::TensorImpl<double> const &b);
 template EINSUMS_EXPORT        std::complex<float>
-                        impl_true_dot<std::complex<float>, std::complex<float>>(einsums::detail::TensorImpl<std::complex<float>> const &a,
+impl_true_dot<std::complex<float>, std::complex<float>>(einsums::detail::TensorImpl<std::complex<float>> const &a,
                                                         einsums::detail::TensorImpl<std::complex<float>> const &b);
 template EINSUMS_EXPORT std::complex<double>
 impl_true_dot<std::complex<double>, std::complex<double>>(einsums::detail::TensorImpl<std::complex<double>> const &a,

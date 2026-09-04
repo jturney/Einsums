@@ -74,9 +74,7 @@ EINSUMS_TEST_CASE("Bench BlockTileReduction: block dot", "[LinearAlgebra][BlockT
             B[i] = create_random_tensor<double>(std::string("b"), extent, extent);
         }
 
-        row("block dot", blocks, extent,
-            time_us(
-                "dot", [&]() { [[maybe_unused]] auto out = linear_algebra::dot(A, B); }, kReps));
+        row("block dot", blocks, extent, time_us("dot", [&]() { [[maybe_unused]] auto out = linear_algebra::dot(A, B); }, kReps));
     }
 }
 
@@ -97,8 +95,6 @@ EINSUMS_TEST_CASE("Bench BlockTileReduction: tiled dot", "[LinearAlgebra][BlockT
             }
         }
 
-        row("tiled dot", grid * grid, extent,
-            time_us(
-                "dot", [&]() { [[maybe_unused]] auto out = linear_algebra::dot(A, B); }, kReps));
+        row("tiled dot", grid * grid, extent, time_us("dot", [&]() { [[maybe_unused]] auto out = linear_algebra::dot(A, B); }, kReps));
     }
 }

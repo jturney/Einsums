@@ -120,8 +120,7 @@ int einsums_main() {
     auto a = pool.submit("a", []() { return 3; });
     auto b = pool.submit("b", []() { return 4.0; });
 
-    auto sum = pool.dataflow(
-        "sum", [](int x, double y) { return static_cast<double>(x) + y; }, a, b);
+    auto sum = pool.dataflow("sum", [](int x, double y) { return static_cast<double>(x) + y; }, a, b);
 
     auto final_val = sum.then("format", [](double v) { return fmt::format("Final: {:.1f}", v); });
 

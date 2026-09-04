@@ -48,8 +48,8 @@ APIARY_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<float, std::allocato
 APIARY_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("read", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    void read_etn(std::string file_path, std::string tensor_name, TensorType *output) {
+// clang-format on
+void read_etn(std::string file_path, std::string tensor_name, TensorType *output) {
     auto executor = [file_path, tensor_name, output]() {
         TensorFile file(file_path, TensorFile::Mode::Read);
         file.read(tensor_name, *output);
@@ -76,8 +76,8 @@ APIARY_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<float, std::allocat
 APIARY_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("write", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    void write_etn(std::string file_path, std::string tensor_name, TensorType const *input) {
+// clang-format on
+void write_etn(std::string file_path, std::string tensor_name, TensorType const *input) {
     auto executor = [file_path, tensor_name, input]() {
         TensorFile file(file_path, TensorFile::Mode::ReadWrite);
         file.write(tensor_name, *input);
@@ -166,8 +166,8 @@ APIARY_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<float, std::al
 APIARY_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("read_slice", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    void read_slice_etn(std::string file_path, std::string tensor_name, Slab const &slab, TensorType *output) {
+// clang-format on
+void read_slice_etn(std::string file_path, std::string tensor_name, Slab const &slab, TensorType *output) {
     auto executor = [file_path, tensor_name, slab_ptr = &slab, output]() {
         TensorFile file(file_path, TensorFile::Mode::Read);
         detail::file_read_slice_dispatch(file, tensor_name, *output, slab_ptr->ranges);
@@ -203,8 +203,8 @@ APIARY_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<float, std::a
 APIARY_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("write_slice", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    void write_slice_etn(std::string file_path, std::string tensor_name, Slab const &slab, TensorType const *input) {
+// clang-format on
+void write_slice_etn(std::string file_path, std::string tensor_name, Slab const &slab, TensorType const *input) {
     auto executor = [file_path, tensor_name, slab_ptr = &slab, input]() {
         TensorFile file(file_path, TensorFile::Mode::ReadWrite);
         detail::file_write_slice_dispatch(file, tensor_name, *input, slab_ptr->ranges);
@@ -236,5 +236,5 @@ inline void checkpoint_etn(std::string file_path, compute_graph::Graph &graph) {
     ctx.record(compute_graph::OpKind::DiskWrite, fmt::format("checkpoint_etn({})", file_path), {}, {}, std::move(executor));
 }
 
-} // namespace APIARY_MODULE("io")tensor_io
+} // namespace tensor_io
 EINSUMS_NAMESPACE_END()

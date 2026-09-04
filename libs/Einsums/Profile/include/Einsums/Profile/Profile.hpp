@@ -726,7 +726,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 #    define LabeledSectionRuntime(name_expr)                                                                                               \
         static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){"", __FILE__, __LINE__, __func__};                 \
         ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__),           \
-                                                                                     [&] { return fmt::format("{}", name_expr); })
+                                                                                          [&] { return fmt::format("{}", name_expr); })
 #    define LabeledSection0() LabeledSection(__func__)
 #    if defined(EINSUMS_WITH_PROFILER_INTERNAL)
 #        define LabeledSectionInternal(name_format, ...)                                                                                   \
@@ -878,8 +878,8 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void print_report([[maybe_unused]]
 }
 
 /// Always ``None``: this build has no aggregated profile to write.
-APIARY_EXPOSE APIARY_MODULE("profile") inline std::optional<std::string> export_json(
-    [[maybe_unused]] std::string const &path = "einsums_profile.json") {
+APIARY_EXPOSE APIARY_MODULE("profile") inline std::optional<std::string>
+export_json([[maybe_unused]] std::string const &path = "einsums_profile.json") {
     return std::nullopt;
 }
 

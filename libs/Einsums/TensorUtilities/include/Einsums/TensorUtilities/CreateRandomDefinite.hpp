@@ -101,9 +101,9 @@ auto create_random_definite(std::string const &name, int rows, int cols, RemoveC
  */
 template <typename T = double>
 APIARY_EXPOSE APIARY_INSTANTIATE_AS("create_random_definite", double) APIARY_INSTANTIATE_AS("create_random_definite", float)
-    APIARY_INSTANTIATE_AS("create_random_definite", std::complex<double>)
-        APIARY_INSTANTIATE_AS("create_random_definite", std::complex<float>) auto create_random_definite(std::string const &name, int n)
-            -> RuntimeTensor<T> {
+APIARY_INSTANTIATE_AS("create_random_definite", std::complex<double>)
+APIARY_INSTANTIATE_AS("create_random_definite", std::complex<float>) auto
+create_random_definite(std::string const &name, int n) -> RuntimeTensor<T> {
     return RuntimeTensor<T>(create_random_definite<T>(name, n, n));
 }
 

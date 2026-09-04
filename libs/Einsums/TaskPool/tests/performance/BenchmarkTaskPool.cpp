@@ -361,8 +361,8 @@ EINSUMS_TEST_CASE("Bench TaskPool: work-stealing imbalanced 100 tasks", "[TaskPo
             handles.reserve(100);
             for (int i = 0; i < 100; i++) {
                 handles.push_back(pool.submit("imbal", [i]() {
-                    volatile double sum   = 0.0;
-                    int             iters = (i % 10 == 0) ? 100000 : 1000;
+                    double volatile sum = 0.0;
+                    int iters           = (i % 10 == 0) ? 100000 : 1000;
                     for (int j = 0; j < iters; j++)
                         sum += static_cast<double>(j) * 0.001;
                 }));

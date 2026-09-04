@@ -371,10 +371,7 @@ void bench_sort_gemm_caching(int N) {
     C.zero();
     ProfileAnnotate("cache_state", "cold");
     auto t_cold = time_us(
-        "sort-gemm-cold",
-        [&] {
-            tensor_algebra::einsum(Indices{i, l, j}, &C, Indices{j, k, i}, A, Indices{l, k}, B);
-        },
+        "sort-gemm-cold", [&] { tensor_algebra::einsum(Indices{i, l, j}, &C, Indices{j, k, i}, A, Indices{l, k}, B); },
         /*reps=*/1);
     publish_benchmark_result("sort-gemm-cold", "t_sort_gemm", N, t_cold);
 

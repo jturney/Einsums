@@ -57,8 +57,7 @@ TEST_CASE("ElementOps - a fresh registry starts empty and grows by registration"
     REQUIRE(registry.size() == 0);
     REQUIRE_FALSE(registry.contains("bump"));
 
-    registry.register_op(
-        "bump", []<typename T>(T x) { return x + T{1}; }, ops::ElementOpSignature{.description = "x + 1"});
+    registry.register_op("bump", []<typename T>(T x) { return x + T{1}; }, ops::ElementOpSignature{.description = "x + 1"});
 
     REQUIRE(registry.size() == 1);
     REQUIRE(registry.contains("bump"));

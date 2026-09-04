@@ -176,8 +176,8 @@ APIARY_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<float>)
 APIARY_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void scale(typename AType::ValueType factor, AType *A) {
+// clang-format on
+void scale(typename AType::ValueType factor, AType *A) {
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
         // Tiled: scale every populated tile. Eager, or an opaque Custom node
         // (the einsum-rewriting passes don't apply to a tiled per-tile op).
@@ -258,8 +258,8 @@ APIARY_INSTANTIATE_AS("conj", einsums::TiledRuntimeTensor<float>)
 APIARY_INSTANTIATE_AS("conj", einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("conj", einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("conj", einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void conj(AType *A) {
+// clang-format on
+void conj(AType *A) {
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
@@ -315,8 +315,8 @@ APIARY_INSTANTIATE_AS("real", einsums::GeneralRuntimeTensor<double, std::allocat
 APIARY_INSTANTIATE_AS("real", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("real", einsums::TiledRuntimeTensor<float>,  einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("real", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void real(ResultType *out, AType const &A) {
+// clang-format on
+void real(ResultType *out, AType const &A) {
     auto &ctx = CaptureContext::current();
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
         if (!ctx.is_capturing()) {
@@ -370,8 +370,8 @@ APIARY_INSTANTIATE_AS("imag", einsums::GeneralRuntimeTensor<double, std::allocat
 APIARY_INSTANTIATE_AS("imag", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("imag", einsums::TiledRuntimeTensor<float>,  einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("imag", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void imag(ResultType *out, AType const &A) {
+// clang-format on
+void imag(ResultType *out, AType const &A) {
     auto &ctx = CaptureContext::current();
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
         if (!ctx.is_capturing()) {
@@ -429,8 +429,8 @@ APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<float>,  einsums::Tiled
 APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<float>,  einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void abs(ResultType *out, AType const &A) {
+// clang-format on
+void abs(ResultType *out, AType const &A) {
     auto &ctx = CaptureContext::current();
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
         if (!ctx.is_capturing()) {
@@ -589,9 +589,9 @@ APIARY_INSTANTIATE_AS("permute", einsums::TiledRuntimeTensor<float>, einsums::Ti
 APIARY_INSTANTIATE_AS("permute", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("permute", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("permute", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void string_permute(std::string const &spec, CType *C, AType const &A, typename CType::ValueType c_pf = typename CType::ValueType{0},
-                        typename AType::ValueType a_pf = typename AType::ValueType{1}) {
+// clang-format on
+void string_permute(std::string const &spec, CType *C, AType const &A, typename CType::ValueType c_pf = typename CType::ValueType{0},
+                    typename AType::ValueType a_pf = typename AType::ValueType{1}) {
     permute(PermuteFormatString{spec}, c_pf, C, a_pf, A);
 }
 
@@ -667,9 +667,9 @@ APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<float>,          
 APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<double>,                                                  einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("block_copy", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void block_copy(DstType *dst, SrcType const &src, std::vector<size_t> dst_offsets, std::vector<size_t> src_offsets,
-                    std::vector<size_t> extents) {
+// clang-format on
+void block_copy(DstType *dst, SrcType const &src, std::vector<size_t> dst_offsets, std::vector<size_t> src_offsets,
+                std::vector<size_t> extents) {
     size_t const N = extents.size();
     if (N == 0) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::block_copy: extents must be non-empty");
@@ -800,12 +800,12 @@ APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<float>,              
 APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<double>,                                                  einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("gather", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    // The default is spelled out rather than `{}` because the binding generator
-    // copies the token through to py::arg, and pybind cannot deduce a type from
-    // an empty braced list.
-    void gather(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices,
-                std::vector<size_t> const &axes = std::vector<size_t>{}) {
+// clang-format on
+// The default is spelled out rather than `{}` because the binding generator
+// copies the token through to py::arg, and pybind cannot deduce a type from
+// an empty braced list.
+void gather(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices,
+            std::vector<size_t> const &axes = std::vector<size_t>{}) {
     size_t const N = indices.size();
     if (N == 0) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::gather: indices must be non-empty");
@@ -938,8 +938,8 @@ APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<float>,             
 APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<double>,                                                  einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<float>>,                                     einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void scatter(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices) {
+// clang-format on
+void scatter(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices) {
     size_t const N = indices.size();
     if (N == 0) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::scatter: indices must be non-empty");
@@ -1029,8 +1029,8 @@ APIARY_INSTANTIATE_AS("sqrt", einsums::GeneralRuntimeTensor<float, std::allocato
 APIARY_INSTANTIATE_AS("sqrt", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("sqrt", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_AS("sqrt", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
-    // clang-format on
-    void sqrt(ResultType *out, AType const &A) {
+// clang-format on
+void sqrt(ResultType *out, AType const &A) {
     using T = typename ResultType::ValueType;
     static_assert(!IsComplexV<T>, "cg::sqrt is real-only; complex needs a branch choice the caller must make");
     if (detail::tensor_rank(*out) != detail::tensor_rank(A)) {
@@ -1112,8 +1112,8 @@ APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<flo
 APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("sum_axes", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void sum_axes(ResultType *out, AType const &A, std::vector<size_t> axes) {
+// clang-format on
+void sum_axes(ResultType *out, AType const &A, std::vector<size_t> axes) {
     using T        = typename ResultType::ValueType;
     size_t const N = detail::tensor_rank(A);
     std::sort(axes.begin(), axes.end());
@@ -1226,8 +1226,8 @@ APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<std::complex<floa
 APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("reshape", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void reshape(ResultType *out, AType const &A, bool row_major) {
+// clang-format on
+void reshape(ResultType *out, AType const &A, bool row_major) {
     using T              = typename ResultType::ValueType;
     size_t const a_rank  = detail::tensor_rank(A);
     size_t const o_rank  = detail::tensor_rank(*out);
@@ -1313,8 +1313,8 @@ APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<std::complex<flo
 APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("diagonal", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void diagonal(ResultType *out, AType const &A) {
+// clang-format on
+void diagonal(ResultType *out, AType const &A) {
     if (detail::tensor_rank(A) != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::diagonal: A must be rank 2, got rank {}", detail::tensor_rank(A));
     }
@@ -1369,8 +1369,8 @@ APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<
 APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void scatter_add(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices) {
+// clang-format on
+void scatter_add(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices) {
     size_t const N = indices.size();
     if (N == 0) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::scatter_add: indices must be non-empty");
@@ -1569,8 +1569,8 @@ APIARY_INSTANTIATE_AS("element_transform", einsums::TiledRuntimeTensor<float>)
 APIARY_INSTANTIATE_AS("element_transform", einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("element_transform", einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("element_transform", einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void element_transform_python(TensorType *C, std::function<typename TensorType::ValueType(typename TensorType::ValueType)> unary_op) {
+// clang-format on
+void element_transform_python(TensorType *C, std::function<typename TensorType::ValueType(typename TensorType::ValueType)> unary_op) {
     using T = typename TensorType::ValueType;
 
     // Operate on one data-bearing unit (the whole dense tensor, or a single
@@ -1661,8 +1661,8 @@ APIARY_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void shift(typename AType::ValueType beta, AType *A) {
+// clang-format on
+void shift(typename AType::ValueType beta, AType *A) {
     using T = typename AType::ValueType;
 
     auto run = [beta](AType *target) {
@@ -1731,8 +1731,8 @@ APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<float>, einsums::Tiled
 APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
+// clang-format on
+void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
     if constexpr (IsTiledTensorV<std::remove_cvref_t<XType>> || IsTiledTensorV<std::remove_cvref_t<YType>>) {
         static_assert(IsTiledTensorV<std::remove_cvref_t<XType>> && IsTiledTensorV<std::remove_cvref_t<YType>>,
                       "cg::axpy with a tiled operand requires both X and Y to be TiledRuntimeTensor");
@@ -1860,8 +1860,8 @@ APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<float>, einsums::Tile
 APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void axpby(typename XType::ValueType alpha, XType const &X, typename XType::ValueType beta, YType *Y) {
+// clang-format on
+void axpby(typename XType::ValueType alpha, XType const &X, typename XType::ValueType beta, YType *Y) {
     if constexpr (IsTiledTensorV<std::remove_cvref_t<XType>> || IsTiledTensorV<std::remove_cvref_t<YType>>) {
         static_assert(IsTiledTensorV<std::remove_cvref_t<XType>> && IsTiledTensorV<std::remove_cvref_t<YType>>,
                       "cg::axpby with a tiled operand requires both X and Y to be TiledRuntimeTensor");
@@ -1980,8 +1980,8 @@ APIARY_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>
 APIARY_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
 APIARY_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
 APIARY_INSTANTIATE_BOOLS("gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
-    // clang-format on
-    void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C) {
+// clang-format on
+void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C) {
     // Folds away for an operand whose type fixes rank 2; a runtime-rank one
     // pays three comparisons and gets a clear error instead of a BLAS failure.
     if (detail::tensor_rank(A) != 2 || detail::tensor_rank(B) != 2 || detail::tensor_rank(*C) != 2) {
@@ -2090,10 +2090,10 @@ APIARY_INSTANTIATE_AS("gemm", einsums::RuntimeTensorView<std::complex<double>>, 
 APIARY_INSTANTIATE_AS("gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
 APIARY_INSTANTIATE_AS("gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
 APIARY_INSTANTIATE_AS("gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
-    // clang-format on
-    void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C,
-              linear_algebra::Transpose trans_a = linear_algebra::Transpose::N,
-              linear_algebra::Transpose trans_b = linear_algebra::Transpose::N) {
+// clang-format on
+void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C,
+          linear_algebra::Transpose trans_a = linear_algebra::Transpose::N,
+          linear_algebra::Transpose trans_b = linear_algebra::Transpose::N) {
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
@@ -2197,8 +2197,8 @@ APIARY_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>
 APIARY_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
 APIARY_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
 APIARY_INSTANTIATE_BOOLS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
-    // clang-format on
-    void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
+// clang-format on
+void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y) {
     if (detail::tensor_rank(A) != 2 || detail::tensor_rank(z) != 1 || detail::tensor_rank(*y) != 1) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::gemv requires A rank-2 and x/y rank-1; got {}, {}, {}.", detail::tensor_rank(A),
                                 detail::tensor_rank(z), detail::tensor_rank(*y));
@@ -2282,9 +2282,9 @@ APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<double>>, 
 APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
 APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, std::complex<double>)
 APIARY_INSTANTIATE_AS("gemv", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          std::complex<double>)
-    // clang-format on
-    void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y,
-              linear_algebra::Transpose trans_a = linear_algebra::Transpose::N) {
+// clang-format on
+void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y,
+          linear_algebra::Transpose trans_a = linear_algebra::Transpose::N) {
     if (A.rank() != 2 || z.rank() != 1 || y->rank() != 1) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::gemv requires A rank-2 and x/y rank-1; got {}, {}, {}.", A.rank(), z.rank(), y->rank());
     }
@@ -2368,8 +2368,8 @@ APIARY_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,  
 APIARY_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("ger", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
+// clang-format on
+void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
     if (detail::tensor_rank(X) != 1 || detail::tensor_rank(Y) != 1 || detail::tensor_rank(*A) != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::ger requires X/Y rank-1 and A rank-2; got {}, {}, {}.", detail::tensor_rank(X),
                                 detail::tensor_rank(Y), detail::tensor_rank(*A));
@@ -2429,8 +2429,8 @@ APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<double>>, 
 APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("gerc", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
+// clang-format on
+void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType *A) {
     if (X.rank() != 1 || Y.rank() != 1 || A->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::gerc requires X/Y rank-1 and A rank-2; got {}, {}, {}.", X.rank(), Y.rank(), A->rank());
     }
@@ -2498,8 +2498,8 @@ APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<float>>,   
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("dot", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
+// clang-format on
+auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueType, typename BType::ValueType> {
     detail::reject_if_capturing("cg::dot(A, B) returning scalar cannot be used during graph capture. "
                                 "Use cg::einsum(\" <- i ; i\", &result, A, B) instead.");
     // A reduction's summation order is its thread count's, so an unfenced dot is a function of the machine as well as of
@@ -2620,8 +2620,8 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<float, std::allocator
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void dot_python(ResultType *result, AType const &A, BType const &B) {
+// clang-format on
+void dot_python(ResultType *result, AType const &A, BType const &B) {
     using T = typename AType::ValueType;
     if (result->size() < 1) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dot: result tensor must have at least one element");
@@ -2734,8 +2734,8 @@ APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<float, std::allocato
 APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void dotc_python(ResultType *result, AType const &A, BType const &B) {
+// clang-format on
+void dotc_python(ResultType *result, AType const &A, BType const &B) {
     using T = typename AType::ValueType;
     if (result->size() < 1) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dotc: result tensor must have at least one element");
@@ -2843,8 +2843,8 @@ APIARY_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<std::complex<float>, 
 APIARY_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>,  einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("sum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void sum_python(ResultType *result, AType const &A) {
+// clang-format on
+void sum_python(ResultType *result, AType const &A) {
     using T = typename AType::ValueType;
     if (result->size() < 1)
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::sum: result tensor must have at least one element");
@@ -2877,8 +2877,8 @@ APIARY_INSTANTIATE_AS("max", einsums::GeneralRuntimeTensor<float, std::allocator
 APIARY_INSTANTIATE_AS("max", einsums::GeneralRuntimeTensor<float, std::allocator<float>>,   einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("max", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_AS("max", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::RuntimeTensorView<double>)
-    // clang-format on
-    void max_python(ResultType *result, AType const &A) {
+// clang-format on
+void max_python(ResultType *result, AType const &A) {
     using T = typename AType::ValueType;
     if (result->size() < 1)
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::max: result tensor must have at least one element");
@@ -2955,8 +2955,8 @@ APIARY_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTe
 APIARY_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
+// clang-format on
+void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("direct_product eager");
@@ -3044,8 +3044,8 @@ APIARY_INSTANTIATE_AS("direct_division", float, einsums::TiledRuntimeTensor<floa
 APIARY_INSTANTIATE_AS("direct_division", double, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("direct_division", std::complex<float>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) {
+// clang-format on
+void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) {
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>> || IsTiledTensorV<std::remove_cvref_t<BType>> ||
                   IsTiledTensorV<std::remove_cvref_t<CType>>) {
         static_assert(IsTiledTensorV<std::remove_cvref_t<AType>> && IsTiledTensorV<std::remove_cvref_t<BType>> &&
@@ -3167,8 +3167,8 @@ APIARY_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::complex<do
 APIARY_INSTANTIATE_AS("outer_sum", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("outer_sum", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void outer_sum(ResultType *result, std::vector<VectorType const *> vectors, std::vector<double> coefficients) {
+// clang-format on
+void outer_sum(ResultType *result, std::vector<VectorType const *> vectors, std::vector<double> coefficients) {
     using T = typename ResultType::ValueType;
 
     size_t const N = vectors.size();
@@ -3395,9 +3395,9 @@ APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<do
 APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void batched_gemm(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta,
-                      std::vector<CType *> c_list, bool trans_a = false, bool trans_b = false) {
+// clang-format on
+void batched_gemm(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta,
+                  std::vector<CType *> c_list, bool trans_a = false, bool trans_b = false) {
     using T = typename AType::ValueType;
 
     size_t const count = a_list.size();
@@ -3544,10 +3544,9 @@ APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::GeneralRuntimeTensor<std:
 APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("batched_gemm_blocked", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    void batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta,
-                              CType *c_base, std::vector<size_t> const &c_offsets, size_t c_rows, size_t c_cols, bool trans_a = false,
-                              bool trans_b = false) {
+// clang-format on
+void batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta, CType *c_base,
+                          std::vector<size_t> const &c_offsets, size_t c_rows, size_t c_cols, bool trans_a = false, bool trans_b = false) {
     using T = typename AType::ValueType;
 
     size_t const count = a_list.size();
@@ -3877,9 +3876,9 @@ APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::co
 APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("grouped_batched_gemm", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void grouped_batched_gemm(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta,
-                              std::vector<CType *> c_list, bool trans_a = false, bool trans_b = false) {
+// clang-format on
+void grouped_batched_gemm(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta,
+                          std::vector<CType *> c_list, bool trans_a = false, bool trans_b = false) {
     using T = typename AType::ValueType;
 
     size_t const count = a_list.size();
@@ -4021,10 +4020,10 @@ template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("graph")
-    // clang-format on
-    void grouped_batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta,
-                                      std::vector<CType *> const &c_bases, std::vector<size_t> const &c_offsets, bool trans_a = false,
-                                      bool trans_b = false) {
+// clang-format on
+void grouped_batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::vector<BType const *> b_list, double beta,
+                                  std::vector<CType *> const &c_bases, std::vector<size_t> const &c_offsets, bool trans_a = false,
+                                  bool trans_b = false) {
     using T = typename AType::ValueType;
 
     size_t const count = a_list.size();
@@ -4288,8 +4287,8 @@ APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<dou
 APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("grouped_dot", einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void grouped_dot(std::vector<ResultType *> results, std::vector<AType const *> a_list, std::vector<BType const *> b_list) {
+// clang-format on
+void grouped_dot(std::vector<ResultType *> results, std::vector<AType const *> a_list, std::vector<BType const *> b_list) {
     size_t const count = results.size();
     if (count == 0) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::grouped_dot: the run is empty");
@@ -4420,9 +4419,8 @@ APIARY_INSTANTIATE_AS("grouped_axpby", einsums::GeneralRuntimeTensor<std::comple
 APIARY_INSTANTIATE_AS("grouped_axpby", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("grouped_axpby", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void grouped_axpby(std::vector<double> alphas, std::vector<XType const *> x_list, std::vector<double> betas,
-                       std::vector<YType *> y_list) {
+// clang-format on
+void grouped_axpby(std::vector<double> alphas, std::vector<XType const *> x_list, std::vector<double> betas, std::vector<YType *> y_list) {
     using T = typename XType::ValueType;
 
     size_t const count = alphas.size();
@@ -4571,9 +4569,9 @@ APIARY_INSTANTIATE_AS("grouped_permute", einsums::GeneralRuntimeTensor<std::comp
 APIARY_INSTANTIATE_AS("grouped_permute", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("grouped_permute", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void grouped_permute(std::string const &spec, std::vector<CType *> c_list, std::vector<AType const *> a_list, std::vector<double> c_pfs,
-                         std::vector<double> a_pfs) {
+// clang-format on
+void grouped_permute(std::string const &spec, std::vector<CType *> c_list, std::vector<AType const *> a_list, std::vector<double> c_pfs,
+                     std::vector<double> a_pfs) {
     using T = typename CType::ValueType;
 
     size_t const count = c_list.size();
@@ -4796,9 +4794,9 @@ APIARY_INSTANTIATE_AS("grouped_direct_product", std::complex<float>, einsums::Ru
 // complex<double>
 APIARY_INSTANTIATE_AS("grouped_direct_product", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("grouped_direct_product", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void grouped_direct_product(std::vector<T> alphas, std::vector<AType const *> a_list, std::vector<BType const *> b_list,
-                                std::vector<T> betas, std::vector<CType *> c_list) {
+// clang-format on
+void grouped_direct_product(std::vector<T> alphas, std::vector<AType const *> a_list, std::vector<BType const *> b_list,
+                            std::vector<T> betas, std::vector<CType *> c_list) {
     LabeledSection("grouped_direct_product");
     detail::grouped_binary_elementwise<T, AType, BType, CType>(
         "cg::grouped_direct_product", OpKind::GroupedDirectProduct, "direct_product",
@@ -4850,9 +4848,9 @@ APIARY_INSTANTIATE_AS("grouped_direct_division", std::complex<float>, einsums::R
 // complex<double>
 APIARY_INSTANTIATE_AS("grouped_direct_division", std::complex<double>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("grouped_direct_division", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>, einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void grouped_direct_division(std::vector<T> alphas, std::vector<AType const *> a_list, std::vector<BType const *> b_list,
-                                 std::vector<T> betas, std::vector<CType *> c_list) {
+// clang-format on
+void grouped_direct_division(std::vector<T> alphas, std::vector<AType const *> a_list, std::vector<BType const *> b_list,
+                             std::vector<T> betas, std::vector<CType *> c_list) {
     LabeledSection("grouped_direct_division");
     detail::grouped_binary_elementwise<T, AType, BType, CType>(
         "cg::grouped_direct_division", OpKind::GroupedDirectDivision, "direct_division",
@@ -5002,9 +5000,9 @@ APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<double, 
 APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
 APIARY_INSTANTIATE_AS("grouped_sandwich", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
-    // clang-format on
-    void grouped_sandwich(std::vector<CType *> c_list, std::vector<AType const *> a_list, std::vector<MType const *> m_list,
-                          std::vector<PType const *> p_list, std::vector<SType const *> s_list) {
+// clang-format on
+void grouped_sandwich(std::vector<CType *> c_list, std::vector<AType const *> a_list, std::vector<MType const *> m_list,
+                      std::vector<PType const *> p_list, std::vector<SType const *> s_list) {
     using T            = typename CType::ValueType;
     size_t const count = c_list.size();
     if (count == 0) {
@@ -5319,9 +5317,9 @@ APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<double
 APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
 APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<float>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
 APIARY_INSTANTIATE_AS("grouped_gather_rotate", einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>, einsums::RuntimeTensorView<float>)
-    // clang-format on
-    void grouped_gather_rotate(std::vector<CType *> c_list, SrcType const &src, std::vector<std::vector<size_t>> const &q_list,
-                               std::vector<std::vector<size_t>> const &u_list, std::vector<XType const *> x_list) {
+// clang-format on
+void grouped_gather_rotate(std::vector<CType *> c_list, SrcType const &src, std::vector<std::vector<size_t>> const &q_list,
+                           std::vector<std::vector<size_t>> const &u_list, std::vector<XType const *> x_list) {
     using T            = typename CType::ValueType;
     size_t const count = c_list.size();
     if (count == 0) {
@@ -5471,8 +5469,8 @@ APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float,              
 APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    auto norm(linear_algebra::Norm norm_type, AType const &A) -> RemoveComplexT<typename AType::ValueType> {
+// clang-format on
+auto norm(linear_algebra::Norm norm_type, AType const &A) -> RemoveComplexT<typename AType::ValueType> {
     detail::reject_if_capturing("cg::norm() returning scalar cannot be used during graph capture.");
     // A reduction's summation order is its thread count's, so an unfenced norm is a function of the machine as well as of
     // the operands. See @ref blas::SerialVendorScope.
@@ -5547,8 +5545,8 @@ APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float, std::allocato
 APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("norm", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const &A) {
+// clang-format on
+void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const &A) {
     using R = RemoveComplexT<typename AType::ValueType>;
     if (result->size() < 1) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::norm: result tensor must have at least one element");
@@ -5626,8 +5624,8 @@ APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<float,             
 APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    auto trace(AType const &A) -> typename AType::ValueType {
+// clang-format on
+auto trace(AType const &A) -> typename AType::ValueType {
     detail::reject_if_capturing("cg::trace(A) returning scalar cannot be used during graph capture. "
                                 "Use cg::trace(&result, A) instead.");
     if (A.rank() != 2) {
@@ -5725,8 +5723,8 @@ APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<float, std::allocat
 APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>, einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("trace", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void trace_python(ResultType *result, AType const &A) {
+// clang-format on
+void trace_python(ResultType *result, AType const &A) {
     using T = typename AType::ValueType;
 
     if (result->size() < 1) {
@@ -5831,8 +5829,8 @@ APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<do
 APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_BOOLS("symm_gemm", einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void symm_gemm(AType const &A, BType const &B, CType *C, bool conjugate = false) {
+// clang-format on
+void symm_gemm(AType const &A, BType const &B, CType *C, bool conjugate = false) {
     if (A.rank() != 2 || B.rank() != 2 || C->rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::symm_gemm requires rank-2 tensors; got ranks {}, {}, {}.", A.rank(), B.rank(), C->rank());
     }
@@ -5924,8 +5922,8 @@ APIARY_INSTANTIATE_BOOLS("syev", einsums::GeneralRuntimeTensor<float,  std::allo
 APIARY_INSTANTIATE_BOOLS("syev", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_BOOLS("syev", einsums::RuntimeTensorView<float>,  einsums::GeneralRuntimeTensor<float,  std::allocator<float>>)
 APIARY_INSTANTIATE_BOOLS("syev", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-    // clang-format on
-    void syev(AType *A, WType *W) {
+// clang-format on
+void syev(AType *A, WType *W) {
     if (detail::tensor_rank(*A) != 2 || detail::tensor_rank(*W) != 1) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::syev requires A rank-2 and W rank-1; got {}, {}.", detail::tensor_rank(*A),
                                 detail::tensor_rank(*W));
@@ -5985,10 +5983,9 @@ APIARY_MODULE("linalg")
 APIARY_TEMPLATE_KWARGS("compute_eigenvectors")
 APIARY_INSTANTIATE_BOOLS("syev_eig", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>)
 APIARY_INSTANTIATE_BOOLS("syev_eig", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-    // clang-format on
-    std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
-               einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> syev_eig(AType const
-                                                                                                                                 &A) {
+// clang-format on
+std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
+           einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> syev_eig(AType const &A) {
     detail::reject_if_capturing("cg::syev(A) returning form cannot be used during graph capture. "
                                 "Use the in-place form cg::syev(&A, &W) instead.");
     if (A.rank() != 2 || A.dim(0) != A.dim(1)) {
@@ -6025,8 +6022,8 @@ APIARY_INSTANTIATE_BOOLS("heev", einsums::GeneralRuntimeTensor<std::complex<floa
 APIARY_INSTANTIATE_BOOLS("heev", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_BOOLS("heev", einsums::RuntimeTensorView<std::complex<float>>,  einsums::GeneralRuntimeTensor<float,  std::allocator<float>>)
 APIARY_INSTANTIATE_BOOLS("heev", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-    // clang-format on
-    void heev(AType *A, WType *W) {
+// clang-format on
+void heev(AType *A, WType *W) {
     if (detail::tensor_rank(*A) != 2 || detail::tensor_rank(*W) != 1) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::heev requires A rank-2 and W rank-1; got {}, {}.", detail::tensor_rank(*A),
                                 detail::tensor_rank(*W));
@@ -6119,8 +6116,8 @@ APIARY_INSTANTIATE_AS("syev", einsums::GeneralRuntimeTensor<float, std::allocato
 APIARY_INSTANTIATE_AS("syev", einsums::GeneralRuntimeTensor<double, std::allocator<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_AS("syev", einsums::TiledRuntimeTensor<float>, einsums::TiledRuntimeTensor<float>)
 APIARY_INSTANTIATE_AS("syev", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
-    // clang-format on
-    void syev_python(AType *A, WType *W) {
+// clang-format on
+void syev_python(AType *A, WType *W) {
     syev<true>(A, W);
 }
 
@@ -6138,8 +6135,8 @@ APIARY_INSTANTIATE_AS("heev", einsums::GeneralRuntimeTensor<std::complex<float>,
 APIARY_INSTANTIATE_AS("heev", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_AS("heev", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<float>)
 APIARY_INSTANTIATE_AS("heev", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<double>)
-    // clang-format on
-    void heev_python(AType *A, WType *W) {
+// clang-format on
+void heev_python(AType *A, WType *W) {
     heev<true>(A, W);
 }
 
@@ -6162,8 +6159,8 @@ APIARY_INSTANTIATE_AS("gesv", einsums::GeneralRuntimeTensor<float,              
 APIARY_INSTANTIATE_AS("gesv", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("gesv", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("gesv", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    auto gesv(AType *A, BType *B) -> int {
+// clang-format on
+auto gesv(AType *A, BType *B) -> int {
     if (detail::tensor_rank(*A) != 2 || (detail::tensor_rank(*B) != 1 && detail::tensor_rank(*B) != 2)) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::gesv requires A rank-2 and B rank-1 or rank-2; got {}, {}.", detail::tensor_rank(*A),
                                 detail::tensor_rank(*B));
@@ -6226,8 +6223,8 @@ APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<float>)
 APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("getrf", einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    auto getrf(AType *A, LuPivots *pivots) -> int {
+// clang-format on
+auto getrf(AType *A, LuPivots *pivots) -> int {
     if (detail::tensor_rank(*A) != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::getrf requires a rank-2 tensor; got rank {}.", detail::tensor_rank(*A));
     }
@@ -6273,8 +6270,8 @@ APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<float,             
 APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>,               einsums::RuntimeTensorView<double>)
 APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>,  einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("getrs", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
+// clang-format on
+auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
     if (detail::tensor_rank(A) != 2 || (detail::tensor_rank(*B) != 1 && detail::tensor_rank(*B) != 2)) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::getrs requires A rank-2 and B rank-1 or rank-2; got {}, {}.", detail::tensor_rank(A),
                                 detail::tensor_rank(*B));
@@ -6357,8 +6354,8 @@ APIARY_INSTANTIATE_AS("diis_add_pair", einsums::GeneralRuntimeTensor<std::comple
 APIARY_INSTANTIATE_AS("diis_add_pair", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 APIARY_INSTANTIATE_AS("diis_add_pair", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
 APIARY_INSTANTIATE_AS("diis_add_pair", einsums::RuntimeTensorView<std::complex<double>>,                                         einsums::RuntimeTensorView<std::complex<double>>)
-    // clang-format on
-    void diis_add_pair(DiisAccelerator<typename AmpType::ValueType> *accelerator, AmpType *amplitude, StepType *step) {
+// clang-format on
+void diis_add_pair(DiisAccelerator<typename AmpType::ValueType> *accelerator, AmpType *amplitude, StepType *step) {
     using T = typename AmpType::ValueType;
     if (accelerator == nullptr || amplitude == nullptr || step == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::diis_add_pair: null accelerator or operand");
@@ -6387,8 +6384,8 @@ APIARY_INSTANTIATE_AS("diis_step", float)
 APIARY_INSTANTIATE_AS("diis_step", double)
 APIARY_INSTANTIATE_AS("diis_step", std::complex<float>)
 APIARY_INSTANTIATE_AS("diis_step", std::complex<double>)
-    // clang-format on
-    void diis_step(std::shared_ptr<DiisAccelerator<T>> const &accelerator) {
+// clang-format on
+void diis_step(std::shared_ptr<DiisAccelerator<T>> const &accelerator) {
     if (!accelerator) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::diis_step: null accelerator");
     }
@@ -6441,8 +6438,8 @@ APIARY_INSTANTIATE_AS("invert", einsums::GeneralRuntimeTensor<float,            
 APIARY_INSTANTIATE_AS("invert", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("invert", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("invert", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    void invert(AType *A) {
+// clang-format on
+void invert(AType *A) {
     if (detail::tensor_rank(*A) != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::invert requires rank-2 tensor; got rank {}.", detail::tensor_rank(*A));
     }
@@ -6489,11 +6486,11 @@ APIARY_INSTANTIATE_AS("svd", einsums::GeneralRuntimeTensor<float,               
 APIARY_INSTANTIATE_AS("svd", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("svd", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("svd", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    auto svd(AType const &A) -> std::tuple<
-        einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
-        einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
-        einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
+// clang-format on
+auto svd(AType const &A) -> std::tuple<
+    einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
+    einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
+    einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
     detail::reject_if_capturing("cg::svd(A) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::svd requires rank-2 input; got rank {}.", A.rank());
@@ -6538,11 +6535,11 @@ APIARY_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<float,            
 APIARY_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("svd_dd", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    auto svd_dd(AType const &A, linear_algebra::Vectors job = linear_algebra::Vectors::ALL) -> std::tuple<
-        einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
-        einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
-        einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
+// clang-format on
+auto svd_dd(AType const &A, linear_algebra::Vectors job = linear_algebra::Vectors::ALL) -> std::tuple<
+    einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
+    einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
+    einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
     detail::reject_if_capturing("cg::svd_dd(A) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::svd_dd requires rank-2 input; got rank {}.", A.rank());
@@ -6591,11 +6588,11 @@ APIARY_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<float,     
 APIARY_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("truncated_svd", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    auto truncated_svd(AType const &A, size_t k) -> std::tuple<
-        einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
-        einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
-        einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
+// clang-format on
+auto truncated_svd(AType const &A, size_t k) -> std::tuple<
+    einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
+    einsums::GeneralRuntimeTensor<RemoveComplexT<typename AType::ValueType>, std::allocator<RemoveComplexT<typename AType::ValueType>>>,
+    einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
     detail::reject_if_capturing("cg::truncated_svd(A, k) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::truncated_svd requires rank-2 input; got rank {}.", A.rank());
@@ -6643,10 +6640,10 @@ APIARY_EXPOSE
 APIARY_MODULE("linalg")
 APIARY_INSTANTIATE_AS("truncated_syev", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>)
 APIARY_INSTANTIATE_AS("truncated_syev", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-    // clang-format on
-    auto truncated_syev(AType const &A, size_t k)
-        -> std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
-                      einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
+// clang-format on
+auto truncated_syev(AType const &A, size_t k)
+    -> std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
+                  einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
     detail::reject_if_capturing("cg::truncated_syev(A, k) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::truncated_syev requires rank-2 input; got rank {}.", A.rank());
@@ -6684,10 +6681,9 @@ APIARY_INSTANTIATE_AS("qr", einsums::GeneralRuntimeTensor<float,                
 APIARY_INSTANTIATE_AS("qr", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("qr", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("qr", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    auto qr(AType const &A)
-        -> std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
-                      einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
+// clang-format on
+auto qr(AType const &A) -> std::tuple<einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>,
+                                      einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>>> {
     detail::reject_if_capturing("cg::qr(A) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::qr requires rank-2 input; got rank {}.", A.rank());
@@ -6727,10 +6723,10 @@ APIARY_EXPOSE
 APIARY_MODULE("linalg")
 APIARY_INSTANTIATE_AS("pow", einsums::GeneralRuntimeTensor<float,  std::allocator<float>>)
 APIARY_INSTANTIATE_AS("pow", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
-    // clang-format on
-    auto pow(AType const &A, typename AType::ValueType alpha,
-             typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon())
-        -> einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>> {
+// clang-format on
+auto pow(AType const &A, typename AType::ValueType alpha,
+         typename AType::ValueType cutoff = std::numeric_limits<typename AType::ValueType>::epsilon())
+    -> einsums::GeneralRuntimeTensor<typename AType::ValueType, std::allocator<typename AType::ValueType>> {
     detail::reject_if_capturing("cg::pow(A, alpha) returning form cannot be used during graph capture.");
     if (A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::pow requires rank-2 input; got rank {}.", A.rank());
@@ -6768,8 +6764,8 @@ APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<float,               
 APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<double,               std::allocator<double>>)
 APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<std::complex<float>,  std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("det", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    auto det(AType const &A) -> typename AType::ValueType {
+// clang-format on
+auto det(AType const &A) -> typename AType::ValueType {
     detail::reject_if_capturing("cg::det(A) returning scalar cannot be used during graph capture.");
     if (A.rank() != 2 || A.dim(0) != A.dim(1)) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::det requires square rank-2 input; got rank {}.", A.rank());
@@ -7058,8 +7054,8 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
             // batch_stride, the batch axes must form a contiguous
             // outermost block. Row-major outermost = [0..num_batch-1];
             // col-major outermost = [rank-num_batch..rank-1].
-            bool const all_contig = A.impl().is_contiguous() && B.impl().is_contiguous() && C->impl().is_contiguous() &&
-                                    layout_matches_flag(A.impl()) && layout_matches_flag(B.impl()) && layout_matches_flag(C->impl());
+            bool const all_contig    = A.impl().is_contiguous() && B.impl().is_contiguous() && C->impl().is_contiguous() &&
+                                       layout_matches_flag(A.impl()) && layout_matches_flag(B.impl()) && layout_matches_flag(C->impl());
             bool const all_row_major = A.impl().is_row_major() && B.impl().is_row_major() && C->impl().is_row_major();
             bool const all_col_major = A.impl().is_column_major() && B.impl().is_column_major() && C->impl().is_column_major();
 
@@ -7459,10 +7455,10 @@ APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<float>, einsums::Til
 APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<double>)
 APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>, einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("einsum", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
-    // clang-format on
-    void einsum_python(std::string const &spec, CType *C, AType const &A, BType const &B,
-                       typename CType::ValueType c_pf  = typename CType::ValueType{0},
-                       typename AType::ValueType ab_pf = typename AType::ValueType{1}, bool conj_a = false, bool conj_b = false) {
+// clang-format on
+void einsum_python(std::string const &spec, CType *C, AType const &A, BType const &B,
+                   typename CType::ValueType c_pf  = typename CType::ValueType{0},
+                   typename AType::ValueType ab_pf = typename AType::ValueType{1}, bool conj_a = false, bool conj_b = false) {
     einsum(EinsumFormatString(std::string_view{spec}), c_pf, C, ab_pf, A, B, conj_a, conj_b);
 }
 
@@ -7694,8 +7690,8 @@ APIARY_INSTANTIATE_AS("custom", einsums::GeneralRuntimeTensor<float, std::alloca
 APIARY_INSTANTIATE_AS("custom", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 APIARY_INSTANTIATE_AS("custom", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
 APIARY_INSTANTIATE_AS("custom", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
-    // clang-format on
-    void custom(std::string label, std::function<void()> executor, TensorType *target) {
+// clang-format on
+void custom(std::string label, std::function<void()> executor, TensorType *target) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         executor();

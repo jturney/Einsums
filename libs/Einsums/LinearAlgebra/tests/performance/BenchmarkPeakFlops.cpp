@@ -80,7 +80,9 @@ void bench_peak_all_threads(size_t N) {
 #ifdef _OPENMP
 #    pragma omp parallel reduction(+ : total)
 #endif
-        { total += peak_flops_kernel(N); }
+        {
+            total += peak_flops_kernel(N);
+        }
         sink = total;
     });
 

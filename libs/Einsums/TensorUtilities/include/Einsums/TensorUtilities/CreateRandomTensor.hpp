@@ -270,10 +270,8 @@ auto create_random_tensor(std::string const &name, Indices const &index) -> Runt
  */
 template <typename T = double>
 APIARY_EXPOSE APIARY_INSTANTIATE_AS("create_random_tensor", double) APIARY_INSTANTIATE_AS("create_random_tensor", float)
-    APIARY_INSTANTIATE_AS("create_random_tensor", std::complex<double>)
-        APIARY_INSTANTIATE_AS("create_random_tensor", std::complex<float>) auto create_random_tensor(std::string const         &name,
-                                                                                                     std::vector<size_t> const &dims)
-            -> RuntimeTensor<T> {
+APIARY_INSTANTIATE_AS("create_random_tensor", std::complex<double>) APIARY_INSTANTIATE_AS("create_random_tensor", std::complex<float>) auto
+create_random_tensor(std::string const &name, std::vector<size_t> const &dims) -> RuntimeTensor<T> {
     return create_random_tensor<T, false>(name, dims);
 }
 

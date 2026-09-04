@@ -475,7 +475,7 @@ BiggestTypeT<A, B, C> impl_dot(einsums::detail::TensorImpl<A> const &a, einsums:
 }
 
 extern template EINSUMS_EXTERN_TEMPLATE_EXPORT float  impl_dot<float, float>(einsums::detail::TensorImpl<float> const &a,
-                                                                            einsums::detail::TensorImpl<float> const &b);
+                                                                             einsums::detail::TensorImpl<float> const &b);
 extern template EINSUMS_EXTERN_TEMPLATE_EXPORT double impl_dot<double, double>(einsums::detail::TensorImpl<double> const &a,
                                                                                einsums::detail::TensorImpl<double> const &b);
 extern template EINSUMS_EXTERN_TEMPLATE_EXPORT        std::complex<float>
@@ -486,7 +486,7 @@ impl_dot<std::complex<double>, std::complex<double>>(einsums::detail::TensorImpl
                                                      einsums::detail::TensorImpl<std::complex<double>> const &b);
 
 extern template EINSUMS_EXTERN_TEMPLATE_EXPORT float  impl_true_dot<float, float>(einsums::detail::TensorImpl<float> const &a,
-                                                                                 einsums::detail::TensorImpl<float> const &b);
+                                                                                  einsums::detail::TensorImpl<float> const &b);
 extern template EINSUMS_EXTERN_TEMPLATE_EXPORT double impl_true_dot<double, double>(einsums::detail::TensorImpl<double> const &a,
                                                                                     einsums::detail::TensorImpl<double> const &b);
 extern template EINSUMS_EXTERN_TEMPLATE_EXPORT        std::complex<float>

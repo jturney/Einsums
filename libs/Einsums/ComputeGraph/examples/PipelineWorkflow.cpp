@@ -89,7 +89,7 @@ int einsums_main() {
                                                 diff = std::sqrt(diff);
                                                 einsums::println("  Iteration {}: ||delta F|| = {:.2e}", iter + 1, diff);
                                                 return diff >= convergence_threshold;
-                                            });
+                                                       });
         cg::CaptureGuard guard(loop_body);
 
         // Save current F for convergence check

@@ -204,12 +204,12 @@ struct ordinal {
 
 #define OPERATOR(OP)                                                                                                                       \
     template <std::integral OtherType>                                                                                                     \
-    constexpr ordinal<IntType> &operator OP##=(const ordinal<OtherType> &other) {                                                          \
+    constexpr ordinal<IntType> &operator OP## = (const ordinal<OtherType> &other) {                                                        \
         val_ OP## = other.val_;                                                                                                            \
         return *this;                                                                                                                      \
     }                                                                                                                                      \
     template <std::integral OtherType>                                                                                                     \
-    constexpr ordinal<IntType> &operator OP##=(const OtherType &other) {                                                                   \
+    constexpr ordinal<IntType> &operator OP## = (const OtherType &other) {                                                                 \
         val_ OP## = other;                                                                                                                 \
         return *this;                                                                                                                      \
     }

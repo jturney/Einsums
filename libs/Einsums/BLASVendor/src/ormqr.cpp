@@ -30,7 +30,7 @@ extern void FC_GLOBAL(zunmqr, ZUNMQR)(char *, char *, int_t *, int_t *, int_t *,
 
 #define ORMQR(Type, lc, uc)                                                                                                                \
     auto lc##ormqr(char side, char trans, int_t m, int_t n, int_t k, Type const *a, int_t lda, Type const *tau, Type *c, int_t ldc)        \
-        ->int_t {                                                                                                                          \
+        -> int_t {                                                                                                                         \
         LabeledSection0();                                                                                                                 \
                                                                                                                                            \
         int_t info{0};                                                                                                                     \
@@ -58,7 +58,7 @@ ORMQR(double, d, D);
 
 #define UNMQR(Type, lc, uc)                                                                                                                \
     auto lc##unmqr(char side, char trans, int_t m, int_t n, int_t k, Type const *a, int_t lda, Type const *tau, Type *c, int_t ldc)        \
-        ->int_t {                                                                                                                          \
+        -> int_t {                                                                                                                         \
         LabeledSection0();                                                                                                                 \
                                                                                                                                            \
         int_t info{0};                                                                                                                     \

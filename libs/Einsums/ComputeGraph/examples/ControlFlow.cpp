@@ -98,8 +98,7 @@ int einsums_main() {
         }
 
         // Loop: halve C three times (lambda form)
-        graph.add_loop(
-            "halve", 3, [](size_t iter) { return iter < 2; }, [&]() { cg::scale(0.5, &C); });
+        graph.add_loop("halve", 3, [](size_t iter) { return iter < 2; }, [&]() { cg::scale(0.5, &C); });
 
         // Post-loop: scale by 8 (restores original)
         {

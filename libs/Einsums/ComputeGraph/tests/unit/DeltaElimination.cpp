@@ -148,8 +148,7 @@ TEST_CASE("a delta contraction feeding another contraction disappears", "[Comput
         }
     };
 
-    auto const pass = require_same_bits(
-        build, [&] { C.zero(); }, [&] { return flatten(C); });
+    auto const pass = require_same_bits(build, [&] { C.zero(); }, [&] { return flatten(C); });
     CHECK(pass->num_eliminated() == 1);
     CHECK(pass->num_dissolved() == 1);
 
@@ -181,8 +180,7 @@ TEST_CASE("a delta on the left of the contraction is eliminated too", "[ComputeG
         }
     };
 
-    auto const pass = require_same_bits(
-        build, [&] { C.zero(); }, [&] { return flatten(C); });
+    auto const pass = require_same_bits(build, [&] { C.zero(); }, [&] { return flatten(C); });
     CHECK(pass->num_eliminated() == 1);
 }
 
@@ -209,8 +207,7 @@ TEST_CASE("a chain of deltas collapses in one visit", "[ComputeGraph][DeltaElimi
         }
     };
 
-    auto const pass = require_same_bits(
-        build, [&] { C.zero(); }, [&] { return flatten(C); });
+    auto const pass = require_same_bits(build, [&] { C.zero(); }, [&] { return flatten(C); });
     CHECK(pass->num_eliminated() == 2);
     CHECK(pass->num_dissolved() == 2);
 }
@@ -228,8 +225,7 @@ TEST_CASE("a delta contraction writing a user tensor keeps a permute", "[Compute
         cg::einsum("ik;kj->ij", &C, A, delta);
     };
 
-    auto const pass = require_same_bits(
-        build, [&] { C.zero(); }, [&] { return flatten(C); });
+    auto const pass = require_same_bits(build, [&] { C.zero(); }, [&] { return flatten(C); });
     CHECK(pass->num_eliminated() == 1);
     CHECK(pass->num_dissolved() == 0); // the target escapes, so it is still written
 

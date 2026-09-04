@@ -145,8 +145,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: serial replay of 100-node chain", "[Comp
     capture_chain(graph, A, pool);
     graph.execute(); // first execute: sort + validation warm-up
 
-    auto t_replay = time_us(
-        "graph replay", [&]() { graph.execute(); }, kReps);
+    auto t_replay = time_us("graph replay", [&]() { graph.execute(); }, kReps);
 
     auto t_eager = time_us(
         "eager equivalent",
@@ -184,10 +183,8 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: dataflow replay of 100-node chain", "[Co
     cg::SequentialExecutor seq;
     cg::DataflowExecutor   df;
 
-    auto t_seq = time_us(
-        "sequential", [&]() { graph.execute(seq); }, kReps);
-    auto t_df = time_us(
-        "dataflow", [&]() { graph.execute(df); }, kReps);
+    auto t_seq = time_us("sequential", [&]() { graph.execute(seq); }, kReps);
+    auto t_df  = time_us("dataflow", [&]() { graph.execute(df); }, kReps);
 
     double const scaffold_per_node_us = (t_df.avg - t_seq.avg) / (2.0 * kChainLen);
     fmt::println("[GraphOverhead dataflow replay 100n] seq: {:.2f} us  df: {:.2f} us  scaffold: {:.2f} us/node", t_seq.avg, t_df.avg,
@@ -231,10 +228,8 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: dataflow submission of 200 independent n
     cg::SequentialExecutor seq;
     cg::DataflowExecutor   df;
 
-    auto t_seq = time_us(
-        "sequential", [&]() { graph.execute(seq); }, kReps);
-    auto t_df = time_us(
-        "dataflow", [&]() { graph.execute(df); }, kReps);
+    auto t_seq = time_us("sequential", [&]() { graph.execute(seq); }, kReps);
+    auto t_df  = time_us("dataflow", [&]() { graph.execute(df); }, kReps);
 
     double const submit_per_node_us = (t_df.avg - t_seq.avg) / static_cast<double>(kNoopNodes);
     fmt::println("[GraphOverhead dataflow submit 200n] seq: {:.2f} us  df: {:.2f} us  submit: {:.3f} us/node", t_seq.avg, t_df.avg,
@@ -289,8 +284,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: CSE scan over 500/1000/2000 distinct nod
         build(graph);
         size_t const before = graph.num_nodes();
 
-        auto t_cse = time_us(
-            "CSE", [&]() { graph.apply<cg::passes::CSE>(); }, kReps);
+        auto t_cse = time_us("CSE", [&]() { graph.apply<cg::passes::CSE>(); }, kReps);
 
         size_t const removed = before - graph.num_nodes();
         fmt::println("[GraphOverhead CSE {}n] {:.1f} us ({:.3f} us/node, {} removed)", count, t_cse.avg,

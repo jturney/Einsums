@@ -111,7 +111,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE APIARY_GETTER("planned_tensor_bytes") [[nodiscard]] size_t planned_tensor_bytes() const { return _planned_tensor_bytes; }
 
     APIARY_EXPOSE APIARY_GETTER("total_memory") [[nodiscard]] size_t total_memory() const { return _total_memory; }
-    APIARY_EXPOSE APIARY_GETTER("peak_memory") [[nodiscard]] size_t peak_memory() const { return _peak_memory; }
+    APIARY_EXPOSE APIARY_GETTER("peak_memory") [[nodiscard]] size_t  peak_memory() const { return _peak_memory; }
 
     /// Device memory: total across all device-resident tensors.
     APIARY_EXPOSE APIARY_GETTER("device_total_memory") [[nodiscard]] size_t device_total_memory() const { return _device_total_memory; }

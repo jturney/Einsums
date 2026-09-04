@@ -458,5 +458,5 @@ inline std::string_view op_kind_name(OpKind kind) {
            kind == OpKind::DiskRead || kind == OpKind::DiskWrite;
 }
 
-} // namespace APIARY_MODULE("graph")compute_graph
+} // namespace compute_graph
 EINSUMS_NAMESPACE_END()

@@ -746,7 +746,7 @@ std::size_t terminal_width() {
         }
     }
 #else
-    struct winsize ws {};
+    struct winsize ws{};
     if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && static_cast<std::size_t>(ws.ws_col) >= k_min_width) {
         return (std::min)(static_cast<std::size_t>(ws.ws_col), k_max_width);
     }

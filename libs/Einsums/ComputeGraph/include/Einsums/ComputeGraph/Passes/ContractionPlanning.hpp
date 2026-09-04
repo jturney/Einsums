@@ -162,7 +162,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// How many GEMM chains the last apply() re-parenthesized. The firing count: a differential
     /// test that sees no difference has to know whether this pass ran or merely declined.
-    APIARY_EXPOSE APIARY_GETTER("chains_restructured") [[nodiscard]] size_t chains_restructured() const { return _chains_restructured; }
+    APIARY_EXPOSE APIARY_GETTER("chains_restructured") [[nodiscard]] size_t   chains_restructured() const { return _chains_restructured; }
     APIARY_EXPOSE APIARY_GETTER("intermediates_created") [[nodiscard]] size_t intermediates_created() const {
         return _intermediates_created;
     }

@@ -26,7 +26,7 @@ extern void FC_GLOBAL(zunglq, ZUNGLQ)(int_t *, int_t *, int_t *, std::complex<do
 }
 
 #define ORGLQ(Type, lc, uc)                                                                                                                \
-    auto lc##orglq(int_t m, int_t n, int_t k, Type *a, int_t lda, const Type *tau)->int_t {                                                \
+    auto lc##orglq(int_t m, int_t n, int_t k, Type *a, int_t lda, const Type *tau) -> int_t {                                              \
         LabeledSection0();                                                                                                                 \
                                                                                                                                            \
         int_t info{0};                                                                                                                     \
@@ -58,7 +58,7 @@ ORGLQ(double, d, D);
 ORGLQ(float, s, S);
 
 #define UNGLQ(Type, lc, uc)                                                                                                                \
-    auto lc##unglq(int_t m, int_t n, int_t k, Type *a, int_t lda, const Type *tau)->int_t {                                                \
+    auto lc##unglq(int_t m, int_t n, int_t k, Type *a, int_t lda, const Type *tau) -> int_t {                                              \
         LabeledSection0();                                                                                                                 \
                                                                                                                                            \
         int_t info{0};                                                                                                                     \
