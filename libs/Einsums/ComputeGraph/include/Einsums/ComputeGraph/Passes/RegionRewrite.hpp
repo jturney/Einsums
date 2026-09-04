@@ -127,6 +127,33 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @param[in] on Whether to collect.
     APIARY_EXPOSE void set_dump(bool on) { _dump = on; }
 
+    /**
+     * @brief Check every accepted rewrite's reported cost against the NODES, off by default.
+     *
+     * The cost line is what a report offers as evidence a rewrite paid, and it is derived from
+     * the algebra alone: a term the rewrite built carries whatever cost the client gave it, and
+     * nothing compared that to the nodes the lowering then emitted. The after side read zero on
+     * every rewrite `MultiTermFactorization` had ever made, for exactly that reason, and went
+     * unread until a case asked whether a loop space had really left.
+     *
+     * With this on, the before side is checked against the flops of the region's own nodes and
+     * the after side against the flops of the nodes the lowering emitted, both through
+     * @ref symbolic_cost_for. Two derivations of one number, which is what makes either of them
+     * evidence. Off by default because it walks the node set once per rewrite and a pipeline in
+     * the default manager should not pay for a self-check.
+     *
+     * @param[in] on Whether to check.
+     */
+    APIARY_EXPOSE void set_verify_costs(bool on) { _verify_costs = on; }
+
+    /// @brief Reported costs the node set disagreed with, from the last run.
+    ///
+    /// Empty unless @ref set_verify_costs is on, and empty when the two derivations agree.
+    /// @return One line per disagreement, naming the region and both numbers.
+    APIARY_EXPOSE APIARY_GETTER("cost_mismatches") [[nodiscard]] std::vector<std::string> cost_mismatches() const {
+        return _cost_mismatches;
+    }
+
     /// @brief How many regions were formed on the last run.
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("regions_formed") [[nodiscard]] std::size_t regions_formed() const { return _regions_formed; }
@@ -218,11 +245,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
   protected:
   private:
-    bool                    _dump{false};
-    std::vector<RegionDump> _dumps;
-    std::size_t             _regions_formed{0};
-    std::size_t             _regions_rewritten{0};
-    std::size_t             _regions_declined{0};
+    bool                     _dump{false};
+    bool                     _verify_costs{false};
+    std::vector<std::string> _cost_mismatches;
+    std::vector<RegionDump>  _dumps;
+    std::size_t              _regions_formed{0};
+    std::size_t              _regions_rewritten{0};
+    std::size_t              _regions_declined{0};
 
     /// Why regions were turned away, counted. A subset of @ref skip_reasons: those are every
     /// decline the pass made including per-candidate ones, and these are the region-level ones

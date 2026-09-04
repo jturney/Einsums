@@ -208,3 +208,40 @@ def test_the_order_it_picks_is_the_one_a_hand_capture_would_use():
 
     assert pass_.num_relaid_out == 0, "the hand-written order was already the one it wants"
     assert_close(np.asarray(R), _expected(a, b, d), dtype="float64")
+
+
+def test_the_symbolic_cost_of_the_graph_does_not_move():
+    """The second derivation this pass admits, which is not a region cost line.
+
+    LayoutAssignment is not a region rewrite: it has no raised algebra, so there
+    is no before-and-after cost polynomial to check against the nodes the way
+    DeltaElimination and MultiTermFactorization have one. What it does have is a
+    stronger invariant, and one worth pinning for exactly the reason the region
+    check exists. Re-laying out a tensor changes which axis is stored fastest and
+    which copies a kernel makes inside itself. It changes no contraction, so the
+    graph's total symbolic FLOPS must come out identical, and a pass that moved
+    them would have rewritten algebra it does not claim to touch.
+
+    Traffic is deliberately not asserted: the copies this pass removes are the
+    ones no node represents, so the model does not count them either way.
+    """
+    a, b, d = _operands("float64")
+
+    before = cg.Graph("layout-flops-before")
+    _r0, _p0 = _build(before, a, b, d, "float64", "i,j,x", (I, J, X))
+    scaling_before = cg.ScalingAnalysis()
+    pm_before = cg.PassManager()
+    pm_before.add(scaling_before)
+    pm_before.run(before)
+
+    after = cg.Graph("layout-flops-after")
+    _r1, _p1 = _build(after, a, b, d, "float64", "i,j,x", (I, J, X))
+    layout = cg.LayoutAssignment()
+    scaling_after = cg.ScalingAnalysis()
+    pm_after = cg.PassManager()
+    pm_after.add(layout)
+    pm_after.add(scaling_after)
+    assert pm_after.run(after)
+    assert layout.num_relaid_out == 1
+
+    assert scaling_after.total_flops_str() == scaling_before.total_flops_str()

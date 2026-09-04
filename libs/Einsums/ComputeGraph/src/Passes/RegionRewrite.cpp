@@ -17,16 +17,37 @@
 
 #include <algorithm>
 #include <string_view>
+#include <unordered_set>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 void RegionRewrite::reset_stats() {
     _dumps.clear();
     _decline_reasons.clear();
+    _cost_mismatches.clear();
     _regions_formed    = 0;
     _regions_rewritten = 0;
     _regions_declined  = 0;
 }
+
+namespace {
+
+/// The flops of every node in @p nodes that carries a contraction, through the SAME formula the
+/// raise gives a term. Nothing else in the algebra is priced, so nothing else is priced here.
+SymbolicPoly node_flops(std::vector<Node> const &nodes, auto &&include) {
+    SymbolicPoly out;
+    for (auto const &node : nodes) {
+        if (!include(node)) {
+            continue;
+        }
+        if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data); desc != nullptr) {
+            out += symbolic_cost_for(*desc).flops;
+        }
+    }
+    return out;
+}
+
+} // namespace
 
 void RegionRewrite::decline(std::string_view reason, std::string_view detail) {
     ++_regions_declined;
@@ -64,6 +85,12 @@ std::vector<std::string> RegionRewrite::explain() const {
         if (!dump.before.empty()) {
             out.push_back(fmt::format("      before: {}\n      after:  {}", dump.before, dump.after));
         }
+    }
+
+    // A disagreement between the two derivations is a finding rather than a diagnostic, so it is
+    // printed wherever the cost line it contradicts is.
+    for (auto const &line : _cost_mismatches) {
+        out.push_back(fmt::format("{}: {}", name(), line));
     }
 
     for (auto &line : describe()) {
@@ -136,11 +163,15 @@ bool RegionRewrite::run(Graph &graph) {
             record.after = changed ? rewritten.to_string(registry) : record.before;
             report(2, fmt::format("region {} ({} nodes)\n  before:\n{}  after:\n{}", index, region.size(), record.before, record.after));
         }
+        SymbolicPoly expr_before;
+        SymbolicPoly expr_after;
         if (changed) {
             // Only for an accepted rewrite: summing a polynomial per term is cheap, and doing
             // it for regions nobody touched would be paid on every graph for nothing.
-            record.cost_before = raised->total_cost().flops.to_string(registry);
-            record.cost_after  = rewritten.total_cost().flops.to_string(registry);
+            expr_before        = raised->total_cost().flops;
+            expr_after         = rewritten.total_cost().flops;
+            record.cost_before = expr_before.to_string(registry);
+            record.cost_after  = expr_after.to_string(registry);
         }
         // Recorded when dumping OR when something changed, so the structural report has a line
         // per rewrite without the option being on; an untouched region with dumping off is not
@@ -152,6 +183,20 @@ bool RegionRewrite::run(Graph &graph) {
             continue;
         }
 
+        // The node-side derivation of the BEFORE number, taken while the region's own nodes are
+        // still in the graph. Compared rather than assumed: it is what says the raise reached
+        // every statement and that `total_cost`'s reachability pruning kept the live ones.
+        SymbolicPoly               nodes_before;
+        std::unordered_set<NodeId> before_ids;
+        if (_verify_costs) {
+            auto const &all  = graph.nodes();
+            auto const  span = [&](Node const &node) { return std::ranges::find(region.nodes, node.id) != region.nodes.end(); };
+            nodes_before     = node_flops(all, span);
+            for (auto const &node : all) {
+                before_ids.insert(node.id);
+            }
+        }
+
         if (auto lowered = lower_region(graph, region, rewritten); !lowered) {
             // The graph is untouched: lower_region builds every node before it
             // erases anything, so a refusal costs the rewrite and nothing else.
@@ -159,6 +204,22 @@ bool RegionRewrite::run(Graph &graph) {
             decline(lowered.error().reason, lowered.error().detail);
             continue;
         }
+
+        if (_verify_costs) {
+            // The emitted nodes are the ones whose id the graph did not hold before. Keyed by id
+            // rather than by position, because lowering sorts the graph and the splice does not
+            // stay where it was put.
+            SymbolicPoly const nodes_after = node_flops(graph.nodes(), [&](Node const &node) { return !before_ids.contains(node.id); });
+            if (!(nodes_before == expr_before)) {
+                _cost_mismatches.push_back(fmt::format("region {} reports a before-cost of {} and its nodes cost {}", index,
+                                                       expr_before.to_string(registry), nodes_before.to_string(registry)));
+            }
+            if (!(nodes_after == expr_after)) {
+                _cost_mismatches.push_back(fmt::format("region {} reports an after-cost of {} and the nodes it emitted cost {}", index,
+                                                       expr_after.to_string(registry), nodes_after.to_string(registry)));
+            }
+        }
+
         ++_regions_rewritten;
         modified = true;
         report(2, fmt::format("rewrote region {} ({} nodes)", index, region.size()));

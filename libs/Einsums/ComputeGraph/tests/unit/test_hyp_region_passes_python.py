@@ -271,8 +271,9 @@ def _region_pass_manager():
     # Off by default, so a fuzz that did not switch it on would cover the pass
     # by never running it.
     mtf.set_search_enabled(True)
+    delta = cg.DeltaElimination()
     passes = [
-        cg.DeltaElimination(),
+        delta,
         cg.LinearCombinationContractionFolding(),
         cg.DistributiveFactoring(),
         mtf,
@@ -280,6 +281,11 @@ def _region_pass_manager():
         cg.ContractionPlanning(),
         cg.Materialization(),
     ]
+    # The region rewrites check their own cost line against the nodes they emit. Off by default
+    # because it walks the node set once per rewrite; on here, because a report offering a cost
+    # as evidence is exactly the kind of claim a fuzz should be checking.
+    for region_pass in (delta, mtf):
+        region_pass.set_verify_costs(True)
     pm = cg.PassManager()
     for p in passes:
         pm.add(p)
@@ -451,6 +457,13 @@ def _check(prog, dtype, seed=0):
     # The storage invariants first: they hold whatever the numbers did, and a
     # rewrite that leaves a buffer behind moves none of them.
     assert_materialization_invariants(graph, f"region pipeline, dtype={dtype}")
+
+    for region_pass in passes:
+        mismatches = getattr(region_pass, "cost_mismatches", [])
+        assert not mismatches, (
+            f"{region_pass.name} reported a cost the nodes it emitted do not agree with\n"
+            + "\n".join(mismatches)
+        )
 
     for after in _mtf_after_costs(pm):
         assert after != "0", (

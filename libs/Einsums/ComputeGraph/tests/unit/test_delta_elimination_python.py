@@ -338,3 +338,52 @@ def test_a_batched_letter_over_disjoint_spaces_is_declined():
     assert not pm.run(g)
     assert pass_.num_zero_blocks == 0
     assert "batched rather than summed" in pm.explain()
+
+
+def test_the_reported_cost_agrees_with_the_nodes_it_emitted():
+    """Both halves of the pass, against the nodes rather than against the algebra.
+
+    The zero-block half is the interesting one: it leaves a Scale, which carries
+    no contraction and therefore no flops, so the after side is legitimately
+    zero and the check has to agree with that rather than with a guess.
+    """
+    rng = np.random.default_rng(11)
+    a = rng.standard_normal((4, 5))
+    d = rng.standard_normal((5, 3))
+
+    graph = cg.Graph("delta-cost-check")
+    A = _tensor("A", a, "float64")
+    D = _tensor("D", d, "float64")
+    C = _tensor("C", np.zeros((4, 3)), "float64")
+    delta = _tensor("delta", np.eye(5), "float64")
+    cg.annotate(delta, tag="identity", graph=graph)
+    tmp = graph.create_zero_tensor("tmp", [4, 5], intermediate=True, dtype="float64")
+    with cg.capture(graph):
+        einsums.einsum("i,j <- i,k ; k,j", tmp, A, delta)
+        einsums.einsum("i,l <- i,j ; j,l", C, tmp, D)
+
+    pass_ = cg.DeltaElimination()
+    pass_.set_verify_costs(True)
+    pm = cg.PassManager()
+    pm.add(pass_)
+    assert pm.run(graph)
+    assert pass_.num_eliminated == 1
+    assert pass_.cost_mismatches == [], pass_.cost_mismatches
+
+    zero = cg.Graph("delta-zero-cost-check")
+    zero.set_space_registry(_disjoint_registry())
+    Az = _tensor("Az", rng.standard_normal((4, 4)), "float64")
+    Bz = _tensor("Bz", np.zeros((4, 4)), "float64")
+    Cz = _tensor("Cz", rng.standard_normal((4, 4)), "float64")
+    with cg.capture(zero):
+        einsums.einsum("i,j <- i,k ; k,j", Cz, Az, Bz, c_pf=2.0)
+    cg.annotate(Az, ("aux", "occ"), graph=zero)
+    cg.annotate(Bz, ("virt", "aux"), graph=zero)
+
+    zero_pass = cg.DeltaElimination()
+    zero_pass.set_verify_costs(True)
+    pm2 = cg.PassManager()
+    pm2.add(zero_pass)
+    assert pm2.run(zero)
+    assert zero_pass.num_zero_blocks == 1
+    assert zero_pass.cost_mismatches == [], zero_pass.cost_mismatches

@@ -310,3 +310,39 @@ def test_the_ccsd_tau_terms_share_the_occupied_intermediate(dtype):
     if dtype == "float64":
         want = 0.25 * np.einsum("ijef,mnef,mnab->ijab", tau_np, oovv_np, tau_np)
         assert_close(got, want, dtype=dtype)
+
+
+def test_the_reported_cost_agrees_with_the_nodes_it_emitted():
+    """The cost line as a SECOND derivation rather than a claim.
+
+    The report prints what a region cost before and after, and it is derived
+    from the algebra alone: a term the rewrite builds carries whatever cost the
+    rewrite gave it. Nothing compared that to the nodes the lowering then
+    emitted, and the after side read zero on every rewrite this pass had ever
+    made. With ``set_verify_costs`` on, the before side is checked against the
+    flops of the region's own nodes and the after side against the flops of the
+    nodes it emitted, both through the symbolic cost the analysis pass uses.
+    """
+    tau_np, oovv_np = _ccsd_operands()
+    graph = cg.Graph("mtf-cost-check")
+    _t2n, _pool = _build_ccsd_tau_terms(graph, tau_np, oovv_np, "float64")
+
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    mtf.set_verify_costs(True)
+    pm = cg.PassManager()
+    pm.add(mtf)
+    assert pm.run(graph)
+    assert mtf.num_shared == 1
+    assert mtf.cost_mismatches == [], mtf.cost_mismatches
+
+    # And the check is off unless it is asked for, so the default pipeline pays
+    # nothing for it.
+    quiet = cg.MultiTermFactorization()
+    quiet.set_search_enabled(True)
+    second = cg.Graph("mtf-cost-check-off")
+    _r, _p = _build_ccsd_tau_terms(second, tau_np, oovv_np, "float64")
+    pm2 = cg.PassManager()
+    pm2.add(quiet)
+    assert pm2.run(second)
+    assert quiet.cost_mismatches == []
