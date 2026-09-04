@@ -746,7 +746,14 @@ bool ContractionPlanning::run(Graph &graph) {
             // ── Graph restructuring ────────────────────────────────────────────
             // leaves and p are already computed above. Build optimal tree from DP.
             {
-                size_t            inter_count = 0;
+                // Seeded from the running total rather than from zero, so two chains in one graph
+                // cannot both declare `_cp_16x16_0`. Two tensors under one name is survivable
+                // today and is a trap tomorrow: every question this module asks about a
+                // lifecycle is name-keyed (already_materialized_in here, FreeInsertion's own
+                // scan, the manifest's bind), so a colliding pair would have one of them answer
+                // for the other.
+                size_t const      first_name  = _intermediates_created;
+                size_t            inter_count = first_name;
                 std::vector<Node> new_nodes;
                 TensorId const    final_tid = chain.back().output_tid;
 
@@ -774,15 +781,16 @@ bool ContractionPlanning::run(Graph &graph) {
                     inserts.emplace_back(chain[0].node_idx, std::move(new_nodes));
                     graph.replace_nodes(remove, std::move(inserts));
 
-                    report.intermediates_created = inter_count;
-                    _intermediates_created += inter_count;
+                    size_t const created         = inter_count - first_name;
+                    report.intermediates_created = created;
+                    _intermediates_created += created;
                     _chains_restructured++;
                     modified               = true;
                     restructured_this_scan = true;
 
                     EINSUMS_LOG_INFO("ContractionPlanning: restructured chain — {} new GEMM nodes, {} intermediates created",
-                                     new_node_count, inter_count);
-                    this->report(2, fmt::format("restructure GEMM chain into {} node(s), {} intermediate(s)", new_node_count, inter_count));
+                                     new_node_count, created);
+                    this->report(2, fmt::format("restructure GEMM chain into {} node(s), {} intermediate(s)", new_node_count, created));
                 }
             }
 

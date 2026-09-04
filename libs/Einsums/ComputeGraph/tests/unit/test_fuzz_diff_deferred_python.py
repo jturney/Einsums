@@ -17,6 +17,7 @@ import einsums
 import einsums.graph as cg
 
 from _fuzz_diff_common import *  # shared fuzz/differential harness
+from _region_invariants import assert_materialization_invariants
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -36,13 +37,29 @@ from _fuzz_diff_common import *  # shared fuzz/differential harness
 
 
 def _deferred_mask(n):
-    return [i % 2 == 1 for i in range(n)]
+    """Two of every three pool slots are deferred, and the third is not.
+
+    The pool lays ``COPIES`` tensors of each shape at consecutive indices, so
+    deferring all but the first of each group is what puts TWO same-shaped
+    deferred tensors in the corpus. The old rule deferred the odd indices,
+    which for half the shapes left exactly one, and a shape with one deferred
+    tensor cannot express the bug this shard now covers: two deferred parents
+    sliced at the same offset presenting views on identical byte spans. One
+    eager copy per shape stays, so nonzero values still flow into the deferred
+    ones.
+    """
+    return [i % COPIES != 0 for i in range(n)]
 
 
-def _make_pool_deferred(m_arrays, v_arrays, t_arrays, name):
-    """Odd-indexed tensors in *each* pool (matrices, vectors, rank-3) are
-    declared deferred (workspace, zero-initialized); even-indexed ones stay
-    eager with random data so nonzero values still flow."""
+def _make_pool_deferred(m_arrays, v_arrays, t_arrays, name, graph=None):
+    """The deferred half of each pool, declared on a Workspace or on a Graph.
+
+    ``graph=None`` declares them on a Workspace, which the caller materializes
+    itself. Passing a graph declares them as graph-owned intermediates instead,
+    which is the path ``Materialization`` allocates and the one whose usage
+    analysis has to resolve a view back to its parent; the returned workspace is
+    then a placeholder with nothing in it.
+    """
     ws = _G.Workspace(f"{name}_ws")
 
     def build(prefix, arrays):
@@ -51,7 +68,11 @@ def _make_pool_deferred(m_arrays, v_arrays, t_arrays, name):
         for idx, arr in enumerate(arrays):
             dt = str(arr.dtype)
             if mask[idx]:
-                out.append(ws.declare_zero_tensor(f"{name}_d{prefix}{idx}", list(arr.shape), dt))
+                dname = f"{name}_d{prefix}{idx}"
+                if graph is None:
+                    out.append(ws.declare_zero_tensor(dname, list(arr.shape), dt))
+                else:
+                    out.append(graph.declare_zero_tensor(dname, list(arr.shape), intermediate=True, dtype=dt))
             else:
                 tn = einsums.create_zero_tensor(f"{name}_{prefix}{idx}", list(arr.shape), dtype=dt)
                 np.asarray(tn)[...] = arr
@@ -68,8 +89,16 @@ def _referenced(stmts, m, v, t):
     excluded from the comparison."""
     for s in stmts:
         k = s[0]
-        if k in ("scale", "etransform", "vscale"):
+        if k in ("scale", "etransform", "vscale", "ivscale"):
             m.add(s[2])
+        elif k == "ivaxpy":
+            v.add(s[2])
+            m.add(s[3])
+        elif k == "i3scale":
+            t.add(s[2])
+        elif k == "i3axpy":
+            m.add(s[2])
+            t.add(s[3])
         elif k == "axpy":
             m.update((s[2], s[3]))
         elif k == "axpby":
@@ -88,6 +117,8 @@ def _referenced(stmts, m, v, t):
         elif k == "ger":
             v.update((s[2], s[3]))
             m.add(s[4])
+        elif k in ("vvscale", "tvscale"):
+            m.add(s[2])
         elif k == "vaxpy":
             m.update((s[2], s[3]))
         elif k == "vgemm":
@@ -112,6 +143,11 @@ def _deferred_oracle_init(m_arrays, v_arrays, t_arrays):
     ov = [np.zeros_like(a) if vm[i] else a.copy() for i, a in enumerate(v_arrays)]
     ot = [np.zeros_like(a) if tm[i] else a.copy() for i, a in enumerate(t_arrays)]
     return om, ov, ot, (mm, vm, tm)
+
+
+def _all_deferred_skips(masks):
+    """Every deferred slot, whatever the program does with it."""
+    return tuple({i for i in range(len(mask)) if mask[i]} for mask in masks)
 
 
 def _deferred_skips(prog, masks):
@@ -156,6 +192,27 @@ def check_program_deferred(prog, m_arrays, v_arrays, t_arrays, label):
     g2.apply(cg.default_pass_manager())
     g2.execute()
     _check_deferred("DEFERRED-OPTIMIZED", prog, (mats2, vecs2, r32), oracle, skips)
+    assert_materialization_invariants(g2, f"{label} workspace-declared")
+
+    # GRAPH-DECLARED: the same deferred half declared on the graph as OWNED
+    # INTERMEDIATES rather than on a workspace. Materialization then owns the
+    # whole lifecycle, and its "is this tensor used" question has to resolve a
+    # view back to the parent it slices, which is where the alias merge that
+    # motivated this arm lived.
+    #
+    # Only the ordinary tensors are compared here, for the reason the graph
+    # scratch shard gives: a graph-owned intermediate is not observable, so
+    # DeadNodeElimination may legitimately drop a write to one nothing reads and
+    # FreeInsertion may release it. What flowed THROUGH a scratch still reaches
+    # an ordinary tensor, so a wrong value in one is not hidden by this; a
+    # scratch nothing reads contributes nothing to the answer by definition.
+    g3 = cg.Graph(f"{label}_gd")
+    mats3, vecs3, r33, _ = _make_pool_deferred(m_arrays, v_arrays, t_arrays, f"{label}_gd", graph=g3)
+    build_cg(prog, g3, mats3, vecs3, r33, f"{label}_gd")
+    g3.apply(cg.default_pass_manager())
+    g3.execute()
+    _check_deferred("DEFERRED-GRAPH-DECLARED", prog, (mats3, vecs3, r33), oracle, _all_deferred_skips(masks))
+    assert_materialization_invariants(g3, f"{label} graph-declared")
 
 
 def check_program_deferred_replay(prog, m_arrays, v_arrays, t_arrays, label):
@@ -205,26 +262,113 @@ def test_regression_deferred_loop_accumulate_then_read():
 @pytest.mark.parametrize("seed", fuzz_seeds(250))
 def test_fuzz_deferred(seed):
     rng = np.random.default_rng(120_000 + seed)
-    prog = _gen_block(rng, depth=2, max_stmts=6)
+    prog = _gen_block(rng, depth=2, max_stmts=6, rank_views=True)
     check_program_deferred(prog, *_seed_arrays(rng), f"def{seed}")
 
 
 @pytest.mark.parametrize("seed", fuzz_seeds(150))
 def test_fuzz_deferred_complex(seed):
     rng = np.random.default_rng(130_000 + seed)
-    prog = _gen_block(rng, depth=2, max_stmts=6)
+    prog = _gen_block(rng, depth=2, max_stmts=6, rank_views=True)
     check_program_deferred(prog, *_seed_arrays(rng, "complex128"), f"cdef{seed}")
 
 
 @pytest.mark.parametrize("seed", fuzz_seeds(200))
 def test_fuzz_deferred_replay(seed):
     rng = np.random.default_rng(140_000 + seed)
-    prog = _gen_block(rng, depth=2, max_stmts=6)
+    prog = _gen_block(rng, depth=2, max_stmts=6, rank_views=True)
     check_program_deferred_replay(prog, *_seed_arrays(rng), f"defr{seed}")
 
 
 @pytest.mark.parametrize("seed", fuzz_seeds(150))
 def test_fuzz_deferred_replay_complex(seed):
     rng = np.random.default_rng(150_000 + seed)
-    prog = _gen_block(rng, depth=2, max_stmts=6)
+    prog = _gen_block(rng, depth=2, max_stmts=6, rank_views=True)
     check_program_deferred_replay(prog, *_seed_arrays(rng, "complex128"), f"cdefr{seed}")
+
+
+def test_regression_two_deferred_parents_seen_through_dropped_views():
+    """Two same-shaped deferred tensors, sliced at the same non-zero offset.
+
+    The rank-reducing views present identical extents, and while a deferred
+    parent's view carried the shell's sentinel address plus its slice offset
+    they presented identical byte SPANS as well, so the pointer-derived alias
+    linking merged the two parents into one root. Every use of the loser was
+    credited to the winner, and Materialization, asked whether anything used it,
+    was told no and left it unallocated.
+
+    Pinned from Python as well as from C++ because this is the shape the
+    generator now draws, and a fuzzer that cannot reach its own regression is
+    a fuzzer nobody can debug.
+    """
+    r3_mask = _deferred_mask(len(R3_SHAPES))
+    first, second = [i for i in R3_BY_SHAPE[(2, 2, 2)] if r3_mask[i]][:2]
+    mat_mask = _deferred_mask(len(MAT_SHAPES))
+    mat = next(i for i in MAT_BY_SHAPE[(2, 2)] if not mat_mask[i])
+    prog = [
+        ("i3axpy", 1.0, mat, first, 1, 0, 2, 0, 2),    # t[first][0:2, 0:2, 1] += m
+        ("i3axpy", 2.0, mat, second, 1, 0, 2, 0, 2),   # t[second][0:2, 0:2, 1] += 2*m
+        ("i3scale", 0.5, first, 1, 0, 2, 0, 2),
+    ]
+    rng = np.random.default_rng(4242)
+    m = [rng.standard_normal(sh) for sh in MAT_SHAPES]
+    v = [rng.standard_normal((L,)) for L in VEC_LENS]
+    t = [rng.standard_normal(sh) for sh in R3_SHAPES]
+    check_program_deferred(prog, m, v, t, "def_two_parents")
+
+
+def test_the_deferred_corpus_draws_dropped_views_of_two_parents_per_shape():
+    """The corpus guard, because both halves of the shape are drawn rather than
+    written down: an axis dropped at a non-zero offset, and two deferred tensors
+    of one shape for the views to be confused between."""
+    kinds = set()
+    for seed in range(60):
+        rng = np.random.default_rng(120_000 + seed)
+        for stmt in _gen_block(rng, depth=2, max_stmts=6, rank_views=True):
+            kinds.add(stmt[0])
+            if stmt[0] in ("loop", "cond"):
+                for sub in stmt[2:]:
+                    if isinstance(sub, list):
+                        kinds.update(x[0] for x in sub)
+    assert {"ivscale", "ivaxpy", "i3scale", "i3axpy"} & kinds, kinds
+
+    for sizes in (len(MAT_SHAPES), len(VEC_LENS), len(R3_SHAPES)):
+        mask = _deferred_mask(sizes)
+        # The pool lays COPIES tensors of each shape consecutively.
+        assert sum(mask[:COPIES]) >= 2, "a shape with fewer than two deferred copies"
+
+    # And the two halves TOGETHER, which is the shape the regression above pins:
+    # two deferred tensors of one shape, each sliced. Neither half alone reaches
+    # it, and the corpus drew it in none of its programs before this change.
+    mat_mask = _deferred_mask(len(MAT_SHAPES))
+    r3_mask = _deferred_mask(len(R3_SHAPES))
+    reached = 0
+    for seed in range(250):
+        rng = np.random.default_rng(120_000 + seed)
+        sliced: dict = {}
+
+        def note(pool_shapes, mask, index):
+            if mask[index]:
+                sliced.setdefault(pool_shapes[index], set()).add(index)
+
+        def walk(stmts):
+            for stmt in stmts:
+                kind = stmt[0]
+                if kind in ("vscale", "vvscale", "tvscale", "ivscale", "vgemm"):
+                    note(MAT_SHAPES, mat_mask, stmt[2])
+                elif kind in ("vaxpy", "ivaxpy"):
+                    note(MAT_SHAPES, mat_mask, stmt[3])
+                elif kind == "i3scale":
+                    note(R3_SHAPES, r3_mask, stmt[2])
+                elif kind == "i3axpy":
+                    note(R3_SHAPES, r3_mask, stmt[3])
+                elif kind == "loop":
+                    walk(stmt[2])
+                elif kind == "cond":
+                    walk(stmt[2])
+                    walk(stmt[3])
+
+        walk(_gen_block(rng, depth=2, max_stmts=6, rank_views=True))
+        if any(len(group) > 1 for group in sliced.values()):
+            reached += 1
+    assert reached > 20, f"only {reached} of 250 programs slice two same-shaped deferred parents"

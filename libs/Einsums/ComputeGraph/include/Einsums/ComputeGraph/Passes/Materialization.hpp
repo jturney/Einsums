@@ -9,6 +9,9 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <string>
+#include <vector>
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 /**
@@ -117,5 +120,41 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     size_t _num_initialized{0};
     size_t _num_unused{0};
 };
+
+/**
+ * @brief Tensors with more than one Materialize node, anywhere in @p graph's tree.
+ *
+ * A tensor's storage is allocated once. Two lifecycles for one buffer survive only because
+ * ``materialize_fn`` happens to be idempotent, which is a property of today's hook rather than a
+ * contract, and the extra node carries a dependency edge that serializes work against itself for
+ * nothing. Two passes each emitting one is how it happens, and no numeric oracle can see it: both
+ * allocations produce the same buffer and the answer does not move.
+ *
+ * Keyed by NAME rather than by id, because a sub-graph carries its own id for the parent's buffer
+ * and a name is the one handle both spellings share, which is what @c already_materialized_in
+ * inside the pass already relies on.
+ *
+ * @param graph The graph to audit; loop bodies, conditional branches and setup bodies are included.
+ * @return The names, sorted, of every tensor named by more than one Materialize node.
+ */
+[[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") EINSUMS_EXPORT std::vector<std::string> duplicate_materializations(Graph const &graph);
+
+/**
+ * @brief Graph-owned intermediates that are materialized and that nothing reads or writes.
+ *
+ * The counterpart of @ref Materialization::num_unused, asked of a finished graph rather than of one
+ * run of the pass: a structural rewrite that dissolves an intermediate keeps its declaration, since
+ * a caller may still hold the handle, and allocating storage for it spends memory on a tensor whose
+ * whole point was to stop existing.
+ *
+ * Restricted to graph-owned intermediates on purpose. A caller-owned deferred tensor is one the
+ * caller may read after the graph runs, so allocating it is deliberate and not a finding.
+ *
+ * A use is counted through aliases, so a tensor written only through a view of it counts as used.
+ *
+ * @param graph The graph to audit; loop bodies, conditional branches and setup bodies are included.
+ * @return The names, sorted, of every such tensor.
+ */
+[[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") EINSUMS_EXPORT std::vector<std::string> stranded_materializations(Graph const &graph);
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -193,6 +193,23 @@ ETRANSFORM_FNS = [
 # chain of ``View`` descriptors (and, for tvscale, by mapping the box through a
 # permutation). They exist for the alias-derivation equivalence shard, which
 # needs a corpus where those two compositions actually occur.
+#
+# Opt-in (``rank_views=True``, likewise drawn by no existing shard):
+#
+#   ("ivscale", a, M, row, c0, c1)          m[M][row, c0:c1] *= a
+#   ("ivaxpy",  a, src, M, row, c0, c1)     m[M][row, c0:c1] += a*v[src]
+#   ("i3scale", a, T, k, r0, r1, c0, c1)    t[T][r0:r1, c0:c1, k] *= a
+#   ("i3axpy",  a, src, T, k, r0, r1, c0, c1)
+#                                           t[T][r0:r1, c0:c1, k] += a*m[src]
+#
+# These are RANK-REDUCING views: an axis is dropped rather than sliced, which is
+# what ``cg.view_indexed`` exists for and what ``cg.view`` cannot express. They
+# are here for the deferred shard, because the alias bug that shipped lived
+# exactly where a rank-reducing view of a DEFERRED parent registered an address:
+# two such parents of one shape, dropped at the same index, presented views on
+# identical byte spans and the pointer derivation merged the parents. The
+# matrix form drops the leading axis, so the view is strided; the rank-three
+# form drops the trailing one, so it is contiguous.
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -225,21 +242,21 @@ def _fallback(rng):
     return ("scale", _scalar(rng), int(rng.integers(0, len(MAT_SHAPES))))
 
 
-def _gen_block(rng, depth, max_stmts, rich_views=False):
+def _gen_block(rng, depth, max_stmts, rich_views=False, rank_views=False):
     stmts = []
     n = int(rng.integers(1, max_stmts + 1))
     for _ in range(n):
         roll = rng.random()
         if depth > 0 and roll < 0.18:
             cnt = int(rng.integers(1, 4))
-            stmts.append(("loop", cnt, _gen_block(rng, depth - 1, max_stmts, rich_views)))
+            stmts.append(("loop", cnt, _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views)))
         elif depth > 0 and roll < 0.30:
             flag = bool(rng.integers(0, 2))
-            then = _gen_block(rng, depth - 1, max_stmts, rich_views)
-            els = _gen_block(rng, depth - 1, max_stmts, rich_views)
+            then = _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views)
+            els = _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views)
             stmts.append(("cond", flag, then, els))
         else:
-            stmts.append(_gen_primitive(rng, rich_views))
+            stmts.append(_gen_primitive(rng, rich_views, rank_views))
     return stmts
 
 
@@ -274,9 +291,47 @@ def _gen_chained_view(rng):
     return ("tvscale", a, M, r0, r0 + sr, c0, c0 + sc)
 
 
-def _gen_primitive(rng, rich_views=False):
+def _gen_rank_view(rng):
+    """A view with an axis DROPPED rather than sliced, at a non-zero offset.
+
+    Drawn only when a caller asks for ``rank_views``, for the reason
+    ``_gen_chained_view`` gives: an existing shard's corpus is defined by its
+    seed, and adding to the common roll would renumber every program the suite
+    has ever generated.
+    """
+    if rng.random() < 0.5:
+        # A ROW of a matrix: axis 0 dropped, axis 1 sliced. Strided, since the
+        # tensors are column major, so nothing here can be mistaken for a
+        # contiguous block by a derivation that only looks at extents.
+        M = int(rng.integers(0, len(MAT_SHAPES)))
+        R, C = MAT_SHAPES[M]
+        row = int(rng.integers(0, R))
+        sc = int(rng.integers(1, C + 1))
+        c0 = int(rng.integers(0, C - sc + 1))
+        src = _pick_vec(rng, sc)
+        if src is None or rng.random() < 0.5:
+            return ("ivscale", _scalar(rng), M, row, c0, c0 + sc)
+        return ("ivaxpy", _scalar(rng), src, M, row, c0, c0 + sc)
+    # A SLAB of a rank-three tensor: the trailing axis dropped, the leading two
+    # sliced. Contiguous, which is the other half of the pair.
+    T = int(rng.integers(0, len(R3_SHAPES)))
+    A, B, Cc = R3_SHAPES[T]
+    k = int(rng.integers(0, Cc))
+    sr = int(rng.integers(1, A + 1))
+    r0 = int(rng.integers(0, A - sr + 1))
+    sc = int(rng.integers(1, B + 1))
+    c0 = int(rng.integers(0, B - sc + 1))
+    src = _pick_mat(rng, (sr, sc))
+    if src is None or rng.random() < 0.5:
+        return ("i3scale", _scalar(rng), T, k, r0, r0 + sr, c0, c0 + sc)
+    return ("i3axpy", _scalar(rng), src, T, k, r0, r0 + sr, c0, c0 + sc)
+
+
+def _gen_primitive(rng, rich_views=False, rank_views=False):
     if rich_views and rng.random() < 0.25:
         return _gen_chained_view(rng)
+    if rank_views and rng.random() < 0.30:
+        return _gen_rank_view(rng)
     op = int(rng.integers(0, 14))
     a = _scalar(rng)
     if op == 13:  # gemm whose A operand is a *view* block of a larger matrix
@@ -461,6 +516,18 @@ def interp_np(stmts, m, v, t, dt=None):
         elif k == "tvscale":
             _, a, M, r0, r1, c0, c1 = s
             m[M][c0:c1, r0:r1] = m[M][c0:c1, r0:r1] * a
+        elif k == "ivscale":
+            _, a, M, row, c0, c1 = s
+            m[M][row, c0:c1] = m[M][row, c0:c1] * a
+        elif k == "ivaxpy":
+            _, a, src, M, row, c0, c1 = s
+            m[M][row, c0:c1] = m[M][row, c0:c1] + a * v[src]
+        elif k == "i3scale":
+            _, a, T, kk, r0, r1, c0, c1 = s
+            t[T][r0:r1, c0:c1, kk] = t[T][r0:r1, c0:c1, kk] * a
+        elif k == "i3axpy":
+            _, a, src, T, kk, r0, r1, c0, c1 = s
+            t[T][r0:r1, c0:c1, kk] = t[T][r0:r1, c0:c1, kk] + a * m[src]
         elif k == "loop":
             _, n, body = s
             for _ in range(n):
@@ -533,6 +600,18 @@ def _emit_primitive(s, m, v, t):
     elif k == "tvscale":
         _, a, M, r0, r1, c0, c1 = s
         einsums.linalg.scale(a, cg.view(cg.permute_view(m[M], [1, 0]), [(r0, r1), (c0, c1)]))
+    elif k == "ivscale":
+        _, a, M, row, c0, c1 = s
+        einsums.linalg.scale(a, cg.view_indexed(m[M], [(2, row, 0), (1, c0, c1)]))
+    elif k == "ivaxpy":
+        _, a, src, M, row, c0, c1 = s
+        einsums.linalg.axpy(a, v[src], cg.view_indexed(m[M], [(2, row, 0), (1, c0, c1)]))
+    elif k == "i3scale":
+        _, a, T, kk, r0, r1, c0, c1 = s
+        einsums.linalg.scale(a, cg.view_indexed(t[T], [(1, r0, r1), (1, c0, c1), (2, kk, 0)]))
+    elif k == "i3axpy":
+        _, a, src, T, kk, r0, r1, c0, c1 = s
+        einsums.linalg.axpy(a, m[src], cg.view_indexed(t[T], [(1, r0, r1), (1, c0, c1), (2, kk, 0)]))
     else:  # pragma: no cover
         raise AssertionError(f"not a primitive: {k!r}")
 
@@ -1223,6 +1302,7 @@ __all__ = [
     '_gen_block',
     '_gen_primitive',
     '_gen_chained_view',
+    '_gen_rank_view',
     'interp_np',
     '_emit_primitive',
     'build_cg',

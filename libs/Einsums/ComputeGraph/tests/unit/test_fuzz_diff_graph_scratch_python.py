@@ -19,6 +19,7 @@ import einsums
 import einsums.graph as cg
 
 from _fuzz_diff_common import *  # shared fuzz/differential harness
+from _region_invariants import assert_materialization_invariants
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -93,6 +94,48 @@ def _write_scratch(rng, dst, ords):
     return ("axpby", _scalar(rng), o1, 0.0, dst)
 
 
+def _view_write_scratch(rng, dst, n):
+    """Touch part of the scratch THROUGH a view.
+
+    The shard declared same-shaped graph scratch from the start and never took a
+    view of one, which is precisely where the alias merge that shipped lived: a
+    view of a deferred parent that registered an address, so two same-shaped
+    parents sliced alike presented one byte span and the pointer derivation
+    merged them. Four spellings, because the derivations differ on them: a plain
+    range, a range of a range, a range of a transpose, and an axis DROPPED
+    rather than sliced.
+    """
+    a = _scalar(rng)
+    roll = int(rng.integers(0, 4))
+    if roll == 0:
+        r0 = int(rng.integers(0, n))
+        c0 = int(rng.integers(0, n))
+        return ("vscale", a, dst, r0, n, c0, n)
+    if roll == 1:
+        r0 = int(rng.integers(0, n))
+        return ("vvscale", a, dst, r0, n, 0, n, 0, n - r0, 0, n)
+    if roll == 2:
+        c0 = int(rng.integers(0, n))
+        return ("tvscale", a, dst, 0, n, c0, n)
+    row = int(rng.integers(0, n))
+    c0 = int(rng.integers(0, n))
+    return ("ivscale", a, dst, row, c0, n)
+
+
+def _view_consume_scratch(rng, src, ords, n):
+    """Read the scratch through a full-cover view.
+
+    A view whose box equals its parent's is the case that once got no alias edge
+    at all, so it is worth drawing on purpose rather than hoping a random offset
+    lands on it.
+    """
+    o1 = int(rng.choice(ords))
+    o2 = _distinct(rng, ords, {o1})
+    if o2 is None:
+        return ("axpy", _scalar(rng), src, o1)
+    return ("vgemm", _scalar(rng), src, 0, n, 0, n, o1, float(rng.integers(0, 2)), o2)
+
+
 def _consume_scratch(rng, src, ords):
     """An op that READS src (a scratch index) into an ordinary tensor. The output
     is kept distinct from the ordinary input for the contraction case."""
@@ -119,7 +162,10 @@ def _gen_scratch_body_program(rng, ords, scratch):
         if loop and rng.random() < 0.5:
             # loop-carried accumulation: scratch += ordinary each iteration
             body.append(("axpby", _scalar(rng), int(rng.choice(ords)), 1.0, si))
-        body.append(_consume_scratch(rng, si, ords))
+        if rng.random() < 0.5:
+            body.append(_view_write_scratch(rng, si, _SCRATCH_N))
+        body.append(_view_consume_scratch(rng, si, ords, _SCRATCH_N)
+                    if rng.random() < 0.5 else _consume_scratch(rng, si, ords))
         body += [_gen_square_primitive(rng, ords) for _ in range(int(rng.integers(0, 2)))]
         if loop:
             stmts.append(("loop", int(rng.integers(2, 4)), body))
@@ -143,7 +189,10 @@ def _gen_scratch_after_cond_program(rng, ords, scratch):
     els += [_gen_square_primitive(rng, ords) for _ in range(int(rng.integers(0, 2)))]
     stmts = [("cond", bool(rng.integers(0, 2)), then, els)]
     for si in scratch:
-        stmts.append(_consume_scratch(rng, si, ords))
+        if rng.random() < 0.5:
+            stmts.append(_view_write_scratch(rng, si, _SCRATCH_N))
+        stmts.append(_view_consume_scratch(rng, si, ords, _SCRATCH_N)
+                     if rng.random() < 0.5 else _consume_scratch(rng, si, ords))
     stmts += [_gen_square_primitive(rng, ords) for _ in range(int(rng.integers(0, 2)))]
     return stmts
 
@@ -187,6 +236,7 @@ def _check_scratch_program(prog, m_arrays, n_scratch, n, label):
         build_cg(prog, g, mats, [], [], f"{label}_{ex_name}")
         g.apply(cg.default_pass_manager())
         _assert_scratch_materialized(g, scratch_names, f"{label}/{ex_name}")
+        assert_materialization_invariants(g, f"{label}/{ex_name}")
         g.execute() if ex_name == "Sequential" else g.execute(exec_cls())
         for idx in range(B):
             got = np.asarray(mats[idx])
@@ -223,3 +273,28 @@ def test_fuzz_graph_scratch_after_conditional(seed):
     scratch = list(range(_SCRATCH_ORDS, _SCRATCH_ORDS + n_scratch))
     prog = _gen_scratch_after_cond_program(rng, ords, scratch)
     _check_scratch_program(prog, m_arrays, n_scratch, n, f"scrc{seed}")
+
+
+def test_the_scratch_corpus_takes_views_of_the_scratch():
+    """The corpus guard: a shard that declares same-shaped scratch and never
+    slices it cannot reach the alias question it is closest to."""
+    kinds = set()
+
+    def walk(stmts):
+        for stmt in stmts:
+            kinds.add(stmt[0])
+            if stmt[0] == "loop":
+                walk(stmt[2])
+            elif stmt[0] == "cond":
+                walk(stmt[2])
+                walk(stmt[3])
+
+    ords = list(range(_SCRATCH_ORDS))
+    scratch = list(range(_SCRATCH_ORDS, _SCRATCH_ORDS + 2))
+    for seed in range(40):
+        rng = np.random.default_rng(170_000 + seed)
+        walk(_gen_scratch_body_program(rng, ords, scratch))
+        rng = np.random.default_rng(180_000 + seed)
+        walk(_gen_scratch_after_cond_program(rng, ords, scratch))
+    for kind in ("vscale", "vvscale", "tvscale", "ivscale", "vgemm"):
+        assert kind in kinds, f"{kind} never drawn: {sorted(kinds)}"

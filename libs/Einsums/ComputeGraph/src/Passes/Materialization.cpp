@@ -12,7 +12,11 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <map>
 #include <optional>
+#include <set>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -140,7 +144,87 @@ bool already_materialized_in(Graph const &graph, std::string const &name) {
     return std::ranges::any_of(graph.nodes(), [&want](Node const &node) { return node.kind == OpKind::Materialize && node.label == want; });
 }
 
+/// What a Materialize node's label names, or empty for any other label.
+std::string materialized_name(std::string const &label) {
+    constexpr std::string_view prefix = "materialize(";
+    if (!label.starts_with(prefix) || !label.ends_with(')')) {
+        return {};
+    }
+    return label.substr(prefix.size(), label.size() - prefix.size() - 1);
+}
+
+/// One graph's contribution to the audit, then every sub-graph's.
+///
+/// Three sets, all keyed by tensor NAME. Ids are per graph, and a body's copy of a parent's buffer
+/// carries the parent's name, which is the only thing that lets a hoisted lifecycle and the use it
+/// exists for be recognized as being about one tensor.
+void collect_audit(Graph const &graph, std::map<std::string, std::size_t> &materialized, std::set<std::string> &used,
+                   std::set<std::string> &owned_deferred) {
+    for (auto const &[tid, handle] : graph.tensors_map()) {
+        if (handle.alloc_state == AllocState::Deferred && handle.is_intermediate) {
+            owned_deferred.insert(handle.name);
+        }
+    }
+
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == OpKind::Materialize) {
+            if (std::string name = materialized_name(node.label); !name.empty()) {
+                ++materialized[name];
+            }
+            continue;
+        }
+        if (is_lifecycle(node.kind)) {
+            continue;
+        }
+        // Through aliases: a tensor written only through a view of it is used, and the view is a
+        // separate handle with a name of its own.
+        auto note = [&](TensorId tid) {
+            if (TensorHandle const *handle = graph.find_tensor(graph.resolve_alias(tid)); handle != nullptr) {
+                used.insert(handle->name);
+            }
+        };
+        for (TensorId const tid : node.inputs) {
+            note(tid);
+        }
+        for (TensorId const tid : node.outputs) {
+            note(tid);
+        }
+    }
+
+    graph.for_each_subgraph([&](Graph const &sub) { collect_audit(sub, materialized, used, owned_deferred); });
+}
+
 } // namespace
+
+std::vector<std::string> duplicate_materializations(Graph const &graph) {
+    std::map<std::string, std::size_t> materialized;
+    std::set<std::string>              used;
+    std::set<std::string>              owned_deferred;
+    collect_audit(graph, materialized, used, owned_deferred);
+
+    std::vector<std::string> out;
+    for (auto const &[name, count] : materialized) {
+        if (count > 1) {
+            out.push_back(name);
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> stranded_materializations(Graph const &graph) {
+    std::map<std::string, std::size_t> materialized;
+    std::set<std::string>              used;
+    std::set<std::string>              owned_deferred;
+    collect_audit(graph, materialized, used, owned_deferred);
+
+    std::vector<std::string> out;
+    for (auto const &[name, count] : materialized) {
+        if (owned_deferred.contains(name) && !used.contains(name)) {
+            out.push_back(name);
+        }
+    }
+    return out;
+}
 
 std::vector<std::string> Materialization::explain() const {
     if (_num_materialized == 0 && _num_initialized == 0) {
