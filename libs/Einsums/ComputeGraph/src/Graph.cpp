@@ -2137,6 +2137,113 @@ void Graph::rebuild_deps(EffectiveIoCache &cache) {
     rebuild_levels();
 }
 
+std::vector<std::string> Graph::unjustified_hazard_edges() {
+    topological_sort();
+
+    // The alias relation the edges were derived from is the one under test, so the justification
+    // is rebuilt from the graph's own View NODES instead. A view's parent is its first input,
+    // which is what the node records and what no pass rewrites.
+    std::unordered_map<TensorId, TensorId> view_parent;
+    for (auto const &node : _nodes) {
+        if (node.kind == OpKind::View && node.outputs.size() == 1 && !node.inputs.empty()) {
+            view_parent.emplace(node.outputs[0], node.inputs[0]);
+        }
+    }
+    auto const structural_root = [&](TensorId tid) {
+        for (std::size_t hop = 0; hop <= _tensors.size(); ++hop) {
+            auto const it = view_parent.find(tid);
+            if (it == view_parent.end() || it->second == tid) {
+                break;
+            }
+            tid = it->second;
+        }
+        return tid;
+    };
+
+    struct Span {
+        char const *lo;
+        char const *hi;
+    };
+    std::unordered_map<TensorId, Span> span;
+    for (auto const &[id, handle] : _tensors) {
+        char const *lo = nullptr;
+        char const *hi = nullptr;
+        if (handle_byte_span(handle, lo, hi)) {
+            span.emplace(id, Span{.lo = lo, .hi = hi});
+        }
+    }
+
+    auto const may_share = [&](TensorId a, TensorId b) {
+        if (a == b) {
+            return true;
+        }
+        TensorId const ra = structural_root(a);
+        TensorId const rb = structural_root(b);
+        if (ra == rb) {
+            return true;
+        }
+        auto const ia = span.find(ra);
+        auto const ib = span.find(rb);
+        if (ia == span.end() || ib == span.end()) {
+            // No address on one of them, so nothing but the structure above could relate them.
+            return false;
+        }
+        return ia->second.lo < ib->second.hi && ib->second.lo < ia->second.hi;
+    };
+
+    EffectiveIoCache                                    cache;
+    std::vector<std::vector<std::pair<TensorId, bool>>> touched(_nodes.size());
+    std::vector<std::unordered_set<std::string>>        params(_nodes.size());
+    for (std::size_t i = 0; i < _nodes.size(); ++i) {
+        auto [eff_in, eff_out] = effective_io_cached(_nodes[i], cache);
+        for (TensorId const tid : eff_in) {
+            touched[i].emplace_back(tid, false);
+        }
+        for (TensorId const tid : eff_out) {
+            touched[i].emplace_back(tid, true);
+        }
+        // The other half of what the hazard scan orders: a parameter write and the slice that
+        // resolves against it touch no tensor at all.
+        for (auto const &name : param_reads(_nodes[i])) {
+            params[i].insert(name);
+        }
+        for (auto const &name : param_writes(_nodes[i])) {
+            params[i].insert(name);
+        }
+    }
+
+    std::vector<std::string> out;
+    for (std::size_t from = 0; from < _deps.successors.size(); ++from) {
+        for (std::size_t const to : _deps.successors[from]) {
+            bool justified = false;
+            for (auto const &[tu, wu] : touched[from]) {
+                for (auto const &[tv, wv] : touched[to]) {
+                    if ((!wu && !wv) || !may_share(tu, tv)) {
+                        continue;
+                    }
+                    justified = true;
+                    break;
+                }
+                if (justified) {
+                    break;
+                }
+            }
+            if (!justified) {
+                for (auto const &name : params[from]) {
+                    if (params[to].contains(name)) {
+                        justified = true;
+                        break;
+                    }
+                }
+            }
+            if (!justified) {
+                out.push_back(fmt::format("{} ({}) -> {} ({})", from, _nodes[from].label, to, _nodes[to].label));
+            }
+        }
+    }
+    return out;
+}
+
 void Graph::verify_level_independence() const {
     // Byte span per registered tensor. A tensor with no span that can be
     // reasoned about (deferred allocation, tiled layout) is skipped entirely

@@ -21,8 +21,8 @@ edge is a race that reproduces probabilistically, so a value check would be a
 flaky test that passes for the wrong reason, while the level structure the edge
 belongs to is deterministic.
 
-Two shapes of assertion, and the difference between them is the whole safety
-argument:
+Three shapes of assertion. The first two are about the two derivations
+agreeing; the third is about the edge set they agree on being the RIGHT one.
 
 * **Equality** over programs whose aliases all come from captured ``cg.view``
   chains. Both derivations are defined there, so anything but equality is a
@@ -31,6 +31,15 @@ argument:
   manifest declaration names a buffer and carries no region). There the demand
   is ``structural >= pointer`` on edges, never ``<``. An extra edge costs
   parallelism; a missing edge is the race.
+* **Minimality** of the edge set itself, through
+  ``Graph.unjustified_hazard_edges``. Both derivations agreeing says nothing
+  about whether either is right, and the direction above deliberately tolerates
+  an extra edge, so nothing here could see an alias relation that is merely too
+  COARSE. That is the direction the deferred-parent merge failed in: it cost
+  every hazard between two unrelated tensors, moved no number, and was found by
+  a materialization counter rather than by any oracle. The minimum is derived
+  from byte overlap and from the graph's own ``View`` nodes, never from
+  ``TensorHandle::aliases``, which is the relation under test.
 
 The corpus is drawn with ``rich_views=True``, which adds a sub-block-of-a-
 sub-block and a sub-block-of-a-transpose to the generator. Those are exactly the
@@ -44,6 +53,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import einsums
 import einsums.graph as cg
 
 from _fuzz_diff_common import *  # shared fuzz/differential harness
@@ -207,3 +217,72 @@ def test_plain_corpus_is_untouched_by_the_rich_view_option():
         assert plain == again
         for stmt in plain:
             assert stmt[0] not in ("vvscale", "tvscale")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Minimality
+#
+# The tiers above compare two derivations of one relation. This one compares
+# the relation against the memory, which is the only thing that can say the
+# agreed answer is too coarse rather than merely consistent.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("seed", fuzz_seeds(120))
+def test_no_hazard_edge_orders_two_disjoint_accesses(seed):
+    """Every hazard edge is justified by storage, a view chain or a parameter.
+
+    A pair with no byte overlap, no ``View`` relating them and no shared
+    parameter has no reason to be ordered, and an edge between them is a level
+    scheduler's width spent on nothing. No value moves, so this is the only
+    oracle that can see it.
+    """
+    rng, prog = _program(seed)
+    g = _graph_for(prog, rng, f"alias_minimal{seed}")
+    g.link_alias_storage()
+    unjustified = g.unjustified_hazard_edges()
+    assert not unjustified, (
+        "hazard edges nothing about the storage justifies, which means the alias relation "
+        f"merged tensors that share no memory\nprogram={prog!r}\n" + "\n".join(unjustified[:8])
+    )
+
+
+@pytest.mark.parametrize("seed", fuzz_seeds(60))
+def test_no_hazard_edge_orders_two_disjoint_accesses_nested(seed):
+    """The same, with loops and conditionals: a control-flow node's effective
+    I/O is the subtree's, so a merged root inside a body reaches the parent."""
+    rng, prog = _program(seed, depth=2, max_stmts=5)
+    g = _graph_for(prog, rng, f"alias_minimal_nested{seed}")
+    g.link_alias_storage()
+    unjustified = g.unjustified_hazard_edges()
+    assert not unjustified, (
+        "hazard edges nothing about the storage justifies\n"
+        f"program={prog!r}\n" + "\n".join(unjustified[:8])
+    )
+
+
+def test_two_deferred_parents_are_not_ordered_against_each_other():
+    """The shape the oracle exists for, pinned rather than left to the corpus.
+
+    Two same-shaped deferred tensors sliced at the same offset. Their writers
+    touch no common memory and no ``View`` relates them, so nothing may order
+    them; while a view of a deferred parent registered the shell's sentinel plus
+    its offset as an address, the pointer derivation merged the parents and
+    every access to one was ordered against every access to the other.
+    """
+    graph = cg.Graph("two-deferred-parents")
+    first = graph.declare_zero_tensor("first", [2, 2, 3, 3], intermediate=True, dtype="float64")
+    second = graph.declare_zero_tensor("second", [2, 2, 3, 3], intermediate=True, dtype="float64")
+    src = einsums.create_zero_tensor("src", [3, 3], dtype="float64")
+    np.asarray(src)[...] = np.arange(9.0).reshape(3, 3)
+
+    drop_at_one = [(2, 1, 0), (2, 1, 0), (0, 0, 0), (0, 0, 0)]
+    with cg.capture(graph):
+        einsums.linalg.axpby(1.0, src, 0.0, cg.view_indexed(first, drop_at_one))
+        einsums.linalg.axpby(2.0, src, 0.0, cg.view_indexed(second, drop_at_one))
+
+    graph.link_alias_storage()
+    assert not graph.unjustified_hazard_edges()
+    # And the schedule shows it: the two writes are independent, so they share a
+    # level rather than chaining. Merging the parents put them on levels of one.
+    assert max(graph.schedule_level_sizes()) >= 2

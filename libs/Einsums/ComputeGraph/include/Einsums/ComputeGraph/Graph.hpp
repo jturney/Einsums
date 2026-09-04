@@ -1660,6 +1660,34 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_EXPOSE [[nodiscard]] std::vector<size_t> schedule_level_sizes();
 
     /**
+     * @brief Hazard edges that nothing about the storage justifies.
+     *
+     * @ref verify_level_independence asks whether an edge is MISSING, and every alias defect this
+     * module has shipped was found by it or by a race. The opposite direction has no detector at
+     * all, and it is the direction an over-conservative alias relation fails in: merging two
+     * unrelated tensors into one root costs a level scheduler its width and moves no number, so no
+     * differential oracle can see it. The deferred-parent merge cost every hazard between the two
+     * parents and was invisible for exactly that reason.
+     *
+     * The justification is derived WITHOUT consulting @ref TensorHandle::aliases, which is the
+     * relation under test. Two tensors may share memory when they are the same tensor, when one is
+     * reachable from the other through the graph's own ``View`` nodes, or when both have a known
+     * byte span and the spans overlap. A pair with none of those and no shared parameter name has
+     * no reason to be ordered.
+     *
+     * A tensor with no address is therefore related to another only structurally, which is what
+     * makes this see the deferred case: two deferred parents have no spans, so an edge between
+     * their writers can only come from an alias link that should not exist.
+     *
+     * Builds the schedule if it is stale, exactly as @ref schedule_edge_count does.
+     *
+     * @return One line per unjustified edge, naming both nodes; empty when the edge set is minimal.
+     *
+     * @versionadded{2.0.0}
+     */
+    APIARY_EXPOSE [[nodiscard]] std::vector<std::string> unjustified_hazard_edges();
+
+    /**
      * @brief Mark the graph as topologically sorted.
      *
      * Called by optimization passes that produce a valid topological ordering
