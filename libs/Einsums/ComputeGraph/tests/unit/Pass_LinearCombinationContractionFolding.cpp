@@ -21,8 +21,12 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <fmt/format.h>
+
 #include <cmath>
 #include <complex>
+#include <string>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -398,5 +402,95 @@ TEST_CASE("LCCF - a second optimized graph does not inherit the first one's L", 
         graph.execute();
 
         require_matches(out_rt, ref, fmt::format("calculation {}", calculation));
+    }
+}
+
+namespace {
+/// "<output tensor> -> <node label>" for every fused contraction LCCF emitted,
+/// in node order. The label carries the group's ordinal (``_lccf_L_<n>``), which
+/// is assigned in the order the groups are folded, so each entry says both where
+/// a fold landed and which group produced it.
+std::vector<std::string> fused_folds(cg::Graph const &g) {
+    std::vector<std::string> out;
+    for (auto const &node : g.nodes()) {
+        if (node.label.starts_with("lccf(") && !node.outputs.empty()) {
+            out.push_back(fmt::format("{} -> {}", g.tensor(node.outputs[0]).name, node.label));
+        }
+    }
+    return out;
+}
+
+/// Two independent 2J-K pairs over one operand pair, captured in the order the
+/// names are given. Each pair is a foldable group of exactly two members, so the
+/// two groups are the same size and nothing but the tiebreak orders them.
+void capture_two_equal_groups(cg::Graph &graph, RuntimeTensor<double> &first, RuntimeTensor<double> &second, RuntimeTensor<double> const &A,
+                              RuntimeTensor<double> const &B) {
+    cg::CaptureGuard const guard(graph);
+    cg::einsum("i,j <- k ; k,i,j", 0.0, &first, 2.0, A, B);
+    cg::einsum("i,j <- k ; k,j,i", 1.0, &first, -1.0, A, B);
+    cg::einsum("i,j <- k ; k,i,j", 0.0, &second, 3.0, A, B);
+    cg::einsum("i,j <- k ; k,j,i", 1.0, &second, -1.0, A, B);
+}
+} // namespace
+
+TEST_CASE("LCCF - equal-sized groups fold in program order, not hash order", "[ComputeGraph][Passes][LCCF]") {
+    // Candidate groups are collected in an unordered_map keyed by a hash, and
+    // the size-descending sort that picks the fold order was not a total order:
+    // equal-sized groups came out in the map's ITERATION order, which differs
+    // between standard libraries and moves whenever the hash changes. The
+    // ordinals in the emitted node labels and tensor names, and so the graph's
+    // IR bytes, then depended on the platform for one and the same input.
+    //
+    // Both directions are asserted because a single ordering could satisfy the
+    // expectation by luck under one library's hash order; the group whose first
+    // member comes earliest in program order has to fold first either way.
+    auto A = create_random_tensor<double>("A", 4);
+    auto B = create_random_tensor<double>("B", 4, 3, 3);
+
+    RuntimeTensor<double> const A_rt(A), B_rt(B);
+
+    RuntimeTensor<double> p("p", std::vector<size_t>{3, 3});
+    RuntimeTensor<double> q("q", std::vector<size_t>{3, 3});
+    p.zero();
+    q.zero();
+
+    cg::Graph forward("lccf_order_pq");
+    capture_two_equal_groups(forward, p, q, A_rt, B_rt);
+
+    auto [fwd_modified, fwd_pass] = forward.apply<cg::passes::LinearCombinationContractionFolding>();
+    REQUIRE(fwd_modified);
+    REQUIRE(fwd_pass.num_groups() == 2);
+    CHECK(fused_folds(forward) == std::vector<std::string>{"p -> lccf(2 terms via _lccf_L_0)", "q -> lccf(2 terms via _lccf_L_1)"});
+
+    // The same program with the two pairs swapped: the ordinals follow program
+    // order again, so they now land the other way round.
+    RuntimeTensor<double> r("r", std::vector<size_t>{3, 3});
+    RuntimeTensor<double> s("s", std::vector<size_t>{3, 3});
+    r.zero();
+    s.zero();
+
+    cg::Graph reversed("lccf_order_sr");
+    capture_two_equal_groups(reversed, s, r, A_rt, B_rt);
+
+    auto [rev_modified, rev_pass] = reversed.apply<cg::passes::LinearCombinationContractionFolding>();
+    REQUIRE(rev_modified);
+    REQUIRE(rev_pass.num_groups() == 2);
+    CHECK(fused_folds(reversed) == std::vector<std::string>{"s -> lccf(2 terms via _lccf_L_0)", "r -> lccf(2 terms via _lccf_L_1)"});
+
+    // The reordering is a bookkeeping change only: both folds still compute the
+    // linear combination they replaced.
+    forward.execute();
+    for (size_t ii = 0; ii < 3; ii++) {
+        for (size_t jj = 0; jj < 3; jj++) {
+            double p_ref = 0.0;
+            double q_ref = 0.0;
+            for (size_t kk = 0; kk < 4; kk++) {
+                p_ref += 2.0 * A(kk) * B(kk, ii, jj) - A(kk) * B(kk, jj, ii);
+                q_ref += 3.0 * A(kk) * B(kk, ii, jj) - A(kk) * B(kk, jj, ii);
+            }
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
+            CHECK(std::abs(p(idx) - p_ref) < 1e-11);
+            CHECK(std::abs(q(idx) - q_ref) < 1e-11);
+        }
     }
 }

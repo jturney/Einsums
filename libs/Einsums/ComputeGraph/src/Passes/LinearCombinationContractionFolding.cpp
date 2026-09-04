@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <complex>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -38,6 +39,14 @@ struct FoldKey {
     bool operator==(FoldKey const &o) const {
         return output_id == o.output_id && c_indices == o.c_indices && shared_id == o.shared_id && shared_is_first == o.shared_is_first &&
                shared_indices == o.shared_indices && non_shared_id == o.non_shared_id && non_shared_sorted == o.non_shared_sorted;
+    }
+
+    /// A total order over every field, so two distinct keys always compare
+    /// unequal in one direction or the other. Used only to break a tie in the
+    /// fold order; the values it compares carry no meaning of their own.
+    bool operator<(FoldKey const &o) const {
+        return std::tie(output_id, shared_id, non_shared_id, shared_is_first, c_indices, shared_indices, non_shared_sorted) <
+               std::tie(o.output_id, o.shared_id, o.non_shared_id, o.shared_is_first, o.c_indices, o.shared_indices, o.non_shared_sorted);
     }
 };
 
@@ -216,8 +225,28 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         return false;
     }
 
-    // Largest groups first; greedy so each node folds once.
-    std::ranges::sort(valid, [](ValidGroup const &a, ValidGroup const &b) { return a.candidates.size() > b.candidates.size(); });
+    // Largest groups first; greedy so each node folds once. Equal-sized groups are
+    // ordered by their SMALLEST member node index (their members were sorted by
+    // node index above, so that is candidates.front()), and identically-placed
+    // groups by the FoldKey itself, which is unique because it is the map key.
+    // Together those make the order a total one that depends only on the graph.
+    //
+    // The size comparison alone was not: `groups` is an unordered_map keyed by a
+    // hash, so equal-sized groups came out of it in hash-iteration order, which
+    // differs between standard libraries (libc++ and libstdc++ iterate a bucket
+    // newest-first, the MSVC STL in insertion order) and moves whenever the hash
+    // does. Fold order decides which group gets which ordinal in the emitted node
+    // labels and `_lccf_L_<n>` tensor names, so one and the same input produced a
+    // different graph, and different saved IR bytes, per platform.
+    std::ranges::sort(valid, [](ValidGroup const &a, ValidGroup const &b) {
+        if (a.candidates.size() != b.candidates.size()) {
+            return a.candidates.size() > b.candidates.size();
+        }
+        if (a.candidates.front().node_index != b.candidates.front().node_index) {
+            return a.candidates.front().node_index < b.candidates.front().node_index;
+        }
+        return a.key < b.key;
+    });
 
     size_t const      orig_count = nodes.size(); // appended Alloc nodes (>= this) are always kept
     std::vector<bool> used(orig_count, false);
