@@ -108,6 +108,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_factorized") [[nodiscard]] std::size_t num_factorized() const { return _num_factorized; }
 
+    /**
+     * @brief How many captured intermediates the cone flattening dissolved into a chosen tree.
+     *
+     * Reported because it is the difference between re-associating one contraction and
+     * re-associating the cone it sits in, and a caller reading the node count would otherwise
+     * see a statement disappear with nothing saying which pass took it.
+     *
+     * @return The count.
+     */
+    APIARY_EXPOSE APIARY_GETTER("num_dissolved") [[nodiscard]] std::size_t num_dissolved() const { return _num_dissolved; }
+
   protected:
     /// @copydoc RegionRewrite::rewrite
     bool rewrite(Graph &graph, Region const &region, TensorExpr &expr) override;
@@ -136,6 +147,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     std::vector<PendingSetup> _pending;
     std::size_t               _num_factorized{0};
+    std::size_t               _num_dissolved{0};
 
     /// Every tagged tensor some contraction offered this pass, whatever became of it. What the
     /// end-of-run sweep subtracts from the tagged tensors the graph holds, so a tag nothing

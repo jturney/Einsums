@@ -17,6 +17,7 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <functional>
@@ -122,6 +123,7 @@ TensorId declare_scratch(Graph &graph, std::string name, packed_gemm::ScalarType
 void FactorizationPass::reset_stats() {
     RegionRewrite::reset_stats();
     _num_factorized = 0;
+    _num_dissolved  = 0;
     _pending.clear();
     _considered.clear();
 }
@@ -134,7 +136,9 @@ std::vector<std::string> FactorizationPass::describe() const {
     if (_num_factorized == 0) {
         return {};
     }
-    return {fmt::format("FactorizationPass: re-associated {} contraction(s) around a provider's factors", _num_factorized)};
+    return {fmt::format("FactorizationPass: re-associated {} contraction(s) around a provider's factors, dissolving {} captured "
+                        "intermediate(s) into the cone",
+                        _num_factorized, _num_dissolved)};
 }
 
 bool FactorizationPass::applicable(Graph const &graph) const {
@@ -247,6 +251,131 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         std::vector<std::string> used = letters_of(tagged_index);
         merge_letters(used, letters_of(other_index));
         merge_letters(used, letters_of(statement.target_indices));
+
+        // ── The cone the tagged operand sits in ───────────────────────────────────────
+        //
+        // The other operand may itself be an intermediate this region formed, and the name the
+        // author gave it encodes the author's bracketing rather than the problem's. Flattening
+        // it in puts its own factors among the leaves the search sees, so the substituted
+        // factors and the cone's factors are bracketed TOGETHER rather than either side being
+        // fixed first. Where keeping the intermediate is the cheaper answer the search says so
+        // on its own, since re-forming it is one of the trees over those leaves.
+        std::vector<search::Factor>                        outer_pieces;
+        std::vector<std::size_t>                           dissolved;        ///< Statements folded in.
+        std::vector<std::array<std::vector<ExprIndex>, 3>> dissolved_shapes; ///< Their left, right and output axes.
+        {
+            // Reader and writer counts over the whole expression, taken here rather than once
+            // per region because an accepted rewrite moves both.
+            std::unordered_map<TensorId, std::size_t> readers;
+            std::unordered_map<TensorId, std::size_t> writer;
+            for (std::size_t other = 0; other < expr.statements.size(); ++other) {
+                auto const [entry, fresh] = writer.try_emplace(expr.statements[other].target, other);
+                if (!fresh) {
+                    entry->second = expr.statements.size(); // more than one writer: never fold
+                }
+                if (expr.statements[other].value == invalid_term) {
+                    continue;
+                }
+                for (TermId const operand : expr.at(expr.statements[other].value).operands) {
+                    if (expr.at(operand).kind == TermKind::Leaf) {
+                        ++readers[expr.at(operand).tensor];
+                    }
+                }
+            }
+
+            std::size_t                                                                                 fresh_index = 0;
+            std::function<void(TermId, std::vector<ExprIndex> const &, bool, std::size_t, std::size_t)> expand =
+                [&](TermId leaf_id, std::vector<ExprIndex> const &as_seen, bool conjugate, std::size_t depth, std::size_t consumer) {
+                    ExprTerm const leaf      = expr.at(leaf_id);
+                    auto const     keep_leaf = [&]() {
+                        outer_pieces.push_back(search::Factor{.tensor = leaf.tensor, .indices = as_seen, .conjugate = conjugate});
+                    };
+                    // A conjugated leaf is never folded. Conjugation does distribute over a
+                    // product, but carrying the flag onto every factor is a rewrite of its own
+                    // and declining costs one opportunity rather than risking a wrong sign.
+                    if (leaf.kind != TermKind::Leaf || depth >= 8 || conjugate) {
+                        keep_leaf();
+                        return;
+                    }
+                    if (std::ranges::find(region.internal, leaf.tensor) == region.internal.end() || readers[leaf.tensor] != 1) {
+                        keep_leaf();
+                        return;
+                    }
+                    auto const found = writer.find(leaf.tensor);
+                    if (found == writer.end() || found->second >= consumer) {
+                        keep_leaf();
+                        return;
+                    }
+                    ExprStatement const definition = expr.statements[found->second];
+                    if (definition.value == invalid_term || !is_zero(definition.target_prefactor) ||
+                        definition.target_indices.size() != as_seen.size()) {
+                        keep_leaf();
+                        return;
+                    }
+                    ExprTerm const value = expr.at(definition.value);
+                    if (value.kind != TermKind::Contraction || value.operands.size() != 2 || value.operand_indices.size() != 2 ||
+                        !is_one(value.factor) || expr.at(value.operands[0]).kind != TermKind::Leaf ||
+                        expr.at(value.operands[1]).kind != TermKind::Leaf) {
+                        keep_leaf();
+                        return;
+                    }
+
+                    // The definition's own letters, mapped onto the names the consumer uses for
+                    // the same axes; everything else it mentions is summed inside it and gets a
+                    // name nothing else here has.
+                    std::unordered_map<std::string, ExprIndex> substitution;
+                    for (std::size_t axis = 0; axis < as_seen.size(); ++axis) {
+                        substitution.emplace(definition.target_indices[axis].letter, as_seen[axis]);
+                    }
+                    auto rename = [&](std::vector<ExprIndex> const &indices) {
+                        std::vector<ExprIndex> out;
+                        out.reserve(indices.size());
+                        for (auto const &index : indices) {
+                            auto const [entry, fresh] = substitution.try_emplace(index.letter, index);
+                            if (fresh) {
+                                entry->second.letter = fmt::format("~{}", fresh_index++);
+                            }
+                            out.push_back(entry->second);
+                        }
+                        return out;
+                    };
+                    std::vector<ExprIndex> const left  = rename(value.operand_indices[0]);
+                    std::vector<ExprIndex> const right = rename(value.operand_indices[1]);
+
+                    dissolved.push_back(found->second);
+                    dissolved_shapes.push_back({left, right, as_seen});
+                    expand(value.operands[0], left, !value.conjugate.empty() && value.conjugate[0], depth + 1, found->second);
+                    expand(value.operands[1], right, !value.conjugate.empty() && value.conjugate[1], depth + 1, found->second);
+                };
+            expand(other_leaf, other_index, !term.conjugate.empty() && term.conjugate[other_slot], 0, position);
+
+            // A folded definition's operands were read where it stood and are read where the
+            // tagged contraction stands instead, so a write to one of them in between would be
+            // seen by the rewrite and was not seen by the program. Falling back to the
+            // unflattened operand costs the wider search rather than the rewrite.
+            if (!dissolved.empty()) {
+                std::size_t const earliest     = *std::ranges::min_element(dissolved);
+                bool              interference = false;
+                for (std::size_t between = earliest; between < position; ++between) {
+                    if (std::ranges::find(dissolved, between) != dissolved.end()) {
+                        continue;
+                    }
+                    for (auto const &piece : outer_pieces) {
+                        interference = interference || expr.statements[between].target == piece.tensor;
+                    }
+                }
+                if (interference) {
+                    note_skip("a statement between an intermediate's definition and its use rewrites one of its operands, so the "
+                              "cone was not flattened",
+                              fmt::format("tensor '{}'", tagged_name));
+                    outer_pieces.clear();
+                    dissolved.clear();
+                    dissolved_shapes.clear();
+                    outer_pieces.push_back(search::Factor{
+                        .tensor = other_id, .indices = other_index, .conjugate = !term.conjugate.empty() && term.conjugate[other_slot]});
+                }
+            }
+        }
 
         struct Candidate {
             FactorizationPlan           plan;
@@ -361,6 +490,9 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             note_extent(tagged_id, tagged_index);
             note_extent(other_id, other_index);
             note_extent(statement.target, statement.target_indices);
+            for (auto const &piece : outer_pieces) {
+                note_extent(piece.tensor, piece.indices);
+            }
             for (std::size_t which = 0; which < count; ++which) {
                 for (std::size_t axis = 0; axis < renamed[which].indices.size(); ++axis) {
                     table.observe(renamed[which].indices[axis], plan.factors[which].dims[axis]);
@@ -403,7 +535,10 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             // The target must still be producible from the pieces. Checked rather than reasoned
             // about: the shapes that reach here are wider than the tidy ones, and a miss would
             // emit a contraction whose operands cannot make its output.
-            std::vector<std::string> reachable = letters_of(other_index);
+            std::vector<std::string> reachable;
+            for (auto const &piece : outer_pieces) {
+                merge_letters(reachable, letters_of(piece.indices));
+            }
             for (auto const &factor : renamed) {
                 merge_letters(reachable, factor.letters);
             }
@@ -419,12 +554,16 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             // ordinary letters to it, so a bracketing that rebuilds the tagged tensor is simply
             // the most expensive tree and the search never picks it.
             std::vector<search::Factor> pieces;
-            pieces.reserve(count + 1);
+            pieces.reserve(count + outer_pieces.size());
             for (auto const &factor : renamed) {
                 pieces.push_back(search::Factor{.tensor = TensorId{0}, .indices = factor.indices, .conjugate = false});
             }
-            pieces.push_back(search::Factor{
-                .tensor = other_id, .indices = other_index, .conjugate = !term.conjugate.empty() && term.conjugate[other_slot]});
+            pieces.insert(pieces.end(), outer_pieces.begin(), outer_pieces.end());
+            if (pieces.size() > kMaxPieces) {
+                note_skip("the cone and the provider's chain together have more leaves than the bracketing search is allowed",
+                          fmt::format("'{}': {} leaves, cap {}", provider->name(), pieces.size(), kMaxPieces));
+                continue;
+            }
 
             ComparisonContext tree_ctx;
             tree_ctx.registry     = ctx.registry;
@@ -437,9 +576,16 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 continue;
             }
 
-            SymbolicCost const before = search::contraction_cost(search::letters_of(tagged_index), search::letters_of(other_index),
-                                                                 search::letters_of(statement.target_indices), table);
-            SymbolicCost const after  = tree.cost;
+            // What the region costs today: the tagged contraction, plus every statement the
+            // flattening dissolved, because those disappear if this rewrite is taken and a
+            // comparison that ignored them would decline a tree that pays for both.
+            SymbolicCost before = search::contraction_cost(search::letters_of(tagged_index), search::letters_of(other_index),
+                                                           search::letters_of(statement.target_indices), table);
+            for (auto const &shape : dissolved_shapes) {
+                before = add_cost(before, search::contraction_cost(search::letters_of(shape[0]), search::letters_of(shape[1]),
+                                                                   search::letters_of(shape[2]), table));
+            }
+            SymbolicCost const after = tree.cost;
 
             // Cheaper SYMBOLICALLY and, where every extent is known, cheaper at those extents
             // too. The two answer different questions and the pass needs both.
@@ -652,6 +798,16 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
 
         expr.statements.insert(expr.statements.begin() + static_cast<std::ptrdiff_t>(position), interior.begin(), interior.end());
         position += interior.size(); // past the statements just inserted, onto the one they feed
+
+        // The definitions the flattening folded in are gone: their values now live inside the
+        // tree. Erased back to front so the earlier indices stay valid, and every one of them
+        // is before the insertion point, which is what keeps `position` meaningful.
+        std::ranges::sort(dissolved);
+        for (auto entry = dissolved.rbegin(); entry != dissolved.rend(); ++entry) {
+            expr.statements.erase(expr.statements.begin() + static_cast<std::ptrdiff_t>(*entry));
+            --position;
+        }
+        _num_dissolved += dissolved.size();
 
         _pending.push_back(PendingSetup{.label = record.setup, .factors = factor_ids, .emit = best->plan.emit_setup});
         ++_num_factorized;

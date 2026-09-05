@@ -761,3 +761,105 @@ TEST_CASE("Factorization - one factor is a rename rather than a factorization, a
     }
     REQUIRE(named_the_count);
 }
+
+TEST_CASE("Factorization - the cone is re-associated, not just the tagged contraction", "[ComputeGraph][Factorization][Chain]") {
+    // The author writes an intermediate and the tagged contraction reads it. The name is the
+    // author's bracketing rather than the problem's, so the pass flattens it in and brackets
+    // the whole cone at once: here the outer product is worth never forming, which is a
+    // decision that cannot be reached one contraction at a time.
+    std::size_t const n    = 6;
+    std::size_t const left = 2;
+    std::size_t const rght = 2;
+
+    auto A  = create_random_tensor<double>("A", left, n, n);
+    auto D  = create_random_tensor<double>("D", left, rght);
+    auto B  = create_random_tensor<double>("B", rght, n, n);
+    auto t1 = create_random_tensor<double>("t1", n);
+    auto t2 = create_random_tensor<double>("t2", n);
+    auto M  = create_zero_tensor<double>("M", n, n, n, n);
+
+    for (std::size_t m = 0; m < n; ++m) {
+        for (std::size_t nn = 0; nn < n; ++nn) {
+            for (std::size_t p = 0; p < n; ++p) {
+                for (std::size_t q = 0; q < n; ++q) {
+                    double sum = 0.0;
+                    for (std::size_t Q = 0; Q < left; ++Q) {
+                        for (std::size_t R = 0; R < rght; ++R) {
+                            sum += A(Q, m, nn) * D(Q, R) * B(R, p, q);
+                        }
+                    }
+                    M(m, nn, p, q) = sum;
+                }
+            }
+        }
+    }
+
+    auto const build = [&](cg::Graph &graph, Tensor<double, 2> &out) {
+        auto                  &U = graph.scratch<double, 2>("U", n, n);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("p ; q -> p,q", &U, t1, t2);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &out, M, U);
+    };
+
+    auto      expected = create_zero_tensor<double>("C", n, n);
+    cg::Graph reference("cone_reference");
+    build(reference, expected);
+    auto defaults_for_reference = cg::PassManager::create_default();
+    reference.apply(defaults_for_reference);
+    reference.execute();
+
+    auto      C = create_zero_tensor<double>("C", n, n);
+    cg::Graph graph("cone_factorized");
+    build(graph, C);
+    graph.annotate_tag(M, cg::ProvenanceTag{.name = "test_chain"});
+
+    cg::FactorizationRegistry registry;
+    registry.add(std::make_shared<ExactChain>(A, D, B));
+
+    cg::passes::FactorizationPass factorization(registry);
+    factorization.set_verify_costs(true);
+    cg::PassManager pm;
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+    REQUIRE(graph.apply(pm));
+    REQUIRE(factorization.num_factorized() == 1);
+    REQUIRE(factorization.cost_mismatches().empty());
+
+    // The author's intermediate is gone: its two factors joined the leaves and the search put
+    // them somewhere the outer product never has to be formed.
+    REQUIRE(factorization.num_dissolved() == 1);
+
+    // Five leaves, four contractions, and none of them writes a rank-four tensor: the tagged
+    // tensor is the most expensive thing the search could rebuild and it never does.
+    std::size_t contractions = 0;
+    for (auto const &node : graph.nodes()) {
+        contractions += node.kind == cg::OpKind::Einsum ? 1 : 0;
+    }
+    REQUIRE(contractions == 4);
+    for (auto const &[id, handle] : graph.tensors_map()) {
+        if (handle.name.rfind("ExactChain_M_x", 0) == 0) {
+            REQUIRE(handle.rank < 4);
+        }
+    }
+
+    // The cost line has to say the rewrite paid, and it is checked against the nodes rather
+    // than believed: a report that offers a rewrite to nothing as evidence went unread once.
+    bool reported = false;
+    for (auto const &dump : factorization.last_dumps()) {
+        if (dump.changed) {
+            REQUIRE_FALSE(dump.cost_after.empty());
+            REQUIRE(dump.cost_after != dump.cost_before);
+            reported = true;
+        }
+    }
+    REQUIRE(reported);
+
+    auto defaults = cg::PassManager::create_default();
+    graph.apply(defaults);
+    graph.execute();
+
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+            REQUIRE(std::abs(C(i, j) - expected(i, j)) < 1e-10);
+        }
+    }
+}
