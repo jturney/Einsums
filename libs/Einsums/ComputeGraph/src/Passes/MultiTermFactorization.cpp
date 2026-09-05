@@ -1040,6 +1040,13 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
 
     std::vector<ExprStatement> emitted;
     emitted.reserve(expr.statements.size() + shared.size() + terms.size());
+    // Unique across the REGIONS of one graph as well as across graphs. The counter restarts per
+    // region and this pass descends into loop bodies, so a program with two regions would
+    // otherwise declare two different tensors under one name; the storage auditor keys its
+    // duplicate check on the name and reads that as one tensor allocated twice. The region's
+    // first node id is what separates them, and it is as deterministic as the node order is.
+    std::string const scratch_stem =
+        fmt::format("{}_r{}", graph.name(), region.nodes.empty() ? std::size_t{0} : static_cast<std::size_t>(region.nodes.front()));
     std::size_t scratch_index = 0;
 
     auto emit_contraction = [&](Factor const &a, Factor const &b, TensorId target, std::string const &target_name,
@@ -1161,7 +1168,13 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
                 return std::nullopt;
             }
             TensorId const scratch = detail::dispatch_scalar_type(model->dtype, [&]<typename T>(T /*tag*/) {
-                auto &tensor = graph.declare_runtime_tensor<T>(fmt::format("mtf_t{}", scratch_index++), dims, /*intermediate=*/true);
+                // Named after the graph it is declared in. This pass descends into loop bodies,
+                // so one program holds one of these counters per graph and two graphs would
+                // otherwise declare two different tensors under one name; the storage auditor
+                // keys its duplicate check on the name and reads that as one tensor allocated
+                // twice.
+                auto &tensor = graph.declare_runtime_tensor<T>(fmt::format("{}_mtf_t{}", scratch_stem, scratch_index++), dims,
+                                                               /*intermediate=*/true);
                 return graph.find_tensor_id_by_ptr(&tensor);
             });
             if (scratch == 0) {

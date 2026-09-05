@@ -90,6 +90,21 @@ std::vector<RuntimeTensorView<double>> views_of(std::vector<RuntimeTensor<double
     }
     return out;
 }
+/// @p view under a name of its own, for a fit that reads the tensor the caller TAGGED.
+///
+/// A fitting is captured, so whatever it reads becomes an interface tensor of the transformed
+/// graph, bound by name at every later bind. When the fit reads a tensor the caller's own algebra
+/// also holds, that is TWO interface tensors over one buffer: the pass and the fitting each hold
+/// their own handle for it, and a manifest that binds by name refuses two entries sharing one.
+/// Naming the fitting's copy is what makes the pair expressible, and it says what it is: a caller
+/// rebinding the graph supplies the same tensor under both names, and both handles are repointed.
+/// Without it a grid-fitted graph whose fit reads its own tagged tensor could not be saved at all.
+RuntimeTensorView<double> fit_input_view(RuntimeTensorView<double> view) {
+    std::string const stem = view.name();
+    view.set_name(fmt::format("{}@fit", stem.empty() ? std::string{"tagged"} : stem));
+    return view;
+}
+
 } // namespace
 
 ThcFactorization::ThcFactorization(std::string tag, RuntimeTensor<double> const &three_index,
@@ -107,22 +122,21 @@ std::shared_ptr<ThcFactorization> ThcFactorization::for_amplitude(std::string ta
     // `propose` reads it as the mode rather than as a missing argument.
     auto provider = std::make_shared<ThcFactorization>(std::move(tag), RuntimeTensorView<double>{}, std::move(collocations), bound,
                                                        drop_threshold, std::move(name));
-    provider->_amplitude.emplace(std::move(amplitude));
+    provider->_amplitude.emplace(fit_input_view(std::move(amplitude)));
     return provider;
 }
 
 std::shared_ptr<ThcFactorization> ThcFactorization::for_amplitude(std::string tag, RuntimeTensor<double> const &amplitude,
                                                                   std::vector<RuntimeTensor<double> const *> collocations, double bound,
                                                                   double drop_threshold, std::string name) {
-    return for_amplitude(std::move(tag), RuntimeTensorView<double>{amplitude}, views_of(collocations), bound, drop_threshold,
-                         std::move(name));
+    return for_amplitude(std::move(tag), named_view(amplitude), views_of(collocations), bound, drop_threshold, std::move(name));
 }
 
 std::shared_ptr<ThcFactorization> ThcFactorization::for_three_index(std::string tag, RuntimeTensorView<double> three_index,
                                                                     std::vector<RuntimeTensorView<double>> collocations, double bound,
                                                                     double drop_threshold, std::string name) {
-    auto provider               = std::make_shared<ThcFactorization>(std::move(tag), std::move(three_index), std::move(collocations), bound,
-                                                                     drop_threshold, std::move(name));
+    auto provider = std::make_shared<ThcFactorization>(std::move(tag), fit_input_view(std::move(three_index)), std::move(collocations),
+                                                       bound, drop_threshold, std::move(name));
     provider->_fits_three_index = true;
     return provider;
 }
@@ -554,21 +568,28 @@ expected<FactorizationPlan, std::string> ThcFactorization::propose(Graph const &
 
         // The fitting's own workspace, declared on the BODY: it is live only while the fit runs
         // and nothing outside has any use for the eigenvectors of a collocation overlap.
-        auto &row_gram  = body.declare_runtime_tensor<double>("thc_gram", {grid, grid}, /*intermediate=*/true);
-        auto &col_gram  = one_matrix ? row_gram : body.declare_runtime_tensor<double>("thc_gram_col", {grid, grid}, /*intermediate=*/true);
-        auto &metric    = body.declare_runtime_tensor<double>("thc_metric", {grid, grid}, /*intermediate=*/true);
-        auto &vectors   = body.declare_runtime_tensor<double>("thc_vectors", {grid, grid}, /*intermediate=*/true);
-        auto &values    = body.declare_runtime_tensor<double>("thc_values", {grid}, /*intermediate=*/true);
-        auto &scaled    = body.declare_runtime_tensor<double>("thc_scaled", {grid, grid}, /*intermediate=*/true);
-        auto &half      = body.declare_runtime_tensor<double>("thc_inv_sqrt", {grid, grid}, /*intermediate=*/true);
-        auto &inverse   = body.declare_runtime_tensor<double>("thc_inverse", {grid, grid}, /*intermediate=*/true);
-        auto &partial   = body.declare_runtime_tensor<double>("thc_partial", {naux, row_basis, grid}, /*intermediate=*/true);
-        auto &projected = body.declare_runtime_tensor<double>("thc_projected", {naux, grid}, /*intermediate=*/true);
-        auto &coupling  = body.declare_runtime_tensor<double>("thc_coupling", {grid, grid}, /*intermediate=*/true);
-        auto &right     = body.declare_runtime_tensor<double>("thc_right", {grid, grid}, /*intermediate=*/true);
-        auto &weights   = body.declare_runtime_tensor<double>("thc_weights", {naux, grid}, /*intermediate=*/true);
-        auto &rebuilt   = body.declare_runtime_tensor<double>("thc_rebuilt", {naux, row_basis, grid}, /*intermediate=*/true);
-        auto &residual  = body.declare_runtime_tensor<double>("thc_residual", {naux, row_basis, col_basis}, /*intermediate=*/true);
+        //
+        // Named after the graph they are declared in, because one program may hold SEVERAL of
+        // these fittings and the storage auditor keys its duplicate check on the name: two fits
+        // under one set of names present it with one tensor materialized twice.
+        auto const named = [&body](std::string_view stem) { return fmt::format("{}_{}", body.name(), stem); };
+
+        auto &row_gram = body.declare_runtime_tensor<double>(named("thc_gram"), {grid, grid}, /*intermediate=*/true);
+        auto &col_gram =
+            one_matrix ? row_gram : body.declare_runtime_tensor<double>(named("thc_gram_col"), {grid, grid}, /*intermediate=*/true);
+        auto &metric    = body.declare_runtime_tensor<double>(named("thc_metric"), {grid, grid}, /*intermediate=*/true);
+        auto &vectors   = body.declare_runtime_tensor<double>(named("thc_vectors"), {grid, grid}, /*intermediate=*/true);
+        auto &values    = body.declare_runtime_tensor<double>(named("thc_values"), {grid}, /*intermediate=*/true);
+        auto &scaled    = body.declare_runtime_tensor<double>(named("thc_scaled"), {grid, grid}, /*intermediate=*/true);
+        auto &half      = body.declare_runtime_tensor<double>(named("thc_inv_sqrt"), {grid, grid}, /*intermediate=*/true);
+        auto &inverse   = body.declare_runtime_tensor<double>(named("thc_inverse"), {grid, grid}, /*intermediate=*/true);
+        auto &partial   = body.declare_runtime_tensor<double>(named("thc_partial"), {naux, row_basis, grid}, /*intermediate=*/true);
+        auto &projected = body.declare_runtime_tensor<double>(named("thc_projected"), {naux, grid}, /*intermediate=*/true);
+        auto &coupling  = body.declare_runtime_tensor<double>(named("thc_coupling"), {grid, grid}, /*intermediate=*/true);
+        auto &right     = body.declare_runtime_tensor<double>(named("thc_right"), {grid, grid}, /*intermediate=*/true);
+        auto &weights   = body.declare_runtime_tensor<double>(named("thc_weights"), {naux, grid}, /*intermediate=*/true);
+        auto &rebuilt   = body.declare_runtime_tensor<double>(named("thc_rebuilt"), {naux, row_basis, grid}, /*intermediate=*/true);
+        auto &residual  = body.declare_runtime_tensor<double>(named("thc_residual"), {naux, row_basis, col_basis}, true);
 
         // The residual's destinations. Plain scalars because that is what the pointer-writing
         // dot and write_param both take, and owned by the BODY so they outlive this call and

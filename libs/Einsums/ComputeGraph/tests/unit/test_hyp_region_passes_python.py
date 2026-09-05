@@ -1093,3 +1093,107 @@ def test_the_drawn_chains_are_binarized_and_never_rebuild_the_integral():
                 assert len(extent) < 4, f"{name} rebuilt a rank-four intermediate"
         assert np.allclose(got, want, rtol=1e-8, atol=1e-10)
     assert seen > 0, "no drawn chain was ever factorized"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Two tagged operands in one contraction
+#
+# The shape the two-operand substitution exists for, drawn rather than fixed.
+# Both operands of one contraction carry a claimed tag and each has a grid fit
+# of its own over ONE collocation matrix, so the leaf set the search is handed
+# is ten factors and the whole decision is taken once. What is drawn is the
+# grid: sometimes smaller than the basis-pair space and sometimes as large as
+# it, which is what moves the bracketing the search picks.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class PairProgram(NamedTuple):
+    """One drawn problem: two rank-4 tensors that ARE grid fits on one grid."""
+
+    nbf: int
+    ngrid: int
+    naux: int
+
+
+@st.composite
+def _pair_programs(draw):
+    nbf = draw(st.integers(min_value=3, max_value=4))
+    ngrid = draw(st.integers(min_value=2, max_value=nbf * (nbf + 1) // 2))
+    return PairProgram(nbf=nbf, ngrid=ngrid, naux=draw(st.integers(min_value=2, max_value=4)))
+
+
+def _run_pair(prog, seed):
+    """Contract two tagged tensors, fit both, and return what happened."""
+    rng = np.random.default_rng(seed)
+    collocation = rng.standard_normal((prog.nbf, prog.ngrid))
+    left_weights = rng.standard_normal((prog.naux, prog.ngrid))
+    right_weights = rng.standard_normal((prog.naux, prog.ngrid))
+    left_three = np.einsum("AP,mP,nP->Amn", left_weights, collocation, collocation)
+    right_three = np.einsum("AP,mP,nP->Amn", right_weights, collocation, collocation)
+    left = np.einsum("Amn,Apq->mnpq", left_three, left_three)
+    right = np.einsum("Apq,Ars->pqrs", right_three, right_three)
+    want = np.einsum("mnpq,pqrs->mnrs", left, right)
+
+    M = einsums.asarray(np.ascontiguousarray(left))
+    N = einsums.asarray(np.ascontiguousarray(right))
+    C = einsums.zeros((prog.nbf, prog.nbf, prog.nbf, prog.nbf), dtype="float64")
+
+    graph = cg.Graph(_nm("pair"))
+    with cg.capture(graph):
+        einsums.einsum("m,n,p,q ; p,q,r,s -> m,n,r,s", C, M, N)
+    graph.annotate_tag(M, _G.ProvenanceTag.make("eri_left"))
+    graph.annotate_tag(N, _G.ProvenanceTag.make("eri_right"))
+    _G.ThcFactorization.register_grid_space(graph)
+
+    # One matrix per provider, because a fitting is captured and two providers
+    # handed one tensor present two interface handles over one buffer.
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.ThcFactorization(
+        "eri_left", einsums.asarray(np.ascontiguousarray(left_three)),
+        einsums.asarray(np.ascontiguousarray(collocation)), 1e-8, 1e-10, "ThcLeft"))
+    registry.add(_G.ThcFactorization(
+        "eri_right", einsums.asarray(np.ascontiguousarray(right_three)),
+        einsums.asarray(np.ascontiguousarray(collocation)), 1e-8, 1e-10, "ThcRight"))
+    factorization = _G.FactorizationPass(registry)
+    pm = cg.PassManager()
+    pm.add(factorization)
+    fired = graph.apply(pm)
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    assert_materialization_invariants(graph, f"two tagged operands, {prog!r}")
+    return fired, np.asarray(C), want, graph, factorization
+
+
+@given(prog=_pair_programs())
+@settings(max_examples=sanitizer_examples(25), deadline=None,
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
+def test_two_tagged_operands_keep_the_answer(prog):
+    fired, got, want, _graph, factorization = _run_pair(prog, seed=0)
+    assert fired, f"both fits declined a drawn problem: {factorization.skip_reasons}"
+    assert factorization.num_multi_substituted == 1
+    # Both fits are EXACT here by construction, so the only difference between
+    # the two forms is the order the sums are taken in.
+    scale = float(np.linalg.norm(np.abs(want))) or 1.0
+    assert float(np.linalg.norm(got - want)) <= 1e-8 * scale
+
+
+def test_the_drawn_pairs_record_one_approximation_per_provider():
+    """Two providers substituted together are two records over one output.
+
+    A record per provider rather than per rewrite, composed by the per-effect
+    rule: the pair is one decision and the budget sees both halves of it.
+    """
+    seen = 0
+    for seed in range(8):
+        rng = np.random.default_rng(seed)
+        nbf = int(rng.integers(3, 5))
+        prog = PairProgram(nbf=nbf, ngrid=int(rng.integers(2, nbf * (nbf + 1) // 2 + 1)),
+                           naux=int(rng.integers(2, 5)))
+        fired, got, want, graph, _f = _run_pair(prog, seed=seed)
+        if not fired:
+            continue
+        seen += 1
+        assert sorted(r.pass_name for r in graph.approximations()) == ["ThcLeft", "ThcRight"]
+        assert np.allclose(got, want, rtol=1e-8, atol=1e-10)
+    assert seen > 0, "no drawn pair was ever factorized"
