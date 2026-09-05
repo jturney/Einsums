@@ -290,6 +290,17 @@ bool MultiTermFactorization::search_enabled() const {
     return _search_explicit ? _search_enabled : config::get(option::GraphStructuralSearch);
 }
 
+std::size_t MultiTermFactorization::max_factors() const {
+    // The option is the process-wide statement and `set_max_factors` is the per-pipeline one,
+    // which is the shape `search_enabled` already has. Clamped on the way out for the same reason
+    // the setter clamps: a term of one factor is a copy and there is nothing to bracket.
+    if (_max_factors_explicit) {
+        return _max_factors;
+    }
+    auto const cap = config::get(option::GraphFactorizationMaxFactors);
+    return cap < 2 ? std::size_t{2} : static_cast<std::size_t>(cap);
+}
+
 bool MultiTermFactorization::cache_enabled() const {
     return _cache_explicit ? _cache_enabled : config::get(option::GraphFactorizationCache);
 }
@@ -352,7 +363,8 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     //
     // Asked before anything is computed, because the answer "nothing here is worth rewriting"
     // costs a whole search to reach and is worth keeping for exactly that reason.
-    PlanKey const            key{_graph_key, region.first, region.last, _max_factors};
+    std::size_t const        cap = max_factors();
+    PlanKey const            key{_graph_key, region.first, region.last, cap};
     FactorizationPlan const *cached = nullptr;
     if (_graph_key_valid) {
         if (auto const it = _cache.find(key); it != _cache.end()) {
@@ -608,7 +620,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             for (auto const &index : term.output) {
                 term.searchable = term.searchable && target_seen.insert(index.letter).second;
             }
-            if (term.factors.size() < 2 || term.factors.size() > _max_factors) {
+            if (term.factors.size() < 2 || term.factors.size() > cap) {
                 term.searchable = false;
             }
         }

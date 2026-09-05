@@ -245,6 +245,30 @@
     ``clear_cache`` empties it. Switch it off when bisecting a wrong number: two supposedly
     identical graphs getting one plan is the first thing to rule out.
 
+"einsums:graph:factorization-max-factors":
+  added: "2.0.0"
+  body: |
+    The largest number of factors a term may have before ``MultiTermFactorization`` declines it
+    instead of searching it.
+
+    The cap is a property of the *program* a caller brings rather than of the pass, which is why
+    it is an option. A density-fitted opposite-spin correlation energy, flattened through its
+    direct product and its dot, is nine leaves; the same energy through a grid fit is fourteen;
+    an amplitude residual term is more. A cap chosen for the first of those declines the other
+    two silently, and a caller has no way to lift it without editing the pass.
+
+    The cost is stated rather than hidden. The per-term program is ``3^N`` in the factor count, so
+    fourteen leaves is a few million subset splits and runs in seconds, and twenty is over three
+    billion and does not finish unaided. A value in the twenties is therefore a request to run
+    under :option:`--einsums:graph:optimizer-budget` and keep the best tree found when it expires,
+    which is what that budget was built to do. Raising this changes what the search is *offered*
+    and never how the search itself scales.
+
+    ``MultiTermFactorization::set_max_factors`` overrides this for one pipeline, in both
+    directions. A pass that builds its own cone out of a provider's factors, which
+    ``FactorizationPass`` does, knows how many leaves it is about to hand over and takes this as a
+    floor rather than a ceiling.
+
 "einsums:graph:thc-epsilon":
   added: "2.0.0"
   body: |

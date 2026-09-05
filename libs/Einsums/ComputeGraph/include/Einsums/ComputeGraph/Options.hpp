@@ -97,6 +97,25 @@ inline constinit cl::ConfigOption<bool> GraphFactorizationCache =
                     "pipeline whose stages present the same program searches once",
                     "ComputeGraph Passes", true);
 
+/// The largest number of factors a term may have before a search pass declines it.
+///
+/// A property of the PROGRAM a caller brings rather than of the pass, which is why it is an
+/// option and not a constant: the density-fitted opposite-spin energy is nine leaves, the grid
+/// fitted one is fourteen, and an amplitude residual term is more. A cap that fitted the first
+/// of those declines the other two silently, and a caller has no way to lift it without editing
+/// the pass.
+///
+/// The cost is stated rather than hidden. The per-term program is `3^N` in the factor count, so
+/// fourteen leaves is a few million subset splits and runs in seconds, and twenty is over three
+/// billion and does not finish unaided. A cap above the mid-teens is therefore a request to run
+/// under `einsums:graph:optimizer-budget` and take the best tree found when it expires, which is
+/// what that budget was built to do. Nothing here changes the search's complexity.
+inline constinit cl::ConfigOption<std::int64_t> GraphFactorizationMaxFactors = cl::config_opt<std::int64_t>(
+    "einsums:graph:factorization-max-factors",
+    "The largest number of factors a term may have before MultiTermFactorization declines it. The per-term search is 3^N in this number, "
+    "so a value above the mid-teens is a request to run under the optimizer budget and keep the best tree found",
+    "ComputeGraph Passes", 14, "COUNT", cl::RangeBetween<std::int64_t>(2, 32));
+
 /// The relative accuracy a Laplace-transform quadrature is built to.
 ///
 /// A TOLERANCE and not a point count, because a tolerance is what composes with the accuracy

@@ -190,7 +190,9 @@ struct FactorizationPlan {
  *   would have to be applied together under a disjointness check, since applying one moves the
  *   other's factor positions and the two may name a factor in common.
  * - Factors are capped at @ref max_factors, because the per-term program is exponential in that
- *   number and a cap is the honest way to bound it.
+ *   number and a cap is the honest way to bound it. The cap is a property of the program a caller
+ *   brings rather than of the pass, so it comes from
+ *   ``einsums:graph:factorization-max-factors`` unless @ref set_max_factors overrides it here.
  * - A factor that repeats an index letter is a diagonal access, whose cost this pass does not
  *   model; such a term is declined.
  * - Shared candidates are pairs. See the file note for what that does and does not reach.
@@ -230,13 +232,27 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return True when this pass will look for anything.
     APIARY_EXPOSE APIARY_GETTER("search_enabled") [[nodiscard]] bool search_enabled() const;
 
-    /// @brief The largest number of factors a term may have before it is declined.
-    /// @return The cap. The per-term program is @c 3^N in this number.
-    APIARY_EXPOSE APIARY_GETTER("max_factors") [[nodiscard]] std::size_t max_factors() const { return _max_factors; }
+    /**
+     * @brief The largest number of factors a term may have before it is declined.
+     *
+     * Taken from ``einsums:graph:factorization-max-factors`` unless @ref set_max_factors has
+     * stated one for this pipeline, which is the same two-level shape @ref search_enabled has and
+     * exists for the same reason: a driver that had only the option would have to mutate
+     * process-global configuration to exercise one pipeline.
+     *
+     * @return The cap. The per-term program is @c 3^N in this number, so fourteen is a few
+     *         million subset splits and twenty is over three billion; a cap in the twenties is a
+     *         request to run under ``einsums:graph:optimizer-budget`` and keep the best tree
+     *         found when it expires.
+     */
+    APIARY_EXPOSE APIARY_GETTER("max_factors") [[nodiscard]] std::size_t max_factors() const;
 
-    /// @brief Set the factor cap.
+    /// @brief Set the factor cap for this pipeline, overriding the option.
     /// @param[in] cap The new cap, clamped to at least two.
-    APIARY_EXPOSE void set_max_factors(std::size_t cap) { _max_factors = cap < 2 ? 2 : cap; }
+    APIARY_EXPOSE void set_max_factors(std::size_t cap) {
+        _max_factors          = cap < 2 ? 2 : cap;
+        _max_factors_explicit = true;
+    }
 
     /// @brief How many multi-factor terms the search re-bracketed.
     /// @return The count.
@@ -337,7 +353,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool        _search_explicit{false};
     bool        _cache_enabled{true};
     bool        _cache_explicit{false};
-    std::size_t _max_factors{10};
+    bool        _max_factors_explicit{false};
+    std::size_t _max_factors{14};
     std::size_t _num_rebracketed{0};
     std::size_t _num_shared{0};
     std::size_t _num_inlined{0};

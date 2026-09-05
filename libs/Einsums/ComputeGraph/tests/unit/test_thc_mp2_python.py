@@ -446,16 +446,17 @@ def test_the_opposite_spin_energy_through_the_grid_reaches_the_pairless_form(wat
 
 
 def test_the_grid_chain_the_design_block_writes_is_not_what_the_search_is_handed(water):
-    """Two reasons, stated rather than left as an absence.
+    """One reason left, and it is no longer the cap.
 
     The chain ``Xo_t``, ``Xv_t``, an elementwise ``Y_t`` and ``Z Y_t Z^T`` needs
     the collocation factors and the coupling as separate leaves, which makes the
-    opposite-spin energy a fourteen-factor product against a cap of ten. And the
-    shipped provider cannot be asked for it by tagging the integral: it fits a
-    tensor over the whole basis on every axis, and an occupied-virtual block is
-    not that shape, so the joint decision has no candidate to cost at all.
+    opposite-spin energy a fourteen-factor product; the default cap admits that
+    now. What still blocks it is the provider: it fits a tensor over the whole
+    basis on every axis, and an occupied-virtual block is not that shape, so the
+    joint decision has no candidate to cost at all.
     """
-    assert cg.MultiTermFactorization().max_factors < 14
+    assert cg.MultiTermFactorization().max_factors >= 14, (
+        "the cap was raised to admit exactly this product")
 
     nocc, nvir = water["nocc"], water["nvir"]
     shape = [nocc, nvir, nocc, nvir]

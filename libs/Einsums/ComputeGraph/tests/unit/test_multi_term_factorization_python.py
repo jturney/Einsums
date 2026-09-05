@@ -434,9 +434,19 @@ def test_a_scaled_product_reduced_by_a_dot_is_re_associated(dtype):
     assert_close(np.asarray(energy)[0], np.asarray(expected).astype(dtype), dtype=dtype, rtol=1e-3)
 
 
-def test_the_nine_factor_product_is_within_the_default_cap():
-    """The cap admits the opposite-spin energy, which is what it was raised for."""
-    assert cg.MultiTermFactorization().max_factors == 10
+def test_the_cap_comes_from_the_option_and_admits_the_grid_fitted_energy():
+    """The default admits fourteen leaves, which is the grid-fitted opposite-spin energy.
+
+    The cap is a property of the program a caller brings rather than of the pass, so
+    it is an option with a per-pipeline override, the same two-level shape
+    ``search_enabled`` has. Nine leaves is the density-fitted energy and fourteen is
+    the grid-fitted one; both are inside the default.
+    """
+    assert cg.MultiTermFactorization().max_factors == 14
+
+    explicit = cg.MultiTermFactorization()
+    explicit.set_max_factors(20)
+    assert explicit.max_factors == 20, "an explicit cap has to win over the option"
 
 
 def test_an_accumulating_direct_product_is_not_folded():

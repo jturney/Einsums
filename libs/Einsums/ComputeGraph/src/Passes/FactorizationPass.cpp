@@ -6,12 +6,14 @@
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/FactorizationPass.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
 #include <Einsums/ComputeGraph/SymbolicCost.hpp>
 #include <Einsums/ComputeGraph/TensorExpr.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/Options/Get.hpp>
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -20,6 +22,7 @@
 #include <array>
 #include <bit>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <set>
@@ -63,13 +66,26 @@ void merge_letters(std::vector<std::string> &into, std::vector<std::string> cons
 using search::add_cost;
 using search::Mask;
 
-/// The largest number of leaves the bracketing search is offered.
+/// The smallest number of leaves the bracketing search is offered, whatever the option says.
 ///
 /// The subset program is @c 3^N in this number, and a provider's chain plus the operand it is
 /// contracted with is what makes up the leaves. A plan above the cap is declined rather than
 /// bracketed by something weaker, which is the same bargain `MultiTermFactorization` strikes
 /// with its own factor cap.
-constexpr std::size_t kMaxPieces = 12;
+constexpr std::size_t kMinPieces = 12;
+
+/// The largest number of leaves the bracketing search is offered here.
+///
+/// This pass BUILDS the cone it searches, out of a provider's chain and the operand the tagged
+/// tensor was contracted with, so it knows how many leaves it is about to hand over where a
+/// caller reading a captured program does not. That is why it takes
+/// `einsums:graph:factorization-max-factors` as a floor rather than as a ceiling: a chain of five
+/// against an operand is bounded by construction, and a caller who lowered the option for their
+/// own captured programs did not thereby ask this cone to be declined.
+std::size_t max_pieces() {
+    auto const cap = config::get(option::GraphFactorizationMaxFactors);
+    return cap < static_cast<std::int64_t>(kMinPieces) ? kMinPieces : static_cast<std::size_t>(cap);
+}
 
 /// Whether any node of @p graph writes the buffer @p id names.
 ///
@@ -654,9 +670,9 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                           fmt::format("'{}'", provider->name()));
                 continue;
             }
-            if (plan.factors.size() + 1 > kMaxPieces) {
+            if (plan.factors.size() + 1 > max_pieces()) {
                 note_skip("a provider's chain has more factors than the bracketing search is allowed",
-                          fmt::format("'{}': {} factor(s), cap {}", provider->name(), plan.factors.size(), kMaxPieces - 1));
+                          fmt::format("'{}': {} factor(s), cap {}", provider->name(), plan.factors.size(), max_pieces() - 1));
                 continue;
             }
             if (plan.tagged_letters.size() != tagged_index.size()) {
@@ -828,9 +844,9 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 pieces.push_back(search::Factor{.tensor = TensorId{0}, .indices = factor.indices, .conjugate = false});
             }
             pieces.insert(pieces.end(), outer_pieces.begin(), outer_pieces.end());
-            if (pieces.size() > kMaxPieces) {
+            if (pieces.size() > max_pieces()) {
                 note_skip("the cone and the provider's chain together have more leaves than the bracketing search is allowed",
-                          fmt::format("'{}': {} leaves, cap {}", provider->name(), pieces.size(), kMaxPieces));
+                          fmt::format("'{}': {} leaves, cap {}", provider->name(), pieces.size(), max_pieces()));
                 continue;
             }
 
@@ -1177,7 +1193,7 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
             continue;
         }
         FactorizationPlan plan = std::move(*offer);
-        if (plan.factors.size() < 2 || plan.factors.size() > kMaxPieces) {
+        if (plan.factors.size() < 2 || plan.factors.size() > max_pieces()) {
             note_skip("a provider's chain is not one the bracketing search is allowed to take",
                       fmt::format("'{}': {} factor(s)", provider->name(), plan.factors.size()));
             continue;

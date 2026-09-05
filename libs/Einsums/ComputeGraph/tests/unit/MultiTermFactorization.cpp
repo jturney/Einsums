@@ -17,7 +17,9 @@
 // at together, which is the whole claim of this pass.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/MultiTermFactorization.hpp>
+#include <Einsums/Options/Get.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
@@ -25,6 +27,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -491,6 +494,45 @@ TEST_CASE("MultiTermFactorization - the report prices what it emitted", "[Comput
     REQUIRE_FALSE(after.empty());
     CHECK(after != "0");
     CHECK(after.find('?') != std::string::npos);
+}
+
+TEST_CASE("MultiTermFactorization - the factor cap comes from the option", "[ComputeGraph][MultiTermFactorization]") {
+    // The cap is a property of the program a caller brings and not of the pass, so the process
+    // states one and a pipeline may override it. That is the same two-level shape the search
+    // switch has, and it is checked in both directions here because an override that could only
+    // raise the cap would leave a caller unable to bound a program they know is pathological.
+    struct Restore {
+        std::int64_t previous{config::get(option::GraphFactorizationMaxFactors)};
+        ~Restore() { config::set(option::GraphFactorizationMaxFactors, previous); }
+    } const restore;
+
+    CHECK(cg::passes::MultiTermFactorization{}.max_factors() == 14);
+
+    config::set(option::GraphFactorizationMaxFactors, std::int64_t{9});
+    CHECK(cg::passes::MultiTermFactorization{}.max_factors() == 9);
+
+    cg::passes::MultiTermFactorization explicit_cap;
+    explicit_cap.set_max_factors(20);
+    CHECK(explicit_cap.max_factors() == 20);
+    explicit_cap.set_max_factors(1); // clamped: a term of one factor is a copy
+    CHECK(explicit_cap.max_factors() == 2);
+
+    // And the option is what a term is actually measured against, not merely what a getter
+    // reports: three factors under a cap of two is a decline.
+    config::set(option::GraphFactorizationMaxFactors, std::int64_t{2});
+    Chain     t = make_chain(17);
+    cg::Graph graph("cap-option");
+    capture_chains(graph, t);
+
+    auto pass = searching_pass();
+    REQUIRE(pass->max_factors() == 2);
+    cg::PassManager pm;
+    pm.add(pass);
+    pm.set_verbosity(2);
+    CHECK_FALSE(pm.run(graph));
+    auto const report = pm.explain();
+    INFO(report);
+    CHECK(report.find("not a product this pass can model") != std::string::npos);
 }
 
 TEST_CASE("MultiTermFactorization - a factor cap is a decline, not an approximation", "[ComputeGraph][MultiTermFactorization]") {
