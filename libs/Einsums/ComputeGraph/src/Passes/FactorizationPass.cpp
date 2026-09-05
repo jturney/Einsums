@@ -901,17 +901,26 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                     }
                 }
 
-                // Two fits in one cone must present the SAME index spaces for the letters they
-                // introduce. The saving is that the contractions between them collapse onto
-                // those letters, and two grids chosen independently give a chain that carries
-                // both extents through instead of contracting one away.
+                // Two fits that MEET on an index space must agree on all of them. Two grid fits
+                // sharing one grid is the case this exists for, and a fit half on one grid and
+                // half on another is an inconsistency the cost model cannot see: the chain would
+                // carry both extents where it was meant to contract one away.
+                //
+                // Fits over WHOLLY DIFFERENT spaces are not asked to agree, which is a narrowing
+                // of "the same grid space" and a deliberate one. A grid fit of an integral beside
+                // a rank-reduced fit of an amplitude introduces a grid letter and a rank letter,
+                // they never meet, and the composition is a legitimate one the search ranks like
+                // any other. Requiring equality there would decline it for being two methods
+                // rather than for costing too much.
                 if (!plan_spaces.empty()) {
                     if (!have_grid_spaces) {
                         grid_spaces      = plan_spaces;
                         have_grid_spaces = true;
-                    } else if (grid_spaces != plan_spaces) {
-                        note_skip("two tagged operands of one cone are fitted over different index spaces, so their factors have no "
-                                  "common grid to contract on",
+                    } else if (grid_spaces != plan_spaces && std::ranges::any_of(plan_spaces, [&grid_spaces](std::string const &name) {
+                                   return grid_spaces.contains(name);
+                               })) {
+                        note_skip("two tagged operands of one cone are fitted over index spaces that overlap without agreeing, so their "
+                                  "factors have no common grid to contract on",
                                   fmt::format("'{}' on '{}'", plan.provider, tagged[owner].name));
                         ok = false;
                         break;

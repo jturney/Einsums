@@ -1386,10 +1386,10 @@ namespace {
 class ExactGridChain : public cg::FactorizationProvider {
   public:
     struct Piece {
-        Tensor<double, 2>       *source{nullptr};
-        std::string              name;
-        std::vector<std::string> letters; ///< In this provider's own alphabet.
-        std::vector<std::string> spaces;  ///< Index-space names, in letter order.
+        einsums::RuntimeTensorView<double> source;
+        std::string                        name;
+        std::vector<std::string>           letters; ///< In this provider's own alphabet.
+        std::vector<std::string>           spaces;  ///< Index-space names, in letter order.
     };
 
     ExactGridChain(std::string name, std::string tag, std::vector<std::string> tagged_letters, std::vector<Piece> pieces)
@@ -1407,9 +1407,13 @@ class ExactGridChain : public cg::FactorizationProvider {
         plan.provider       = _name;
         plan.tagged_letters = _tagged_letters;
         for (auto const &piece : _pieces) {
+            std::vector<std::size_t> dims;
+            for (std::size_t axis = 0; axis < piece.source.rank(); ++axis) {
+                dims.push_back(piece.source.dim(axis));
+            }
             plan.factors.push_back(cg::FactorTensor{.name    = piece.name,
                                                     .letters = piece.letters,
-                                                    .dims    = {piece.source->dim(0), piece.source->dim(1)},
+                                                    .dims    = std::move(dims),
                                                     .spaces  = piece.spaces,
                                                     .dtype   = einsums::packed_gemm::ScalarType::Float64});
         }
@@ -1420,7 +1424,19 @@ class ExactGridChain : public cg::FactorizationProvider {
             cg::CaptureGuard const guard(body);
             for (std::size_t which = 0; which < pieces.size(); ++which) {
                 auto *dest = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[which]).tensor_ptr);
-                cg::permute("x,y <- x,y", 0.0, dest, 1.0, *pieces[which].source);
+                // Spelled out per rank rather than built as a string, because a permute spec is
+                // a compile-time literal here and a runtime one has no overload.
+                switch (pieces[which].source.rank()) {
+                case 1:
+                    cg::permute("x <- x", 0.0, dest, 1.0, pieces[which].source);
+                    break;
+                case 2:
+                    cg::permute("x,y <- x,y", 0.0, dest, 1.0, pieces[which].source);
+                    break;
+                default:
+                    cg::permute("x,y,z <- x,y,z", 0.0, dest, 1.0, pieces[which].source);
+                    break;
+                }
             }
         };
         return plan;
@@ -1493,19 +1509,24 @@ struct LadderFixture {
     }
 
     [[nodiscard]] std::shared_ptr<cg::FactorizationProvider> integral_provider(std::string space = "grid") {
-        return std::make_shared<ExactGridChain>("GridEri", "test_grid_eri", std::vector<std::string>{"A", "m", "n"},
-                                                std::vector<ExactGridChain::Piece>{{&Xvir, "Xvir", {"m", "P"}, {std::string{}, space}},
-                                                                                   {&Xvir, "Xvir", {"n", "P"}, {std::string{}, space}},
-                                                                                   {&Cq, "Cq", {"A", "P"}, {std::string{}, space}}});
+        return std::make_shared<ExactGridChain>(
+            "GridEri", "test_grid_eri", std::vector<std::string>{"A", "m", "n"},
+            std::vector<ExactGridChain::Piece>{{einsums::RuntimeTensorView<double>{Xvir}, "Xvir", {"m", "P"}, {std::string{}, space}},
+                                               {einsums::RuntimeTensorView<double>{Xvir}, "Xvir", {"n", "P"}, {std::string{}, space}},
+                                               {einsums::RuntimeTensorView<double>{Cq}, "Cq", {"A", "P"}, {std::string{}, space}}});
     }
 
-    [[nodiscard]] std::shared_ptr<cg::FactorizationProvider> amplitude_provider(std::string space = "grid") {
-        return std::make_shared<ExactGridChain>("GridAmp", "test_grid_amp", std::vector<std::string>{"m", "n", "p", "q"},
-                                                std::vector<ExactGridChain::Piece>{{&Xocc, "Xocc", {"m", "P"}, {std::string{}, space}},
-                                                                                   {&Xvir, "Xvir", {"n", "P"}, {std::string{}, space}},
-                                                                                   {&Zt, "Zt", {"P", "R"}, {space, space}},
-                                                                                   {&Xocc, "Xocc", {"p", "R"}, {std::string{}, space}},
-                                                                                   {&Xvir, "Xvir", {"q", "R"}, {std::string{}, space}}});
+    /// @param coupling_space The space the SECOND grid letter runs over, which is the first one
+    ///        unless a case is asking what a fit half on one grid and half on another does.
+    [[nodiscard]] std::shared_ptr<cg::FactorizationProvider> amplitude_provider(std::string space = "grid", std::string coupling = {}) {
+        std::string const second = coupling.empty() ? space : coupling;
+        return std::make_shared<ExactGridChain>(
+            "GridAmp", "test_grid_amp", std::vector<std::string>{"m", "n", "p", "q"},
+            std::vector<ExactGridChain::Piece>{{einsums::RuntimeTensorView<double>{Xocc}, "Xocc", {"m", "P"}, {std::string{}, space}},
+                                               {einsums::RuntimeTensorView<double>{Xvir}, "Xvir", {"n", "P"}, {std::string{}, space}},
+                                               {einsums::RuntimeTensorView<double>{Zt}, "Zt", {"P", "R"}, {space, second}},
+                                               {einsums::RuntimeTensorView<double>{Xocc}, "Xocc", {"p", "R"}, {std::string{}, second}},
+                                               {einsums::RuntimeTensorView<double>{Xvir}, "Xvir", {"q", "R"}, {std::string{}, second}}});
     }
 };
 
@@ -1586,7 +1607,8 @@ TEST_CASE("Factorization - two tagged tensors of one cone are substituted in one
     }
 }
 
-TEST_CASE("Factorization - two fits over different grids have no grid to meet on", "[ComputeGraph][Factorization][TwoOperand]") {
+TEST_CASE("Factorization - a fit half on one grid and half on another has no grid to meet on",
+          "[ComputeGraph][Factorization][TwoOperand]") {
     LadderFixture fixture;
 
     auto      R = create_zero_tensor<double>("R", LadderFixture::occ, LadderFixture::vir, LadderFixture::occ, LadderFixture::vir);
@@ -1599,7 +1621,7 @@ TEST_CASE("Factorization - two fits over different grids have no grid to meet on
 
     cg::FactorizationRegistry registry;
     registry.add(fixture.integral_provider());
-    registry.add(fixture.amplitude_provider("other_grid"));
+    registry.add(fixture.amplitude_provider("grid", "other_grid"));
 
     cg::passes::FactorizationPass factorization(registry);
     cg::PassManager               pm;
@@ -1609,7 +1631,7 @@ TEST_CASE("Factorization - two fits over different grids have no grid to meet on
 
     bool declined = false;
     for (auto const &[reason, count] : factorization.skip_reasons()) {
-        declined = declined || reason.find("different index spaces") != std::string::npos;
+        declined = declined || reason.find("overlap without agreeing") != std::string::npos;
     }
     REQUIRE(declined);
 }
@@ -1630,9 +1652,10 @@ TEST_CASE("Factorization - more provider combinations than the pass will cost is
     for (int which = 0; which < 13; ++which) {
         auto offer = std::make_shared<ExactGridChain>(
             fmt::format("GridEri{}", which), "test_grid_eri", std::vector<std::string>{"A", "m", "n"},
-            std::vector<ExactGridChain::Piece>{{&fixture.Xvir, "Xvir", {"m", "P"}, {std::string{}, "grid"}},
-                                               {&fixture.Xvir, "Xvir", {"n", "P"}, {std::string{}, "grid"}},
-                                               {&fixture.Cq, "Cq", {"A", "P"}, {std::string{}, "grid"}}});
+            std::vector<ExactGridChain::Piece>{
+                {einsums::RuntimeTensorView<double>{fixture.Xvir}, "Xvir", {"m", "P"}, {std::string{}, "grid"}},
+                {einsums::RuntimeTensorView<double>{fixture.Xvir}, "Xvir", {"n", "P"}, {std::string{}, "grid"}},
+                {einsums::RuntimeTensorView<double>{fixture.Cq}, "Cq", {"A", "P"}, {std::string{}, "grid"}}});
         registry.add(offer);
     }
 
@@ -1646,4 +1669,115 @@ TEST_CASE("Factorization - more provider combinations than the pass will cost is
         declined = declined || reason.find("more combinations of provider") != std::string::npos;
     }
     REQUIRE(declined);
+}
+
+// ── A rank-reduced amplitude beside a grid-fitted integral ─────────────────
+
+namespace {
+
+/// The ladder with the amplitude written as a RANK-REDUCED factorization instead of a grid one.
+///
+/// @c T[i,e,j,f] is @c U[i,e,x] @c s[x] @c U[j,f,x], the shape a truncated eigendecomposition of
+/// the doubles amplitudes gives, and the integral is the same three-factor grid fit. The two
+/// introduce letters over different spaces and never meet on one, which is the composition the
+/// same-space requirement is narrowed to admit.
+struct RankReducedFixture : LadderFixture {
+    static constexpr std::size_t rank = 3;
+
+    Tensor<double, 3> U = create_random_tensor<double>("U", occ, vir, rank);
+    Tensor<double, 1> s = create_random_tensor<double>("s", rank);
+
+    RankReducedFixture() {
+        for (std::size_t i = 0; i < occ; ++i) {
+            for (std::size_t e = 0; e < vir; ++e) {
+                for (std::size_t j = 0; j < occ; ++j) {
+                    for (std::size_t f = 0; f < vir; ++f) {
+                        double sum = 0.0;
+                        for (std::size_t x = 0; x < rank; ++x) {
+                            sum += U(i, e, x) * s(x) * U(j, f, x);
+                        }
+                        T(i, e, j, f) = sum;
+                    }
+                }
+            }
+        }
+    }
+
+    [[nodiscard]] std::shared_ptr<cg::FactorizationProvider> rank_reduced_provider() {
+        return std::make_shared<ExactGridChain>(
+            "RankReduced", "test_grid_amp", std::vector<std::string>{"m", "n", "p", "q"},
+            std::vector<ExactGridChain::Piece>{
+                {einsums::RuntimeTensorView<double>{U}, "U", {"m", "n", "x"}, {std::string{}, std::string{}, "rank"}},
+                {einsums::RuntimeTensorView<double>{s}, "s", {"x"}, {"rank"}},
+                {einsums::RuntimeTensorView<double>{U}, "U", {"p", "q", "x"}, {std::string{}, std::string{}, "rank"}}});
+    }
+};
+
+} // namespace
+
+TEST_CASE("Factorization - a rank-reduced amplitude reaches a chain against a fitted integral",
+          "[ComputeGraph][Factorization][TwoOperand]") {
+    // The question the rank-reduced step was blocked on. Substituting the compressed amplitude
+    // alone leaves the ladder's other operand where it was, which is the wall the entry named;
+    // with the integral fitted on the same statement the whole term becomes a chain over the
+    // grid and the rank, and no intermediate carries the auxiliary index and two virtual axes at
+    // once. What this does NOT need is a Sylvester solver: the update stays elementwise because
+    // the factors are re-derived from the tensor rather than solved for.
+    RankReducedFixture fixture;
+
+    auto      expected = create_zero_tensor<double>("R", LadderFixture::occ, LadderFixture::vir, LadderFixture::occ, LadderFixture::vir);
+    cg::Graph reference("rank_reduced_reference");
+    fixture.capture(reference, expected);
+    auto defaults_for_reference = cg::PassManager::create_default();
+    reference.apply(defaults_for_reference);
+    reference.execute();
+
+    auto      R = create_zero_tensor<double>("R", LadderFixture::occ, LadderFixture::vir, LadderFixture::occ, LadderFixture::vir);
+    cg::Graph graph("rank_reduced_factorized");
+    fixture.capture(graph, R);
+    graph.annotate_tag(fixture.B, cg::ProvenanceTag{.name = "test_grid_eri"});
+    graph.annotate_tag(fixture.T, cg::ProvenanceTag{.name = "test_grid_amp"});
+    cg::ThcFactorization::register_grid_space(graph);
+    graph.space_registry().register_space(cg::make_index_space("rank", "x", 0.0, cg::GrowthClass::linear(), "nrank"));
+
+    cg::FactorizationRegistry registry;
+    registry.add(fixture.integral_provider());
+    registry.add(fixture.rank_reduced_provider());
+
+    cg::passes::FactorizationPass factorization(registry);
+    factorization.set_dump(true);
+    cg::PassManager pm;
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+    bool const fired = graph.apply(pm);
+    for (auto const &[reason, count] : factorization.skip_reasons()) {
+        UNSCOPED_INFO(fmt::format("{} x{}", reason, count));
+    }
+    REQUIRE(fired);
+    REQUIRE(factorization.num_multi_substituted() == 1);
+    REQUIRE(factorization.num_dissolved() == 1);
+    // The chain the step was blocked on, as the emitted statements rather than as prose: nothing
+    // it writes carries the auxiliary index beside two virtual axes, and the rank letter meets
+    // the grid letters rather than the virtual ones.
+    UNSCOPED_INFO(factorization.dump_text());
+
+    std::vector<std::string> recorded;
+    for (auto const &record : graph.approximations()) {
+        recorded.push_back(record.pass_name);
+    }
+    std::ranges::sort(recorded);
+    REQUIRE(recorded == std::vector<std::string>{"GridEri", "RankReduced"});
+
+    auto defaults = cg::PassManager::create_default();
+    graph.apply(defaults);
+    graph.execute();
+
+    for (std::size_t i = 0; i < LadderFixture::occ; ++i) {
+        for (std::size_t a = 0; a < LadderFixture::vir; ++a) {
+            for (std::size_t j = 0; j < LadderFixture::occ; ++j) {
+                for (std::size_t b = 0; b < LadderFixture::vir; ++b) {
+                    REQUIRE(std::abs(R(i, a, j, b) - expected(i, a, j, b)) < 1e-10);
+                }
+            }
+        }
+    }
 }
