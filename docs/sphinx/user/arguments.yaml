@@ -229,7 +229,7 @@
     graph comes back. On by default.
 
     The search ``MultiTermFactorization`` runs is a pure function of the region's structure, so
-    its answer is worth keeping. An entry is keyed on :cpp:func:`Graph::content_hash` together
+    its answer is worth keeping. An entry is keyed on :cpp:func:`einsums::compute_graph::Graph::content_hash` together
     with the region's node span and the factor cap, and it holds a *plan* rather than a graph: the
     shared pairs that were committed, in order, and the contraction tree chosen for each term,
     written as positions rather than as tensor identities so a plan found on one graph applies to
