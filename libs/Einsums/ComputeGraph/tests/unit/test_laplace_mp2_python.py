@@ -740,3 +740,152 @@ def test_the_pairless_form_is_declined_where_it_does_not_pay(water):
     four_index = [water["nocc"], water["nvir"], water["nocc"], water["nvir"]]
     assert four_index in _written_dims(graph), (
         "the search took the decoupled form at extents where it costs more")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Full MP2 leaves the same-spin term alone
+#
+# SOS-MP2 drops the exchange term and scales the other, which is a decision the
+# PROGRAM makes by writing SOS-MP2. A full-MP2 capture must therefore keep its
+# exchange term, and what the optimizer owes is that it never makes it worse and
+# never moves the number.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _full_mp2_run(water, epsilon):
+    """The example's own full-axis MP2, transformed and then searched."""
+    energy = einsums.create_zero_tensor(f"E_full_{epsilon:g}", [1])
+    graph = cg.Graph(f"full_mp2_{epsilon:g}")
+    registry = _sos_registry()
+    graph.set_space_registry(registry)
+    shape = _shape(water)
+    B = water["fitted"]
+    K = graph.scratch("K", shape, "float64")
+    T = graph.scratch("T", shape, "float64")
+    again = graph.scratch("K_again", shape, "float64")
+    exchange = graph.scratch("K_exchange", shape, "float64")
+    combination = graph.scratch("Kbar", shape, "float64")
+    denominator = graph.scratch("D", shape, "float64")
+    _build_denominator(graph, water, denominator)
+    with cg.capture(graph):
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
+        la.direct_product(1.0, K, denominator, 0.0, T)
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, B, B)
+        einsums.permute("iajb <- ibja", exchange, again)
+        la.axpby(2.0, again, 0.0, combination)
+        la.axpby(-1.0, exchange, 1.0, combination)
+        la.dot(energy, combination, T)
+    graph.annotate_tag(denominator, _tag())
+    cg.annotate(B, ("aux", "occ", "vir"), graph=graph)
+    for tensor in (K, T, again, exchange, combination, denominator):
+        cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
+
+    transform = _transform(water, epsilon)
+    search = cg.MultiTermFactorization()
+    search.set_search_enabled(True)
+    manager = cg.PassManager()
+    manager.add(transform)
+    manager.add(search)
+    manager.run(graph)
+    return graph, energy, transform, search, registry
+
+
+def test_full_mp2_keeps_its_exchange_term_and_its_number(water):
+    """The exchange combination survives, and the energy is inside the bound.
+
+    The example writes both spin cases as ONE reduction over ``2K - K^T``, so
+    there is no separable opposite-spin term for the search to take apart: the
+    exchange combination is a materialized ``o^2 v^2`` tensor the dot reads, and
+    no bracketing of the product it appears in can make it not exist. What the
+    search does is re-bracket what is there, and what it owes is that the number
+    does not move.
+    """
+    exact = _exact(water)
+    graph, energy, transform, search, _registry = _full_mp2_run(water, 1e-8)
+
+    assert transform.num_transformed == 1
+    assert search.num_rebracketed >= 1, search.skip_reasons
+
+    four_index = [water["nocc"], water["nvir"], water["nocc"], water["nvir"]]
+    assert four_index in _written_dims(graph), (
+        "the exchange combination cannot be bracketed away and must still be formed")
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    value = float(np.asarray(energy)[0])
+    record = graph.approximations()[0]
+    assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING
+
+
+def test_the_opposite_spin_half_needs_its_own_amplitude_and_integral(water):
+    """Splitting the energy into two reductions is not enough, and why.
+
+    Writing ``E = 2 sum K K D - sum K^T K D`` as two dots gives the opposite-spin
+    half a statement of its own, and it still does not reach the pairless form:
+    both halves read ONE amplitude and one integral, and a value two consumers
+    need is not absorbed into either of them. Giving each half its own copy is
+    what does it, and then the opposite-spin half is rewritten and the exchange
+    half keeps the four-index tensor its permute makes.
+
+    Which is the design's own point restated by the implementation: the author
+    has to write SOS-MP2 as SOS-MP2. The optimizer does not decide to drop a
+    term.
+    """
+    exact = _exact(water)
+    shape = _shape(water)
+    B = water["fitted"]
+    energy = einsums.create_zero_tensor("E_split", [1])
+    opposite = einsums.create_zero_tensor("E_os", [1])
+    same = einsums.create_zero_tensor("E_ss", [1])
+
+    graph = cg.Graph("full_mp2_split")
+    registry = _sos_registry()
+    graph.set_space_registry(registry)
+    names = ("K_os", "T_os", "A_os", "D_os", "K_ss", "T_ss", "A_ss", "X_ss", "D_ss")
+    held = {name: graph.scratch(name, shape, "float64") for name in names}
+    for half in ("os", "ss"):
+        with cg.capture(graph):
+            la.outer_sum(held[f"D_{half}"],
+                         [water["occupied_energies"], water["virtual_energies"],
+                          water["occupied_energies"], water["virtual_energies"]],
+                         [1.0, -1.0, 1.0, -1.0])
+            la.element_transform(held[f"D_{half}"], "recip")
+    with cg.capture(graph):
+        for half in ("os", "ss"):
+            einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", held[f"K_{half}"], B, B)
+            la.direct_product(1.0, held[f"K_{half}"], held[f"D_{half}"], 0.0, held[f"T_{half}"])
+            einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", held[f"A_{half}"], B, B)
+        einsums.permute("iajb <- ibja", held["X_ss"], held["A_ss"])
+        la.dot(opposite, held["A_os"], held["T_os"])
+        la.dot(same, held["X_ss"], held["T_ss"])
+    for half in ("os", "ss"):
+        graph.annotate_tag(held[f"D_{half}"], _tag())
+    cg.annotate(B, ("aux", "occ", "vir"), graph=graph)
+    for tensor in held.values():
+        cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
+
+    transform = _transform(water, 1e-8)
+    search = cg.MultiTermFactorization()
+    search.set_search_enabled(True)
+    manager = cg.PassManager()
+    manager.add(transform)
+    manager.add(search)
+    manager.run(graph)
+    assert transform.num_transformed == 2
+    assert search.num_rebracketed >= 1, search.skip_reasons
+
+    # The exchange half's permuted integral is still formed, and must be.
+    four_index = [water["nocc"], water["nvir"], water["nocc"], water["nvir"]]
+    written = _written_dims(graph)
+    assert four_index in written
+    # And the opposite-spin half reached the pairless form beside it.
+    naux, points = water["naux"], transform.last_point_count
+    assert any(sorted(shape_) == sorted([naux, naux, points]) for shape_ in written), (
+        f"the opposite-spin half did not reach the pairless form: {written}")
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    value = 2.0 * float(np.asarray(opposite)[0]) - float(np.asarray(same)[0])
+    np.asarray(energy)[0] = value
+    record = graph.approximations()[0]
+    assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING, (
+        f"the split energy {value} is outside the bound against {exact}")
