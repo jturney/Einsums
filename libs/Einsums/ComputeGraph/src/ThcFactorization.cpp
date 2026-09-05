@@ -118,6 +118,21 @@ std::shared_ptr<ThcFactorization> ThcFactorization::for_amplitude(std::string ta
                          std::move(name));
 }
 
+std::shared_ptr<ThcFactorization> ThcFactorization::for_three_index(std::string tag, RuntimeTensorView<double> three_index,
+                                                                    std::vector<RuntimeTensorView<double>> collocations, double bound,
+                                                                    double drop_threshold, std::string name) {
+    auto provider               = std::make_shared<ThcFactorization>(std::move(tag), std::move(three_index), std::move(collocations), bound,
+                                                                     drop_threshold, std::move(name));
+    provider->_fits_three_index = true;
+    return provider;
+}
+
+std::shared_ptr<ThcFactorization> ThcFactorization::for_three_index(std::string tag, RuntimeTensor<double> const &three_index,
+                                                                    std::vector<RuntimeTensor<double> const *> collocations, double bound,
+                                                                    double drop_threshold, std::string name) {
+    return for_three_index(std::move(tag), named_view(three_index), views_of(collocations), bound, drop_threshold, std::move(name));
+}
+
 void ThcFactorization::report_residual_into(RuntimeTensorView<double> residual, RuntimeTensorView<double> reference) {
     _residual_report.emplace(std::move(residual));
     _reference_report.emplace(std::move(reference));
@@ -260,6 +275,84 @@ FactorizationPlan amplitude_plan(FactorizationPlan plan, TensorHandle const &han
     return plan;
 }
 
+/// The fitting a three-index plan carries, which is the four-index fitting stopped one step
+/// earlier: the weights @c C are what the four-index form squares to make @c Z.
+FactorizationPlan three_index_plan(FactorizationPlan plan, RuntimeTensorView<double> three_index, RuntimeTensorView<double> row_source,
+                                   RuntimeTensorView<double> col_source, bool one_matrix, std::size_t naux, std::size_t row_basis,
+                                   std::size_t col_basis, std::size_t grid, double threshold, std::string residual_key,
+                                   std::string reference_key) {
+    plan.emit_setup = [three_index, row_source, col_source, one_matrix, naux, row_basis, col_basis, grid, threshold, residual_key,
+                       reference_key](Graph &parent, Graph &body, std::vector<TensorId> const &factors) {
+        auto *X_row = static_cast<RuntimeTensor<double> *>(parent.tensor(factors[0]).tensor_ptr);
+        auto *X_col = static_cast<RuntimeTensor<double> *>(parent.tensor(factors[1]).tensor_ptr);
+        auto *C     = static_cast<RuntimeTensor<double> *>(parent.tensor(factors[2]).tensor_ptr);
+
+        // Named after the graph they are declared in, because one program may hold several of
+        // these fittings and the storage auditor keys its duplicate check on the name.
+        auto const named = [&body](std::string_view stem) { return fmt::format("{}_{}", body.name(), stem); };
+
+        auto &row_gram = body.declare_runtime_tensor<double>(named("thc3_gram"), {grid, grid}, /*intermediate=*/true);
+        auto &col_gram =
+            one_matrix ? row_gram : body.declare_runtime_tensor<double>(named("thc3_gram_col"), {grid, grid}, /*intermediate=*/true);
+        auto &metric   = body.declare_runtime_tensor<double>(named("thc3_metric"), {grid, grid}, /*intermediate=*/true);
+        auto &vectors  = body.declare_runtime_tensor<double>(named("thc3_vectors"), {grid, grid}, /*intermediate=*/true);
+        auto &values   = body.declare_runtime_tensor<double>(named("thc3_values"), {grid}, /*intermediate=*/true);
+        auto &scaled   = body.declare_runtime_tensor<double>(named("thc3_scaled"), {grid, grid}, /*intermediate=*/true);
+        auto &half     = body.declare_runtime_tensor<double>(named("thc3_inv_sqrt"), {grid, grid}, /*intermediate=*/true);
+        auto &inverse  = body.declare_runtime_tensor<double>(named("thc3_inverse"), {grid, grid}, /*intermediate=*/true);
+        auto &partial  = body.declare_runtime_tensor<double>(named("thc3_partial"), {naux, row_basis, grid}, /*intermediate=*/true);
+        auto &weighted = body.declare_runtime_tensor<double>(named("thc3_weighted"), {naux, grid}, /*intermediate=*/true);
+        auto &rebuilt  = body.declare_runtime_tensor<double>(named("thc3_rebuilt"), {naux, row_basis, grid}, /*intermediate=*/true);
+        auto &residual = body.declare_runtime_tensor<double>(named("thc3_residual"), {naux, row_basis, col_basis}, /*intermediate=*/true);
+
+        auto *residual_squared  = new double{0.0};
+        auto *reference_squared = new double{0.0};
+        body.adopt([residual_squared]() { delete residual_squared; });
+        body.adopt([reference_squared]() { delete reference_squared; });
+
+        {
+            CaptureGuard const guard(body);
+
+            CaptureContext::current().get_or_register_scalar(residual_squared, residual_key);
+            CaptureContext::current().get_or_register_scalar(reference_squared, reference_key);
+
+            permute("m,P <- m,P", 0.0, X_row, 1.0, row_source);
+            if (!one_matrix) {
+                permute("n,P <- n,P", 0.0, X_col, 1.0, col_source);
+            }
+
+            einsum("m,P ; m,Q -> P,Q", &row_gram, *X_row, *X_row);
+            if (!one_matrix) {
+                einsum("n,P ; n,Q -> P,Q", &col_gram, *X_col, *X_col);
+            }
+            direct_product(1.0, row_gram, col_gram, 0.0, &metric);
+
+            permute("P,Q <- P,Q", 0.0, &vectors, 1.0, metric);
+            syev(&vectors, &values);
+            element_transform(&values, "inv_sqrt_or_zero", threshold);
+            einsum("P,R ; R -> P,R", &scaled, vectors, values);
+            einsum("P,R ; Q,R -> P,Q", &half, scaled, vectors);
+            einsum("P,R ; R,Q -> P,Q", &inverse, half, half);
+
+            // B~[A,P] = sum_mn B[A,m,n] X_row[m,P] X_col[n,P], then C = B~ S^{-1}.
+            einsum("A,m,n ; n,P -> A,m,P", &partial, three_index, *X_col);
+            einsum("A,m,P ; m,P -> A,P", &weighted, partial, *X_row);
+            einsum("A,R ; R,P -> A,P", C, weighted, inverse);
+
+            // What the fit is worth, measured rather than asserted, because the exact quantity
+            // here IS the tagged tensor and it is in hand.
+            einsum("A,P ; m,P -> A,m,P", &rebuilt, *C, *X_row);
+            permute("A,m,n <- A,m,n", 0.0, &residual, 1.0, three_index);
+            einsum("A,m,P ; n,P -> A,m,n", 1.0, &residual, -1.0, rebuilt, *X_col);
+            dot(residual_squared, residual, residual);
+            dot(reference_squared, three_index, three_index);
+            write_param(residual_key, *residual_squared);
+            write_param(reference_key, *reference_squared);
+        }
+    };
+    return plan;
+}
+
 } // namespace
 
 expected<FactorizationPlan, std::string> ThcFactorization::propose(Graph const &graph, TensorId tensor) const {
@@ -267,6 +360,65 @@ expected<FactorizationPlan, std::string> ThcFactorization::propose(Graph const &
     if (handle == nullptr) {
         return unexpected(std::string{"the tagged tensor is not registered in this graph"});
     }
+
+    if (_fits_three_index) {
+        if (handle->rank != 3) {
+            return unexpected(fmt::format("this fit replaces a rank-3 tensor; this one is rank {}", handle->rank));
+        }
+        if (_collocations.size() != 1 && _collocations.size() != 2) {
+            return unexpected(fmt::format("there are {} collocation matrix/matrices for the two basis axes of a rank-3 tensor; give one "
+                                          "per basis axis or one for both",
+                                          _collocations.size()));
+        }
+        if (handle->data_ptr != static_cast<void const *>(_three_index.data())) {
+            return unexpected(std::string{"the tagged tensor is not the one this provider was given to fit"});
+        }
+        RuntimeTensorView<double> const &row_matrix = _collocations.front();
+        RuntimeTensorView<double> const &col_matrix = _collocations.size() == 1 ? _collocations.front() : _collocations[1];
+        std::size_t const                grid       = row_matrix.dim(1);
+        if (col_matrix.dim(1) != grid) {
+            return unexpected(fmt::format("the collocation matrices carry {} and {} grid points; the chain contracts them against one grid",
+                                          grid, col_matrix.dim(1)));
+        }
+        if (grid == 0) {
+            return unexpected(std::string{"the collocation matrix has no grid points"});
+        }
+        if (handle->dims[1] != row_matrix.dim(0) || handle->dims[2] != col_matrix.dim(0)) {
+            return unexpected(fmt::format("the tagged tensor is [{}] and its basis axes are fitted over {} and {} basis functions",
+                                          fmt::join(handle->dims, ", "), row_matrix.dim(0), col_matrix.dim(0)));
+        }
+
+        bool const one_matrix =
+            _collocations.size() == 1 ||
+            (row_matrix.data() == col_matrix.data() && row_matrix.dim(0) == col_matrix.dim(0) && row_matrix.dim(1) == col_matrix.dim(1));
+        std::string const grid_space = grid_space_name();
+
+        FactorizationPlan plan;
+        plan.provider         = _name;
+        plan.tagged_letters   = {"A", "m", "n"};
+        plan.fits_from_tagged = true;
+        plan.factors.push_back(FactorTensor{.name    = one_matrix ? "X" : "X_row",
+                                            .letters = {"m", "P"},
+                                            .dims    = {row_matrix.dim(0), grid},
+                                            .spaces  = {std::string{}, grid_space},
+                                            .dtype   = packed_gemm::ScalarType::Float64});
+        plan.factors.push_back(FactorTensor{.name    = one_matrix ? "X" : "X_col",
+                                            .letters = {"n", "P"},
+                                            .dims    = {col_matrix.dim(0), grid},
+                                            .spaces  = {std::string{}, grid_space},
+                                            .dtype   = packed_gemm::ScalarType::Float64});
+        plan.factors.push_back(FactorTensor{.name    = "C",
+                                            .letters = {"A", "P"},
+                                            .dims    = {handle->dims[0], grid},
+                                            .spaces  = {std::string{}, grid_space},
+                                            .dtype   = packed_gemm::ScalarType::Float64});
+        plan.accuracy = make_approximation_record(_name, ApproximationEffect::NormRelative, epsilon(), epsilon(), {}, {}, "",
+                                                  ApproximationOrigin::Measured, residual_param_name(_name, handle->name));
+        return three_index_plan(std::move(plan), _three_index, row_matrix, col_matrix, one_matrix, handle->dims[0], row_matrix.dim(0),
+                                col_matrix.dim(0), grid, _drop_threshold, residual_param_name(_name, handle->name),
+                                reference_param_name(_name, handle->name));
+    }
+
     if (handle->rank != 4) {
         return unexpected(fmt::format("a grid fit replaces a rank-4 tensor; this one is rank {}", handle->rank));
     }

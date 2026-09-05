@@ -51,6 +51,22 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * node of the chosen tree becomes a declared intermediate and a binary contraction, and the
  * auxiliary letters are ordinary letters to the ranking.
  *
+ * @par More than one tagged leaf in one cone
+ * The rule above is stated over the LEAF SET of the cone rather than over the two operands of a
+ * statement, and that is what lets several tagged tensors be replaced in one decision. A
+ * density-fitted four-external ladder never writes a contraction of two tagged operands: it
+ * writes a chain whose leaves are the three-index integral twice and the doubles amplitude once,
+ * so the tags land on the leaves the flattening exposes. Every such leaf is offered to its own
+ * providers, every combination of one plan per leaf is bracketed, and the cost of the whole
+ * doubly substituted cone is what decides. Neither fit pays alone there, which is the same shape
+ * the joint quadrature decision has: replacing the amplitude leaves the integral's indices to be
+ * carried through and replacing the integral leaves the amplitude's, and only both together
+ * collapse the contraction onto the grid letters.
+ *
+ * Two fits in one cone must present the same index SPACES for the letters they introduce. Two
+ * grids chosen independently give a chain that carries both extents rather than contracting one
+ * away, so that is a decline with the reason rather than a rewrite that is quietly no better.
+ *
  * @par What it declines, and why each is a real case
  * - A tagged tensor some node WRITES. Its factors would have to be refitted whenever it
  *   changed, and the setup body this pass emits runs once per bound problem. Only an operand
@@ -123,6 +139,20 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * @return The count.
      */
     APIARY_EXPOSE APIARY_GETTER("num_dissolved") [[nodiscard]] std::size_t num_dissolved() const { return _num_dissolved; }
+
+    /**
+     * @brief How many rewrites substituted more than one tagged tensor at once.
+     *
+     * The four-external ladder of a coupled-cluster iteration is the case: written in density-
+     * fitted form it is a chain whose leaves are the three-index integral twice and the doubles
+     * amplitude once, and it becomes a grid chain only when both are replaced by fits over ONE
+     * grid. Fitting either alone leaves the other's indices to be carried through, which is a
+     * decline rather than a saving, so the two are one decision and this counts the times it
+     * was taken.
+     *
+     * @return The count.
+     */
+    APIARY_EXPOSE APIARY_GETTER("num_multi_substituted") [[nodiscard]] std::size_t num_multi_substituted() const { return _num_multi; }
 
     /**
      * @brief Decide profitability jointly with this transform, and emit both rewrites together.
@@ -205,6 +235,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::vector<PendingSetup> _pending;
     std::size_t               _num_factorized{0};
     std::size_t               _num_dissolved{0};
+    std::size_t               _num_multi{0};
 
     /// Every tagged tensor some contraction offered this pass, whatever became of it. What the
     /// end-of-run sweep subtracts from the tagged tensors the graph holds, so a tag nothing

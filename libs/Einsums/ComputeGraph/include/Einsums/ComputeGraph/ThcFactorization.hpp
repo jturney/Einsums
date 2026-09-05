@@ -283,6 +283,56 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
                   double bound = 0.0, double drop_threshold = ThcFactorization::default_drop_threshold, std::string name = "ThcAmplitude");
 
     /**
+     * @brief Fit the three-index tensor of a density fit, rather than the four-index tensor.
+     *
+     * @param[in] tag The provenance tag this claims, e.g. ``"eri"``.
+     * @param[in] three_index @c B[A,m,n], which is also the tensor the caller tags. Checked
+     *            against the tagged handle's buffer in @ref propose.
+     * @param[in] collocations One matrix per BASIS axis, so two for a rank-3 tensor, or one for
+     *            both. Axis 0 is the auxiliary axis and has no collocation.
+     * @param[in] bound The relative error asserted, or zero to take ``einsums:graph:thc-epsilon``.
+     * @param[in] drop_threshold See @ref default_drop_threshold.
+     * @param[in] name The provider's name.
+     * @return The provider.
+     *
+     * @par Why the three-index tensor rather than the four-index one
+     * A density-fitted program never forms @f$(ab|ef)@f$, so a provider that only claims a
+     * rank-4 tensor has nothing to offer it: what the program holds is @c B and what it writes
+     * is a chain over the auxiliary index. The fit is the one the four-index fit already
+     * computes on its way to @c Z, stopped one step earlier,
+     *
+     * @f[ B[A,m,n] \approx \sum_P C[A,P]\,X_0[m,P]\,X_1[n,P],
+     *     \qquad C = \tilde{B} S^{-1} @f]
+     *
+     * so it is three factors over one grid letter where the four-index form is five over two.
+     * It is also the smaller object: @c C is auxiliary-by-grid where @c Z is grid-by-grid, and
+     * the two occurrences of @c B in a ladder term get one fitting between them.
+     *
+     * @par Its accuracy statement is measured
+     * The exact quantity is the tagged tensor and the fit reads it, so the residual is a number
+     * rather than a claim, exactly as it is for an amplitude fit. That is also what
+     * @c FactorizationPlan::fits_from_tagged says of it.
+     */
+    static std::shared_ptr<ThcFactorization> for_three_index(std::string tag, RuntimeTensorView<double> three_index,
+                                                             std::vector<RuntimeTensorView<double>> collocations, double bound = 0.0,
+                                                             double      drop_threshold = default_drop_threshold,
+                                                             std::string name           = "ThcThreeIndex");
+
+    /// @brief The same, taking runtime-rank tensors. This is the overload Python gets.
+    /// @param[in] tag The provenance tag this claims.
+    /// @param[in] three_index The very tensor the caller tags.
+    /// @param[in] collocations One matrix per basis axis, or one for both.
+    /// @param[in] bound The relative error asserted, or zero to take the option.
+    /// @param[in] drop_threshold See @ref default_drop_threshold.
+    /// @param[in] name The provider's name.
+    /// @return The provider.
+    APIARY_EXPOSE static std::shared_ptr<ThcFactorization> for_three_index(std::string tag, RuntimeTensor<double> const &three_index,
+                                                                           std::vector<RuntimeTensor<double> const *> collocations,
+                                                                           double                                     bound = 0.0,
+                                                                           double drop_threshold = ThcFactorization::default_drop_threshold,
+                                                                           std::string name      = "ThcThreeIndex");
+
+    /**
      * @brief Where an amplitude fit writes what it was worth on this bind.
      *
      * @param[in] residual A rank-1 tensor the fit writes @f$\lVert T - \tilde{T}\rVert^2@f$ into.
@@ -389,8 +439,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::optional<RuntimeTensorView<double>> _residual_report;
     std::optional<RuntimeTensorView<double>> _reference_report;
     std::vector<RuntimeTensorView<double>>   _collocations;
-    double                                   _bound;
-    double                                   _drop_threshold;
+    /// Whether this fits the three-index tensor itself rather than a four-index tensor. The
+    /// three-index tensor is in @ref _three_index either way, so the mode cannot be read off
+    /// the members and is stated.
+    bool   _fits_three_index{false};
+    double _bound;
+    double _drop_threshold;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

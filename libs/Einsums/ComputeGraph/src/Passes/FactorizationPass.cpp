@@ -75,6 +75,16 @@ using search::Mask;
 /// with its own factor cap.
 constexpr std::size_t kMinPieces = 12;
 
+/// The marker for a cone leaf no provider claims.
+constexpr std::size_t kNoLeafOwner = static_cast<std::size_t>(-1);
+
+/// How many ways of choosing one plan per tagged leaf the pass will cost.
+///
+/// One provider per tag is the ordinary case and makes this one. The product grows as providers
+/// to the power of tagged leaves and every combination is a bracketing search, so it is capped
+/// and the excess is a decline rather than a pass that runs for an unbounded time.
+constexpr std::size_t kMaxPlanCombinations = 12;
+
 /// The largest number of leaves the bracketing search is offered here.
 ///
 /// This pass BUILDS the cone it searches, out of a provider's chain and the operand the tagged
@@ -365,6 +375,7 @@ void FactorizationPass::reset_stats() {
     RegionRewrite::reset_stats();
     _num_factorized = 0;
     _num_dissolved  = 0;
+    _num_multi      = 0;
     _num_joint      = 0;
     _pending.clear();
     _pending_quadrature.clear();
@@ -380,8 +391,9 @@ std::vector<std::string> FactorizationPass::describe() const {
         return {};
     }
     return {fmt::format("FactorizationPass: re-associated {} contraction(s) around a provider's factors, dissolving {} captured "
-                        "intermediate(s) into the cone, {} of them decided jointly with a quadrature",
-                        _num_factorized, _num_dissolved, _num_joint)};
+                        "intermediate(s) into the cone, {} of them substituting more than one tagged tensor at once and {} decided "
+                        "jointly with a quadrature",
+                        _num_factorized, _num_dissolved, _num_multi, _num_joint)};
 }
 
 bool FactorizationPass::applicable(Graph const &graph) const {
@@ -528,36 +540,9 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             _considered.push_back(tagged_id);
         }
 
-        // A tagged tensor this graph writes has one way through, and only one: it is the
-        // amplitude of a solver whose iteration this graph IS, updated by a statement the
-        // analysis can name, and the fit is then re-fitted at that update rather than made once
-        // per bound problem. Everything else declines, because a fit of a tensor that has since
-        // moved describes nothing.
-        bool refit = false;
-        if (written_anywhere(graph, tagged_id)) {
-            auto const update = inside_control_flow(graph) ? amplitude_update_writer(graph, tagged_id)
-                                                           : unexpected(std::string{"this graph is not a loop body"});
-            if (!update) {
-                note_skip("the tagged tensor is written by this graph, so its factors could go stale",
-                          fmt::format("tensor '{}': {}", tagged_name, update.error()));
-                continue;
-            }
-            refit = true;
-        }
-        // Asked before anything is accepted, never after. The fitting is emitted once the region
-        // loop is over, and a region already rewritten to read factors nothing fits would be a
-        // wrong number rather than a missed optimization. A refit is emitted in the body and so
-        // has nothing to escape.
-        if (!refit && !setup_may_escape(graph, {tagged_id})) {
-            continue;
-        }
-        if (!term.conjugate.empty() && term.conjugate[tagged_slot]) {
-            note_skip("the tagged operand is conjugated, which a factor chain has nowhere to carry",
-                      fmt::format("tensor '{}'", tagged_name));
-            continue;
-        }
-
         // Every letter this statement already uses, so a provider's new ones cannot collide.
+        // Widened once the cone is flattened, with the letters the dissolved definitions summed
+        // over.
         std::vector<std::string> used = letters_of(tagged_index);
         merge_letters(used, letters_of(other_index));
         merge_letters(used, letters_of(statement.target_indices));
@@ -687,147 +672,318 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             }
         }
 
+        // ── The tagged leaves of the cone ─────────────────────────────────────────────
+        //
+        // The operand this statement was found by, and then every leaf the flattening put
+        // beside it. A DF program never writes the four-external ladder as one contraction of
+        // two tagged operands: it writes a chain whose leaves are the three-index integral twice
+        // and the amplitude once, so the tags land on the leaves of the cone rather than on the
+        // two operands of one statement. The rule is therefore stated over the LEAF SET, and a
+        // contraction whose two operands are both tagged is the shortest case of it.
+        std::vector<search::Factor> leaves;
+        leaves.push_back(search::Factor{
+            .tensor = tagged_id, .indices = tagged_index, .conjugate = !term.conjugate.empty() && term.conjugate[tagged_slot]});
+        leaves.insert(leaves.end(), outer_pieces.begin(), outer_pieces.end());
+        for (auto const &leaf : leaves) {
+            merge_letters(used, letters_of(leaf.indices));
+        }
+
+        /// One tagged tensor of the cone, with every plan its providers offered for it.
+        struct TaggedLeaf {
+            TensorId                       tensor{};
+            std::string                    name;
+            std::string                    tag;
+            bool                           refit{false};
+            std::vector<FactorizationPlan> plans;
+            std::vector<std::size_t>       occurrences; ///< Where in @c leaves it appears.
+        };
+        std::vector<TaggedLeaf>  tagged;
+        std::vector<std::size_t> leaf_owner(leaves.size(), kNoLeafOwner);
+        for (std::size_t which = 0; which < leaves.size(); ++which) {
+            TensorHandle const *held = graph.find_tensor(leaves[which].tensor);
+            if (held == nullptr || held->tag.name.empty() || !registry().claims(held->tag.name)) {
+                continue;
+            }
+            auto found =
+                std::ranges::find_if(tagged, [&leaves, which](TaggedLeaf const &entry) { return entry.tensor == leaves[which].tensor; });
+            if (found == tagged.end()) {
+                tagged.push_back(TaggedLeaf{.tensor = leaves[which].tensor, .name = held->name, .tag = held->tag.name});
+                found = tagged.end() - 1;
+            }
+            found->occurrences.push_back(which);
+            leaf_owner[which] = static_cast<std::size_t>(found - tagged.begin());
+        }
+
+        // What each tagged leaf may be replaced by, asked once per tensor rather than once per
+        // occurrence: two occurrences of one integral are two grid indices over one fit.
+        for (auto &entry : tagged) {
+            if (std::ranges::find(_considered, entry.tensor) == _considered.end()) {
+                _considered.push_back(entry.tensor);
+            }
+
+            // A tagged tensor this graph writes has one way through, and only one: it is the
+            // amplitude of a solver whose iteration this graph IS, updated by a statement the
+            // analysis can name, and the fit is then re-fitted at that update rather than made
+            // once per bound problem. Everything else declines, because a fit of a tensor that
+            // has since moved describes nothing.
+            if (written_anywhere(graph, entry.tensor)) {
+                auto const update = inside_control_flow(graph) ? amplitude_update_writer(graph, entry.tensor)
+                                                               : unexpected(std::string{"this graph is not a loop body"});
+                if (!update) {
+                    note_skip("the tagged tensor is written by this graph, so its factors could go stale",
+                              fmt::format("tensor '{}': {}", entry.name, update.error()));
+                    continue;
+                }
+                entry.refit = true;
+            }
+            // Asked before anything is accepted, never after. The fitting is emitted once the
+            // region loop is over, and a region already rewritten to read factors nothing fits
+            // would be a wrong number rather than a missed optimization. A refit is emitted in
+            // the body and so has nothing to escape.
+            if (!entry.refit && !setup_may_escape(graph, {entry.tensor})) {
+                continue;
+            }
+            if (std::ranges::any_of(entry.occurrences, [&leaves](std::size_t at) { return leaves[at].conjugate; })) {
+                note_skip("the tagged operand is conjugated, which a factor chain has nowhere to carry",
+                          fmt::format("tensor '{}'", entry.name));
+                continue;
+            }
+
+            for (auto const &provider : registry().for_tag(entry.tag)) {
+                auto offer = provider->propose(graph, entry.tensor);
+                if (!offer) {
+                    note_skip("a provider declined", fmt::format("'{}': {}", provider->name(), offer.error()));
+                    continue;
+                }
+                FactorizationPlan plan = std::move(*offer);
+                if (plan.factors.size() < 2) {
+                    note_skip("a provider offered fewer than two factors, which is a rename rather than a factorization",
+                              fmt::format("'{}'", provider->name()));
+                    continue;
+                }
+                if (plan.factors.size() + 1 > max_pieces()) {
+                    note_skip("a provider's chain has more factors than the bracketing search is allowed",
+                              fmt::format("'{}': {} factor(s), cap {}", provider->name(), plan.factors.size(), max_pieces() - 1));
+                    continue;
+                }
+                if (plan.tagged_letters.size() != leaves[entry.occurrences.front()].indices.size()) {
+                    note_skip("a provider's letter list does not match the tagged operand's rank", fmt::format("'{}'", provider->name()));
+                    continue;
+                }
+                if (entry.refit && !plan.fits_from_tagged) {
+                    // The tensor moves every iteration and this fit does not read it, so the
+                    // factors are the same however often it moves. Substituting them is not a
+                    // stale approximation, it is a different quantity.
+                    note_skip("a provider's fit does not read the tagged tensor, which a tensor the loop body updates requires",
+                              fmt::format("'{}'", provider->name()));
+                    continue;
+                }
+                bool consistent = true;
+                for (auto const &factor : plan.factors) {
+                    if (factor.letters.size() != factor.dims.size()) {
+                        note_skip("a provider's factor has a different number of letters and extents",
+                                  fmt::format("'{}'", provider->name()));
+                        consistent = false;
+                        break;
+                    }
+                }
+                if (!consistent) {
+                    continue;
+                }
+                entry.plans.push_back(std::move(plan));
+            }
+        }
+
+        // How many ways there are to choose one plan per tagged leaf. One provider per tag is
+        // the ordinary case and makes this one; the cap is here because the product grows as
+        // providers to the power of tagged leaves and each combination is a bracketing search.
+        std::size_t combinations = 1;
+        for (auto const &entry : tagged) {
+            if (!entry.plans.empty()) {
+                combinations *= entry.plans.size();
+            }
+        }
+        if (std::ranges::none_of(tagged, [](TaggedLeaf const &entry) { return !entry.plans.empty(); })) {
+            continue;
+        }
+        if (combinations > kMaxPlanCombinations) {
+            note_skip("the tagged leaves of one cone offer more combinations of provider than the pass will cost",
+                      fmt::format("{} combination(s), cap {}", combinations, kMaxPlanCombinations));
+            continue;
+        }
+
+        /// One tagged leaf replaced by one plan's factors, in the letters that leaf is spelled
+        /// with. Two occurrences of one tensor are two substitutions over one fit.
+        struct Substitution {
+            std::size_t                entry{0};      ///< Index into @c tagged.
+            std::size_t                choice{0};     ///< Which of that entry's plans.
+            std::size_t                occurrence{0}; ///< Index into @c leaves.
+            std::size_t                first_piece{0};
+            std::vector<RenamedFactor> factors;
+        };
         struct Candidate {
-            FactorizationPlan           plan;
-            std::vector<RenamedFactor>  factors;
-            std::vector<search::Factor> pieces; ///< The factors, then the other operand.
+            std::vector<Substitution>   subs;
+            std::vector<search::Factor> pieces; ///< Every leaf, with the tagged ones substituted.
             search::LetterTable         table;
             search::TreePlan            tree;
             SymbolicCost                cost;
         };
         std::optional<Candidate> best;
 
-        for (auto const &provider : registry().for_tag(tag)) {
-            auto offer = provider->propose(graph, tagged_id);
-            if (!offer) {
-                note_skip("a provider declined", fmt::format("'{}': {}", provider->name(), offer.error()));
-                continue;
-            }
-            FactorizationPlan plan = std::move(*offer);
-            if (plan.factors.size() < 2) {
-                note_skip("a provider offered fewer than two factors, which is a rename rather than a factorization",
-                          fmt::format("'{}'", provider->name()));
-                continue;
-            }
-            if (plan.factors.size() + 1 > max_pieces()) {
-                note_skip("a provider's chain has more factors than the bracketing search is allowed",
-                          fmt::format("'{}': {} factor(s), cap {}", provider->name(), plan.factors.size(), max_pieces() - 1));
-                continue;
-            }
-            if (plan.tagged_letters.size() != tagged_index.size()) {
-                note_skip("a provider's letter list does not match the tagged operand's rank", fmt::format("'{}'", provider->name()));
-                continue;
-            }
-            if (refit && !plan.fits_from_tagged) {
-                // The tensor moves every iteration and this fit does not read it, so the factors
-                // are the same however often it moves. Substituting them is not a stale
-                // approximation, it is a different quantity.
-                note_skip("a provider's fit does not read the tagged tensor, which a tensor the loop body updates requires",
-                          fmt::format("'{}'", provider->name()));
-                continue;
+        std::vector<std::size_t> choice(tagged.size(), 0);
+        for (std::size_t combination = 0; combination < combinations; ++combination) {
+            // Mixed radix over the entries that have a plan, so the walk is a fixed order and
+            // two runs over one cone consider the same combinations in the same sequence.
+            std::size_t rest = combination;
+            for (std::size_t entry = 0; entry < tagged.size(); ++entry) {
+                if (tagged[entry].plans.empty()) {
+                    choice[entry] = 0;
+                    continue;
+                }
+                choice[entry] = rest % tagged[entry].plans.size();
+                rest /= tagged[entry].plans.size();
             }
 
-            // The rename. A provider letter naming one of the tagged tensor's axes becomes the
-            // letter this contraction spells that axis with; anything else is a new letter and
-            // gets one nothing here is using.
-            std::unordered_map<std::string, std::string> rename;
-            std::unordered_map<std::string, SpaceId>     new_spaces;
-            for (std::size_t axis = 0; axis < plan.tagged_letters.size(); ++axis) {
-                rename.emplace(plan.tagged_letters[axis], tagged_index[axis].letter);
-            }
-            std::vector<std::string> taken = used;
-            bool                     ok    = true;
-            for (auto const &factor : plan.factors) {
-                if (factor.letters.size() != factor.dims.size()) {
-                    note_skip("a provider's factor has a different number of letters and extents", fmt::format("'{}'", provider->name()));
-                    ok = false;
-                    break;
+            Candidate                candidate;
+            std::vector<std::string> taken             = used;
+            bool                     provider_symbolic = false;
+            std::set<std::string>    grid_spaces;
+            bool                     have_grid_spaces = false;
+            bool                     ok               = true;
+
+            for (std::size_t which = 0; which < leaves.size() && ok; ++which) {
+                std::size_t const owner = leaf_owner[which];
+                if (owner == kNoLeafOwner || tagged[owner].plans.empty()) {
+                    candidate.pieces.push_back(leaves[which]);
+                    continue;
                 }
-                for (std::size_t axis = 0; axis < factor.letters.size(); ++axis) {
-                    if (rename.contains(factor.letters[axis])) {
-                        continue;
-                    }
-                    std::string fresh = fresh_letter(taken, factor.letters[axis]);
-                    taken.push_back(fresh);
-                    rename.emplace(factor.letters[axis], fresh);
-                    if (axis < factor.spaces.size() && !factor.spaces[axis].empty()) {
-                        if (auto const space = graph.space_registry().find(factor.spaces[axis]); space.has_value()) {
-                            new_spaces.emplace(fresh, *space);
+                FactorizationPlan const      &plan             = tagged[owner].plans[choice[owner]];
+                std::vector<ExprIndex> const &occurrence_index = leaves[which].indices;
+
+                // The rename. A provider letter naming one of the tagged tensor's axes becomes
+                // the letter this occurrence spells that axis with; anything else is a new
+                // letter and gets one nothing here is using. The taken list runs across every
+                // substitution of the cone, so two fits never collide on an auxiliary letter and
+                // two occurrences of ONE fit get grid letters of their own, which is what makes
+                // them two grid indices rather than one.
+                std::unordered_map<std::string, std::string> rename;
+                std::unordered_map<std::string, SpaceId>     new_spaces;
+                std::set<std::string>                        plan_spaces;
+                for (std::size_t axis = 0; axis < plan.tagged_letters.size(); ++axis) {
+                    rename.emplace(plan.tagged_letters[axis], occurrence_index[axis].letter);
+                }
+                for (auto const &factor : plan.factors) {
+                    for (std::size_t axis = 0; axis < factor.letters.size(); ++axis) {
+                        if (rename.contains(factor.letters[axis])) {
+                            continue;
                         }
-                    }
-                }
-            }
-            if (!ok) {
-                continue;
-            }
-
-            // A letter the provider introduces over a space with a DIM SYMBOL is one a later
-            // bind may resize, which is what a grid is: the number of points a capture happened
-            // to have is a placeholder rather than a size anything runs at. The extent veto has
-            // to abstain over it for the same reason it abstains over an annotated axis of the
-            // tagged tensor, and this is where the pass learns that it should.
-            bool provider_symbolic = false;
-            for (auto const &[letter, space] : new_spaces) {
-                if (space.valid() && space.value() < graph.space_registry().size() &&
-                    !graph.space_registry().space(space).dim_symbol.empty()) {
-                    provider_symbolic = true;
-                }
-            }
-
-            std::size_t const          count = plan.factors.size();
-            std::vector<RenamedFactor> renamed(count);
-            for (std::size_t which = 0; which < count; ++which) {
-                for (auto const &letter : plan.factors[which].letters) {
-                    std::string const &mapped = rename.at(letter);
-                    SpaceId            space;
-                    if (auto const found = new_spaces.find(mapped); found != new_spaces.end()) {
-                        space = found->second;
-                    } else {
-                        for (auto const &index : tagged_index) {
-                            if (index.letter == mapped) {
-                                space = index.space;
-                                break;
+                        std::string fresh = fresh_letter(taken, factor.letters[axis]);
+                        taken.push_back(fresh);
+                        rename.emplace(factor.letters[axis], fresh);
+                        if (axis < factor.spaces.size() && !factor.spaces[axis].empty()) {
+                            plan_spaces.insert(factor.spaces[axis]);
+                            if (auto const space = graph.space_registry().find(factor.spaces[axis]); space.has_value()) {
+                                new_spaces.emplace(fresh, *space);
                             }
                         }
                     }
-                    renamed[which].indices.push_back(ExprIndex{.letter = mapped, .space = space});
-                    renamed[which].letters.push_back(mapped);
                 }
+
+                // A letter the provider introduces over a space with a DIM SYMBOL is one a later
+                // bind may resize, which is what a grid is: the number of points a capture
+                // happened to have is a placeholder rather than a size anything runs at. The
+                // extent veto has to abstain over it for the same reason it abstains over an
+                // annotated axis of the tagged tensor.
+                for (auto const &[letter, space] : new_spaces) {
+                    if (space.valid() && space.value() < graph.space_registry().size() &&
+                        !graph.space_registry().space(space).dim_symbol.empty()) {
+                        provider_symbolic = true;
+                    }
+                }
+
+                // Two fits in one cone must present the SAME index spaces for the letters they
+                // introduce. The saving is that the contractions between them collapse onto
+                // those letters, and two grids chosen independently give a chain that carries
+                // both extents through instead of contracting one away.
+                if (!plan_spaces.empty()) {
+                    if (!have_grid_spaces) {
+                        grid_spaces      = plan_spaces;
+                        have_grid_spaces = true;
+                    } else if (grid_spaces != plan_spaces) {
+                        note_skip("two tagged operands of one cone are fitted over different index spaces, so their factors have no "
+                                  "common grid to contract on",
+                                  fmt::format("'{}' on '{}'", plan.provider, tagged[owner].name));
+                        ok = false;
+                        break;
+                    }
+                }
+
+                Substitution sub;
+                sub.entry       = owner;
+                sub.choice      = choice[owner];
+                sub.occurrence  = which;
+                sub.first_piece = candidate.pieces.size();
+                for (auto const &factor : plan.factors) {
+                    RenamedFactor renamed;
+                    for (auto const &letter : factor.letters) {
+                        std::string const &mapped = rename.at(letter);
+                        SpaceId            space;
+                        if (auto const found = new_spaces.find(mapped); found != new_spaces.end()) {
+                            space = found->second;
+                        } else {
+                            for (auto const &index : occurrence_index) {
+                                if (index.letter == mapped) {
+                                    space = index.space;
+                                    break;
+                                }
+                            }
+                        }
+                        renamed.indices.push_back(ExprIndex{.letter = mapped, .space = space});
+                        renamed.letters.push_back(mapped);
+                    }
+                    candidate.pieces.push_back(search::Factor{.tensor = TensorId{0}, .indices = renamed.indices, .conjugate = false});
+                    sub.factors.push_back(std::move(renamed));
+                }
+                candidate.subs.push_back(std::move(sub));
+            }
+            if (!ok || candidate.subs.empty()) {
+                continue;
             }
 
             // Every letter's actual extent, for the search's own ranking and for the numeric
-            // veto below. Read off the operands this contraction already has, and off the plan
-            // for the letters it introduces.
+            // veto below. Read off the operands this contraction already has, and off the plans
+            // for the letters they introduce.
             //
             // An axis carrying a SYMBOLIC extent is noted too, because a capture-time number
             // for such an axis is a placeholder for whatever the next bind supplies rather
             // than a size anything runs at.
             search::LetterTable table;
-            bool                any_symbolic_extent = false;
+            bool                any_symbolic_extent = provider_symbolic;
             auto const          note_extent         = [&](TensorId id, std::vector<ExprIndex> const &indices) {
-                TensorHandle const *handle = graph.find_tensor(id);
-                if (handle == nullptr) {
+                TensorHandle const *held = graph.find_tensor(id);
+                if (held == nullptr) {
                     return;
                 }
-                for (std::size_t axis = 0; axis < indices.size() && axis < handle->dims.size(); ++axis) {
-                    table.observe(indices[axis], handle->dims[axis]);
+                for (std::size_t axis = 0; axis < indices.size() && axis < held->dims.size(); ++axis) {
+                    table.observe(indices[axis], held->dims[axis]);
                     // An EMPTY dim_symbols means every axis is literal; an empty ENTRY means
                     // this one is. Anything else is a symbol or a ragged axis, both resizable.
-                    if (axis < handle->dim_symbols.size() && !handle->dim_symbols[axis].empty()) {
+                    if (axis < held->dim_symbols.size() && !held->dim_symbols[axis].empty()) {
                         any_symbolic_extent = true;
                     }
                 }
             };
-            any_symbolic_extent = provider_symbolic;
-            note_extent(tagged_id, tagged_index);
-            note_extent(other_id, other_index);
             note_extent(statement.target, statement.target_indices);
-            for (auto const &piece : outer_pieces) {
-                note_extent(piece.tensor, piece.indices);
+            note_extent(other_id, other_index);
+            for (auto const &leaf : leaves) {
+                note_extent(leaf.tensor, leaf.indices);
             }
-            for (std::size_t which = 0; which < count; ++which) {
-                for (std::size_t axis = 0; axis < renamed[which].indices.size(); ++axis) {
-                    table.observe(renamed[which].indices[axis], plan.factors[which].dims[axis]);
+            for (auto const &sub : candidate.subs) {
+                FactorizationPlan const &plan = tagged[sub.entry].plans[sub.choice];
+                for (std::size_t which = 0; which < sub.factors.size(); ++which) {
+                    for (std::size_t axis = 0; axis < sub.factors[which].indices.size(); ++axis) {
+                        table.observe(sub.factors[which].indices[axis], plan.factors[which].dims[axis]);
+                    }
                 }
             }
 
@@ -838,18 +994,22 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             // Stated for two factors and not for a chain, because it is a two-factor statement.
             // A chain has as many ways to meet the other operand as it has links, and which of
             // them pays is what the bracketing search answers; asking a chain to separate would
-            // decline exactly the plans the search exists to bracket.
-            if (count == 2) {
+            // decline exactly the plans the search exists to bracket. Asked only of a cone whose
+            // single tagged leaf is this statement's own operand, for the same reason: with a
+            // second leaf substituted there is no fixed operand to separate against.
+            if (candidate.subs.size() == 1 && candidate.subs[0].occurrence == 0 &&
+                tagged[candidate.subs[0].entry].plans[candidate.subs[0].choice].factors.size() == 2) {
+                auto const              &renamed = candidate.subs[0].factors;
                 std::vector<std::string> shared;
                 for (auto const &index : tagged_index) {
                     if (contains(letters_of(other_index), index.letter)) {
                         shared.push_back(index.letter);
                     }
                 }
-                auto const carries_all = [&](RenamedFactor const &factor) {
+                auto const carries_all = [&shared](RenamedFactor const &factor) {
                     return std::ranges::all_of(shared, [&factor](std::string const &letter) { return contains(factor.letters, letter); });
                 };
-                auto const carries_none = [&](RenamedFactor const &factor) {
+                auto const carries_none = [&shared](RenamedFactor const &factor) {
                     return std::ranges::none_of(shared, [&factor](std::string const &letter) { return contains(factor.letters, letter); });
                 };
                 bool separated = false;
@@ -859,7 +1019,8 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 }
                 if (!separated) {
                     note_skip("the split does not separate the letters shared with the other operand",
-                              fmt::format("'{}' on '{}'", provider->name(), tagged_name));
+                              fmt::format("'{}' on '{}'", tagged[candidate.subs[0].entry].plans[candidate.subs[0].choice].provider,
+                                          tagged[candidate.subs[0].entry].name));
                     continue;
                 }
             }
@@ -868,32 +1029,18 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             // about: the shapes that reach here are wider than the tidy ones, and a miss would
             // emit a contraction whose operands cannot make its output.
             std::vector<std::string> reachable;
-            for (auto const &piece : outer_pieces) {
+            for (auto const &piece : candidate.pieces) {
                 merge_letters(reachable, letters_of(piece.indices));
-            }
-            for (auto const &factor : renamed) {
-                merge_letters(reachable, factor.letters);
             }
             if (!std::ranges::all_of(letters_of(statement.target_indices),
                                      [&reachable](std::string const &letter) { return contains(reachable, letter); })) {
-                note_skip("the decomposed form cannot produce the target's indices",
-                          fmt::format("'{}' on '{}'", provider->name(), tagged_name));
+                note_skip("the decomposed form cannot produce the target's indices", fmt::format("on '{}'", tagged_name));
                 continue;
             }
 
-            // The leaves the bracketing search is offered: the provider's factors, and the
-            // operand the tagged tensor was being contracted with. The auxiliary letters are
-            // ordinary letters to it, so a bracketing that rebuilds the tagged tensor is simply
-            // the most expensive tree and the search never picks it.
-            std::vector<search::Factor> pieces;
-            pieces.reserve(count + outer_pieces.size());
-            for (auto const &factor : renamed) {
-                pieces.push_back(search::Factor{.tensor = TensorId{0}, .indices = factor.indices, .conjugate = false});
-            }
-            pieces.insert(pieces.end(), outer_pieces.begin(), outer_pieces.end());
-            if (pieces.size() > max_pieces()) {
-                note_skip("the cone and the provider's chain together have more leaves than the bracketing search is allowed",
-                          fmt::format("'{}': {} leaves, cap {}", provider->name(), pieces.size(), max_pieces()));
+            if (candidate.pieces.size() > max_pieces()) {
+                note_skip("the cone and the providers' chains together have more leaves than the bracketing search is allowed",
+                          fmt::format("on '{}': {} leaves, cap {}", tagged_name, candidate.pieces.size(), max_pieces()));
                 continue;
             }
 
@@ -901,10 +1048,9 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             tree_ctx.registry     = ctx.registry;
             tree_ctx.bound_extent = table.lookup();
 
-            search::TreePlan const tree = search::solve_tree(pieces, statement.target_indices, table, tree_ctx);
+            search::TreePlan const tree = search::solve_tree(candidate.pieces, statement.target_indices, table, tree_ctx);
             if (!tree.ok) {
-                note_skip("no bracketing of the substituted product could be found",
-                          fmt::format("'{}' on '{}'", provider->name(), tagged_name));
+                note_skip("no bracketing of the substituted product could be found", fmt::format("on '{}'", tagged_name));
                 continue;
             }
 
@@ -920,7 +1066,9 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             SymbolicCost const after = tree.cost;
 
             // Cheaper SYMBOLICALLY and, where every extent is known, cheaper at those extents
-            // too. The two answer different questions and the pass needs both.
+            // too. The two answer different questions and the pass needs both, and with more
+            // than one substitution both are asked of the whole cone rather than of either fit:
+            // neither pays alone, which is the same shape the joint quadrature decision has.
             //
             // The symbolic one is about the family: two degree-three contractions beat one of
             // degree four however large the problem grows, which is the whole DF argument and
@@ -932,7 +1080,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             // measurable regression for a promise, so the bound extents get a veto.
             if (compare(after, before, ctx) >= 0) {
                 note_skip("the decomposed form is not symbolically cheaper",
-                          fmt::format("'{}' on '{}': {} vs {}", provider->name(), tagged_name, after.flops.to_string(ctx.registry),
+                          fmt::format("on '{}': {} vs {}", tagged_name, after.flops.to_string(ctx.registry),
                                       before.flops.to_string(ctx.registry)));
                 continue;
             }
@@ -948,38 +1096,62 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             auto const         before_flops = before.flops.evaluate(extent_of);
             auto const         after_flops  = after.flops.evaluate(extent_of);
             if (any_symbolic_extent) {
-                report(2, fmt::format("the extent veto abstains on '{}' ({}): a symbolic axis makes the captured size a "
+                report(2, fmt::format("the extent veto abstains on '{}': a symbolic axis makes the captured size a "
                                       "placeholder, so the symbolic verdict stands alone",
-                                      tagged_name, provider->name()));
+                                      tagged_name));
             } else if (before_flops.has_value() && after_flops.has_value() && *after_flops >= *before_flops) {
                 note_skip("the decomposed form is not cheaper at the extents this graph holds",
-                          fmt::format("'{}' on '{}': {:g} vs {:g} flops", provider->name(), tagged_name, *after_flops, *before_flops));
+                          fmt::format("on '{}': {:g} vs {:g} flops", tagged_name, *after_flops, *before_flops));
                 continue;
             }
             if (best.has_value() && compare(after, best->cost, ctx) >= 0) {
                 continue;
             }
 
-            best = Candidate{.plan    = std::move(plan),
-                             .factors = std::move(renamed),
-                             .pieces  = std::move(pieces),
-                             .table   = std::move(table),
-                             .tree    = tree,
-                             .cost    = after};
+            candidate.table = std::move(table);
+            candidate.tree  = tree;
+            candidate.cost  = after;
+            best            = std::move(candidate);
         }
-
         if (!best.has_value()) {
             continue;
         }
 
-        // The accuracy statement, before anything is rewritten. A refusal here leaves the
-        // statement exactly as it was and puts the budget's own reason in the skip tally.
-        ApproximationRecord record = best->plan.accuracy;
-        record.pass_name           = best->plan.provider;
-        if (record.setup.empty()) {
-            record.setup = fmt::format("{}({})", best->plan.provider, tagged_name);
+        // The distinct FITS the chosen combination needs: one per tagged tensor and plan,
+        // however many occurrences of it the cone holds. Two occurrences of one integral are two
+        // grid indices over one fitting, and a fitting emitted per occurrence would store the
+        // factors twice and run the fit twice per bind.
+        std::vector<std::pair<std::size_t, std::size_t>> fits;
+        for (auto const &sub : best->subs) {
+            if (std::ranges::find(fits, std::pair{sub.entry, sub.choice}) == fits.end()) {
+                fits.emplace_back(sub.entry, sub.choice);
+            }
         }
-        if (!approximate(record_host(graph), record)) {
+        auto const fit_index = [&fits](Substitution const &sub) {
+            return static_cast<std::size_t>(std::ranges::find(fits, std::pair{sub.entry, sub.choice}) - fits.begin());
+        };
+
+        // The accuracy statements, before anything is rewritten, one per provider and all of
+        // them through the one place a lossy pass refuses. Two fits substituted together are ONE
+        // decision, so a budget that will not pay for the second must not leave the first
+        // standing on a graph nothing rewrote; the records are rolled back rather than composed
+        // half way.
+        Graph                                 &host  = record_host(graph);
+        std::vector<ApproximationRecord> const saved = host.approximations();
+        std::vector<std::string>               labels(fits.size());
+        bool                                   budgeted = true;
+        for (std::size_t which = 0; which < fits.size() && budgeted; ++which) {
+            FactorizationPlan const &plan   = tagged[fits[which].first].plans[fits[which].second];
+            ApproximationRecord      record = plan.accuracy;
+            record.pass_name                = plan.provider;
+            if (record.setup.empty()) {
+                record.setup = fmt::format("{}({})", plan.provider, tagged[fits[which].first].name);
+            }
+            labels[which] = record.setup;
+            budgeted      = approximate(host, record);
+        }
+        if (!budgeted) {
+            host.restore_approximations(saved);
             continue;
         }
 
@@ -1000,29 +1172,36 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         // auditor with one tensor materialized three times. The factors are the same object for
         // every candidate over one tagged tensor and one provider, so the second candidate reuses
         // what the first declared and emits no second setup.
-        std::size_t const     count = best->plan.factors.size();
-        std::vector<TensorId> factor_ids(count);
-        FitKey const          fit_key{tagged_id, best->plan.provider};
-        bool const            already_fitted = _fits.contains(fit_key);
-        if (already_fitted) {
-            factor_ids = _fits.at(fit_key);
-        } else {
+        std::vector<std::vector<TensorId>> factor_ids(fits.size());
+        std::vector<bool>                  already_fitted(fits.size(), false);
+        for (std::size_t which = 0; which < fits.size(); ++which) {
+            FactorizationPlan const &plan = tagged[fits[which].first].plans[fits[which].second];
+            FitKey const             fit_key{tagged[fits[which].first].tensor, plan.provider};
+            if (_fits.contains(fit_key)) {
+                factor_ids[which]     = _fits.at(fit_key);
+                already_fitted[which] = true;
+                continue;
+            }
             std::vector<std::pair<std::string, TensorId>> declared;
-            for (std::size_t which = 0; which < count; ++which) {
-                std::string const &factor_name = best->plan.factors[which].name;
+            factor_ids[which].resize(plan.factors.size());
+            for (std::size_t factor = 0; factor < plan.factors.size(); ++factor) {
+                std::string const &factor_name = plan.factors[factor].name;
                 auto const found = std::ranges::find_if(declared, [&factor_name](auto const &entry) { return entry.first == factor_name; });
                 if (found != declared.end()) {
-                    factor_ids[which] = found->second;
+                    factor_ids[which][factor] = found->second;
                     continue;
                 }
-                factor_ids[which] = declare_scratch(graph, fmt::format("{}_{}", best->plan.provider, factor_name),
-                                                    best->plan.factors[which].dtype, best->plan.factors[which].dims);
-                declared.emplace_back(factor_name, factor_ids[which]);
+                factor_ids[which][factor] = declare_scratch(graph, fmt::format("{}_{}", plan.provider, factor_name),
+                                                            plan.factors[factor].dtype, plan.factors[factor].dims);
+                declared.emplace_back(factor_name, factor_ids[which][factor]);
             }
-            _fits.emplace(fit_key, factor_ids);
+            _fits.emplace(fit_key, factor_ids[which]);
         }
-        for (std::size_t which = 0; which < count; ++which) {
-            best->pieces[which].tensor = factor_ids[which];
+        for (auto const &sub : best->subs) {
+            std::vector<TensorId> const &ids = factor_ids[fit_index(sub)];
+            for (std::size_t factor = 0; factor < ids.size(); ++factor) {
+                best->pieces[sub.first_piece + factor].tensor = ids[factor];
+            }
         }
 
         // What the factors are OVER, and how big a later bind may make them. The spaces come
@@ -1032,20 +1211,23 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         // Annotated only when EVERY axis of a factor resolves, which is the rule
         // `MultiTermFactorization` states for its shared intermediates: a partial annotation is
         // what makes a bind move some extents and not others, which is worse than none at all.
-        {
+        for (auto const &sub : best->subs) {
+            std::vector<TensorId> const  &ids              = factor_ids[fit_index(sub)];
+            std::vector<ExprIndex> const &occurrence_index = leaves[sub.occurrence].indices;
+
             std::unordered_map<std::string, std::string> symbol_of;
-            if (TensorHandle const *held = graph.find_tensor(tagged_id); held != nullptr) {
-                for (std::size_t axis = 0; axis < tagged_index.size() && axis < held->dim_symbols.size(); ++axis) {
+            if (TensorHandle const *held = graph.find_tensor(tagged[sub.entry].tensor); held != nullptr) {
+                for (std::size_t axis = 0; axis < occurrence_index.size() && axis < held->dim_symbols.size(); ++axis) {
                     if (!held->dim_symbols[axis].empty()) {
-                        symbol_of.emplace(tagged_index[axis].letter, held->dim_symbols[axis]);
+                        symbol_of.emplace(occurrence_index[axis].letter, held->dim_symbols[axis]);
                     }
                 }
             }
-            for (std::size_t which = 0; which < count; ++which) {
+            for (std::size_t which = 0; which < sub.factors.size(); ++which) {
                 std::vector<SpaceId>     spaces;
                 std::vector<std::string> symbols;
                 bool                     every_axis_symbolic = true;
-                for (auto const &index : best->factors[which].indices) {
+                for (auto const &index : sub.factors[which].indices) {
                     spaces.push_back(index.space);
                     std::string symbol;
                     if (auto const found = symbol_of.find(index.letter); found != symbol_of.end()) {
@@ -1060,24 +1242,25 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 // all-or-nothing rule the symbols get: a partial annotation is what makes a
                 // bind move some extents and not others.
                 if (std::ranges::all_of(spaces, [](SpaceId id) { return id.valid(); })) {
-                    graph.annotate_spaces(factor_ids[which], spaces);
+                    graph.annotate_spaces(ids[which], spaces);
                 }
                 if (every_axis_symbolic) {
-                    graph.annotate_dims(factor_ids[which], symbols);
+                    graph.annotate_dims(ids[which], symbols);
                 }
             }
         }
 
         // ── Emit the tree the search chose ────────────────────────────────────────────
-        EmitRequest request;
+        FactorizationPlan const &lead = tagged[best->subs.front().entry].plans[best->subs.front().choice];
+        EmitRequest              request;
         request.graph          = &graph;
         request.expr           = &expr;
         request.pieces         = &best->pieces;
         request.tree           = &best->tree;
         request.table          = &best->table;
-        request.provider       = best->plan.provider;
+        request.provider       = lead.provider;
         request.stem           = tagged_name;
-        request.dtype          = best->plan.factors[0].dtype;
+        request.dtype          = lead.factors[0].dtype;
         request.root_target    = statement.target;
         request.root_name      = statement.target_name;
         request.root_indices   = statement.target_indices;
@@ -1092,7 +1275,8 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         if (!emitted.has_value()) {
             // Nothing above touched the statement list, so a tree that will not build costs
             // this candidate and leaves the region as it was.
-            note_skip("the chosen bracketing could not be emitted", fmt::format("'{}' on '{}'", best->plan.provider, tagged_name));
+            note_skip("the chosen bracketing could not be emitted", fmt::format("'{}' on '{}'", lead.provider, tagged_name));
+            host.restore_approximations(saved);
             continue;
         }
 
@@ -1111,12 +1295,21 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         }
         _num_dissolved += dissolved.size();
 
-        if (!already_fitted) {
-            _pending.push_back(PendingSetup{.label = record.setup, .factors = factor_ids, .emit = best->plan.emit_setup, .refit = refit});
+        for (std::size_t which = 0; which < fits.size(); ++which) {
+            if (already_fitted[which]) {
+                continue;
+            }
+            FactorizationPlan const &plan = tagged[fits[which].first].plans[fits[which].second];
+            _pending.push_back(PendingSetup{
+                .label = labels[which], .factors = factor_ids[which], .emit = plan.emit_setup, .refit = tagged[fits[which].first].refit});
         }
         ++_num_factorized;
+        if (fits.size() > 1) {
+            ++_num_multi;
+        }
         changed = true;
-        report(2, fmt::format("factorized '{}' through {}", tagged_name, best->plan.provider));
+        report(2, fmt::format("factorized '{}' through {}{}", tagged_name, lead.provider,
+                              fits.size() > 1 ? fmt::format(" and {} more fit(s) in one decision", fits.size() - 1) : std::string{}));
     }
 
     (void)region;

@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Factorization.hpp>
 #include <Einsums/ComputeGraph/Passes/FactorizationPass.hpp>
+#include <Einsums/ComputeGraph/ThcFactorization.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -1370,4 +1371,279 @@ TEST_CASE("Factorization - the cone is re-associated, not just the tagged contra
             REQUIRE(std::abs(C(i, j) - expected(i, j)) < 1e-10);
         }
     }
+}
+
+// ── Two tagged operands in one cone ────────────────────────────────────────
+
+namespace {
+
+/// A provider handing back a chain of factors the test already holds, so the fit is EXACT and
+/// the two forms differ only in the order the sums are taken in.
+///
+/// One class for both halves of a ladder term, because what changes between an integral fit and
+/// an amplitude fit is the factor list and not the mechanism. Every factor is a matrix, which is
+/// what a grid fit's factors are: a basis block by a grid, or a grid by a grid.
+class ExactGridChain : public cg::FactorizationProvider {
+  public:
+    struct Piece {
+        Tensor<double, 2>       *source{nullptr};
+        std::string              name;
+        std::vector<std::string> letters; ///< In this provider's own alphabet.
+        std::vector<std::string> spaces;  ///< Index-space names, in letter order.
+    };
+
+    ExactGridChain(std::string name, std::string tag, std::vector<std::string> tagged_letters, std::vector<Piece> pieces)
+        : _name(std::move(name)), _tag(std::move(tag)), _tagged_letters(std::move(tagged_letters)), _pieces(std::move(pieces)) {}
+
+    [[nodiscard]] std::string name() const override { return _name; }
+    [[nodiscard]] std::string tag() const override { return _tag; }
+
+    [[nodiscard]] expected<cg::FactorizationPlan, std::string> propose(cg::Graph const &graph, cg::TensorId tensor) const override {
+        cg::TensorHandle const *handle = graph.find_tensor(tensor);
+        if (handle == nullptr || handle->rank != _tagged_letters.size()) {
+            return einsums::unexpected(std::string{"this provider only factorizes a tensor of its own rank"});
+        }
+        cg::FactorizationPlan plan;
+        plan.provider       = _name;
+        plan.tagged_letters = _tagged_letters;
+        for (auto const &piece : _pieces) {
+            plan.factors.push_back(cg::FactorTensor{.name    = piece.name,
+                                                    .letters = piece.letters,
+                                                    .dims    = {piece.source->dim(0), piece.source->dim(1)},
+                                                    .spaces  = piece.spaces,
+                                                    .dtype   = einsums::packed_gemm::ScalarType::Float64});
+        }
+        plan.accuracy = cg::make_approximation_record(_name, cg::ApproximationEffect::NormRelative, 0.0, 0.0);
+
+        auto const pieces = _pieces;
+        plan.emit_setup   = [pieces](cg::Graph &parent, cg::Graph &body, std::vector<cg::TensorId> const &factors) {
+            cg::CaptureGuard const guard(body);
+            for (std::size_t which = 0; which < pieces.size(); ++which) {
+                auto *dest = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[which]).tensor_ptr);
+                cg::permute("x,y <- x,y", 0.0, dest, 1.0, *pieces[which].source);
+            }
+        };
+        return plan;
+    }
+
+  private:
+    std::string              _name;
+    std::string              _tag;
+    std::vector<std::string> _tagged_letters;
+    std::vector<Piece>       _pieces;
+};
+
+/// The density-fitted ladder term, with both of its tagged tensors built out of the very factors
+/// their providers hand back.
+///
+/// @c B is three-index because a density-fitted program never forms the four-index integral, and
+/// the term is the chain such a program writes: an intermediate over the auxiliary index and a
+/// second contraction that closes it. The tags therefore land on the LEAVES of a cone rather
+/// than on the two operands of one statement, which is the shape the two-operand mechanism is
+/// stated over.
+struct LadderFixture {
+    static constexpr std::size_t occ  = 2;
+    static constexpr std::size_t vir  = 3;
+    static constexpr std::size_t aux  = 3;
+    static constexpr std::size_t grid = 4;
+
+    Tensor<double, 2> Xocc = create_random_tensor<double>("Xocc", occ, grid);
+    Tensor<double, 2> Xvir = create_random_tensor<double>("Xvir", vir, grid);
+    Tensor<double, 2> Cq   = create_random_tensor<double>("Cq", aux, grid);
+    Tensor<double, 2> Zt   = create_random_tensor<double>("Zt", grid, grid);
+
+    Tensor<double, 3> B = create_zero_tensor<double>("B", aux, vir, vir);
+    Tensor<double, 4> T = create_zero_tensor<double>("t2", occ, vir, occ, vir);
+
+    LadderFixture() {
+        for (std::size_t Q = 0; Q < aux; ++Q) {
+            for (std::size_t a = 0; a < vir; ++a) {
+                for (std::size_t e = 0; e < vir; ++e) {
+                    double sum = 0.0;
+                    for (std::size_t P = 0; P < grid; ++P) {
+                        sum += Cq(Q, P) * Xvir(a, P) * Xvir(e, P);
+                    }
+                    B(Q, a, e) = sum;
+                }
+            }
+        }
+        for (std::size_t i = 0; i < occ; ++i) {
+            for (std::size_t e = 0; e < vir; ++e) {
+                for (std::size_t j = 0; j < occ; ++j) {
+                    for (std::size_t f = 0; f < vir; ++f) {
+                        double sum = 0.0;
+                        for (std::size_t P = 0; P < grid; ++P) {
+                            for (std::size_t R = 0; R < grid; ++R) {
+                                sum += Xocc(i, P) * Xvir(e, P) * Zt(P, R) * Xocc(j, R) * Xvir(f, R);
+                            }
+                        }
+                        T(i, e, j, f) = sum;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The term as a density-fitted program writes it, into @p out.
+    void capture(cg::Graph &graph, Tensor<double, 4> &out) {
+        auto                  &W = graph.scratch<double, 5>("W", aux, occ, vir, occ, vir);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("Q,a,e ; i,e,j,f -> Q,i,a,j,f", &W, B, T);
+        cg::einsum("Q,i,a,j,f ; Q,b,f -> i,a,j,b", &out, W, B);
+    }
+
+    [[nodiscard]] std::shared_ptr<cg::FactorizationProvider> integral_provider(std::string space = "grid") {
+        return std::make_shared<ExactGridChain>("GridEri", "test_grid_eri", std::vector<std::string>{"A", "m", "n"},
+                                                std::vector<ExactGridChain::Piece>{{&Xvir, "Xvir", {"m", "P"}, {std::string{}, space}},
+                                                                                   {&Xvir, "Xvir", {"n", "P"}, {std::string{}, space}},
+                                                                                   {&Cq, "Cq", {"A", "P"}, {std::string{}, space}}});
+    }
+
+    [[nodiscard]] std::shared_ptr<cg::FactorizationProvider> amplitude_provider(std::string space = "grid") {
+        return std::make_shared<ExactGridChain>("GridAmp", "test_grid_amp", std::vector<std::string>{"m", "n", "p", "q"},
+                                                std::vector<ExactGridChain::Piece>{{&Xocc, "Xocc", {"m", "P"}, {std::string{}, space}},
+                                                                                   {&Xvir, "Xvir", {"n", "P"}, {std::string{}, space}},
+                                                                                   {&Zt, "Zt", {"P", "R"}, {space, space}},
+                                                                                   {&Xocc, "Xocc", {"p", "R"}, {std::string{}, space}},
+                                                                                   {&Xvir, "Xvir", {"q", "R"}, {std::string{}, space}}});
+    }
+};
+
+} // namespace
+
+TEST_CASE("Factorization - two tagged tensors of one cone are substituted in one decision", "[ComputeGraph][Factorization][TwoOperand]") {
+    LadderFixture fixture;
+
+    auto      expected = create_zero_tensor<double>("R", LadderFixture::occ, LadderFixture::vir, LadderFixture::occ, LadderFixture::vir);
+    cg::Graph reference("ladder_reference");
+    fixture.capture(reference, expected);
+    auto defaults_for_reference = cg::PassManager::create_default();
+    reference.apply(defaults_for_reference);
+    reference.execute();
+
+    auto      R = create_zero_tensor<double>("R", LadderFixture::occ, LadderFixture::vir, LadderFixture::occ, LadderFixture::vir);
+    cg::Graph graph("ladder_factorized");
+    fixture.capture(graph, R);
+    graph.annotate_tag(fixture.B, cg::ProvenanceTag{.name = "test_grid_eri"});
+    graph.annotate_tag(fixture.T, cg::ProvenanceTag{.name = "test_grid_amp"});
+    cg::ThcFactorization::register_grid_space(graph);
+
+    cg::FactorizationRegistry registry;
+    registry.add(fixture.integral_provider());
+    registry.add(fixture.amplitude_provider());
+
+    // The cost self-check is deliberately OFF here, and the reason is the one @c emit_tree's own
+    // comment predicts. Only the letters the providers introduce carry a space in this program,
+    // so an intermediate mixing a grid axis with a basis axis has one axis that does not resolve
+    // and gets no annotation at all; the report then names the grid through its space variable
+    // where the node built from that intermediate names it anonymously, and the check fires on a
+    // rewrite whose two derivations hold the same monomials.
+    cg::passes::FactorizationPass factorization(registry);
+    cg::PassManager               pm;
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+    bool const fired = graph.apply(pm);
+    for (auto const &[reason, count] : factorization.skip_reasons()) {
+        UNSCOPED_INFO(fmt::format("{} x{}", reason, count));
+    }
+    REQUIRE(fired);
+
+    // One statement re-associated, two fits taken as one decision, and the author's auxiliary
+    // intermediate dissolved into the cone that replaced it.
+    REQUIRE(factorization.num_factorized() == 1);
+    REQUIRE(factorization.num_multi_substituted() == 1);
+    REQUIRE(factorization.num_dissolved() == 1);
+
+    // One record per provider, composed by the per-effect rule rather than replacing each other.
+    std::vector<std::string> recorded;
+    for (auto const &record : graph.approximations()) {
+        recorded.push_back(record.pass_name);
+    }
+    std::ranges::sort(recorded);
+    REQUIRE(recorded == std::vector<std::string>{"GridAmp", "GridEri"});
+
+    // Nothing the rewrite emitted carries the auxiliary axis: the auxiliary index is contracted
+    // away against the grid rather than carried through, which is the whole of what fitting the
+    // three-index integral buys.
+    for (auto const &[id, handle] : graph.tensors_map()) {
+        if (handle.name.find("_R_x") == std::string::npos && handle.name.find("_W_x") == std::string::npos) {
+            continue;
+        }
+        REQUIRE(std::ranges::find(handle.dims, LadderFixture::aux) == handle.dims.end());
+    }
+
+    auto defaults = cg::PassManager::create_default();
+    graph.apply(defaults);
+    graph.execute();
+
+    for (std::size_t i = 0; i < LadderFixture::occ; ++i) {
+        for (std::size_t a = 0; a < LadderFixture::vir; ++a) {
+            for (std::size_t j = 0; j < LadderFixture::occ; ++j) {
+                for (std::size_t b = 0; b < LadderFixture::vir; ++b) {
+                    REQUIRE(std::abs(R(i, a, j, b) - expected(i, a, j, b)) < 1e-10);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("Factorization - two fits over different grids have no grid to meet on", "[ComputeGraph][Factorization][TwoOperand]") {
+    LadderFixture fixture;
+
+    auto      R = create_zero_tensor<double>("R", LadderFixture::occ, LadderFixture::vir, LadderFixture::occ, LadderFixture::vir);
+    cg::Graph graph("ladder_two_grids");
+    fixture.capture(graph, R);
+    graph.annotate_tag(fixture.B, cg::ProvenanceTag{.name = "test_grid_eri"});
+    graph.annotate_tag(fixture.T, cg::ProvenanceTag{.name = "test_grid_amp"});
+    cg::ThcFactorization::register_grid_space(graph);
+    graph.space_registry().register_space(cg::make_index_space("other_grid", "h", 0.0, cg::GrowthClass::linear(), "nother"));
+
+    cg::FactorizationRegistry registry;
+    registry.add(fixture.integral_provider());
+    registry.add(fixture.amplitude_provider("other_grid"));
+
+    cg::passes::FactorizationPass factorization(registry);
+    cg::PassManager               pm;
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE(factorization.num_factorized() == 0);
+
+    bool declined = false;
+    for (auto const &[reason, count] : factorization.skip_reasons()) {
+        declined = declined || reason.find("different index spaces") != std::string::npos;
+    }
+    REQUIRE(declined);
+}
+
+TEST_CASE("Factorization - more provider combinations than the pass will cost is a decline", "[ComputeGraph][Factorization][TwoOperand]") {
+    LadderFixture fixture;
+
+    auto      R = create_zero_tensor<double>("R", LadderFixture::occ, LadderFixture::vir, LadderFixture::occ, LadderFixture::vir);
+    cg::Graph graph("ladder_many_providers");
+    fixture.capture(graph, R);
+    graph.annotate_tag(fixture.B, cg::ProvenanceTag{.name = "test_grid_eri"});
+    cg::ThcFactorization::register_grid_space(graph);
+
+    // Thirteen providers on one tag is thirteen combinations of one plan, which is past the cap.
+    // The product grows as providers to the power of tagged leaves and every combination is a
+    // bracketing search, so the excess declines rather than deciding how long the pass runs.
+    cg::FactorizationRegistry registry;
+    for (int which = 0; which < 13; ++which) {
+        auto offer = std::make_shared<ExactGridChain>(
+            fmt::format("GridEri{}", which), "test_grid_eri", std::vector<std::string>{"A", "m", "n"},
+            std::vector<ExactGridChain::Piece>{{&fixture.Xvir, "Xvir", {"m", "P"}, {std::string{}, "grid"}},
+                                               {&fixture.Xvir, "Xvir", {"n", "P"}, {std::string{}, "grid"}},
+                                               {&fixture.Cq, "Cq", {"A", "P"}, {std::string{}, "grid"}}});
+        registry.add(offer);
+    }
+
+    cg::passes::FactorizationPass factorization(registry);
+    cg::PassManager               pm;
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+    REQUIRE_FALSE(graph.apply(pm));
+
+    bool declined = false;
+    for (auto const &[reason, count] : factorization.skip_reasons()) {
+        declined = declined || reason.find("more combinations of provider") != std::string::npos;
+    }
+    REQUIRE(declined);
 }
