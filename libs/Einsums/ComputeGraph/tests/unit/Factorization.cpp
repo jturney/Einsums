@@ -544,3 +544,220 @@ TEST_CASE("Factorization - the fitting runs once and the replays skip it", "[Com
         }
     }
 }
+
+// ── The chain plan ─────────────────────────────────────────────────────────
+
+namespace {
+
+/// A three-factor plan, exact by construction, whose auxiliary letters are TWO rather than one.
+///
+/// @c M[m,n,p,q] @c = @c sum_QR @c A[Q,m,n] @c D[Q,R] @c B[R,p,q]. There is no way to write that
+/// as a split of two factors, which is exactly what a plan naming a factor list buys: the pass
+/// binarizes the chain, so a provider states the algebra and never a bracketing.
+///
+/// Deliberately synthetic. The chain a real method produces is the tensor hypercontraction one,
+/// and a test of the PASS should not need a fitting to run.
+class ExactChain : public cg::FactorizationProvider {
+  public:
+    ExactChain(Tensor<double, 3> &a, Tensor<double, 2> &d, Tensor<double, 3> &b) : _a(&a), _d(&d), _b(&b) {}
+
+    [[nodiscard]] std::string name() const override { return "ExactChain"; }
+    [[nodiscard]] std::string tag() const override { return "test_chain"; }
+
+    [[nodiscard]] expected<cg::FactorizationPlan, std::string> propose(cg::Graph const &graph, cg::TensorId tensor) const override {
+        cg::TensorHandle const *handle = graph.find_tensor(tensor);
+        if (handle == nullptr || handle->rank != 4) {
+            return einsums::unexpected(std::string{"this provider only factorizes a rank-4 tensor"});
+        }
+        std::size_t const left_aux  = _a->dim(0);
+        std::size_t const right_aux = _b->dim(0);
+
+        cg::FactorizationPlan plan;
+        plan.provider       = name();
+        plan.tagged_letters = {"m", "n", "p", "q"};
+        plan.factors.push_back(cg::FactorTensor{.name    = "A",
+                                                .letters = {"Q", "m", "n"},
+                                                .dims    = {left_aux, handle->dims[0], handle->dims[1]},
+                                                .spaces  = {},
+                                                .dtype   = einsums::packed_gemm::ScalarType::Float64});
+        plan.factors.push_back(cg::FactorTensor{.name    = "D",
+                                                .letters = {"Q", "R"},
+                                                .dims    = {left_aux, right_aux},
+                                                .spaces  = {},
+                                                .dtype   = einsums::packed_gemm::ScalarType::Float64});
+        plan.factors.push_back(cg::FactorTensor{.name    = "B",
+                                                .letters = {"R", "p", "q"},
+                                                .dims    = {right_aux, handle->dims[2], handle->dims[3]},
+                                                .spaces  = {},
+                                                .dtype   = einsums::packed_gemm::ScalarType::Float64});
+        plan.accuracy = cg::make_approximation_record(name(), cg::ApproximationEffect::NormRelative, 0.0, 0.0);
+
+        auto *a         = _a;
+        auto *d         = _d;
+        auto *b         = _b;
+        plan.emit_setup = [a, d, b](cg::Graph &parent, cg::Graph &body, std::vector<cg::TensorId> const &factors) {
+            auto                  *fa = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[0]).tensor_ptr);
+            auto                  *fd = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[1]).tensor_ptr);
+            auto                  *fb = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[2]).tensor_ptr);
+            cg::CaptureGuard const guard(body);
+            cg::permute("Q,m,n <- Q,m,n", 0.0, fa, 1.0, *a);
+            cg::permute("Q,R <- Q,R", 0.0, fd, 1.0, *d);
+            cg::permute("R,p,q <- R,p,q", 0.0, fb, 1.0, *b);
+        };
+        return plan;
+    }
+
+  private:
+    Tensor<double, 3> *_a;
+    Tensor<double, 2> *_d;
+    Tensor<double, 3> *_b;
+};
+
+} // namespace
+
+TEST_CASE("Factorization - a three-factor chain is substituted and binarized by the pass", "[ComputeGraph][Factorization][Chain]") {
+    std::size_t const n    = 6;
+    std::size_t const left = 2;
+    std::size_t const rght = 3;
+
+    auto A = create_random_tensor<double>("A", left, n, n);
+    auto D = create_random_tensor<double>("D", left, rght);
+    auto B = create_random_tensor<double>("B", rght, n, n);
+    auto M = create_zero_tensor<double>("M", n, n, n, n);
+    auto T = create_random_tensor<double>("T", n, n);
+    auto C = create_zero_tensor<double>("C", n, n);
+
+    // M is EXACTLY the chain the provider claims it is, written out rather than contracted so
+    // the reference owes nothing to the machinery under test.
+    for (std::size_t m = 0; m < n; ++m) {
+        for (std::size_t nn = 0; nn < n; ++nn) {
+            for (std::size_t p = 0; p < n; ++p) {
+                for (std::size_t q = 0; q < n; ++q) {
+                    double sum = 0.0;
+                    for (std::size_t Q = 0; Q < left; ++Q) {
+                        for (std::size_t R = 0; R < rght; ++R) {
+                            sum += A(Q, m, nn) * D(Q, R) * B(R, p, q);
+                        }
+                    }
+                    M(m, nn, p, q) = sum;
+                }
+            }
+        }
+    }
+
+    cg::Graph reference("chain_reference");
+    {
+        cg::CaptureGuard const guard(reference);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &C, M, T);
+    }
+    reference.execute();
+    auto const expected = C;
+
+    auto      Cf = create_zero_tensor<double>("C", n, n);
+    cg::Graph graph("chain_factorized");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &Cf, M, T);
+    }
+    graph.annotate_tag(M, cg::ProvenanceTag{.name = "test_chain"});
+
+    cg::FactorizationRegistry registry;
+    registry.add(std::make_shared<ExactChain>(A, D, B));
+
+    cg::passes::FactorizationPass factorization(registry);
+    // The cost line is what the report offers as evidence the rewrite paid, and it is derived
+    // from the algebra alone. Checking it against the nodes the lowering emitted is what makes
+    // either derivation evidence.
+    factorization.set_verify_costs(true);
+    cg::PassManager pm;
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+    REQUIRE(graph.apply(pm));
+    REQUIRE(factorization.num_factorized() == 1);
+    REQUIRE(factorization.cost_mismatches().empty());
+
+    // One contraction became three: four leaves make three interior contractions in any binary
+    // tree, and the pass emitted the tree rather than a three-operand node nothing can lower.
+    std::size_t contractions = 0;
+    for (auto const &node : graph.nodes()) {
+        contractions += node.kind == cg::OpKind::Einsum ? 1 : 0;
+    }
+    REQUIRE(contractions == 3);
+    REQUIRE(graph.nodes().front().kind == cg::OpKind::Setup);
+
+    // And no intermediate the rewrite introduced is rank four, which is the tagged tensor the
+    // substitution exists to avoid forming. It is not a rule anywhere in the pass: rebuilding
+    // it is simply the most expensive tree and the search never picks it.
+    for (auto const &[id, handle] : graph.tensors_map()) {
+        if (handle.name.rfind("ExactChain_M_x", 0) == 0) {
+            REQUIRE(handle.rank < 4);
+        }
+    }
+
+    auto defaults = cg::PassManager::create_default();
+    graph.apply(defaults);
+    graph.execute();
+
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+            REQUIRE(std::abs(Cf(i, j) - expected(i, j)) < 1e-10);
+        }
+    }
+
+    REQUIRE(graph.approximations().size() == 1);
+    REQUIRE(graph.approximations()[0].pass_name == "ExactChain");
+}
+
+TEST_CASE("Factorization - one factor is a rename rather than a factorization, and is declined", "[ComputeGraph][Factorization][Chain]") {
+    // A plan naming a single factor says the tagged tensor IS that factor under other letters.
+    // There is nothing to re-associate around, and accepting it would substitute a tensor for
+    // itself and record an approximation for having done so.
+    class OneFactor : public cg::FactorizationProvider {
+      public:
+        [[nodiscard]] std::string                                  name() const override { return "OneFactor"; }
+        [[nodiscard]] std::string                                  tag() const override { return "test_one"; }
+        [[nodiscard]] expected<cg::FactorizationPlan, std::string> propose(cg::Graph const &graph, cg::TensorId tensor) const override {
+            cg::TensorHandle const *handle = graph.find_tensor(tensor);
+            cg::FactorizationPlan   plan;
+            plan.provider       = name();
+            plan.tagged_letters = {"m", "n", "p", "q"};
+            plan.factors.push_back(cg::FactorTensor{.name    = "same",
+                                                    .letters = {"m", "n", "p", "q"},
+                                                    .dims    = {handle->dims[0], handle->dims[1], handle->dims[2], handle->dims[3]},
+                                                    .spaces  = {},
+                                                    .dtype   = einsums::packed_gemm::ScalarType::Float64});
+            plan.accuracy   = cg::make_approximation_record(name(), cg::ApproximationEffect::NormRelative, 0.0, 0.0);
+            plan.emit_setup = [](cg::Graph &, cg::Graph &, std::vector<cg::TensorId> const &) {};
+            return plan;
+        }
+    };
+
+    std::size_t const n = 4;
+    auto              M = create_random_tensor<double>("M", n, n, n, n);
+    auto              T = create_random_tensor<double>("T", n, n);
+    auto              C = create_zero_tensor<double>("C", n, n);
+
+    cg::Graph graph("one_factor");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &C, M, T);
+    }
+    graph.annotate_tag(M, cg::ProvenanceTag{.name = "test_one"});
+
+    cg::FactorizationRegistry registry;
+    registry.add(std::make_shared<OneFactor>());
+    cg::passes::FactorizationPass factorization(registry);
+    cg::PassManager               pm;
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+
+    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE(factorization.num_factorized() == 0);
+    REQUIRE(graph.approximations().empty());
+
+    bool named_the_count = false;
+    for (auto const &[reason, count] : factorization.skip_reasons()) {
+        if (reason.find("fewer than two factors") != std::string::npos) {
+            named_the_count = true;
+        }
+    }
+    REQUIRE(named_the_count);
+}

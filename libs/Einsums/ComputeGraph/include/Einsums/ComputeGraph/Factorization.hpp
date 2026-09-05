@@ -103,8 +103,10 @@ struct FactorizationPlan {
     /// equal the tensor's rank.
     std::vector<std::string> tagged_letters;
 
-    /// Exactly two factors whose letters, taken together, are @ref tagged_letters plus the
-    /// new letters this provider introduces.
+    /// The factors, at least two, whose letters taken together are @ref tagged_letters plus
+    /// the new letters this provider introduces. Two or more of them may share a @ref
+    /// FactorTensor::name, and then they are ONE tensor mentioned several times, which is what
+    /// keeps a fit from being computed and stored once per mention.
     std::vector<FactorTensor> factors;
 
     /// A scalar on the product, for a provider whose identity carries one.

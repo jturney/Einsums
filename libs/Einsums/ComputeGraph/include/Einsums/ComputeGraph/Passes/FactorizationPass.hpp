@@ -23,9 +23,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @brief Replace a tagged tensor by a provider's factors, and re-associate around them.
  *
  * The one pass every factorization method goes through. It finds a contraction with a tagged
- * operand, asks each @ref FactorizationProvider claiming that tag for a split, works out the
- * binary decomposition, costs it against what was there, and takes the cheapest offer that is
- * actually cheaper.
+ * operand, asks each @ref FactorizationProvider claiming that tag for a chain of factors,
+ * brackets the substituted product with the subset search, costs the bracketing against what
+ * was there, and takes the cheapest offer that is actually cheaper.
  *
  * @par What it does to one contraction
  * Given @c C[c] @c = @c f @c * @c T[t] @c * @c O[o] with @c T tagged, and a provider saying
@@ -41,13 +41,22 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * would give a three-operand contraction, which has no node form and would be more arithmetic
  * besides; the regrouping is the entire point, and DF's saving is exactly this.
  *
+ * A provider offering more than two factors gets the same treatment over a longer product. The
+ * leaves handed to the search are the provider's factors and the other operand, every interior
+ * node of the chosen tree becomes a declared intermediate and a binary contraction, and the
+ * auxiliary letters are ordinary letters to the ranking.
+ *
  * @par What it declines, and why each is a real case
  * - A tagged tensor some node WRITES. Its factors would have to be refitted whenever it
  *   changed, and the setup body this pass emits runs once per bound problem. Only an operand
  *   nothing in the graph produces is safely factorizable this way.
- * - A split whose two factors cannot be told apart by which one pairs with the other operand.
- *   The decomposition needs one factor carrying the letters shared with @c O and one not; if
- *   both do or neither does, there is no regrouping to make.
+ * - A TWO-FACTOR split whose factors cannot be told apart by which one pairs with the other
+ *   operand. The decomposition needs one factor carrying the letters shared with @c O and one
+ *   not; if both do or neither does, there is no regrouping to make. Not asked of a longer
+ *   chain, which has as many ways to meet the other operand as it has links and whose answer
+ *   is the bracketing the search returns.
+ * - A chain with more factors than the search is allowed. The subset program is exponential in
+ *   the leaf count, and a cap is the honest way to bound it.
  * - A decomposed form that is not symbolically cheaper. Substituting an approximation and
  *   getting slower is the worst of both, and the comparison is the total order of
  *   @ref SymbolicCost so the answer does not depend on iteration order.

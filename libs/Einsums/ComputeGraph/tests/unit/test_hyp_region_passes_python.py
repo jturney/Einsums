@@ -43,6 +43,7 @@ from hypothesis import strategies as st
 
 import einsums
 import einsums.graph as cg
+import einsums._core.graph as _G
 from einsums.testing import ALL_DTYPES
 
 from _region_invariants import assert_materialization_invariants
@@ -773,3 +774,103 @@ def test_the_drawn_corpus_reaches_both_sides_of_the_split():
     assert both > 0, "no drawn program ever split the axes across the two operands"
     assert one_sided > 0, "no drawn program ever put every axis on one operand"
     assert negative > 0, "no drawn program ever had a negative denominator"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The other lossy arm: a tagged tensor and a factorization provider
+#
+# FactorizationPass substitutes a provider's factors for a tagged operand and
+# brackets what is left. The bracketing is a SEARCH, and a search that is only
+# ever asked one shape is a search nobody has tested, so the extents are drawn:
+# the auxiliary index is sometimes smaller than the product it replaces and
+# sometimes larger, which is what makes the profitability veto reachable rather
+# than assumed.
+#
+# The provider is the shipped metric fit, because a provider cannot be authored
+# in Python; test_factorization_python.py records that as the standing gap. So
+# what this arm draws is the shortest chain, two factors, and the longer ones
+# are pinned in C++ until a chain provider Python can construct exists.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class FitProgram(NamedTuple):
+    """One drawn factorization problem: a rank-4 tensor that IS a metric fit."""
+
+    naux: int
+    rows: int
+    cols: int
+
+
+@st.composite
+def _fit_programs(draw):
+    return FitProgram(naux=draw(st.integers(min_value=2, max_value=9)),
+                      rows=draw(st.integers(min_value=2, max_value=6)),
+                      cols=draw(st.integers(min_value=2, max_value=6)))
+
+
+def _run_fit(prog, seed):
+    """Run the drawn problem with the pass on, and return what happened."""
+    rng = np.random.default_rng(seed)
+    three = rng.standard_normal((prog.naux, prog.rows, prog.cols))
+    metric = rng.standard_normal((prog.naux, prog.naux))
+    metric = metric @ metric.T + prog.naux * np.eye(prog.naux)
+    dense = np.einsum("pmn,pq,qab->mnab", three, np.linalg.inv(metric), three)
+    operand = rng.standard_normal((prog.rows, prog.cols))
+    want = np.einsum("mnpq,pq->mn", dense, operand)
+
+    M = einsums.asarray(np.ascontiguousarray(dense))
+    T = einsums.asarray(np.ascontiguousarray(operand))
+    C = einsums.zeros((prog.rows, prog.cols), dtype="float64")
+
+    graph = cg.Graph(_nm("fit"))
+    with cg.capture(graph):
+        einsums.einsum("m,n,p,q ; p,q -> m,n", C, M, T)
+    graph.annotate_tag(M, _G.ProvenanceTag.make("eri"))
+
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.MetricFitFactorization(
+        "eri", einsums.asarray(np.ascontiguousarray(three)),
+        einsums.asarray(np.ascontiguousarray(metric)), 0.0))
+    factorization = _G.FactorizationPass(registry)
+    factorization.set_verify_costs(True)
+    pm = cg.PassManager()
+    pm.add(factorization)
+    fired = graph.apply(pm)
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    assert_materialization_invariants(graph, f"factorization, {prog!r}")
+    assert not factorization.cost_mismatches, (
+        "FactorizationPass reported a cost the nodes it emitted do not agree with\n"
+        + "\n".join(factorization.cost_mismatches))
+    return fired, np.asarray(C), want, factorization
+
+
+@given(prog=_fit_programs())
+@settings(max_examples=sanitizer_examples(60), deadline=None,
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
+def test_the_factorized_contraction_keeps_the_answer(prog):
+    fired, got, want, factorization = _run_fit(prog, seed=0)
+    assert fired == (factorization.num_factorized == 1)
+    # The fit is EXACT here, so the only difference between the two forms is the
+    # order the auxiliary sum is taken in: the re-associating bound, not the
+    # tolerance the record asserts.
+    scale = float(np.linalg.norm(np.abs(want))) or 1.0
+    bound = 1024.0 * float(np.finfo(np.float64).eps) * scale * max(prog.naux, 1)
+    assert float(np.linalg.norm(got - want)) <= bound
+
+
+def test_the_drawn_fits_reach_both_sides_of_the_profitability_veto():
+    """A corpus that always factorized would never exercise the veto, and one
+    that never did would prove the pass runs and nothing else."""
+    accepted = declined = 0
+    for seed in range(24):
+        rng = np.random.default_rng(seed)
+        prog = FitProgram(naux=int(rng.integers(2, 10)), rows=int(rng.integers(2, 7)),
+                          cols=int(rng.integers(2, 7)))
+        fired, got, want, _ = _run_fit(prog, seed=seed)
+        accepted += bool(fired)
+        declined += not fired
+        assert np.allclose(got, want, rtol=1e-10, atol=1e-12)
+    assert accepted > 0, "no drawn problem was ever factorized"
+    assert declined > 0, "no drawn problem ever hit the profitability veto"

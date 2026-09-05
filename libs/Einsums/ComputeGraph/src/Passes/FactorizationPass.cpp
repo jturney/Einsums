@@ -17,10 +17,16 @@
 #include <fmt/ranges.h>
 
 #include <algorithm>
+#include <bit>
+#include <cstddef>
+#include <functional>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "ContractionTreeSearch.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -49,31 +55,19 @@ void merge_letters(std::vector<std::string> &into, std::vector<std::string> cons
     }
 }
 
-/// The cost of one hypothetical contraction, by the same formula @ref symbolic_cost_for uses.
+/// The bracketing search and the letter table it prices against. Shared with
+/// `MultiTermFactorization`, which asks the same question of a captured chain: two
+/// implementations would rank the same candidates by two rules.
+using search::add_cost;
+using search::Mask;
+
+/// The largest number of leaves the bracketing search is offered.
 ///
-/// Written out rather than built through an @ref EinsumDescriptor because the contraction does
-/// not exist yet and constructing a descriptor for a node nobody will emit would be a second
-/// way of spelling the same three polynomials.
-SymbolicCost contraction_cost(std::vector<std::string> const &a, std::vector<std::string> const &b, std::vector<std::string> const &c,
-                              LetterVars const &vars) {
-    std::vector<std::string> all = c;
-    merge_letters(all, a);
-    merge_letters(all, b);
-
-    SymbolicCost cost;
-    cost.flops    = symbolic_size_for(all, vars) * 2.0;
-    cost.traffic  = symbolic_size_for(c, vars) + symbolic_size_for(a, vars) + symbolic_size_for(b, vars);
-    cost.resident = cost.traffic;
-    return cost;
-}
-
-SymbolicCost operator+(SymbolicCost const &lhs, SymbolicCost const &rhs) {
-    SymbolicCost out;
-    out.flops    = lhs.flops + rhs.flops;
-    out.traffic  = lhs.traffic + rhs.traffic;
-    out.resident = lhs.resident + rhs.resident;
-    return out;
-}
+/// The subset program is @c 3^N in this number, and a provider's chain plus the operand it is
+/// contracted with is what makes up the leaves. A plan above the cap is declined rather than
+/// bracketed by something weaker, which is the same bargain `MultiTermFactorization` strikes
+/// with its own factor cap.
+constexpr std::size_t kMaxPieces = 12;
 
 /// Whether any node of @p graph writes the buffer @p id names.
 ///
@@ -201,8 +195,8 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
     ComparisonContext ctx;
     ctx.registry = &graph.space_registry();
 
-    // Index-based, because an accepted rewrite INSERTS a statement and the loop has to skip
-    // past what it just added rather than reconsider it.
+    // Index-based, because an accepted rewrite INSERTS statements and the loop has to skip
+    // past what it just added rather than reconsider them.
     for (std::size_t position = 0; position < expr.statements.size(); ++position) {
         ExprStatement const statement = expr.statements[position];
         if (statement.value == invalid_term) {
@@ -231,6 +225,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         TensorId const    tagged_id    = expr.at(term.operands[tagged_slot]).tensor;
         std::string const tagged_name  = expr.at(term.operands[tagged_slot]).name;
         TermId const      other_leaf   = term.operands[other_slot];
+        TensorId const    other_id     = expr.at(other_leaf).tensor;
         auto const        tagged_index = term.operand_indices[tagged_slot];
         auto const        other_index  = term.operand_indices[other_slot];
 
@@ -243,35 +238,23 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             continue;
         }
         if (!term.conjugate.empty() && term.conjugate[tagged_slot]) {
-            note_skip("the tagged operand is conjugated, which a factor pair has nowhere to carry",
+            note_skip("the tagged operand is conjugated, which a factor chain has nowhere to carry",
                       fmt::format("tensor '{}'", tagged_name));
             continue;
         }
 
-        // Every letter this statement already uses, so a provider's new one cannot collide.
+        // Every letter this statement already uses, so a provider's new ones cannot collide.
         std::vector<std::string> used = letters_of(tagged_index);
         merge_letters(used, letters_of(other_index));
         merge_letters(used, letters_of(statement.target_indices));
 
-        // Letters to their spaces, for both the rename and the cost model.
-        std::vector<std::pair<std::string, SpaceId>> letter_spaces;
-        auto const                                   note_space = [&letter_spaces](std::vector<ExprIndex> const &indices) {
-            for (auto const &index : indices) {
-                if (index.space.valid()) {
-                    letter_spaces.emplace_back(index.letter, index.space);
-                }
-            }
-        };
-        note_space(tagged_index);
-        note_space(other_index);
-        note_space(statement.target_indices);
-
         struct Candidate {
-            FactorizationPlan          plan;
-            std::vector<RenamedFactor> factors;
-            std::vector<ExprIndex>     intermediate;
-            std::size_t                pair_slot{0}; ///< Which factor pairs with the other operand.
-            SymbolicCost               cost;
+            FactorizationPlan           plan;
+            std::vector<RenamedFactor>  factors;
+            std::vector<search::Factor> pieces; ///< The factors, then the other operand.
+            search::LetterTable         table;
+            search::TreePlan            tree;
+            SymbolicCost                cost;
         };
         std::optional<Candidate> best;
 
@@ -282,8 +265,14 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 continue;
             }
             FactorizationPlan plan = std::move(*offer);
-            if (plan.factors.size() != 2) {
-                note_skip("a provider offered other than two factors", fmt::format("'{}'", provider->name()));
+            if (plan.factors.size() < 2) {
+                note_skip("a provider offered fewer than two factors, which is a rename rather than a factorization",
+                          fmt::format("'{}'", provider->name()));
+                continue;
+            }
+            if (plan.factors.size() + 1 > kMaxPieces) {
+                note_skip("a provider's chain has more factors than the bracketing search is allowed",
+                          fmt::format("'{}': {} factor(s), cap {}", provider->name(), plan.factors.size(), kMaxPieces - 1));
                 continue;
             }
             if (plan.tagged_letters.size() != tagged_index.size()) {
@@ -325,60 +314,9 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 continue;
             }
 
-            LetterVars const vars{[&]() {
-                auto all = letter_spaces;
-                for (auto const &[letter, space] : new_spaces) {
-                    all.emplace_back(letter, space);
-                }
-                return all;
-            }()};
-
-            // Every letter's actual extent, for the numeric veto below. Read off the operands
-            // this contraction already has, and off the plan for the letters it introduces;
-            // between them every letter of both forms is covered or none of it is, and a
-            // partial answer disables the veto rather than guessing at it.
-            //
-            // An axis carrying a SYMBOLIC extent is noted too, because a capture-time number
-            // for such an axis is a placeholder for whatever the next bind supplies rather
-            // than a size anything runs at.
-            std::unordered_map<std::string, double> extents;
-            bool                                    any_symbolic_extent = false;
-            auto const                              note_extent         = [&](TensorId id, std::vector<ExprIndex> const &indices) {
-                TensorHandle const *handle = graph.find_tensor(id);
-                if (handle == nullptr) {
-                    return;
-                }
-                for (std::size_t axis = 0; axis < indices.size() && axis < handle->dims.size(); ++axis) {
-                    extents.emplace(indices[axis].letter, static_cast<double>(handle->dims[axis]));
-                    // An EMPTY dim_symbols means every axis is literal; an empty ENTRY means
-                    // this one is. Anything else is a symbol or a ragged axis, both resizable.
-                    if (axis < handle->dim_symbols.size() && !handle->dim_symbols[axis].empty()) {
-                        any_symbolic_extent = true;
-                    }
-                }
-            };
-            note_extent(tagged_id, tagged_index);
-            note_extent(expr.at(other_leaf).tensor, other_index);
-            note_extent(statement.target, statement.target_indices);
-            for (std::size_t which = 0; which < 2; ++which) {
-                for (std::size_t axis = 0; axis < plan.factors[which].letters.size(); ++axis) {
-                    auto const mapped = rename.find(plan.factors[which].letters[axis]);
-                    if (mapped != rename.end()) {
-                        extents.emplace(mapped->second, static_cast<double>(plan.factors[which].dims[axis]));
-                    }
-                }
-            }
-            ExtentLookup const extent_of = [&extents, &vars](SymbolicVar const &variable) -> std::optional<double> {
-                for (auto const &[letter, value] : extents) {
-                    if (vars.var_for(letter) == variable) {
-                        return value;
-                    }
-                }
-                return std::nullopt;
-            };
-
-            std::vector<RenamedFactor> renamed(2);
-            for (std::size_t which = 0; which < 2; ++which) {
+            std::size_t const          count = plan.factors.size();
+            std::vector<RenamedFactor> renamed(count);
+            for (std::size_t which = 0; which < count; ++which) {
                 for (auto const &letter : plan.factors[which].letters) {
                     std::string const &mapped = rename.at(letter);
                     SpaceId            space;
@@ -397,60 +335,78 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 }
             }
 
-            // Which factor pairs with the other operand. The decomposition needs exactly one
-            // factor carrying the letters the tagged tensor shares with it: that is the pair
-            // whose product is the cheap intermediate. Both or neither and there is no
-            // regrouping to make, only a substitution, which is strictly more arithmetic.
-            std::vector<std::string> shared;
-            for (auto const &index : tagged_index) {
-                if (contains(letters_of(other_index), index.letter)) {
-                    shared.push_back(index.letter);
+            // Every letter's actual extent, for the search's own ranking and for the numeric
+            // veto below. Read off the operands this contraction already has, and off the plan
+            // for the letters it introduces.
+            //
+            // An axis carrying a SYMBOLIC extent is noted too, because a capture-time number
+            // for such an axis is a placeholder for whatever the next bind supplies rather
+            // than a size anything runs at.
+            search::LetterTable table;
+            bool                any_symbolic_extent = false;
+            auto const          note_extent         = [&](TensorId id, std::vector<ExprIndex> const &indices) {
+                TensorHandle const *handle = graph.find_tensor(id);
+                if (handle == nullptr) {
+                    return;
                 }
-            }
-            auto const carries_all = [&](RenamedFactor const &factor) {
-                return std::ranges::all_of(shared, [&factor](std::string const &letter) { return contains(factor.letters, letter); });
-            };
-            auto const carries_none = [&](RenamedFactor const &factor) {
-                return std::ranges::none_of(shared, [&factor](std::string const &letter) { return contains(factor.letters, letter); });
-            };
-            std::size_t pair_slot = 2;
-            if (!shared.empty()) {
-                if (carries_all(renamed[1]) && carries_none(renamed[0])) {
-                    pair_slot = 1;
-                } else if (carries_all(renamed[0]) && carries_none(renamed[1])) {
-                    pair_slot = 0;
-                }
-            }
-            if (pair_slot == 2) {
-                note_skip("the split does not separate the letters shared with the other operand",
-                          fmt::format("'{}' on '{}'", provider->name(), tagged_name));
-                continue;
-            }
-            std::size_t const outer_slot = 1 - pair_slot;
-
-            // The intermediate's free indices: everything the paired factor and the other
-            // operand carry that the outer factor or the target still needs. Anything else is
-            // summed away inside the first contraction, which is where the saving is.
-            std::vector<ExprIndex> intermediate;
-            auto const             needed = [&](std::string const &letter) {
-                return contains(renamed[outer_slot].letters, letter) || contains(letters_of(statement.target_indices), letter);
-            };
-            auto const push_needed = [&](std::vector<ExprIndex> const &source) {
-                for (auto const &index : source) {
-                    if (needed(index.letter) && !contains(letters_of(intermediate), index.letter)) {
-                        intermediate.push_back(index);
+                for (std::size_t axis = 0; axis < indices.size() && axis < handle->dims.size(); ++axis) {
+                    table.observe(indices[axis], handle->dims[axis]);
+                    // An EMPTY dim_symbols means every axis is literal; an empty ENTRY means
+                    // this one is. Anything else is a symbol or a ragged axis, both resizable.
+                    if (axis < handle->dim_symbols.size() && !handle->dim_symbols[axis].empty()) {
+                        any_symbolic_extent = true;
                     }
                 }
             };
-            push_needed(renamed[pair_slot].indices);
-            push_needed(other_index);
+            note_extent(tagged_id, tagged_index);
+            note_extent(other_id, other_index);
+            note_extent(statement.target, statement.target_indices);
+            for (std::size_t which = 0; which < count; ++which) {
+                for (std::size_t axis = 0; axis < renamed[which].indices.size(); ++axis) {
+                    table.observe(renamed[which].indices[axis], plan.factors[which].dims[axis]);
+                }
+            }
 
-            // The target must still be producible from the outer factor and the intermediate.
-            // Checked rather than reasoned about: the shapes that reach here are wider than the
-            // tidy ones, and a miss would emit a contraction whose operands cannot make its
-            // output.
-            std::vector<std::string> reachable = renamed[outer_slot].letters;
-            merge_letters(reachable, letters_of(intermediate));
+            // A two-factor plan has to SEPARATE the letters shared with the other operand: one
+            // factor carrying all of them and one carrying none. Both or neither and there is
+            // no regrouping to make, only a substitution, which is strictly more arithmetic.
+            //
+            // Stated for two factors and not for a chain, because it is a two-factor statement.
+            // A chain has as many ways to meet the other operand as it has links, and which of
+            // them pays is what the bracketing search answers; asking a chain to separate would
+            // decline exactly the plans the search exists to bracket.
+            if (count == 2) {
+                std::vector<std::string> shared;
+                for (auto const &index : tagged_index) {
+                    if (contains(letters_of(other_index), index.letter)) {
+                        shared.push_back(index.letter);
+                    }
+                }
+                auto const carries_all = [&](RenamedFactor const &factor) {
+                    return std::ranges::all_of(shared, [&factor](std::string const &letter) { return contains(factor.letters, letter); });
+                };
+                auto const carries_none = [&](RenamedFactor const &factor) {
+                    return std::ranges::none_of(shared, [&factor](std::string const &letter) { return contains(factor.letters, letter); });
+                };
+                bool separated = false;
+                if (!shared.empty()) {
+                    separated =
+                        (carries_all(renamed[1]) && carries_none(renamed[0])) || (carries_all(renamed[0]) && carries_none(renamed[1]));
+                }
+                if (!separated) {
+                    note_skip("the split does not separate the letters shared with the other operand",
+                              fmt::format("'{}' on '{}'", provider->name(), tagged_name));
+                    continue;
+                }
+            }
+
+            // The target must still be producible from the pieces. Checked rather than reasoned
+            // about: the shapes that reach here are wider than the tidy ones, and a miss would
+            // emit a contraction whose operands cannot make its output.
+            std::vector<std::string> reachable = letters_of(other_index);
+            for (auto const &factor : renamed) {
+                merge_letters(reachable, factor.letters);
+            }
             if (!std::ranges::all_of(letters_of(statement.target_indices),
                                      [&reachable](std::string const &letter) { return contains(reachable, letter); })) {
                 note_skip("the decomposed form cannot produce the target's indices",
@@ -458,11 +414,32 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 continue;
             }
 
-            SymbolicCost const before =
-                contraction_cost(letters_of(tagged_index), letters_of(other_index), letters_of(statement.target_indices), vars);
-            SymbolicCost const after =
-                contraction_cost(renamed[pair_slot].letters, letters_of(other_index), letters_of(intermediate), vars) +
-                contraction_cost(renamed[outer_slot].letters, letters_of(intermediate), letters_of(statement.target_indices), vars);
+            // The leaves the bracketing search is offered: the provider's factors, and the
+            // operand the tagged tensor was being contracted with. The auxiliary letters are
+            // ordinary letters to it, so a bracketing that rebuilds the tagged tensor is simply
+            // the most expensive tree and the search never picks it.
+            std::vector<search::Factor> pieces;
+            pieces.reserve(count + 1);
+            for (auto const &factor : renamed) {
+                pieces.push_back(search::Factor{.tensor = TensorId{0}, .indices = factor.indices, .conjugate = false});
+            }
+            pieces.push_back(search::Factor{
+                .tensor = other_id, .indices = other_index, .conjugate = !term.conjugate.empty() && term.conjugate[other_slot]});
+
+            ComparisonContext tree_ctx;
+            tree_ctx.registry     = ctx.registry;
+            tree_ctx.bound_extent = table.lookup();
+
+            search::TreePlan const tree = search::solve_tree(pieces, statement.target_indices, table, tree_ctx);
+            if (!tree.ok) {
+                note_skip("no bracketing of the substituted product could be found",
+                          fmt::format("'{}' on '{}'", provider->name(), tagged_name));
+                continue;
+            }
+
+            SymbolicCost const before = search::contraction_cost(search::letters_of(tagged_index), search::letters_of(other_index),
+                                                                 search::letters_of(statement.target_indices), table);
+            SymbolicCost const after  = tree.cost;
 
             // Cheaper SYMBOLICALLY and, where every extent is known, cheaper at those extents
             // too. The two answer different questions and the pass needs both.
@@ -489,8 +466,9 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             // factorization the family it was annotated for needs, and delete it at the
             // capture, before the save, rather than at the bind that would have wanted it.
             // Where nothing is annotated the capture size is the contract and the veto stands.
-            auto const before_flops = before.flops.evaluate(extent_of);
-            auto const after_flops  = after.flops.evaluate(extent_of);
+            ExtentLookup const extent_of    = table.lookup();
+            auto const         before_flops = before.flops.evaluate(extent_of);
+            auto const         after_flops  = after.flops.evaluate(extent_of);
             if (any_symbolic_extent) {
                 report(2, fmt::format("the extent veto abstains on '{}' ({}): a symbolic axis makes the captured size a "
                                       "placeholder, so the symbolic verdict stands alone",
@@ -504,11 +482,12 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 continue;
             }
 
-            best = Candidate{.plan         = std::move(plan),
-                             .factors      = std::move(renamed),
-                             .intermediate = std::move(intermediate),
-                             .pair_slot    = pair_slot,
-                             .cost         = after};
+            best = Candidate{.plan    = std::move(plan),
+                             .factors = std::move(renamed),
+                             .pieces  = std::move(pieces),
+                             .table   = std::move(table),
+                             .tree    = tree,
+                             .cost    = after};
         }
 
         if (!best.has_value()) {
@@ -526,115 +505,159 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             continue;
         }
 
-        std::size_t const outer_slot = 1 - best->pair_slot;
-
-        // Create the factors and the intermediate. Tensors only: a node added here would move
-        // the region out from under the splice that is about to replace it.
+        // Create the factors. Tensors only: a node added here would move the region out from
+        // under the splice that is about to replace it.
         //
-        // Two factors under ONE name are one tensor, which is not a shortcut but the
-        // commonest case there is: a metric-fitted factorization writes its tensor as
-        // B[Q,m,n] B[Q,p,q], the same B twice with different letters. Creating two would fit
-        // it twice and store it twice. A contraction whose operands share a tensor is
-        // already legal, so nothing downstream needs to know.
-        std::vector<TensorId> factor_ids(2);
-        bool const            one_tensor = best->plan.factors[0].name == best->plan.factors[1].name;
-        for (std::size_t which = 0; which < 2; ++which) {
-            if (which == 1 && one_tensor) {
-                factor_ids[1] = factor_ids[0];
-                break;
+        // Factors under ONE name are one tensor, which is not a shortcut but the commonest
+        // case there is: a metric-fitted factorization writes its tensor as B[Q,m,n] B[Q,p,q],
+        // the same B twice with different letters, and a tensor-hypercontraction chain writes
+        // one collocation matrix four times. Creating one per mention would fit the same thing
+        // several times and store the largest tensor in the calculation several times. A
+        // contraction whose operands share a tensor is already legal, so nothing downstream
+        // needs to know.
+        std::size_t const                             count = best->plan.factors.size();
+        std::vector<TensorId>                         factor_ids(count);
+        std::vector<std::pair<std::string, TensorId>> declared;
+        for (std::size_t which = 0; which < count; ++which) {
+            std::string const &factor_name = best->plan.factors[which].name;
+            auto const found = std::ranges::find_if(declared, [&factor_name](auto const &entry) { return entry.first == factor_name; });
+            if (found != declared.end()) {
+                factor_ids[which] = found->second;
+                continue;
             }
-            factor_ids[which] = declare_scratch(graph, fmt::format("{}_{}", best->plan.provider, best->plan.factors[which].name),
+            factor_ids[which] = declare_scratch(graph, fmt::format("{}_{}", best->plan.provider, factor_name),
                                                 best->plan.factors[which].dtype, best->plan.factors[which].dims);
+            declared.emplace_back(factor_name, factor_ids[which]);
+        }
+        for (std::size_t which = 0; which < count; ++which) {
+            best->pieces[which].tensor = factor_ids[which];
         }
 
-        std::vector<std::size_t> intermediate_dims;
-        for (auto const &index : best->intermediate) {
-            std::size_t extent = 0;
-            // The extent of a letter, from whichever operand spells that axis. Read off the
-            // handles rather than from the plan, because only the graph knows what the OTHER
-            // operand's axes are.
-            auto const from = [&](TensorId id, std::vector<ExprIndex> const &indices) {
-                TensorHandle const *handle = graph.find_tensor(id);
-                if (handle == nullptr) {
-                    return;
-                }
-                for (std::size_t axis = 0; axis < indices.size() && axis < handle->dims.size(); ++axis) {
-                    if (indices[axis].letter == index.letter && extent == 0) {
-                        extent = handle->dims[axis];
-                    }
-                }
-            };
-            from(expr.at(other_leaf).tensor, other_index);
-            for (std::size_t which = 0; which < 2; ++which) {
-                for (std::size_t axis = 0; axis < best->factors[which].letters.size(); ++axis) {
-                    if (best->factors[which].letters[axis] == index.letter && extent == 0) {
-                        extent = best->plan.factors[which].dims[axis];
-                    }
-                }
-            }
-            intermediate_dims.push_back(extent);
-        }
-        TensorId const intermediate_id = declare_scratch(graph, fmt::format("{}_{}_x", best->plan.provider, tagged_name),
-                                                         best->plan.factors[0].dtype, intermediate_dims);
+        // ── Emit the tree the search chose ────────────────────────────────────────────
+        //
+        // Every interior node becomes a declared intermediate and a binary contraction, which
+        // is the same binarization `MultiTermFactorization` does and for the same reason:
+        // @ref lower_region has no multi-operand contraction to lower one to.
+        std::set<std::string> const output_letters = search::letters_of(statement.target_indices);
+        std::vector<ExprStatement>  interior;
+        std::size_t                 scratch_index = 0;
+        Mask const                  full          = static_cast<Mask>((Mask{1} << best->pieces.size()) - 1);
 
-        // Leaves for the three new tensors.
-        auto make_leaf = [&expr](TensorId id, std::string name, std::vector<ExprIndex> indices) {
+        auto make_leaf = [&expr, &graph](TensorId id, std::vector<ExprIndex> indices) {
             ExprTerm leaf;
             leaf.kind    = TermKind::Leaf;
             leaf.tensor  = id;
-            leaf.name    = std::move(name);
+            leaf.name    = graph.find_tensor(id) != nullptr ? graph.find_tensor(id)->name : std::string{};
             leaf.indices = std::move(indices);
             return expr.add(std::move(leaf));
         };
-        TermId const pair_leaf =
-            make_leaf(factor_ids[best->pair_slot], best->plan.factors[best->pair_slot].name, best->factors[best->pair_slot].indices);
-        TermId const outer_leaf = make_leaf(factor_ids[outer_slot], best->plan.factors[outer_slot].name, best->factors[outer_slot].indices);
-        TermId const intermediate_leaf = make_leaf(intermediate_id, fmt::format("{}_x", tagged_name), best->intermediate);
 
-        // X = paired_factor * other
-        ExprTerm inner;
-        inner.kind    = TermKind::Contraction;
-        inner.indices = best->intermediate;
-        inner.operands.assign({pair_leaf, other_leaf});
-        inner.operand_indices.assign({best->factors[best->pair_slot].indices, other_index});
-        inner.conjugate.assign({false, !term.conjugate.empty() && term.conjugate[other_slot]});
-        inner.factor = PrefactorScalar{double{1}};
+        bool                                               emitted_ok = true;
+        std::function<std::optional<search::Factor>(Mask)> build      = [&](Mask mask) -> std::optional<search::Factor> {
+            if (std::popcount(mask) == 1) {
+                return best->pieces[static_cast<std::size_t>(std::countr_zero(mask))];
+            }
+            if (best->tree.resolved[mask] == 0) {
+                return std::nullopt;
+            }
+            auto const left  = build(best->tree.split[mask]);
+            auto const right = build(mask ^ best->tree.split[mask]);
+            if (!left.has_value() || !right.has_value()) {
+                return std::nullopt;
+            }
 
-        ExprStatement inner_statement;
-        inner_statement.target           = intermediate_id;
-        inner_statement.target_name      = fmt::format("{}_x", tagged_name);
-        inner_statement.target_indices   = best->intermediate;
-        inner_statement.target_prefactor = PrefactorScalar{double{0}};
-        inner_statement.value            = expr.add(std::move(inner));
-        inner_statement.origin           = statement.origin;
-        inner_statement.origin_kind      = OpKind::Einsum;
-        inner_statement.origin_label =
-            fmt::format("{}: X[{}] = {}[{}] ; {}", best->plan.provider, fmt::join(letters_of(best->intermediate), ","),
-                        best->plan.factors[best->pair_slot].name, fmt::join(best->factors[best->pair_slot].letters, ","), tagged_name);
+            // The axes this combine must expose, in first-appearance order over its operands.
+            std::set<std::string> outside = output_letters;
+            for (std::size_t piece = 0; piece < best->pieces.size(); ++piece) {
+                if ((mask & (Mask{1} << piece)) == 0) {
+                    for (auto const &index : best->pieces[piece].indices) {
+                        outside.insert(index.letter);
+                    }
+                }
+            }
+            std::vector<ExprIndex> axes;
+            std::set<std::string>  seen;
+            for (search::Factor const *operand : {&*left, &*right}) {
+                for (auto const &index : operand->indices) {
+                    if (outside.count(index.letter) != 0 && seen.insert(index.letter).second) {
+                        axes.push_back(index);
+                    }
+                }
+            }
 
-        // target = f * outer_factor * X, keeping the original destination prefactor so an
-        // accumulation stays an accumulation.
-        ExprTerm outer;
-        outer.kind    = TermKind::Contraction;
-        outer.indices = statement.target_indices;
-        outer.operands.assign({outer_leaf, intermediate_leaf});
-        outer.operand_indices.assign({best->factors[outer_slot].indices, best->intermediate});
-        outer.conjugate.assign({false, false});
-        outer.factor = term.factor;
+            bool const  root = mask == full;
+            TensorId    target{};
+            std::string target_name;
+            if (root) {
+                target      = statement.target;
+                target_name = statement.target_name;
+            } else {
+                std::vector<std::size_t> dims;
+                dims.reserve(axes.size());
+                for (auto const &index : axes) {
+                    auto const extent = best->table.extent.find(index.letter);
+                    if (extent == best->table.extent.end()) {
+                        return std::nullopt;
+                    }
+                    dims.push_back(extent->second);
+                }
+                if (dims.empty()) {
+                    return std::nullopt; // a scalar intermediate; nothing here emits one
+                }
+                target_name = fmt::format("{}_{}_x{}", best->plan.provider, tagged_name, scratch_index++);
+                target      = declare_scratch(graph, target_name, best->plan.factors[0].dtype, dims);
+            }
 
-        expr.statements[position].value        = expr.add(std::move(outer));
-        expr.statements[position].origin_kind  = OpKind::Einsum;
-        expr.statements[position].origin_label = fmt::format(
-            "{}: {}[{}] = {}[{}] ; X", best->plan.provider, statement.target_name, fmt::join(letters_of(statement.target_indices), ","),
-            best->plan.factors[outer_slot].name, fmt::join(best->factors[outer_slot].letters, ","));
+            ExprTerm value;
+            value.kind    = TermKind::Contraction;
+            value.indices = root ? statement.target_indices : axes;
+            value.operands.assign({make_leaf(left->tensor, left->indices), make_leaf(right->tensor, right->indices)});
+            value.operand_indices.assign({left->indices, right->indices});
+            value.conjugate.assign({left->conjugate, right->conjugate});
+            value.factor = root ? term.factor : PrefactorScalar{double{1}};
+            // Priced the way a raised term is, so the region's before-and-after compares like
+            // with like. An emitted term with no cost reads as free, and the report then
+            // offers a rewrite to nothing as evidence that the search was worth making.
+            value.cost = search::contraction_cost(search::letters_of(left->indices), search::letters_of(right->indices),
+                                                  search::letters_of(value.indices), best->table);
 
-        expr.statements.insert(expr.statements.begin() + static_cast<std::ptrdiff_t>(position), std::move(inner_statement));
-        ++position; // past the statement just inserted, onto the one it feeds
+            ExprStatement emitted;
+            emitted.target           = target;
+            emitted.target_name      = target_name;
+            emitted.target_indices   = value.indices;
+            emitted.target_prefactor = root ? statement.target_prefactor : PrefactorScalar{double{0}};
+            emitted.value            = expr.add(std::move(value));
+            emitted.origin           = statement.origin;
+            emitted.origin_kind      = OpKind::Einsum;
+            emitted.origin_label     = fmt::format("{}: {}[{}]", best->plan.provider, target_name,
+                                                   fmt::join(letters_of(root ? statement.target_indices : axes), ","));
+
+            if (root) {
+                expr.statements[position] = std::move(emitted);
+            } else {
+                interior.push_back(std::move(emitted));
+            }
+            return search::Factor{.tensor = target, .indices = root ? statement.target_indices : axes, .conjugate = false};
+        };
+
+        if (!build(full).has_value()) {
+            // Nothing above touched the statement list, so a tree that will not build costs
+            // this candidate and leaves the region as it was.
+            emitted_ok = false;
+        }
+        if (!emitted_ok) {
+            note_skip("the chosen bracketing could not be emitted", fmt::format("'{}' on '{}'", best->plan.provider, tagged_name));
+            continue;
+        }
+
+        expr.statements.insert(expr.statements.begin() + static_cast<std::ptrdiff_t>(position), interior.begin(), interior.end());
+        position += interior.size(); // past the statements just inserted, onto the one they feed
 
         _pending.push_back(PendingSetup{.label = record.setup, .factors = factor_ids, .emit = best->plan.emit_setup});
         ++_num_factorized;
         changed = true;
-        report(2, fmt::format("factorized '{}' through {}: one contraction became two", tagged_name, best->plan.provider));
+        report(2,
+               fmt::format("factorized '{}' through {}: one contraction became {}", tagged_name, best->plan.provider, interior.size() + 1));
     }
 
     (void)region;
