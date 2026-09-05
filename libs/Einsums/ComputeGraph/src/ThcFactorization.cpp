@@ -20,6 +20,7 @@
 #include <fmt/ranges.h>
 
 #include <cmath>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -98,6 +99,38 @@ ThcFactorization::ThcFactorization(std::string tag, RuntimeTensor<double> const 
                        std::move(name)) {
 }
 
+std::shared_ptr<ThcFactorization> ThcFactorization::for_amplitude(std::string tag, RuntimeTensorView<double> amplitude,
+                                                                  std::vector<RuntimeTensorView<double>> collocations, double bound,
+                                                                  double drop_threshold, std::string name) {
+    // The primary constructor takes a three-index tensor to fit FROM; an amplitude fit has none,
+    // because what it fits from is the tagged tensor itself. An empty view is what says so, and
+    // `propose` reads it as the mode rather than as a missing argument.
+    auto provider = std::make_shared<ThcFactorization>(std::move(tag), RuntimeTensorView<double>{}, std::move(collocations), bound,
+                                                       drop_threshold, std::move(name));
+    provider->_amplitude.emplace(std::move(amplitude));
+    return provider;
+}
+
+std::shared_ptr<ThcFactorization> ThcFactorization::for_amplitude(std::string tag, RuntimeTensor<double> const &amplitude,
+                                                                  std::vector<RuntimeTensor<double> const *> collocations, double bound,
+                                                                  double drop_threshold, std::string name) {
+    return for_amplitude(std::move(tag), RuntimeTensorView<double>{amplitude}, views_of(collocations), bound, drop_threshold,
+                         std::move(name));
+}
+
+void ThcFactorization::report_residual_into(RuntimeTensorView<double> residual, RuntimeTensorView<double> reference) {
+    _residual_report.emplace(std::move(residual));
+    _reference_report.emplace(std::move(reference));
+}
+
+void ThcFactorization::report_residual_into(RuntimeTensor<double> const &residual, RuntimeTensor<double> const &reference) {
+    report_residual_into(named_view(residual), named_view(reference));
+}
+
+void ThcFactorization::report_residual_into(Tensor<double, 1> const &residual, Tensor<double, 1> const &reference) {
+    report_residual_into(named_view(residual), named_view(reference));
+}
+
 double ThcFactorization::epsilon() const {
     return _bound > 0.0 ? _bound : config::get(option::GraphThcEpsilon);
 }
@@ -124,6 +157,110 @@ std::string ThcFactorization::residual_param_name(std::string const &provider, s
 std::string ThcFactorization::reference_param_name(std::string const &provider, std::string const &tensor) {
     return fmt::format("{}.{}.reference_squared", provider, tensor);
 }
+
+namespace {
+
+/// Finish a plan whose coupling is fitted from the TAGGED tensor.
+///
+/// The metric is the same Hadamard product of collocation Gram matrices the integral fit uses,
+/// and so is the guarded inverse; what differs is where the projected quantity comes from. The
+/// projection contracts the tagged tensor against a collocation matrix one axis at a time, with
+/// the grid letter riding along on the second of each pair, which is what makes the result one
+/// function per grid point rather than a sum over them.
+FactorizationPlan amplitude_plan(FactorizationPlan plan, TensorHandle const &handle, RuntimeTensorView<double> row_source,
+                                 RuntimeTensorView<double> col_source, RuntimeTensorView<double> amplitude,
+                                 std::optional<RuntimeTensorView<double>> residual_report,
+                                 std::optional<RuntimeTensorView<double>> reference_report, bool one_matrix, std::size_t grid,
+                                 double threshold) {
+    std::vector<std::size_t> const dims{handle.dims};
+
+    plan.emit_setup = [row_source, col_source, amplitude, residual_report, reference_report, one_matrix, grid, threshold,
+                       dims](Graph &parent, Graph &body, std::vector<TensorId> const &factors) {
+        auto *X_row = static_cast<RuntimeTensor<double> *>(parent.tensor(factors[0]).tensor_ptr);
+        auto *X_col = static_cast<RuntimeTensor<double> *>(parent.tensor(factors[1]).tensor_ptr);
+        auto *Z     = static_cast<RuntimeTensor<double> *>(parent.tensor(factors[2]).tensor_ptr);
+
+        // Named after the graph they are declared in, because an amplitude fit is emitted TWICE,
+        // once into a setup body and once into the loop body that refits it, and the storage
+        // auditor keys its duplicate check on the name rather than on the buffer.
+        auto const named = [&body](std::string_view stem) { return fmt::format("{}_{}", body.name(), stem); };
+
+        auto &row_gram = body.declare_runtime_tensor<double>(named("thc_gram"), {grid, grid}, /*intermediate=*/true);
+        auto &col_gram =
+            one_matrix ? row_gram : body.declare_runtime_tensor<double>(named("thc_gram_col"), {grid, grid}, /*intermediate=*/true);
+        auto &metric    = body.declare_runtime_tensor<double>(named("thc_metric"), {grid, grid}, /*intermediate=*/true);
+        auto &vectors   = body.declare_runtime_tensor<double>(named("thc_vectors"), {grid, grid}, /*intermediate=*/true);
+        auto &values    = body.declare_runtime_tensor<double>(named("thc_values"), {grid}, /*intermediate=*/true);
+        auto &scaled    = body.declare_runtime_tensor<double>(named("thc_scaled"), {grid, grid}, /*intermediate=*/true);
+        auto &half      = body.declare_runtime_tensor<double>(named("thc_inv_sqrt"), {grid, grid}, /*intermediate=*/true);
+        auto &inverse   = body.declare_runtime_tensor<double>(named("thc_inverse"), {grid, grid}, /*intermediate=*/true);
+        auto &first     = body.declare_runtime_tensor<double>(named("thc_proj1"), {grid, dims[1], dims[2], dims[3]}, true);
+        auto &second    = body.declare_runtime_tensor<double>(named("thc_proj2"), {grid, dims[2], dims[3]}, true);
+        auto &third     = body.declare_runtime_tensor<double>(named("thc_proj3"), {grid, grid, dims[3]}, true);
+        auto &projected = body.declare_runtime_tensor<double>(named("thc_projected"), {grid, grid}, /*intermediate=*/true);
+        auto &right     = body.declare_runtime_tensor<double>(named("thc_right"), {grid, grid}, /*intermediate=*/true);
+
+        bool const measure = residual_report.has_value() && reference_report.has_value();
+
+        {
+            CaptureGuard const guard(body);
+
+            permute("m,P <- m,P", 0.0, X_row, 1.0, row_source);
+            if (!one_matrix) {
+                permute("n,P <- n,P", 0.0, X_col, 1.0, col_source);
+            }
+
+            einsum("m,P ; m,Q -> P,Q", &row_gram, *X_row, *X_row);
+            if (!one_matrix) {
+                einsum("n,P ; n,Q -> P,Q", &col_gram, *X_col, *X_col);
+            }
+            direct_product(1.0, row_gram, col_gram, 0.0, &metric);
+
+            permute("P,Q <- P,Q", 0.0, &vectors, 1.0, metric);
+            syev(&vectors, &values);
+            element_transform(&values, "inv_sqrt_or_zero", threshold);
+            einsum("P,R ; R -> P,R", &scaled, vectors, values);
+            einsum("P,R ; Q,R -> P,Q", &half, scaled, vectors);
+            einsum("P,R ; R,Q -> P,Q", &inverse, half, half);
+
+            // P[P,Q] = sum_mnpq X_row[m,P] X_col[n,P] T[m,n,p,q] X_row[p,Q] X_col[q,Q], one axis
+            // at a time, with the grid letter riding along on the second of each pair.
+            einsum("m,P ; m,n,p,q -> P,n,p,q", &first, *X_row, amplitude);
+            einsum("n,P ; P,n,p,q -> P,p,q", &second, *X_col, first);
+            einsum("P,p,q ; p,Q -> P,Q,q", &third, second, *X_row);
+            einsum("P,Q,q ; q,Q -> P,Q", &projected, third, *X_col);
+
+            einsum("P,R ; R,Q -> P,Q", &right, projected, inverse);
+            einsum("P,R ; R,Q -> P,Q", Z, inverse, right);
+
+            // What the fit is worth on this bind, measured rather than asserted, and the one
+            // place this provider differs from its integral half. There the exact quantity is
+            // the four-index tensor the fit exists to avoid forming, so the bound is a claim;
+            // here the exact quantity is the tensor being fitted and it is already in hand, so
+            // the error is a number. Forming the fitted tensor to subtract is affordable for the
+            // same reason: it is the size of a tensor that is already allocated. Emitted only
+            // where a caller asked for the measurement, since it is arithmetic the rewrite
+            // otherwise exists to avoid.
+            if (measure) {
+                auto &pair = body.declare_runtime_tensor<double>(named("thc_pair"), {grid, dims[0], dims[1]}, /*intermediate=*/true);
+                auto &carried_pair = body.declare_runtime_tensor<double>(named("thc_carried_pair"), {grid, dims[0], dims[1]}, true);
+                auto &difference   = body.declare_runtime_tensor<double>(named("thc_difference"), dims, /*intermediate=*/true);
+                einsum("m,P ; n,P -> P,m,n", &pair, *X_row, *X_col);
+                einsum("P,Q ; P,m,n -> Q,m,n", &carried_pair, *Z, pair);
+                permute("m,n,p,q <- m,n,p,q", 0.0, &difference, 1.0, amplitude);
+                einsum("Q,m,n ; Q,p,q -> m,n,p,q", 1.0, &difference, -1.0, carried_pair, pair);
+                // The caller's own rank-1 tensors, written through their buffers: the pointer
+                // form is the only dot this layer has, and the destinations are materialized
+                // because a caller supplied them.
+                dot(const_cast<double *>(residual_report->data()), difference, difference);
+                dot(const_cast<double *>(reference_report->data()), amplitude, amplitude);
+            }
+        }
+    };
+    return plan;
+}
+
+} // namespace
 
 expected<FactorizationPlan, std::string> ThcFactorization::propose(Graph const &graph, TensorId tensor) const {
     TensorHandle const *handle = graph.find_tensor(tensor);
@@ -160,10 +297,11 @@ expected<FactorizationPlan, std::string> ThcFactorization::propose(Graph const &
     RuntimeTensorView<double> const &row_matrix = per_axis(0);
     RuntimeTensorView<double> const &col_matrix = per_axis(1);
 
-    std::size_t const naux      = _three_index.dim(0);
-    std::size_t const row_basis = row_matrix.dim(0);
-    std::size_t const col_basis = col_matrix.dim(0);
-    std::size_t const grid      = row_matrix.dim(1);
+    bool const        amplitude_mode = _three_index.rank() == 0;
+    std::size_t const naux           = amplitude_mode ? 0 : _three_index.dim(0);
+    std::size_t const row_basis      = row_matrix.dim(0);
+    std::size_t const col_basis      = col_matrix.dim(0);
+    std::size_t const grid           = row_matrix.dim(1);
     if (col_matrix.dim(1) != grid) {
         return unexpected(fmt::format("the collocation matrices carry {} and {} grid points; the chain contracts them against one grid",
                                       grid, col_matrix.dim(1)));
@@ -171,7 +309,17 @@ expected<FactorizationPlan, std::string> ThcFactorization::propose(Graph const &
     if (grid == 0) {
         return unexpected(std::string{"the collocation matrix has no grid points"});
     }
-    if (_three_index.dim(1) != row_basis || _three_index.dim(2) != col_basis) {
+    if (amplitude_mode) {
+        // The caller hands over the very tensor they tag, and this is where that claim is
+        // checked rather than believed: a fit OF a tensor is only sound if it reads the tensor
+        // the pass is about to substitute away.
+        if (!_amplitude.has_value() || _amplitude->rank() != 4) {
+            return unexpected(std::string{"an amplitude fit needs the rank-4 tensor it fits, and none was handed over"});
+        }
+        if (handle->data_ptr != static_cast<void const *>(_amplitude->data())) {
+            return unexpected(std::string{"the tagged tensor is not the one this provider was given to fit"});
+        }
+    } else if (_three_index.dim(1) != row_basis || _three_index.dim(2) != col_basis) {
         return unexpected(fmt::format("the three-index tensor is [{}, {}, {}] and the collocation matrices carry {} and {} basis "
                                       "functions",
                                       naux, _three_index.dim(1), _three_index.dim(2), row_basis, col_basis));
@@ -224,6 +372,18 @@ expected<FactorizationPlan, std::string> ThcFactorization::propose(Graph const &
     // stops is the last iteration's fit.
     plan.accuracy = make_approximation_record(_name, ApproximationEffect::NormRelative, epsilon(), epsilon(), {}, {}, "",
                                               ApproximationOrigin::Asserted, residual_param_name(_name, handle->name));
+
+    if (amplitude_mode) {
+        plan.fits_from_tagged = true;
+        // MEASURED here, where the integral fit's is asserted, and the difference is what the fit
+        // reads: the exact quantity is the tagged tensor and it is in hand, so the residual is a
+        // real number rather than a claim. It still never forms the fitted tensor; see the header.
+        plan.accuracy = make_approximation_record(_name, ApproximationEffect::NormRelative, epsilon(), epsilon(), {}, {}, "",
+                                                  ApproximationOrigin::Measured,
+                                                  _residual_report.has_value() ? _residual_report->name() : std::string{});
+        return amplitude_plan(std::move(plan), *handle, row_matrix, col_matrix, *_amplitude, _residual_report, _reference_report,
+                              one_matrix, grid, _drop_threshold);
+    }
 
     // The fitting, as nodes. Every step is a captured operation, so a bind that moves the
     // problem refits rather than replaying a grid fit computed once at optimize time.

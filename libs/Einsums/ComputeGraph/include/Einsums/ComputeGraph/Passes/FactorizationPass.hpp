@@ -15,9 +15,11 @@
 
 #include <cstddef>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -195,6 +197,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     std::vector<PendingQuadrature> _pending_quadrature;
     std::size_t                    _num_joint{0};
+
+    /// One tagged tensor and one provider make one fitting, however many contractions read it.
+    using FitKey = std::pair<TensorId, std::string>;
+    std::map<FitKey, std::vector<TensorId>> _fits;
 
     std::vector<PendingSetup> _pending;
     std::size_t               _num_factorized{0};

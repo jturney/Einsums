@@ -301,3 +301,164 @@ TEST_CASE("ThcFit - a fitted graph saves, loads, rebinds and refits", "[ComputeG
     REQUIRE(reference_norm > 0.0);
     REQUIRE(std::sqrt(residual / reference_norm) < 1e-10);
 }
+
+// ── The amplitude mode: a fit OF the tagged tensor ───────────────────────────
+
+TEST_CASE("ThcFit - an amplitude is fitted from itself and refitted at every update", "[ComputeGraph][Factorization][Thc][Amplitude]") {
+    // The integral fit reads a three-index tensor the caller hands over and CLAIMS it
+    // approximates the tagged one; its factors do not move when the tagged tensor does. An
+    // amplitude fit projects the tagged tensor onto the grid basis, so its factors are a function
+    // of that tensor and have to be redone wherever it is written. That is what lets a tensor a
+    // solver rewrites every iteration be factorized at all.
+    std::size_t const iterations = 3;
+
+    // A grid the amplitude lies exactly in the span of: T[m,n,p,q] = sum_PQ X[m,P] X[n,P] Z[P,Q]
+    // X[p,Q] X[q,Q] by construction, so the substitution is exact and the case compares against
+    // an un-rewritten replay rather than against a tolerance nobody derived.
+    auto X              = create_random_tensor<double>("X", nbf, ngrd);
+    auto W              = create_random_tensor<double>("W", ngrd, ngrd);
+    auto seed_amplitude = [&](Tensor<double, 4> &into) {
+        for (std::size_t m = 0; m < nbf; ++m) {
+            for (std::size_t n = 0; n < nbf; ++n) {
+                for (std::size_t p = 0; p < nbf; ++p) {
+                    for (std::size_t q = 0; q < nbf; ++q) {
+                        double sum = 0.0;
+                        for (std::size_t a = 0; a < ngrd; ++a) {
+                            for (std::size_t b = 0; b < ngrd; ++b) {
+                                sum += X(m, a) * X(n, a) * W(a, b) * X(p, b) * X(q, b);
+                            }
+                        }
+                        into(m, n, p, q) = sum;
+                    }
+                }
+            }
+        }
+    };
+
+    auto ones = create_zero_tensor<double>("ones", nbf, nbf, nbf, nbf);
+    for (std::size_t m = 0; m < nbf; ++m) {
+        for (std::size_t n = 0; n < nbf; ++n) {
+            for (std::size_t p = 0; p < nbf; ++p) {
+                for (std::size_t q = 0; q < nbf; ++q) {
+                    ones(m, n, p, q) = 1.0;
+                }
+            }
+        }
+    }
+    auto operand = create_random_tensor<double>("T", nbf, nbf);
+
+    // One iteration: a contraction over the amplitude, and an update that divides a residual by
+    // a denominator into it. The residual is a scaling of the amplitude, so it stays in the
+    // grid's span and the fit stays exact; what is under test is the refit, not a solver.
+    auto capture = [&](cg::Graph &graph, Tensor<double, 4> &amplitude, Tensor<double, 2> &result,
+                       Tensor<double, 4> &residual) -> cg::Graph & {
+        cg::Graph &body = graph.add_loop("amplitude_iteration", iterations, [iterations](std::size_t it) { return it + 1 < iterations; });
+        cg::CaptureGuard const guard(body);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &result, amplitude, operand);
+        cg::direct_product(0.5, amplitude, ones, 0.0, &residual);
+        cg::direct_division(1.0, residual, ones, 0.0, &amplitude);
+        return body;
+    };
+
+    auto reference_amplitude = create_zero_tensor<double>("Tamp", nbf, nbf, nbf, nbf);
+    auto reference_result    = create_zero_tensor<double>("C", nbf, nbf);
+    auto reference_residual  = create_zero_tensor<double>("R", nbf, nbf, nbf, nbf);
+    seed_amplitude(reference_amplitude);
+    cg::Graph reference("amplitude_reference");
+    capture(reference, reference_amplitude, reference_result, reference_residual);
+    auto reference_passes = cg::PassManager::create_default();
+    reference.apply(reference_passes);
+    reference.execute();
+
+    auto amplitude = create_zero_tensor<double>("Tamp", nbf, nbf, nbf, nbf);
+    auto result    = create_zero_tensor<double>("C", nbf, nbf);
+    auto residual  = create_zero_tensor<double>("R", nbf, nbf, nbf, nbf);
+    seed_amplitude(amplitude);
+    cg::Graph  graph("amplitude_factorized");
+    cg::Graph &body = capture(graph, amplitude, result, residual);
+    graph.annotate_tag(amplitude, cg::ProvenanceTag{.name = "amplitude"});
+    cg::ThcFactorization::register_grid_space(graph);
+
+    auto fit_residual  = create_zero_tensor<double>("thc_residual", 1);
+    auto fit_reference = create_zero_tensor<double>("thc_reference", 1);
+
+    auto provider = cg::ThcFactorization::for_amplitude("amplitude", RuntimeTensorView<double>{amplitude},
+                                                        std::vector<RuntimeTensorView<double>>{RuntimeTensorView<double>{X}}, 1e-6, 1e-12);
+    provider->report_residual_into(fit_residual, fit_reference);
+
+    cg::FactorizationRegistry registry;
+    registry.add(provider);
+    cg::passes::FactorizationPass factorization(registry);
+    cg::PassManager               pm;
+    pm.add(std::make_shared<cg::passes::ProvenancePropagation>());
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+    pm.set_verbosity(3);
+    bool const fired = graph.apply(pm);
+    INFO(pm.explain());
+    REQUIRE(fired);
+    CHECK(factorization.num_factorized() == 1);
+
+    // One record, MEASURED, naming the caller's own tensor.
+    REQUIRE(graph.approximations().size() == 1);
+    CHECK(graph.approximations().front().origin == cg::ApproximationOrigin::Measured);
+    CHECK(graph.approximations().front().measurement == fit_residual.name());
+
+    // The fitting is in the parent's setup, which is what the first iteration reads, and again in
+    // the body, which is what every iteration after it reads.
+    std::size_t setups = 0;
+    for (auto const &node : graph.nodes()) {
+        if (std::get_if<cg::SetupDescriptor>(&node.op_data) != nullptr) {
+            ++setups;
+        }
+    }
+    CHECK(setups == 1);
+    CHECK(body.num_nodes() > 3); // the refit is in there beside the three captured statements
+
+    auto graph_passes = cg::PassManager::create_default();
+    graph.apply(graph_passes);
+    graph.execute();
+
+    for (std::size_t m = 0; m < nbf; ++m) {
+        for (std::size_t n = 0; n < nbf; ++n) {
+            CHECK_THAT(result(m, n), Catch::Matchers::WithinRel(reference_result(m, n), 1.0e-8));
+        }
+    }
+
+    // And the measurement is a real one: the fit is exact here, so the residual is rounding
+    // against a reference norm that is not.
+    CHECK(fit_reference(0) > 0.0);
+    CHECK(std::sqrt(fit_residual(0) / fit_reference(0)) < 1e-8);
+}
+
+TEST_CASE("ThcFit - an amplitude provider handed a different tensor declines", "[ComputeGraph][Factorization][Thc][Amplitude]") {
+    // The caller's claim that the tensor they tagged is the tensor they handed over is CHECKED,
+    // because a fit OF a tensor is only sound if it reads the tensor the pass substitutes away.
+    auto X     = create_random_tensor<double>("X", nbf, ngrd);
+    auto mine  = create_random_tensor<double>("mine", nbf, nbf, nbf, nbf);
+    auto other = create_random_tensor<double>("other", nbf, nbf, nbf, nbf);
+    auto T     = create_random_tensor<double>("T", nbf, nbf);
+    auto C     = create_zero_tensor<double>("C", nbf, nbf);
+
+    cg::Graph graph("amplitude_mismatched");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &C, mine, T);
+    }
+    graph.annotate_tag(mine, cg::ProvenanceTag{.name = "amplitude"});
+    cg::ThcFactorization::register_grid_space(graph);
+
+    auto provider = cg::ThcFactorization::for_amplitude("amplitude", RuntimeTensorView<double>{other},
+                                                        std::vector<RuntimeTensorView<double>>{RuntimeTensorView<double>{X}});
+    cg::FactorizationRegistry registry;
+    registry.add(provider);
+    cg::passes::FactorizationPass factorization(registry);
+    cg::PassManager               pm;
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+    pm.set_verbosity(3);
+    CHECK_FALSE(graph.apply(pm));
+    CHECK(factorization.num_factorized() == 0);
+
+    auto const report = pm.explain();
+    INFO(report);
+    CHECK(report.find("provider declined") != std::string::npos);
+}

@@ -137,6 +137,8 @@
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -235,6 +237,81 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     ThcFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &collocation, double bound = 0.0,
                      double drop_threshold = default_drop_threshold, std::string name = "Thc");
 
+    /**
+     * @brief Fit the TAGGED tensor itself, for an amplitude a solver rewrites every iteration.
+     *
+     * @param[in] tag The provenance tag this claims, e.g. ``"amplitude"``.
+     * @param[in] amplitude The very tensor the caller tags. Checked against the tagged handle's
+     *            buffer in @ref propose, so a caller who hands over a different tensor gets a
+     *            decline rather than a fit of something else.
+     * @param[in] collocations One matrix per axis, or one for every axis.
+     * @param[in] bound The relative error asserted, or zero to take ``einsums:graph:thc-epsilon``.
+     * @param[in] drop_threshold See @ref default_drop_threshold.
+     * @param[in] name The provider's name.
+     * @return The provider.
+     *
+     * @par Why this is a different provider rather than a different tag
+     * A density fit reads a three-index tensor the caller handed over and merely CLAIMS it
+     * approximates the tagged four-index one; the factors are the same however often that tensor
+     * moves. This one projects the tagged tensor onto the grid basis,
+     * @f$Z = S^{-1} (X^T T X) S^{-1}@f$, so the factors are a function of the tensor and are
+     * re-fitted wherever it is written. That is what @c FactorizationPlan::fits_from_tagged says,
+     * and it is what lets a tensor a loop body updates be factorized at all.
+     *
+     * @par The residual is measured without forming the fit
+     * @f$\lVert T - \tilde{T}\rVert^2 = \lVert T\rVert^2 - 2\langle Z, P\rangle +
+     * \langle Z, S Z S\rangle@f$ with @f$P = X^T T X@f$, every term of which is a grid-sized
+     * contraction the fit already computes or a dot of the tagged tensor with itself. So the
+     * accuracy statement is a real measurement here, where the integral fit's is an assertion,
+     * and the record names the tensor it lands in.
+     */
+    static std::shared_ptr<ThcFactorization> for_amplitude(std::string tag, RuntimeTensorView<double> amplitude,
+                                                           std::vector<RuntimeTensorView<double>> collocations, double bound = 0.0,
+                                                           double      drop_threshold = default_drop_threshold,
+                                                           std::string name           = "ThcAmplitude");
+
+    /// @brief The same, taking runtime-rank tensors. This is the overload Python gets.
+    /// @param[in] tag The provenance tag this claims.
+    /// @param[in] amplitude The very tensor the caller tags.
+    /// @param[in] collocations One matrix per axis, or one for every axis.
+    /// @param[in] bound The relative error asserted, or zero to take the option.
+    /// @param[in] drop_threshold See @ref default_drop_threshold.
+    /// @param[in] name The provider's name.
+    /// @return The provider.
+    APIARY_EXPOSE static std::shared_ptr<ThcFactorization>
+    for_amplitude(std::string tag, RuntimeTensor<double> const &amplitude, std::vector<RuntimeTensor<double> const *> collocations,
+                  double bound = 0.0, double drop_threshold = ThcFactorization::default_drop_threshold, std::string name = "ThcAmplitude");
+
+    /**
+     * @brief Where an amplitude fit writes what it was worth on this bind.
+     *
+     * @param[in] residual A rank-1 tensor the fit writes @f$\lVert T - \tilde{T}\rVert^2@f$ into.
+     * @param[in] reference A rank-1 tensor the fit writes @f$\lVert T\rVert^2@f$ into.
+     *
+     * The caller's own tensors, for the reason the energies of a Laplace transform are: a
+     * measurement a caller cannot read is a measurement nobody makes, and a value the graph
+     * declares for itself is one the graph keeps to itself. The record points at @p residual by
+     * name, so a caller holding a record knows which of their tensors to look in.
+     *
+     * Without this an amplitude fit emits no measurement and its record asserts its bound, which
+     * is what the integral fit does in every case.
+     */
+    void report_residual_into(RuntimeTensorView<double> residual, RuntimeTensorView<double> reference);
+
+    /// @brief The same, taking runtime-rank tensors. This is the overload Python gets.
+    /// @param[in] residual A rank-1 tensor for the squared residual.
+    /// @param[in] reference A rank-1 tensor for the squared norm of what was fitted.
+    APIARY_EXPOSE void report_residual_into(RuntimeTensor<double> const &residual, RuntimeTensor<double> const &reference);
+
+    /// @brief The same, taking compile-time-rank tensors.
+    ///
+    /// Its own overload rather than left to the implicit conversion, for the reason the
+    /// constructors' is: a view built from a @c Tensor is anonymous, and the record names the
+    /// destination by NAME.
+    /// @param[in] residual A rank-1 tensor for the squared residual.
+    /// @param[in] reference A rank-1 tensor for the squared norm of what was fitted.
+    void report_residual_into(Tensor<double, 1> const &residual, Tensor<double, 1> const &reference);
+
     /// @copydoc FactorizationProvider::name
     [[nodiscard]] std::string name() const override { return _name; }
 
@@ -302,12 +379,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE [[nodiscard]] static std::string reference_param_name(std::string const &provider, std::string const &tensor);
 
   private:
-    std::string                            _tag;
-    std::string                            _name;
-    RuntimeTensorView<double>              _three_index;
-    std::vector<RuntimeTensorView<double>> _collocations;
-    double                                 _bound;
-    double                                 _drop_threshold;
+    std::string               _tag;
+    std::string               _name;
+    RuntimeTensorView<double> _three_index;
+    /// Optional rather than an empty view, because assigning a @ref RuntimeTensorView COPIES
+    /// what it names rather than rebinding, and a rank-4 view assigned onto a rank-0 one throws.
+    /// A view is constructed in place or not at all.
+    std::optional<RuntimeTensorView<double>> _amplitude;
+    std::optional<RuntimeTensorView<double>> _residual_report;
+    std::optional<RuntimeTensorView<double>> _reference_report;
+    std::vector<RuntimeTensorView<double>>   _collocations;
+    double                                   _bound;
+    double                                   _drop_threshold;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

@@ -393,6 +393,7 @@ bool FactorizationPass::applicable(Graph const &graph) const {
 bool FactorizationPass::run(Graph &graph) {
     _pending.clear();
     _considered.clear();
+    _fits.clear();
     bool modified = RegionRewrite::run(graph);
 
     // After the region loop, never inside it: a region is a range of positions in the node
@@ -992,19 +993,33 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         // several times and store the largest tensor in the calculation several times. A
         // contraction whose operands share a tensor is already legal, so nothing downstream
         // needs to know.
-        std::size_t const                             count = best->plan.factors.size();
-        std::vector<TensorId>                         factor_ids(count);
-        std::vector<std::pair<std::string, TensorId>> declared;
-        for (std::size_t which = 0; which < count; ++which) {
-            std::string const &factor_name = best->plan.factors[which].name;
-            auto const found = std::ranges::find_if(declared, [&factor_name](auto const &entry) { return entry.first == factor_name; });
-            if (found != declared.end()) {
-                factor_ids[which] = found->second;
-                continue;
+        // Fitted ONCE per tagged tensor, however many contractions read it. An amplitude a
+        // residual reads three times is the ordinary case rather than a corner, and fitting it
+        // three times would store the factors three times, run the fitting three times per bind,
+        // and, because the three fittings name their workspace identically, present the storage
+        // auditor with one tensor materialized three times. The factors are the same object for
+        // every candidate over one tagged tensor and one provider, so the second candidate reuses
+        // what the first declared and emits no second setup.
+        std::size_t const     count = best->plan.factors.size();
+        std::vector<TensorId> factor_ids(count);
+        FitKey const          fit_key{tagged_id, best->plan.provider};
+        bool const            already_fitted = _fits.contains(fit_key);
+        if (already_fitted) {
+            factor_ids = _fits.at(fit_key);
+        } else {
+            std::vector<std::pair<std::string, TensorId>> declared;
+            for (std::size_t which = 0; which < count; ++which) {
+                std::string const &factor_name = best->plan.factors[which].name;
+                auto const found = std::ranges::find_if(declared, [&factor_name](auto const &entry) { return entry.first == factor_name; });
+                if (found != declared.end()) {
+                    factor_ids[which] = found->second;
+                    continue;
+                }
+                factor_ids[which] = declare_scratch(graph, fmt::format("{}_{}", best->plan.provider, factor_name),
+                                                    best->plan.factors[which].dtype, best->plan.factors[which].dims);
+                declared.emplace_back(factor_name, factor_ids[which]);
             }
-            factor_ids[which] = declare_scratch(graph, fmt::format("{}_{}", best->plan.provider, factor_name),
-                                                best->plan.factors[which].dtype, best->plan.factors[which].dims);
-            declared.emplace_back(factor_name, factor_ids[which]);
+            _fits.emplace(fit_key, factor_ids);
         }
         for (std::size_t which = 0; which < count; ++which) {
             best->pieces[which].tensor = factor_ids[which];
@@ -1096,7 +1111,9 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         }
         _num_dissolved += dissolved.size();
 
-        _pending.push_back(PendingSetup{.label = record.setup, .factors = factor_ids, .emit = best->plan.emit_setup, .refit = refit});
+        if (!already_fitted) {
+            _pending.push_back(PendingSetup{.label = record.setup, .factors = factor_ids, .emit = best->plan.emit_setup, .refit = refit});
+        }
         ++_num_factorized;
         changed = true;
         report(2, fmt::format("factorized '{}' through {}", tagged_name, best->plan.provider));
