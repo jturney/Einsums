@@ -62,6 +62,41 @@
  * relative residual. The four-index error is not measurable without the tensor the fit exists
  * to avoid forming; this one is, and it costs one contraction more than the fit already does.
  *
+ * @par Choosing the grid is the CALLER's, and it cannot be anything else
+ * A raw Becke grid is not a grid this fits on. At water/cc-pVDZ psi4's grid is 5241 points
+ * against a basis-pair space of rank at most @f$n(n+1)/2@f$ in the basis size, so handing the
+ * raw grid over makes @c S singular in five thousand directions and @c Z a matrix hundreds of
+ * times larger than its own rank. What works is the pivoted selection interpolative separable
+ * density fitting uses: take the point whose basis-pair product has the largest remaining
+ * norm, project it out, repeat. It stops on its own, at 280 points for that molecule, which
+ * is the grid saying it has no more independent directions to give.
+ *
+ * So the point count is a property of the basis and the geometry rather than of an accuracy
+ * target, which is why the grid extent is a SYMBOL a bind resolves rather than a number. The
+ * approximation record does not tell a caller whether their grid was enough; the measured
+ * residual does, and it errs on the safe side: at water/cc-pVDZ it reads @c 4e-4 against an
+ * energy error of @c 2e-5.
+ *
+ * @par The drop threshold, and why the inherited default is wrong here
+ * @c S runs continuously from about @c 5e-14 to @c 3 with no null space, where a Coulomb metric
+ * has a clear one. An absolute cutoff at @ref default_drop_threshold therefore keeps near-null
+ * directions whose inverse amplifies rounding into the fit, and two implementations of the same
+ * formula then disagree by more than the fit's own error, because which side of the cutoff an
+ * eigenvalue lands on decides the answer. At @c 1e-8 they agree to five digits and the fit is
+ * at its most accurate on that grid. The number that ought to be compared against is a fraction
+ * of the largest eigenvalue, and a relative cutoff needs a reduction feeding a value into a
+ * guard whose policy number is bound when its executor is built; that is the mechanism
+ * @ref MetricFitFactorization already records as one to add, met here on a real system. Until
+ * it exists, a caller states a threshold suited to their grid rather than taking the default.
+ *
+ * @par Grid letters and a following quadrature do not compete
+ * A tensor this fits may also be the numerator a @ref passes::LaplaceTransform rewrites, and
+ * the chain contracts to @c sum_Q @c L[Q,i,a] @c R[Q,j,b] with the grid index where an
+ * auxiliary index would be, so the transform rides on it unchanged. There is no sharing
+ * question between quadrature terms, because there are no terms: the quadrature index is an
+ * ordinary contracted letter of one contraction rather than a loop over points, so the emitted
+ * form carries the grid letter exactly once however many points the rule takes.
+ *
  * @see Factorization.hpp for what a provider is
  * @see MetricFitFactorization.hpp for the provider this is an alternative to
  */
@@ -90,9 +125,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
   public:
     /// @brief The drop threshold a caller who states none gets.
     ///
-    /// The same number @ref MetricFitFactorization uses and for the same reason: it is far
-    /// below anything a well-conditioned grid produces and far above the noise a redundant one
-    /// leaves behind.
+    /// The same number @ref MetricFitFactorization uses, and INHERITED rather than chosen for a
+    /// grid: it is the magnitude a Coulomb metric's null space sits below, and a collocation
+    /// metric has no null space to sit below. See the file note on why a caller with a real
+    /// grid states a threshold of their own instead.
     static constexpr double default_drop_threshold = 1.0e-10;
 
     /**
