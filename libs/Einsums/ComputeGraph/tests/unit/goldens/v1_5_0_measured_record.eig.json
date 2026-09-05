@@ -1,0 +1,90 @@
+{
+  "einsums_graph_ir": "1.5.0",
+  "provenance": {"library_version":"2.0.0","config_fingerprint":"0x3163ced3f54d794c","structural_passes":[]},
+  "name": "measured_record",
+  "manifest": [
+    {
+      "id": 0,
+      "name": "A",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [4,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 1,
+      "name": "B",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,5],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 2,
+      "name": "C",
+      "direction": "output",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [4,5],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    }
+  ],
+  "spaces": {"names":[],"symbol_ties":[]},
+  "approximations": [
+    {
+      "pass_name": "Thc",
+      "effect": "norm-relative",
+      "tolerance": 1e-04,
+      "bound": 1e-04,
+      "origin": "asserted",
+      "outputs": [],
+      "spaces": [],
+      "setup": "Thc(T2)",
+      "measurement": "Thc.T2.residual_squared"
+    }
+  ],
+  "params": [],
+  "gate_flags": [],
+  "tensors": [],
+  "slot_redirects": [],
+  "nodes": [
+    {
+      "id": 0,
+      "kind": "Einsum",
+      "label": "einsum: C[i,j] = A[i,k] * B[k,j]",
+      "inputs": [0,1],
+      "outputs": [2],
+      "dtype": "float64",
+      "rank": 2,
+      "descriptor": {
+        "c_indices": ["i","j"],
+        "a_indices": ["i","k"],
+        "b_indices": ["k","j"],
+        "link_indices": ["k"],
+        "target_indices": ["i","j"],
+        "all_indices": ["i","j","k"],
+        "scalar_output": false,
+        "conj_a": false,
+        "conj_b": false,
+        "c_prefactor": {"dtype":"float64","re":0.0},
+        "ab_prefactor": {"dtype":"float64","re":1.0},
+        "letter_spaces": [],
+        "gemm_hint": {"m":4,"n":5,"k":3,"trans_a":"N","trans_b":"N","a":{"id":0,"leading_dim":4},"b":{"id":1,"leading_dim":3},"c":{"id":2,"leading_dim":4}}
+      }
+    }
+  ]
+}

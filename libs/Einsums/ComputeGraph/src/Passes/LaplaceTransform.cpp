@@ -1040,8 +1040,9 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
         if (!setup_may_escape(graph, {offer.denominator})) {
             return false;
         }
-        ApproximationRecord record = make_approximation_record(name(), ApproximationEffect::NormRelative, offer.tolerance, offer.measured,
-                                                               {}, {}, offer.setup_label, ApproximationOrigin::Measured);
+        ApproximationRecord record =
+            make_approximation_record(name(), ApproximationEffect::NormRelative, offer.tolerance, offer.measured, {}, {}, offer.setup_label,
+                                      ApproximationOrigin::Measured, error_tensor_name(offer.name));
         if (!approximate(record_host(graph), record)) {
             return false;
         }

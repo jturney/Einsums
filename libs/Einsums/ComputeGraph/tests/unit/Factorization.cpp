@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Factorization.hpp>
 #include <Einsums/ComputeGraph/Passes/FactorizationPass.hpp>
@@ -11,9 +12,13 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <fmt/format.h>
+#include <fmt/ranges.h>
+
 #include <cmath>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include <Einsums/Testing.hpp>
@@ -626,10 +631,14 @@ class ExactChain : public cg::FactorizationProvider {
 /// for any ``M`` whose rows lie in that basis and the fit has to be redone whenever ``M`` does.
 class ProjectedAmplitude : public cg::FactorizationProvider {
   public:
-    ProjectedAmplitude(Tensor<double, 2> &basis, Tensor<double, 2> &transposed) : _basis(&basis), _transposed(&transposed) {}
+    ProjectedAmplitude(Tensor<double, 2> &basis, Tensor<double, 2> &transposed, double *report = nullptr)
+        : _basis(&basis), _transposed(&transposed), _report(report) {}
 
     [[nodiscard]] std::string name() const override { return "ProjectedAmplitude"; }
     [[nodiscard]] std::string tag() const override { return "test_amplitude"; }
+
+    /// The tensor the squared residual of the projection is reported in.
+    static std::string residual_tensor() { return "ProjectedAmplitude.residual_squared"; }
 
     [[nodiscard]] expected<cg::FactorizationPlan, std::string> propose(cg::Graph const &graph, cg::TensorId tensor) const override {
         cg::TensorHandle const *handle = graph.find_tensor(tensor);
@@ -654,16 +663,42 @@ class ProjectedAmplitude : public cg::FactorizationProvider {
                                                 .dtype   = einsums::packed_gemm::ScalarType::Float64});
         plan.accuracy = cg::make_approximation_record(name(), cg::ApproximationEffect::NormRelative, 0.0, 0.0);
 
+        // The record's BOUND is written once; the record names the TENSOR carrying what a bind
+        // found, which is the rule for a rewrite inside a loop read back: the fitting rewrites
+        // that value at every update, so what stands in it when the solver stops is the fit's
+        // residual at the last iteration.
+        if (_report != nullptr) {
+            plan.accuracy.measurement = residual_tensor();
+        }
+
         auto *basis      = _basis;
         auto *transposed = _transposed;
-        plan.emit_setup  = [basis, transposed, tensor](cg::Graph &parent, cg::Graph &body, std::vector<cg::TensorId> const &factors) {
-            auto                  *a = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[0]).tensor_ptr);
-            auto                  *b = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[1]).tensor_ptr);
-            auto                  *m = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(tensor).tensor_ptr);
+        auto *report     = _report;
+        auto  rows       = handle->dims[0];
+        auto  cols       = handle->dims[1];
+        plan.emit_setup  = [basis, transposed, report, tensor, rows, cols](cg::Graph &parent, cg::Graph &body,
+                                                                           std::vector<cg::TensorId> const &factors) {
+            auto *a = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[0]).tensor_ptr);
+            auto *b = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[1]).tensor_ptr);
+            auto *m = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(tensor).tensor_ptr);
+
             cg::CaptureGuard const guard(body);
             // The projection reads the tagged tensor, which is what makes this a fit OF it.
             cg::einsum("m,n ; n,Q -> m,Q", a, *m, *basis);
             cg::permute("Q,n <- Q,n", 0.0, b, 1.0, *transposed);
+            if (report == nullptr) {
+                return;
+            }
+            // What the fit is worth on THIS bind, measured rather than asserted, and rewritten at
+            // every refit. Named after the graph it is declared in, because this fitting is
+            // emitted twice for a re-fitted amplitude and the storage auditor keys its duplicate
+            // check on the NAME rather than on the buffer.
+            auto &residual = body.declare_runtime_tensor<double>(fmt::format("{}_projection_residual", body.name()), {rows, cols},
+                                                                 /*intermediate=*/true);
+            cg::CaptureContext::current().get_or_register_scalar(report, residual_tensor());
+            cg::permute("m,n <- m,n", 0.0, &residual, 1.0, *m);
+            cg::einsum("m,Q ; Q,n -> m,n", 1.0, &residual, -1.0, *a, *b);
+            cg::dot(report, residual, residual);
         };
         return plan;
     }
@@ -671,6 +706,7 @@ class ProjectedAmplitude : public cg::FactorizationProvider {
   private:
     Tensor<double, 2> *_basis;
     Tensor<double, 2> *_transposed;
+    double            *_report;
 };
 
 /// The same plan, declaring nothing about what it reads. Used to pin the decline: a provider
@@ -844,6 +880,7 @@ TEST_CASE("Factorization - an amplitude the loop body updates is refitted in the
 
     auto graph_default = cg::PassManager::create_default();
     graph.apply(graph_default);
+    INFO(fmt::format("{}", fmt::join(cg::passes::duplicate_materializations(graph), ", ")));
     CHECK(cg::passes::duplicate_materializations(graph).empty());
     CHECK(cg::passes::stranded_materializations(graph).empty());
     graph.execute();
@@ -856,6 +893,98 @@ TEST_CASE("Factorization - an amplitude the loop body updates is refitted in the
             CHECK_THAT(C(row, col), Catch::Matchers::WithinAbs(C_ref(row, col), 1.0e-10));
         }
     }
+}
+
+TEST_CASE("Factorization - the record on a converged output is the last iteration's fit", "[ComputeGraph][Factorization][Amplitude]") {
+    // The rule for an approximation record inside a loop, asserted rather than argued.
+    //
+    // A record is written once, at optimize time, so its BOUND is what the structure claims and
+    // cannot be what a particular bind found. What a bind leaves behind is a parameter, and the
+    // record names which one. A fit re-fitted at every amplitude update rewrites that parameter
+    // once per iteration, so what stands in it when the solver stops is the fit's residual at the
+    // LAST iteration, which is the iteration the answer came out of. There is no per-iteration
+    // history and there should not be: the intermediate fits are error in a quantity nobody kept.
+    std::size_t const n = 8, rank = 3;
+
+    auto [basis, transposed] = orthonormal_basis(n, rank, 23);
+    auto T                   = RuntimeTensor<double>(create_random_tensor<double>("T", n, n));
+    auto S                   = RuntimeTensor<double>(create_random_tensor<double>("S", n, n));
+    auto ones                = RuntimeTensor<double>(create_zero_tensor<double>("ones", n, n));
+    for (std::size_t row = 0; row < n; ++row) {
+        for (std::size_t col = 0; col < n; ++col) {
+            ones(row, col) = 1.0;
+        }
+    }
+
+    // The residual of the projection for a given amplitude, written out: what the graph's own
+    // parameter has to agree with.
+    auto expected_residual = [&](RuntimeTensor<double> const &M) {
+        double total = 0.0;
+        for (std::size_t row = 0; row < n; ++row) {
+            for (std::size_t col = 0; col < n; ++col) {
+                double fitted = 0.0;
+                for (std::size_t q = 0; q < rank; ++q) {
+                    double projected = 0.0;
+                    for (std::size_t k = 0; k < n; ++k) {
+                        projected += M(row, k) * basis(k, q);
+                    }
+                    fitted += projected * transposed(q, col);
+                }
+                double const diff = M(row, col) - fitted;
+                total += diff * diff;
+            }
+        }
+        return total;
+    };
+
+    auto run = [&](std::size_t iterations) {
+        // A RANDOM amplitude, not one in the basis: the fit is inexact on purpose, because a
+        // residual of zero at every iteration would agree with any rule at all.
+        auto M    = RuntimeTensor<double>(create_random_tensor<double>("M", n, n));
+        auto C    = RuntimeTensor<double>(create_zero_tensor<double>("C", n, n));
+        auto R    = RuntimeTensor<double>(create_zero_tensor<double>("R", n, n));
+        auto copy = RuntimeTensor<double>(create_zero_tensor<double>("Mcopy", n, n));
+        for (std::size_t row = 0; row < n; ++row) {
+            for (std::size_t col = 0; col < n; ++col) {
+                M(row, col) = 0.25 * static_cast<double>(row + 1) - 0.1 * static_cast<double>(col);
+            }
+        }
+
+        auto       graph = std::make_unique<cg::Graph>("amplitude_record");
+        auto const loop  = capture_amplitude_iteration(*graph, M, T, C, S, R, copy, ones, iterations);
+        graph->annotate_tag(M, cg::ProvenanceTag{.name = "test_amplitude"});
+
+        auto                      measured_residual = std::make_unique<double>(0.0);
+        cg::FactorizationRegistry registry;
+        registry.add(std::make_shared<ProjectedAmplitude>(basis, transposed, measured_residual.get()));
+        cg::passes::FactorizationPass factorization(registry);
+        cg::PassManager               pm;
+        pm.add(std::make_shared<cg::passes::ProvenancePropagation>());
+        pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+        REQUIRE(graph->apply(pm));
+
+        auto defaults = cg::PassManager::create_default();
+        graph->apply(defaults);
+        graph->execute();
+
+        (void)loop;
+        return std::tuple{std::move(graph), expected_residual(M), *measured_residual};
+    };
+
+    auto const [one_graph, one_expected, one_measured]       = run(1);
+    auto const [three_graph, three_expected, three_measured] = run(3);
+
+    // The record says where to read the number, which is what makes it readable at all without
+    // knowing how this provider spells its diagnostics.
+    REQUIRE(one_graph->approximations().size() == 1);
+    CHECK(one_graph->approximations().front().measurement == ProjectedAmplitude::residual_tensor());
+    CHECK(one_graph->approximations().front().origin == cg::ApproximationOrigin::Asserted);
+
+    // And what stands in it is the LAST iteration's fit, not the first one's.
+    CHECK_THAT(one_measured, Catch::Matchers::WithinRel(one_expected, 1.0e-10));
+    CHECK_THAT(three_measured, Catch::Matchers::WithinRel(three_expected, 1.0e-10));
+    CHECK(three_measured != one_measured);
+    CHECK(three_expected > 0.0);
 }
 
 TEST_CASE("Factorization - a fit that does not read the updated tensor is declined", "[ComputeGraph][Factorization][Amplitude]") {

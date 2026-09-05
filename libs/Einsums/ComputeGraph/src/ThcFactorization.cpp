@@ -212,7 +212,18 @@ expected<FactorizationPlan, std::string> ThcFactorization::propose(Graph const &
     plan.factors.push_back(collocation_factor(row_name, row_basis, "p", "Q"));
     plan.factors.push_back(collocation_factor(col_name, col_basis, "q", "Q"));
 
-    plan.accuracy = make_approximation_record(_name, ApproximationEffect::NormRelative, epsilon(), epsilon());
+    // The bound is ASSERTED, because a record is written once and a record cannot hold a number a
+    // particular bind found. The record names the parameter the fitting writes instead, so a
+    // caller holding a record can read what this bind's fit was actually worth; inside a loop
+    // body that parameter is rewritten at every refit, and what stands in it when the solver
+    // stops is the last iteration's fit.
+    // The bound is ASSERTED, because a record is written once and cannot hold a number a
+    // particular bind found. The record names the tensor the fitting writes its squared residual
+    // into instead, so a caller holding a record can read what this bind's fit was worth; inside
+    // a loop body that tensor is rewritten at every refit, and what stands in it when the solver
+    // stops is the last iteration's fit.
+    plan.accuracy = make_approximation_record(_name, ApproximationEffect::NormRelative, epsilon(), epsilon(), {}, {}, "",
+                                              ApproximationOrigin::Asserted, residual_param_name(_name, handle->name));
 
     // The fitting, as nodes. Every step is a captured operation, so a bind that moves the
     // problem refits rather than replaying a grid fit computed once at optimize time.

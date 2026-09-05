@@ -52,15 +52,16 @@ std::optional<ApproximationOrigin> approximation_origin_from_name(std::string_vi
 
 ApproximationRecord make_approximation_record(std::string pass_name, ApproximationEffect effect, double tolerance, double bound,
                                               std::vector<std::string> outputs, std::vector<std::string> spaces, std::string setup,
-                                              ApproximationOrigin origin) {
-    return ApproximationRecord{.pass_name = std::move(pass_name),
-                               .tolerance = tolerance,
-                               .effect    = effect,
-                               .bound     = bound,
-                               .origin    = origin,
-                               .outputs   = std::move(outputs),
-                               .spaces    = std::move(spaces),
-                               .setup     = std::move(setup)};
+                                              ApproximationOrigin origin, std::string measurement) {
+    return ApproximationRecord{.pass_name   = std::move(pass_name),
+                               .tolerance   = tolerance,
+                               .effect      = effect,
+                               .bound       = bound,
+                               .origin      = origin,
+                               .outputs     = std::move(outputs),
+                               .spaces      = std::move(spaces),
+                               .setup       = std::move(setup),
+                               .measurement = std::move(measurement)};
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)

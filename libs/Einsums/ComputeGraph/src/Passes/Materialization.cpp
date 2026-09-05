@@ -440,8 +440,16 @@ bool Materialization::run(Graph &graph) {
 
     bool modified = false;
 
+    // Every tensor the request loop places a lifecycle for, by name, so the setup-body arm below
+    // does not place a second one. Its own guard looks inside the body it is walking and is blind
+    // to a node the request loop put in the PARENT, which is where a tensor declared in a loop
+    // body gets one: a fitting that is emitted both into a setup and into a loop body, which is
+    // what a re-fitted amplitude is, presents exactly that shape.
+    std::set<std::string> placed;
+
     for (auto const &r : reqs) {
         auto &handle = r.owner->tensor(r.tid);
+        placed.insert(handle.name);
 
         if (Graph *body = setup_body_writing(r.position, handle.tensor_ptr); body != nullptr) {
             if (auto const body_tid = body_tid_for(*body, handle.tensor_ptr); body_tid.has_value()) {
@@ -508,7 +516,7 @@ bool Materialization::run(Graph &graph) {
             if (!handle.materialize_fn) {
                 continue;
             }
-            if (already_materialized_in(body, handle.name)) {
+            if (placed.contains(handle.name) || already_materialized_in(body, handle.name)) {
                 continue;
             }
             for (auto &node : lifecycle_for(handle, tid)) {

@@ -194,6 +194,26 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") ApproximationRecord {
     /// factorization emits its fitting into one, and the record is where the two are tied
     /// together for anyone asking what produced these factors.
     APIARY_EXPOSE std::string setup;
+
+    /// The TENSOR whose value after a replay is this rewrite's MEASURED error, by name, or
+    /// empty when the rewrite measures nothing.
+    ///
+    /// A record is written once, at optimize time, so @ref bound is what the structure claims
+    /// and cannot be what a particular bind found. What a bind can leave behind is a value in
+    /// the graph, and this is where the record says which one, so a caller holding a record does
+    /// not have to know how the pass spells its diagnostics.
+    ///
+    /// A tensor rather than a parameter, and that is a correction rather than a preference: the
+    /// @ref ParamTable is integer-valued, so a residual below one truncates to zero there and a
+    /// number that cannot represent what it measures is not a measurement. The precedent that
+    /// works is the error tensor a Laplace quadrature already writes.
+    ///
+    /// It is also the whole of the rule for a rewrite INSIDE A LOOP. A fit re-fitted at every
+    /// amplitude update writes this tensor once per iteration, so what stands in it when the
+    /// solver stops is the fit's error at the LAST iteration, which is the iteration the
+    /// converged answer came out of. There is no per-iteration history and there should not be:
+    /// the intermediate fits are error in a quantity nobody kept.
+    APIARY_EXPOSE std::string measurement;
 };
 
 /**
@@ -227,6 +247,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") ApproximationTolerance {
  * @param[in] spaces Index-space names the rewrite involved.
  * @param[in] setup Label of the setup node it created, or empty.
  * @param[in] origin Whether @p bound was computed or claimed.
+ * @param[in] measurement Name of the tensor carrying the measured error per bind, or empty.
  * @return The record.
  *
  * A free function rather than a constructor, so @ref ApproximationRecord stays an AGGREGATE
@@ -240,6 +261,6 @@ APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("approximation_record") [[nod
 make_approximation_record(std::string pass_name, ApproximationEffect effect, double tolerance, double bound,
                           std::vector<std::string> outputs = std::vector<std::string>{},
                           std::vector<std::string> spaces = std::vector<std::string>{}, std::string setup = "",
-                          ApproximationOrigin origin = ApproximationOrigin::Asserted);
+                          ApproximationOrigin origin = ApproximationOrigin::Asserted, std::string measurement = "");
 
 EINSUMS_NAMESPACE_END(compute_graph)

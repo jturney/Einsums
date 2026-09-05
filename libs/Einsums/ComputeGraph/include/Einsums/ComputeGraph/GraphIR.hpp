@@ -20,13 +20,13 @@
  * be, which is why it refuses a graph it cannot write instead of writing a
  * partial one.
  *
- * @par The schema: ``einsums_graph_ir``, semver, currently 1.4.0
+ * @par The schema: ``einsums_graph_ir``, semver, currently 1.5.0
  * One JSON object with a FIXED top-level key order, so a tool can validate the
  * interface before it parses a single node:
  *
  * @code{.json}
  * {
- *   "einsums_graph_ir": "1.4.0",
+ *   "einsums_graph_ir": "1.5.0",
  *   "provenance":       { ... },
  *   "name":             "ccsd_doubles",
  *   "manifest":         [ ... ],
@@ -56,6 +56,14 @@
  * default is not a constant in this file: an absent key means the default the
  * NAMED op's registration documents, so an older file keeps computing what it
  * computed and a reader has one place to look up what it will run at.
+ *
+ * An approximation record's ``measurement`` key arrived at 1.5.0 and is optional
+ * within the section for the same reason ``origin`` is: a file written before it
+ * named no parameter, which is exactly what an empty string says. It carries the
+ * parameter key whose value after a replay is the rewrite's measured error, which
+ * is what lets a record state a number a bind found without a record having to be
+ * rewritten per bind; for a fit re-fitted inside a loop body it is the last
+ * iteration's fit that stands in it when the solver stops.
  *
  * @ref OpKind::LaplaceQuadrature arrived at 1.4.0. All three of its keys are
  * REQUIRED rather than defaulted, which is the same reasoning
@@ -199,7 +207,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.4.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.5.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

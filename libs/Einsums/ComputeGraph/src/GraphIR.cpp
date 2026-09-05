@@ -942,6 +942,7 @@ Object write_structure(Graph const &graph) {
         entry.set("outputs", to_array(record.outputs));
         entry.set("spaces", to_array(record.spaces));
         entry.set("setup", Value{record.setup});
+        entry.set("measurement", Value{record.measurement});
         return Value{std::move(entry)};
     });
 
@@ -2005,6 +2006,15 @@ IrDocument read_document(Value const &root, Problems &problems, SpaceRegistry co
                 record.outputs = read_string_array(*entry, "outputs", path, problems, (*items)[i].position);
                 record.spaces  = read_string_array(*entry, "spaces", path, problems, (*items)[i].position);
                 record.setup   = read_string(*entry, "setup", path, problems, (*items)[i].position);
+                // OPTIONAL, for the reason `origin` is: a file written before the key existed
+                // named no parameter, which is exactly what an empty string says.
+                if (Value const *measurement = entry->take("measurement"); measurement != nullptr) {
+                    if (measurement->is_string()) {
+                        record.measurement = measurement->as_string();
+                    } else {
+                        note(problems, fmt::format("{}.measurement", path), measurement->position, "expected a string");
+                    }
+                }
                 out.approximations.push_back(std::move(record));
             }
         }

@@ -39,6 +39,7 @@
 
 #include <complex>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -954,6 +955,37 @@ TEST_CASE("SaveLoad - an element transform with no parameter writes no key and r
     loaded.execute();
     REQUIRE_THAT(values(0), Catch::Matchers::WithinAbs(0.5, 1.0e-12));
     REQUIRE(values(1) > 1.0e8);
+}
+
+TEST_CASE("SaveLoad - an approximation record's measured-parameter key round-trips", "[ComputeGraph][SaveLoad]") {
+    // A record is written once, at optimize time, so its bound is what the structure claims. What
+    // a bind can leave behind is a parameter, and the record names which one; that is what lets a
+    // caller holding a record read what a particular bind's fit was worth, and it is the whole of
+    // the rule for a fit re-fitted inside a loop, where the parameter's value when the solver
+    // stops is the last iteration's.
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 5);
+    auto C = create_zero_tensor<double>("C", 4, 5);
+
+    cg::Graph graph("measured_record");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,k ; k,j -> i,j", &C, A, B);
+    }
+    graph.note_approximation(cg::make_approximation_record("Thc", cg::ApproximationEffect::NormRelative, 1.0e-4, 1.0e-4, {}, {}, "Thc(T2)",
+                                                           cg::ApproximationOrigin::Asserted, "Thc.T2.residual_squared"));
+
+    auto const saved = cg::save_graph_string(graph);
+    REQUIRE(saved.has_value());
+    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+        std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_5_0_measured_record.eig.json", std::ios::binary);
+        out << *saved;
+    }
+
+    cg::Graph const back = must_load(*saved);
+    REQUIRE(back.approximations().size() == 1);
+    CHECK(back.approximations().front().measurement == "Thc.T2.residual_squared");
+    CHECK(back.approximations().front().setup == "Thc(T2)");
 }
 
 // ── Tier 4: goldens ────────────────────────────────────────────────────────
