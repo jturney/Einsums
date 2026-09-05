@@ -329,6 +329,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Denominators this run has already claimed, so the sweep that reports an unclaimed tag
     /// does not report one the rewrite took.
     std::vector<TensorId> _claimed;
+
+    /// Denominators whose writer chain the rewrite verified and whose nodes it may now erase.
+    /// Held until the region loop is over for the reason @ref PendingSetup is.
+    std::vector<TensorId> _dissolve;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

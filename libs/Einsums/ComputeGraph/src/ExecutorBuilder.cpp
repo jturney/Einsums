@@ -801,6 +801,7 @@ constexpr auto kDescriptorNames = std::to_array<std::string_view>({
     "SetupDescriptor",
     "SyevDescriptor",
     "LaplaceQuadratureDescriptor",
+    "OuterSumDescriptor",
 });
 
 static_assert(kDescriptorNames.size() == std::variant_size_v<OpData>,

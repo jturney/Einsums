@@ -27,6 +27,7 @@ quadrature on the rebind.
 
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -273,17 +274,85 @@ def test_the_transformed_graph_saves_loads_rebinds_and_replays(water, tmp_path):
     assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING
 
 
-def test_a_denominator_the_graph_builds_is_refused(water):
-    """Why the denominator is built outside the capture, pinned.
+def _build_denominator(graph, water, denominator, coefficients=(1.0, -1.0, 1.0, -1.0), op="recip"):
+    """The chain the pass verifies, captured: an outer sum and a reciprocal."""
+    with cg.capture(graph):
+        la.outer_sum(denominator,
+                     [water["occupied_energies"], water["virtual_energies"],
+                      water["occupied_energies"], water["virtual_energies"]],
+                     list(coefficients))
+        la.element_transform(denominator, op)
 
-    Forming it inside the graph is the first thing a caller writes, and it is
-    refused: the quadrature is fitted once per bind, so a graph that recomputes
-    the denominator on every replay is describing something the substitution
-    cannot follow.
+
+def test_the_denominator_may_be_a_deferred_intermediate_the_graph_builds(water):
+    """The chain the pass can read is accepted, dissolved, and never allocated.
+
+    The first thing a caller writes is the denominator inside the capture, and
+    it used to be refused outright. The refusal's argument is that a graph
+    recomputing the denominator on every replay disagrees with a quadrature
+    fitted once per bind, and it holds for a recipe the pass cannot read. It does
+    not hold for the one the tag already describes, so that one is verified
+    against the nodes and dissolved with the tensor.
     """
+    exact = _exact(water)
+    energy = einsums.create_zero_tensor("E_deferred", [1])
+    graph = cg.Graph("mp2_denominator_deferred")
+    denominator = graph.scratch("D", _shape(water), "float64")
+    _build_denominator(graph, water, denominator)
+    _capture(graph, water, denominator, energy)
+    graph.annotate_tag(denominator, _tag())
+
+    transform = _transform(water, 1e-8)
+    manager = cg.PassManager()
+    manager.add(transform)
+    assert graph.apply(manager), f"the pass declined: {transform.skip_reasons}"
+    assert transform.num_transformed == 1
+
+    kinds = [node["kind"] for node in json.loads(graph.to_json())["nodes"]]
+    assert "ElementTransform" not in kinds, "the reciprocal survived the dissolution"
+
+    graph.apply(cg.default_pass_manager())
+    materialized = {node["label"] for node in json.loads(graph.to_json())["nodes"]
+                    if node["kind"] == "Materialize"}
+    assert "materialize(D)" not in materialized, materialized
+
+    graph.execute()
+    value = float(np.asarray(energy)[0])
+    record = graph.approximations()[0]
+    assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING
+
+
+@pytest.mark.parametrize("label,coefficients,op,extra", [
+    ("a sign the tag does not say", (1.0, 1.0, 1.0, -1.0), "recip", False),
+    ("an element operation that is not the reciprocal", (1.0, -1.0, 1.0, -1.0), "negate", False),
+    ("a third writer", (1.0, -1.0, 1.0, -1.0), "recip", True),
+])
+def test_a_denominator_with_a_writer_the_pass_cannot_verify_is_refused(water, label, coefficients, op, extra):
+    """Everything the tag describes is CHECKED against the nodes, not taken on its word."""
     energy = einsums.create_zero_tensor("E_corr", [1])
-    graph = cg.Graph("mp2_denominator_in_graph")
-    denominator = einsums.create_zero_tensor("D", _shape(water))
+    graph = cg.Graph(f"mp2_denominator_{label}")
+    denominator = graph.scratch("D", _shape(water), "float64")
+    _build_denominator(graph, water, denominator, coefficients, op)
+    if extra:
+        with cg.capture(graph):
+            la.scale(1.0, denominator)
+    _capture(graph, water, denominator, energy)
+    graph.annotate_tag(denominator, _tag())
+
+    transform = _transform(water, 1e-6)
+    manager = cg.PassManager()
+    manager.add(transform)
+    assert not graph.apply(manager)
+    assert transform.num_transformed == 0
+    assert any("cannot verify" in reason for reason, _count in transform.skip_reasons), (
+        transform.skip_reasons)
+
+
+def test_an_anonymous_reciprocal_is_not_a_recipe_the_pass_can_read(water):
+    """A Python callable says only that something is applied to every element."""
+    energy = einsums.create_zero_tensor("E_corr", [1])
+    graph = cg.Graph("mp2_denominator_lambda")
+    denominator = graph.scratch("D", _shape(water), "float64")
     with cg.capture(graph):
         la.outer_sum(denominator,
                      [water["occupied_energies"], water["virtual_energies"],
@@ -297,8 +366,8 @@ def test_a_denominator_the_graph_builds_is_refused(water):
     manager = cg.PassManager()
     manager.add(transform)
     assert not graph.apply(manager)
-    assert transform.num_transformed == 0
-    assert any("written by this graph" in reason for reason, _count in transform.skip_reasons)
+    assert any("cannot verify" in reason for reason, _count in transform.skip_reasons), (
+        transform.skip_reasons)
 
 
 def _dense_program(water):

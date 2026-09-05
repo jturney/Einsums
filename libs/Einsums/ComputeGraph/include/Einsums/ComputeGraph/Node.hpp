@@ -473,6 +473,22 @@ struct DotDescriptor {
 struct TraceDescriptor {};
 
 /**
+ * @brief Metadata for the @ref OpKind::Custom node ``cg::outer_sum`` records:
+ *        ``result(i_0,...,i_{N-1}) = sum_k c_k v_k(i_k)``.
+ *
+ * The node keeps its capture-baked executor and is not reconstructible, so this
+ * is not a step towards saving one. It exists because a PASS has to be able to
+ * read what the node computes: `LaplaceTransform` accepts a denominator its
+ * graph writes only when it can verify the recipe, and one coefficient per axis
+ * with a sign is the whole of the recipe. Without the numbers on the node they
+ * live inside a lambda, and "the caller says the signs are these" is exactly the
+ * trust a verification is supposed to replace.
+ */
+struct OuterSumDescriptor {
+    std::vector<double> coefficients; ///< One per axis of the destination, in axis order.
+};
+
+/**
  * @brief Metadata for @ref OpKind::Gemm nodes: ``C = alpha*op(A)*op(B) + beta*C``.
  *
  * @ref trans_a and @ref trans_b are the BLAS transpose characters -- ``'n'``,
@@ -1301,7 +1317,7 @@ using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, P
                             GroupedDotDescriptor, GroupedAxpbyDescriptor, GroupedElementwiseDescriptor, GroupedSandwichDescriptor,
                             GroupedGatherRotateDescriptor, TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor,
                             TiledDotDescriptor, ElementwiseBinaryDescriptor, DotDescriptor, TraceDescriptor, GemmDescriptor,
-                            ElementTransformDescriptor, SetupDescriptor, SyevDescriptor, LaplaceQuadratureDescriptor>;
+                            ElementTransformDescriptor, SetupDescriptor, SyevDescriptor, LaplaceQuadratureDescriptor, OuterSumDescriptor>;
 
 /**
  * @brief A single operation node in the computation graph.

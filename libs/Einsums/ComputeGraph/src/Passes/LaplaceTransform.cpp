@@ -66,21 +66,113 @@ std::string fresh_letter(std::vector<std::string> const &used, std::string const
     }
 }
 
-/// Whether any node of @p graph writes the buffer @p id names.
+/// The name of the reciprocal in the element-op registry, which is the only element operation a
+/// verified denominator chain may end in.
+constexpr std::string_view kReciprocal = "recip";
+
+/// @brief What the pass makes of the nodes writing a tagged denominator.
 ///
-/// The gate on which tensors may be transformed at all, and the same one
-/// @ref FactorizationPass applies: a tensor the graph PRODUCES would have to have its
-/// quadrature refitted whenever it changed, and the setup body runs once per bound problem.
-bool written_anywhere(Graph const &graph, TensorId id) {
-    auto const owner = graph.resolve_alias(id);
+/// Three answers rather than two. NOTHING writes it, which is the eager form and needs no
+/// verification; a chain this pass can READ, which it may accept and dissolve; and anything
+/// else, which is declined with the reason.
+enum class WriterVerdict : std::uint8_t { None, Verified, Unverifiable };
+
+/// @brief Read the nodes writing @p id and say which of the three this is.
+///
+/// The rule the refusal was written for is that a graph which recomputes the denominator on
+/// every replay is declaring an intention to recompute, while the quadrature is fitted once per
+/// bind, so the two would silently disagree in exactly the case the recomputation was written
+/// for. That argument holds for a writer whose recipe the pass cannot read. It does NOT hold for
+/// the one recipe the tag already describes: an outer sum of the named energy vectors with the
+/// tagged signs, followed by the reciprocal. That chain recomputes exactly what the quadrature
+/// is fitted from, so accepting it and dissolving it is the substitution rather than a race with
+/// it, and it lets the denominator be a deferred intermediate that is never allocated.
+///
+/// Everything in the recipe is CHECKED against the nodes: the coefficients come off the outer
+/// sum's descriptor rather than being taken on the tag's word, each vector is matched against
+/// the one registered under that axis's name, and nothing else may write or read the tensor.
+///
+/// @param[in]  graph        The graph.
+/// @param[in]  id           The tagged tensor.
+/// @param[in]  energy_names One name per axis, from the tag.
+/// @param[in]  signs        One sign per axis, from the tag.
+/// @param[in]  options      Where the registered energy vectors come from.
+/// @param[out] trouble      Why an unverifiable chain is unverifiable.
+/// @return The verdict.
+WriterVerdict classify_writers(Graph const &graph, TensorId id, std::vector<std::string> const &energy_names, std::vector<int> const &signs,
+                               quadrature::RewriteOptions const &options, std::string &trouble) {
+    auto const                owner = graph.resolve_alias(id);
+    std::vector<Node const *> writers;
+    std::size_t               readers = 0;
     for (auto const &node : graph.nodes()) {
+        bool writes = false;
         for (TensorId const out : node.outputs) {
-            if (graph.resolve_alias(out) == owner) {
-                return true;
-            }
+            writes = writes || graph.resolve_alias(out) == owner;
+        }
+        if (writes) {
+            writers.push_back(&node);
+            continue;
+        }
+        for (TensorId const in : node.inputs) {
+            readers += graph.resolve_alias(in) == owner ? 1 : 0;
         }
     }
-    return false;
+    if (writers.empty()) {
+        return WriterVerdict::None;
+    }
+    if (writers.size() != 2) {
+        trouble = fmt::format("{} node(s) write it; the chain this pass can verify is an outer sum and a reciprocal", writers.size());
+        return WriterVerdict::Unverifiable;
+    }
+    if (readers != 1) {
+        // Exactly the direct product this rewrite is about. Anything else reads a value the
+        // dissolution would take away.
+        trouble = fmt::format("{} node(s) other than its writers read it, and a dissolved chain leaves them nothing", readers);
+        return WriterVerdict::Unverifiable;
+    }
+
+    // Lifecycle nodes are not writers of a value. They are removed with the chain by whoever
+    // owns the node set, not verified here.
+    Node const *sum        = writers[0];
+    Node const *reciprocal = writers[1];
+    auto const *outer      = std::get_if<OuterSumDescriptor>(&sum->op_data);
+    if (sum->kind != OpKind::Custom || outer == nullptr) {
+        trouble = "the first writer is not an outer sum of orbital energies";
+        return WriterVerdict::Unverifiable;
+    }
+    if (outer->coefficients.size() != signs.size() || sum->inputs.size() != signs.size()) {
+        trouble = fmt::format("the outer sum has {} coefficient(s) and {} operand(s) where the tag names {} axes",
+                              outer->coefficients.size(), sum->inputs.size(), signs.size());
+        return WriterVerdict::Unverifiable;
+    }
+    for (std::size_t axis = 0; axis < signs.size(); ++axis) {
+        if (outer->coefficients[axis] != static_cast<double>(signs[axis])) {
+            trouble = fmt::format("axis {}'s coefficient is {} where the tag says {}", axis, outer->coefficients[axis], signs[axis]);
+            return WriterVerdict::Unverifiable;
+        }
+        TensorHandle const *operand = graph.find_tensor(sum->inputs[axis]);
+        if (operand == nullptr || operand->name != energy_names[axis]) {
+            trouble = fmt::format("axis {} sums '{}' where the tag names '{}'", axis,
+                                  operand == nullptr ? std::string{"<unknown>"} : operand->name, energy_names[axis]);
+            return WriterVerdict::Unverifiable;
+        }
+        LaplaceTransform::EnergyVector const *held = options.energy ? options.energy(energy_names[axis]) : nullptr;
+        if (held == nullptr || held->extent != operand->dims.front()) {
+            trouble = fmt::format("axis {}'s operand is not the vector registered as '{}'", axis, energy_names[axis]);
+            return WriterVerdict::Unverifiable;
+        }
+    }
+
+    auto const *element = std::get_if<ElementTransformDescriptor>(&reciprocal->op_data);
+    if (reciprocal->kind != OpKind::ElementTransform || element == nullptr || element->op_name != kReciprocal) {
+        trouble = fmt::format("the second writer is not the '{}' element transform", kReciprocal);
+        return WriterVerdict::Unverifiable;
+    }
+    if (reciprocal->inputs.size() != 1 || graph.resolve_alias(reciprocal->inputs.front()) != owner) {
+        trouble = "the reciprocal does not read the sum it is supposed to invert";
+        return WriterVerdict::Unverifiable;
+    }
+    return WriterVerdict::Verified;
 }
 
 /// Whether @p dtype is one this pass can represent an exponential in.
@@ -245,6 +337,7 @@ void LaplaceTransform::reset_stats() {
     _last_measured   = 0;
     _pending.clear();
     _claimed.clear();
+    _dissolve.clear();
 }
 
 void LaplaceTransform::set_epsilon(double epsilon) {
@@ -285,6 +378,7 @@ bool LaplaceTransform::applicable(Graph const &graph) const {
 bool LaplaceTransform::run(Graph &graph) {
     _pending.clear();
     _claimed.clear();
+    _dissolve.clear();
     bool modified = RegionRewrite::run(graph);
 
     // After the region loop, never inside it: a region is a range of positions in the node
@@ -302,6 +396,40 @@ bool LaplaceTransform::run(Graph &graph) {
         report(1, fmt::format("emitted {} setup bod(y/ies) holding the quadratures", _pending.size()));
     }
     _pending.clear();
+
+    // The verified writer chains, erased now that nothing reads what they wrote: the rewrite that
+    // accepted them dissolved the direct product that was their only reader. After the region loop
+    // for the same reason the setup bodies are, since erasing a node moves every region position.
+    // The tensor's own declaration stays, because the caller holds the handle, and an unused
+    // deferred intermediate is left unallocated.
+    if (!_dissolve.empty()) {
+        std::vector<bool> remove(graph.nodes().size(), false);
+        std::size_t       erased = 0;
+        for (TensorId const denominator : _dissolve) {
+            auto const owner = graph.resolve_alias(denominator);
+            for (std::size_t position = 0; position < graph.nodes().size(); ++position) {
+                Node const &node = graph.nodes()[position];
+                if (node.kind != OpKind::Custom && node.kind != OpKind::ElementTransform) {
+                    continue;
+                }
+                bool writes = false;
+                for (TensorId const out : node.outputs) {
+                    writes = writes || graph.resolve_alias(out) == owner;
+                }
+                if (writes) {
+                    remove[position] = true;
+                    ++erased;
+                }
+            }
+        }
+        if (erased != 0) {
+            graph.erase_nodes(remove);
+            graph.note_structural_change();
+            report(1, fmt::format("dissolved {} node(s) forming {} denominator(s)", erased, _dissolve.size()));
+            modified = true;
+        }
+    }
+    _dissolve.clear();
 
     // A tag nothing claimed is a decline rather than a silence. It is the only report a
     // SLICED denominator can produce: provenance does not cross a view, so the operand the
@@ -409,12 +537,6 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
                         fmt::format("tensor '{}'", name));
                 continue;
             }
-            if (written_anywhere(graph, denominator_id)) {
-                decline(denominator_id, name, "the tagged denominator is written by this graph, so its quadrature could go stale",
-                        fmt::format("tensor '{}'", name));
-                continue;
-            }
-
             // The tag's attributes, one axis at a time. More axes than the tensor has is the
             // folded form: a caller who multiplied two of the energies into a scalar prefactor
             // is asking this pass to carry a bound value as structure.
@@ -443,6 +565,18 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
                         "the tag names more energies than the tagged tensor has axes, which is the pair-driven form whose folded "
                         "energies the graph cannot see",
                         fmt::format("tensor '{}' is rank {} and the tag names {} energies", name, denominator->rank, energy_names.size()));
+                continue;
+            }
+
+            // The writers, now that the recipe the tag describes is known: the pass either finds
+            // none, or one it can read the whole of, or something it declines.
+            std::string writer_trouble;
+            auto const  verdict             = classify_writers(graph, denominator_id, energy_names, signs, options, writer_trouble);
+            bool const  dissolvable_writers = verdict == WriterVerdict::Verified;
+            if (verdict == WriterVerdict::Unverifiable) {
+                decline(denominator_id, name,
+                        "the tagged denominator has a writer this pass cannot verify, so its quadrature could go stale",
+                        fmt::format("tensor '{}': {}", name, writer_trouble));
                 continue;
             }
 
@@ -587,13 +721,14 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             // made. A refusal here leaves the region exactly as it was and leaves the caller to
             // put its own reason in the tally.
             RewriteOutcome outcome;
-            outcome.applied     = true;
-            outcome.denominator = denominator_id;
-            outcome.name        = name;
-            outcome.points      = count;
-            outcome.measured    = measured;
-            outcome.tolerance   = tolerance;
-            outcome.setup_label = fmt::format("LaplaceTransform({})", name);
+            outcome.applied             = true;
+            outcome.denominator         = denominator_id;
+            outcome.name                = name;
+            outcome.points              = count;
+            outcome.measured            = measured;
+            outcome.tolerance           = tolerance;
+            outcome.setup_label         = fmt::format("LaplaceTransform({})", name);
+            outcome.dissolvable_writers = dissolvable_writers;
             if (options.accept && !options.accept(outcome)) {
                 claimed.push_back(denominator_id);
                 continue;
@@ -877,6 +1012,9 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
             continue;
         }
         _pending.push_back(PendingSetup{.label = accepted[applied].setup, .emit = outcome.emit_setup});
+        if (outcome.dissolvable_writers) {
+            _dissolve.push_back(outcome.denominator);
+        }
         ++applied;
         ++_num_transformed;
         _last_points   = outcome.points;

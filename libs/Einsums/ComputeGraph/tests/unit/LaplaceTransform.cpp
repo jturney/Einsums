@@ -73,6 +73,17 @@ void capture_program(cg::Graph &graph, Tensor<T, 2> const &A, Tensor<T, 2> const
     }
 }
 
+/// The same vector as a runtime-rank tensor, which is what ``cg::outer_sum`` needs: it asks its
+/// operands for a ``rank()`` and a compile-time-rank tensor answers with a constant instead.
+template <typename T>
+RuntimeTensor<T> as_runtime(Tensor<T, 1> const &vector) {
+    RuntimeTensor<T> out(vector.name(), std::vector<std::size_t>{vector.dim(0)});
+    for (std::size_t i = 0; i < vector.dim(0); ++i) {
+        out(std::array<std::size_t, 1>{i}) = vector(i);
+    }
+    return out;
+}
+
 /// Give the pass the two energy vectors every case here names in its tags.
 template <typename T>
 void supply_energies(cg::passes::LaplaceTransform &laplace, Tensor<T, 1> const &eo, Tensor<T, 1> const &ev) {
@@ -446,29 +457,130 @@ TEST_CASE("LaplaceTransform - a complex denominator is declined", "[ComputeGraph
     REQUIRE(mentions(outcome.skips, "is complex"));
 }
 
-TEST_CASE("LaplaceTransform - a denominator some node writes is declined", "[ComputeGraph][Laplace]") {
+TEST_CASE("LaplaceTransform - a denominator with a writer the pass cannot verify is declined", "[ComputeGraph][Laplace]") {
     auto const eo = occupied<double>();
     auto const ev = virtuals<double>();
-    auto       D  = denominator<double>(eo, ev);
     auto const A  = create_random_tensor<double>("A", nocc, nlnk);
     auto const B  = create_random_tensor<double>("B", nlnk, nvir);
-    auto       P  = create_zero_tensor<double>("P", nocc, nvir);
 
-    cg::Graph graph("written");
-    auto     &numerator = graph.scratch<double, 2>("numerator", nocc, nvir);
+    // Each arm writes the denominator with something the pass cannot read as the recipe the tag
+    // describes, and the pass has to decline rather than fit a quadrature to a value the graph
+    // will recompute into something else.
+    auto const eo_rt = as_runtime(eo);
+    auto const ev_rt = as_runtime(ev);
+
+    auto const declines = [&](std::string const &label, auto &&write) {
+        auto      P = create_zero_tensor<double>("P", nocc, nvir);
+        cg::Graph graph(label);
+        auto     &D         = graph.declare_runtime_tensor<double>("denom", {nocc, nvir}, /*intermediate=*/true);
+        auto     &numerator = graph.scratch<double, 2>("numerator", nocc, nvir);
+        {
+            cg::CaptureGuard const guard(graph);
+            write(D);
+            cg::einsum("i,k ; k,a -> i,a", &numerator, A, B);
+            cg::direct_product(1.0, numerator, D, 0.0, &P);
+        }
+        graph.annotate_tag(D, cg::passes::LaplaceTransform::denominator_tag({"eps_o", "eps_v"}, "-+"));
+
+        Outcome const outcome = run_pass(graph, eo, ev);
+        INFO(label);
+        REQUIRE(outcome.transformed == 0);
+        REQUIRE(mentions(outcome.skips, "has a writer this pass cannot verify"));
+    };
+
+    // A third writer, which is more of the recipe than the tag describes.
+    declines("a scale on top of the chain", [&](RuntimeTensor<double> &D) {
+        cg::outer_sum(&D, std::vector<RuntimeTensor<double> const *>{&eo_rt, &ev_rt}, {-1.0, 1.0});
+        cg::element_transform(&D, "recip");
+        cg::scale(1.0, &D);
+    });
+
+    // The right shape with the wrong arithmetic: the tag says the occupied energy is
+    // subtracted and the node adds it.
+    declines("a sign the tag does not say", [&](RuntimeTensor<double> &D) {
+        cg::outer_sum(&D, std::vector<RuntimeTensor<double> const *>{&eo_rt, &ev_rt}, {1.0, 1.0});
+        cg::element_transform(&D, "recip");
+    });
+
+    // The right shape with the wrong element operation: the tag is on the RECIPROCAL, and a
+    // tensor that is the sum itself is a different quantity.
+    declines("an element operation that is not the reciprocal", [&](RuntimeTensor<double> &D) {
+        cg::outer_sum(&D, std::vector<RuntimeTensor<double> const *>{&eo_rt, &ev_rt}, {-1.0, 1.0});
+        cg::element_transform(&D, "negate");
+    });
+
+    // And an outer sum over a vector the tag does not name.
+    auto const other = as_runtime(occupied<double>("eps_other"));
+    declines("an energy the tag does not name", [&](RuntimeTensor<double> &D) {
+        cg::outer_sum(&D, std::vector<RuntimeTensor<double> const *>{&other, &ev_rt}, {-1.0, 1.0});
+        cg::element_transform(&D, "recip");
+    });
+}
+
+TEST_CASE("LaplaceTransform - a verified writer chain is accepted and dissolved with the tensor", "[ComputeGraph][Laplace]") {
+    auto const eo = occupied<double>();
+    auto const ev = virtuals<double>();
+    auto const A  = create_random_tensor<double>("A", nocc, nlnk);
+    auto const B  = create_random_tensor<double>("B", nlnk, nvir);
+
+    // The exact answer, from the same program with the denominator built eagerly.
+    auto const D_exact = denominator<double>(eo, ev);
+    auto       exact   = create_zero_tensor<double>("P_exact", nocc, nvir);
+    {
+        cg::Graph reference("reference");
+        capture_program<double>(reference, A, B, D_exact, &exact);
+        apply_defaults(reference);
+        reference.execute();
+    }
+
+    auto      P = create_zero_tensor<double>("P", nocc, nvir);
+    cg::Graph graph("verified chain");
+    // DEFERRED, which is the point: a denominator the rewrite dissolves is never allocated, so
+    // the full-axis form does not pay for the four-index tensor it writes down.
+    auto      &D         = graph.declare_runtime_tensor<double>("denom", {nocc, nvir}, /*intermediate=*/true);
+    auto      &numerator = graph.scratch<double, 2>("numerator", nocc, nvir);
+    auto const eo_rt     = as_runtime(eo);
+    auto const ev_rt     = as_runtime(ev);
     {
         cg::CaptureGuard const guard(graph);
-        // The graph itself scales the denominator, so its quadrature would be stale by the
-        // time anything read it and the setup body runs once per bound problem.
-        cg::scale(1.0, &D);
+        cg::outer_sum(&D, std::vector<RuntimeTensor<double> const *>{&eo_rt, &ev_rt}, {-1.0, 1.0});
+        cg::element_transform(&D, "recip");
         cg::einsum("i,k ; k,a -> i,a", &numerator, A, B);
         cg::direct_product(1.0, numerator, D, 0.0, &P);
     }
     graph.annotate_tag(D, cg::passes::LaplaceTransform::denominator_tag({"eps_o", "eps_v"}, "-+"));
 
-    Outcome const outcome = run_pass(graph, eo, ev);
-    REQUIRE(outcome.transformed == 0);
-    REQUIRE(mentions(outcome.skips, "is written by this graph"));
+    cg::passes::LaplaceTransform laplace;
+    laplace.set_epsilon(1.0e-8);
+    supply_energies(laplace, eo, ev);
+    cg::PassManager pm;
+    pm.add(borrow(laplace));
+    REQUIRE(graph.apply(pm));
+    REQUIRE(laplace.num_transformed() == 1);
+
+    // The chain is gone: nothing forms the denominator any more.
+    for (auto const &node : graph.nodes()) {
+        REQUIRE(node.kind != cg::OpKind::ElementTransform);
+        REQUIRE(node.label != "outer_sum");
+    }
+
+    apply_defaults(graph);
+    // And nothing allocates it either, which is what an unused deferred intermediate gets.
+    for (auto const &node : graph.nodes()) {
+        if (node.kind != cg::OpKind::Alloc) {
+            continue;
+        }
+        for (cg::TensorId const out : node.outputs) {
+            REQUIRE(graph.tensor(out).name != "denom");
+        }
+    }
+
+    graph.execute();
+    for (std::size_t i = 0; i < nocc; ++i) {
+        for (std::size_t a = 0; a < nvir; ++a) {
+            REQUIRE(P(i, a) == Catch::Approx(exact(i, a)).epsilon(1.0e-6));
+        }
+    }
 }
 
 TEST_CASE("LaplaceTransform - a tag naming an energy this graph cannot use is declined", "[ComputeGraph][Laplace]") {

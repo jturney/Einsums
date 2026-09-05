@@ -1542,6 +1542,39 @@ void element_transform(CType *C, std::string_view op_name, std::optional<double>
     ctx.record(OpKind::ElementTransform, "element_transform", {c_id}, {c_id}, std::move(executor), std::move(op_data));
 }
 
+/// Python-friendly NAMED element_transform: the registry's kernel, chosen by name.
+///
+/// The same operation the ``string_view`` overload above records, reachable from
+/// Python. Worth having as more than a convenience: a node built from a
+/// registered name says WHAT it computes, where a node holding a Python callable
+/// says only that something is applied to every element. A pass that has to
+/// recognize a reciprocal can read the first and not the second, and
+/// `LaplaceTransform` is one, so a caller who wants their denominator
+/// recognized needs this spelling rather than a lambda.
+///
+/// Parameterized ops are not reachable here yet; nothing in the Python surface
+/// needs one, and adding the policy number is a second overload rather than a
+/// default argument.
+///
+/// @param[in,out] C       The tensor to transform in place.
+/// @param[in]     op_name Name of the kernel in the process's element-op registry.
+template <CoreBasicTensorConcept TensorType>
+// clang-format off
+APIARY_EXPOSE
+APIARY_MODULE("linalg")
+APIARY_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
+APIARY_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
+APIARY_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor<std::complex<float>, std::allocator<std::complex<float>>>)
+APIARY_INSTANTIATE_AS("element_transform", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>)
+APIARY_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<float>)
+APIARY_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<double>)
+APIARY_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<std::complex<float>>)
+APIARY_INSTANTIATE_AS("element_transform", einsums::RuntimeTensorView<std::complex<double>>)
+// clang-format on
+void element_transform_named_python(TensorType *C, std::string const &op_name) {
+    element_transform(C, op_name);
+}
+
 /// Python-friendly element_transform wrapper.
 ///
 /// The generic ``element_transform`` template requires ``RankTensorConcept``
@@ -3264,7 +3297,13 @@ void outer_sum(ResultType *result, std::vector<VectorType const *> vectors, std:
         apply(static_cast<ResultType *>(r_slot->ptr), rebound);
     };
 
-    ctx.record(OpKind::Custom, "outer_sum", in_ids, {r_id}, std::move(executor));
+    // The coefficients ride on the node as well as inside the executor, so a pass can read what
+    // this computes. `LaplaceTransform` accepts a denominator its graph writes only when it can
+    // VERIFY the recipe, and one signed coefficient per axis is the whole of the recipe; without
+    // the numbers here they are only inside a closure.
+    OuterSumDescriptor desc;
+    desc.coefficients = coefficients.empty() ? std::vector<double>(N, 1.0) : coefficients;
+    ctx.record(OpKind::Custom, "outer_sum", in_ids, {r_id}, std::move(executor), OpData(std::move(desc)));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -86,6 +86,13 @@ struct RewriteOutcome {
     double      measured{0};
     double      tolerance{0};
 
+    /// Whether the tagged tensor is written by a chain this rewrite verified and may dissolve.
+    ///
+    /// A caller that owns the node set erases those writers once the region loop is over, at
+    /// which point nothing reads the denominator: the rewrite that made this true dissolved its
+    /// only reader. A caller costing a trial leaves them alone.
+    bool dissolvable_writers{false};
+
     /// The setup body's label and the callback that captures it, when one was asked for.
     std::string                           setup_label;
     std::function<void(Graph &, Graph &)> emit_setup;
