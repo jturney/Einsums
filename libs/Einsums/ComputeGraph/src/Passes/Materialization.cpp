@@ -12,6 +12,7 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -124,13 +125,38 @@ struct DeferredEntry {
 // the graph that owns its handle, so the caller can build hoisted lifecycle
 // nodes for it. @p graph's own tensors come first, then each sub-graph's in
 // turn, depth first.
-void collect_deferred(Graph &graph, std::vector<DeferredEntry> &out) {
+//
+// A SETUP body met on the way is not descended into. Its workspace is materialized inside the
+// body, whatever depth the body sits at, and the body is handed back through @p nested_setups so
+// the setup-body arm can do that. Hoisting a setup's workspace to the outermost parent gave it a
+// lifecycle the body's own validation could not see: a body checks its own nodes and its
+// descendants for the Materialize, never its ancestors, and the parent-placed node had no edge to
+// the loop the body sat in, so whether it had run first was a matter of schedule order. That
+// order differed between platforms, which is how one program passed on three and failed on one.
+void collect_deferred(Graph &graph, std::vector<DeferredEntry> &out, std::vector<std::pair<Graph *, std::string>> &nested_setups) {
     for (auto const &[tid, handle] : graph.tensors_map()) {
         if (handle.alloc_state == AllocState::Deferred) {
             out.push_back({.handle_owner = &graph, .tid = tid});
         }
     }
-    graph.for_each_subgraph([&out](Graph &sub) { collect_deferred(sub, out); });
+    for (auto &node : graph.nodes()) {
+        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+            if (loop->body) {
+                collect_deferred(*loop->body, out, nested_setups);
+            }
+        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+            if (cond->then_branch) {
+                collect_deferred(*cond->then_branch, out, nested_setups);
+            }
+            if (cond->else_branch) {
+                collect_deferred(*cond->else_branch, out, nested_setups);
+            }
+        } else if (auto *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
+            if (setup->body) {
+                nested_setups.emplace_back(setup->body.get(), node.label);
+            }
+        }
+    }
 }
 
 /// Whether @p graph already holds a Materialize node for the tensor named @p name.
@@ -155,9 +181,14 @@ std::string materialized_name(std::string const &label) {
 
 /// One graph's contribution to the audit, then every sub-graph's.
 ///
-/// Three sets, all keyed by tensor NAME. Ids are per graph, and a body's copy of a parent's buffer
-/// carries the parent's name, which is the only thing that lets a hoisted lifecycle and the use it
-/// exists for be recognized as being about one tensor.
+/// The used and owned sets are keyed by tensor NAME. Ids are per graph, and a body's copy of a
+/// parent's buffer carries the parent's name, which is the only thing that lets a hoisted lifecycle
+/// and the use it exists for be recognized as being about one tensor.
+///
+/// The Materialize count is keyed by BUFFER where the node names one, and by name only where it
+/// does not: two setup bodies may each declare a workspace of one name, as a fitting emitted into
+/// a setup and again into a loop body does, and those are two tensors with one lifecycle each
+/// rather than one tensor with two. The key carries the name so the report can still say it.
 void collect_audit(Graph const &graph, std::map<std::string, std::size_t> &materialized, std::set<std::string> &used,
                    std::set<std::string> &owned_deferred) {
     for (auto const &[tid, handle] : graph.tensors_map()) {
@@ -169,7 +200,13 @@ void collect_audit(Graph const &graph, std::map<std::string, std::size_t> &mater
     for (auto const &node : graph.nodes()) {
         if (node.kind == OpKind::Materialize) {
             if (std::string name = materialized_name(node.label); !name.empty()) {
-                ++materialized[name];
+                void const *buffer = nullptr;
+                if (!node.outputs.empty()) {
+                    if (TensorHandle const *handle = graph.find_tensor(node.outputs.front()); handle != nullptr) {
+                        buffer = handle->tensor_ptr;
+                    }
+                }
+                ++materialized[buffer != nullptr ? fmt::format("{}@{}", name, buffer) : name];
             }
             continue;
         }
@@ -203,9 +240,9 @@ std::vector<std::string> duplicate_materializations(Graph const &graph) {
     collect_audit(graph, materialized, used, owned_deferred);
 
     std::vector<std::string> out;
-    for (auto const &[name, count] : materialized) {
+    for (auto const &[key, count] : materialized) {
         if (count > 1) {
-            out.push_back(name);
+            out.push_back(key.substr(0, key.find('@')));
         }
     }
     return out;
@@ -218,7 +255,8 @@ std::vector<std::string> stranded_materializations(Graph const &graph) {
     collect_audit(graph, materialized, used, owned_deferred);
 
     std::vector<std::string> out;
-    for (auto const &[name, count] : materialized) {
+    for (auto const &[key, count] : materialized) {
+        std::string const name = key.substr(0, key.find('@'));
         if (owned_deferred.contains(name) && !used.contains(name)) {
             out.push_back(name);
         }
@@ -263,6 +301,9 @@ bool Materialization::run(Graph &graph) {
         TensorId tid;
     };
     std::vector<Hoist> hoists;
+    // Setup bodies found under a loop or a branch: their workspace is placed inside them by the
+    // setup-body arm rather than hoisted, see collect_deferred.
+    std::vector<std::pair<Graph *, std::string>> nested_setups;
 
     auto const &parent_nodes = graph.nodes();
     for (size_t i = 0; i < parent_nodes.size(); i++) {
@@ -270,7 +311,7 @@ bool Materialization::run(Graph &graph) {
 
         auto collect_from = [&](Graph &child) {
             std::vector<DeferredEntry> found;
-            collect_deferred(child, found);
+            collect_deferred(child, found, nested_setups);
             for (auto const &e : found) {
                 hoists.push_back({.owning_node_index = i, .handle_owner = e.handle_owner, .tid = e.tid});
             }
@@ -391,24 +432,56 @@ bool Materialization::run(Graph &graph) {
     // recompute, which is a silently wrong answer on the second replay and a correct one on
     // the first. So the pair goes to the front of the setup body instead, where it runs
     // exactly when the thing it prepares storage for runs.
-    auto setup_body_writing = [&](std::size_t position, void const *ptr) -> Graph * {
-        if (position >= nodes.size() || nodes[position].kind != OpKind::Setup || ptr == nullptr) {
-            return nullptr;
-        }
-        auto *desc = std::get_if<SetupDescriptor>(&nodes[position].op_data);
-        if (desc == nullptr || !desc->body) {
-            return nullptr;
-        }
-        Graph &body = *desc->body;
+    //
+    // The setup may sit BELOW the node at that position rather than be it: a fitting emitted into
+    // a loop body puts its setup inside the loop, and the parent holds a handle for that setup's
+    // workspace whose first use is the Loop node. Looking only at the node itself sent such a
+    // workspace to a parent-level lifecycle the nested body's validation could not see, and
+    // whether execute reached the body before or after that lifecycle was a matter of schedule
+    // order. So the search descends through loops and branches to the setup that writes the
+    // buffer, at any depth.
+    auto body_writes = [](Graph &body, void const *ptr) {
         for (auto const &node : body.nodes()) {
             for (TensorId const out : node.outputs) {
                 TensorHandle const *written = body.find_tensor(body.resolve_alias(out));
                 if (written != nullptr && written->tensor_ptr == ptr) {
-                    return &body;
+                    return true;
                 }
             }
         }
+        return false;
+    };
+    // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest, so the search does too.
+    std::function<Graph *(Node const &, void const *)> setup_below = [&](Node const &node, void const *ptr) -> Graph * {
+        if (auto const *desc = std::get_if<SetupDescriptor>(&node.op_data)) {
+            return (desc->body && body_writes(*desc->body, ptr)) ? desc->body.get() : nullptr;
+        }
+        auto search = [&](Graph &child) -> Graph * {
+            for (auto const &inner : child.nodes()) {
+                if (Graph *found = setup_below(inner, ptr); found != nullptr) {
+                    return found;
+                }
+            }
+            return nullptr;
+        };
+        if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+            return loop->body ? search(*loop->body) : nullptr;
+        }
+        if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+            if (cond->then_branch) {
+                if (Graph *found = search(*cond->then_branch); found != nullptr) {
+                    return found;
+                }
+            }
+            return cond->else_branch ? search(*cond->else_branch) : nullptr;
+        }
         return nullptr;
+    };
+    auto setup_body_writing = [&](std::size_t position, void const *ptr) -> Graph * {
+        if (position >= nodes.size() || ptr == nullptr) {
+            return nullptr;
+        }
+        return setup_below(nodes[position], ptr);
     };
 
     /// The body's own id for the buffer @p ptr names, which is what a node placed in the
@@ -440,16 +513,24 @@ bool Materialization::run(Graph &graph) {
 
     bool modified = false;
 
-    // Every tensor the request loop places a lifecycle for, by name, so the setup-body arm below
-    // does not place a second one. Its own guard looks inside the body it is walking and is blind
-    // to a node the request loop put in the PARENT, which is where a tensor declared in a loop
-    // body gets one: a fitting that is emitted both into a setup and into a loop body, which is
-    // what a re-fitted amplitude is, presents exactly that shape.
-    std::set<std::string> placed;
+    // Every tensor the request loop places a lifecycle for, by IDENTITY, so the setup-body arm
+    // below does not place a second one. Its own guard looks inside the body it is walking and is
+    // blind to a node the request loop put in the PARENT, which is where a tensor declared in a
+    // loop body gets one: a fitting that is emitted both into a setup and into a loop body, which
+    // is what a re-fitted amplitude is, presents exactly that shape.
+    //
+    // Keyed on the buffer rather than on the name, because that same re-fitted amplitude declares
+    // the same workspace NAMES in two different bodies, and a name-keyed set let whichever body
+    // the request loop reached first claim the name for both: the other body's workspace was then
+    // skipped by the arm below and reached execute unallocated. Which body came first depended on
+    // iteration order, so the same program passed on one platform and failed on the next.
+    std::set<void const *> placed;
 
     for (auto const &r : reqs) {
         auto &handle = r.owner->tensor(r.tid);
-        placed.insert(handle.name);
+        if (handle.tensor_ptr != nullptr) {
+            placed.insert(handle.tensor_ptr);
+        }
 
         if (Graph *body = setup_body_writing(r.position, handle.tensor_ptr); body != nullptr) {
             if (auto const body_tid = body_tid_for(*body, handle.tensor_ptr); body_tid.has_value()) {
@@ -497,12 +578,15 @@ bool Materialization::run(Graph &graph) {
     // allocation is a resource decision that the design says is re-derived on load rather than
     // saved. Doing it at capture baked a resource decision into structure and made the fitting
     // unsaveable, which is the one thing a factorization exists to avoid.
-    for (std::size_t i = 0; i < nodes.size(); ++i) {
-        auto *setup = std::get_if<SetupDescriptor>(&nodes[i].op_data);
-        if (setup == nullptr || !setup->body) {
-            continue;
+    std::vector<std::pair<Graph *, std::string>> setup_bodies;
+    for (auto const &node : nodes) {
+        if (auto const *setup = std::get_if<SetupDescriptor>(&node.op_data); setup != nullptr && setup->body) {
+            setup_bodies.emplace_back(setup->body.get(), node.label);
         }
-        Graph &body = *setup->body;
+    }
+    setup_bodies.insert(setup_bodies.end(), nested_setups.begin(), nested_setups.end());
+    for (auto const &[body_ptr, setup_label] : setup_bodies) {
+        Graph &body = *body_ptr;
 
         std::vector<Node> body_lifecycle;
         for (auto &[tid, handle] : body.tensors_map()) {
@@ -516,13 +600,13 @@ bool Materialization::run(Graph &graph) {
             if (!handle.materialize_fn) {
                 continue;
             }
-            if (placed.contains(handle.name) || already_materialized_in(body, handle.name)) {
+            if ((handle.tensor_ptr != nullptr && placed.contains(handle.tensor_ptr)) || already_materialized_in(body, handle.name)) {
                 continue;
             }
             for (auto &node : lifecycle_for(handle, tid)) {
                 body_lifecycle.push_back(std::move(node));
             }
-            report(2, fmt::format("materialize setup-body scratch '{}' inside '{}'", handle.name, nodes[i].label));
+            report(2, fmt::format("materialize setup-body scratch '{}' inside '{}'", handle.name, setup_label));
         }
         if (!body_lifecycle.empty()) {
             insert_at_front(body, std::move(body_lifecycle));

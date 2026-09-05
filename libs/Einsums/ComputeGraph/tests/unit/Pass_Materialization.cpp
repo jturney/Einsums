@@ -15,6 +15,8 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <fmt/format.h>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -624,4 +626,63 @@ TEST_CASE("Materialization - a setup body's output gets ONE lifecycle, not two",
 
     g.execute();
     CHECK(out(0, 0) == Catch::Approx(1.0));
+}
+
+TEST_CASE("Materialization - a setup nested in a loop body materializes its workspace inside itself",
+          "[ComputeGraph][Passes][Materialization]") {
+    // A fitting emitted into a loop body, which is what a re-fitted amplitude is, puts a setup
+    // node inside the body, and that setup declares its own workspace. The hoist walk used to
+    // descend into it and give the workspace a lifecycle in the outermost parent. The body's
+    // validation looks for a Materialize in its own nodes and its descendants, never in its
+    // ancestors, and accepts a live allocation only if the parent's node has already run; that
+    // node had no edge to the loop, so whether it ran first was a matter of schedule order, and
+    // the same program passed on three platforms and failed on the fourth. The workspace of a
+    // setup body is materialized inside that body at any depth, and this case says where.
+    auto out  = create_zero_tensor<double>("out", 3, 3);
+    auto one  = create_zero_tensor<double>("one", 3, 3);
+    one(0, 0) = 1.0;
+
+    cg::Graph g("nested_setup");
+    auto     &first  = g.declare_runtime_tensor<double>("first", {3, 3}, /*intermediate=*/true);
+    auto     &second = g.declare_runtime_tensor<double>("second", {3, 3}, /*intermediate=*/true);
+    {
+        // A parent-level setup with a workspace of the same name, so the two are told apart by
+        // identity and not by name.
+        auto                  &body = g.add_setup("fit_parent");
+        cg::CaptureGuard const guard(body);
+        auto                  &scratch = body.declare_runtime_tensor<double>("workspace", {3, 3}, /*intermediate=*/true);
+        cg::permute("ij <- ij", 0.0, &scratch, 1.0, one);
+        cg::permute("ij <- ij", 0.0, &first, 1.0, scratch);
+    }
+    cg::Graph *nested = nullptr;
+    {
+        auto &loop = g.add_loop("iterate", 2, [](std::size_t it) { return it + 1 < 2; });
+        auto &fit  = loop.add_setup("fit_nested");
+        nested     = &fit;
+        cg::CaptureGuard const guard(fit);
+        auto                  &scratch = fit.declare_runtime_tensor<double>("workspace", {3, 3}, /*intermediate=*/true);
+        cg::permute("ij <- ij", 0.0, &scratch, 1.0, one);
+        cg::permute("ij <- ij", 0.0, &second, 1.0, scratch);
+    }
+    {
+        cg::CaptureGuard const guard(g);
+        cg::permute("ij <- ij", 0.0, &out, 1.0, first);
+        cg::permute("ij <- ij", 1.0, &out, 1.0, second);
+    }
+
+    auto pm = cg::PassManager::create_default();
+    g.apply(pm);
+
+    auto const materialize_of = [](cg::Graph const &graph, std::string const &name) {
+        return std::ranges::count_if(graph.nodes(), [&](cg::Node const &node) {
+            return node.kind == cg::OpKind::Materialize && node.label == fmt::format("materialize({})", name);
+        });
+    };
+    CHECK(materialize_of(*nested, "workspace") == 1);
+    CHECK(materialize_of(g, "workspace") == 0);
+    CHECK(cg::passes::duplicate_materializations(g).empty());
+    CHECK(cg::passes::stranded_materializations(g).empty());
+
+    g.execute();
+    CHECK(out(0, 0) == Catch::Approx(2.0));
 }
