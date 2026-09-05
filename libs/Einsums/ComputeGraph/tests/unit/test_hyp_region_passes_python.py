@@ -44,6 +44,7 @@ from hypothesis import strategies as st
 import einsums
 import einsums.graph as cg
 import einsums._core.graph as _G
+from einsums import linalg as la
 from einsums.testing import ALL_DTYPES
 
 from _region_invariants import assert_materialization_invariants
@@ -84,10 +85,14 @@ _AB_PFS = (1.0, -1.0, 0.5)
 class Program(NamedTuple):
     """A multi-statement contraction program, operands named by key.
 
-    ``stmts`` are binary contractions in program order, each
-    ``(out, out_letters, a, a_letters, b, b_letters, c_pf, ab_pf)``. Keys
+    ``stmts`` are binary products in program order, each
+    ``(out, out_letters, a, a_letters, b, b_letters, c_pf, ab_pf)`` with an
+    optional ninth element naming the kind: ``einsum`` when absent, ``dp`` for
+    an elementwise direct product and ``dot`` for a reduction to a scalar. Keys
     beginning ``p`` are pool tensors the caller owns, ``t`` are author-named
-    intermediates declared on the graph, ``r`` are results.
+    intermediates declared on the graph, ``r`` are results. The tail exists
+    because the flattener reads all three kinds as one product, so a program
+    that only ever contracts leaves that half of it untested.
     ``disjoint`` is ``None`` or ``(statement index, summed letter)``: that
     statement's two operands get index spaces the registry declares disjoint,
     and the second operand is zeroed so the arithmetic honours the declaration.
@@ -101,6 +106,11 @@ class Program(NamedTuple):
     stmts: tuple
     terms: tuple
     disjoint: object
+
+
+def _kind_of(stmt):
+    """The statement's kind, defaulting so the pinned tuples need no ninth field."""
+    return stmt[8] if len(stmt) > 8 else "einsum"
 
 
 def _draw_program(pick_int) -> Program:
@@ -196,6 +206,27 @@ def _draw_program(pick_int) -> Program:
             items[i:i + 2] = [[key, letters, lo, hi]]
             step += 1
 
+    # A contraction, scaled elementwise and reduced to a scalar: the three kinds
+    # the flattener reads as one product, in the shape a correlation energy has.
+    # Every tensor in it is dissolvable, so a run in which the search fires
+    # leaves neither the product nor the reduction as a node.
+    if pick_int(0, 2) == 0:
+        letters = (("a",), ("c",), ("b",))
+        shape = (_EXTENTS["a"], _EXTENTS["b"])
+        chain = pool_key((_EXTENTS["a"], _EXTENTS["c"])), pool_key((_EXTENTS["c"], _EXTENTS["b"]))
+        formed = f"t_e{len(inter)}"
+        scaled = f"t_e{len(inter) + 1}"
+        inter[formed] = shape
+        inter[scaled] = shape
+        reduced = f"r{len(outs)}"
+        outs[reduced] = (1,)
+        stmts.append((formed, letters[0] + letters[2], chain[0], letters[0] + letters[1],
+                      chain[1], letters[1] + letters[2], 0.0, _AB_PFS[pick_int(0, len(_AB_PFS) - 1)]))
+        stmts.append((scaled, letters[0] + letters[2], formed, letters[0] + letters[2],
+                      pool_key(shape), letters[0] + letters[2], 0.0, 1.0, "dp"))
+        stmts.append((reduced, (), scaled, letters[0] + letters[2],
+                      pool_key(shape), letters[0] + letters[2], 0.0, 1.0, "dot"))
+
     disjoint = None
     if pick_int(0, 1):
         uses: dict = {}
@@ -204,6 +235,8 @@ def _draw_program(pick_int) -> Program:
                 uses[key] = uses.get(key, 0) + 1
         cands = []
         for index, stmt in enumerate(stmts):
+            if _kind_of(stmt) != "einsum":
+                continue
             a, a_letters, b, b_letters = stmt[2], stmt[3], stmt[4], stmt[5]
             # Both operands must be pool tensors used nowhere else: the
             # annotation goes on the TENSOR, so a shared operand would carry one
@@ -340,9 +373,16 @@ def _numpy_result(prog, arrays, dtype):
     dt = np.dtype(dtype)
     values = {key: array.copy() for key, array in arrays.items()}
     values.update({key: np.zeros(dims, dtype=dt) for key, dims in prog.inter.items()})
-    for out, ol, a, al, b, bl, c_pf, ab_pf in prog.stmts:
-        spec = f"{''.join(al)},{''.join(bl)}->{''.join(ol)}"
-        term = np.einsum(spec, values[a], values[b])
+    for stmt in prog.stmts:
+        out, ol, a, al, b, bl, c_pf, ab_pf = stmt[:8]
+        kind = _kind_of(stmt)
+        if kind == "dot":
+            values[out] = np.array([np.sum(values[a] * values[b])], dtype=dt)
+            continue
+        if kind == "dp":
+            term = values[a] * values[b]
+        else:
+            term = np.einsum(f"{''.join(al)},{''.join(bl)}->{''.join(ol)}", values[a], values[b])
         values[out] = (np.asarray(c_pf, dt) * values[out] + np.asarray(ab_pf, dt) * term).astype(dt)
     return {key: values[key] for key in prog.outs}
 
@@ -367,9 +407,16 @@ def _run(prog, arrays, dtype, region):
         tensors[key] = graph.declare_tensor(_nm(key), list(dims), intermediate=True, dtype=dtype)
 
     with cg.capture(graph):
-        for out, ol, a, al, b, bl, c_pf, ab_pf in prog.stmts:
-            spec = f"{','.join(ol)} <- {','.join(al)} ; {','.join(bl)}"
-            einsums.einsum(spec, tensors[out], tensors[a], tensors[b], c_pf=c_pf, ab_pf=ab_pf)
+        for stmt in prog.stmts:
+            out, ol, a, al, b, bl, c_pf, ab_pf = stmt[:8]
+            kind = _kind_of(stmt)
+            if kind == "dot":
+                la.dot(tensors[out], tensors[a], tensors[b])
+            elif kind == "dp":
+                la.direct_product(ab_pf, tensors[a], tensors[b], c_pf, tensors[out])
+            else:
+                spec = f"{','.join(ol)} <- {','.join(al)} ; {','.join(bl)}"
+                einsums.einsum(spec, tensors[out], tensors[a], tensors[b], c_pf=c_pf, ab_pf=ab_pf)
 
     if prog.disjoint is not None:
         index, letter = prog.disjoint
@@ -408,9 +455,16 @@ def _numpy_magnitude(prog, arrays, dtype):
     real = np.dtype("float32") if dt.itemsize <= 8 else np.dtype("float64")
     values = {key: np.abs(array).astype(real) for key, array in arrays.items()}
     values.update({key: np.zeros(dims, dtype=real) for key, dims in prog.inter.items()})
-    for out, ol, a, al, b, bl, c_pf, ab_pf in prog.stmts:
-        spec = f"{''.join(al)},{''.join(bl)}->{''.join(ol)}"
-        term = np.einsum(spec, values[a], values[b])
+    for stmt in prog.stmts:
+        out, ol, a, al, b, bl, c_pf, ab_pf = stmt[:8]
+        kind = _kind_of(stmt)
+        if kind == "dot":
+            values[out] = np.array([np.sum(values[a] * values[b])], dtype=real)
+            continue
+        if kind == "dp":
+            term = values[a] * values[b]
+        else:
+            term = np.einsum(f"{''.join(al)},{''.join(bl)}->{''.join(ol)}", values[a], values[b])
         values[out] = (abs(c_pf) * values[out] + abs(ab_pf) * term).astype(real)
     return float(np.linalg.norm(np.concatenate(
         [values[key].ravel().astype(np.float64) for key in sorted(prog.outs)])))
@@ -541,9 +595,12 @@ def test_the_corpus_provokes_the_region_passes():
 
 def test_the_generator_draws_the_shapes_the_passes_need():
     """The three properties that separate this corpus from the einsum shards."""
-    repeated_operand = shared_output = annotated = False
+    repeated_operand = shared_output = annotated = reduced = False
     for seed in range(200):
         prog = _rng_program(seed)
+        kinds = {_kind_of(stmt) for stmt in prog.stmts}
+        if {"dp", "dot"} <= kinds:
+            reduced = True
         for factors in prog.terms:
             if len(set(factors)) != len(factors):
                 repeated_operand = True
@@ -557,6 +614,7 @@ def test_the_generator_draws_the_shapes_the_passes_need():
     assert repeated_operand, "no product ever holds one tensor twice"
     assert shared_output, "no two terms ever accumulate into one output"
     assert annotated, "no program ever declares a disjointness"
+    assert reduced, "no program ever scales a contraction and reduces it to a scalar"
 
 
 def test_the_pinned_ccsd_case_still_shares_the_occupied_intermediate():

@@ -81,7 +81,13 @@ struct LetterTable {
     std::unordered_map<std::string, double> constant;
 
     void observe(ExprIndex const &index, std::size_t extent_value) {
-        if (auto const [it, fresh] = var.try_emplace(index.letter); fresh) {
+        auto const [it, fresh] = var.try_emplace(index.letter);
+        // An anonymous letter is UPGRADED when a later occurrence of it carries a space, because
+        // the two numeric rungs both refuse a polynomial holding one anonymous variable and a
+        // program whose annotation reaches only some of the operands would otherwise decide
+        // nothing. A letter already bound to a space keeps it: the first valid one wins, which is
+        // what makes the walk's order the only thing the answer depends on.
+        if (fresh || (it->second.is_anonymous() && index.space.valid())) {
             it->second = index.space.valid() ? SymbolicVar::space(index.space) : SymbolicVar::anonymous(index.letter);
         }
         extent.try_emplace(index.letter, extent_value);
@@ -90,6 +96,14 @@ struct LetterTable {
         } else {
             anonymous_extent.try_emplace(index.letter, static_cast<double>(extent_value));
         }
+    }
+
+    /// @brief The space a letter was observed over, if any.
+    /// @param[in] letter The index letter.
+    /// @return The space, or an invalid id when the letter is anonymous or unknown.
+    [[nodiscard]] SpaceId space_for(std::string const &letter) const {
+        auto const it = var.find(letter);
+        return it != var.end() && it->second.is_space() ? it->second.space_id() : SpaceId{};
     }
 
     /// @brief Note a letter whose extent is a constant of a rewrite rather than a scale.

@@ -30,6 +30,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
+from einsums import linalg as la
 from einsums.testing import ALL_DTYPES, assert_close
 
 # (A B) C is the cheaper bracketing for both terms with these, which is what makes
@@ -346,3 +347,121 @@ def test_the_reported_cost_agrees_with_the_nodes_it_emitted():
     pm2.add(quiet)
     assert pm2.run(second)
     assert quiet.cost_mismatches == []
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The other two kinds the flattener reads as a product
+#
+# A correlation energy is not written as a chain of contractions. It is a
+# contraction, an elementwise scaling and a reduction to a scalar, and until
+# the flattener read all three the amplitude in the middle survived as a stored
+# leaf that every candidate had to rebuild. These pin the widening: the
+# elementwise intermediate never exists, the reduction becomes an ordinary
+# summed letter, and the answer holds.
+# ──────────────────────────────────────────────────────────────────────────
+
+#: Extents where re-bracketing the flattened energy pays. The reduction to a
+#: scalar is what makes it pay: with no free index to keep, the two operands of
+#: the contraction can be folded in one at a time instead of building the whole
+#: matrix first.
+EI, EJ, EK, EL = 12, 12, 2, 2
+
+
+def _energy_shaped(graph, arrays, dtype):
+    """``s = sum_ij (A B)[i,j] (C D)[i,j] V[i,j]``, written the way a caller does."""
+    A = _tensor("A", arrays[0], dtype)
+    B = _tensor("B", arrays[1], dtype)
+    C = _tensor("C", arrays[2], dtype)
+    D = _tensor("D", arrays[3], dtype)
+    V = _tensor("V", arrays[4], dtype)
+    energy = _tensor("E", np.zeros((1,)), dtype)
+    X = graph.declare_tensor("X", [EI, EJ], intermediate=True, dtype=dtype)
+    Y = graph.declare_tensor("Y", [EI, EJ], intermediate=True, dtype=dtype)
+    M = graph.declare_tensor("M", [EI, EJ], intermediate=True, dtype=dtype)
+    with cg.capture(graph):
+        einsums.einsum("i,j <- i,k ; k,j", X, A, B)
+        einsums.einsum("i,j <- i,l ; l,j", Y, C, D)
+        la.direct_product(1.0, X, Y, 0.0, M)
+        la.dot(energy, M, V)
+    return energy, (A, B, C, D, V, X, Y, M)
+
+
+def _energy_operands(seed=11):
+    rng = np.random.default_rng(seed)
+    return (rng.standard_normal((EI, EK)), rng.standard_normal((EK, EJ)),
+            rng.standard_normal((EI, EL)), rng.standard_normal((EL, EJ)),
+            rng.standard_normal((EI, EJ)))
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_a_scaled_product_reduced_by_a_dot_is_re_associated(dtype):
+    arrays = _energy_operands()
+    graph = cg.Graph("mtf-energy")
+    energy, _pool = _energy_shaped(graph, arrays, dtype)
+
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    mtf.set_verify_costs(True)
+    pm = cg.PassManager()
+    pm.add(mtf)
+    assert pm.run(graph), pm.explain()
+
+    # Five factors out of four statements: both contractions and the direct
+    # product are dissolved, and nothing was shared, so this is the search
+    # re-bracketing on its own.
+    assert mtf.num_inlined == 3
+    assert mtf.num_rebracketed == 1
+    assert mtf.num_shared == 0
+    assert mtf.cost_mismatches == [], mtf.cost_mismatches
+
+    ir = json.loads(graph.to_json())
+    kinds = {node["kind"] for node in ir["nodes"]}
+    assert kinds == {"Einsum"}, f"the direct product and the dot survive: {kinds}"
+
+    # The elementwise intermediate never exists. Its declaration stays, because
+    # the caller holds the handle, and Materialization leaves an unused deferred
+    # intermediate unallocated.
+    pm2 = cg.PassManager()
+    pm2.add(cg.Materialization())
+    pm2.run(graph)
+    materialized = {node["label"] for node in json.loads(graph.to_json())["nodes"]
+                    if node["kind"] == "Materialize"}
+    for dissolved in ("X", "Y", "M"):
+        assert f"materialize({dissolved})" not in materialized, materialized
+
+    graph.execute()
+    expected = np.sum((arrays[0] @ arrays[1]) * (arrays[2] @ arrays[3]) * arrays[4])
+    assert_close(np.asarray(energy)[0], np.asarray(expected).astype(dtype), dtype=dtype, rtol=1e-3)
+
+
+def test_the_nine_factor_product_is_within_the_default_cap():
+    """The cap admits the opposite-spin energy, which is what it was raised for."""
+    assert cg.MultiTermFactorization().max_factors == 10
+
+
+def test_an_accumulating_direct_product_is_not_folded():
+    """``C = A*B + C`` is more than one value, so dissolving it would drop the rest."""
+    arrays = _energy_operands(seed=13)
+    graph = cg.Graph("mtf-energy-rmw")
+    A = _tensor("A", arrays[0], "float64")
+    B = _tensor("B", arrays[1], "float64")
+    V = _tensor("V", arrays[4], "float64")
+    seed = _tensor("M0", np.ones((EI, EJ)), "float64")
+    energy = _tensor("E", np.zeros((1,)), "float64")
+    X = graph.declare_tensor("X", [EI, EJ], intermediate=True, dtype="float64")
+    with cg.capture(graph):
+        einsums.einsum("i,j <- i,k ; k,j", X, A, B)
+        la.direct_product(1.0, X, V, 1.0, seed)   # accumulates into a caller tensor
+        la.dot(energy, seed, V)
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    pm = cg.PassManager()
+    pm.add(mtf)
+    pm.run(graph)
+    kinds = {node["kind"] for node in json.loads(graph.to_json())["nodes"]}
+    assert "DirectProduct" in kinds
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    expected = np.sum((np.ones((EI, EJ)) + (arrays[0] @ arrays[1]) * arrays[4]) * arrays[4])
+    assert_close(np.asarray(energy)[0], np.asarray(expected), dtype="float64")

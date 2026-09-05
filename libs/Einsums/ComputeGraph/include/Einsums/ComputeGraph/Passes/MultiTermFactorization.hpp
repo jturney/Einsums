@@ -41,7 +41,10 @@
  * Per term, the optimal binary tree comes from the standard subset dynamic program: the best way
  * to contract a set of factors, built up from the best way to contract each of its subsets. That
  * is @c 3^N in the factor count, so the factor count is capped and a term above the cap is
- * declined rather than approximated.
+ * declined rather than approximated. The cap is TEN, which is what the opposite-spin correlation
+ * energy needs: flattened through its direct product and its dot, and with the Laplace transform's
+ * exponentials already in place, it is a nine-factor product over seven letters, and @c 3^9 is
+ * nineteen thousand subsets.
  *
  * Across terms, the candidates are PAIRS of factors that occur in more than one term. Restricting
  * to pairs is what keeps the candidate set quadratic instead of exponential, and it costs less
@@ -52,6 +55,15 @@
  * Both loops check @ref SearchBudget. A pass that runs out keeps the best assignment it had
  * reached, applies it, and reports that it was cut off, so exhausting the budget costs
  * optimization rather than correctness or determinism.
+ *
+ * @par What a rewrite is measured against
+ * The CAPTURED bracketing, priced through the same model the search ranks its own trees with: the
+ * product as the author wrote it, plus every definition the flattening dissolves, since those go
+ * away if the rewrite is taken. Comparing against the searched cost instead asks whether a search
+ * improves on itself, which it never does, and leaves the pass unable to fire on a re-bracketing
+ * that shares nothing. That is the case a decoupled energy expression is: one statement, one
+ * product, and a tree that is several scale orders cheaper than the one the equations were written
+ * in.
  *
  * @par Why it is off by default
  * `einsums:graph:structural-search`. Every other structural-algebraic pass is a recognizer whose
@@ -165,9 +177,18 @@ struct FactorizationPlan {
  *
  * @par Limitations
  * - A term's factors are flattened out of the captured chain only through intermediates the region
- *   can dissolve: written once, read once, overwritten rather than accumulated, and carrying a
- *   product prefactor of one. Anything else stays a factor in its own right, which is correct but
- *   hides the products inside it from the search.
+ *   can dissolve: written once, overwritten rather than accumulated, carrying a product prefactor
+ *   of one, and read only by statements that all resolve to ONE consumer once the folding is done.
+ *   Anything else stays a factor in its own right, which is correct but hides the products inside
+ *   it from the search.
+ * - Three node kinds present the product the flattener reads: a contraction, a
+ *   @c OpKind::DirectProduct (the same product with no summed letter) and a @c OpKind::Dot (the
+ *   same product summed over every letter). An amplitude formed by a contraction, scaled by a
+ *   direct product and reduced by a dot is therefore one product rather than a stored leaf every
+ *   candidate has to rebuild.
+ * - Shared occurrences must be in DIFFERENT terms. Two occurrences of one pair inside one term
+ *   would have to be applied together under a disjointness check, since applying one moves the
+ *   other's factor positions and the two may name a factor in common.
  * - Factors are capped at @ref max_factors, because the per-term program is exponential in that
  *   number and a cap is the honest way to bound it.
  * - A factor that repeats an index letter is a diagonal access, whose cost this pass does not
@@ -316,7 +337,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool        _search_explicit{false};
     bool        _cache_enabled{true};
     bool        _cache_explicit{false};
-    std::size_t _max_factors{8};
+    std::size_t _max_factors{10};
     std::size_t _num_rebracketed{0};
     std::size_t _num_shared{0};
     std::size_t _num_inlined{0};
