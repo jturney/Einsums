@@ -472,4 +472,11 @@ def test_the_rewritten_graph_saves_loads_rebinds_and_replays(water, tmp_path):
     loaded.apply(cg.default_pass_manager())
     loaded.execute()
 
-    assert np.allclose(np.asarray(replayed), in_process, rtol=0.0, atol=1e-12)
+    # The two runs are the same node set over the same numbers, but the fit keeps every
+    # direction of its squared-gram metric down to the 1e-8 drop threshold, so rounding that
+    # differs between two executions (a multithreaded BLAS reduction order, a different buffer
+    # alignment) is amplified by that conditioning to about 1e-8 relative on the result. Linux
+    # with MKL and with OpenBLAS showed 1e-12 absolute on elements near 1e-4 and 5e-12 on
+    # elements near 1e-9; macOS with Accelerate happened to reproduce bitwise. The bar is the
+    # conditioning, with an order of magnitude to spare, and not bit equality.
+    assert np.allclose(np.asarray(replayed), in_process, rtol=1e-8, atol=1e-10)
