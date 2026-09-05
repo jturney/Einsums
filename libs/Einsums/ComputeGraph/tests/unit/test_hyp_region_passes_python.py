@@ -786,10 +786,11 @@ def test_the_drawn_corpus_reaches_both_sides_of_the_split():
 # sometimes larger, which is what makes the profitability veto reachable rather
 # than assumed.
 #
-# The provider is the shipped metric fit, because a provider cannot be authored
-# in Python; test_factorization_python.py records that as the standing gap. So
-# what this arm draws is the shortest chain, two factors, and the longer ones
-# are pinned in C++ until a chain provider Python can construct exists.
+# Two providers are drawn, and they are the two shipped ones: the metric fit,
+# whose plan is the shortest chain there is, and the grid fit, whose plan is
+# five factors over two new letters. A provider still cannot be AUTHORED in
+# Python, which test_factorization_python.py records as the standing gap, so
+# these two are what the chain path can be drawn over.
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -874,3 +875,95 @@ def test_the_drawn_fits_reach_both_sides_of_the_profitability_veto():
         assert np.allclose(got, want, rtol=1e-10, atol=1e-12)
     assert accepted > 0, "no drawn problem was ever factorized"
     assert declined > 0, "no drawn problem ever hit the profitability veto"
+
+
+class ChainProgram(NamedTuple):
+    """One drawn grid-fit problem: a rank-4 tensor that IS a five-factor chain."""
+
+    nbf: int
+    ngrid: int
+    naux: int
+
+
+@st.composite
+def _chain_programs(draw):
+    nbf = draw(st.integers(min_value=3, max_value=5))
+    # No larger than the number of distinct basis pairs, or the fit's normal
+    # equations are singular and the residual stops meaning anything.
+    ngrid = draw(st.integers(min_value=2, max_value=nbf * (nbf + 1) // 2))
+    return ChainProgram(nbf=nbf, ngrid=ngrid, naux=draw(st.integers(min_value=2, max_value=4)))
+
+
+def _run_chain(prog, seed):
+    """Run the drawn grid-fit problem with the pass on, and return what happened."""
+    rng = np.random.default_rng(seed)
+    collocation = rng.standard_normal((prog.nbf, prog.ngrid))
+    weights = rng.standard_normal((prog.naux, prog.ngrid))
+    three = np.einsum("AP,mP,nP->Amn", weights, collocation, collocation)
+    dense = np.einsum("Amn,Apq->mnpq", three, three)
+    operand = rng.standard_normal((prog.nbf, prog.nbf))
+    want = np.einsum("mnpq,pq->mn", dense, operand)
+
+    M = einsums.asarray(np.ascontiguousarray(dense))
+    T = einsums.asarray(np.ascontiguousarray(operand))
+    C = einsums.zeros((prog.nbf, prog.nbf), dtype="float64")
+
+    graph = cg.Graph(_nm("chain"))
+    with cg.capture(graph):
+        einsums.einsum("m,n,p,q ; p,q -> m,n", C, M, T)
+    graph.annotate_tag(M, _G.ProvenanceTag.make("eri"))
+    graph.annotate_dims(M, ["nbf"] * 4)
+    _G.ThcFactorization.register_grid_space(graph)
+
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.ThcFactorization(
+        "eri", einsums.asarray(np.ascontiguousarray(three)),
+        einsums.asarray(np.ascontiguousarray(collocation)), 1e-8))
+    factorization = _G.FactorizationPass(registry)
+    pm = cg.PassManager()
+    pm.add(factorization)
+    fired = graph.apply(pm)
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    assert_materialization_invariants(graph, f"grid fit, {prog!r}")
+    return fired, np.asarray(C), want, graph, factorization
+
+
+@given(prog=_chain_programs())
+@settings(max_examples=sanitizer_examples(40), deadline=None,
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
+def test_the_five_factor_chain_keeps_the_answer(prog):
+    fired, got, want, _graph, factorization = _run_chain(prog, seed=0)
+    assert fired, f"the grid fit declined a drawn problem: {factorization.skip_reasons}"
+    assert factorization.num_factorized == 1
+    # The fit is EXACT on these problems by construction, so the only difference
+    # between the two forms is the order the sums are taken in.
+    scale = float(np.linalg.norm(np.abs(want))) or 1.0
+    assert float(np.linalg.norm(got - want)) <= 1e-8 * scale
+
+
+def test_the_drawn_chains_are_binarized_and_never_rebuild_the_integral():
+    """Five factors and an operand make five binary contractions, none of them rank four.
+
+    The property the chain plan exists for, asserted over drawn extents rather
+    than at one size: the pass binarizes, and rebuilding the tagged tensor is
+    simply the most expensive tree over those leaves.
+    """
+    seen = 0
+    for seed in range(12):
+        rng = np.random.default_rng(seed)
+        nbf = int(rng.integers(3, 6))
+        prog = ChainProgram(nbf=nbf, ngrid=int(rng.integers(2, nbf * (nbf + 1) // 2 + 1)),
+                            naux=int(rng.integers(2, 5)))
+        fired, got, want, graph, _f = _run_chain(prog, seed=seed)
+        if not fired:
+            continue
+        seen += 1
+        ir = json.loads(graph.to_json())
+        dims = {t["name"]: t["dims"] for t in ir["tensors"]}
+        for name, extent in dims.items():
+            if name.startswith("Thc_") and "_x" in name:
+                assert len(extent) < 4, f"{name} rebuilt a rank-four intermediate"
+        assert np.allclose(got, want, rtol=1e-8, atol=1e-10)
+    assert seen > 0, "no drawn chain was ever factorized"

@@ -245,6 +245,29 @@
     ``clear_cache`` empties it. Switch it off when bisecting a wrong number: two supposedly
     identical graphs getting one plan is the first thing to rule out.
 
+"einsums:graph:thc-epsilon":
+  added: "2.0.0"
+  body: |
+    Relative error a ``ThcFactorization`` asserts for the grid fit it substitutes for a tagged
+    four-index tensor, when the caller states none of its own.
+
+    A *tolerance*, spelled the way every per-lossy-pass knob is, and it reaches the PROVIDER
+    rather than living in a pass, so a graph saved after a grid fit means one thing wherever it
+    is loaded.
+
+    What it is not is a measurement. The error of a tensor-hypercontraction fit against the
+    exact four-index tensor cannot be computed without forming the tensor the fit exists to
+    avoid, so the number in the approximation record is the caller's assertion, exactly as the
+    density fit's is. What IS measured, on every bind, is the least-squares residual of the grid
+    fit against the three-index tensor it was fitted from: two parameters named by
+    ``ThcFactorization.residual_param_name`` and ``ThcFactorization.reference_param_name``,
+    whose ratio's square root is the relative residual. A residual far above this option is the
+    signal that the grid was too coarse for the accuracy the record claims.
+
+    The grid itself is not chosen here. The pass takes the collocation matrix it is handed, and
+    pruning a grid is a setup the caller performs; this option says what the result is asserted
+    to be worth and the measured residual says whether the grid delivered it.
+
 "einsums:graph:laplace-epsilon":
   added: "2.0.0"
   body: |

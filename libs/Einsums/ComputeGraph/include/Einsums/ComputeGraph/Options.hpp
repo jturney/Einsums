@@ -111,6 +111,20 @@ inline constinit cl::ConfigOption<double> GraphLaplaceEpsilon = cl::config_opt<d
     "point count and the emitted arithmetic with it",
     "ComputeGraph Passes", 1.0e-6, "EPS");
 
+/// The relative accuracy a tensor-hypercontraction fit is asserted to have.
+///
+/// A TOLERANCE, spelled the way Part 8.3 asks every per-lossy-pass knob to be spelled, and it
+/// reaches the provider rather than living in a pass, so a graph saved after a grid fit means
+/// one thing wherever it is loaded. What it is NOT is a measurement: the error of a grid fit
+/// against the exact four-index tensor cannot be computed without the tensor the fit exists to
+/// avoid forming. What is measured instead, per bind, is the least-squares residual against the
+/// three-index tensor the fit was fitted from; see ThcFactorization::residual_param_name.
+inline constinit cl::ConfigOption<double> GraphThcEpsilon = cl::config_opt<double>(
+    "einsums:graph:thc-epsilon",
+    "Relative error a ThcFactorization asserts for the grid fit it substitutes for a tagged four-index tensor, when the caller states "
+    "none of its own",
+    "ComputeGraph Passes", 1.0e-4, "EPS");
+
 /// How long a search pass may run, in milliseconds. Zero means unlimited.
 ///
 /// The number is a starting point rather than a measurement, which is what an option is for. What

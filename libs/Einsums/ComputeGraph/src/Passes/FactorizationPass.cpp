@@ -121,7 +121,7 @@ TensorId declare_scratch(Graph &graph, std::string name, packed_gemm::ScalarType
 
 /// What the tree emitter needs to build one product's statements.
 struct EmitRequest {
-    Graph const                       *graph{nullptr};
+    Graph                             *graph{nullptr};
     TensorExpr                        *expr{nullptr};
     std::vector<search::Factor> const *pieces{nullptr};
     search::TreePlan const            *tree{nullptr};
@@ -219,6 +219,19 @@ std::optional<std::vector<ExprStatement>> emit_tree(EmitRequest const &request) 
             }
             target_name = fmt::format("{}_{}_x{}", request.provider, request.stem, scratch_index++);
             target      = request.make(target_name, request.dtype, dims);
+
+            // What the intermediate is OVER, where every axis of it resolves. Without this the
+            // cost the pass reports and the cost its own nodes carry name the same letter two
+            // ways, one through a space variable and one anonymously, and the self-check that
+            // compares the two derivations fires on a rewrite that is perfectly correct.
+            std::vector<SpaceId> spaces;
+            spaces.reserve(axes.size());
+            for (auto const &index : axes) {
+                spaces.push_back(index.space);
+            }
+            if (request.graph->find_tensor(target) != nullptr && std::ranges::all_of(spaces, [](SpaceId id) { return id.valid(); })) {
+                request.graph->annotate_spaces(target, spaces);
+            }
         }
 
         ExprTerm value;
@@ -685,6 +698,19 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 continue;
             }
 
+            // A letter the provider introduces over a space with a DIM SYMBOL is one a later
+            // bind may resize, which is what a grid is: the number of points a capture happened
+            // to have is a placeholder rather than a size anything runs at. The extent veto has
+            // to abstain over it for the same reason it abstains over an annotated axis of the
+            // tagged tensor, and this is where the pass learns that it should.
+            bool provider_symbolic = false;
+            for (auto const &[letter, space] : new_spaces) {
+                if (space.valid() && space.value() < graph.space_registry().size() &&
+                    !graph.space_registry().space(space).dim_symbol.empty()) {
+                    provider_symbolic = true;
+                }
+            }
+
             std::size_t const          count = plan.factors.size();
             std::vector<RenamedFactor> renamed(count);
             for (std::size_t which = 0; which < count; ++which) {
@@ -729,6 +755,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                     }
                 }
             };
+            any_symbolic_extent = provider_symbolic;
             note_extent(tagged_id, tagged_index);
             note_extent(other_id, other_index);
             note_extent(statement.target, statement.target_indices);
@@ -921,6 +948,49 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             best->pieces[which].tensor = factor_ids[which];
         }
 
+        // What the factors are OVER, and how big a later bind may make them. The spaces come
+        // from the plan through the rename; a symbol comes from the space where the space has
+        // one and from the tagged tensor's own annotation where the letter is one of its axes.
+        //
+        // Annotated only when EVERY axis of a factor resolves, which is the rule
+        // `MultiTermFactorization` states for its shared intermediates: a partial annotation is
+        // what makes a bind move some extents and not others, which is worse than none at all.
+        {
+            std::unordered_map<std::string, std::string> symbol_of;
+            if (TensorHandle const *held = graph.find_tensor(tagged_id); held != nullptr) {
+                for (std::size_t axis = 0; axis < tagged_index.size() && axis < held->dim_symbols.size(); ++axis) {
+                    if (!held->dim_symbols[axis].empty()) {
+                        symbol_of.emplace(tagged_index[axis].letter, held->dim_symbols[axis]);
+                    }
+                }
+            }
+            for (std::size_t which = 0; which < count; ++which) {
+                std::vector<SpaceId>     spaces;
+                std::vector<std::string> symbols;
+                bool                     every_axis_symbolic = true;
+                for (auto const &index : best->factors[which].indices) {
+                    spaces.push_back(index.space);
+                    std::string symbol;
+                    if (auto const found = symbol_of.find(index.letter); found != symbol_of.end()) {
+                        symbol = found->second;
+                    } else if (index.space.valid() && index.space.value() < graph.space_registry().size()) {
+                        symbol = graph.space_registry().space(index.space).dim_symbol;
+                    }
+                    every_axis_symbolic = every_axis_symbolic && !symbol.empty();
+                    symbols.push_back(std::move(symbol));
+                }
+                // Every axis or none, which is what `annotate_spaces` requires and is the same
+                // all-or-nothing rule the symbols get: a partial annotation is what makes a
+                // bind move some extents and not others.
+                if (std::ranges::all_of(spaces, [](SpaceId id) { return id.valid(); })) {
+                    graph.annotate_spaces(factor_ids[which], spaces);
+                }
+                if (every_axis_symbolic) {
+                    graph.annotate_dims(factor_ids[which], symbols);
+                }
+            }
+        }
+
         // ── Emit the tree the search chose ────────────────────────────────────────────
         EmitRequest request;
         request.graph          = &graph;
@@ -984,7 +1054,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
 namespace {
 
 bool substitute_product_operand(
-    Graph const &graph, TensorExpr &expr, std::size_t position, std::size_t tagged_slot, std::string const &provider,
+    Graph &graph, TensorExpr &expr, std::size_t position, std::size_t tagged_slot, std::string const &provider,
     std::string const &tagged_name, FactorizationPlan const &plan, std::vector<search::Factor> const &pieces, search::TreePlan const &tree,
     search::LetterTable const &table, std::vector<ExprIndex> const &tagged_index, TensorId numerator,
     std::function<TensorId(std::string const &, packed_gemm::ScalarType, std::vector<std::size_t> const &)> const &make) {

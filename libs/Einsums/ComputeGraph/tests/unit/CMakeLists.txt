@@ -29,6 +29,7 @@ set(ComputeGraphTests
     Blueprints.cpp
     Factorization.cpp
     MetricFit.cpp
+    ThcFit.cpp
     LaplaceTransform.cpp
     PooledOperands.cpp
     ControlFlow.cpp
@@ -190,6 +191,7 @@ set(ComputeGraphTests
     test_tier_opportunities_python.py
     test_pass_operand_lifetime_after_rewrite_python.py
     test_factorization_python.py
+    test_thc_python.py
     test_laplace_transform_python.py
     test_laplace_mp2_python.py
     test_fuzz_ergonomics_python.py
