@@ -477,11 +477,25 @@ bool Materialization::run(Graph &graph) {
         }
         return nullptr;
     };
-    auto setup_body_writing = [&](std::size_t position, void const *ptr) -> Graph * {
-        if (position >= nodes.size() || ptr == nullptr) {
+    //
+    // The setup is found by SCANNING the node list in order rather than by looking at the node at
+    // the buffer's recorded first use. A setup node carries no inputs or outputs of its own and
+    // orders itself against its neighbours through effective io alone, so two setups that share
+    // no tensor are free to be reordered, and a first-use position taken before such a reorder
+    // names whichever setup now sits there. On one platform that happened to be the setup that
+    // writes the buffer and on another it was not, and the buffer's lifecycle then went to a node
+    // the writing body's validation could not see. The earliest setup that writes the buffer is a
+    // property of the graph, not of a position, so it is what is looked for.
+    auto setup_body_writing = [&](std::size_t /*position*/, void const *ptr) -> Graph * {
+        if (ptr == nullptr) {
             return nullptr;
         }
-        return setup_below(nodes[position], ptr);
+        for (auto const &node : nodes) {
+            if (Graph *found = setup_below(node, ptr); found != nullptr) {
+                return found;
+            }
+        }
+        return nullptr;
     };
 
     /// The body's own id for the buffer @p ptr names, which is what a node placed in the
