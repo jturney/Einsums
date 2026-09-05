@@ -258,6 +258,32 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return The measured deviation, or zero when nothing was rewritten.
     APIARY_EXPOSE APIARY_GETTER("last_measured_error") [[nodiscard]] double last_measured_error() const { return _last_measured; }
 
+    /// One energy vector the caller handed over, held type-erased.
+    ///
+    /// A @c shared_ptr to a view rather than the view itself, because the ADDRESS is the
+    /// identity a capture registers by: the setup body has to capture the same object on
+    /// every apply, or a second run of the pass would give the graph a second tensor under
+    /// one name.
+    ///
+    /// Public because the rewrite this pass drives is also driven by `FactorizationPass`, on a
+    /// trial expression, and the two share one implementation that has to name this type.
+    struct EnergyVector {
+        std::string             name;
+        packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Float64};
+        std::size_t             extent{0};
+        std::shared_ptr<void>   view;
+    };
+
+    /// @brief The vector registered under @p name, or null.
+    /// @param[in] name The tag's axis name.
+    /// @return The entry, or null when the caller supplied none.
+    [[nodiscard]] EnergyVector const *energy(std::string const &name) const;
+
+    /// @brief The smallest and largest element of a registered vector.
+    /// @param[in] held The entry to read.
+    /// @return The extremes, or nothing when the vector has no data.
+    [[nodiscard]] static std::optional<std::pair<double, double>> energy_extremes(EnergyVector const &held);
+
   protected:
     /// @copydoc RegionRewrite::rewrite
     bool rewrite(Graph &graph, Region const &region, TensorExpr &expr) override;
@@ -283,29 +309,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         std::string                           label;
         std::function<void(Graph &, Graph &)> emit;
     };
-
-    /// One energy vector the caller handed over, held type-erased.
-    ///
-    /// A @c shared_ptr to a view rather than the view itself, because the ADDRESS is the
-    /// identity a capture registers by: the setup body has to capture the same object on
-    /// every apply, or a second run of the pass would give the graph a second tensor under
-    /// one name.
-    struct EnergyVector {
-        std::string             name;
-        packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Float64};
-        std::size_t             extent{0};
-        std::shared_ptr<void>   view;
-    };
-
-    /// @brief The vector registered under @p name, or null.
-    /// @param[in] name The tag's axis name.
-    /// @return The entry, or null when the caller supplied none.
-    [[nodiscard]] EnergyVector const *energy(std::string const &name) const;
-
-    /// @brief The smallest and largest element of a registered vector.
-    /// @param[in] held The entry to read.
-    /// @return The extremes, or nothing when the vector has no data.
-    [[nodiscard]] static std::optional<std::pair<double, double>> energy_extremes(EnergyVector const &held);
 
     /// @brief Keep one energy vector, refusing a second under the same name.
     /// @param[in] name The tag's axis name.

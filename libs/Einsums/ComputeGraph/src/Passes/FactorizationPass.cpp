@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "ContractionTreeSearch.hpp"
+#include "LaplaceRewrite.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -118,13 +119,225 @@ TensorId declare_scratch(Graph &graph, std::string name, packed_gemm::ScalarType
     });
 }
 
+/// What the tree emitter needs to build one product's statements.
+struct EmitRequest {
+    Graph const                       *graph{nullptr};
+    TensorExpr                        *expr{nullptr};
+    std::vector<search::Factor> const *pieces{nullptr};
+    search::TreePlan const            *tree{nullptr};
+    search::LetterTable const         *table{nullptr};
+    std::string                        provider; ///< For the interior names and the labels.
+    std::string                        stem;     ///< The tagged tensor's name, for the interior names.
+    packed_gemm::ScalarType            dtype{packed_gemm::ScalarType::Float64};
+
+    /// The root statement's destination, exactly as the statement it replaces had it.
+    TensorId               root_target{};
+    std::string            root_name;
+    std::vector<ExprIndex> root_indices;
+    PrefactorScalar        root_prefactor{double{0}};
+    PrefactorScalar        root_factor{double{1}};
+    NodeId                 origin{0};
+
+    /// Make a tensor of the given name and shape. A live run declares it on the graph; a trial
+    /// invents an id, so costing a rewrite that is then declined leaves no shells behind.
+    std::function<TensorId(std::string const &, packed_gemm::ScalarType, std::vector<std::size_t> const &)> make;
+};
+
+/// Emit the chosen bracketing as binary contractions.
+///
+/// Every interior node becomes a declared intermediate and a binary contraction, which is the
+/// same binarization `MultiTermFactorization` does and for the same reason: @ref lower_region
+/// has no multi-operand contraction to lower one to. The statements come back in dependency
+/// order with the root last, and nothing is spliced: the caller decides where they go.
+std::optional<std::vector<ExprStatement>> emit_tree(EmitRequest const &request) {
+    std::set<std::string> const output_letters = search::letters_of(request.root_indices);
+    std::vector<ExprStatement>  emitted;
+    std::size_t                 scratch_index = 0;
+    Mask const                  full          = static_cast<Mask>((Mask{1} << request.pieces->size()) - 1);
+    TensorExpr                 &expr          = *request.expr;
+
+    auto make_leaf = [&](TensorId id, std::vector<ExprIndex> indices) {
+        ExprTerm            leaf;
+        TensorHandle const *held = request.graph->find_tensor(id);
+        leaf.kind                = TermKind::Leaf;
+        leaf.tensor              = id;
+        leaf.name                = held != nullptr ? held->name : std::string{};
+        leaf.indices             = std::move(indices);
+        return expr.add(std::move(leaf));
+    };
+
+    std::function<std::optional<search::Factor>(Mask)> build = [&](Mask mask) -> std::optional<search::Factor> {
+        if (std::popcount(mask) == 1) {
+            return (*request.pieces)[static_cast<std::size_t>(std::countr_zero(mask))];
+        }
+        if (request.tree->resolved[mask] == 0) {
+            return std::nullopt;
+        }
+        auto const left  = build(request.tree->split[mask]);
+        auto const right = build(mask ^ request.tree->split[mask]);
+        if (!left.has_value() || !right.has_value()) {
+            return std::nullopt;
+        }
+
+        // The axes this combine must expose, in first-appearance order over its operands.
+        std::set<std::string> outside = output_letters;
+        for (std::size_t piece = 0; piece < request.pieces->size(); ++piece) {
+            if ((mask & (Mask{1} << piece)) == 0) {
+                for (auto const &index : (*request.pieces)[piece].indices) {
+                    outside.insert(index.letter);
+                }
+            }
+        }
+        std::vector<ExprIndex> axes;
+        std::set<std::string>  seen;
+        for (search::Factor const *operand : {&*left, &*right}) {
+            for (auto const &index : operand->indices) {
+                if (outside.count(index.letter) != 0 && seen.insert(index.letter).second) {
+                    axes.push_back(index);
+                }
+            }
+        }
+
+        bool const  root = mask == full;
+        TensorId    target{};
+        std::string target_name;
+        if (root) {
+            target      = request.root_target;
+            target_name = request.root_name;
+        } else {
+            std::vector<std::size_t> dims;
+            dims.reserve(axes.size());
+            for (auto const &index : axes) {
+                auto const extent = request.table->extent.find(index.letter);
+                if (extent == request.table->extent.end()) {
+                    return std::nullopt;
+                }
+                dims.push_back(extent->second);
+            }
+            if (dims.empty()) {
+                return std::nullopt; // a scalar intermediate; nothing here emits one
+            }
+            target_name = fmt::format("{}_{}_x{}", request.provider, request.stem, scratch_index++);
+            target      = request.make(target_name, request.dtype, dims);
+        }
+
+        ExprTerm value;
+        value.kind    = TermKind::Contraction;
+        value.indices = root ? request.root_indices : axes;
+        value.operands.assign({make_leaf(left->tensor, left->indices), make_leaf(right->tensor, right->indices)});
+        value.operand_indices.assign({left->indices, right->indices});
+        value.conjugate.assign({left->conjugate, right->conjugate});
+        value.factor = root ? request.root_factor : PrefactorScalar{double{1}};
+        // Priced the way a raised term is, so the region's before-and-after compares like with
+        // like. An emitted term with no cost reads as free, and the report then offers a
+        // rewrite to nothing as evidence that the search was worth making.
+        value.cost = search::contraction_cost(search::letters_of(left->indices), search::letters_of(right->indices),
+                                              search::letters_of(value.indices), *request.table);
+
+        ExprStatement statement;
+        statement.target           = target;
+        statement.target_name      = target_name;
+        statement.target_indices   = value.indices;
+        statement.target_prefactor = root ? request.root_prefactor : PrefactorScalar{double{0}};
+        statement.value            = expr.add(std::move(value));
+        statement.origin           = request.origin;
+        statement.origin_kind      = OpKind::Einsum;
+        statement.origin_label =
+            fmt::format("{}: {}[{}]", request.provider, target_name, fmt::join(letters_of(statement.target_indices), ","));
+        emitted.push_back(std::move(statement));
+        return search::Factor{.tensor = target, .indices = root ? request.root_indices : axes, .conjugate = false};
+    };
+
+    if (!build(full).has_value()) {
+        return std::nullopt;
+    }
+    return emitted;
+}
+
+/// The cost of every contraction in an expression, over one letter table.
+///
+/// Written here rather than read off @ref TensorExpr::total_cost because the two sides of a
+/// JOINT comparison have to be priced by one rule: a raised term's cost comes from its node's
+/// descriptor and an emitted term's from this file, and a sum of the two would be a sum of two
+/// opinions about what a letter's extent variable is called.
+SymbolicCost expression_cost(Graph const &graph, TensorExpr const &expr,
+                             std::unordered_map<TensorId, std::vector<std::size_t>> const &invented,
+                             std::vector<std::pair<std::string, std::size_t>> const       &constants) {
+    search::LetterTable table;
+    auto const          dims_of = [&](TensorId id) -> std::vector<std::size_t> const          *{
+        if (auto const found = invented.find(id); found != invented.end()) {
+            return &found->second;
+        }
+        TensorHandle const *handle = graph.find_tensor(id);
+        return handle != nullptr ? &handle->dims : nullptr;
+    };
+    auto const observe = [&](std::vector<ExprIndex> const &indices, TensorId id) {
+        auto const *dims = dims_of(id);
+        if (dims == nullptr) {
+            return;
+        }
+        for (std::size_t axis = 0; axis < indices.size() && axis < dims->size(); ++axis) {
+            table.observe(indices[axis], (*dims)[axis]);
+        }
+    };
+    for (auto const &statement : expr.statements) {
+        if (statement.value == invalid_term) {
+            continue;
+        }
+        observe(statement.target_indices, statement.target);
+        ExprTerm const &term = expr.at(statement.value);
+        for (std::size_t slot = 0; slot < term.operands.size() && slot < term.operand_indices.size(); ++slot) {
+            observe(term.operand_indices[slot], expr.at(term.operands[slot]).tensor);
+        }
+    }
+    for (auto const &[letter, value] : constants) {
+        table.observe_constant(letter, value);
+    }
+
+    SymbolicCost total;
+    for (auto const &statement : expr.statements) {
+        if (statement.value == invalid_term) {
+            continue;
+        }
+        ExprTerm const &term = expr.at(statement.value);
+        if (term.kind == TermKind::Contraction && term.operand_indices.size() == 2) {
+            total = add_cost(total, search::contraction_cost(search::letters_of(term.operand_indices[0]),
+                                                             search::letters_of(term.operand_indices[1]),
+                                                             search::letters_of(statement.target_indices), table));
+            continue;
+        }
+        if (term.kind != TermKind::Elementwise) {
+            continue;
+        }
+        // An elementwise term is priced too, and only here. Everywhere else in this pass the
+        // question is which of two contractions is cheaper and a direct product on both sides
+        // cancels; here the question is whether a direct product is worth replacing BY a
+        // contraction, and a model that priced one side at nothing would answer it by
+        // comparing a number against zero.
+        std::set<std::string> loop = search::letters_of(statement.target_indices);
+        for (auto const operand : term.operands) {
+            for (auto const &index : expr.at(operand).indices) {
+                loop.insert(index.letter);
+            }
+        }
+        SymbolicCost elementwise;
+        elementwise.flops    = search::poly_over(loop, table);
+        elementwise.traffic  = elementwise.flops;
+        elementwise.resident = elementwise.flops;
+        total                = add_cost(total, elementwise);
+    }
+    return total;
+}
+
 } // namespace
 
 void FactorizationPass::reset_stats() {
     RegionRewrite::reset_stats();
     _num_factorized = 0;
     _num_dissolved  = 0;
+    _num_joint      = 0;
     _pending.clear();
+    _pending_quadrature.clear();
     _considered.clear();
 }
 
@@ -137,8 +350,8 @@ std::vector<std::string> FactorizationPass::describe() const {
         return {};
     }
     return {fmt::format("FactorizationPass: re-associated {} contraction(s) around a provider's factors, dissolving {} captured "
-                        "intermediate(s) into the cone",
-                        _num_factorized, _num_dissolved)};
+                        "intermediate(s) into the cone, {} of them decided jointly with a quadrature",
+                        _num_factorized, _num_dissolved, _num_joint)};
 }
 
 bool FactorizationPass::applicable(Graph const &graph) const {
@@ -163,10 +376,20 @@ bool FactorizationPass::run(Graph &graph) {
         pending.emit(graph, body, pending.factors);
         modified = true;
     }
-    if (!_pending.empty()) {
-        report(1, fmt::format("emitted {} setup bod(y/ies) holding the fittings", _pending.size()));
+    // The quadratures a joint rewrite fitted, behind the fittings for the same reason those go
+    // at the front: a body reading tensors nothing here produces depends on nothing this graph
+    // computes, and every reader of what it writes comes later.
+    for (auto const &pending : _pending_quadrature) {
+        Graph &body = graph.add_setup_at(pending.label, 0);
+        pending.emit(graph, body);
+        modified = true;
+    }
+    if (!_pending.empty() || !_pending_quadrature.empty()) {
+        report(1, fmt::format("emitted {} setup bod(y/ies) holding the fittings and {} holding a quadrature", _pending.size(),
+                              _pending_quadrature.size()));
     }
     _pending.clear();
+    _pending_quadrature.clear();
 
     // A tag no contraction ever offered is a decline rather than a silence. Every other refusal
     // here reports itself because it happens with a candidate in hand; this one happens because
@@ -198,6 +421,25 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
 
     ComparisonContext ctx;
     ctx.registry = &graph.space_registry();
+
+    // ── The joint shape, first ────────────────────────────────────────────────────────────
+    //
+    // A tagged tensor multiplied by a tagged denominator is the one candidate whose worth
+    // cannot be decided here alone, so it is decided with the quadrature that follows it. A
+    // whole rescan after each one, because the accepted rewrite dissolves a statement and
+    // splices several, and every index into the list is stale afterwards. Bounded by the number
+    // of such products, which is small, and terminating because an accepted rewrite leaves no
+    // direct product reading the tagged tensor.
+    for (bool joint = _laplace != nullptr; joint;) {
+        joint = false;
+        for (std::size_t position = 0; position < expr.statements.size(); ++position) {
+            if (rewrite_denominator_product(graph, region, expr, position).has_value()) {
+                changed = true;
+                joint   = true;
+                break;
+            }
+        }
+    }
 
     // Index-based, because an accepted rewrite INSERTS statements and the loop has to skip
     // past what it just added rather than reconsider them.
@@ -680,124 +922,37 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         }
 
         // ── Emit the tree the search chose ────────────────────────────────────────────
-        //
-        // Every interior node becomes a declared intermediate and a binary contraction, which
-        // is the same binarization `MultiTermFactorization` does and for the same reason:
-        // @ref lower_region has no multi-operand contraction to lower one to.
-        std::set<std::string> const output_letters = search::letters_of(statement.target_indices);
-        std::vector<ExprStatement>  interior;
-        std::size_t                 scratch_index = 0;
-        Mask const                  full          = static_cast<Mask>((Mask{1} << best->pieces.size()) - 1);
-
-        auto make_leaf = [&expr, &graph](TensorId id, std::vector<ExprIndex> indices) {
-            ExprTerm leaf;
-            leaf.kind    = TermKind::Leaf;
-            leaf.tensor  = id;
-            leaf.name    = graph.find_tensor(id) != nullptr ? graph.find_tensor(id)->name : std::string{};
-            leaf.indices = std::move(indices);
-            return expr.add(std::move(leaf));
+        EmitRequest request;
+        request.graph          = &graph;
+        request.expr           = &expr;
+        request.pieces         = &best->pieces;
+        request.tree           = &best->tree;
+        request.table          = &best->table;
+        request.provider       = best->plan.provider;
+        request.stem           = tagged_name;
+        request.dtype          = best->plan.factors[0].dtype;
+        request.root_target    = statement.target;
+        request.root_name      = statement.target_name;
+        request.root_indices   = statement.target_indices;
+        request.root_prefactor = statement.target_prefactor;
+        request.root_factor    = term.factor;
+        request.origin         = statement.origin;
+        request.make           = [&graph](std::string const &name, packed_gemm::ScalarType dtype, std::vector<std::size_t> const &dims) {
+            return declare_scratch(graph, name, dtype, dims);
         };
 
-        bool                                               emitted_ok = true;
-        std::function<std::optional<search::Factor>(Mask)> build      = [&](Mask mask) -> std::optional<search::Factor> {
-            if (std::popcount(mask) == 1) {
-                return best->pieces[static_cast<std::size_t>(std::countr_zero(mask))];
-            }
-            if (best->tree.resolved[mask] == 0) {
-                return std::nullopt;
-            }
-            auto const left  = build(best->tree.split[mask]);
-            auto const right = build(mask ^ best->tree.split[mask]);
-            if (!left.has_value() || !right.has_value()) {
-                return std::nullopt;
-            }
-
-            // The axes this combine must expose, in first-appearance order over its operands.
-            std::set<std::string> outside = output_letters;
-            for (std::size_t piece = 0; piece < best->pieces.size(); ++piece) {
-                if ((mask & (Mask{1} << piece)) == 0) {
-                    for (auto const &index : best->pieces[piece].indices) {
-                        outside.insert(index.letter);
-                    }
-                }
-            }
-            std::vector<ExprIndex> axes;
-            std::set<std::string>  seen;
-            for (search::Factor const *operand : {&*left, &*right}) {
-                for (auto const &index : operand->indices) {
-                    if (outside.count(index.letter) != 0 && seen.insert(index.letter).second) {
-                        axes.push_back(index);
-                    }
-                }
-            }
-
-            bool const  root = mask == full;
-            TensorId    target{};
-            std::string target_name;
-            if (root) {
-                target      = statement.target;
-                target_name = statement.target_name;
-            } else {
-                std::vector<std::size_t> dims;
-                dims.reserve(axes.size());
-                for (auto const &index : axes) {
-                    auto const extent = best->table.extent.find(index.letter);
-                    if (extent == best->table.extent.end()) {
-                        return std::nullopt;
-                    }
-                    dims.push_back(extent->second);
-                }
-                if (dims.empty()) {
-                    return std::nullopt; // a scalar intermediate; nothing here emits one
-                }
-                target_name = fmt::format("{}_{}_x{}", best->plan.provider, tagged_name, scratch_index++);
-                target      = declare_scratch(graph, target_name, best->plan.factors[0].dtype, dims);
-            }
-
-            ExprTerm value;
-            value.kind    = TermKind::Contraction;
-            value.indices = root ? statement.target_indices : axes;
-            value.operands.assign({make_leaf(left->tensor, left->indices), make_leaf(right->tensor, right->indices)});
-            value.operand_indices.assign({left->indices, right->indices});
-            value.conjugate.assign({left->conjugate, right->conjugate});
-            value.factor = root ? term.factor : PrefactorScalar{double{1}};
-            // Priced the way a raised term is, so the region's before-and-after compares like
-            // with like. An emitted term with no cost reads as free, and the report then
-            // offers a rewrite to nothing as evidence that the search was worth making.
-            value.cost = search::contraction_cost(search::letters_of(left->indices), search::letters_of(right->indices),
-                                                  search::letters_of(value.indices), best->table);
-
-            ExprStatement emitted;
-            emitted.target           = target;
-            emitted.target_name      = target_name;
-            emitted.target_indices   = value.indices;
-            emitted.target_prefactor = root ? statement.target_prefactor : PrefactorScalar{double{0}};
-            emitted.value            = expr.add(std::move(value));
-            emitted.origin           = statement.origin;
-            emitted.origin_kind      = OpKind::Einsum;
-            emitted.origin_label     = fmt::format("{}: {}[{}]", best->plan.provider, target_name,
-                                                   fmt::join(letters_of(root ? statement.target_indices : axes), ","));
-
-            if (root) {
-                expr.statements[position] = std::move(emitted);
-            } else {
-                interior.push_back(std::move(emitted));
-            }
-            return search::Factor{.tensor = target, .indices = root ? statement.target_indices : axes, .conjugate = false};
-        };
-
-        if (!build(full).has_value()) {
+        auto emitted = emit_tree(request);
+        if (!emitted.has_value()) {
             // Nothing above touched the statement list, so a tree that will not build costs
             // this candidate and leaves the region as it was.
-            emitted_ok = false;
-        }
-        if (!emitted_ok) {
             note_skip("the chosen bracketing could not be emitted", fmt::format("'{}' on '{}'", best->plan.provider, tagged_name));
             continue;
         }
 
-        expr.statements.insert(expr.statements.begin() + static_cast<std::ptrdiff_t>(position), interior.begin(), interior.end());
-        position += interior.size(); // past the statements just inserted, onto the one they feed
+        expr.statements[position] = std::move(emitted->back());
+        emitted->pop_back();
+        expr.statements.insert(expr.statements.begin() + static_cast<std::ptrdiff_t>(position), emitted->begin(), emitted->end());
+        position += emitted->size(); // past the statements just inserted, onto the one they feed
 
         // The definitions the flattening folded in are gone: their values now live inside the
         // tree. Erased back to front so the earlier indices stay valid, and every one of them
@@ -812,8 +967,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         _pending.push_back(PendingSetup{.label = record.setup, .factors = factor_ids, .emit = best->plan.emit_setup});
         ++_num_factorized;
         changed = true;
-        report(2,
-               fmt::format("factorized '{}' through {}: one contraction became {}", tagged_name, best->plan.provider, interior.size() + 1));
+        report(2, fmt::format("factorized '{}' through {}", tagged_name, best->plan.provider));
     }
 
     (void)region;
@@ -821,6 +975,401 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         EINSUMS_LOG_INFO("FactorizationPass: re-associated {} contraction(s)", _num_factorized);
     }
     return changed;
+}
+
+/// Emit the substituted product into @p numerator and point the direct product at it.
+///
+/// Shared by the trial and the rewrite that follows it, because a trial priced by one code path
+/// and applied by another is a measurement of the wrong program.
+namespace {
+
+bool substitute_product_operand(
+    Graph const &graph, TensorExpr &expr, std::size_t position, std::size_t tagged_slot, std::string const &provider,
+    std::string const &tagged_name, FactorizationPlan const &plan, std::vector<search::Factor> const &pieces, search::TreePlan const &tree,
+    search::LetterTable const &table, std::vector<ExprIndex> const &tagged_index, TensorId numerator,
+    std::function<TensorId(std::string const &, packed_gemm::ScalarType, std::vector<std::size_t> const &)> const &make) {
+    ExprStatement const statement = expr.statements[position];
+
+    EmitRequest request;
+    request.graph          = &graph;
+    request.expr           = &expr;
+    request.pieces         = &pieces;
+    request.tree           = &tree;
+    request.table          = &table;
+    request.provider       = provider;
+    request.stem           = tagged_name;
+    request.dtype          = plan.factors[0].dtype;
+    request.root_target    = numerator;
+    request.root_name      = fmt::format("{}_{}_num", provider, tagged_name);
+    request.root_indices   = tagged_index;
+    request.root_prefactor = PrefactorScalar{double{0}};
+    request.root_factor    = PrefactorScalar{double{1}};
+    request.origin         = statement.origin;
+    request.make           = make;
+
+    auto emitted = emit_tree(request);
+    if (!emitted.has_value()) {
+        return false;
+    }
+
+    // The direct product now reads the substituted product rather than the tagged tensor. An id
+    // substitution rather than an index rewrite, because the numerator has the tagged tensor's
+    // own index list by construction.
+    ExprTerm updated = expr.at(statement.value);
+    ExprTerm leaf;
+    leaf.kind                       = TermKind::Leaf;
+    leaf.tensor                     = numerator;
+    leaf.name                       = request.root_name;
+    leaf.indices                    = tagged_index;
+    updated.operands[tagged_slot]   = expr.add(std::move(leaf));
+    expr.statements[position].value = expr.add(std::move(updated));
+
+    expr.statements.insert(expr.statements.begin() + static_cast<std::ptrdiff_t>(position), emitted->begin(), emitted->end());
+    return true;
+}
+
+} // namespace
+
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): the joint decision is one argument
+// and splitting it would put the halves out of sight of each other.
+std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph &graph, Region const &region, TensorExpr &expr,
+                                                                          std::size_t position) {
+    ExprStatement const statement = expr.statements[position];
+    ExprTerm const      product   = expr.at(statement.value);
+    if (product.kind != TermKind::Elementwise || product.element_kind != OpKind::DirectProduct || product.operands.size() != 2) {
+        return std::nullopt;
+    }
+
+    // One operand tagged for a provider, the other a Laplace denominator. That pairing is what
+    // makes this shape the one neither pass can go first on: the fit has no contraction to
+    // re-associate until it substitutes, and the transform has no contraction to ride on until
+    // the fit has substituted.
+    std::size_t tagged_slot = 2;
+    std::string tag;
+    for (std::size_t slot = 0; slot < 2; ++slot) {
+        TensorHandle const *handle = graph.find_tensor(expr.at(product.operands[slot]).tensor);
+        TensorHandle const *other  = graph.find_tensor(expr.at(product.operands[1 - slot]).tensor);
+        if (handle != nullptr && other != nullptr && !handle->tag.name.empty() && registry().claims(handle->tag.name) &&
+            other->tag.name == LaplaceTransform::tag_name()) {
+            tagged_slot = slot;
+            tag         = handle->tag.name;
+            break;
+        }
+    }
+    if (tagged_slot == 2) {
+        return std::nullopt;
+    }
+
+    TensorId const    tagged_id   = expr.at(product.operands[tagged_slot]).tensor;
+    std::string const tagged_name = expr.at(product.operands[tagged_slot]).name;
+    // An elementwise term carries no per-operand index lists, which are a contraction's
+    // vocabulary; a leaf carries its own. Reading them off the term instead is the mistake that
+    // made this shape invisible the first time it was looked for.
+    auto const tagged_index = expr.at(product.operands[tagged_slot]).indices;
+
+    if (std::ranges::find(_considered, tagged_id) == _considered.end()) {
+        _considered.push_back(tagged_id);
+    }
+    if (written_anywhere(graph, tagged_id)) {
+        note_skip("the tagged tensor is written by this graph, so its factors could go stale", fmt::format("tensor '{}'", tagged_name));
+        return std::nullopt;
+    }
+
+    ComparisonContext ctx;
+    ctx.registry = &graph.space_registry();
+
+    std::vector<std::string> used = letters_of(tagged_index);
+    merge_letters(used, letters_of(statement.target_indices));
+
+    // The invented-id space a trial names its tensors in. Far above anything a graph assigns,
+    // so a trial expression can be priced without a declaration being made for a rewrite that
+    // is then declined.
+    TensorId trial_next = TensorId{1} << 60U;
+
+    struct Candidate {
+        FactorizationPlan           plan;
+        std::vector<search::Factor> pieces;
+        search::LetterTable         table;
+        search::TreePlan            tree;
+        SymbolicCost                after;
+        std::size_t                 quadrature_points{0};
+        double                      quadrature_measured{0};
+        double                      quadrature_tolerance{0};
+        std::string                 quadrature_label;
+    };
+    std::optional<Candidate> best;
+    SymbolicCost const       before = expression_cost(graph, expr, {}, {});
+
+    for (auto const &provider : registry().for_tag(tag)) {
+        auto offer = provider->propose(graph, tagged_id);
+        if (!offer) {
+            note_skip("a provider declined", fmt::format("'{}': {}", provider->name(), offer.error()));
+            continue;
+        }
+        FactorizationPlan plan = std::move(*offer);
+        if (plan.factors.size() < 2 || plan.factors.size() > kMaxPieces) {
+            note_skip("a provider's chain is not one the bracketing search is allowed to take",
+                      fmt::format("'{}': {} factor(s)", provider->name(), plan.factors.size()));
+            continue;
+        }
+        if (plan.tagged_letters.size() != tagged_index.size()) {
+            note_skip("a provider's letter list does not match the tagged operand's rank", fmt::format("'{}'", provider->name()));
+            continue;
+        }
+
+        std::unordered_map<std::string, std::string> rename;
+        std::unordered_map<std::string, SpaceId>     new_spaces;
+        for (std::size_t axis = 0; axis < plan.tagged_letters.size(); ++axis) {
+            rename.emplace(plan.tagged_letters[axis], tagged_index[axis].letter);
+        }
+        std::vector<std::string> taken = used;
+        bool                     ok    = true;
+        for (auto const &factor : plan.factors) {
+            if (factor.letters.size() != factor.dims.size()) {
+                note_skip("a provider's factor has a different number of letters and extents", fmt::format("'{}'", provider->name()));
+                ok = false;
+                break;
+            }
+            for (std::size_t axis = 0; axis < factor.letters.size(); ++axis) {
+                if (rename.contains(factor.letters[axis])) {
+                    continue;
+                }
+                std::string fresh = fresh_letter(taken, factor.letters[axis]);
+                taken.push_back(fresh);
+                rename.emplace(factor.letters[axis], fresh);
+                if (axis < factor.spaces.size() && !factor.spaces[axis].empty()) {
+                    if (auto const space = graph.space_registry().find(factor.spaces[axis]); space.has_value()) {
+                        new_spaces.emplace(fresh, *space);
+                    }
+                }
+            }
+        }
+        if (!ok) {
+            continue;
+        }
+
+        std::vector<search::Factor> pieces;
+        search::LetterTable         table;
+        bool                        any_symbolic_extent = false;
+        if (TensorHandle const *handle = graph.find_tensor(tagged_id); handle != nullptr) {
+            for (std::size_t axis = 0; axis < tagged_index.size() && axis < handle->dims.size(); ++axis) {
+                table.observe(tagged_index[axis], handle->dims[axis]);
+                if (axis < handle->dim_symbols.size() && !handle->dim_symbols[axis].empty()) {
+                    any_symbolic_extent = true;
+                }
+            }
+        }
+        for (auto const &factor : plan.factors) {
+            search::Factor piece;
+            for (std::size_t axis = 0; axis < factor.letters.size(); ++axis) {
+                std::string const &mapped = rename.at(factor.letters[axis]);
+                SpaceId            space;
+                if (auto const found = new_spaces.find(mapped); found != new_spaces.end()) {
+                    space = found->second;
+                } else {
+                    for (auto const &index : tagged_index) {
+                        if (index.letter == mapped) {
+                            space = index.space;
+                            break;
+                        }
+                    }
+                }
+                ExprIndex const index{.letter = mapped, .space = space};
+                table.observe(index, factor.dims[axis]);
+                piece.indices.push_back(index);
+            }
+            pieces.push_back(std::move(piece));
+        }
+
+        ComparisonContext tree_ctx;
+        tree_ctx.registry     = ctx.registry;
+        tree_ctx.bound_extent = table.lookup();
+
+        search::TreePlan const tree = search::solve_tree(pieces, tagged_index, table, tree_ctx);
+        if (!tree.ok) {
+            note_skip("no bracketing of the substituted product could be found",
+                      fmt::format("'{}' on '{}'", provider->name(), tagged_name));
+            continue;
+        }
+
+        // ── The trial ─────────────────────────────────────────────────────────────────
+        //
+        // The substitution alone is strictly more arithmetic here: it rebuilds the very tensor
+        // the caller already holds. What is being asked is whether the substitution plus the
+        // quadrature that becomes possible because of it is worth taking, so the trial carries
+        // both and nothing is declared for a trial that loses.
+        TensorExpr                                             trial = expr;
+        std::unordered_map<TensorId, std::vector<std::size_t>> invented;
+        TensorId                                               next = trial_next;
+        auto const invent = [&](std::string const & /*name*/, packed_gemm::ScalarType, std::vector<std::size_t> const &dims) {
+            TensorId const id = next++;
+            invented.emplace(id, dims);
+            return id;
+        };
+        std::vector<search::Factor> trial_pieces = pieces;
+        for (std::size_t which = 0; which < trial_pieces.size(); ++which) {
+            trial_pieces[which].tensor = invent(plan.factors[which].name, plan.factors[which].dtype, plan.factors[which].dims);
+        }
+        std::vector<std::size_t> numerator_dims;
+        for (auto const &index : tagged_index) {
+            auto const extent = table.extent.find(index.letter);
+            if (extent == table.extent.end()) {
+                break;
+            }
+            numerator_dims.push_back(extent->second);
+        }
+        if (numerator_dims.size() != tagged_index.size()) {
+            continue;
+        }
+        TensorId const trial_numerator =
+            invent(fmt::format("{}_{}_num", provider->name(), tagged_name), plan.factors[0].dtype, numerator_dims);
+
+        if (!substitute_product_operand(graph, trial, position, tagged_slot, provider->name(), tagged_name, plan, trial_pieces, tree, table,
+                                        tagged_index, trial_numerator, invent)) {
+            note_skip("the chosen bracketing could not be emitted", fmt::format("'{}' on '{}'", provider->name(), tagged_name));
+            continue;
+        }
+
+        std::vector<TensorId> internal = region.internal;
+        internal.push_back(trial_numerator);
+        quadrature::RewriteOptions options;
+        options.epsilon    = _laplace->epsilon();
+        options.points     = _laplace->points();
+        options.energy     = [this](std::string const &wanted) { return _laplace->energy(wanted); };
+        options.declare    = invent;
+        options.want_setup = false;
+        std::vector<TensorId> claimed;
+
+        auto const outcomes = quadrature::rewrite_denominators(graph, internal, trial, options, claimed);
+        auto const applied  = std::ranges::find_if(outcomes, [](auto const &entry) { return entry.applied; });
+        if (applied == outcomes.end()) {
+            for (auto const &entry : outcomes) {
+                if (!entry.reason.empty()) {
+                    note_skip(entry.reason, entry.detail);
+                }
+            }
+            note_skip("the substitution only pays with the quadrature that follows it, and the quadrature declined",
+                      fmt::format("'{}' on '{}'", provider->name(), tagged_name));
+            continue;
+        }
+        for (auto const &[id, dims] : applied->shapes) {
+            invented.emplace(id, dims);
+        }
+
+        SymbolicCost const after = expression_cost(graph, trial, invented, applied->constant_letters);
+
+        // The joint verdict. Both halves are asked of the PAIR, because the substitution on its
+        // own rebuilds a tensor the caller already has and the transform on its own has nothing
+        // to ride on: a veto taken on either alone would refuse a rewrite the other makes pay.
+        if (compare(after, before, ctx) >= 0) {
+            note_skip("the fit and the quadrature together are not symbolically cheaper than the region they replace",
+                      fmt::format("'{}' on '{}': {} vs {}", provider->name(), tagged_name, after.flops.to_string(ctx.registry),
+                                  before.flops.to_string(ctx.registry)));
+            continue;
+        }
+        ExtentLookup const extent_of    = table.lookup();
+        auto const         before_flops = before.flops.evaluate(extent_of);
+        auto const         after_flops  = after.flops.evaluate(extent_of);
+        if (any_symbolic_extent) {
+            report(2, fmt::format("the extent veto abstains on '{}' ({}): a symbolic axis makes the captured size a placeholder",
+                                  tagged_name, provider->name()));
+        } else if (before_flops.has_value() && after_flops.has_value() && *after_flops >= *before_flops) {
+            note_skip("the fit and the quadrature together are not cheaper at the extents this graph holds",
+                      fmt::format("'{}' on '{}': {:g} vs {:g} flops", provider->name(), tagged_name, *after_flops, *before_flops));
+            continue;
+        }
+        if (best.has_value() && compare(after, best->after, ctx) >= 0) {
+            continue;
+        }
+
+        best = Candidate{.plan                 = std::move(plan),
+                         .pieces               = std::move(pieces),
+                         .table                = std::move(table),
+                         .tree                 = tree,
+                         .after                = after,
+                         .quadrature_points    = applied->points,
+                         .quadrature_measured  = applied->measured,
+                         .quadrature_tolerance = applied->tolerance,
+                         .quadrature_label     = applied->setup_label};
+    }
+
+    if (!best.has_value()) {
+        return std::nullopt;
+    }
+
+    // Both accuracy statements, before anything is rewritten, and both through the one place a
+    // lossy pass refuses. A budget that will not pay for the pair leaves the region exactly as
+    // it was, which is why neither record is written until both are accepted.
+    ApproximationRecord fit = best->plan.accuracy;
+    fit.pass_name           = best->plan.provider;
+    if (fit.setup.empty()) {
+        fit.setup = fmt::format("{}({})", best->plan.provider, tagged_name);
+    }
+    ApproximationRecord quad =
+        make_approximation_record(_laplace->name(), ApproximationEffect::NormRelative, best->quadrature_tolerance,
+                                  best->quadrature_measured, {}, {}, best->quadrature_label, ApproximationOrigin::Measured);
+    if (!approximate(graph, fit) || !approximate(graph, quad)) {
+        return std::nullopt;
+    }
+
+    // ── The real thing, with the tensors declared this time ───────────────────────────
+    std::size_t const                             count = best->plan.factors.size();
+    std::vector<TensorId>                         factor_ids(count);
+    std::vector<std::pair<std::string, TensorId>> declared;
+    for (std::size_t which = 0; which < count; ++which) {
+        std::string const &factor_name = best->plan.factors[which].name;
+        auto const         found = std::ranges::find_if(declared, [&factor_name](auto const &entry) { return entry.first == factor_name; });
+        if (found != declared.end()) {
+            factor_ids[which] = found->second;
+            continue;
+        }
+        factor_ids[which] = declare_scratch(graph, fmt::format("{}_{}", best->plan.provider, factor_name), best->plan.factors[which].dtype,
+                                            best->plan.factors[which].dims);
+        declared.emplace_back(factor_name, factor_ids[which]);
+    }
+    for (std::size_t which = 0; which < count; ++which) {
+        best->pieces[which].tensor = factor_ids[which];
+    }
+
+    auto const declare = [&graph](std::string const &name, packed_gemm::ScalarType dtype, std::vector<std::size_t> const &dims) {
+        return declare_scratch(graph, name, dtype, dims);
+    };
+    std::vector<std::size_t> numerator_dims;
+    for (auto const &index : tagged_index) {
+        numerator_dims.push_back(best->table.extent.at(index.letter));
+    }
+    TensorId const numerator =
+        declare(fmt::format("{}_{}_num", best->plan.provider, tagged_name), best->plan.factors[0].dtype, numerator_dims);
+
+    std::size_t const inserted = expr.statements.size();
+    if (!substitute_product_operand(graph, expr, position, tagged_slot, best->plan.provider, tagged_name, best->plan, best->pieces,
+                                    best->tree, best->table, tagged_index, numerator, declare)) {
+        return std::nullopt;
+    }
+    std::size_t const grew = expr.statements.size() - inserted;
+
+    std::vector<TensorId> internal = region.internal;
+    internal.push_back(numerator);
+    quadrature::RewriteOptions options;
+    options.epsilon = _laplace->epsilon();
+    options.points  = _laplace->points();
+    options.energy  = [this](std::string const &wanted) { return _laplace->energy(wanted); };
+    options.declare = declare;
+    std::vector<TensorId> claimed;
+
+    auto const outcomes = quadrature::rewrite_denominators(graph, internal, expr, options, claimed);
+    for (auto const &outcome : outcomes) {
+        if (outcome.applied && outcome.emit_setup) {
+            _pending_quadrature.push_back(PendingQuadrature{.label = quad.setup, .emit = outcome.emit_setup});
+        }
+    }
+
+    _pending.push_back(PendingSetup{.label = fit.setup, .factors = factor_ids, .emit = best->plan.emit_setup});
+    ++_num_factorized;
+    ++_num_joint;
+    report(1, fmt::format("factorized '{}' through {} and decoupled its denominator in one decision: neither pays alone", tagged_name,
+                          best->plan.provider));
+    return grew;
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

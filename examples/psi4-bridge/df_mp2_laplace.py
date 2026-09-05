@@ -45,9 +45,12 @@ a caller with only a dense ``(ia|jb)`` writes and runs both passes over it, and
 both decline with their reasons: the integral is read elementwise and through a
 dot, never as a contraction operand, so there is nothing for the fit to
 re-associate, and the amplitude's numerator is then a stored tensor rather than
-a contraction, so the transform has no operands to ride on. Substituting the fit
-anyway is what would unlock the decoupling, and that substitution is not itself
-profitable, which is what the fit's cost veto refuses. ``--response`` shows the
+a contraction, so the transform has no operands to ride on. It then runs the same
+form again with the two costed as ONE decision, which is what
+``FactorizationPass.set_laplace_transform`` is for, and prints the joint number:
+the pair is a whole scale order worse, because the amplitude is a stored tensor
+and the decoupled form has to rebuild it as a sum over the quadrature and
+auxiliary indices where the captured form built it with one elementwise multiply. ``--response`` shows the
 two composing on this same molecule's integrals in the shape where the fit IS
 profitable, an orbital-response update built from ``(ia|jb)`` and divided by
 ``e_i - e_a``.
@@ -200,7 +203,7 @@ def _integrals(source):
 _TAG = _G.LaplaceTransform.denominator_tag(["eps_occ", "eps_vir", "eps_occ", "eps_vir"], "+-+-")
 
 
-def _denominator(problem):
+def _denominator(problem, name="D"):
     """1 / (e_i + e_j - e_a - e_b), eagerly, from the two energy vectors.
 
     Eager and not captured. The pass refuses a denominator the graph writes,
@@ -209,7 +212,7 @@ def _denominator(problem):
     describing something the substitution cannot follow.
     """
     shape = [problem["nocc"], problem["nvir"], problem["nocc"], problem["nvir"]]
-    denominator = einsums.create_zero_tensor("D", shape)
+    denominator = einsums.create_zero_tensor(name, shape)
     la.outer_sum(denominator,
                  [problem["occupied_energies"], problem["virtual_energies"],
                   problem["occupied_energies"], problem["virtual_energies"]],
@@ -392,6 +395,34 @@ def _report_naive(problem, exact):
     value = _energy_of(graph, energy)
     print(f"  energy {value:.12f}, which is the exact one to {abs(value - exact):.2e}: "
           "nothing was approximated because nothing was rewritten")
+
+    # The same form again, with the two passes asked TOGETHER. Handing the
+    # transform to the fit makes a tagged integral multiplied by a tagged
+    # denominator a candidate the fit did not have on its own: the substituted
+    # product is emitted into an intermediate, the quadrature is applied to the
+    # trial, and the cost of the pair is what decides. It still declines, and
+    # the one line it prints is what two unrelated silences used to be.
+    print("\n  and again with the pair costed as one decision:")
+    energy_joint = einsums.create_zero_tensor("E_joint", [1])
+    tagged_joint = _denominator(problem, "D_joint")
+    joint_graph = cg.Graph("mp2 dense, jointly costed")
+    _capture_dense(joint_graph, problem, dense, tagged_joint, energy_joint)
+    joint_graph.annotate_tag(dense, _G.ProvenanceTag.make("eri"))
+    joint_graph.annotate_tag(tagged_joint, _TAG)
+
+    paired = _G.FactorizationPass(_fit(problem))
+    paired.set_laplace_transform(_transform(problem, 1e-6))
+    joint_manager = cg.PassManager()
+    joint_manager.add(paired)
+    print(f"  modified={joint_graph.apply(joint_manager)}, "
+          f"joint rewrites={paired.num_joint}")
+    for reason, count in paired.skip_reasons:
+        print(f"  pair declines ({count}): {reason}")
+    print("  the amplitude is a stored o^2 v^2 tensor, so the decoupled form rebuilds it as a")
+    print("  sum over the quadrature and auxiliary indices where the captured form built it")
+    print("  with one elementwise multiply: one whole scale order worse. What would pay is")
+    print("  never forming the amplitude, which is a re-association of the energy expression")
+    print("  rather than a substitution into it.")
 
 
 def _report_response(problem):

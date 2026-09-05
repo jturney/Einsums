@@ -8,12 +8,15 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph/Factorization.hpp>
+#include <Einsums/ComputeGraph/Passes/LaplaceTransform.hpp>
 #include <Einsums/ComputeGraph/Passes/RegionRewrite.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstddef>
 #include <functional>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -119,6 +122,37 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      */
     APIARY_EXPOSE APIARY_GETTER("num_dissolved") [[nodiscard]] std::size_t num_dissolved() const { return _num_dissolved; }
 
+    /**
+     * @brief Decide profitability jointly with this transform, and emit both rewrites together.
+     *
+     * On canonical MP2 the tagged integral is read elementwise and never as a contraction
+     * operand, so this pass has no candidate at all; and until the integral is factored the
+     * transform's numerator is a leaf and it has nothing to ride on. Neither can go first, and
+     * a veto taken on either alone refuses a rewrite that only the pair could make pay.
+     *
+     * With a transform set, a tagged tensor multiplied by a tagged denominator becomes a
+     * candidate: the substituted product is emitted into an intermediate, the transform is
+     * applied to the TRIAL expression, and the cost of the pair is what decides. Both rewrites
+     * are then emitted together and both records land on the output.
+     *
+     * The transform supplies its tolerance, its point override and its energy vectors, so it
+     * has to be handed the energies through @ref LaplaceTransform::add_energy exactly as it
+     * would be if it were running on its own. It does NOT need to be in the same pass manager;
+     * adding it there as well is harmless and reports the denominator as unclaimed, because
+     * this pass has already taken it.
+     *
+     * @param[in] transform The transform, or null to take every fit on its own merits.
+     */
+    /// @note Keeps the transform alive for as long as the pass, because a Python caller has no
+    ///       other reason to keep a reference to it.
+    APIARY_EXPOSE APIARY_KEEP_ALIVE(1, 2) void set_laplace_transform(std::shared_ptr<LaplaceTransform> transform) {
+        _laplace = std::move(transform);
+    }
+
+    /// @brief How many rewrites were taken as one decision with a following quadrature.
+    /// @return The count.
+    APIARY_EXPOSE APIARY_GETTER("num_joint") [[nodiscard]] std::size_t num_joint() const { return _num_joint; }
+
   protected:
     /// @copydoc RegionRewrite::rewrite
     bool rewrite(Graph &graph, Region const &region, TensorExpr &expr) override;
@@ -142,8 +176,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         std::function<void(Graph &, Graph &, std::vector<TensorId> const &)> emit;
     };
 
+    /// A setup body a quadrature this pass applied still needs emitted. Separate from
+    /// @ref PendingSetup because a quadrature's body takes no factor list: it writes tensors
+    /// this pass declared and the callback closed over them when it was built.
+    struct PendingQuadrature {
+        std::string                           label;
+        std::function<void(Graph &, Graph &)> emit;
+    };
+
     /// The registry to query, or null for the process-wide one.
     FactorizationRegistry *_registry{nullptr};
+
+    /// The transform this pass decides profitability with, or null.
+    std::shared_ptr<LaplaceTransform> _laplace;
+
+    std::vector<PendingQuadrature> _pending_quadrature;
+    std::size_t                    _num_joint{0};
 
     std::vector<PendingSetup> _pending;
     std::size_t               _num_factorized{0};
@@ -157,6 +205,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief The registry this pass queries.
     /// @return The caller's, or the process-wide one.
     [[nodiscard]] FactorizationRegistry &registry() const;
+
+    /**
+     * @brief Try the joint rewrite on a direct product of a tagged tensor and a denominator.
+     *
+     * @param[in,out] graph    The graph, for shapes and for the tensors the rewrite declares.
+     * @param[in]     region   The region being offered, for its dissolvable tensors.
+     * @param[in,out] expr     The algebra, rewritten in place when the pair is taken.
+     * @param[in]     position The statement to examine.
+     * @return How many statements were inserted ahead of @p position, or nothing when the
+     *         shape did not match or the pair was declined.
+     */
+    std::optional<std::size_t> rewrite_denominator_product(Graph &graph, Region const &region, TensorExpr &expr, std::size_t position);
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

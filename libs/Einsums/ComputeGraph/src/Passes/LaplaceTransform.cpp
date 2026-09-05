@@ -30,6 +30,9 @@
 #include <utility>
 #include <vector>
 
+#include "ContractionTreeSearch.hpp"
+#include "LaplaceRewrite.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
@@ -318,10 +321,46 @@ bool LaplaceTransform::run(Graph &graph) {
     return modified;
 }
 
+EINSUMS_NAMESPACE_END(compute_graph::passes)
+
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes::quadrature)
+
+bool expression_carries_denominator(Graph const &graph, TensorExpr const &expr) {
+    for (auto const &term : expr.terms) {
+        if (term.kind != TermKind::Leaf) {
+            continue;
+        }
+        TensorHandle const *handle = graph.find_tensor(term.tensor);
+        if (handle != nullptr && handle->tag.name == kTag) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // NOLINTNEXTLINE(readability-function-cognitive-complexity): the recognizer is one argument and
 // splitting it would put the halves out of sight of each other.
-bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &expr) {
-    bool changed = false;
+std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<TensorId> const &internal, TensorExpr &expr,
+                                                 RewriteOptions const &options, std::vector<TensorId> &claimed) {
+    std::vector<RewriteOutcome>                            outcomes;
+    std::unordered_map<TensorId, std::vector<std::size_t>> shapes;
+    std::vector<std::pair<std::string, std::size_t>>       constants;
+
+    // Every tensor this rewrite makes goes through the caller's factory, which is the one
+    // difference between running on a live region and costing a trial.
+    auto const make = [&](std::string const &name, packed_gemm::ScalarType dtype, std::vector<std::size_t> const &dims) {
+        TensorId const id = options.declare(name, dtype, dims);
+        shapes.emplace(id, dims);
+        return id;
+    };
+
+    // What a decline looks like from here: a record rather than a report, because the two
+    // callers say it in different places.
+    auto const decline = [&](TensorId id, std::string const &name, std::string reason, std::string detail) {
+        outcomes.push_back(
+            RewriteOutcome{.applied = false, .reason = std::move(reason), .detail = std::move(detail), .denominator = id, .name = name});
+        claimed.push_back(id);
+    };
 
     // At most one rewrite per sweep, and a fresh sweep after each: an accepted rewrite erases
     // the numerator's statement and inserts several, so every index into the statement list is
@@ -360,20 +399,19 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
             TensorId const      numerator_id   = expr.at(product.operands[numerator_slot]).tensor;
             TensorHandle const *denominator    = graph.find_tensor(denominator_id);
             std::string const   name           = denominator->name;
-            if (std::ranges::find(_claimed, denominator_id) != _claimed.end()) {
+            if (std::ranges::find(claimed, denominator_id) != claimed.end()) {
                 continue;
             }
 
             if (!is_real_dtype(denominator->dtype)) {
-                note_skip("the tagged denominator is complex, and a reciprocal of a complex sum has no exponential-integral form",
-                          fmt::format("tensor '{}'", name));
-                _claimed.push_back(denominator_id);
+                decline(denominator_id, name,
+                        "the tagged denominator is complex, and a reciprocal of a complex sum has no exponential-integral form",
+                        fmt::format("tensor '{}'", name));
                 continue;
             }
             if (written_anywhere(graph, denominator_id)) {
-                note_skip("the tagged denominator is written by this graph, so its quadrature could go stale",
-                          fmt::format("tensor '{}'", name));
-                _claimed.push_back(denominator_id);
+                decline(denominator_id, name, "the tagged denominator is written by this graph, so its quadrature could go stale",
+                        fmt::format("tensor '{}'", name));
                 continue;
             }
 
@@ -396,16 +434,15 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 signs.push_back(*sign == "+" ? 1 : -1);
             }
             if (energy_names.empty()) {
-                note_skip("the tag does not carry an axis name and a '+' or '-' sign for every axis", fmt::format("tensor '{}'", name));
-                _claimed.push_back(denominator_id);
+                decline(denominator_id, name, "the tag does not carry an axis name and a '+' or '-' sign for every axis",
+                        fmt::format("tensor '{}'", name));
                 continue;
             }
             if (energy_names.size() != denominator->rank) {
-                note_skip(
-                    "the tag names more energies than the tagged tensor has axes, which is the pair-driven form whose folded "
-                    "energies the graph cannot see",
-                    fmt::format("tensor '{}' is rank {} and the tag names {} energies", name, denominator->rank, energy_names.size()));
-                _claimed.push_back(denominator_id);
+                decline(denominator_id, name,
+                        "the tag names more energies than the tagged tensor has axes, which is the pair-driven form whose folded "
+                        "energies the graph cannot see",
+                        fmt::format("tensor '{}' is rank {} and the tag names {} energies", name, denominator->rank, energy_names.size()));
                 continue;
             }
 
@@ -417,30 +454,30 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 }
             }
             if (numerator_position == expr.statements.size()) {
-                note_skip("the denominator's consumer multiplies something this region does not form, so there are no factors to push "
-                          "the exponentials onto",
-                          fmt::format("tensor '{}'", name));
-                _claimed.push_back(denominator_id);
+                decline(denominator_id, name,
+                        "the denominator's consumer multiplies something this region does not form, so there are no factors to push "
+                        "the exponentials onto",
+                        fmt::format("tensor '{}'", name));
                 continue;
             }
             ExprStatement const numerator = expr.statements[numerator_position];
             ExprTerm const      formation = expr.at(numerator.value);
             if (formation.kind != TermKind::Contraction || formation.operands.size() != 2 || formation.operand_indices.size() != 2) {
-                note_skip("the numerator is not formed by a two-operand contraction, so the quadrature has no operands to ride on",
-                          fmt::format("tensor '{}'", name));
-                _claimed.push_back(denominator_id);
+                decline(denominator_id, name,
+                        "the numerator is not formed by a two-operand contraction, so the quadrature has no operands to ride on",
+                        fmt::format("tensor '{}'", name));
                 continue;
             }
             if (!is_zero(numerator.target_prefactor)) {
-                note_skip("the numerator accumulates rather than being written outright, so dissolving it would drop what else wrote it",
-                          fmt::format("tensor '{}'", name));
-                _claimed.push_back(denominator_id);
+                decline(denominator_id, name,
+                        "the numerator accumulates rather than being written outright, so dissolving it would drop what else wrote it",
+                        fmt::format("tensor '{}'", name));
                 continue;
             }
-            if (std::ranges::find(region.internal, numerator_id) == region.internal.end()) {
-                note_skip("the numerator is observed from outside the region, and a value someone else reads cannot be dissolved",
-                          fmt::format("tensor '{}'", name));
-                _claimed.push_back(denominator_id);
+            if (std::ranges::find(internal, numerator_id) == internal.end()) {
+                decline(denominator_id, name,
+                        "the numerator is observed from outside the region, and a value someone else reads cannot be dissolved",
+                        fmt::format("tensor '{}'", name));
                 continue;
             }
 
@@ -471,9 +508,9 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 }
             }
             if (interference) {
-                note_skip("another statement reads the numerator or rewrites an operand between its formation and its use",
-                          fmt::format("tensor '{}'", name));
-                _claimed.push_back(denominator_id);
+                decline(denominator_id, name,
+                        "another statement reads the numerator or rewrites an operand between its formation and its use",
+                        fmt::format("tensor '{}'", name));
                 continue;
             }
 
@@ -483,9 +520,8 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
             // descriptor is where the number is.
             auto const *scalars = std::get_if<ElementwiseBinaryDescriptor>(&product.descriptor);
             if (scalars == nullptr || !is_real_valued(live_alpha(*scalars)) || !is_real_valued(live_beta(*scalars))) {
-                note_skip("the direct product carries a complex prefactor, which a real quadrature has nowhere to put",
-                          fmt::format("tensor '{}'", name));
-                _claimed.push_back(denominator_id);
+                decline(denominator_id, name, "the direct product carries a complex prefactor, which a real quadrature has nowhere to put",
+                        fmt::format("tensor '{}'", name));
                 continue;
             }
 
@@ -496,7 +532,7 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
             std::vector<std::pair<double, double>> extremes;
             std::string                            trouble;
             for (std::size_t axis = 0; axis < energy_names.size(); ++axis) {
-                EnergyVector const *held = energy(energy_names[axis]);
+                LaplaceTransform::EnergyVector const *held = options.energy(energy_names[axis]);
                 if (held == nullptr) {
                     trouble = fmt::format("no vector was registered as '{}'; hand it over with add_energy before applying the pass",
                                           energy_names[axis]);
@@ -511,7 +547,7 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
                                           axis, denominator->dims[axis]);
                     break;
                 }
-                auto const range = energy_extremes(*held);
+                auto const range = LaplaceTransform::energy_extremes(*held);
                 if (!range.has_value()) {
                     trouble = fmt::format("'{}' has no data to read a spectral range from at optimize time", energy_names[axis]);
                     break;
@@ -520,8 +556,8 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 extremes.push_back(*range);
             }
             if (!trouble.empty()) {
-                note_skip("the tag names an energy vector this pass cannot use", fmt::format("tensor '{}': {}", name, trouble));
-                _claimed.push_back(denominator_id);
+                decline(denominator_id, name, "the tag names an energy vector this pass cannot use",
+                        fmt::format("tensor '{}': {}", name, trouble));
                 continue;
             }
 
@@ -534,26 +570,32 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 low.push_back(axis_low);
                 high.push_back(axis_high);
             }
-            double      tolerance = epsilon();
+            double      tolerance = options.epsilon;
             std::size_t count     = 0;
             double      measured  = 0;
             try {
                 laplace::SpectralRange const range = laplace::spectral_range(low, high, signs);
-                count    = _points > 0 ? static_cast<std::size_t>(_points) : laplace::quadrature_point_count(range, tolerance);
+                count = options.points > 0 ? static_cast<std::size_t>(options.points) : laplace::quadrature_point_count(range, tolerance);
                 measured = laplace::measure_quadrature_error(laplace::build_quadrature(range, tolerance, count));
             } catch (std::exception const &error) {
-                note_skip("no quadrature represents this denominator", fmt::format("tensor '{}': {}", name, error.what()));
-                _claimed.push_back(denominator_id);
+                decline(denominator_id, name, "no quadrature represents this denominator",
+                        fmt::format("tensor '{}': {}", name, error.what()));
                 continue;
             }
 
-            // The accuracy statement, before anything is rewritten. A refusal here leaves the
-            // region exactly as it was and puts the budget's own reason in the skip tally.
-            ApproximationRecord record =
-                make_approximation_record(this->name(), ApproximationEffect::NormRelative, tolerance, measured, {}, {},
-                                          fmt::format("LaplaceTransform({})", name), ApproximationOrigin::Measured);
-            if (!approximate(graph, record)) {
-                _claimed.push_back(denominator_id);
+            // The accuracy statement, before anything is rewritten and before any tensor is
+            // made. A refusal here leaves the region exactly as it was and leaves the caller to
+            // put its own reason in the tally.
+            RewriteOutcome outcome;
+            outcome.applied     = true;
+            outcome.denominator = denominator_id;
+            outcome.name        = name;
+            outcome.points      = count;
+            outcome.measured    = measured;
+            outcome.tolerance   = tolerance;
+            outcome.setup_label = fmt::format("LaplaceTransform({})", name);
+            if (options.accept && !options.accept(outcome)) {
+                claimed.push_back(denominator_id);
                 continue;
             }
 
@@ -576,24 +618,47 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
             }
             ExprIndex const quadrature{.letter = fresh_letter(used, "laplace_t"), .space = SpaceId{}};
 
+            // Every letter of everything about to be emitted, with its extent, so the terms
+            // this rewrite builds carry a cost. A term with none reads as free, and a region
+            // report then offers a rewrite to nothing as evidence that it paid; it is also
+            // what lets a caller cost this rewrite jointly with its own.
+            search::LetterTable table;
+            auto const          observe = [&](std::vector<ExprIndex> const &indices, TensorId id) {
+                TensorHandle const *held = graph.find_tensor(id);
+                if (held == nullptr) {
+                    return;
+                }
+                for (std::size_t slot = 0; slot < indices.size() && slot < held->dims.size(); ++slot) {
+                    table.observe(indices[slot], held->dims[slot]);
+                }
+            };
+            observe(target_indices, apply.target);
+            observe(a_indices, expr.at(formation.operands[0]).tensor);
+            observe(b_indices, expr.at(formation.operands[1]).tensor);
+            // The quadrature letter is a CONSTANT of the rewrite: its length is fixed by the
+            // tolerance and does not move when the problem does. A cost model that gave it a
+            // scale variable would rank every decoupled form one scale order worse than it is.
+            table.observe_constant(quadrature.letter, count);
+            constants.emplace_back(quadrature.letter, count);
+
             // The exponential matrices, the points and the weights: parent tensors the setup
             // body writes and the rewritten region reads.
             std::vector<TensorId> exponentials;
             for (std::size_t axis = 0; axis < energy_names.size(); ++axis) {
-                exponentials.push_back(declare_scratch(graph, fmt::format("LaplaceTransform.{}.exp{}", name, axis), denominator->dtype,
-                                                       {count, denominator->dims[axis]}));
+                exponentials.push_back(
+                    make(fmt::format("LaplaceTransform.{}.exp{}", name, axis), denominator->dtype, {count, denominator->dims[axis]}));
             }
-            TensorId const points_id = declare_scratch(graph, fmt::format("LaplaceTransform.{}.points", name), denominator->dtype, {count});
-            TensorId const weights_id =
-                declare_scratch(graph, fmt::format("LaplaceTransform.{}.weights", name), denominator->dtype, {count});
-            TensorId const error_id = declare_scratch(graph, error_tensor_name(name), denominator->dtype, {1});
+            TensorId const points_id  = make(fmt::format("LaplaceTransform.{}.points", name), denominator->dtype, {count});
+            TensorId const weights_id = make(fmt::format("LaplaceTransform.{}.weights", name), denominator->dtype, {count});
+            TensorId const error_id   = make(LaplaceTransform::error_tensor_name(name), denominator->dtype, {1});
 
             auto make_leaf = [&expr, &graph](TensorId id, std::vector<ExprIndex> indices) {
-                ExprTerm leaf;
-                leaf.kind    = TermKind::Leaf;
-                leaf.tensor  = id;
-                leaf.name    = graph.find_tensor(id) != nullptr ? graph.find_tensor(id)->name : std::string{};
-                leaf.indices = std::move(indices);
+                ExprTerm            leaf;
+                TensorHandle const *held = graph.find_tensor(id);
+                leaf.kind                = TermKind::Leaf;
+                leaf.tensor              = id;
+                leaf.name                = held != nullptr ? held->name : std::string{};
+                leaf.indices             = std::move(indices);
                 return expr.add(std::move(leaf));
             };
 
@@ -648,8 +713,8 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
                     dims.push_back(extent);
                 }
 
-                TensorId const scaled =
-                    declare_scratch(graph, fmt::format("LaplaceTransform.{}.scaled{}", name, scalings.size()), denominator->dtype, dims);
+                std::string const scaled_name = fmt::format("LaplaceTransform.{}.scaled{}", name, scalings.size());
+                TensorId const    scaled      = make(scaled_name, denominator->dtype, dims);
 
                 ExprTerm term;
                 term.kind    = TermKind::Contraction;
@@ -661,10 +726,13 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 bool const conjugate = !side->scaled && !formation.conjugate.empty() && formation.conjugate[side == &side_a ? 0 : 1];
                 term.conjugate.assign({conjugate, false});
                 term.factor = PrefactorScalar{double{1}};
+                term.cost =
+                    search::contraction_cost(search::letters_of(side->indices), search::letters_of({quadrature, target_indices[axis]}),
+                                             search::letters_of(scaled_indices), table);
 
                 ExprStatement statement;
                 statement.target           = scaled;
-                statement.target_name      = graph.find_tensor(scaled)->name;
+                statement.target_name      = scaled_name;
                 statement.target_indices   = scaled_indices;
                 statement.target_prefactor = PrefactorScalar{double{0}};
                 statement.value            = expr.add(std::move(term));
@@ -690,6 +758,8 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
             combined.conjugate.assign({!side_a.scaled && !formation.conjugate.empty() && formation.conjugate[0],
                                        !side_b.scaled && !formation.conjugate.empty() && formation.conjugate[1]});
             combined.factor = multiply_real(live_alpha(*scalars), formation.factor);
+            combined.cost   = search::contraction_cost(search::letters_of(side_a.indices), search::letters_of(side_b.indices),
+                                                       search::letters_of(target_indices), table);
 
             ExprStatement final_statement;
             final_statement.target           = apply.target;
@@ -726,8 +796,8 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 descriptor.signs.push_back(static_cast<std::int8_t>(sign));
             }
             packed_gemm::ScalarType const dtype = denominator->dtype;
-            _pending.push_back(PendingSetup{
-                .label = record.setup, .emit = [energy_views, quadrature_outputs, descriptor, dtype](Graph &parent, Graph &body) {
+            if (options.want_setup) {
+                outcome.emit_setup = [energy_views, quadrature_outputs, descriptor, dtype](Graph &parent, Graph &body) {
                     detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
                         if constexpr (std::is_floating_point_v<T>) {
                             // The outputs are tensors this pass declared, so their handles name
@@ -752,16 +822,68 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
                                                         owned(quadrature_outputs[2]), exponentials, descriptor);
                         }
                     });
-                }});
+                };
+            }
+            outcomes.push_back(std::move(outcome));
 
-            _claimed.push_back(denominator_id);
-            ++_num_transformed;
-            _last_points   = count;
-            _last_measured = measured;
-            changed        = true;
-            progress       = true;
-            report(2, fmt::format("replaced '{}' with a {}-point quadrature; measured relative error {:.3e}", name, count, measured));
+            claimed.push_back(denominator_id);
+            progress = true;
         }
+    }
+
+    for (auto &outcome : outcomes) {
+        outcome.shapes           = shapes;
+        outcome.constant_letters = constants;
+    }
+    return outcomes;
+}
+
+EINSUMS_NAMESPACE_END(compute_graph::passes::quadrature)
+
+EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
+
+bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &expr) {
+    quadrature::RewriteOptions options;
+    options.epsilon = epsilon();
+    options.points  = _points;
+    options.energy  = [this](std::string const &wanted) { return energy(wanted); };
+    options.declare = [&graph](std::string const &tensor_name, packed_gemm::ScalarType dtype, std::vector<std::size_t> const &dims) {
+        return declare_scratch(graph, tensor_name, dtype, dims);
+    };
+
+    // The accuracy statement, taken before the splice of the denominator it is about. A refusal
+    // here leaves that denominator's region exactly as it was and puts the budget's own reason
+    // in the skip tally, which is why it is a callback rather than a check afterwards.
+    std::vector<ApproximationRecord> accepted;
+    options.accept = [&](quadrature::RewriteOutcome const &offer) {
+        ApproximationRecord record = make_approximation_record(name(), ApproximationEffect::NormRelative, offer.tolerance, offer.measured,
+                                                               {}, {}, offer.setup_label, ApproximationOrigin::Measured);
+        if (!approximate(graph, record)) {
+            return false;
+        }
+        accepted.push_back(std::move(record));
+        return true;
+    };
+
+    auto const outcomes = quadrature::rewrite_denominators(graph, region.internal, expr, options, _claimed);
+
+    bool        changed = false;
+    std::size_t applied = 0;
+    for (auto const &outcome : outcomes) {
+        if (!outcome.applied) {
+            if (!outcome.reason.empty()) {
+                note_skip(outcome.reason, outcome.detail);
+            }
+            continue;
+        }
+        _pending.push_back(PendingSetup{.label = accepted[applied].setup, .emit = outcome.emit_setup});
+        ++applied;
+        ++_num_transformed;
+        _last_points   = outcome.points;
+        _last_measured = outcome.measured;
+        changed        = true;
+        report(2, fmt::format("replaced '{}' with a {}-point quadrature; measured relative error {:.3e}", outcome.name, outcome.points,
+                              outcome.measured));
     }
 
     if (changed) {
@@ -769,5 +891,4 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
     }
     return changed;
 }
-
 EINSUMS_NAMESPACE_END(compute_graph::passes)

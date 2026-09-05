@@ -301,17 +301,8 @@ def test_a_denominator_the_graph_builds_is_refused(water):
     assert any("written by this graph" in reason for reason, _count in transform.skip_reasons)
 
 
-def test_the_dense_integral_form_is_declined_by_both_passes(water):
-    """Canonical MP2 gives the density fit nothing to re-associate, and says so.
-
-    The form a caller holding only ``(ia|jb)`` writes: the integral is read
-    elementwise and through a dot, never as a contraction operand, so the fit
-    has no candidate at all, and the amplitude's numerator is then a stored
-    tensor rather than a contraction, so the transform has nothing to push its
-    exponentials onto. Both report it. This is a property of MP2 rather than a
-    limit of either pass: the substitution that would unlock the decoupling is
-    not itself profitable, which is what the fit's cost veto refuses.
-    """
+def _dense_program(water):
+    """Canonical MP2 over a stored ``(ia|jb)``, tagged on both sides."""
     shape = _shape(water)
     dense = einsums.create_zero_tensor("(ia|jb)", shape)
     einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", dense, water["fitted"], water["fitted"])
@@ -330,6 +321,19 @@ def test_the_dense_integral_form_is_declined_by_both_passes(water):
         la.dot(energy, combination, T)
     graph.annotate_tag(dense, _G.ProvenanceTag.make("eri"))
     graph.annotate_tag(denominator, _tag())
+    return graph, energy
+
+
+def test_the_dense_integral_form_is_declined_by_each_pass_alone(water):
+    """Canonical MP2 gives each pass nothing on its own, and both say so.
+
+    The form a caller holding only ``(ia|jb)`` writes: the integral is read
+    elementwise and through a dot, never as a contraction operand, so the fit
+    has no candidate at all, and the amplitude's numerator is then a stored
+    tensor rather than a contraction, so the transform has nothing to push its
+    exponentials onto. Both report it.
+    """
+    graph, energy = _dense_program(water)
 
     factorization = _G.FactorizationPass(_registry(water))
     transform = _transform(water, 1e-6)
@@ -345,6 +349,53 @@ def test_the_dense_integral_form_is_declined_by_both_passes(water):
         f"the fit passed the tag over in silence: {factorization.skip_reasons}")
     assert any("does not form" in reason for reason, _count in transform.skip_reasons), (
         f"the transform did not say why: {transform.skip_reasons}")
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    assert float(np.asarray(energy)[0]) == pytest.approx(_exact(water), abs=1e-12), (
+        "nothing was rewritten, so nothing may have moved")
+
+
+def test_the_pair_is_costed_as_one_decision_and_declines_on_the_joint_number(water):
+    """The pair is asked together, and the answer on canonical MP2 is still no.
+
+    Handing the transform to the fit makes a tagged integral multiplied by a
+    tagged denominator a candidate the fit did not have: the substituted product
+    is emitted into an intermediate, the quadrature is applied to the trial, and
+    the cost of the PAIR is what decides. The design expected that to accept.
+
+    It declines, and the reason is structural rather than a threshold. The
+    amplitude is a stored ``o^2 v^2`` tensor, so the decoupled form has to
+    rebuild it as a sum over the quadrature index and the auxiliary one where
+    the captured form built it with one elementwise multiply: the pair is one
+    whole scale order worse, by the point count times the auxiliary dimension.
+    What would pay is never forming the amplitude at all, which needs the energy
+    expression's own contraction re-associated and is a different rewrite.
+
+    Pinned because the decline is now INFORMATIVE where it used to be two
+    unrelated silences: one line, naming the pair and both costs.
+    """
+    graph, energy = _dense_program(water)
+
+    factorization = _G.FactorizationPass(_registry(water))
+    transform = _transform(water, 1e-6)
+    factorization.set_laplace_transform(transform)
+    manager = cg.PassManager()
+    manager.add(factorization)
+
+    assert not graph.apply(manager)
+    assert factorization.num_factorized == 0
+    assert factorization.num_joint == 0
+    assert graph.approximations() == [], "a declined pair must record no approximation"
+
+    # The joint verdict, not either half's: the fit now HAS a candidate and the
+    # quadrature was fitted on the trial before anything was costed.
+    assert any("the fit and the quadrature together" in reason
+               for reason, _count in factorization.skip_reasons), (
+        f"the pair was not costed as one decision: {factorization.skip_reasons}")
+    assert not any("no two-operand contraction" in reason
+                   for reason, _count in factorization.skip_reasons), (
+        "the tag was reported unclaimed, so the joint candidate was never formed")
 
     graph.apply(cg.default_pass_manager())
     graph.execute()

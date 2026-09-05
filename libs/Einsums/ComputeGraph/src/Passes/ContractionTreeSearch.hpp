@@ -72,6 +72,14 @@ struct LetterTable {
     std::unordered_map<std::string, double>      anonymous_extent;
     std::map<std::uint64_t, double>              space_extent;
 
+    /// Letters whose extent is a CONSTANT of the rewrite rather than a dimension of the problem.
+    ///
+    /// A quadrature index is the case this exists for: its length is fixed by a tolerance and
+    /// does not move when the molecule does, so a cost model that gave it a scale variable
+    /// would say the arithmetic grows with it and would rank a decoupled form as one scale
+    /// order worse than it is. Such a letter multiplies the polynomial by a number instead.
+    std::unordered_map<std::string, double> constant;
+
     void observe(ExprIndex const &index, std::size_t extent_value) {
         if (auto const [it, fresh] = var.try_emplace(index.letter); fresh) {
             it->second = index.space.valid() ? SymbolicVar::space(index.space) : SymbolicVar::anonymous(index.letter);
@@ -82,6 +90,15 @@ struct LetterTable {
         } else {
             anonymous_extent.try_emplace(index.letter, static_cast<double>(extent_value));
         }
+    }
+
+    /// @brief Note a letter whose extent is a constant of a rewrite rather than a scale.
+    /// @param[in] letter The index letter.
+    /// @param[in] value  Its length.
+    void observe_constant(std::string const &letter, std::size_t value) {
+        constant[letter] = static_cast<double>(value);
+        extent[letter]   = value;
+        var.try_emplace(letter, SymbolicVar::anonymous(letter));
     }
 
     /// @brief The lookup @ref ComparisonContext::bound_extent wants.
@@ -108,6 +125,10 @@ struct LetterTable {
 inline SymbolicPoly poly_over(std::set<std::string> const &letters, LetterTable const &table) {
     SymbolicPoly poly = SymbolicPoly::constant(1.0);
     for (auto const &letter : letters) {
+        if (auto const fixed = table.constant.find(letter); fixed != table.constant.end()) {
+            poly *= SymbolicPoly::constant(fixed->second);
+            continue;
+        }
         auto const it = table.var.find(letter);
         poly *= SymbolicPoly::variable(it == table.var.end() ? SymbolicVar::anonymous(letter) : it->second);
     }
