@@ -37,6 +37,7 @@ which points carry independent basis-pair products.
 
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -340,3 +341,154 @@ def test_the_three_arms_agree_with_the_exact_energy(water):
         assert abs(joint - df_energy) <= (bound + 1e-12) * abs(df_energy), (
             f"epsilon={epsilon:g}: error {abs(joint - df_energy) / abs(df_energy):.3e} "
             f"against a composed bound of {bound:.3e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The opposite-spin energy through the grid fit
+#
+# The grid form has the SAME shape the density-fitted one has, so the transform
+# and the search reach the same pairless bracketing over the grid letter. What
+# it does NOT reach is the chain the design block writes, and the reasons are
+# stated here rather than left as an absence.
+# ──────────────────────────────────────────────────────────────────────────
+
+#: The family the caller declares. The grid extent is the one that matters: a
+#: grid is about ten times a basis where an auxiliary set is three or four, so
+#: the trade the decoupling makes, ``o^2 v^2 G`` against ``o v G^2 t``, turns
+#: over at a larger system for the grid than for the fit.
+_SOS_FAMILY = (("occ", "o", 300.0, "nocc"), ("vir", "v", 2700.0, "nvir"),
+               ("grid", "g", 30000.0, "ngrid"))
+
+
+def _sos_registry():
+    registry = cg.SpaceRegistry()
+    for name, symbol, extent, dim in _SOS_FAMILY:
+        registry.register_space(cg.index_space(name, symbol, extent, cg.GrowthClass.linear(), dim))
+    return registry
+
+
+def _sos_grid_arm(water, epsilon):
+    """``E_OS`` over all four indices with the grid factors in the fit's place."""
+    nocc, nvir = water["nocc"], water["nvir"]
+    _thc, left, right = _thc_dense(water)
+    L = _tensor("L", np.ascontiguousarray(left[:, :nocc, nocc:]))
+    R = _tensor("R", np.ascontiguousarray(right[:, :nocc, nocc:]))
+    shape = [nocc, nvir, nocc, nvir]
+
+    energies = water["orbital_energies"]
+    occupied = _tensor("eps_occ", energies[:nocc])
+    virtual = _tensor("eps_vir", energies[nocc:])
+    energy = einsums.create_zero_tensor("E_sos_thc", [1])
+
+    graph = cg.Graph(f"thc_sos_{epsilon}")
+    registry = _sos_registry()
+    graph.set_space_registry(registry)
+    K = graph.scratch("K", shape, "float64")
+    T = graph.scratch("T", shape, "float64")
+    again = graph.scratch("K_again", shape, "float64")
+    denominator = graph.scratch("D", shape, "float64")
+    with cg.capture(graph):
+        la.outer_sum(denominator, [occupied, virtual, occupied, virtual], [1.0, -1.0, 1.0, -1.0])
+        la.element_transform(denominator, "recip")
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, L, R)
+        la.direct_product(1.0, K, denominator, 0.0, T)
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, L, R)
+        la.dot(energy, again, T)
+    graph.annotate_tag(denominator, _G.LaplaceTransform.denominator_tag(
+        ["eps_occ", "eps_vir", "eps_occ", "eps_vir"], "+-+-"))
+    for tensor in (L, R):
+        cg.annotate(tensor, ("grid", "occ", "vir"), graph=graph)
+    for tensor in (K, T, again, denominator):
+        cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
+
+    transform = cg.LaplaceTransform()
+    transform.set_epsilon(epsilon)
+    transform.add_energy("eps_occ", occupied)
+    transform.add_energy("eps_vir", virtual)
+    search = cg.MultiTermFactorization()
+    search.set_search_enabled(True)
+    manager = cg.PassManager()
+    manager.add(transform)
+    manager.add(search)
+    manager.run(graph)
+
+    ir = json.loads(graph.to_json())
+    dims = {tensor["id"]: tensor["dims"] for tensor in ir["tensors"]}
+    shapes = [dims[t] for node in ir["nodes"] for t in node.get("outputs", []) if t in dims]
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    return float(np.asarray(energy)[0]), shapes, transform, search, registry
+
+
+def test_the_opposite_spin_energy_through_the_grid_reaches_the_pairless_form(water):
+    """The same rewrite, over the grid letter, at the tolerance SOS-MP2 is run at."""
+    nocc, nvir = water["nocc"], water["nvir"]
+    thc, _left, _right = _thc_dense(water)
+    block = thc[:nocc, nocc:, :nocc, nocc:]
+    energies = water["orbital_energies"]
+    gaps = 1.0 / (energies[:nocc, None, None, None] - energies[None, nocc:, None, None]
+                  + energies[None, None, :nocc, None] - energies[None, None, None, nocc:])
+    oracle = float(np.einsum("iajb,iajb->", block * block, gaps))
+
+    value, shapes, transform, search, _registry = _sos_grid_arm(water, 1e-3)
+    assert transform.num_transformed == 1
+    assert search.num_rebracketed == 1, search.skip_reasons
+
+    ngrid = water["grid"].shape[1]
+    points = transform.last_point_count
+    assert [nocc, nvir, nocc, nvir] not in shapes, f"a tensor over o and v survived: {shapes}"
+    assert any(sorted(shape) == sorted([ngrid, ngrid, points]) for shape in shapes), (
+        f"no grid by grid by points object was emitted: {shapes}")
+
+    bound = transform.last_measured_error
+    assert abs(value - oracle) <= (bound + 1e-12) * abs(oracle), (
+        f"the grid-fitted pairless energy {value} is outside {bound:.3e} of {oracle}")
+
+
+def test_the_grid_chain_the_design_block_writes_is_not_what_the_search_is_handed(water):
+    """Two reasons, stated rather than left as an absence.
+
+    The chain ``Xo_t``, ``Xv_t``, an elementwise ``Y_t`` and ``Z Y_t Z^T`` needs
+    the collocation factors and the coupling as separate leaves, which makes the
+    opposite-spin energy a fourteen-factor product against a cap of ten. And the
+    shipped provider cannot be asked for it by tagging the integral: it fits a
+    tensor over the whole basis on every axis, and an occupied-virtual block is
+    not that shape, so the joint decision has no candidate to cost at all.
+    """
+    assert cg.MultiTermFactorization().max_factors < 14
+
+    nocc, nvir = water["nocc"], water["nvir"]
+    shape = [nocc, nvir, nocc, nvir]
+    block = _tensor("(ia|jb)", _dense(water)[:nocc, nocc:, :nocc, nocc:])
+    energy = einsums.create_zero_tensor("E_block", [1])
+    graph = cg.Graph("thc_sos_block")
+    _G.ThcFactorization.register_grid_space(graph)
+    T = graph.scratch("T", shape, "float64")
+    D = einsums.create_zero_tensor("D", shape)
+    energies = water["orbital_energies"]
+    occupied = _tensor("eps_occ", energies[:nocc])
+    virtual = _tensor("eps_vir", energies[nocc:])
+    la.outer_sum(D, [occupied, virtual, occupied, virtual], [1.0, -1.0, 1.0, -1.0])
+    la.element_transform(D, "recip")
+    with cg.capture(graph):
+        la.direct_product(1.0, block, D, 0.0, T)
+        la.dot(energy, block, T)
+    graph.annotate_tag(block, _G.ProvenanceTag.make("eri"))
+    graph.annotate_tag(D, _G.LaplaceTransform.denominator_tag(
+        ["eps_occ", "eps_vir", "eps_occ", "eps_vir"], "+-+-"))
+
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.ThcFactorization("eri", _tensor("B", water["three"]),
+                                     _tensor("X", water["grid"]), 1e-2, _DROP))
+    factorization = _G.FactorizationPass(registry)
+    transform = cg.LaplaceTransform()
+    transform.set_epsilon(1e-5)
+    transform.add_energy("eps_occ", occupied)
+    transform.add_energy("eps_vir", virtual)
+    factorization.set_laplace_transform(transform)
+    manager = cg.PassManager()
+    manager.add(factorization)
+    assert not graph.apply(manager)
+    assert factorization.num_joint == 0
+    assert any("provider declined" in reason for reason, _count in factorization.skip_reasons), (
+        factorization.skip_reasons)

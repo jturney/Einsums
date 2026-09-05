@@ -443,6 +443,18 @@ def test_the_pair_is_costed_as_one_decision_and_declines_on_the_joint_number(wat
 
     Pinned because the decline is now INFORMATIVE where it used to be two
     unrelated silences: one line, naming the pair and both costs.
+
+    REVISITED 2026-09-05, and it stands. The expectation was that admitting the
+    direct product and the dot to the flattener would remove the decline's
+    premise, since the amplitude is then no longer a stored leaf. It does not,
+    and the reason is where the two decisions are taken: this one is
+    ``FactorizationPass`` costing the tagged tensor's own CONE, which is the
+    direct product and nothing else, and the amplitude is materialized there
+    whatever a later pass would do with it. What the flattener changed is the
+    other half of the sentence this decline already carried, that what would pay
+    is never forming the amplitude at all: ``MultiTermFactorization`` can now
+    reach that, and the opposite-spin proving ground below is it doing so. The
+    two are complementary rather than one superseding the other.
     """
     graph, energy = _dense_program(water)
 

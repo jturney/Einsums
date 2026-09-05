@@ -475,7 +475,8 @@ def main():
 #: declaring them is how a caller says which regime they run in. Unannotated,
 #: the comparison falls back to the extents this capture happens to have and the
 #: search declines, which the arm prints beside the annotated run.
-_SOS_FAMILY = (("occ", "o", 300.0, "nocc"), ("vir", "v", 2700.0, "nvir"), ("aux", "x", 9000.0, "naux"))
+_SOS_FAMILY = (("occ", "o", 300.0, "nocc"), ("vir", "v", 2700.0, "nvir"), ("aux", "x", 9000.0, "naux"),
+               ("grid", "g", 30000.0, "ngrid"))
 
 
 def _sos_registry():
@@ -549,8 +550,9 @@ def _sos_capture(graph, problem, energy, left=None, right=None):
     return denominator, (K, T, again)
 
 
-def _sos_annotate(graph, problem, denominator, tensors, aux_carrier):
-    cg.annotate(aux_carrier, ("aux", "occ", "vir"), graph=graph)
+def _sos_annotate(graph, problem, denominator, tensors, carriers, aux_space):
+    for carrier in carriers:
+        cg.annotate(carrier, (aux_space, "occ", "vir"), graph=graph)
     for tensor in tensors + (denominator,):
         cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
 
@@ -561,16 +563,17 @@ def _sos_shapes(graph):
     return [dims[t] for node in ir["nodes"] for t in node.get("outputs", []) if t in dims]
 
 
-def _sos_arm(problem, epsilon, annotate, left=None, right=None, registry_extra=None):
+def _sos_arm(problem, epsilon, annotate, left=None, right=None, aux_space="aux"):
     """Capture, transform, search. Returns everything the table needs."""
     energy = einsums.create_zero_tensor(f"E_sos_{epsilon:g}_{annotate}", [1])
     graph = cg.Graph(f"sos {epsilon:g} {annotate}")
     registry = _sos_registry()
     graph.set_space_registry(registry)
     denominator, tensors = _sos_capture(graph, problem, energy, left, right)
-    carrier = problem["fitted"] if left is None else left
+    carriers = {id(t): t for t in (problem["fitted"] if left is None else left,
+                                   problem["fitted"] if right is None else right)}.values()
     if annotate:
-        _sos_annotate(graph, problem, denominator, tensors, carrier)
+        _sos_annotate(graph, problem, denominator, tensors, tuple(carriers), aux_space)
     captured = graph.num_nodes()
 
     transform = _transform(problem, epsilon)
@@ -621,6 +624,50 @@ def _report_sos(problem):
     print(f"  At this molecule it is not: {problem['naux']} auxiliary directions against "
           f"{problem['nocc'] * problem['nvir']} occupied-virtual pairs, so the search declines and")
     print("  is right to. Declaring the family's typical extents is how a caller says otherwise.")
+
+
+def _report_sos_thc(problem, left, right, ngrid):
+    """The same opposite-spin energy with the grid fit in the density fit's place.
+
+    The grid form has the SAME shape the density-fitted one does,
+    ``sum_G L[G,i,a] R[G,j,b]`` with the grid index where the auxiliary index
+    was, so the transform rides on it unchanged and the search re-associates it
+    the same way. What comes out is the pairless form again, over the grid
+    letter: a grid-by-grid matrix per quadrature point.
+
+    Two things this arm does NOT reach, stated because the design block asks for
+    them. The chain the block writes, ``Xo_t``, ``Xv_t``, an elementwise ``Y_t``
+    and ``Z Y_t Z^T``, needs the collocation factors and the coupling as separate
+    leaves, which makes the energy a fourteen-factor product over the search's
+    cap of ten; what the search is handed here is the grid fit already contracted
+    into two three-index factors, so it finds the same bracketing it finds for
+    the density fit. And the shipped ``ThcFactorization`` cannot be asked for
+    this by tagging the integral: it fits a tensor over the whole basis on every
+    axis, and an occupied-virtual block is not that shape, so the joint decision
+    has no candidate to cost. The grid fit is therefore performed here, as the
+    density fit's factors are.
+    """
+    print("\n  the opposite-spin energy through the grid fit:")
+    oracle = _sos_oracle(problem)
+    shape = [problem["nocc"], problem["nvir"], problem["nocc"], problem["nvir"]]
+    L = _tensor("L", left)
+    R = _tensor("R", right)
+    header = (f"    {'epsilon':>9}  {'points':>6}  {'energy':>16}  {'|dE|/|E|':>10}  "
+              f"{'nodes':>12}  {'largest intermediate':>24}  o^2v^2")
+    print(header)
+    print("    " + "-" * (len(header) - 4))
+    for epsilon in _args.epsilons:
+        arm = _sos_arm(problem, epsilon, annotate=True, left=L, right=R, aux_space="grid")
+        rel = abs(arm["energy"] - oracle) / abs(oracle)
+        print(f"    {epsilon:9.0e}  {arm['points']:6d}  {arm['energy']:16.12f}  {rel:10.2e}  "
+              f"{arm['captured']:4d} -> {arm['emitted']:3d}  {str(arm['largest']):>24}  "
+              f"{'yes' if shape in arm['shapes'] else 'no'}")
+    print(f"    the grid has {ngrid} points against {problem['naux']} auxiliary directions, and a")
+    print("    grid is about ten times a basis where an auxiliary set is three or four. The trade")
+    print("    is the same one, o^2 v^2 G against o v G^2 t, so it turns over at a larger system")
+    print("    for the grid than for the fit and at a looser tolerance for the same system: the")
+    print("    o^2 v^2 column above is where the search says the decoupled form has stopped")
+    print("    paying, and it says so on the numbers rather than on a rule about grids.")
 
 
 def _report_naive(problem, exact):
@@ -814,6 +861,8 @@ def _report_thc(source, problem, exact):
     print("  the quadrature's own error falls below the grid fit's and the joint number stops "
           "moving, which is\n  the composition doing what a composition should: the looser "
           "approximation is the one that decides.")
+    if _args.sos:
+        _report_sos_thc(problem, left, right, grid.shape[1])
 
 
 def _energy_of_tensor(graph, tensor):
