@@ -70,6 +70,9 @@ std::string fresh_letter(std::vector<std::string> const &used, std::string const
 /// verified denominator chain may end in.
 constexpr std::string_view kReciprocal = "recip";
 
+/// The space a quadrature index ranges over: as many points as the rule takes.
+constexpr std::string_view kQuadratureSpace = "laplace_quadrature";
+
 /// @brief What the pass makes of the nodes writing a tagged denominator.
 ///
 /// Three answers rather than two. NOTHING writes it, which is the eager form and needs no
@@ -751,7 +754,30 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
                     used.push_back(letter);
                 }
             }
-            ExprIndex const quadrature{.letter = fresh_letter(used, "laplace_t"), .space = SpaceId{}};
+            // The tagged tensor's own metadata, COPIED. Declaring a tensor below inserts into the
+            // graph's map, and a handle pointer taken before that insertion is one rehash away
+            // from naming somewhere else.
+            packed_gemm::ScalarType const  denominator_dtype  = denominator->dtype;
+            std::vector<std::size_t> const denominator_dims   = denominator->dims;
+            std::vector<SpaceId> const     denominator_spaces = denominator->spaces;
+
+            // The quadrature index is a SPACE, with as many points as the rule takes.
+            //
+            // Its own length is a constant of the rewrite and the cost model here says so through
+            // `observe_constant`, but that is a statement inside one pass. A LATER pass raising the
+            // rewritten region sees an ordinary letter, and an anonymous one blocks the typical-
+            // extent rung for the whole polynomial it appears in, which leaves a re-association of
+            // the decoupled form decided on the extents the capture happened to have rather than
+            // on the family the caller declared. A registered space with a positive typical extent
+            // is what carries the fact past the end of this pass.
+            SpaceId quadrature_space{};
+            if (auto const found = graph.space_registry().find(kQuadratureSpace); found.has_value()) {
+                quadrature_space = *found;
+            } else {
+                quadrature_space = graph.space_registry().register_space(
+                    make_index_space(std::string(kQuadratureSpace), "lt", static_cast<double>(count)));
+            }
+            ExprIndex const quadrature{.letter = fresh_letter(used, "laplace_t"), .space = quadrature_space};
 
             // Every letter of everything about to be emitted, with its extent, so the terms
             // this rewrite builds carry a cost. A term with none reads as free, and a region
@@ -781,11 +807,22 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             std::vector<TensorId> exponentials;
             for (std::size_t axis = 0; axis < energy_names.size(); ++axis) {
                 exponentials.push_back(
-                    make(fmt::format("LaplaceTransform.{}.exp{}", name, axis), denominator->dtype, {count, denominator->dims[axis]}));
+                    make(fmt::format("LaplaceTransform.{}.exp{}", name, axis), denominator_dtype, {count, denominator_dims[axis]}));
             }
-            TensorId const points_id  = make(fmt::format("LaplaceTransform.{}.points", name), denominator->dtype, {count});
-            TensorId const weights_id = make(fmt::format("LaplaceTransform.{}.weights", name), denominator->dtype, {count});
-            TensorId const error_id   = make(LaplaceTransform::error_tensor_name(name), denominator->dtype, {1});
+            TensorId const points_id  = make(fmt::format("LaplaceTransform.{}.points", name), denominator_dtype, {count});
+            TensorId const weights_id = make(fmt::format("LaplaceTransform.{}.weights", name), denominator_dtype, {count});
+            TensorId const error_id   = make(LaplaceTransform::error_tensor_name(name), denominator_dtype, {1});
+
+            // The exponentials carry the quadrature space and the axis they were built from, so a
+            // later pass reading them as ordinary operands gets both. All axes or none, which is
+            // what `annotate_spaces` requires and what keeps a bind from moving some extents and
+            // not others; a denominator nobody annotated leaves them unannotated too.
+            if (options.want_setup && denominator_spaces.size() == energy_names.size() &&
+                std::ranges::all_of(denominator_spaces, [](SpaceId space) { return space.valid(); })) {
+                for (std::size_t axis = 0; axis < exponentials.size(); ++axis) {
+                    graph.annotate_spaces(exponentials[axis], {quadrature_space, denominator_spaces[axis]});
+                }
+            }
 
             auto make_leaf = [&expr, &graph](TensorId id, std::vector<ExprIndex> indices) {
                 ExprTerm            leaf;
@@ -849,7 +886,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
                 }
 
                 std::string const scaled_name = fmt::format("LaplaceTransform.{}.scaled{}", name, scalings.size());
-                TensorId const    scaled      = make(scaled_name, denominator->dtype, dims);
+                TensorId const    scaled      = make(scaled_name, denominator_dtype, dims);
 
                 ExprTerm term;
                 term.kind    = TermKind::Contraction;
@@ -930,7 +967,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             for (int sign : signs) {
                 descriptor.signs.push_back(static_cast<std::int8_t>(sign));
             }
-            packed_gemm::ScalarType const dtype = denominator->dtype;
+            packed_gemm::ScalarType const dtype = denominator_dtype;
             if (options.want_setup) {
                 outcome.emit_setup = [energy_views, quadrature_outputs, descriptor, dtype](Graph &parent, Graph &body) {
                     detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {

@@ -26,12 +26,15 @@ i, a, j and b lives. That is the substitution SOS-MP2 is built on.
 
 Three things this file records because the real case settled them.
 
-The denominator is built EAGERLY, from the same two energy vectors, rather than
-inside the capture. A tagged denominator some node writes is refused: a graph
-that recomputes it declares an intention to recompute, while the quadrature is
-fitted per bind, so the two would silently disagree in exactly the case the
-refusal is aimed at. Building it outside the capture is what the caller has to
-write, and it costs one ``outer_sum`` and one ``element_transform``.
+The denominator is built EAGERLY in the arms below, from the same two energy
+vectors, and that is now a choice rather than a requirement. The refusal it was
+written for declined a tagged tensor any node writes, on the grounds that a graph
+recomputing the denominator on every replay disagrees with a quadrature fitted
+once per bind. That holds for a recipe the pass cannot read, and not for the one
+the tag already describes: an outer sum of the named energies with the tagged
+signs followed by the reciprocal is checked against the nodes and dissolved with
+the tensor. ``--sos`` builds it inside the capture for exactly that reason, since
+a denominator declared deferred and then dissolved is never allocated.
 
 The numerator has to be a contraction, and it is one here for a physical reason
 rather than to please the pass: the exponentials ride on the OPERANDS of the
@@ -55,6 +58,14 @@ two composing on this same molecule's integrals in the shape where the fit IS
 profitable, an orbital-response update built from ``(ia|jb)`` and divided by
 ``e_i - e_a``.
 
+``--sos`` writes the opposite-spin energy over all four indices and lets the
+search re-associate it. With the denominator decoupled the whole energy is one
+nine-factor product, and its cheapest bracketing contracts the orbital indices
+away first: no tensor over o and v survives, and what is left is a Q-by-Q matrix
+per quadrature point. That is the fourth-order algorithm, reached from the
+subset search rather than from a rule about SOS-MP2, and the arm prints it beside
+the pair-driven energy it has to agree with.
+
 ``--thc`` runs the grid fit on the same molecule. A collocation matrix comes
 from psi4's own Becke grid, is pruned to the points whose basis-pair products
 are independent, and ``ThcFactorization`` fits the coupling from the same
@@ -77,6 +88,7 @@ so the offline arm needed no new file.
 """
 import argparse
 import contextlib
+import json
 import os
 
 import numpy as np
@@ -93,6 +105,8 @@ _argp.add_argument("--naive", action="store_true",
                    help="also capture the dense-integral form and report what each pass declines")
 _argp.add_argument("--thc", action="store_true",
                    help="also fit the integrals on a grid and run the energy through the grid fit")
+_argp.add_argument("--sos", action="store_true",
+                   help="also run the opposite-spin energy and let the search re-associate it")
 _argp.add_argument("--response", action="store_true",
                    help="also run the orbital-response shape, where the fit and the transform compose")
 _argp.add_argument("--epsilons", type=float, nargs="+", default=[1e-3, 1e-5, 1e-8],
@@ -282,10 +296,13 @@ _TAG = _G.LaplaceTransform.denominator_tag(["eps_occ", "eps_vir", "eps_occ", "ep
 def _denominator(problem, name="D"):
     """1 / (e_i + e_j - e_a - e_b), eagerly, from the two energy vectors.
 
-    Eager and not captured. The pass refuses a denominator the graph writes,
-    and the refusal is right: the quadrature is fitted once per bind from the
-    energies, so a graph that recomputes the denominator every replay is
-    describing something the substitution cannot follow.
+    Eager here, and captured in the ``--sos`` arm. The pass accepts either: a
+    denominator nothing writes needs no verification, and one written by an
+    outer sum of the tagged energies followed by the reciprocal is a recipe it
+    reads off the nodes and dissolves with the tensor. What it still refuses is a
+    writer it cannot read, since a graph recomputing the denominator into
+    something else on every replay is describing what the quadrature cannot
+    follow.
     """
     shape = [problem["nocc"], problem["nvir"], problem["nocc"], problem["nvir"]]
     denominator = einsums.create_zero_tensor(name, shape)
@@ -433,6 +450,8 @@ def main():
     print("the emitted node count does not move with the point count, which is what makes the "
           "tolerance free to be as tight as the caller wants")
 
+    if _args.sos:
+        _report_sos(problem)
     if _args.naive:
         _report_naive(problem, exact)
     if _args.thc:
@@ -442,6 +461,166 @@ def main():
 
     print("\nfull-axis DF-MP2 under LaplaceTransform agrees with the exact denominator "
           "inside every recorded bound")
+
+
+# ── The opposite-spin proving ground ────────────────────────────────────────
+
+#: The family this arm declares, and the whole reason the rewrite is taken.
+#:
+#: Decoupling the denominator trades ``o^2 v^2 Q`` for ``o v Q^2 t``, so it pays
+#: exactly where the auxiliary dimension is smaller than the occupied-virtual
+#: product by more than the point count. At water/cc-pVDZ it is not: 84
+#: auxiliary directions against 95 occupied-virtual pairs. These extents are a
+#: system of a few thousand basis functions, which is where SOS-MP2 is used, and
+#: declaring them is how a caller says which regime they run in. Unannotated,
+#: the comparison falls back to the extents this capture happens to have and the
+#: search declines, which the arm prints beside the annotated run.
+_SOS_FAMILY = (("occ", "o", 300.0, "nocc"), ("vir", "v", 2700.0, "nvir"), ("aux", "x", 9000.0, "naux"))
+
+
+def _sos_registry():
+    registry = cg.SpaceRegistry()
+    for name, symbol, extent, dim in _SOS_FAMILY:
+        registry.register_space(cg.index_space(name, symbol, extent, cg.GrowthClass.linear(), dim))
+    return registry
+
+
+def _sos_oracle(problem):
+    """``E_OS`` pair by pair, which never forms a four-index tensor.
+
+    The oracle, and the production form: the full-axis spelling below exists to
+    be rewritten into something with this one's memory profile, and until the
+    tiling pass can do that it is a correctness proving ground.
+    """
+    B = problem["fitted"]
+    nocc, nvir = problem["nocc"], problem["nvir"]
+    occupied = np.asarray(problem["occupied_energies"])
+    gaps = einsums.create_zero_tensor("-ea-eb", [nvir, nvir])
+    la.outer_sum(gaps, [problem["virtual_energies"], problem["virtual_energies"]], [-1.0, -1.0])
+    integral = einsums.create_zero_tensor("K_ij", [nvir, nvir])
+    squared = einsums.create_zero_tensor("K2_ij", [nvir, nvir])
+    weights = einsums.create_zero_tensor("W_ij", [nvir, nvir])
+    partial = einsums.create_zero_tensor("e_ij", [1])
+    total = 0.0
+    for i in range(nocc):
+        left = B[:, i, :]
+        for j in range(nocc):
+            einsums.einsum("Q,a ; Q,b -> a,b", integral, left, B[:, j, :])
+            la.axpby(1.0, gaps, 0.0, weights)
+            shift = float(occupied[i] + occupied[j])
+            la.element_transform(weights, lambda x, s=shift: 1.0 / (x + s))
+            la.direct_product(1.0, integral, integral, 0.0, squared)
+            la.dot(partial, squared, weights)
+            total += float(np.asarray(partial)[0])
+    return total
+
+
+def _sos_capture(graph, problem, energy, left=None, right=None):
+    """``E = sum_iajb (ia|jb)^2 / D``, over all four indices.
+
+    ``K`` is formed twice because the transform dissolves the numerator it
+    rewrites. After the search both copies are gone, so the second one costs
+    nothing in the graph that runs.
+
+    The denominator is built INSIDE the capture here, and that is the change the
+    refusal above no longer forces: an outer sum of the tagged energies followed
+    by the reciprocal is a recipe the pass reads off the nodes, so it accepts it,
+    dissolves it with the tensor, and the four-index denominator is never
+    allocated at all.
+    """
+    shape = [problem["nocc"], problem["nvir"], problem["nocc"], problem["nvir"]]
+    left = problem["fitted"] if left is None else left
+    right = problem["fitted"] if right is None else right
+    K = graph.scratch("K", shape, "float64")
+    T = graph.scratch("T", shape, "float64")
+    again = graph.scratch("K_again", shape, "float64")
+    denominator = graph.scratch("D", shape, "float64")
+    with cg.capture(graph):
+        la.outer_sum(denominator,
+                     [problem["occupied_energies"], problem["virtual_energies"],
+                      problem["occupied_energies"], problem["virtual_energies"]],
+                     [1.0, -1.0, 1.0, -1.0])
+        la.element_transform(denominator, "recip")
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, left, right)
+        la.direct_product(1.0, K, denominator, 0.0, T)
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, left, right)
+        la.dot(energy, again, T)
+    graph.annotate_tag(denominator, _TAG)
+    return denominator, (K, T, again)
+
+
+def _sos_annotate(graph, problem, denominator, tensors, aux_carrier):
+    cg.annotate(aux_carrier, ("aux", "occ", "vir"), graph=graph)
+    for tensor in tensors + (denominator,):
+        cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
+
+
+def _sos_shapes(graph):
+    ir = json.loads(graph.to_json())
+    dims = {tensor["id"]: tensor["dims"] for tensor in ir["tensors"]}
+    return [dims[t] for node in ir["nodes"] for t in node.get("outputs", []) if t in dims]
+
+
+def _sos_arm(problem, epsilon, annotate, left=None, right=None, registry_extra=None):
+    """Capture, transform, search. Returns everything the table needs."""
+    energy = einsums.create_zero_tensor(f"E_sos_{epsilon:g}_{annotate}", [1])
+    graph = cg.Graph(f"sos {epsilon:g} {annotate}")
+    registry = _sos_registry()
+    graph.set_space_registry(registry)
+    denominator, tensors = _sos_capture(graph, problem, energy, left, right)
+    carrier = problem["fitted"] if left is None else left
+    if annotate:
+        _sos_annotate(graph, problem, denominator, tensors, carrier)
+    captured = graph.num_nodes()
+
+    transform = _transform(problem, epsilon)
+    search = cg.MultiTermFactorization()
+    search.set_search_enabled(True)
+    manager = cg.PassManager()
+    manager.add(transform)
+    manager.add(search)
+    manager.run(graph)
+    emitted = graph.num_nodes()
+    shapes = _sos_shapes(graph)
+    value = _energy_of(graph, energy)
+    bound = graph.approximations()[0].bound if graph.approximations() else 0.0
+    return {
+        "energy": value, "bound": bound, "points": transform.last_point_count,
+        "captured": captured, "emitted": emitted, "shapes": shapes,
+        "search": search, "registry": registry,
+        "largest": max(shapes, key=lambda d: int(np.prod(d))) if shapes else [],
+    }
+
+
+def _report_sos(problem):
+    """The opposite-spin energy over all four indices, and what the search finds."""
+    print("\nthe opposite-spin energy, full axis:")
+    oracle = _sos_oracle(problem)
+    shape = [problem["nocc"], problem["nvir"], problem["nocc"], problem["nvir"]]
+    print(f"  pair-driven oracle, never forming a four-index tensor: {oracle:.12f}")
+
+    header = (f"  {'epsilon':>9}  {'points':>6}  {'bound':>10}  {'energy':>16}  {'|dE|/|E|':>10}  "
+              f"{'nodes':>12}  {'largest intermediate':>22}  o^2v^2")
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for epsilon in _args.epsilons:
+        arm = _sos_arm(problem, epsilon, annotate=True)
+        rel = abs(arm["energy"] - oracle) / abs(oracle)
+        print(f"  {epsilon:9.0e}  {arm['points']:6d}  {arm['bound']:10.2e}  {arm['energy']:16.12f}  "
+              f"{rel:10.2e}  {arm['captured']:4d} -> {arm['emitted']:3d}  "
+              f"{str(arm['largest']):>22}  {'yes' if shape in arm['shapes'] else 'no'}")
+        assert shape not in arm["shapes"], "a tensor over o and v survived the rewrite"
+        assert abs(arm["energy"] - oracle) <= arm["bound"] * abs(oracle) + 1e-12
+
+    unannotated = _sos_arm(problem, _args.epsilons[-1], annotate=False)
+    print(f"  unannotated, at this molecule's own extents: "
+          f"{unannotated['captured']} -> {unannotated['emitted']} nodes, "
+          f"o^2v^2 present = {shape in unannotated['shapes']}")
+    print("  the decoupled form trades o^2 v^2 Q for o v Q^2 t, so it pays where the auxiliary")
+    print("  dimension is smaller than the occupied-virtual product by more than the point count.")
+    print(f"  At this molecule it is not: {problem['naux']} auxiliary directions against "
+          f"{problem['nocc'] * problem['nvir']} occupied-virtual pairs, so the search declines and")
+    print("  is right to. Declaring the family's typical extents is how a caller says otherwise.")
 
 
 def _report_naive(problem, exact):

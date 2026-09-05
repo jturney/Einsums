@@ -475,7 +475,19 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             return false;
         }
         for (std::size_t axis = 0; axis < factor.indices.size(); axis++) {
-            table.observe(factor.indices[axis], handle->dims[axis]);
+            ExprIndex index = factor.indices[axis];
+            // The raised letter carries the space the descriptor froze AT CAPTURE, and that map
+            // holds nothing for a program annotated afterwards, which is every program annotated
+            // from Python. Re-derived from the operand's current handle, which is the argument
+            // `LetterBindings.hpp` already makes for the diagnostic passes and what
+            // `DeltaElimination` does for the same reason. It decides whether the comparison can
+            // use the family's typical extents at all: one anonymous letter blocks that rung for
+            // the whole polynomial, and the answer then rests on the extents this capture happened
+            // to have.
+            if (!index.space.valid() && axis < handle->spaces.size()) {
+                index.space = handle->spaces[axis];
+            }
+            table.observe(index, handle->dims[axis]);
         }
         return true;
     };
@@ -746,10 +758,11 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
                 break;
             }
             dims.push_back(extent->second);
-            spaces.push_back(index.space);
+            SpaceId const space = index.space.valid() ? index.space : table.space_for(index.letter);
+            spaces.push_back(space);
             std::string symbol;
-            if (index.space.valid() && index.space.value() < graph.space_registry().size()) {
-                symbol = graph.space_registry().space(index.space).dim_symbol;
+            if (space.valid() && space.value() < graph.space_registry().size()) {
+                symbol = graph.space_registry().space(space).dim_symbol;
             }
             every_axis_symbolic = every_axis_symbolic && !symbol.empty();
             symbols.push_back(std::move(symbol));
@@ -773,7 +786,11 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         if (shared_id == 0) {
             return false;
         }
-        if (std::ranges::any_of(spaces, [](SpaceId id) { return id.valid(); })) {
+        // EVERY axis or none. `annotate_spaces` rightly refuses a hole in an annotation, so an
+        // "any axis is valid" guard throws on the mixed case, which is what an intermediate over
+        // one annotated space and one unannotated letter is; a decoupled energy has exactly that
+        // shape as soon as its quadrature index is a space and something else is not.
+        if (std::ranges::all_of(spaces, [](SpaceId id) { return id.valid(); })) {
             graph.annotate_spaces(shared_id, spaces);
         }
         if (every_axis_symbolic) {
@@ -1122,7 +1139,10 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
                     return std::nullopt;
                 }
                 dims.push_back(extent->second);
-                spaces.push_back(index.space);
+                // From the table, which re-derived the space from the operands' handles where the
+                // raised index carried none, so an intermediate of a program annotated after
+                // capture is annotated too.
+                spaces.push_back(index.space.valid() ? index.space : table.space_for(index.letter));
             }
             TensorHandle const *model = graph.find_tensor(left->tensor);
             if (model == nullptr || dims.empty()) {
@@ -1135,7 +1155,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             if (scratch == 0) {
                 return std::nullopt;
             }
-            if (std::ranges::any_of(spaces, [](SpaceId id) { return id.valid(); })) {
+            if (std::ranges::all_of(spaces, [](SpaceId id) { return id.valid(); })) {
                 graph.annotate_spaces(scratch, spaces);
             }
             emit_contraction(*left, *right, scratch, {}, axes, PrefactorScalar{double{0}}, PrefactorScalar{double{1}},

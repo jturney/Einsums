@@ -553,3 +553,178 @@ def test_the_veto_stands_where_nothing_is_annotated(water):
     manager.add(factorization)
     assert not graph.apply(manager)
     assert any("not cheaper at the extents" in reason for reason, _count in factorization.skip_reasons)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The opposite-spin proving ground
+#
+# SOS-MP2 written over all four indices, and what the optimizer makes of it.
+# The target is the pairless form: with the denominator decoupled, the energy
+# is one nine-factor product and its cheapest bracketing contracts the orbital
+# indices away first, leaving a Q-by-Q matrix per quadrature point and no tensor
+# over o and v at all.
+#
+# The oracle is the PAIR-DRIVEN energy, which is the memory-optimal spelling and
+# the one production uses; the full-axis form is a correctness proving ground
+# until the tiling pass can derive the pair loop from it.
+# ──────────────────────────────────────────────────────────────────────────
+
+#: The family the caller declares, and the whole reason the rewrite is taken.
+#:
+#: Decoupling trades ``o^2 v^2 Q`` for ``o v Q^2 t``, so it pays exactly where
+#: the auxiliary dimension is smaller than the occupied-virtual product by more
+#: than the point count. At water/cc-pVDZ it is NOT: 84 auxiliary directions
+#: against 95 occupied-virtual pairs, so the rewrite is a loss at this size and
+#: the pass says so. These extents are a system of a few thousand basis
+#: functions, which is where SOS-MP2 is used, and declaring them is how a caller
+#: says which regime they are in. It is the same abstention the density fit's
+#: extent veto makes over an annotated axis.
+_SOS_FAMILY = (("occ", "o", 300.0, "nocc"), ("vir", "v", 2700.0, "nvir"), ("aux", "x", 9000.0, "naux"))
+
+
+def _sos_registry():
+    registry = cg.SpaceRegistry()
+    for name, symbol, extent, dim in _SOS_FAMILY:
+        registry.register_space(cg.index_space(name, symbol, extent, cg.GrowthClass.linear(), dim))
+    return registry
+
+
+def _sos_capture(graph, water, energy):
+    """``E = sum_iajb (ia|jb)^2 / D``, over all four indices.
+
+    ``K`` is formed twice because the transform dissolves the numerator it
+    rewrites; after the search both copies are gone, so the second one costs
+    nothing in the rewritten graph.
+    """
+    shape = _shape(water)
+    B = water["fitted"]
+    K = graph.scratch("K", shape, "float64")
+    T = graph.scratch("T", shape, "float64")
+    again = graph.scratch("K_again", shape, "float64")
+    denominator = graph.scratch("D", shape, "float64")
+    _build_denominator(graph, water, denominator)
+    with cg.capture(graph):
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
+        la.direct_product(1.0, K, denominator, 0.0, T)
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, B, B)
+        la.dot(energy, again, T)
+    graph.annotate_tag(denominator, _tag())
+    return denominator, (B, K, T, again)
+
+
+def _annotate_sos(graph, water, tensors, denominator):
+    B, K, T, again = tensors
+    cg.annotate(B, ("aux", "occ", "vir"), graph=graph)
+    # The DENOMINATOR too, and not for symmetry: the transform gives its
+    # exponentials the quadrature space and the axis they were built from, all
+    # axes or none, so an unannotated denominator leaves the quadrature letter
+    # anonymous and one anonymous letter blocks the family's extents for the
+    # whole polynomial it appears in.
+    for tensor in (K, T, again, denominator):
+        cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
+
+
+def _opposite_spin_pair_driven(water):
+    """The oracle: the same energy pair by pair, never forming a four-index tensor."""
+    B = water["fitted"]
+    nocc, nvir = water["nocc"], water["nvir"]
+    occupied = np.asarray(water["occupied_energies"])
+    gaps = einsums.create_zero_tensor("-ea-eb", [nvir, nvir])
+    la.outer_sum(gaps, [water["virtual_energies"], water["virtual_energies"]], [-1.0, -1.0])
+
+    integral = einsums.create_zero_tensor("K_ij", [nvir, nvir])
+    squared = einsums.create_zero_tensor("K2_ij", [nvir, nvir])
+    weights = einsums.create_zero_tensor("W_ij", [nvir, nvir])
+    partial = einsums.create_zero_tensor("e_ij", [1])
+
+    total = 0.0
+    for i in range(nocc):
+        left = B[:, i, :]
+        for j in range(nocc):
+            einsums.einsum("Q,a ; Q,b -> a,b", integral, left, B[:, j, :])
+            la.axpby(1.0, gaps, 0.0, weights)
+            shift = float(occupied[i] + occupied[j])
+            la.element_transform(weights, lambda x, s=shift: 1.0 / (x + s))
+            la.direct_product(1.0, integral, integral, 0.0, squared)
+            la.dot(partial, squared, weights)
+            total += float(np.asarray(partial)[0])
+    return total
+
+
+def _sos_run(water, epsilon, annotate):
+    energy = einsums.create_zero_tensor(f"E_sos_{epsilon:g}_{annotate}", [1])
+    graph = cg.Graph(f"sos_{epsilon:g}_{annotate}")
+    registry = _sos_registry()
+    graph.set_space_registry(registry)
+    denominator, tensors = _sos_capture(graph, water, energy)
+    if annotate:
+        _annotate_sos(graph, water, tensors, denominator)
+    captured = graph.num_nodes()
+
+    transform = _transform(water, epsilon)
+    search = cg.MultiTermFactorization()
+    search.set_search_enabled(True)
+    manager = cg.PassManager()
+    manager.add(transform)
+    manager.add(search)
+    manager.run(graph)
+    return graph, energy, transform, search, captured, registry
+
+
+def _written_dims(graph):
+    """The shape of every tensor some node in the optimized graph writes."""
+    ir = json.loads(graph.to_json())
+    dims = {tensor["id"]: tensor["dims"] for tensor in ir["tensors"]}
+    out = []
+    for node in ir["nodes"]:
+        for tid in node.get("outputs", []):
+            if tid in dims:
+                out.append(dims[tid])
+    return out
+
+
+def test_the_opposite_spin_energy_reaches_the_pairless_form(water):
+    """No four-index tensor survives, and a Q-by-Q-by-points object appears."""
+    oracle = _opposite_spin_pair_driven(water)
+    graph, energy, transform, search, captured, _registry = _sos_run(water, 1e-8, annotate=True)
+
+    assert transform.num_transformed == 1
+    assert search.num_rebracketed == 1, search.skip_reasons
+
+    points = transform.last_point_count
+    four_index = [water["nocc"], water["nvir"], water["nocc"], water["nvir"]]
+    written = _written_dims(graph)
+    assert four_index not in written, (
+        f"a tensor over o and v survived the rewrite: {written}")
+
+    naux = water["naux"]
+    assert any(sorted(shape) == sorted([naux, naux, points]) for shape in written), (
+        f"no Q by Q by points object was emitted: {written}")
+
+    # The emitted count does not move with the point count, which is the transform's own
+    # property surviving the re-association: one contraction sums over the quadrature letter.
+    emitted = graph.num_nodes()
+    assert emitted == 8, f"{captured} captured, {emitted} emitted"
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    value = float(np.asarray(energy)[0])
+    record = graph.approximations()[0]
+    assert abs(value - oracle) <= _SAFETY * record.bound * abs(oracle) + _ROUNDING, (
+        f"the pairless energy {value} is outside the recorded bound against the "
+        f"pair-driven {oracle}")
+
+
+def test_the_pairless_form_is_declined_where_it_does_not_pay(water):
+    """Unannotated, the comparison falls back to the extents this capture has.
+
+    At water/cc-pVDZ the auxiliary set is 84 directions against 95
+    occupied-virtual pairs, so trading ``o^2 v^2 Q`` for ``o v Q^2 t`` is a loss
+    and the search says so. The rewrite is a property of the family, not of the
+    expression, and the pass is right to decline it here.
+    """
+    graph, _energy, transform, search, _captured, _registry = _sos_run(water, 1e-8, annotate=False)
+    assert transform.num_transformed == 1
+    four_index = [water["nocc"], water["nvir"], water["nocc"], water["nvir"]]
+    assert four_index in _written_dims(graph), (
+        "the search took the decoupled form at extents where it costs more")
