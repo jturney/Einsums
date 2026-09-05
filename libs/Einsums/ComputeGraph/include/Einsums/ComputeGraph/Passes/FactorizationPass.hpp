@@ -174,6 +174,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         std::string                                                          label;
         std::vector<TensorId>                                                factors;
         std::function<void(Graph &, Graph &, std::vector<TensorId> const &)> emit;
+        /// Whether the fitting is also emitted into the loop body, because the tensor it fits
+        /// from is the amplitude that body updates every iteration.
+        bool refit{false};
     };
 
     /// A setup body a quadrature this pass applied still needs emitted. Separate from

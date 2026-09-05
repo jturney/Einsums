@@ -53,10 +53,12 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -249,5 +251,30 @@ class EINSUMS_EXPORT EscapeAnalysis {
     /// Pointers any descendant sub-graph mentions.
     std::unordered_set<void const *> _subtree_ptrs;
 };
+
+/**
+ * @brief The node of @p graph that updates @p tensor, when @p graph is a solver's loop body.
+ *
+ * A tagged tensor some node writes is normally refused outright by a factorization: its factors
+ * would go stale whenever it changed, and a fitting runs once per bound problem. An AMPLITUDE is
+ * written every iteration by design, and the way out is not to relax the refusal but to
+ * recognize the one writer that makes a re-fit meaningful.
+ *
+ * What counts as the update statement, and nothing else does:
+ *
+ *  - a @c DirectDivision whose destination is @p tensor, which is a residual divided by an
+ *    energy denominator into the amplitude, the plain update with the extrapolation left to the
+ *    host predicate; or
+ *  - an @c Axpby accumulating into @p tensor whose source is itself produced in this graph by a
+ *    @c DirectDivision, which is the same update written as a step the host's DIIS can read.
+ *
+ * There must be exactly ONE value-writer of the buffer here and none in any descendant, because
+ * two writers mean the value the fit is about is not settled by the statement being recognized.
+ *
+ * @param[in] graph The loop body.
+ * @param[in] tensor The tagged tensor.
+ * @return The updating node's id, or the reason this is not an update.
+ */
+[[nodiscard]] EINSUMS_EXPORT expected<NodeId, std::string> amplitude_update_writer(Graph const &graph, TensorId tensor);
 
 EINSUMS_NAMESPACE_END(compute_graph)

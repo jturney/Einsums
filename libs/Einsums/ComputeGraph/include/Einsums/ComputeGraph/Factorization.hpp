@@ -135,6 +135,21 @@ struct FactorizationPlan {
     /// an inline literal followed immediately by a parameter list renders as a literal whose
     /// start-string is never terminated, and the docs build treats that warning as an error.
     std::function<void(Graph &parent, Graph &body, std::vector<TensorId> const &factors)> emit_setup;
+
+    /// Whether @ref emit_setup reads the TAGGED tensor rather than some other tensor the
+    /// provider holds.
+    ///
+    /// False for a fit of a fixed quantity: a density fit reads a three-index tensor the caller
+    /// handed the provider, and the tagged four-index tensor is only what the fit is claimed to
+    /// approximate. True for a fit OF the tagged tensor itself, which an amplitude fit is.
+    ///
+    /// It is what decides whether a tagged tensor a loop body rewrites every iteration may be
+    /// factorized at all. A fit that does not read the tagged tensor is the same factors however
+    /// often the tensor moves, so substituting it for a moving tensor is simply wrong; a fit that
+    /// does read it can be re-fitted at each update, and the pass emits the fitting in the body
+    /// instead of once per bind. A provider that says nothing gets the fixed-quantity answer,
+    /// which declines rather than guesses.
+    bool fits_from_tagged{false};
 };
 
 /**

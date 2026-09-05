@@ -4,14 +4,17 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Factorization.hpp>
 #include <Einsums/ComputeGraph/Passes/FactorizationPass.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <cmath>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include <Einsums/Testing.hpp>
 
@@ -613,7 +616,383 @@ class ExactChain : public cg::FactorizationProvider {
     Tensor<double, 3> *_b;
 };
 
+/// A provider whose fit READS the tagged tensor, which is what an amplitude fit is.
+///
+/// Every other provider in this file, and both shipped ones, fit a quantity the caller handed
+/// over and merely claim it approximates the tagged tensor. That is a fixed factorization: the
+/// factors are the same however often the tagged tensor moves, so a tensor a loop body rewrites
+/// every iteration cannot be factorized that way at all. This one projects the tagged matrix
+/// onto a fixed orthonormal basis, ``A = M U`` with ``B = U^T``, so the substitution is exact
+/// for any ``M`` whose rows lie in that basis and the fit has to be redone whenever ``M`` does.
+class ProjectedAmplitude : public cg::FactorizationProvider {
+  public:
+    ProjectedAmplitude(Tensor<double, 2> &basis, Tensor<double, 2> &transposed) : _basis(&basis), _transposed(&transposed) {}
+
+    [[nodiscard]] std::string name() const override { return "ProjectedAmplitude"; }
+    [[nodiscard]] std::string tag() const override { return "test_amplitude"; }
+
+    [[nodiscard]] expected<cg::FactorizationPlan, std::string> propose(cg::Graph const &graph, cg::TensorId tensor) const override {
+        cg::TensorHandle const *handle = graph.find_tensor(tensor);
+        if (handle == nullptr || handle->rank != 2) {
+            return einsums::unexpected(std::string{"this provider only factorizes a rank-2 tensor"});
+        }
+        std::size_t const rank = _basis->dim(1);
+
+        cg::FactorizationPlan plan;
+        plan.provider         = name();
+        plan.tagged_letters   = {"m", "n"};
+        plan.fits_from_tagged = true;
+        plan.factors.push_back(cg::FactorTensor{.name    = "projected",
+                                                .letters = {"m", "Q"},
+                                                .dims    = {handle->dims[0], rank},
+                                                .spaces  = {},
+                                                .dtype   = einsums::packed_gemm::ScalarType::Float64});
+        plan.factors.push_back(cg::FactorTensor{.name    = "basisT",
+                                                .letters = {"Q", "n"},
+                                                .dims    = {rank, handle->dims[1]},
+                                                .spaces  = {},
+                                                .dtype   = einsums::packed_gemm::ScalarType::Float64});
+        plan.accuracy = cg::make_approximation_record(name(), cg::ApproximationEffect::NormRelative, 0.0, 0.0);
+
+        auto *basis      = _basis;
+        auto *transposed = _transposed;
+        plan.emit_setup  = [basis, transposed, tensor](cg::Graph &parent, cg::Graph &body, std::vector<cg::TensorId> const &factors) {
+            auto                  *a = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[0]).tensor_ptr);
+            auto                  *b = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[1]).tensor_ptr);
+            auto                  *m = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(tensor).tensor_ptr);
+            cg::CaptureGuard const guard(body);
+            // The projection reads the tagged tensor, which is what makes this a fit OF it.
+            cg::einsum("m,n ; n,Q -> m,Q", a, *m, *basis);
+            cg::permute("Q,n <- Q,n", 0.0, b, 1.0, *transposed);
+        };
+        return plan;
+    }
+
+  private:
+    Tensor<double, 2> *_basis;
+    Tensor<double, 2> *_transposed;
+};
+
+/// The same plan, declaring nothing about what it reads. Used to pin the decline: a provider
+/// that says nothing gets the fixed-quantity answer, which is the one that cannot be wrong.
+class SilentAmplitude : public ProjectedAmplitude {
+  public:
+    using ProjectedAmplitude::ProjectedAmplitude;
+
+    [[nodiscard]] std::string name() const override { return "SilentAmplitude"; }
+
+    [[nodiscard]] expected<cg::FactorizationPlan, std::string> propose(cg::Graph const &graph, cg::TensorId tensor) const override {
+        auto plan = ProjectedAmplitude::propose(graph, tensor);
+        if (plan) {
+            plan->provider         = name();
+            plan->fits_from_tagged = false;
+        }
+        return plan;
+    }
+};
+
+/// An orthonormal basis of @p rank columns in @p n dimensions, and its transpose.
+std::pair<Tensor<double, 2>, Tensor<double, 2>> orthonormal_basis(std::size_t n, std::size_t rank, int seed) {
+    auto raw = create_random_tensor<double>("raw", n, rank);
+    (void)seed;
+    // Modified Gram-Schmidt, in double, over a handful of columns.
+    for (std::size_t col = 0; col < rank; ++col) {
+        for (std::size_t prev = 0; prev < col; ++prev) {
+            double overlap = 0.0;
+            for (std::size_t row = 0; row < n; ++row) {
+                overlap += raw(row, prev) * raw(row, col);
+            }
+            for (std::size_t row = 0; row < n; ++row) {
+                raw(row, col) -= overlap * raw(row, prev);
+            }
+        }
+        double norm = 0.0;
+        for (std::size_t row = 0; row < n; ++row) {
+            norm += raw(row, col) * raw(row, col);
+        }
+        norm = std::sqrt(norm);
+        for (std::size_t row = 0; row < n; ++row) {
+            raw(row, col) /= norm;
+        }
+    }
+    auto transposed = create_zero_tensor<double>("basisT", rank, n);
+    for (std::size_t col = 0; col < rank; ++col) {
+        for (std::size_t row = 0; row < n; ++row) {
+            transposed(col, row) = raw(row, col);
+        }
+    }
+    return {raw, transposed};
+}
+
 } // namespace
+
+namespace {
+
+/// One CCSD-shaped iteration: a contraction over the amplitude, a residual built from it, and an
+/// update that divides the residual by a denominator into the amplitude.
+///
+/// The denominator is all ones and the residual is a left multiplication, so the amplitude stays
+/// in the row space of the fixed basis at every iteration and the projected factorization stays
+/// EXACT. What is under test is where the fitting goes and how often it runs, not the accuracy
+/// of an approximation.
+struct AmplitudeLoop {
+    RuntimeTensor<double> *amplitude;
+    RuntimeTensor<double> *result;
+    cg::Graph             *body;
+};
+
+AmplitudeLoop capture_amplitude_iteration(cg::Graph &graph, RuntimeTensor<double> &M, RuntimeTensor<double> &T, RuntimeTensor<double> &C,
+                                          RuntimeTensor<double> &S, RuntimeTensor<double> &R, RuntimeTensor<double> &copy,
+                                          RuntimeTensor<double> &ones, std::size_t iterations) {
+    cg::Graph &body = graph.add_loop("amplitude_iteration", iterations, [iterations](std::size_t it) { return it + 1 < iterations; });
+    {
+        cg::CaptureGuard const guard(body);
+        // The residual reads a COPY of the amplitude rather than the amplitude, so exactly one
+        // two-operand contraction offers the tagged tensor as an operand. A tagged tensor two
+        // contractions read is factorized once per reader today, and that is a separate question
+        // from where the fitting goes.
+        cg::axpby(1.0, M, 0.0, &copy);
+        cg::einsum("m,n ; n,j -> m,j", &C, M, T);
+        cg::einsum("m,k ; k,n -> m,n", &R, S, copy);
+        cg::direct_division(1.0, R, ones, 0.0, &M);
+    }
+    return AmplitudeLoop{.amplitude = &M, .result = &C, .body = &body};
+}
+
+} // namespace
+
+TEST_CASE("Factorization - an amplitude the loop body updates is refitted in the body", "[ComputeGraph][Factorization][Amplitude]") {
+    std::size_t const n = 8, rank = 2, iterations = 3;
+
+    auto [basis, transposed] = orthonormal_basis(n, rank, 7);
+    auto weights             = create_random_tensor<double>("weights", n, rank);
+
+    // M = W U^T, so M's rows lie in the basis and M U U^T is M exactly. A left multiplication
+    // keeps them there, which is what the residual below is.
+    auto seed_amplitude = [&](RuntimeTensor<double> &into) {
+        for (std::size_t row = 0; row < n; ++row) {
+            for (std::size_t col = 0; col < n; ++col) {
+                double sum = 0.0;
+                for (std::size_t q = 0; q < rank; ++q) {
+                    sum += weights(row, q) * transposed(q, col);
+                }
+                into(row, col) = sum;
+            }
+        }
+    };
+
+    auto T    = RuntimeTensor<double>(create_random_tensor<double>("T", n, n));
+    auto S    = RuntimeTensor<double>(create_random_tensor<double>("S", n, n));
+    auto ones = RuntimeTensor<double>(create_zero_tensor<double>("ones", n, n));
+    for (std::size_t row = 0; row < n; ++row) {
+        for (std::size_t col = 0; col < n; ++col) {
+            ones(row, col) = 1.0;
+        }
+    }
+
+    // The reference arm: the same iteration with no factorization at all.
+    auto M_ref    = RuntimeTensor<double>(create_zero_tensor<double>("M", n, n));
+    auto C_ref    = RuntimeTensor<double>(create_zero_tensor<double>("C", n, n));
+    auto R_ref    = RuntimeTensor<double>(create_zero_tensor<double>("R", n, n));
+    auto copy_ref = RuntimeTensor<double>(create_zero_tensor<double>("Mcopy", n, n));
+    seed_amplitude(M_ref);
+    cg::Graph reference("amplitude_reference");
+    capture_amplitude_iteration(reference, M_ref, T, C_ref, S, R_ref, copy_ref, ones, iterations);
+    auto reference_default = cg::PassManager::create_default();
+    reference.apply(reference_default);
+    reference.execute();
+
+    auto M    = RuntimeTensor<double>(create_zero_tensor<double>("M", n, n));
+    auto C    = RuntimeTensor<double>(create_zero_tensor<double>("C", n, n));
+    auto R    = RuntimeTensor<double>(create_zero_tensor<double>("R", n, n));
+    auto copy = RuntimeTensor<double>(create_zero_tensor<double>("Mcopy", n, n));
+    seed_amplitude(M);
+    cg::Graph  graph("amplitude_factorized");
+    auto const loop = capture_amplitude_iteration(graph, M, T, C, S, R, copy, ones, iterations);
+    graph.annotate_tag(M, cg::ProvenanceTag{.name = "test_amplitude"});
+
+    cg::FactorizationRegistry registry;
+    registry.add(std::make_shared<ProjectedAmplitude>(basis, transposed));
+
+    cg::passes::FactorizationPass factorization(registry);
+    cg::PassManager               pm;
+    // The tag is declared on the graph and read inside the body, which are two handles for one
+    // buffer; the analysis phase is what carries it across.
+    pm.add(std::make_shared<cg::passes::ProvenancePropagation>());
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+    pm.set_verbosity(3);
+    REQUIRE(graph.apply(pm));
+    CHECK(factorization.num_factorized() == 1);
+
+    // The fitting is in BOTH places, and each is there for one of the two things a re-fit has to
+    // do: the parent's setup fits what is bound before the loop runs, and the body's copy re-fits
+    // after each update.
+    std::size_t setups_in_parent = 0;
+    for (auto const &node : graph.nodes()) {
+        if (std::get_if<cg::SetupDescriptor>(&node.op_data) != nullptr) {
+            ++setups_in_parent;
+        }
+    }
+    CHECK(setups_in_parent == 1);
+    std::size_t setups_in_body = 0;
+    for (auto const &node : loop.body->nodes()) {
+        if (std::get_if<cg::SetupDescriptor>(&node.op_data) != nullptr) {
+            ++setups_in_body;
+        }
+    }
+    CHECK(setups_in_body == 0);
+
+    auto graph_default = cg::PassManager::create_default();
+    graph.apply(graph_default);
+    CHECK(cg::passes::duplicate_materializations(graph).empty());
+    CHECK(cg::passes::stranded_materializations(graph).empty());
+    graph.execute();
+
+    // Exact, because the projection is exact for an amplitude in this basis, and the point of the
+    // case is that it stays exact across iterations: a fit made once before the loop would be the
+    // first iteration's and would be visibly wrong by the third.
+    for (std::size_t row = 0; row < n; ++row) {
+        for (std::size_t col = 0; col < n; ++col) {
+            CHECK_THAT(C(row, col), Catch::Matchers::WithinAbs(C_ref(row, col), 1.0e-10));
+        }
+    }
+}
+
+TEST_CASE("Factorization - a fit that does not read the updated tensor is declined", "[ComputeGraph][Factorization][Amplitude]") {
+    std::size_t const n = 8, rank = 2, iterations = 2;
+
+    auto [basis, transposed] = orthonormal_basis(n, rank, 11);
+    auto M                   = RuntimeTensor<double>(create_random_tensor<double>("M", n, n));
+    auto T                   = RuntimeTensor<double>(create_random_tensor<double>("T", n, n));
+    auto S                   = RuntimeTensor<double>(create_random_tensor<double>("S", n, n));
+    auto C                   = RuntimeTensor<double>(create_zero_tensor<double>("C", n, n));
+    auto R                   = RuntimeTensor<double>(create_zero_tensor<double>("R", n, n));
+    auto copy                = RuntimeTensor<double>(create_zero_tensor<double>("Mcopy", n, n));
+    auto ones                = RuntimeTensor<double>(create_zero_tensor<double>("ones", n, n));
+
+    cg::Graph graph("amplitude_silent");
+    capture_amplitude_iteration(graph, M, T, C, S, R, copy, ones, iterations);
+    graph.annotate_tag(M, cg::ProvenanceTag{.name = "test_amplitude"});
+
+    cg::FactorizationRegistry registry;
+    registry.add(std::make_shared<SilentAmplitude>(basis, transposed));
+
+    cg::passes::FactorizationPass factorization(registry);
+    cg::PassManager               pm;
+    pm.add(std::make_shared<cg::passes::ProvenancePropagation>());
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+    pm.set_verbosity(3);
+    CHECK_FALSE(graph.apply(pm));
+    CHECK(factorization.num_factorized() == 0);
+
+    auto const report = pm.explain();
+    INFO(report);
+    CHECK(report.find("does not read the tagged tensor") != std::string::npos);
+}
+
+TEST_CASE("Factorization - a tagged tensor written by anything but an update still declines", "[ComputeGraph][Factorization][Amplitude]") {
+    std::size_t const n = 8, rank = 2, iterations = 2;
+
+    auto [basis, transposed] = orthonormal_basis(n, rank, 13);
+    auto M                   = RuntimeTensor<double>(create_random_tensor<double>("M", n, n));
+    auto T                   = RuntimeTensor<double>(create_random_tensor<double>("T", n, n));
+    auto S                   = RuntimeTensor<double>(create_random_tensor<double>("S", n, n));
+    auto C                   = RuntimeTensor<double>(create_zero_tensor<double>("C", n, n));
+
+    cg::Graph  graph("amplitude_wrong_writer");
+    cg::Graph &body = graph.add_loop("iteration", iterations, [iterations](std::size_t it) { return it + 1 < iterations; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("m,n ; n,j -> m,j", &C, M, T);
+        // A contraction, not a division of a residual by a denominator. The tensor still moves
+        // every iteration and there is still nothing a fit made once could describe, but the
+        // statement is not one this analysis will call an update.
+        cg::einsum("m,k ; k,n -> m,n", &M, S, T);
+    }
+    graph.annotate_tag(M, cg::ProvenanceTag{.name = "test_amplitude"});
+
+    cg::FactorizationRegistry registry;
+    registry.add(std::make_shared<ProjectedAmplitude>(basis, transposed));
+
+    cg::passes::FactorizationPass factorization(registry);
+    cg::PassManager               pm;
+    pm.add(std::make_shared<cg::passes::ProvenancePropagation>());
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+    pm.set_verbosity(3);
+    CHECK_FALSE(graph.apply(pm));
+    CHECK(factorization.num_factorized() == 0);
+
+    auto const report = pm.explain();
+    INFO(report);
+    CHECK(report.find("could go stale") != std::string::npos);
+}
+
+TEST_CASE("Factorization - what counts as an amplitude update, and what does not", "[ComputeGraph][Factorization][Amplitude]") {
+    // The three answers the analysis gives, asked of it directly. What a pass does with them is
+    // the business of the cases above; what they ARE is decided here, because the whole of the
+    // third mode of the stale-factor refusal rests on this one recognition.
+    std::size_t const n    = 4;
+    auto              M    = RuntimeTensor<double>(create_random_tensor<double>("M", n, n));
+    auto              R    = RuntimeTensor<double>(create_random_tensor<double>("R", n, n));
+    auto              D    = RuntimeTensor<double>(create_random_tensor<double>("D", n, n));
+    auto              S    = RuntimeTensor<double>(create_random_tensor<double>("S", n, n));
+    auto              step = RuntimeTensor<double>(create_zero_tensor<double>("step", n, n));
+
+    SECTION("a residual divided by a denominator into the amplitude") {
+        cg::Graph body("update_division");
+        {
+            cg::CaptureGuard const guard(body);
+            cg::direct_division(1.0, R, D, 0.0, &M);
+        }
+        auto const found = cg::amplitude_update_writer(body, body.live_tensor_id_by_ptr(&M, {}));
+        CHECK(found.has_value());
+    }
+
+    SECTION("the same update written as a step a host's DIIS can read") {
+        cg::Graph body("update_step");
+        {
+            cg::CaptureGuard const guard(body);
+            cg::direct_division(1.0, R, D, 0.0, &step);
+            cg::axpby(1.0, step, 1.0, &M);
+        }
+        auto const found = cg::amplitude_update_writer(body, body.live_tensor_id_by_ptr(&M, {}));
+        CHECK(found.has_value());
+    }
+
+    SECTION("a contraction is not an update") {
+        cg::Graph body("update_contraction");
+        {
+            cg::CaptureGuard const guard(body);
+            cg::einsum("m,k ; k,n -> m,n", &M, S, R);
+        }
+        auto const found = cg::amplitude_update_writer(body, body.live_tensor_id_by_ptr(&M, {}));
+        REQUIRE_FALSE(found.has_value());
+        CHECK(found.error().find("not an amplitude update") != std::string::npos);
+    }
+
+    SECTION("an accumulation from something no division produced is not an update") {
+        cg::Graph body("update_bare_axpby");
+        {
+            cg::CaptureGuard const guard(body);
+            cg::axpby(1.0, R, 1.0, &M);
+        }
+        auto const found = cg::amplitude_update_writer(body, body.live_tensor_id_by_ptr(&M, {}));
+        REQUIRE_FALSE(found.has_value());
+        CHECK(found.error().find("no division in this body produced") != std::string::npos);
+    }
+
+    SECTION("two writers are not an update, whatever they are") {
+        cg::Graph body("update_two_writers");
+        {
+            cg::CaptureGuard const guard(body);
+            cg::direct_division(1.0, R, D, 0.0, &M);
+            cg::axpby(1.0, S, 1.0, &M);
+        }
+        auto const found = cg::amplitude_update_writer(body, body.live_tensor_id_by_ptr(&M, {}));
+        REQUIRE_FALSE(found.has_value());
+        CHECK(found.error().find("value-writers") != std::string::npos);
+    }
+}
 
 TEST_CASE("Factorization - a three-factor chain is substituted and binarized by the pass", "[ComputeGraph][Factorization][Chain]") {
     std::size_t const n    = 6;

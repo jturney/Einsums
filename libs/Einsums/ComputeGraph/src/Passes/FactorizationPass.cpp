@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
@@ -408,6 +409,16 @@ bool FactorizationPass::run(Graph &graph) {
             continue; // gated before the rewrite was accepted; this is belt and braces
         }
         pending.emit(graph, *body, pending.factors);
+        // A fit OF a tensor the body updates is emitted twice: once in the parent's setup, which
+        // fits whatever is bound before the loop runs, and once at the end of the body, which
+        // re-fits after each update. The body's copy is what every later iteration reads, and the
+        // parent's is what the first one reads; between them every iteration reads a fit of the
+        // amplitude it was going to read. Appended rather than spliced, because the readers of
+        // the factors were captured earlier and the dependency sort keeps a writer behind its
+        // readers when program order puts it there.
+        if (pending.refit) {
+            pending.emit(graph, graph, pending.factors);
+        }
         modified = true;
     }
     // The quadratures a joint rewrite fitted, behind the fittings for the same reason those go
@@ -516,14 +527,27 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             _considered.push_back(tagged_id);
         }
 
+        // A tagged tensor this graph writes has one way through, and only one: it is the
+        // amplitude of a solver whose iteration this graph IS, updated by a statement the
+        // analysis can name, and the fit is then re-fitted at that update rather than made once
+        // per bound problem. Everything else declines, because a fit of a tensor that has since
+        // moved describes nothing.
+        bool refit = false;
         if (written_anywhere(graph, tagged_id)) {
-            note_skip("the tagged tensor is written by this graph, so its factors could go stale", fmt::format("tensor '{}'", tagged_name));
-            continue;
+            auto const update = inside_control_flow(graph) ? amplitude_update_writer(graph, tagged_id)
+                                                           : unexpected(std::string{"this graph is not a loop body"});
+            if (!update) {
+                note_skip("the tagged tensor is written by this graph, so its factors could go stale",
+                          fmt::format("tensor '{}': {}", tagged_name, update.error()));
+                continue;
+            }
+            refit = true;
         }
         // Asked before anything is accepted, never after. The fitting is emitted once the region
         // loop is over, and a region already rewritten to read factors nothing fits would be a
-        // wrong number rather than a missed optimization.
-        if (!setup_may_escape(graph, {tagged_id})) {
+        // wrong number rather than a missed optimization. A refit is emitted in the body and so
+        // has nothing to escape.
+        if (!refit && !setup_may_escape(graph, {tagged_id})) {
             continue;
         }
         if (!term.conjugate.empty() && term.conjugate[tagged_slot]) {
@@ -691,6 +715,14 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             }
             if (plan.tagged_letters.size() != tagged_index.size()) {
                 note_skip("a provider's letter list does not match the tagged operand's rank", fmt::format("'{}'", provider->name()));
+                continue;
+            }
+            if (refit && !plan.fits_from_tagged) {
+                // The tensor moves every iteration and this fit does not read it, so the factors
+                // are the same however often it moves. Substituting them is not a stale
+                // approximation, it is a different quantity.
+                note_skip("a provider's fit does not read the tagged tensor, which a tensor the loop body updates requires",
+                          fmt::format("'{}'", provider->name()));
                 continue;
             }
 
@@ -1064,7 +1096,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         }
         _num_dissolved += dissolved.size();
 
-        _pending.push_back(PendingSetup{.label = record.setup, .factors = factor_ids, .emit = best->plan.emit_setup});
+        _pending.push_back(PendingSetup{.label = record.setup, .factors = factor_ids, .emit = best->plan.emit_setup, .refit = refit});
         ++_num_factorized;
         changed = true;
         report(2, fmt::format("factorized '{}' through {}", tagged_name, best->plan.provider));

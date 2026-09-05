@@ -179,6 +179,23 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
                 continue;
             }
 
+            // Refuse to hoist a producer whose output is a DEFERRED declaration of this body.
+            // Materialization runs after this pass and places a deferred tensor's allocation from
+            // the declarations of the graph that owns it; the declaration stays here when the
+            // node leaves, so the buffer the hoisted node writes would never be allocated and the
+            // read of it is a null pointer at execute rather than a wrong number. Reachable since
+            // region rewrites began raising loop bodies, which is what first put a pass-declared
+            // workspace inside one.
+            bool const deferred_outputs = std::ranges::any_of(bnode.outputs, [&loop_desc](TensorId out_tid) {
+                TensorHandle const &handle = loop_desc->body->tensor(out_tid);
+                return handle.alloc_state == AllocState::Deferred;
+            });
+            if (deferred_outputs) {
+                note_skip("node writes a deferred declaration of this body, whose allocation would stay behind",
+                          fmt::format("body node '{}'", bnode.label));
+                continue;
+            }
+
             // Refuse to hoist a producer whose output is read by an *earlier*
             // body node. That earlier read observes the value from the previous
             // iteration (the output is loop-carried *through* this producer), so

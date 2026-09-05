@@ -10,8 +10,11 @@
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <array>
+#include <string>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -199,6 +202,66 @@ Escape EscapeAnalysis::classify(TensorId id, std::unordered_set<NodeId> const &r
         return Escape::TouchedBySubgraph;
     }
     return Escape::Dissolvable;
+}
+
+expected<NodeId, std::string> amplitude_update_writer(Graph const &graph, TensorId tensor) {
+    auto const analysis = EscapeAnalysis::over(graph);
+    auto const root     = graph.resolve_alias(tensor);
+
+    // Exactly one value-writer here, and none in any descendant. Two writers mean the value the
+    // fit would be about is not settled by the statement being recognized, and a write inside a
+    // nested body is one this graph's node list cannot see at all.
+    if (analysis.writer_count(tensor) != 1) {
+        return unexpected(
+            fmt::format("the tensor has {} value-writers in this body, and an update is exactly one", analysis.writer_count(tensor)));
+    }
+    if (analysis.subtree_writer_count(tensor) != analysis.writer_count(tensor)) {
+        return unexpected(std::string{"a nested body writes the tensor as well, which this body's node list cannot describe"});
+    }
+
+    Node const *writer = nullptr;
+    for (auto const &node : graph.nodes()) {
+        if (is_lifecycle(node.kind)) {
+            continue;
+        }
+        for (auto const out : node.outputs) {
+            if (graph.resolve_alias(out) == root) {
+                writer = &node;
+            }
+        }
+    }
+    if (writer == nullptr) {
+        return unexpected(std::string{"nothing in this body writes the tensor"});
+    }
+
+    // t = r / D, the plain update with the extrapolation left to the host predicate.
+    if (writer->kind == OpKind::DirectDivision) {
+        return writer->id;
+    }
+
+    // t += s, with s produced here by a division: the same update written as a step a host's
+    // DIIS can read, which is how the tiled example spells it.
+    if (writer->kind == OpKind::Axpby) {
+        for (auto const in : writer->inputs) {
+            auto const source = graph.resolve_alias(in);
+            if (source == root) {
+                continue;
+            }
+            for (auto const &node : graph.nodes()) {
+                if (node.kind != OpKind::DirectDivision) {
+                    continue;
+                }
+                for (auto const out : node.outputs) {
+                    if (graph.resolve_alias(out) == source) {
+                        return writer->id;
+                    }
+                }
+            }
+        }
+        return unexpected(std::string{"the tensor is accumulated into from something no division in this body produced"});
+    }
+
+    return unexpected(fmt::format("the tensor is written by a {}, which is not an amplitude update", op_kind_name(writer->kind)));
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)
