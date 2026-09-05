@@ -129,6 +129,7 @@ void FactorizationPass::reset_stats() {
     RegionRewrite::reset_stats();
     _num_factorized = 0;
     _pending.clear();
+    _considered.clear();
 }
 
 FactorizationRegistry &FactorizationPass::registry() const {
@@ -150,6 +151,7 @@ bool FactorizationPass::applicable(Graph const &graph) const {
 
 bool FactorizationPass::run(Graph &graph) {
     _pending.clear();
+    _considered.clear();
     bool modified = RegionRewrite::run(graph);
 
     // After the region loop, never inside it: a region is a range of positions in the node
@@ -167,6 +169,27 @@ bool FactorizationPass::run(Graph &graph) {
         report(1, fmt::format("emitted {} setup bod(y/ies) holding the fittings", _pending.size()));
     }
     _pending.clear();
+
+    // A tag no contraction ever offered is a decline rather than a silence. Every other refusal
+    // here reports itself because it happens with a candidate in hand; this one happens because
+    // there was never a candidate, and it is the commonest thing a caller tagging an integral
+    // gets: a tensor read only elementwise, or only through a dot, is not a contraction operand
+    // and so nothing in the region loop ever looks at it.
+    std::vector<std::string> unclaimed;
+    for (auto const &[id, handle] : graph.tensors_map()) {
+        if (handle.tag.name.empty() || !registry().claims(handle.tag.name)) {
+            continue;
+        }
+        if (std::ranges::find(_considered, id) == _considered.end()) {
+            unclaimed.push_back(handle.name);
+        }
+    }
+    std::ranges::sort(unclaimed);
+    for (auto const &name : unclaimed) {
+        note_skip("a tagged tensor is read by no two-operand contraction, so there is nothing to re-associate around its factors",
+                  fmt::format("tensor '{}'", name));
+    }
+    _considered.clear();
     return modified;
 }
 
@@ -210,6 +233,10 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         TermId const      other_leaf   = term.operands[other_slot];
         auto const        tagged_index = term.operand_indices[tagged_slot];
         auto const        other_index  = term.operand_indices[other_slot];
+
+        if (std::ranges::find(_considered, tagged_id) == _considered.end()) {
+            _considered.push_back(tagged_id);
+        }
 
         if (written_anywhere(graph, tagged_id)) {
             note_skip("the tagged tensor is written by this graph, so its factors could go stale", fmt::format("tensor '{}'", tagged_name));

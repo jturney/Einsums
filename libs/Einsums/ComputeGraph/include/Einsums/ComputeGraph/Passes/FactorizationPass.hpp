@@ -53,6 +53,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   @ref SymbolicCost so the answer does not depend on iteration order.
  * - A cost the accuracy budget will not pay for, refused through @ref OptimizerPass::approximate
  *   with the budget's own reason.
+ * - A tagged tensor no two-operand contraction reads at all. There is nothing to re-associate
+ *   around, so the tag is reported unclaimed at the end of the run rather than passed over in
+ *   silence: a tensor read only elementwise, or only through a dot, is the shape a caller
+ *   tagging an integral in an energy expression most often writes.
  *
  * @par Never in a default manager
  * A provider may be exact, but the pass is the lossy tier's entry point and Part 5.1 says that
@@ -123,6 +127,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     std::vector<PendingSetup> _pending;
     std::size_t               _num_factorized{0};
+
+    /// Every tagged tensor some contraction offered this pass, whatever became of it. What the
+    /// end-of-run sweep subtracts from the tagged tensors the graph holds, so a tag nothing
+    /// ever offered is reported rather than silently doing nothing.
+    std::vector<TensorId> _considered;
 
     /// @brief The registry this pass queries.
     /// @return The caller's, or the process-wide one.

@@ -15,6 +15,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <string>
 
 #include <Einsums/Testing.hpp>
 
@@ -332,6 +333,44 @@ TEST_CASE("MetricFit - a tensor whose shape the fit cannot produce is declined",
     REQUIRE_FALSE(graph.apply(pm));
     REQUIRE(factorization.num_factorized() == 0);
     REQUIRE(graph.approximations().empty());
+}
+
+TEST_CASE("MetricFit - a tag no contraction reads is reported rather than passed over in silence",
+          "[ComputeGraph][Factorization][MetricFit]") {
+    // The shape a caller tagging an integral in an energy expression writes: the tensor is read
+    // elementwise and never as a contraction operand, so the region loop never sees a candidate
+    // and every other refusal here, which needs one in hand, has nothing to say. Without the
+    // end-of-run sweep the pass runs, does nothing, and reports nothing at all.
+    auto R = create_random_tensor<double>("R", naux, nbf, nbf);
+    auto J = make_metric();
+    auto T = create_random_tensor<double>("T", nbf, nbf);
+    auto D = create_random_tensor<double>("D", nbf, nbf);
+    auto C = create_zero_tensor<double>("C", nbf, nbf);
+
+    cg::Graph graph("elementwise_only");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::direct_product(1.0, T, D, 0.0, &C);
+    }
+    graph.annotate_tag(T, cg::ProvenanceTag{.name = "eri"});
+
+    cg::FactorizationRegistry registry;
+    registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-12));
+    cg::passes::FactorizationPass factorization(registry);
+    cg::PassManager               pm;
+    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
+
+    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE(factorization.num_factorized() == 0);
+
+    bool reported = false;
+    for (auto const &[reason, count] : factorization.skip_reasons()) {
+        (void)count;
+        if (reason.find("no two-operand contraction") != std::string::npos) {
+            reported = true;
+        }
+    }
+    REQUIRE(reported);
 }
 
 TEST_CASE("MetricFit - a fitted graph saves, loads, and refits for the problem it is bound to",
