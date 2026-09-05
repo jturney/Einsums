@@ -313,6 +313,117 @@ def test_the_ccsd_tau_terms_share_the_occupied_intermediate(dtype):
         assert_close(got, want, dtype=dtype)
 
 
+def _build_ccsd_tau_iteration(graph, tau_np, oovv_np, dtype, iterations):
+    """The same four contractions, captured as the loop body they are in a solver.
+
+    The tiled CCSD example writes its iteration this way: a ``Loop`` whose body
+    is the whole residual. Nothing about the algebra changes; what changes is
+    that the statements are in a sub-graph, which is what a region rewrite could
+    not see until it descended.
+
+    ``tau`` is read and never written here, so the body is a repetition of one
+    residual rather than an amplitude update. That is deliberate: what is under
+    test is that the rewrite fires inside a body and replays correctly, not the
+    solver, and a body whose inputs move would make the comparison against the
+    flat capture a comparison of two different programs.
+    """
+    tau = _tensor("tau", tau_np, dtype)
+    oovv = _tensor("oovv", oovv_np, dtype)
+    t2n = _tensor("t2n", np.zeros((O, O, V, V)), dtype)
+    body = graph.add_loop("ccsd_iteration", iterations, lambda it, c=iterations: it < c - 1)
+    Wmnij = body.declare_tensor("Wmnij_tau", [O, O, O, O], intermediate=True, dtype=dtype)
+    Wabef = body.declare_tensor("Wabef_tau", [V, V, V, V], intermediate=True, dtype=dtype)
+    with cg.capture(body):
+        einsums.einsum("m,n,i,j <- i,j,e,f ; m,n,e,f", Wmnij, tau, oovv)
+        einsums.einsum("i,j,a,b <- m,n,a,b ; m,n,i,j", t2n, tau, Wmnij, ab_pf=0.125)
+        einsums.einsum("a,b,e,f <- m,n,a,b ; m,n,e,f", Wabef, tau, oovv)
+        einsums.einsum("i,j,a,b <- i,j,e,f ; a,b,e,f", t2n, tau, Wabef, c_pf=1.0, ab_pf=0.125)
+    return t2n, body
+
+
+def test_the_tau_terms_share_the_occupied_intermediate_inside_a_loop_body():
+    """The bite test for descending into loop bodies.
+
+    A coupled-cluster iteration is a ``Loop`` whose body is the whole residual,
+    so a framework that stopped at the loop header could never see the
+    expression this pass exists to rewrite. The flat capture of these same four
+    contractions has been pinned since the pass shipped; this is the identical
+    algebra written as the iteration it is, and it has to reach the identical
+    rewrite.
+    """
+    iterations = 3
+    tau_np, oovv_np = _ccsd_operands()
+    graph = cg.Graph("ccsd-tau-loop")
+    t2n, body = _build_ccsd_tau_iteration(graph, tau_np, oovv_np, "float64", iterations)
+
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    pm = cg.PassManager()
+    pm.add(mtf)
+    pm.add(cg.Materialization())
+    assert pm.run(graph), mtf.skip_reasons
+
+    # The same counters the flat case pins, reached from inside a body.
+    assert mtf.num_inlined == 2
+    assert mtf.num_shared == 1
+    assert mtf.num_rebracketed == 2
+    assert not mtf.was_cut_off
+
+    # And the same shapes: one o^4 intermediate, three contractions, no v^4 tensor.
+    # Read off the BODY, which is where the rewrite landed; the parent's own node
+    # list holds one Loop and nothing else.
+    outer = [n["kind"] for n in json.loads(graph.to_json())["nodes"]]
+    assert outer.count("Loop") == 1 and "Einsum" not in outer, outer
+    inner = json.loads(body.to_json())
+    dims = {t["name"]: t["dims"] for t in inner["tensors"]}
+    assert [name for name in dims if name.startswith("mtf_shared")] == ["mtf_shared0"]
+    assert dims["mtf_shared0"] == [O, O, O, O]
+    assert sum(1 for n in inner["nodes"] if n["kind"] == "Einsum") == 3
+
+    # Replayed over several iterations against the flat capture run the same number
+    # of times, which is what says the rewrite survived being in a body rather than
+    # merely happening there.
+    graph.execute()
+
+    flat = cg.Graph("ccsd-tau-flat-reference")
+    t2n_flat, _pool = _build_ccsd_tau_terms(flat, tau_np, oovv_np, "float64")
+    pm_flat = cg.PassManager()
+    pm_flat.add(cg.Materialization())
+    pm_flat.run(flat)
+    for _ in range(iterations):
+        flat.execute()
+
+    got, reference = np.asarray(t2n), np.asarray(t2n_flat)
+    assert np.linalg.norm(got - reference) / np.linalg.norm(reference) <= 1024 * np.finfo(np.float64).eps
+
+
+def test_a_setup_body_is_not_a_region_this_framework_rewrites():
+    """A fitting is not an expression to re-associate on this pass's own terms.
+
+    A setup body runs once per bound problem, and a rewrite of one would have
+    nowhere to hoist a setup of its own; the once-per-bind contract is a property
+    of the node rather than of the algebra inside it. So the descent stops there,
+    by name, and says so rather than skipping silently.
+    """
+    tau_np, oovv_np = _ccsd_operands()
+    graph = cg.Graph("mtf-setup-body")
+    t2n = _tensor("t2n", np.zeros((O, O, V, V)), "float64")
+    tau = _tensor("tau", tau_np, "float64")
+    oovv = _tensor("oovv", oovv_np, "float64")
+    fit = graph.add_setup("a_fitting")
+    Wmnij = fit.declare_tensor("Wmnij_fit", [O, O, O, O], intermediate=True, dtype="float64")
+    with cg.capture(fit):
+        einsums.einsum("m,n,i,j <- i,j,e,f ; m,n,e,f", Wmnij, tau, oovv)
+        einsums.einsum("i,j,a,b <- m,n,a,b ; m,n,i,j", t2n, tau, Wmnij, ab_pf=0.125)
+
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    pm = cg.PassManager()
+    pm.add(mtf)
+    assert not pm.run(graph)
+    assert any("setup body" in reason for reason, _count in mtf.skip_reasons), mtf.skip_reasons
+
+
 def test_the_reported_cost_agrees_with_the_nodes_it_emitted():
     """The cost line as a SECOND derivation rather than a claim.
 

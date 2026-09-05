@@ -716,6 +716,60 @@ def check_program(prog, m_arrays, v_arrays, t_arrays, label, dtype="float64"):
         _cmp(stage, gt, ot, "t")
 
 
+def region_pass_manager():
+    """The structural-algebraic phase, with the search on.
+
+    ``default_pass_manager`` does not run it: the search is off by default
+    because its runtime is a function of how many candidates a graph offers.
+    These passes are the ones that descend into loop bodies and conditional
+    branches, so a control-flow corpus is the only place their descent is
+    exercised against a numeric oracle rather than against a counter.
+    """
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    pm = cg.PassManager()
+    for p in (cg.DeltaElimination(), cg.LinearCombinationContractionFolding(),
+              cg.DistributiveFactoring(), mtf, cg.LayoutAssignment(),
+              cg.ContractionPlanning(), cg.Materialization()):
+        pm.add(p)
+    return pm
+
+
+def check_program_region_pipeline(prog, m_arrays, v_arrays, t_arrays, label, dtype="float64"):
+    """The region pipeline over a program full of loops and conditionals.
+
+    The same oracle comparison ``check_program`` makes, with the structural
+    phase in place of the default pipeline. What it is for is the descent: a
+    region rewrite now raises a loop body, and a rewrite that is correct on a
+    flat run and wrong inside a body shows up here as a wrong number rather than
+    as a counter nobody reads.
+    """
+    rtol, atol = _DTYPE_TOL[dtype]
+    cap = _DTYPE_CAP[dtype]
+    dt = np.dtype(dtype)
+    om = [a.copy() for a in m_arrays]
+    ov = [a.copy() for a in v_arrays]
+    ot = [a.copy() for a in t_arrays]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        interp_np(prog, om, ov, ot, dt)
+    if not _usable(om, ov, ot, cap=cap):
+        pytest.skip("oracle overflowed - numerically degenerate program")
+
+    mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, f"{label}_reg")
+    g = cg.Graph(f"{label}_reg")
+    build_cg(prog, g, mats, vecs, r3s, f"{label}_reg")
+    g.apply(region_pass_manager())
+    g.execute()
+
+    for kind, got, oracle in (("m", mats, om), ("v", vecs, ov), ("t", r3s, ot)):
+        for idx in range(len(oracle)):
+            value = np.asarray(got[idx])
+            if not np.allclose(value, oracle[idx], rtol=rtol, atol=atol):
+                raise AssertionError(
+                    f"REGION PIPELINE disagrees with oracle on {kind}{idx} (dtype={dtype})\n"
+                    f"program={prog!r}\ngot=\n{value}\noracle=\n{oracle[idx]}")
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Cross-executor differential
 #
@@ -1273,6 +1327,8 @@ def measure_program_single_pass(prog, m_arrays, v_arrays, t_arrays, label,
 
 __all__ = [
     'fuzz_seeds',
+    'check_program_region_pipeline',
+    'region_pass_manager',
     'DIMS',
     'R3_DIMS',
     'COPIES',

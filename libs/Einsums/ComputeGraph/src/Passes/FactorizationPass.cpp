@@ -397,20 +397,28 @@ bool FactorizationPass::run(Graph &graph) {
     // After the region loop, never inside it: a region is a range of positions in the node
     // vector and those positions stay live for the whole of the loop above.
     //
-    // Position 0, which is correct by construction rather than by luck: the pass only accepts a
-    // tagged tensor no node writes, so a fitting reading it depends on nothing this graph
-    // computes and every reader of the factors comes later.
+    // WHERE it goes is the framework's answer rather than this pass's: at the front of a
+    // top-level graph, which is correct by construction since the pass only accepts a tagged
+    // tensor no node writes; and in the parent ahead of the Loop node when the region being
+    // rewritten was a loop body, so the fitting runs once per bound problem rather than once per
+    // iteration.
     for (auto const &pending : _pending) {
-        Graph &body = graph.add_setup_at(pending.label, 0);
-        pending.emit(graph, body, pending.factors);
+        Graph *body = setup_body_for(graph, pending.label);
+        if (body == nullptr) {
+            continue; // gated before the rewrite was accepted; this is belt and braces
+        }
+        pending.emit(graph, *body, pending.factors);
         modified = true;
     }
     // The quadratures a joint rewrite fitted, behind the fittings for the same reason those go
     // at the front: a body reading tensors nothing here produces depends on nothing this graph
     // computes, and every reader of what it writes comes later.
     for (auto const &pending : _pending_quadrature) {
-        Graph &body = graph.add_setup_at(pending.label, 0);
-        pending.emit(graph, body);
+        Graph *body = setup_body_for(graph, pending.label);
+        if (body == nullptr) {
+            continue;
+        }
+        pending.emit(graph, *body);
         modified = true;
     }
     if (!_pending.empty() || !_pending_quadrature.empty()) {
@@ -510,6 +518,12 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
 
         if (written_anywhere(graph, tagged_id)) {
             note_skip("the tagged tensor is written by this graph, so its factors could go stale", fmt::format("tensor '{}'", tagged_name));
+            continue;
+        }
+        // Asked before anything is accepted, never after. The fitting is emitted once the region
+        // loop is over, and a region already rewritten to read factors nothing fits would be a
+        // wrong number rather than a missed optimization.
+        if (!setup_may_escape(graph, {tagged_id})) {
             continue;
         }
         if (!term.conjugate.empty() && term.conjugate[tagged_slot]) {
@@ -932,7 +946,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         if (record.setup.empty()) {
             record.setup = fmt::format("{}({})", best->plan.provider, tagged_name);
         }
-        if (!approximate(graph, record)) {
+        if (!approximate(record_host(graph), record)) {
             continue;
         }
 
@@ -1158,6 +1172,9 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
     }
     if (written_anywhere(graph, tagged_id)) {
         note_skip("the tagged tensor is written by this graph, so its factors could go stale", fmt::format("tensor '{}'", tagged_name));
+        return std::nullopt;
+    }
+    if (!setup_may_escape(graph, {tagged_id})) {
         return std::nullopt;
     }
 
@@ -1394,7 +1411,7 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
     ApproximationRecord quad =
         make_approximation_record(_laplace->name(), ApproximationEffect::NormRelative, best->quadrature_tolerance,
                                   best->quadrature_measured, {}, {}, best->quadrature_label, ApproximationOrigin::Measured);
-    if (!approximate(graph, fit) || !approximate(graph, quad)) {
+    if (!approximate(record_host(graph), fit) || !approximate(record_host(graph), quad)) {
         return std::nullopt;
     }
 

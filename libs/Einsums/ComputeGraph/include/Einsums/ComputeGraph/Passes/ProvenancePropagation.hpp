@@ -33,6 +33,14 @@
  * When a tag arrives whose slices genuinely inherit it, the rule gains a per-tag exception rather
  * than losing its default.
  *
+ * @par A tag crosses into a loop body, because a body's handle is the same tensor
+ * A sub-graph keeps its own tensor table, so a caller's tensor has one handle in the parent and
+ * another in every body that captured it. Those are not views of each other; they are two names
+ * for one buffer. A tag declared on the enclosing graph therefore describes the body's handle
+ * too, and it is carried onto it here. Without that, a caller who tags an amplitude on the graph
+ * and captures the iteration as a loop body has tagged something no pass reading that body can
+ * see, which is the shape the region rewrites descended into bodies to serve.
+ *
  * @par An inferred tag never overwrites a declared one
  * A declaration is authoritative. If a caller has tagged an output, this pass leaves it alone
  * even when the producing node's input carries something else, and reports the disagreement

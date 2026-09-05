@@ -13,6 +13,8 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -29,6 +31,27 @@ bool preserves_identity(OpKind kind) {
     return kind == OpKind::Permute || kind == OpKind::Transpose || kind == OpKind::HPTTPermute;
 }
 
+/// Give every handle of @p graph and its descendants naming the buffer @p ptr the tag @p tag,
+/// where it has none. Returns how many were annotated.
+std::size_t carry_into(Graph &graph, void const *ptr, ProvenanceTag const &tag) {
+    std::size_t           carried = 0;
+    std::vector<TensorId> targets;
+    for (auto const &[id, handle] : graph.tensors_map()) {
+        if (handle.tensor_ptr == ptr && !handle.tag.valid()) {
+            targets.push_back(id);
+        }
+    }
+    // Sorted, because tensors_map is unordered and an annotation order that varies between runs
+    // makes every pass reading it vary with it.
+    std::ranges::sort(targets);
+    for (TensorId const id : targets) {
+        graph.annotate_tag(id, tag);
+        ++carried;
+    }
+    graph.for_each_subgraph([&](Graph &child) { carried += carry_into(child, ptr, tag); });
+    return carried;
+}
+
 } // namespace
 
 std::vector<std::string> ProvenancePropagation::explain() const {
@@ -40,6 +63,21 @@ std::vector<std::string> ProvenancePropagation::explain() const {
 
 bool ProvenancePropagation::run(Graph &graph) {
     graph.topological_sort();
+
+    // A body's handle for a caller's tensor is the SAME tensor, not a view of it, so a tag
+    // declared on the enclosing graph describes it. Carried here because the driver runs a parent
+    // before it descends: without it a caller who tags an amplitude on the graph and captures the
+    // iteration as a loop body has tagged something no pass reading that body can see, which is
+    // exactly the shape the region rewrites descended into bodies to serve. Declared beats
+    // inherited, as everywhere else in this pass: a body that already carries a tag keeps it.
+    for (auto const &[id, handle] : graph.tensors_map()) {
+        if (!handle.tag.valid() || handle.tensor_ptr == nullptr) {
+            continue;
+        }
+        ProvenanceTag const tag = handle.tag;
+        void const *const   ptr = handle.tensor_ptr;
+        graph.for_each_subgraph([&](Graph &child) { _num_propagated += carry_into(child, ptr, tag); });
+    }
 
     // Forward over program order, so a chain of permutes carries a tag the whole way in one
     // sweep rather than needing one sweep per hop.

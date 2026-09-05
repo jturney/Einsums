@@ -22,9 +22,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import json
+
 import einsums
 import einsums.graph as cg
 import einsums._core.graph as _G
+from einsums import linalg as la
 from einsums.testing import assert_close
 
 #: Sized so the split is actually cheaper. The pass costs the rewrite at the
@@ -124,6 +127,103 @@ def test_the_whole_loop_from_python():
 
     g.execute()
     assert_close(C, np.einsum("mnpq,pq->mn", dense, operand), atol=1e-12, rtol=1e-10)
+
+
+def test_a_fitting_for_a_loop_body_lands_in_the_parent_ahead_of_the_loop():
+    """The rewrite is inside the body; the fitting is not.
+
+    A setup body runs once per bound problem. Emitted into the loop body it would
+    refit on every iteration, which is a different program, so the framework puts
+    it in the graph holding the ``Loop`` node and ahead of it. What the body gets
+    is the rewritten contraction reading factors somebody else fitted.
+    """
+    iterations = 3
+    three, metric, dense = _fitted_problem(20260905)
+    rng = np.random.default_rng(5)
+    operand = rng.standard_normal((_N, _N))
+
+    M = einsums.asarray(dense)
+    T = einsums.asarray(operand)
+    C = einsums.zeros((_N, _N), dtype="float64")
+
+    g = cg.Graph("autodf_in_a_loop")
+    body = g.add_loop("iteration", iterations, lambda it, c=iterations: it < c - 1)
+    with cg.capture(body):
+        einsums.einsum("m,n,p,q ; p,q -> m,n", C, M, T)
+    g.annotate_tag(M, _G.ProvenanceTag.make("eri"))
+
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.MetricFitFactorization(
+        "eri", einsums.asarray(three), einsums.asarray(metric), 0.0))
+
+    factorization = _G.FactorizationPass(registry)
+    pm = cg.PassManager()
+    # A body keeps its own tensor table, so the tag declared on the graph reaches the
+    # body's handle for the same buffer through the analysis phase rather than by
+    # itself. Two names for one tensor, not a view of one.
+    pm.add(cg.ProvenancePropagation())
+    pm.add(factorization)
+    assert g.apply(pm), f"the pass declined: {factorization.skip_reasons}"
+    assert factorization.num_factorized == 1
+    assert [record.pass_name for record in g.approximations()] == ["MetricFit"]
+
+    # The Setup is in the PARENT and ahead of the Loop, which is what makes the
+    # fitting once-per-bind rather than once-per-iteration.
+    outer = [n["kind"] for n in json.loads(g.to_json())["nodes"]]
+    assert outer.count("Setup") == 1, outer
+    assert outer.index("Setup") < outer.index("Loop"), outer
+    assert "Setup" not in [n["kind"] for n in json.loads(body.to_json())["nodes"]]
+
+    g.apply(cg.default_pass_manager())
+    assert not cg.duplicate_materializations(g)
+    assert not cg.stranded_materializations(g)
+
+    g.execute()
+    # The contraction is idempotent in the loop, so the answer after several
+    # iterations is the answer after one; what the replay proves is that the
+    # factors are still there on the second pass through the body.
+    assert_close(C, np.einsum("mnpq,pq->mn", dense, operand), atol=1e-12, rtol=1e-10)
+
+
+def test_a_fitting_declines_when_the_body_writes_what_it_fits_from():
+    """The gate that separates a fixed factorization from a refitted one.
+
+    A tagged tensor the loop body writes every iteration cannot have its factors
+    fitted once before the loop: they would be the first iteration's and stale
+    for every one after it. The pass declines with that reason rather than
+    hoisting a fitting that is wrong.
+    """
+    iterations = 2
+    three, metric, dense = _fitted_problem(4242)
+    rng = np.random.default_rng(6)
+    operand = rng.standard_normal((_N, _N))
+
+    M = einsums.asarray(dense)
+    T = einsums.asarray(operand)
+    C = einsums.zeros((_N, _N), dtype="float64")
+    S = einsums.asarray(rng.standard_normal((_N, _N, _N, _N)))
+
+    g = cg.Graph("autodf_written_in_body")
+    body = g.add_loop("iteration", iterations, lambda it, c=iterations: it < c - 1)
+    with cg.capture(body):
+        einsums.einsum("m,n,p,q ; p,q -> m,n", C, M, T)
+        # The update: the tagged tensor is rewritten every iteration.
+        la.axpby(1e-9, S, 1.0, M)
+    g.annotate_tag(M, _G.ProvenanceTag.make("eri"))
+
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.MetricFitFactorization(
+        "eri", einsums.asarray(three), einsums.asarray(metric), 0.0))
+
+    factorization = _G.FactorizationPass(registry)
+    pm = cg.PassManager()
+    pm.add(cg.ProvenancePropagation())
+    pm.add(factorization)
+    assert not g.apply(pm)
+    assert factorization.num_factorized == 0
+    assert g.approximations() == []
+    assert any("go stale" in reason or "hoisted out of a loop" in reason
+               for reason, _count in factorization.skip_reasons), factorization.skip_reasons
 
 
 def test_declines_when_the_split_is_not_cheaper():

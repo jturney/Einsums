@@ -266,6 +266,15 @@ TEST_CASE("Recursion policy - safe local-rewrite passes opt in", "[ComputeGraph]
     // body's snapshot+recompute sequence. Guarded by the fuzzer's loop-body
     // "Reorder bait" patterns.
     CHECK(cg::passes::Reorder{}.recurse_into_subgraphs());
+
+    // Every region rewrite opts in, from the base, as of 2026-09-05. A coupled-cluster
+    // iteration is a Loop whose body is the whole residual, so a framework that stopped at the
+    // loop header could never see the expression these passes exist to rewrite. What crosses the
+    // loop boundary is the SETUP a rewrite may introduce, and the base places that in the graph
+    // holding the Loop node rather than in the body.
+    CHECK(cg::passes::RegionIdentity{}.recurse_into_subgraphs());
+    CHECK(cg::passes::MultiTermFactorization{}.recurse_into_subgraphs());
+    CHECK(cg::passes::DeltaElimination{}.recurse_into_subgraphs());
 }
 
 TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[ComputeGraph][Recursion][Policy]") {

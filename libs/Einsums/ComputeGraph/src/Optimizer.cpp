@@ -59,6 +59,7 @@
 #include <set>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -176,11 +177,22 @@ namespace {
 bool run_pass_recursive(OptimizerPass &pass, Graph &graph) {
     bool modified = pass.run(graph);
     if (pass.recurse_into_subgraphs()) {
-        graph.for_each_subgraph([&](Graph &sub) {
-            if (run_pass_recursive(pass, sub)) {
+        // The children are COLLECTED before any of them is run, and that is load-bearing rather
+        // than tidy. A pass whose effect on a body lands in the parent -- a region rewrite
+        // hoisting a setup out of a loop is the case that forced this -- inserts a node into the
+        // very vector `for_each_subgraph` is walking, and a visitor called from inside that walk
+        // would then be holding an invalidated iterator. The pointers survive the insertion
+        // because a body is held by shared_ptr from its descriptor, so a snapshot of them is
+        // exactly as valid after the parent's node vector reallocates as before it. A sub-graph
+        // the pass itself creates is not visited this apply, which is the right answer as well:
+        // the setup a rewrite just emitted is not a region for the same rewrite to raise.
+        std::vector<Graph *> children;
+        graph.for_each_subgraph([&children](Graph &sub) { children.push_back(&sub); });
+        for (Graph *sub : children) {
+            if (run_pass_recursive(pass, *sub)) {
                 modified = true;
             }
-        });
+        }
     }
     return modified;
 }

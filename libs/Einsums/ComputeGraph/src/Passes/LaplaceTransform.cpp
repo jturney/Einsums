@@ -387,12 +387,16 @@ bool LaplaceTransform::run(Graph &graph) {
     // After the region loop, never inside it: a region is a range of positions in the node
     // vector and those positions stay live for the whole of the loop above.
     //
-    // Position 0, which is correct by construction rather than by luck: the pass only accepts
-    // a denominator no node writes and energies no node writes, so a quadrature reading them
-    // depends on nothing this graph computes and every reader of its exponentials comes later.
+    // WHERE it goes is the framework's answer rather than this pass's: at the front of a
+    // top-level graph, which is correct by construction since a quadrature reads a denominator
+    // and energies nothing here writes; and in the parent ahead of the Loop node when the region
+    // was a loop body, so the rule is fitted once per bound problem rather than per iteration.
     for (auto const &pending : _pending) {
-        Graph &body = graph.add_setup_at(pending.label, 0);
-        pending.emit(graph, body);
+        Graph *body = setup_body_for(graph, pending.label);
+        if (body == nullptr) {
+            continue; // gated before the rewrite was accepted; this is belt and braces
+        }
+        pending.emit(graph, *body);
         modified = true;
     }
     if (!_pending.empty()) {
@@ -1028,9 +1032,17 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
     // in the skip tally, which is why it is a callback rather than a check afterwards.
     std::vector<ApproximationRecord> accepted;
     options.accept = [&](quadrature::RewriteOutcome const &offer) {
+        // Where the quadrature's setup would go, asked before the splice for the same reason the
+        // budget is: a region rewritten to read exponentials nothing fits is a wrong number. Over
+        // a loop body the energies are what has to be loop-invariant, and the denominator with
+        // them, since a rule fitted to a spectrum the body rewrites every iteration is stale the
+        // moment it is hoisted out of the loop.
+        if (!setup_may_escape(graph, {offer.denominator})) {
+            return false;
+        }
         ApproximationRecord record = make_approximation_record(name(), ApproximationEffect::NormRelative, offer.tolerance, offer.measured,
                                                                {}, {}, offer.setup_label, ApproximationOrigin::Measured);
-        if (!approximate(graph, record)) {
+        if (!approximate(record_host(graph), record)) {
             return false;
         }
         accepted.push_back(std::move(record));

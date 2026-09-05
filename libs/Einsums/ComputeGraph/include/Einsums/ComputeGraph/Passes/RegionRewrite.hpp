@@ -46,6 +46,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -93,6 +94,31 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief Region rewrites are machine-independent algebra, so their output is saved.
     /// @return @ref PassPhase::StructuralAlgebraic.
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+
+    /**
+     * @brief Descend into loop bodies and conditional branches.
+     *
+     * True here, once, for every region rewrite there is. A coupled-cluster iteration is a
+     * @c Loop whose body is the whole contraction set, so a framework that stopped at the loop
+     * header could never see the expression these passes exist to rewrite: the tau-term
+     * factorization validated on a flat capture of the CCSD equations could not fire on the same
+     * equations written as the iteration they are.
+     *
+     * Two things follow, and both are handled here rather than by each client.
+     *
+     * A SETUP escapes the body. A fitting runs once per bound problem, so a setup node emitted
+     * into a loop body would refit on every iteration, which is a different program. Clients ask
+     * for one through @ref setup_body_for, which puts it in the graph holding the @c Loop node
+     * and ahead of it, and declines when the tensors the setup reads are not loop-invariant.
+     *
+     * A SETUP BODY is not itself descended into. It is a fitting this framework emitted; a
+     * rewrite of one would have nowhere to hoist a setup of its own, and the once-per-bind
+     * contract is a property of the node rather than of the algebra inside it. That is a decline
+     * with a reason rather than a silent skip.
+     *
+     * @return True.
+     */
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// @brief Zero the per-apply counters.
     void reset_stats() override;
@@ -228,6 +254,71 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] virtual std::vector<std::string> describe() const { return {}; }
 
     /**
+     * @brief A setup body for a rewrite of @p graph, in the graph a setup belongs in.
+     *
+     * Call this instead of @c Graph::add_setup_at, and call it after @ref run has returned, for
+     * the reason @ref rewrite gives: a region is a range of positions in a node vector and those
+     * positions are live for the whole of the region loop.
+     *
+     * For a top-level graph this is @c add_setup_at(label, 0), which is what every client did
+     * before bodies were descended into and is correct by construction there: a fitting reads
+     * tensors nothing in the graph produces, so it depends on nothing and every reader of what it
+     * writes comes later.
+     *
+     * For a LOOP BODY or a conditional branch it is the parent's @c add_setup_at at the position
+     * of the control-flow node, so the fitting runs once per bound problem rather than once per
+     * iteration. It is offered only when every tensor in @p reads is loop-invariant by the count
+     * @c LoopInvariantHoisting uses, which is @c EscapeAnalysis::subtree_writer_count over the
+     * body: a fit whose input the body rewrites every iteration is stale the moment it is hoisted,
+     * and hoisting it anyway would be a wrong number rather than a missed optimization.
+     *
+     * @param[in] graph The graph being rewritten, which is what @ref run was handed.
+     * @param[in] label The setup node's label.
+     * @return The body to capture into, or @c nullptr when there is nowhere to put it, in which
+     *         case a skip reason has been recorded. Ask @ref setup_may_escape BEFORE accepting a
+     *         rewrite that needs one: a region already rewritten to read factors nothing fits is
+     *         a wrong number, not a missed optimization.
+     */
+    Graph *setup_body_for(Graph &graph, std::string label);
+
+    /**
+     * @brief May a rewrite of @p graph have a setup at all, and would it be current?
+     *
+     * The gate a client asks BEFORE it accepts a candidate whose rewrite needs a fitting. True
+     * for a top-level graph always. For a loop body, true when every tensor in @p reads is
+     * loop-invariant by the count @c LoopInvariantHoisting uses,
+     * @c EscapeAnalysis::subtree_writer_count over the body: a fit whose input the body rewrites
+     * every iteration is stale the moment the fitting is hoisted out of the loop. False for a
+     * setup body, which is not a place to emit another setup.
+     *
+     * Records a skip reason when it declines, so the report names the gate.
+     *
+     * @param[in] graph The graph being rewritten.
+     * @param[in] reads The tensors, in @p graph's own id space, the setup will fit FROM. Empty
+     *            when the fit reads nothing the graph holds, which is the ordinary provider case.
+     * @return True when a setup may be emitted for this rewrite.
+     */
+    [[nodiscard]] bool setup_may_escape(Graph const &graph, std::vector<TensorId> const &reads) const;
+
+    /// @brief Whether @p graph is a loop body or conditional branch this apply descended into.
+    /// @param[in] graph The graph being rewritten.
+    /// @return True when a setup for it would have to escape to a parent.
+    [[nodiscard]] bool inside_control_flow(Graph const &graph) const;
+
+    /**
+     * @brief The graph an approximation record about a rewrite of @p graph belongs on.
+     *
+     * The outermost graph of this apply, which is @p graph itself unless the framework descended
+     * into it. A record is a statement about an OUTPUT of the whole computation, and a caller
+     * reading @c Graph::approximations holds the graph they applied the pass to; a record left on
+     * a loop body is one nothing composes with and nothing prints.
+     *
+     * @param[in,out] graph The graph being rewritten.
+     * @return The graph to record on.
+     */
+    Graph &record_host(Graph &graph);
+
+    /**
      * @brief The smallest region this pass is interested in.
      *
      * One node by default. A pass that folds pairs should return two, so a
@@ -243,6 +334,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// used to drift: the count said three declines and the tally named one.
     void decline(std::string_view reason, std::string_view detail = {});
 
+  private:
+    /// Where a setup emitted while rewriting one sub-graph belongs: the graph holding the node
+    /// that owns it, and that node's id. The id rather than a position, because a client emits
+    /// its setups after the region loop and the positions have moved by then.
+    struct SetupSite {
+        Graph *host{nullptr};
+        NodeId owner{};
+        bool   is_setup_body{false};
+    };
+
+    /// Record where each of @p graph's own sub-graphs would put a setup. Called from @ref run,
+    /// which the driver invokes on a parent before it descends, so a child's entry is present by
+    /// the time that child is run.
+    void note_subgraph_sites(Graph &graph);
+
   protected:
   private:
     bool                     _dump{false};
@@ -257,6 +363,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// decline the pass made including per-candidate ones, and these are the region-level ones
     /// the structural report is about.
     std::vector<std::pair<std::string, std::size_t>> _decline_reasons;
+
+    /// Sub-graph address -> where its setups belong. Cleared once per apply by @ref reset_stats,
+    /// which the manager calls before it descends.
+    std::unordered_map<Graph const *, SetupSite> _sites;
 };
 
 /**

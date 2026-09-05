@@ -98,6 +98,10 @@ class Program(NamedTuple):
     and the second operand is zeroed so the arithmetic honours the declaration.
     ``terms`` names the factors of each product, which the statements no longer
     say once a bracketing has split them across intermediates.
+    ``loop`` is ``None`` or ``(start, stop, count)``: that slice of the
+    statements is captured as a ``Loop`` body run ``count`` times, which is what
+    a solver's iteration is and what a region rewrite could not see until it
+    descended into bodies.
     """
 
     pool: dict
@@ -106,6 +110,7 @@ class Program(NamedTuple):
     stmts: tuple
     terms: tuple
     disjoint: object
+    loop: object = None
 
 
 def _kind_of(stmt):
@@ -255,7 +260,19 @@ def _draw_program(pick_int) -> Program:
             index, summed = cands[pick_int(0, len(cands) - 1)]
             disjoint = (index, summed[pick_int(0, len(summed) - 1)])
 
-    return Program(pool, inter, outs, tuple(stmts), tuple(terms), disjoint)
+    # A loop around part of the program. One in three, over a contiguous slice,
+    # because a coupled-cluster iteration is a Loop whose body is the residual and
+    # a corpus of flat programs leaves the descent into bodies untested. The
+    # repeat count is small on purpose: a slice that accumulates into an output
+    # grows with every iteration, and what is under test is that the rewrite
+    # survives being in a body rather than how far a value can travel.
+    loop = None
+    if len(stmts) >= 2 and pick_int(0, 2) == 0:
+        start = pick_int(0, len(stmts) - 2)
+        stop = pick_int(start + 1, len(stmts))
+        loop = (start, stop, pick_int(1, 2))
+
+    return Program(pool, inter, outs, tuple(stmts), tuple(terms), disjoint, loop)
 
 
 @st.composite
@@ -373,7 +390,7 @@ def _numpy_result(prog, arrays, dtype):
     dt = np.dtype(dtype)
     values = {key: array.copy() for key, array in arrays.items()}
     values.update({key: np.zeros(dims, dtype=dt) for key, dims in prog.inter.items()})
-    for stmt in prog.stmts:
+    for stmt in _replayed(prog):
         out, ol, a, al, b, bl, c_pf, ab_pf = stmt[:8]
         kind = _kind_of(stmt)
         if kind == "dot":
@@ -385,6 +402,18 @@ def _numpy_result(prog, arrays, dtype):
             term = np.einsum(f"{''.join(al)},{''.join(bl)}->{''.join(ol)}", values[a], values[b])
         values[out] = (np.asarray(c_pf, dt) * values[out] + np.asarray(ab_pf, dt) * term).astype(dt)
     return {key: values[key] for key in prog.outs}
+
+
+def _replayed(prog):
+    """The statements in the order the graph runs them, loop repeats expanded.
+
+    The oracle and the magnitude bound both read this rather than ``prog.stmts``,
+    so a looped slice is compared against the arithmetic it actually performs.
+    """
+    if prog.loop is None:
+        return list(prog.stmts)
+    start, stop, count = prog.loop
+    return list(prog.stmts[:start]) + list(prog.stmts[start:stop]) * count + list(prog.stmts[stop:])
 
 
 def _run(prog, arrays, dtype, region):
@@ -406,17 +435,32 @@ def _run(prog, arrays, dtype, region):
     for key, dims in prog.inter.items():
         tensors[key] = graph.declare_tensor(_nm(key), list(dims), intermediate=True, dtype=dtype)
 
-    with cg.capture(graph):
-        for stmt in prog.stmts:
-            out, ol, a, al, b, bl, c_pf, ab_pf = stmt[:8]
-            kind = _kind_of(stmt)
-            if kind == "dot":
-                la.dot(tensors[out], tensors[a], tensors[b])
-            elif kind == "dp":
-                la.direct_product(ab_pf, tensors[a], tensors[b], c_pf, tensors[out])
-            else:
-                spec = f"{','.join(ol)} <- {','.join(al)} ; {','.join(bl)}"
-                einsums.einsum(spec, tensors[out], tensors[a], tensors[b], c_pf=c_pf, ab_pf=ab_pf)
+    def emit(stmt):
+        out, ol, a, al, b, bl, c_pf, ab_pf = stmt[:8]
+        kind = _kind_of(stmt)
+        if kind == "dot":
+            la.dot(tensors[out], tensors[a], tensors[b])
+        elif kind == "dp":
+            la.direct_product(ab_pf, tensors[a], tensors[b], c_pf, tensors[out])
+        else:
+            spec = f"{','.join(ol)} <- {','.join(al)} ; {','.join(bl)}"
+            einsums.einsum(spec, tensors[out], tensors[a], tensors[b], c_pf=c_pf, ab_pf=ab_pf)
+
+    def emit_run(into, run):
+        if not run:
+            return
+        with cg.capture(into):
+            for stmt in run:
+                emit(stmt)
+
+    if prog.loop is None:
+        emit_run(graph, list(prog.stmts))
+    else:
+        start, stop, count = prog.loop
+        emit_run(graph, list(prog.stmts[:start]))
+        body = graph.add_loop(_nm("iteration"), count, lambda it, c=count: it < c - 1)
+        emit_run(body, list(prog.stmts[start:stop]))
+        emit_run(graph, list(prog.stmts[stop:]))
 
     if prog.disjoint is not None:
         index, letter = prog.disjoint
@@ -455,7 +499,7 @@ def _numpy_magnitude(prog, arrays, dtype):
     real = np.dtype("float32") if dt.itemsize <= 8 else np.dtype("float64")
     values = {key: np.abs(array).astype(real) for key, array in arrays.items()}
     values.update({key: np.zeros(dims, dtype=real) for key, dims in prog.inter.items()})
-    for stmt in prog.stmts:
+    for stmt in _replayed(prog):
         out, ol, a, al, b, bl, c_pf, ab_pf = stmt[:8]
         kind = _kind_of(stmt)
         if kind == "dot":
@@ -615,6 +659,30 @@ def test_the_generator_draws_the_shapes_the_passes_need():
     assert shared_output, "no two terms ever accumulate into one output"
     assert annotated, "no program ever declares a disjointness"
     assert reduced, "no program ever scales a contraction and reduces it to a scalar"
+
+
+def test_the_corpus_draws_loops_and_the_rewrites_fire_inside_them():
+    """A loop around part of the program, and a rewrite that reaches into it.
+
+    A coupled-cluster iteration is a Loop whose body is the whole residual, so a
+    corpus of flat programs leaves the case the region rewrites exist for
+    untested. What this asserts is both halves: the generator draws loops, and a
+    program whose looped slice holds the terms a rewrite relates still gets
+    rewritten, which it could not before the framework descended into bodies.
+    """
+    drawn = fired_inside = 0
+    for seed in range(96):
+        prog = _rng_program(seed)
+        if prog.loop is None:
+            continue
+        drawn += 1
+        for pass_obj in _check(prog, "float64", seed=seed):
+            attr = _FIRED_ATTR.get(pass_obj.name)
+            if attr is not None and int(getattr(pass_obj, attr)):
+                fired_inside += 1
+                break
+    assert drawn > 8, f"only {drawn} of 96 programs drew a loop"
+    assert fired_inside > 0, "no region rewrite ever fired on a program holding a loop"
 
 
 def test_the_pinned_ccsd_case_still_shares_the_occupied_intermediate():

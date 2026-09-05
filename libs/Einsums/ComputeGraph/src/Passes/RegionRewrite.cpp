@@ -5,6 +5,7 @@
 
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/RegionRewrite.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
@@ -16,6 +17,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <iterator>
 #include <string_view>
 #include <unordered_set>
 
@@ -25,6 +27,7 @@ void RegionRewrite::reset_stats() {
     _dumps.clear();
     _decline_reasons.clear();
     _cost_mismatches.clear();
+    _sites.clear();
     _regions_formed    = 0;
     _regions_rewritten = 0;
     _regions_declined  = 0;
@@ -112,8 +115,91 @@ bool RegionRewrite::applicable(Graph const & /*graph*/) const {
     return true;
 }
 
+void RegionRewrite::note_subgraph_sites(Graph &graph) {
+    for (auto const &node : graph.nodes()) {
+        bool const   setup = std::get_if<SetupDescriptor>(&node.op_data) != nullptr;
+        NodeId const owner = node.id;
+        for_each_child_graph(
+            node, [&](Graph const &child) { _sites[&child] = SetupSite{.host = &graph, .owner = owner, .is_setup_body = setup}; });
+    }
+}
+
+bool RegionRewrite::inside_control_flow(Graph const &graph) const {
+    auto const hit = _sites.find(&graph);
+    return hit != _sites.end() && !hit->second.is_setup_body;
+}
+
+bool RegionRewrite::setup_may_escape(Graph const &graph, std::vector<TensorId> const &reads) const {
+    auto const hit = _sites.find(&graph);
+    if (hit == _sites.end()) {
+        return true;
+    }
+    if (hit->second.is_setup_body) {
+        note_skip("a setup body is not a place to emit another setup");
+        return false;
+    }
+
+    // Loop-invariant by the count the hoisting pass uses, and by the same two halves: a value
+    // written by a node of this body, or a write anywhere in its subtree. A fit whose input the
+    // body rewrites every iteration is stale the moment it is hoisted out of the loop, and that
+    // is a wrong number rather than a missed optimization.
+    auto const escapes = EscapeAnalysis::over(graph);
+    for (auto const id : reads) {
+        if (escapes.writer_count(id) > 0 || escapes.subtree_writer_count(id) > 0) {
+            note_skip("a fitting would have to be hoisted out of a loop whose body writes what it fits from",
+                      fmt::format("tensor '{}'", graph.tensor(id).name));
+            return false;
+        }
+    }
+    return true;
+}
+
+Graph &RegionRewrite::record_host(Graph &graph) {
+    // Walk out to the graph this apply started from. Bounded by the nesting depth, and by the
+    // site table having been filled parent-first, so a cycle is not reachable.
+    Graph *host = &graph;
+    for (auto hit = _sites.find(host); hit != _sites.end() && hit->second.host != nullptr; hit = _sites.find(host)) {
+        host = hit->second.host;
+    }
+    return *host;
+}
+
+Graph *RegionRewrite::setup_body_for(Graph &graph, std::string label) {
+    auto const hit = _sites.find(&graph);
+    if (hit == _sites.end()) {
+        // A top-level graph. Position 0 is correct by construction: a fitting reads tensors
+        // nothing here produces, so it depends on nothing this graph computes and every reader of
+        // what it writes comes later.
+        return &graph.add_setup_at(std::move(label), 0);
+    }
+    if (hit->second.is_setup_body) {
+        note_skip("a setup body is not a place to emit another setup");
+        return nullptr;
+    }
+
+    Graph      &host  = *hit->second.host;
+    auto const &nodes = host.nodes();
+    auto const  owner = std::ranges::find_if(nodes, [&hit](Node const &node) { return node.id == hit->second.owner; });
+    // The node's POSITION is resolved here rather than remembered, because a client emits its
+    // setups after the region loop and everything before the control-flow node may have moved.
+    std::size_t const position = owner == nodes.end() ? nodes.size() : static_cast<std::size_t>(std::distance(nodes.begin(), owner));
+    return &host.add_setup_at(std::move(label), position);
+}
+
 bool RegionRewrite::run(Graph &graph) {
     bool const dump = _dump || config::get(option::GraphDumpRegions);
+
+    // Recorded before anything else, and before any rewrite moves a node: the driver runs a
+    // parent before it descends, so a child's site is on file by the time that child is run.
+    note_subgraph_sites(graph);
+
+    // A setup body is a fitting this framework emitted. Raising it is not obviously wrong, but a
+    // rewrite of one has nowhere to hoist a setup of its own and the once-per-bind contract is a
+    // property of the node rather than of the algebra inside it, so it is declined by name.
+    if (auto const hit = _sites.find(&graph); hit != _sites.end() && hit->second.is_setup_body) {
+        note_skip("the graph is a setup body, whose once-per-bind contract a rewrite cannot restate");
+        return false;
+    }
 
     // Before anything expensive. See the header: a pass in the default pipeline runs on every
     // graph anyone optimizes, and most of them have nothing for it.
@@ -126,7 +212,12 @@ bool RegionRewrite::run(Graph &graph) {
     RegionOptions options;
     options.min_nodes  = min_region_nodes();
     auto const regions = form_regions(graph, escapes, options);
-    _regions_formed    = regions.size();
+    // ACCUMULATED, not assigned. The driver calls `run` once per sub-graph and zeroes the
+    // counters once per apply, so a count written here would report whatever the last-visited
+    // body contributed and nothing else. That is silent for a graph with one loop and wrong the
+    // moment there are two.
+    _regions_formed += regions.size();
+    std::size_t const dumps_before = _dumps.size();
     if (regions.empty()) {
         note_skip("the graph holds no run of raisable nodes");
         return false;
@@ -229,10 +320,11 @@ bool RegionRewrite::run(Graph &graph) {
         report(1, fmt::format("rewrote {} of {} region(s)", _regions_rewritten, _regions_formed));
         EINSUMS_LOG_INFO("{}: rewrote {} of {} region(s)", name(), _regions_rewritten, _regions_formed);
     }
-    // The dumps are in reverse region order because the rewrite is; put them
-    // back so a report reads in program order, which is how a person reads a
-    // graph.
-    std::ranges::reverse(_dumps);
+    // The dumps of THIS graph are in reverse region order because the rewrite is; put them back
+    // so a report reads in program order, which is how a person reads a graph. Only this graph's,
+    // because the list accumulates across the sub-graph tree and reversing the whole of it would
+    // put a parent's regions behind its children's.
+    std::ranges::reverse(_dumps.begin() + static_cast<std::ptrdiff_t>(dumps_before), _dumps.end());
     return modified;
 }
 
