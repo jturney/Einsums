@@ -18,6 +18,34 @@
  * with @c Z fitted by least squares from @c B. Five factors over two new letters, which is what
  * a plan naming a factor LIST exists for: it cannot be written as a split of two.
  *
+ * @par Per-axis collocation, and why the matrices are handed to the PROVIDER
+ * A tagged tensor's axes need not all run over the whole basis. An @f$(ia|jb)@f$ integral and a
+ * doubles amplitude @f$t[i,a,j,b]@f$ are both blocks of it, one axis occupied and the next
+ * virtual, and a provider fitting over the whole basis on every axis can propose nothing for
+ * either. So a caller may hand over one collocation matrix per axis, and the fit becomes
+ *
+ * @f[ T[m,n,p,q] \approx \sum_{PQ} X_0[m,P]\,X_1[n,P]\,Z[P,Q]\,X_0[p,Q]\,X_1[q,Q] @f]
+ *
+ * with @f$S[P,Q] = (\sum_m X_0[m,P] X_0[m,Q])(\sum_n X_1[n,P] X_1[n,Q])@f$ and
+ * @f$\tilde{B}[A,P] = \sum_{mn} B[A,m,n] X_0[m,P] X_1[n,P]@f$, from a three-index tensor over
+ * the same two blocks. One collocation for every axis is the case where @f$X_0@f$ and @f$X_1@f$
+ * are one matrix, and the algebra above is then the Hadamard square this always fitted.
+ *
+ * The two PAIRS must present the same blocks, axis 0 with axis 2 and axis 1 with axis 3, which
+ * is what @f$(ia|jb)@f$ and @f$t[i,a,j,b]@f$ both are. A @f$[i,j,a,b]@f$ layout pairs occupied
+ * with occupied and virtual with virtual, so its two halves have different metrics and different
+ * three-index tensors; that needs two fits rather than one and is declined with the reason.
+ *
+ * The matrices are given to the provider rather than named by the tag, and the choice is about
+ * what a SAVED graph can do. A tag saying "this axis is the occupied block" would leave the
+ * provider to slice the caller's whole-basis collocation, and a slice is a view: a provenance
+ * tag does not cross one, and the block boundary would be frozen into the emitted structure at
+ * optimize time, so a graph rebound at a geometry with a different occupation could not follow
+ * it. Handed over, each matrix becomes an interface tensor of the transformed graph under its
+ * own name, which is the same shape @ref MetricFitFactorization has for its three-index tensor
+ * and @c passes::LaplaceTransform has for its orbital energies, and it is bound by name at every
+ * later bind.
+ *
  * @par What chemistry calls it
  * Tensor hypercontraction, and this class registered on the tag @c "eri" is the ``AutoTHC`` the
  * design asks for. The name stays generic for the reason @ref MetricFitFactorization's does:
@@ -110,6 +138,7 @@
 #include <Einsums/Tensor/Tensor.hpp>
 
 #include <string>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -152,6 +181,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     ThcFactorization(std::string tag, RuntimeTensorView<double> three_index, RuntimeTensorView<double> collocation, double bound = 0.0,
                      double drop_threshold = default_drop_threshold, std::string name = "Thc");
 
+    /**
+     * @brief The primary constructor: one collocation matrix per axis, or one for every axis.
+     *
+     * @param[in] tag The provenance tag this claims.
+     * @param[in] three_index @c B[A,m,n] over the blocks axes 0 and 1 run over.
+     * @param[in] collocations The per-axis matrices. Every other constructor forwards to this one
+     *            with a list of one.
+     * @param[in] bound The relative error the caller asserts, or zero to take the option.
+     * @param[in] drop_threshold See @ref default_drop_threshold.
+     * @param[in] name The provider's name.
+     * @throws std::invalid_argument When @p collocations is empty, or on the numeric grounds the
+     *         other constructors refuse.
+     */
+    ThcFactorization(std::string tag, RuntimeTensorView<double> three_index, std::vector<RuntimeTensorView<double>> collocations,
+                     double bound = 0.0, double drop_threshold = default_drop_threshold, std::string name = "Thc");
+
     /// @brief The same, taking runtime-rank tensors. This is the overload Python gets.
     ///
     /// @note The drop-threshold default is spelled with its class qualifier because the binding
@@ -160,6 +205,27 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE ThcFactorization(std::string tag, RuntimeTensor<double> const &three_index, RuntimeTensor<double> const &collocation,
                                    double bound = 0.0, double drop_threshold = ThcFactorization::default_drop_threshold,
                                    std::string name = "Thc");
+
+    /**
+     * @brief The same, with one collocation matrix per axis of the tagged tensor.
+     *
+     * @param[in] tag The provenance tag this claims.
+     * @param[in] three_index @c B[A,m,n] over the two blocks axes 0 and 1 run over.
+     * @param[in] collocations One matrix per axis, or one matrix for every axis. Each must
+     *            outlive the provider, and each becomes an interface tensor of the transformed
+     *            graph under its own name.
+     * @param[in] bound As above.
+     * @param[in] drop_threshold As above.
+     * @param[in] name As above.
+     * @throws std::invalid_argument When @p collocations is empty, or on the same numeric
+     *         grounds the other constructors refuse.
+     *
+     * Which axes may differ is checked in @ref propose rather than here, because it is a
+     * statement about the tagged tensor and this constructor has not met one yet.
+     */
+    APIARY_EXPOSE ThcFactorization(std::string tag, RuntimeTensor<double> const &three_index,
+                                   std::vector<RuntimeTensor<double> const *> collocations, double bound = 0.0,
+                                   double drop_threshold = ThcFactorization::default_drop_threshold, std::string name = "Thc");
 
     /// @brief The same, taking compile-time-rank tensors.
     ///
@@ -180,8 +246,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      *
      * @param[in] graph The graph holding @p tensor.
      * @param[in] tensor The tagged tensor.
-     * @return The plan, or the reason there is not one: a rank other than four, or extents that
-     *         do not match the collocation matrix's basis axis.
+     * @return The plan, or the reason there is not one: a rank other than four, a collocation
+     *         list that is neither one matrix nor one per axis, two pairs that do not present
+     *         the same blocks, or extents that do not match a collocation matrix's basis axis.
      */
     [[nodiscard]] expected<FactorizationPlan, std::string> propose(Graph const &graph, TensorId tensor) const override;
 
@@ -235,12 +302,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE [[nodiscard]] static std::string reference_param_name(std::string const &provider, std::string const &tensor);
 
   private:
-    std::string               _tag;
-    std::string               _name;
-    RuntimeTensorView<double> _three_index;
-    RuntimeTensorView<double> _collocation;
-    double                    _bound;
-    double                    _drop_threshold;
+    std::string                            _tag;
+    std::string                            _name;
+    RuntimeTensorView<double>              _three_index;
+    std::vector<RuntimeTensorView<double>> _collocations;
+    double                                 _bound;
+    double                                 _drop_threshold;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

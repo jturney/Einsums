@@ -237,6 +237,103 @@ def test_the_shipped_provider_fits_this_molecule(water):
     assert float(np.linalg.norm(np.asarray(C) - exact)) <= 1e-2 * scale
 
 
+def _ov_blocks(water_problem):
+    """The occupied and virtual rows of the collocation matrix, and the ov three-index tensor."""
+    nocc = water_problem["nocc"]
+    grid, three = water_problem["grid"], water_problem["three"]
+    return (_tensor("X_occ", grid[:nocc]),
+            _tensor("X_vir", grid[nocc:]),
+            _tensor("B_ov", three[:, :nocc, nocc:]))
+
+
+def test_the_occupied_virtual_block_gets_a_proposal_from_per_axis_collocation(water):
+    """``(ia|jb)`` is a block of the basis on every axis, and it is fitted as one.
+
+    A provider fitting over the whole basis on every axis proposes NOTHING for
+    this tensor, which is what shipped and what the joint-decline case below
+    still pins for that construction. Handed one collocation matrix per axis it
+    is an ordinary five-factor chain, and the fit is better here than over the
+    whole basis rather than worse: the occupied-virtual pair space is 95
+    directions and the pruned grid carries 280, so the least-squares problem is
+    over-determined and the metric's kept directions are exactly the pair space.
+    """
+    nocc, nvir = water["nocc"], water["nvir"]
+    X_occ, X_vir, B_ov = _ov_blocks(water)
+    dense = _dense(water)[:nocc, nocc:, :nocc, nocc:]
+
+    operand = np.random.default_rng(20260905).standard_normal((nocc, nvir))
+    exact = np.einsum("iajb,jb->ia", dense, operand)
+
+    M = _tensor("(ia|jb)", dense)
+    T = _tensor("T_ov", operand)
+    C = einsums.zeros((nocc, nvir), dtype="float64")
+
+    graph = cg.Graph("thc_water_ov")
+    with cg.capture(graph):
+        einsums.einsum("i,a,j,b ; j,b -> i,a", C, M, T)
+    graph.annotate_tag(M, _G.ProvenanceTag.make("eri"))
+    graph.annotate_dims(M, ["nocc", "nvir", "nocc", "nvir"])
+    _G.ThcFactorization.register_grid_space(graph)
+
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.ThcFactorization("eri", B_ov, [X_occ, X_vir, X_occ, X_vir], 1e-2))
+    factorization = _G.FactorizationPass(registry)
+    manager = cg.PassManager()
+    manager.add(factorization)
+
+    captured = graph.num_nodes()
+    assert graph.apply(manager), f"the grid fit declined: {factorization.skip_reasons}"
+    assert factorization.num_factorized == 1
+    assert [record.pass_name for record in graph.approximations()] == ["Thc"]
+    assert graph.num_nodes() > captured
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+
+    scale = float(np.linalg.norm(exact))
+    relative = float(np.linalg.norm(np.asarray(C) - exact)) / scale
+    # A ceiling rather than a target. Measured at 5e-5 on this grid with the
+    # provider's default drop threshold, which is two orders better than the
+    # whole-basis fit of the same integrals reaches.
+    assert relative < 1e-3, f"the block fit is off by {relative:.3e}"
+
+
+def test_a_layout_whose_pairs_run_over_different_blocks_is_declined(water, capfd):
+    """``[i,j,a,b]`` pairs occupied with occupied, which is a different fit.
+
+    The chain writes axes 0 and 1 against one grid letter and axes 2 and 3
+    against the other, so one metric and one three-index tensor only describe a
+    tensor whose axis 2 runs over the same block as axis 0. A layout that pairs
+    the two occupied axes together has two metrics and two three-index tensors,
+    which is two fits rather than a spelling of this one, and it is declined with
+    that reason rather than fitted wrongly.
+    """
+    nocc, nvir = water["nocc"], water["nvir"]
+    X_occ, X_vir, B_ov = _ov_blocks(water)
+
+    M = _tensor("(ij|ab)", np.zeros((nocc, nocc, nvir, nvir)))
+    T = _tensor("T_vv", np.zeros((nvir, nvir)))
+    C = einsums.zeros((nocc, nocc), dtype="float64")
+
+    graph = cg.Graph("thc_water_oovv")
+    with cg.capture(graph):
+        einsums.einsum("i,j,a,b ; a,b -> i,j", C, M, T)
+    graph.annotate_tag(M, _G.ProvenanceTag.make("eri"))
+    _G.ThcFactorization.register_grid_space(graph)
+
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.ThcFactorization("eri", B_ov, [X_occ, X_occ, X_vir, X_vir], 1e-2))
+    factorization = _G.FactorizationPass(registry)
+    manager = cg.PassManager()
+    manager.add(factorization)
+    manager.set_verbosity(3)  # the reason is the detail behind the decline
+
+    assert not graph.apply(manager)
+    assert any("provider declined" in reason for reason, _count in factorization.skip_reasons), (
+        factorization.skip_reasons)
+    assert "run over different blocks" in capfd.readouterr().err
+
+
 def test_the_grid_fit_reproduces_the_density_fitted_integrals(water):
     """The four-index residual, which is the quantity the record is about."""
     nocc = water["nocc"]

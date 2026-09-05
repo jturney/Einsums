@@ -849,6 +849,13 @@ def _report_thc(source, problem, exact):
     print(f"  (ia|jb) relative residual {np.linalg.norm(thc_block - df_block) / np.linalg.norm(df_block):.3e}, "
           f"largest deviation {np.abs(thc_block - df_block).max():.3e}")
 
+    # The same block through the SHIPPED provider, with one collocation matrix per
+    # axis. Nothing about (ia|jb) runs over the whole basis, so a provider fitting
+    # over the whole basis on every axis proposes nothing for it; handed the
+    # occupied and virtual rows separately it is an ordinary five-factor chain and
+    # the fit is done inside the graph rather than written out here.
+    _report_thc_block(three[:, :nocc, nocc:], grid[:nocc], grid[nocc:], df_block, nocc, nvir)
+
     print("\n  the correlation energy through each arm:")
     print("  arm                                 energy            |dE|      |dE|/|E|  points     nodes")
     print("  " + "-" * 88)
@@ -863,6 +870,49 @@ def _report_thc(source, problem, exact):
           "approximation is the one that decides.")
     if _args.sos:
         _report_sos_thc(problem, left, right, grid.shape[1])
+
+
+def _report_thc_block(three_ov, occupied_rows, virtual_rows, reference_block, nocc, nvir):
+    """The occupied-virtual block fitted by the provider itself, per axis.
+
+    The point is that no factor is precomputed here: the collocation rows and the
+    occupied-virtual three-index tensor go to the provider, and the chain, the
+    fit and the contraction against it all come out of the pass.
+    """
+    operand = np.random.default_rng(20260905).standard_normal((nocc, nvir))
+    reference = np.einsum("iajb,jb->ia", reference_block, operand)
+
+    M = _tensor("(ia|jb)", reference_block)
+    T = _tensor("T_ov", operand)
+    C = einsums.create_zero_tensor("C_ov", [nocc, nvir])
+    graph = cg.Graph("thc ov block")
+    with cg.capture(graph):
+        einsums.einsum("i,a,j,b ; j,b -> i,a", C, M, T)
+    graph.annotate_tag(M, _G.ProvenanceTag.make("eri"))
+    graph.annotate_dims(M, ["nocc", "nvir", "nocc", "nvir"])
+    _G.ThcFactorization.register_grid_space(graph)
+
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.ThcFactorization("eri", _tensor("B_ov", np.ascontiguousarray(three_ov)),
+                                     [_tensor("X_occ", np.ascontiguousarray(occupied_rows)),
+                                      _tensor("X_vir", np.ascontiguousarray(virtual_rows))] * 2,
+                                     1e-2, _THC_DROP))
+    factorization = _G.FactorizationPass(registry)
+    manager = cg.PassManager()
+    manager.add(factorization)
+    before = graph.num_nodes()
+    fired = graph.apply(manager)
+    after = graph.num_nodes()
+    print(f"  the pass on a contraction over the tagged (ia|jb) block: fired={fired}, "
+          f"factorized={factorization.num_factorized}, nodes {before} -> {after}")
+    for reason, count in factorization.skip_reasons:
+        print(f"    declines ({count}): {reason}")
+    if not fired:
+        return
+    value = np.asarray(_energy_of_tensor(graph, C))
+    scale = float(np.linalg.norm(reference))
+    print(f"  the contracted block through the per-axis chain is within "
+          f"{np.linalg.norm(value - reference) / scale:.3e} of the density-fitted one")
 
 
 def _energy_of_tensor(graph, tensor):
