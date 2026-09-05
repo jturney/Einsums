@@ -55,8 +55,21 @@ two composing on this same molecule's integrals in the shape where the fit IS
 profitable, an orbital-response update built from ``(ia|jb)`` and divided by
 ``e_i - e_a``.
 
+``--thc`` runs the grid fit on the same molecule. A collocation matrix comes
+from psi4's own Becke grid, is pruned to the points whose basis-pair products
+are independent, and ``ThcFactorization`` fits the coupling from the same
+three-index tensor the density fit uses. It reports the residual of the fitted
+integrals against the density-fitted ones and the correlation energy through
+three arms, the density fit alone, the grid fit on top of it, and the grid fit
+with the quadrature, so what each approximation costs in accuracy is visible
+side by side. Choosing the grid is the caller's, which is why the pruning is in
+this file: the pass takes the collocation matrix it is handed and the residual
+it measures is what tells the caller whether the grid was enough.
+
 Integrals come from psi4 when it can be imported and from the DLPNO fixture
-otherwise, and the two paths differ only in where the buffers come from.
+otherwise, and the two paths differ only in where the buffers come from. The
+fixture already carries a psi4 Becke grid, because the DLPNO domains need one,
+so the offline arm needed no new file.
 
     PYTHONPATH=/Users/jturney/Code/Einsums/Einsums/build/lib:/Users/jturney/Code/psi4/cmake-build-debug/stage/lib \
         /Users/jturney/miniconda3/envs/einsums-dev/bin/python \
@@ -78,6 +91,8 @@ _argp.add_argument("--fixture", action="store_true",
                    help="read the integrals from the DLPNO fixture even if psi4 imports")
 _argp.add_argument("--naive", action="store_true",
                    help="also capture the dense-integral form and report what each pass declines")
+_argp.add_argument("--thc", action="store_true",
+                   help="also fit the integrals on a grid and run the energy through the grid fit")
 _argp.add_argument("--response", action="store_true",
                    help="also run the orbital-response shape, where the fit and the transform compose")
 _argp.add_argument("--epsilons", type=float, nargs="+", default=[1e-3, 1e-5, 1e-8],
@@ -129,7 +144,46 @@ def _from_psi4():
         "three": np.squeeze(np.asarray(mints.ao_eri(aux, zero, primary, primary))),
         "metric": np.squeeze(np.asarray(mints.ao_eri(aux, zero, aux, zero))),
         "reference": float(psi4.variable("MP2 CORRELATION ENERGY")),
+        # The collocation matrix, from psi4's own DFT grid machinery: basis
+        # function values on a Becke grid, blocked the way psi4 blocks them and
+        # concatenated here. A grid fit needs this and nothing else that the
+        # density fit did not already need.
+        "grid": _psi4_collocation(psi4, mol, primary),
     }
+
+
+def _psi4_collocation(psi4, mol, basis):
+    """``(X[m,P], w[P])`` over psi4's Becke grid, as dense numpy buffers.
+
+    Deliberately COARSE. The point of the grid arm is that a fit on a real
+    molecule's basis reproduces its integrals, not that it reproduces them to
+    spectroscopic accuracy, and a coarse grid makes the run seconds instead of
+    minutes. A denser grid moves every residual below down.
+    """
+    psi4.set_options({"DFT_BASIS_TOLERANCE": 1e-12, "DFT_BS_RADIUS_ALPHA": 1.0,
+                      "DFT_PRUNING_ALPHA": 1.0, "DFT_BLOCK_MAX_RADIUS": 3.0,
+                      "DFT_WEIGHTS_TOLERANCE": 1e-15})
+    grid = psi4.core.DFTGrid.build(
+        mol, basis,
+        {"DFT_SPHERICAL_POINTS": 74, "DFT_RADIAL_POINTS": 35,
+         "DFT_BLOCK_MIN_POINTS": 100, "DFT_BLOCK_MAX_POINTS": 256},
+        {"DFT_PRUNING_SCHEME": "ROBUST", "DFT_RADIAL_SCHEME": "TREUTLER",
+         "DFT_NUCLEAR_SCHEME": "TREUTLER", "DFT_GRID_NAME": "", "DFT_BLOCK_SCHEME": "OCTREE"})
+    values = psi4.core.BasisFunctions(basis, grid.max_points(), basis.nbf())
+    blocks, weights = [], []
+    for block in grid.blocks():
+        values.compute_functions(block)
+        columns = list(block.functions_local_to_global())
+        npoints = block.npoints()
+        # Copied, explicitly: PHI is one allocation sized to the largest block
+        # and psi4 reuses it, so a loop that accumulates rather than consumes
+        # gets the last block's values for every block that shared the buffer.
+        phi = np.array(np.asarray(values.basis_values()["PHI"])[:npoints, :len(columns)], copy=True)
+        full = np.zeros((npoints, basis.nbf()))
+        full[:, columns] = phi
+        blocks.append(full)
+        weights.append(np.array(np.asarray(block.w())[:npoints], copy=True))
+    return np.concatenate(blocks, axis=0).T, np.concatenate(weights)
 
 
 def _from_fixture():
@@ -162,7 +216,29 @@ def _from_fixture():
         "three": np.asarray(z["eri_3index"], dtype=np.float64),
         "metric": np.asarray(z["metric"], dtype=np.float64),
         "reference": float(z["energy_psi4_df_mp2"]),
+        "grid": _fixture_collocation(z) if bool(z["has_grid"]) else None,
     }
+
+
+def _fixture_collocation(z):
+    """The same collocation matrix, out of the fixture's per-block buffers.
+
+    The fixture already carries a psi4 Becke grid, because the DLPNO domains
+    need one, so the offline arm needs no new file.
+    """
+    phi_flat, weights = z["grid_phi_flat"], z["grid_w_flat"]
+    bfmap, npoints, nbfs = z["grid_bfmap_flat"], z["grid_npoints"], z["grid_nbf"]
+    nbf = z["S"].shape[0]
+    blocks, offset, mapped = [], 0, 0
+    for count, width in zip(npoints, nbfs):
+        count, width = int(count), int(width)
+        block = phi_flat[offset:offset + count * width].reshape(count, width)
+        full = np.zeros((count, nbf))
+        full[:, bfmap[mapped:mapped + width].astype(int)] = block
+        blocks.append(full)
+        offset += count * width
+        mapped += width
+    return np.concatenate(blocks, axis=0).T, np.asarray(weights, dtype=np.float64)
 
 
 def _integrals(source):
@@ -359,6 +435,8 @@ def main():
 
     if _args.naive:
         _report_naive(problem, exact)
+    if _args.thc:
+        _report_thc(source, problem, exact)
     if _args.response:
         _report_response(problem)
 
@@ -423,6 +501,182 @@ def _report_naive(problem, exact):
     print("  with one elementwise multiply: one whole scale order worse. What would pay is")
     print("  never forming the amplitude, which is a re-association of the energy expression")
     print("  rather than a substitution into it.")
+
+
+def _select_points(pair, count):
+    """The points whose basis-pair products are independent, by pivoted selection.
+
+    Modified Gram-Schmidt with column pivoting: take the column of largest
+    remaining norm, project it out, repeat, and stop when the remaining norms
+    collapse. Choosing the grid is a setup the CALLER performs, which is why it
+    is here rather than in the provider: the pass takes the collocation matrix
+    it is handed, and the residual it measures is what tells a caller whether
+    the grid they chose was enough.
+    """
+    remaining = pair.copy()
+    pivots = []
+    for _ in range(count):
+        norms = np.einsum("ij,ij->j", remaining, remaining)
+        best = int(np.argmax(norms))
+        if norms[best] <= 1e-20:
+            break
+        pivots.append(best)
+        direction = remaining[:, best] / np.sqrt(norms[best])
+        remaining -= np.outer(direction, direction @ remaining)
+    return np.array(pivots, dtype=int)
+
+
+#: The drop threshold a grid metric needs, and NOT the provider's default.
+#:
+#: ``S = (X^T X)^2`` for a pruned grid runs from about ``1e-13`` to ``1`` with no
+#: gap in between, where a Coulomb metric has a clear null space. An absolute
+#: cutoff at ``1e-10`` therefore keeps directions whose inverse amplifies
+#: rounding into the fit, and the fit comes out both less accurate and not
+#: reproducible between two implementations of the same formula. At ``1e-8`` it
+#: is at its most accurate here and two implementations agree to five digits.
+_THC_DROP = 1e-8
+
+
+def _report_thc(source, problem, exact):
+    """The integrals through a grid fit, and the energy through the pair.
+
+    Three arms, all against the same exact denominator and the same integrals:
+    the density fit on its own, the grid fit on top of it, and the grid fit with
+    the quadrature. The grid form has the SAME shape the density-fitted one
+    does, ``sum_Q L[Q,i,a] R[Q,j,b]`` with the grid index where the auxiliary
+    index was, so the transform rides on it unchanged.
+    """
+    if source.get("grid") is None:
+        print("\nno collocation matrix available from this source; skipping the grid arm")
+        return
+    print("\nthe integrals through a grid fit:")
+
+    collocation_ao, weights = source["grid"]
+    coefficients = source["C"]
+    nocc, nvir = problem["nocc"], problem["nvir"]
+    nbf = coefficients.shape[0]
+
+    # The weight, split four ways, because four collocation factors meet in the
+    # integral this fits.
+    collocation = (coefficients.T @ collocation_ao) * (np.abs(weights) ** 0.25)
+    pairs = np.triu_indices(nbf)
+    pivots = _select_points(collocation[pairs[0], :] * collocation[pairs[1], :], nbf * (nbf + 1) // 2)
+    grid = np.ascontiguousarray(collocation[:, pivots])
+    print(f"  grid: {collocation_ao.shape[1]} Becke points pruned to {grid.shape[1]} "
+          f"independent pair directions, over {nbf} orbitals")
+
+    # The density fit over the whole orbital basis, which is what the grid fit
+    # is fitted FROM and what it is measured against.
+    metric = np.asarray(source["metric"], dtype=np.float64)
+    values, vectors = np.linalg.eigh(metric)
+    inv_sqrt = vectors @ np.diag(np.where(values > 1e-10, values ** -0.5, 0.0)) @ vectors.T
+    three = np.einsum("PQ,Qmn,mp,nq->Ppq", inv_sqrt, np.asarray(source["three"], dtype=np.float64),
+                      coefficients, coefficients)
+    dense = np.einsum("Amn,Apq->mnpq", three, three)
+
+    # The SHIPPED provider, on this molecule, through an ordinary contraction.
+    operand = np.random.default_rng(20260904).standard_normal((nbf, nbf))
+    reference = np.einsum("mnpq,pq->mn", dense, operand)
+    M = _tensor("(mn|pq)", dense)
+    T = _tensor("T", operand)
+    C = einsums.create_zero_tensor("C", [nbf, nbf])
+    graph = cg.Graph("thc contraction")
+    with cg.capture(graph):
+        einsums.einsum("m,n,p,q ; p,q -> m,n", C, M, T)
+    graph.annotate_tag(M, _G.ProvenanceTag.make("eri"))
+    graph.annotate_dims(M, ["nbf"] * 4)
+    _G.ThcFactorization.register_grid_space(graph)
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.ThcFactorization("eri", _tensor("B", three), _tensor("X", grid), 1e-2, _THC_DROP))
+    factorization = _G.FactorizationPass(registry)
+    manager = cg.PassManager()
+    manager.add(factorization)
+    before = graph.num_nodes()
+    fired = graph.apply(manager)
+    after = graph.num_nodes()
+    print(f"  the pass on a contraction over the tagged integral: fired={fired}, "
+          f"factorized={factorization.num_factorized}, nodes {before} -> {after}")
+    for reason, count in factorization.skip_reasons:
+        print(f"    declines ({count}): {reason}")
+    value = np.asarray(_energy_of_tensor(graph, C))
+    scale = float(np.linalg.norm(reference))
+    print(f"  the contracted integral through the chain is within "
+          f"{np.linalg.norm(value - reference) / scale:.3e} of the density-fitted one")
+
+    # The same fit written out, because the energy arms need the factors as
+    # buffers and the pass keeps them inside a graph. Checked against the pass
+    # above rather than trusted.
+    gram = grid.T @ grid
+    fit_metric = gram * gram
+    fvals, fvecs = np.linalg.eigh(fit_metric)
+    fit_half = fvecs @ np.diag(np.where(fvals > _THC_DROP, fvals ** -0.5, 0.0)) @ fvecs.T
+    inverse = fit_half @ fit_half
+    projected = np.einsum("Amn,mP,nP->AP", three, grid, grid)
+    coupling = inverse @ (projected.T @ projected) @ inverse
+    rebuilt = np.einsum("AP,mP,nP->Amn", projected @ inverse, grid, grid)
+    print(f"  three-index relative residual {np.linalg.norm(three - rebuilt) / np.linalg.norm(three):.3e}")
+
+    left = np.ascontiguousarray(np.einsum("iP,aP,PQ->Qia", grid[:nocc], grid[nocc:], coupling))
+    right = np.ascontiguousarray(np.einsum("jQ,bQ->Qjb", grid[:nocc], grid[nocc:]))
+    thc_block = np.einsum("Qia,Qjb->iajb", left, right)
+    df_block = dense[:nocc, nocc:, :nocc, nocc:]
+    print(f"  (ia|jb) relative residual {np.linalg.norm(thc_block - df_block) / np.linalg.norm(df_block):.3e}, "
+          f"largest deviation {np.abs(thc_block - df_block).max():.3e}")
+
+    print("\n  the correlation energy through each arm:")
+    print("  arm                                 energy            |dE|      |dE|/|E|  points     nodes")
+    print("  " + "-" * 88)
+    print(f"  {'density fit alone':<26} {exact:16.12f}  {0.0:10.2e}  {0.0:10.2e}       -         -")
+    for epsilon in [None] + list(_args.epsilons):
+        energy, captured, emitted, points = _thc_arm(problem, left, right, epsilon)
+        label = "grid fit alone" if epsilon is None else f"grid fit + quadrature {epsilon:g}"
+        print(f"  {label:<26} {energy:16.12f}  {abs(energy - exact):10.2e}  "
+              f"{abs(energy - exact) / abs(exact):10.2e}  {points:>6}  {captured:4d} -> {emitted:3d}")
+    print("  the quadrature's own error falls below the grid fit's and the joint number stops "
+          "moving, which is\n  the composition doing what a composition should: the looser "
+          "approximation is the one that decides.")
+
+
+def _energy_of_tensor(graph, tensor):
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    return tensor
+
+
+def _thc_arm(problem, left, right, epsilon):
+    """The full-axis energy with the grid factors in the density fit's place."""
+    shape = [problem["nocc"], problem["nvir"], problem["nocc"], problem["nvir"]]
+    L = _tensor("L", left)
+    R = _tensor("R", right)
+    denominator = _denominator(problem, f"D_thc_{epsilon}")
+    energy = einsums.create_zero_tensor("E_thc", [1])
+
+    graph = cg.Graph(f"thc mp2 {epsilon}")
+    K = graph.scratch("K", shape, "float64")
+    T = graph.scratch("T", shape, "float64")
+    again = graph.scratch("K_again", shape, "float64")
+    exchange = graph.scratch("K_exchange", shape, "float64")
+    combination = graph.scratch("Kbar", shape, "float64")
+    with cg.capture(graph):
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, L, R)
+        la.direct_product(1.0, K, denominator, 0.0, T)
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, L, R)
+        einsums.permute("iajb <- ibja", exchange, again)
+        la.axpby(2.0, again, 0.0, combination)
+        la.axpby(-1.0, exchange, 1.0, combination)
+        la.dot(energy, combination, T)
+
+    captured = graph.num_nodes()
+    points = "-"
+    if epsilon is not None:
+        graph.annotate_tag(denominator, _TAG)
+        transform = _transform(problem, epsilon)
+        manager = cg.PassManager()
+        manager.add(transform)
+        assert graph.apply(manager), f"the transform declined: {transform.skip_reasons}"
+        points = str(transform.last_point_count)
+    value = _energy_of(graph, energy)
+    return value, captured, graph.num_nodes(), points
 
 
 def _report_response(problem):
