@@ -804,6 +804,11 @@ class LaplaceProgram(NamedTuple):
     ``sides`` says, per axis of the denominator, which operand of the numerator
     carries that axis; ``link`` is the extent of the contracted index the two
     operands share, or zero for a numerator that is a pure outer product.
+
+    ``reader`` says who else holds the numerator, which is what decides whether
+    the pass dissolves it or takes a copy of its definition: nobody, another
+    statement of the region, or the caller, whose own tensor the region may not
+    dissolve at all.
     """
 
     extents: tuple
@@ -812,6 +817,7 @@ class LaplaceProgram(NamedTuple):
     link: int
     negative: bool
     epsilon: float
+    reader: int
 
 
 @st.composite
@@ -826,7 +832,8 @@ def _laplace_programs(draw):
     link = draw(st.integers(min_value=0, max_value=3))
     negative = draw(st.booleans())
     epsilon = draw(st.sampled_from((1e-3, 1e-5, 1e-7)))
-    return LaplaceProgram(extents, sides, signs, link, negative, epsilon)
+    reader = draw(st.integers(min_value=0, max_value=2))
+    return LaplaceProgram(extents, sides, signs, link, negative, epsilon, reader)
 
 
 def _laplace_arrays(prog, seed):
@@ -890,21 +897,29 @@ def _run_laplace(prog, seed):
         A = einsums.asarray(np.ascontiguousarray(a))
         B = einsums.asarray(np.ascontiguousarray(b))
         D = einsums.asarray(np.ascontiguousarray(denominator))
-        numerator = graph.scratch(_nm("lap_num"), shape, "float64")
+        # A numerator the caller owns is one the region may not dissolve, and a
+        # numerator another statement reads is one the cone may not have to
+        # itself. Both are a copy rather than a decline, and the value the other
+        # reader gets has to be the one the untransformed program computes.
+        numerator = (einsums.zeros(shape, dtype="float64") if prog.reader == 2
+                     else graph.scratch(_nm("lap_num"), shape, "float64"))
+        kept = einsums.zeros(shape, dtype="float64") if prog.reader == 1 else None
         with cg.capture(graph):
             einsums.einsum(f"{a_spec} ; {b_spec} -> {c_spec}", numerator, A, B)
+            if kept is not None:
+                einsums.linalg.axpby(1.0, numerator, 0.0, kept)
             einsums.linalg.direct_product(1.0, numerator, D, 0.0, out)
-        return D
+        return D, (kept if prog.reader == 1 else numerator if prog.reader == 2 else None)
 
     exact = einsums.zeros(shape, dtype="float64")
     reference = cg.Graph(_nm("lap_ref"))
-    build(reference, exact)
+    _, held_exact = build(reference, exact)
     reference.apply(cg.default_pass_manager())
     reference.execute()
 
     out = einsums.zeros(shape, dtype="float64")
     graph = cg.Graph(_nm("lap"))
-    D = build(graph, out)
+    D, held = build(graph, out)
     tag = {"name": "laplace_denominator"}
     names = []
     for axis in range(len(prog.extents)):
@@ -922,9 +937,18 @@ def _run_laplace(prog, seed):
     changed = graph.apply(pm)
     assert changed, f"the pass declined a drawn program: {laplace.skip_reasons}"
 
+    assert laplace.num_numerator_copies == (0 if prog.reader == 0 else 1), (
+        f"a numerator with reader kind {prog.reader} took "
+        f"{laplace.num_numerator_copies} copies: {laplace.skip_reasons}")
+
     graph.apply(cg.default_pass_manager())
     graph.execute()
     assert_materialization_invariants(graph, "laplace")
+    if held is not None:
+        # The definition the copy left standing is untouched arithmetic, so its
+        # reader gets the same bits rather than something inside the tolerance.
+        assert np.array_equal(np.asarray(held), np.asarray(held_exact)), (
+            "the retained numerator's other reader did not get the untransformed value")
     return np.asarray(out), np.asarray(exact), graph.approximations()[0], laplace
 
 
@@ -947,8 +971,14 @@ def test_the_quadrature_keeps_the_answer_inside_its_own_record(prog):
 
 
 def test_the_drawn_corpus_reaches_both_sides_of_the_split():
-    """A corpus that always piled every exponential onto one operand would prove nothing."""
+    """A corpus that always piled every exponential onto one operand would prove nothing.
+
+    The same guard covers who else holds the numerator, and for the same reason:
+    the copy the pass takes for a numerator something else reads is a path a
+    corpus of private numerators would never enter.
+    """
     both = one_sided = negative = 0
+    readers = {0: 0, 1: 0, 2: 0}
     for seed in range(40):
         rng = np.random.default_rng(seed)
         prog = LaplaceProgram(
@@ -958,6 +988,7 @@ def test_the_drawn_corpus_reaches_both_sides_of_the_split():
             link=int(rng.integers(0, 4)),
             negative=bool(rng.integers(0, 2)),
             epsilon=1e-5,
+            reader=int(rng.integers(0, 3)),
         )
         rank = len(prog.extents)
         prog = prog._replace(
@@ -970,10 +1001,13 @@ def test_the_drawn_corpus_reaches_both_sides_of_the_split():
             one_sided += 1
         if prog.negative:
             negative += 1
+        readers[prog.reader] += 1
         _run_laplace(prog, seed=seed)
     assert both > 0, "no drawn program ever split the axes across the two operands"
     assert one_sided > 0, "no drawn program ever put every axis on one operand"
     assert negative > 0, "no drawn program ever had a negative denominator"
+    assert all(count > 0 for count in readers.values()), (
+        f"the corpus never reached one of the numerator's three owners: {readers}")
 
 
 # ──────────────────────────────────────────────────────────────────────────
