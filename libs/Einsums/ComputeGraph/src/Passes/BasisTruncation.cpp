@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/BasisTruncation.hpp>
+#include <Einsums/ComputeGraph/Passes/LaplaceTransform.hpp>
 #include <Einsums/ComputeGraph/ThcFactorization.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
@@ -372,7 +373,8 @@ std::pair<std::vector<double>, std::vector<double>> BasisTruncation::ordinary_tr
     return {std::move(rotation), std::move(energies)};
 }
 
-expected<double, std::string> BasisTruncation::measure_correction() const {
+expected<double, std::string> BasisTruncation::measure_correction(std::vector<double> const &rotation,
+                                                                  std::vector<double> const &energies) const {
     if (!_occupied.has_value()) {
         return unexpected(std::string{"no occupied orbital energies were handed to the pass"});
     }
@@ -390,8 +392,6 @@ expected<double, std::string> BasisTruncation::measure_correction() const {
     for (std::size_t a = 0; a < nvir; ++a) {
         eps_vir[a] = fock(a, a);
     }
-
-    auto const [rotation, energies] = ordinary_truncation();
 
     // The integrals, recovered from the amplitudes rather than asked for. A first-order
     // amplitude is the integral over its denominator, and both halves of the denominator are
@@ -613,6 +613,26 @@ bool BasisTruncation::run(Graph &graph) {
         (*_keep)(which, which) = 1.0;
     }
 
+    // The same construction the setup body captures, done here in ordinary code, and its result
+    // written into the tensors the setup will write on every bind.
+    //
+    // Not a cache and not a shortcut. A later pass in the same pipeline may need to READ the
+    // truncated space's orbital energies at optimize time: a quadrature over an energy
+    // denominator fits its points to the range those energies span, and a setup body does not
+    // run until the first execute, so a pipeline that put the two passes in one manager would
+    // fit a quadrature to a buffer of zeros and produce a number nothing about the graph
+    // explains. The bind overwrites both tensors, so what stands here is what the first replay
+    // would have written anyway.
+    auto const [rotation, semicanonical] = ordinary_truncation();
+    for (std::size_t a = 0; a < nvir; ++a) {
+        for (std::size_t z = 0; z < _kept; ++z) {
+            (*_transformation)(a, z) = rotation[a * _kept + z];
+        }
+    }
+    for (std::size_t z = 0; z < _kept; ++z) {
+        (*_energies)(z) = semicanonical[z];
+    }
+
     // ── What runs over the space being replaced ──────────────────────────────
     //
     // Every handle is inspected once, in a deterministic order: a tensor map is unordered, and
@@ -691,6 +711,30 @@ bool BasisTruncation::run(Graph &graph) {
                       fmt::format("record from '{}'", record.pass_name));
             return false;
         }
+    }
+
+    // A quadrature already fitted over this space's energies is the other order of a composition
+    // that works one way round, and it is declined rather than half done. A quadrature carries
+    // its own exponentials of the orbital energies, sized and fitted for the space the
+    // denominator ran over; a truncation after it would leave those tables describing a space
+    // the rest of the program no longer uses, and nothing in the node re-derives them. Applied
+    // the other way round the two compose, which is what the decline says to do.
+    // At any depth, because a quadrature fits its exponentials inside a setup body of its own.
+    std::string quadrature;
+    auto const  find_quadrature = [&quadrature](Graph const &where, auto const &self) -> void {
+        for (auto const &node : where.nodes()) {
+            if (node.kind == OpKind::LaplaceQuadrature && quadrature.empty()) {
+                quadrature = node.label;
+            }
+        }
+        where.for_each_subgraph([&](Graph const &sub) { self(sub, self); });
+    };
+    find_quadrature(graph, find_quadrature);
+    if (!quadrature.empty()) {
+        note_skip("a quadrature has already been fitted to the orbital energies of the space being replaced; truncate the space "
+                  "before transforming the denominator, which is the order the two compose in",
+                  fmt::format("node '{}'", quadrature));
+        return false;
     }
 
     // An interface tensor the algebra WRITES cannot be projected: its extents are the caller's,
@@ -848,6 +892,30 @@ bool BasisTruncation::run(Graph &graph) {
             repoint(candidate->id, energies_id);
             replaced_energies = candidate->name;
         }
+
+        // A denominator RECIPE names its energy vectors by name, and the vector this pass just
+        // pointed the outer sum away from is one of them. Left alone, the recipe describes a
+        // chain that is no longer there and the quadrature that would read it declines for
+        // being unverifiable, which is a composition lost to a stale annotation rather than to
+        // anything about the two approximations. So the name is substituted where the tag
+        // carries it, and the caller registers the replacement vector under it.
+        for (auto &[tid, handle] : graph.tensors_map()) {
+            if (handle.tag.name != LaplaceTransform::tag_name()) {
+                continue;
+            }
+            ProvenanceTag renamed = handle.tag;
+            bool          moved   = false;
+            for (auto &[key, value] : renamed.attributes) {
+                if (key.starts_with("axis") && value == replaced_energies) {
+                    value = energies_name();
+                    moved = true;
+                }
+            }
+            if (moved) {
+                graph.annotate_tag(tid, std::move(renamed));
+                report(2, fmt::format("the denominator recipe on '{}' now names '{}'", handle.name, energies_name()));
+            }
+        }
     }
 
     // The node list did not move and its operands did, which is a state nothing else in this
@@ -857,14 +925,26 @@ bool BasisTruncation::run(Graph &graph) {
 
     // ── The intermediates the algebra writes on the way ──────────────────────
     //
-    // DERIVED from what now writes them rather than told: a contraction chain reaching a
-    // truncated operand writes something over the truncated space at every step, and the shape
-    // of each step is what its index letters say against the operands it now has. Their space
-    // annotations are re-stated beside the extents, because an annotation naming the space that
-    // was replaced would be a claim about the graph that is no longer true.
+    // Their extents are DERIVED from what now writes them, which is where a contraction chain
+    // reaching a truncated operand is concerned: the shape of each step is what its index
+    // letters say against the operands it now has. An intermediate an OPAQUE node writes has no
+    // letters to follow, and an energy denominator built by an outer sum is that case, so one
+    // whose annotation already says which axes moved is told rather than derived. Both run, in
+    // that order, and the derivation is a no-op wherever the first got there.
+    //
+    // The annotations are re-stated either way, because an annotation naming the space that was
+    // replaced would be a claim about the graph that is no longer true.
     for (auto const &candidate : candidates) {
         if (!candidate.intermediate) {
             continue;
+        }
+        if (TensorHandle const *handle = graph.find_tensor(candidate.id);
+            handle != nullptr && handle->alloc_state == AllocState::Deferred) {
+            std::vector<std::size_t> dims = handle->dims;
+            for (std::size_t const axis : candidate.axes) {
+                dims[axis] = _kept;
+            }
+            graph.resize_intermediate(candidate.id, dims, name());
         }
         std::vector<SpaceId> spaces = graph.tensor_spaces(candidate.id);
         for (std::size_t const axis : candidate.axes) {
@@ -877,7 +957,7 @@ bool BasisTruncation::run(Graph &graph) {
     // ── What it cost ─────────────────────────────────────────────────────────
     _correction = 0.0;
     if (!targets.empty()) {
-        auto measured = measure_correction();
+        auto measured = measure_correction(rotation, semicanonical);
         if (!measured) {
             note_skip("the correlation energy the truncation removes could not be measured", measured.error());
             return false;

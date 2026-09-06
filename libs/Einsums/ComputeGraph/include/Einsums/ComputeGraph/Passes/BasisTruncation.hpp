@@ -324,8 +324,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::pair<std::vector<double>, std::vector<double>> ordinary_truncation() const;
 
     /// @brief The MP2 energy the truncation removed, from the amplitudes and the two energy sets.
+    /// @param[in] rotation The transformation, row-major over the full space by the truncated one.
+    /// @param[in] energies The semicanonical orbital energies of the truncated space.
     /// @return The difference, or a reason it could not be measured.
-    [[nodiscard]] expected<double, std::string> measure_correction() const;
+    [[nodiscard]] expected<double, std::string> measure_correction(std::vector<double> const &rotation,
+                                                                   std::vector<double> const &energies) const;
 
     std::optional<RuntimeTensorView<double>> _amplitudes;
     std::optional<RuntimeTensorView<double>> _fock;

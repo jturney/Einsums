@@ -3867,6 +3867,28 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     }
 
     /**
+     * @brief Give one graph-owned intermediate a new shape, or say why it cannot have one.
+     *
+     * @param[in] id The intermediate.
+     * @param[in] dims Its new extents, one per axis of its current rank.
+     * @param[in] producer What is asking, named in any refusal so the mistake is findable.
+     *
+     * The single-tensor form of @ref rederive_intermediate_extents, for the intermediates no
+     * derivation reaches. A derivation follows a node's index letters, so an intermediate an
+     * OPAQUE node writes has no letters to follow and stays the size it was declared; an
+     * energy denominator built by an outer sum is that case, and a caller who annotated its
+     * axes with index spaces has already said which of them moved. Nothing but storage this
+     * graph owns is reshaped, whichever form asks.
+     *
+     * @throws std::invalid_argument Under the conditions @ref rederive_intermediate_extents
+     *         lists, for this one tensor.
+     * @versionadded{2.1.0}
+     */
+    void resize_intermediate(TensorId id, std::vector<std::size_t> const &dims, std::string_view producer) {
+        resize_derived_extent(id, dims, producer);
+    }
+
+    /**
      * @brief Every ragged extent table @ref bind_ragged_extents has accepted.
      * @return The tables, in the order they were supplied.
      * @versionadded{2.0.0}

@@ -198,6 +198,7 @@ set(ComputeGraphTests
     test_naf_python.py
     test_fno_python.py
     test_fno_projection_python.py
+    test_fno_composition_python.py
     test_laplace_transform_python.py
     test_laplace_mp2_python.py
     test_fuzz_ergonomics_python.py
