@@ -405,15 +405,16 @@ TEST_CASE("LaplaceTransform - a consumer that is not a direct product is decline
     REQUIRE(mentions(outcome.skips, "has no direct-product consumer"));
 }
 
-TEST_CASE("LaplaceTransform - a numerator observed from outside the region is declined", "[ComputeGraph][Laplace]") {
+TEST_CASE("LaplaceTransform - a numerator observed from outside the region is copied, not declined", "[ComputeGraph][Laplace]") {
     auto const eo = occupied<double>();
     auto const ev = virtuals<double>();
     auto const D  = denominator<double>(eo, ev);
     auto const A  = create_random_tensor<double>("A", nocc, nlnk);
     auto const B  = create_random_tensor<double>("B", nlnk, nvir);
     auto       P  = create_zero_tensor<double>("P", nocc, nvir);
-    // The numerator is the CALLER's tensor rather than graph-owned scratch, so it is
-    // observable and the rewrite may not dissolve it.
+    // The numerator is the CALLER's tensor rather than graph-owned scratch, so the rewrite may
+    // not dissolve it: it takes a copy of the definition instead and leaves the original to
+    // write what the caller asked for.
     auto numerator = create_zero_tensor<double>("numerator", nocc, nvir);
 
     cg::Graph graph("escaping");
@@ -424,9 +425,31 @@ TEST_CASE("LaplaceTransform - a numerator observed from outside the region is de
     }
     graph.annotate_tag(D, cg::passes::LaplaceTransform::denominator_tag({"eps_o", "eps_v"}, "-+"));
 
-    Outcome const outcome = run_pass(graph, eo, ev);
-    REQUIRE(outcome.transformed == 0);
-    REQUIRE(mentions(outcome.skips, "observed from outside the region"));
+    cg::passes::LaplaceTransform laplace;
+    supply_energies(laplace, eo, ev);
+    laplace.set_epsilon(1.0e-8);
+    cg::PassManager pm;
+    pm.add(borrow(laplace));
+    REQUIRE(graph.apply(pm));
+    REQUIRE(laplace.num_transformed() == 1);
+    REQUIRE(laplace.num_numerator_copies() == 1);
+
+    apply_defaults(graph);
+    graph.execute();
+
+    // Both halves: the caller's numerator holds the product it was written to hold, and the
+    // denominator's consumer holds the quadrature's answer for it.
+    double const bound = graph.approximations().at(0).bound;
+    for (std::size_t i = 0; i < nocc; ++i) {
+        for (std::size_t a = 0; a < nvir; ++a) {
+            double exact = 0.0;
+            for (std::size_t k = 0; k < nlnk; ++k) {
+                exact += A(i, k) * B(k, a);
+            }
+            REQUIRE(numerator(i, a) == Catch::Approx(exact));
+            REQUIRE(P(i, a) == Catch::Approx(exact * D(i, a)).epsilon(bound));
+        }
+    }
 }
 
 TEST_CASE("LaplaceTransform - a complex denominator is declined", "[ComputeGraph][Laplace]") {

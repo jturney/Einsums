@@ -336,6 +336,7 @@ std::string LaplaceTransform::error_tensor_name(std::string const &denominator) 
 void LaplaceTransform::reset_stats() {
     RegionRewrite::reset_stats();
     _num_transformed = 0;
+    _num_copied      = 0;
     _last_points     = 0;
     _last_measured   = 0;
     _pending.clear();
@@ -370,8 +371,13 @@ std::vector<std::string> LaplaceTransform::describe() const {
     if (_num_transformed == 0) {
         return {};
     }
-    return {fmt::format("LaplaceTransform: replaced {} energy denominator(s) with a {}-point quadrature, measured relative error {:.3e}",
-                        _num_transformed, _last_points, _last_measured)};
+    std::vector<std::string> out{
+        fmt::format("LaplaceTransform: replaced {} energy denominator(s) with a {}-point quadrature, measured relative error {:.3e}",
+                    _num_transformed, _last_points, _last_measured)};
+    if (_num_copied != 0) {
+        out.push_back(fmt::format("LaplaceTransform: took a copy of {} numerator(s) whose definition something else reads", _num_copied));
+    }
+    return out;
 }
 
 bool LaplaceTransform::applicable(Graph const &graph) const {
@@ -587,7 +593,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
                 continue;
             }
 
-            // The numerator's own statement, which the rewrite dissolves.
+            // The numerator's own statement, which the rewrite dissolves unless something else reads it.
             std::size_t numerator_position = expr.statements.size();
             for (std::size_t earlier = 0; earlier < position; ++earlier) {
                 if (expr.statements[earlier].target == numerator_id) {
@@ -611,46 +617,48 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             }
             if (!is_zero(numerator.target_prefactor)) {
                 decline(denominator_id, name,
-                        "the numerator accumulates rather than being written outright, so dissolving it would drop what else wrote it",
+                        "the numerator accumulates rather than being written outright, so the contraction behind it is not the whole of "
+                        "its value",
                         fmt::format("tensor '{}'", name));
                 continue;
             }
-            if (std::ranges::find(internal, numerator_id) == internal.end()) {
-                decline(denominator_id, name,
-                        "the numerator is observed from outside the region, and a value someone else reads cannot be dissolved",
-                        fmt::format("tensor '{}'", name));
-                continue;
+            // Does anything but this direct product hold the numerator's value: a node outside
+            // the region, or another statement of it? Then the rewrite takes a COPY of the
+            // numerator and the original definition stays for whoever else reads it.
+            //
+            // The copy is a statement the same rewrite would erase again, since what the
+            // quadrature needs is the numerator's FACTORS and not the numerator, so it is made
+            // by keeping the original rather than by declaring a tensor nothing would ever
+            // read. What the emitted graph shows either way is the definition standing and the
+            // product rewritten over the operands behind it.
+            bool copied = std::ranges::find(internal, numerator_id) == internal.end();
+            for (std::size_t other = 0; other < expr.statements.size() && !copied; ++other) {
+                if (other == numerator_position || other == position || expr.statements[other].value == invalid_term) {
+                    continue;
+                }
+                for (TermId const operand : expr.at(expr.statements[other].value).operands) {
+                    copied = copied || expr.at(operand).tensor == numerator_id;
+                }
             }
 
             // Nothing between the two statements may write an operand the rewrite is about to
-            // read later than it was read before, and nothing else may read the numerator.
+            // read later than it was read before. That check is what the copy does NOT lift:
+            // the scalings read those operands where the direct product was, so an operand
+            // rewritten in between would give the quadrature a different value to ride on.
             bool interference = false;
-            for (std::size_t between = 0; between < expr.statements.size(); ++between) {
-                if (between == numerator_position || between == position) {
-                    continue;
-                }
+            for (std::size_t between = numerator_position + 1; between < position; ++between) {
                 ExprStatement const &other = expr.statements[between];
-                if (other.value != invalid_term) {
-                    for (TermId const operand : expr.at(other.value).operands) {
-                        if (expr.at(operand).tensor == numerator_id) {
-                            interference = true;
-                        }
-                    }
-                }
-                if (between > numerator_position && between < position) {
-                    for (TermId const operand : formation.operands) {
-                        if (other.target == expr.at(operand).tensor) {
-                            interference = true;
-                        }
-                    }
-                    if (other.target == denominator_id || other.target == apply.target) {
+                for (TermId const operand : formation.operands) {
+                    if (other.target == expr.at(operand).tensor) {
                         interference = true;
                     }
                 }
+                if (other.target == denominator_id || other.target == apply.target) {
+                    interference = true;
+                }
             }
             if (interference) {
-                decline(denominator_id, name,
-                        "another statement reads the numerator or rewrites an operand between its formation and its use",
+                decline(denominator_id, name, "another statement rewrites an operand of the numerator between its formation and its use",
                         fmt::format("tensor '{}'", name));
                 continue;
             }
@@ -736,6 +744,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             outcome.tolerance           = tolerance;
             outcome.setup_label         = fmt::format("LaplaceTransform({})", name);
             outcome.dissolvable_writers = dissolvable_writers;
+            outcome.copied_numerator    = copied;
             if (options.accept && !options.accept(outcome)) {
                 claimed.push_back(denominator_id);
                 continue;
@@ -948,12 +957,13 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             final_statement.origin_label     = fmt::format("LaplaceTransform: {}[{}] over {} quadrature point(s)", apply.target_name,
                                                            fmt::join(letters_of(target_indices), ","), count);
 
-            // Splice: the numerator's statement goes, the scalings and the contraction take
-            // the direct product's place. Erasing first and inserting after keeps every index
-            // this block still uses valid, which is why the two are not interleaved.
+            // Splice: the scalings and the contraction take the direct product's place, and the
+            // numerator's own statement goes unless something else reads it. Erasing first and
+            // inserting after keeps every index this block still uses valid, which is why the
+            // two are not interleaved.
             std::size_t insert_at = position;
-            expr.statements.erase(expr.statements.begin() + static_cast<std::ptrdiff_t>(numerator_position));
-            if (numerator_position < insert_at) {
+            if (!copied) {
+                expr.statements.erase(expr.statements.begin() + static_cast<std::ptrdiff_t>(numerator_position));
                 --insert_at;
             }
             expr.statements[insert_at] = std::move(final_statement);
@@ -1072,6 +1082,11 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
         changed        = true;
         report(2, fmt::format("replaced '{}' with a {}-point quadrature; measured relative error {:.3e}", outcome.name, outcome.points,
                               outcome.measured));
+        if (outcome.copied_numerator) {
+            ++_num_copied;
+            report(2, fmt::format("took a copy of the numerator '{}' multiplies, so the definition stays for its other readers",
+                                  outcome.name));
+        }
     }
 
     if (changed) {

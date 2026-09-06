@@ -93,6 +93,15 @@ struct RewriteOutcome {
     /// only reader. A caller costing a trial leaves them alone.
     bool dissolvable_writers{false};
 
+    /// Whether the rewrite took a COPY of the numerator rather than the numerator itself.
+    ///
+    /// True when something other than the direct product holds that value, which is a program
+    /// that writes one integral and reads it from several places. The rewrite needs a numerator
+    /// whose value it may change, since it pushes the per-axis exponentials onto that
+    /// numerator's factors, so it copies the definition and leaves the original standing for
+    /// its other readers. A caller counting copies reports this; nothing else depends on it.
+    bool copied_numerator{false};
+
     /// The setup body's label and the callback that captures it, when one was asked for.
     std::string                           setup_label;
     std::function<void(Graph &, Graph &)> emit_setup;

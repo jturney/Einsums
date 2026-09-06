@@ -50,6 +50,16 @@
  * already carried, and the sum over quadrature points is the same contraction the numerator
  * always was.
  *
+ * @par The copy the rewrite takes
+ * The numerator is dissolved, since the exponentials go onto its factors and the value itself
+ * is never formed again. A program that writes one integral and reads it from several places
+ * still has to keep it, and asking the author for a second copy of the integral would be the
+ * pass refusing work rather than declining it. So where anything but this direct product reads
+ * the numerator, the rewrite takes a COPY of its definition, rides on that, and leaves the
+ * original standing for its other readers; @ref num_numerator_copies counts them. The copy is
+ * arithmetic this same rewrite removes, so what the emitted graph holds is the original
+ * definition and the product re-expressed over the operands behind it.
+ *
  * @par What it declines, and why each is a real case
  * - A tag that does not reach the operand. Provenance does not cross a view, so a SLICED
  *   denominator is untagged and there is nothing to recognize; the tally says so rather than
@@ -62,8 +72,9 @@
  * - A consumer that is not a direct product, or whose numerator is not a contraction inside
  *   the region. There is nothing to push the exponentials onto, and a substitution alone is
  *   more arithmetic than what it replaced rather than less.
- * - A numerator the escape analysis says is observed from outside the region. The rewrite
- *   dissolves it, and a value someone else reads cannot be dissolved.
+ * - A statement between the numerator's formation and its use that rewrites one of the
+ *   numerator's operands. The scalings read those operands where the direct product stood, so
+ *   an operand rewritten in between would give the quadrature a different value to ride on.
  * - A complex denominator. A complex energy is not a thing, and the exponential integral that
  *   represents a reciprocal needs a spectral range on the real line.
  * - A tagged tensor some node WRITES. Its quadrature would go stale whenever it changed, and
@@ -250,6 +261,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_transformed") [[nodiscard]] std::size_t num_transformed() const { return _num_transformed; }
 
+    /**
+     * @brief How many numerators the last run took a COPY of rather than dissolving.
+     *
+     * One per rewrite whose numerator something else reads. The rewrite needs a numerator whose
+     * value it may change, so it copies the definition and leaves the original standing for its
+     * other readers; a numerator this product alone holds is dissolved and counts nothing here.
+     *
+     * @return The count.
+     */
+    APIARY_EXPOSE APIARY_GETTER("num_numerator_copies") [[nodiscard]] std::size_t num_numerator_copies() const { return _num_copied; }
+
     /// @brief How many quadrature points the last accepted rewrite used.
     /// @return The count, or zero when nothing was rewritten.
     APIARY_EXPOSE APIARY_GETTER("last_point_count") [[nodiscard]] std::size_t last_point_count() const { return _last_points; }
@@ -321,6 +343,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     std::vector<PendingSetup> _pending;
     std::size_t               _num_transformed{0};
+    std::size_t               _num_copied{0};
     std::size_t               _last_points{0};
     double                    _last_measured{0};
     double                    _epsilon{0}; ///< Zero means "read the option".

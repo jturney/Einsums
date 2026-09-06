@@ -711,6 +711,102 @@ def _written_dims(graph):
     return out
 
 
+def _integrals_formed(graph):
+    """Every contraction in the optimized graph that forms ``(ia|jb)`` from the fitted tensor.
+
+    Named by what it WRITES, since what is under test is how many of them there
+    are: a program that formed the integral once and then rebuilt the same
+    product inside a consumer would read as one definition and two contractions.
+    """
+    ir = json.loads(graph.to_json())
+    names_by_id = {tensor["id"]: tensor["name"] for tensor in ir["tensors"]}
+    written = []
+    for node in ir["nodes"]:
+        if node["kind"] != "Einsum":
+            continue
+        if [names_by_id.get(t) for t in node.get("inputs", [])] != ["B", "B"]:
+            continue
+        written += [names_by_id.get(t) for t in node.get("outputs", [])]
+    return written
+
+
+def _readers_of(graph, name):
+    """The kind of every node in the optimized graph that reads the tensor called @p name."""
+    ir = json.loads(graph.to_json())
+    wanted = {tensor["id"] for tensor in ir["tensors"] if tensor["name"] == name}
+    return sorted(node["kind"] for node in ir["nodes"] if wanted & set(node.get("inputs", [])))
+
+
+def test_the_transform_copies_a_numerator_the_dot_also_reads(water):
+    """One integral, read by the direct product and by the dot, and the pass copies it.
+
+    The rewrite dissolves the numerator it rides on, because the exponentials go
+    onto that numerator's factors and the value is never formed again. A program
+    that writes one integral and reads it twice still has to keep it, so the pass
+    takes a COPY of the definition and leaves the original standing: the dot's
+    operand is the tensor the author wrote, and the transform rewrites the
+    product over the two factors behind it.
+
+    What the copy costs is nothing in the graph that runs. The transform dissolves
+    the copy in the same rewrite that makes it, so the integral is formed exactly
+    once after the transform, and the search then inlines that one definition into
+    the dot and reaches the pairless chain over the density-fitting factor itself,
+    which is zero.
+    """
+    oracle = _opposite_spin_pair_driven(water)
+    energy = einsums.create_zero_tensor("E_one_integral", [1])
+    graph = cg.Graph("sos_one_integral")
+    graph.set_space_registry(_sos_registry())
+
+    shape = _shape(water)
+    B = water["fitted"]
+    K = graph.scratch("K", shape, "float64")
+    T = graph.scratch("T", shape, "float64")
+    denominator = graph.scratch("D", shape, "float64")
+    _build_denominator(graph, water, denominator)
+    with cg.capture(graph):
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
+        la.direct_product(1.0, K, denominator, 0.0, T)
+        la.dot(energy, K, T)
+    graph.annotate_tag(denominator, _tag())
+    cg.annotate(B, ("aux", "occ", "vir"), graph=graph)
+    for tensor in (K, T, denominator):
+        cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
+
+    transform = _transform(water, 1e-8)
+    manager = cg.PassManager()
+    manager.add(transform)
+    assert graph.apply(manager), f"the pass declined: {transform.skip_reasons}"
+    assert transform.num_transformed == 1
+    assert transform.num_numerator_copies == 1, transform.skip_reasons
+
+    # The definition stands, once, and the dot still reads it.
+    assert _integrals_formed(graph) == ["K"], _integrals_formed(graph)
+    assert _readers_of(graph, "K") == ["Dot"], _readers_of(graph, "K")
+
+    search = cg.MultiTermFactorization()
+    search.set_search_enabled(True)
+    after = cg.PassManager()
+    after.add(search)
+    assert graph.apply(after), search.skip_reasons
+    assert _integrals_formed(graph) == [], _integrals_formed(graph)
+
+    four_index = [water["nocc"], water["nvir"], water["nocc"], water["nvir"]]
+    written = _written_dims(graph)
+    assert four_index not in written, f"a tensor over o and v survived the rewrite: {written}"
+    naux, points = water["naux"], transform.last_point_count
+    assert any(sorted(shape_) == sorted([naux, naux, points]) for shape_ in written), (
+        f"the pairless chain was not reached: {written}")
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    value = float(np.asarray(energy)[0])
+    record = graph.approximations()[0]
+    assert abs(value - oracle) <= _SAFETY * record.bound * abs(oracle) + _ROUNDING, (
+        f"the pairless energy {value} is outside the recorded bound against the "
+        f"pair-driven {oracle}")
+
+
 def test_the_opposite_spin_energy_reaches_the_pairless_form(water):
     """No four-index tensor survives, and a Q-by-Q-by-points object appears."""
     oracle = _opposite_spin_pair_driven(water)
@@ -886,25 +982,6 @@ def _split_over_one_integral(water, epsilon):
     manager.run(graph)
     assert transform.num_transformed == 2
     return graph, opposite, same, transform, search
-
-
-def _integrals_formed(graph):
-    """Every contraction in the optimized graph that forms ``(ia|jb)`` from the fitted tensor.
-
-    Named by what it WRITES, since what is under test is how many of them there
-    are: a program that formed the integral once and then rebuilt the same
-    product inside a consumer would read as one definition and two contractions.
-    """
-    ir = json.loads(graph.to_json())
-    names_by_id = {tensor["id"]: tensor["name"] for tensor in ir["tensors"]}
-    written = []
-    for node in ir["nodes"]:
-        if node["kind"] != "Einsum":
-            continue
-        if [names_by_id.get(t) for t in node.get("inputs", [])] != ["B", "B"]:
-            continue
-        written += [names_by_id.get(t) for t in node.get("outputs", [])]
-    return written
 
 
 def test_the_opposite_spin_half_takes_a_copy_of_the_one_integral_the_exchange_half_keeps(water):
