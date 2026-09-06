@@ -502,17 +502,17 @@ def test_the_rewritten_graph_saves_loads_rebinds_and_replays(water, tmp_path):
     graph.annotate_tag(three, _G.ProvenanceTag.make("eri"))
     graph.annotate_tag(amplitude, _G.ProvenanceTag.make("amplitude"))
 
-    # A collocation matrix PER PROVIDER, and that is a caller decision rather than a
-    # duplication. A fitting is captured, so every tensor it reads becomes an interface tensor
-    # bound by name; two providers handed one matrix present two handles over one buffer under
-    # one name, and a manifest that binds by name refuses that. Unifying them is a question for
-    # the alias machinery rather than for this pass, so the grid arrives once per fit.
+    # ONE virtual collocation matrix for both providers, which is what a caller would write.
+    # A fitting is captured, so every tensor it reads becomes an interface tensor bound by name,
+    # and each provider captures its own view object of the matrix into its own setup body: two
+    # handles over one buffer under one name. The manifest used to refuse that, and the caller
+    # had to give each fit a matrix of its own and bind the same numbers twice. A name is a slot
+    # now, the slot folds the handles behind it, and a bind supplies the matrix once.
     X_occ = _tensor("X_occ", water["X_occ"])
     X_vir = _tensor("X_vir", water["X_vir"])
-    X_vir_eri = _tensor("X_vir_eri", water["X_vir"])
     registry = _G.FactorizationRegistry()
     registry.add(_G.ThcFactorization.for_amplitude("amplitude", amplitude, [X_occ, X_vir, X_occ, X_vir], 1e-2, 1e-8))
-    registry.add(_G.ThcFactorization.for_three_index("eri", three, [X_vir_eri, X_vir_eri], 1e-2, 1e-8))
+    registry.add(_G.ThcFactorization.for_three_index("eri", three, [X_vir, X_vir], 1e-2, 1e-8))
     factorization = _G.FactorizationPass(registry)
     manager = cg.PassManager()
     manager.add(cg.ProvenancePropagation())
@@ -531,14 +531,16 @@ def test_the_rewritten_graph_saves_loads_rebinds_and_replays(water, tmp_path):
     assert sorted(r.pass_name for r in loaded.approximations()) == ["ThcAmplitude", "ThcThreeIndex"]
 
     names = set(loaded.manifest_names())
-    assert {"X_occ", "X_vir", "X_vir_eri"} <= names, names
+    assert {"X_occ", "X_vir"} <= names, names
+    # One entry, not two, and the fold survived the file: the loaded graph asks for the virtual
+    # collocation matrix once and both fits are repointed at whatever is bound to it.
+    assert sorted(names).count("X_vir") == 1
     replayed = einsums.create_zero_tensor("R", [water["nocc"], water["nvir"], water["nocc"], water["nvir"]])
     fresh = {
         "B_vv": _tensor("B_vv", water["B_vv"]),
         "t2": _tensor("t2", water["ovov"] / water["denominator"]),
         "X_occ": _tensor("X_occ", water["X_occ"]),
         "X_vir": _tensor("X_vir", water["X_vir"]),
-        "X_vir_eri": _tensor("X_vir_eri", water["X_vir"]),
         "B_vv@fit": _tensor("B_vv", water["B_vv"]),
         "t2@fit": _tensor("t2", water["ovov"] / water["denominator"]),
         "R": replayed,

@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -260,17 +261,50 @@ InterfaceManifest Graph::manifest() {
         return lhs.name != rhs.name ? lhs.name < rhs.name : lhs.id < rhs.id;
     });
 
-    // Binding is by name, so two entries sharing one is an ambiguity a caller
-    // cannot resolve. Report it here rather than at bind time, where only one
-    // of the two would ever be reachable.
-    for (std::size_t i = 1; i < collected.size(); ++i) {
-        if (collected[i].name == collected[i - 1].name) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                    "Graph '{}': two interface tensors are both named '{}' (ids {} and {}); a manifest binds by "
-                                    "name, so give one of them a distinct name",
-                                    _name, collected[i].name, collected[i - 1].id, collected[i].id);
+    // A NAME IS A SLOT, and one slot may stand over more than one handle. Two factorization
+    // providers handed one collocation matrix each capture their own view of it into their own
+    // setup body, and a capture identity is the view OBJECT's address, so the graph ends up
+    // holding two handles over one buffer under one name. Refusing that outright made the
+    // caller hand each provider a matrix of its own and bind the same numbers twice, which is
+    // a workaround for the manifest rather than anything the algebra wanted.
+    //
+    // So entries sharing a name are FOLDED, and the fold is refused where the ambiguity is
+    // real: the handles must agree on the whole shape contract, and they must either name the
+    // same storage or all still be waiting for it. A loaded graph is the second case, since
+    // nothing is allocated until a bind, which is what lets one file's slot be supplied once.
+    // Two different live buffers under one name are still the ambiguity they always were.
+    std::vector<ManifestEntry> folded;
+    folded.reserve(collected.size());
+    for (auto &entry : collected) {
+        if (folded.empty() || folded.back().name != entry.name) {
+            folded.push_back(std::move(entry));
+            continue;
         }
+        ManifestEntry &first = folded.back();
+
+        auto const shape_of = [](ManifestEntry const &e) { return std::tie(e.dtype, e.rank, e.dims, e.dim_symbols, e.spaces, e.scope); };
+        TensorHandle const *lhs         = find_tensor(first.id);
+        TensorHandle const *rhs         = find_tensor(entry.id);
+        bool const          one_storage = lhs != nullptr && rhs != nullptr && lhs->data_ptr == rhs->data_ptr;
+        bool const          none_yet    = lhs != nullptr && rhs != nullptr && lhs->data_ptr == nullptr && rhs->data_ptr == nullptr;
+        if (!(shape_of(first) == shape_of(entry)) || !(one_storage || none_yet)) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "Graph '{}': two interface tensors are both named '{}' (ids {} and {}) and they are not one slot: "
+                                    "they describe different shapes or different storage. A manifest binds by name, so give one of "
+                                    "them a distinct name",
+                                    _name, entry.name, first.id, entry.id);
+        }
+        // A slot read through one handle and written through the other is read and written.
+        if (first.direction != entry.direction) {
+            first.direction = ManifestDirection::InOut;
+        }
+        if (first.aliases_input == 0) {
+            first.aliases_input = entry.aliases_input;
+        }
+        first.also.push_back(entry.id);
+        first.also.insert(first.also.end(), entry.also.begin(), entry.also.end());
     }
+    collected = std::move(folded);
 
     InterfaceManifest contract;
     for (auto const &entry : collected) {

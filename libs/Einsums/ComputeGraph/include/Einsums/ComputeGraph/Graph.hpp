@@ -4493,6 +4493,20 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // symbol is repointed under exactly the public rebind's exact-extent rule.
         bool const relax = solution.extents_changed && !entry.dim_symbols.empty();
         rebind_impl(entry.id, tensor, relax);
+        // Every handle the slot folded, repointed with it. One name is one slot even when more
+        // than one capture identity stands behind it, and a fit whose handle was left pointing
+        // at the tensor the graph was captured with would read last problem's numbers while
+        // everything else read this one's. See ManifestEntry::also for what is folded and what
+        // is still refused.
+        for (TensorId const other : entry.also) {
+            // A folded handle is often one effective-IO minted for a body's buffer and never
+            // gave a slot, exactly as an entry capture never reached; mint it the same way.
+            if (find_slot(other) == nullptr) {
+                get_or_create_slot(tensor, other);
+            }
+            rebind_impl(other, tensor, relax);
+            _interface_names.insert_or_assign(other, entry.name);
+        }
     }
 
     std::string                                _name;

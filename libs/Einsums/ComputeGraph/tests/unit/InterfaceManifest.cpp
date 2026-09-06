@@ -662,3 +662,75 @@ TEST_CASE("Manifest - serializability_report reports a blocker inside a conditio
     }
     REQUIRE(flat.serializability_report().front().subgraph_path.empty());
 }
+
+TEST_CASE("Manifest - one name over two handles of one buffer is one slot a bind supplies once", "[ComputeGraph][Manifest][Bind]") {
+    // A capture identity is the tensor OBJECT's address, so two views of one buffer captured
+    // into two different sub-graphs are two handles, and they carry the tensor's name twice.
+    // Two factorization providers handed one collocation matrix are exactly that, and the
+    // manifest used to refuse the graph, which made the caller give each provider a matrix of
+    // its own and bind the same numbers twice.
+    //
+    // A NAME IS A SLOT. The entries fold, and the bind repoints every handle behind the name.
+    auto M = create_random_tensor<double>("M", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+    auto D = create_zero_tensor<double>("D", 4, 4);
+
+    RuntimeTensorView<double> first{M};
+    RuntimeTensorView<double> second{M};
+    first.set_name("M");
+    second.set_name("M");
+
+    cg::Graph graph("two_handles_one_buffer");
+    {
+        auto                  &body = graph.add_setup("fit_a");
+        cg::CaptureGuard const guard(body);
+        cg::permute("ij <- ij", 0.0, &C, 1.0, first);
+    }
+    {
+        auto                  &body = graph.add_setup("fit_b");
+        cg::CaptureGuard const guard(body);
+        cg::permute("ij <- ij", 0.0, &D, 1.0, second);
+    }
+    graph.topological_sort();
+
+    // Two handles, one name, one buffer.
+    cg::TensorId const id_first  = graph.find_tensor_id_by_ptr(&first);
+    cg::TensorId const id_second = graph.find_tensor_id_by_ptr(&second);
+    REQUIRE(id_first != 0);
+    REQUIRE(id_second != 0);
+    REQUIRE(id_first != id_second);
+
+    auto const  contract = graph.manifest();
+    auto const *entry    = contract.find("M");
+    REQUIRE(entry != nullptr);
+    REQUIRE(entry->also.size() == 1);
+    REQUIRE(std::ranges::count(contract.names(), "M") == 1);
+
+    // The payoff: the caller supplies it ONCE and both fits read what was supplied.
+    auto N = create_random_tensor<double>("N", 4, 4);
+    graph.bind("M", N, "C", C, "D", D);
+    graph.execute();
+    for (std::size_t i = 0; i < 4; ++i) {
+        for (std::size_t j = 0; j < 4; ++j) {
+            REQUIRE(C(i, j) == Catch::Approx(N(i, j)));
+            REQUIRE(D(i, j) == Catch::Approx(N(i, j)));
+        }
+    }
+}
+
+TEST_CASE("Manifest - one name over two different buffers is still the ambiguity it was", "[ComputeGraph][Manifest]") {
+    // The fold is about one slot standing over more than one handle, not about letting a name
+    // mean two things. Two live buffers under one name have no answer a bind could give, so the
+    // refusal stays and it says which two ids it is talking about.
+    auto A = create_random_tensor<double>("shared", 4, 4);
+    auto B = create_random_tensor<double>("shared", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+
+    cg::Graph graph("two_buffers_one_name");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);
+    }
+
+    REQUIRE_THROWS_WITH(graph.manifest(), Catch::Matchers::ContainsSubstring("'shared'"));
+}

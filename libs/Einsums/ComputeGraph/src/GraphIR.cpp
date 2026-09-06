@@ -296,8 +296,18 @@ class Frame {
   public:
     Frame(Graph const &graph, Frame const *parent) : _graph(graph), _parent(parent) {}
 
+    /// Fold one slot's other ids onto the id that represents it. See ManifestEntry::also: a
+    /// name is a slot, and two capture identities over one buffer are one entry, so the file
+    /// holds ONE tensor and every reference to either handle points at it. Without this the
+    /// folded handle would be written as a tensor record of its own, under the same name, and
+    /// the loaded graph would hold the two entries the manifest just refused.
+    void set_canonical(std::unordered_map<TensorId, TensorId> canonical) { _canonical = std::move(canonical); }
+
     /// The dense id for @p id, minting one on first mention.
     std::size_t intern(TensorId id) {
+        if (auto const folded = _canonical.find(id); folded != _canonical.end()) {
+            id = folded->second;
+        }
         auto const it = _dense.find(id);
         if (it != _dense.end()) {
             return it->second;
@@ -322,6 +332,18 @@ class Frame {
                     return dense;
                 }
             }
+            // A handle this frame FOLDED onto another one is not in its order any more, and a
+            // body whose own view of the buffer is the folded identity would otherwise find no
+            // match and be loaded as a buffer of its own, under the same name, which is the two
+            // entries the fold exists to remove.
+            TensorId const local = frame->_graph.find_tensor_id_by_ptr(tensor_ptr);
+            if (local != 0) {
+                if (auto const folded = frame->_canonical.find(local); folded != frame->_canonical.end()) {
+                    if (auto const dense = frame->_dense.find(folded->second); dense != frame->_dense.end()) {
+                        return dense->second;
+                    }
+                }
+            }
         }
         return std::nullopt;
     }
@@ -331,6 +353,7 @@ class Frame {
     Frame const                              *_parent;
     std::unordered_map<TensorId, std::size_t> _dense;
     std::vector<TensorId>                     _order;
+    std::unordered_map<TensorId, TensorId>    _canonical;
 };
 
 /// Refuse, naming the node and the field, which is the shape every save refusal
@@ -819,6 +842,15 @@ Object write_structure(Graph const &graph) {
     InterfaceManifest const contract = manifest_of(graph);
 
     Frame frame(graph, nullptr);
+    {
+        std::unordered_map<TensorId, TensorId> canonical;
+        for (auto const &entry : contract.entries()) {
+            for (TensorId const other : entry.also) {
+                canonical.emplace(other, entry.id);
+            }
+        }
+        frame.set_canonical(std::move(canonical));
+    }
     // The manifest is interned FIRST, in manifest order, so a graph's interface
     // occupies the low dense ids whatever order capture happened to register in.
     for (auto const &entry : contract.entries()) {
