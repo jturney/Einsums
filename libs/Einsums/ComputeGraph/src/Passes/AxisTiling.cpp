@@ -258,19 +258,13 @@ std::function<std::int64_t()> slice_bound(std::shared_ptr<TileCursor> cursor, st
 
 /// The canonical spelling of a contraction's index lists, which is what the capture entry point
 /// parses back into the same lists.
-std::string einsum_spec_of(EinsumDescriptor const &desc) {
-    auto const &spec = desc.indices ? desc.indices->spec : ParsedEinsumSpec{desc.spec.c_indices, desc.spec.a_indices, desc.spec.b_indices};
-    auto        side = [](std::vector<std::string> const &indices, bool conjugated) {
+std::string einsum_spec_text(std::vector<std::string> const &a, std::vector<std::string> const &b, std::vector<std::string> const &c,
+                             bool conj_a, bool conj_b) {
+    auto side = [](std::vector<std::string> const &indices, bool conjugated) {
         std::string const joined = fmt::format("{}", fmt::join(indices, ","));
         return conjugated ? fmt::format("conj({})", joined) : joined;
     };
-    return fmt::format("{} ; {} -> {}", side(spec.a_indices, live_conj_a(desc)), side(spec.b_indices, live_conj_b(desc)),
-                       fmt::format("{}", fmt::join(spec.c_indices, ",")));
-}
-
-/// The same for a permutation.
-std::string permute_spec_of(PermuteDescriptor const &desc) {
-    return fmt::format("{} <- {}", fmt::join(desc.c_indices, ","), fmt::join(desc.a_indices, ","));
+    return fmt::format("{} ; {} -> {}", side(a, conj_a), side(b, conj_b), fmt::format("{}", fmt::join(c, ",")));
 }
 
 /// Unify two label vectors position by position, failing on a genuine disagreement.
@@ -617,6 +611,25 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
             return out;
         }
     }
+
+    // A sliced axis becomes a loop variable and leaves the operand, so an operand every one of
+    // whose axes is sliced has nothing left to be. The emitted body would name a rank-zero
+    // view, which is not an operand any kernel takes.
+    auto survives = [](std::vector<int> const &labels) { return std::ranges::any_of(labels, [](int v) { return v == kFree; }); };
+    for (auto const &[tid, labels] : out.store.tensor) {
+        if (!labels.empty() && !survives(labels)) {
+            out.feasible = false;
+            out.reason   = "every axis of one operand is sliced, so the body would name an operand with no axes left";
+            return out;
+        }
+    }
+    for (auto const &[key, labels] : out.store.use) {
+        if (!labels.empty() && !survives(labels)) {
+            out.feasible = false;
+            out.reason   = "every axis of one operand is sliced, so the body would name an operand with no axes left";
+            return out;
+        }
+    }
     return out;
 }
 
@@ -902,7 +915,65 @@ void zero_accumulator(Graph &graph, TensorHandle const &handle) {
     }
 }
 
-/// Build the loop body: one chunk member at a time, one node per member per captured node.
+/// The index letters a slot keeps once its sliced axes have become loop variables.
+///
+/// A sliced axis is DROPPED from the operand rather than kept as an axis of extent one. Both
+/// spell the same arithmetic, and the drop is what makes the body's contractions the shapes a
+/// kernel recognises: at one occupied pair the four-index contraction is an ordinary matrix
+/// product over the auxiliary index, which is what the hand-written pair loop performs, where a
+/// rank-four contraction with two unit axes would reach the generic algorithm instead.
+std::vector<std::string> surviving(std::vector<std::string> const &letters, std::vector<int> const &labels) {
+    std::vector<std::string> out;
+    out.reserve(letters.size());
+    for (std::size_t p = 0; p < letters.size(); ++p) {
+        if (p < labels.size() && labels[p] != kFree) {
+            continue;
+        }
+        out.push_back(letters[p]);
+    }
+    return out;
+}
+
+/// The transposes a contraction over two matrices and one summed letter needs, when it is one.
+struct GemmShape {
+    bool trans_a{false};
+    bool trans_b{false};
+};
+
+/// Whether a reduced contraction is a plain matrix product, and with which transposes.
+std::optional<GemmShape> gemm_shape(std::vector<std::string> const &c, std::vector<std::string> const &a, std::vector<std::string> const &b,
+                                    std::vector<std::string> const &link) {
+    if (c.size() != 2 || a.size() != 2 || b.size() != 2 || link.size() != 1) {
+        return std::nullopt;
+    }
+    std::string const &k = link[0];
+    GemmShape          shape;
+    if (a[0] == k && a[1] == c[0]) {
+        shape.trans_a = true;
+    } else if (a[1] == k && a[0] == c[0]) {
+        shape.trans_a = false;
+    } else {
+        return std::nullopt;
+    }
+    if (b[0] == k && b[1] == c[1]) {
+        shape.trans_b = false;
+    } else if (b[1] == k && b[0] == c[1]) {
+        shape.trans_b = true;
+    } else {
+        return std::nullopt;
+    }
+    return shape;
+}
+
+/// A prefactor a grouped kernel can take, which is a real number however the tensor is typed.
+std::optional<double> real_prefactor(PrefactorScalar const &value) {
+    if (!is_real_valued(value)) {
+        return std::nullopt;
+    }
+    return as_real<double>(value);
+}
+
+/// Build the loop body: the captured algebra at one slice, a chunk of slices at a time.
 ///
 /// Every operand the body reads or writes is a VIEW. A caller's tensor is viewed at the slice
 /// the member is at, or in full when it carries no sliced axis, so what the body touches is the
@@ -910,6 +981,12 @@ void zero_accumulator(Graph &graph, TensorHandle const &handle) {
 /// sliced axis is re-declared on the body at slice extents and viewed in full, which is what
 /// makes every operand one type and the emission one function rather than a dispatch over which
 /// of them happen to be views.
+///
+/// A chunk of more than one slice is emitted as the GROUPED form of the same body: the members
+/// of a chunk are independent, so one node per family per chunk replaces one node per family per
+/// member wherever a grouped kernel exists for that family. The accumulation is the exception
+/// and is grouped anyway, because a grouped accumulation runs its entries sequentially against a
+/// repeated destination, which is the same summation order the members were captured in.
 template <typename T>
 void emit_body(Graph &parent, Graph &body, Plan const &plan) {
     std::size_t const depth = std::max<std::size_t>(1, plan.depth);
@@ -930,7 +1007,10 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
         std::vector<std::size_t> dims;
         dims.reserve(handle.dims.size());
         for (std::size_t p = 0; p < handle.dims.size(); ++p) {
-            dims.push_back(p < labels.size() && labels[p] != kFree ? 1 : handle.dims[p]);
+            if (p < labels.size() && labels[p] != kFree) {
+                continue;
+            }
+            dims.push_back(handle.dims[p]);
         }
         for (std::size_t member = 0; member < depth; ++member) {
             owned[{tid, member}] = &body.declare_runtime_tensor<T>(fmt::format("{}#{}", handle.name, member), dims, /*intermediate=*/true);
@@ -946,21 +1026,17 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
 
     CaptureGuard const guard(body);
 
-    // ── The slice index, one parameter per bound per axis per member ────────
-    std::vector<std::vector<std::pair<std::string, std::string>>> bounds(depth);
+    // ── The slice index, one parameter per axis per member ──────────────────
+    std::vector<std::vector<std::string>> index_of(depth);
     for (std::size_t member = 0; member < depth; ++member) {
         for (std::size_t k = 0; k < axes; ++k) {
-            auto const lo = fmt::format("axtile:{}:{}:lo", k, member);
-            auto const hi = fmt::format("axtile:{}:{}:hi", k, member);
-            write_param(lo, slice_bound(std::make_shared<TileCursor>(), depth, member, stride[k], plan.extents[k], 0));
-            write_param(hi, slice_bound(std::make_shared<TileCursor>(), depth, member, stride[k], plan.extents[k], 1));
-            // Seed the table with the first iteration's bound, so a view recorded below carries
-            // the SLICE's extent rather than the parent's and the capture-time shape checks see
-            // the program that will run. The writes above overwrite it on every iteration.
-            std::size_t const first = ((member / stride[k]) % plan.extents[k]);
-            body.params_ptr()->set(lo, static_cast<std::int64_t>(first));
-            body.params_ptr()->set(hi, static_cast<std::int64_t>(first) + 1);
-            bounds[member].emplace_back(lo, hi);
+            auto const name = fmt::format("axtile:{}:{}", k, member);
+            write_param(name, slice_bound(std::make_shared<TileCursor>(), depth, member, stride[k], plan.extents[k], 0));
+            // Seed the table with the first iteration's index, so a view recorded below carries
+            // the SLICE's shape rather than the parent's and the capture-time shape checks see
+            // the program that will run. The write above overwrites it on every iteration.
+            body.params_ptr()->set(name, static_cast<std::int64_t>((member / stride[k]) % plan.extents[k]));
+            index_of[member].push_back(name);
         }
     }
 
@@ -972,8 +1048,7 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
         out.reserve(rank);
         for (std::size_t p = 0; p < rank; ++p) {
             if (p < labels.size() && labels[p] != kFree) {
-                auto const &[lo, hi] = bounds[member][static_cast<std::size_t>(labels[p])];
-                out.push_back(ViewAxis::range(BoundExpr(lo), BoundExpr(hi)));
+                out.push_back(ViewAxis::drop(BoundExpr(index_of[member][static_cast<std::size_t>(labels[p])])));
             } else {
                 out.push_back(ViewAxis::full());
             }
@@ -999,72 +1074,143 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
         return *made;
     };
 
-    // ── The algebra, unchanged, one member at a time ────────────────────────
-    for (std::size_t member = 0; member < depth; ++member) {
-        for (auto const &op : plan.ops) {
-            std::vector<RuntimeTensorView<T> *> operand;
-            operand.reserve(op.slots.size());
-            bool accumulating = false;
-            for (std::size_t s = 0; s < op.slots.size(); ++s) {
-                if (s == 0 && op.slots[s].tid == plan.accumulator_id && plan.accumulator_id != 0) {
-                    accumulating = true;
-                    operand.push_back(&view_runtime(*partials[member], std::vector<ViewAxis>(partials[member]->rank(), ViewAxis::full())));
-                    continue;
-                }
-                operand.push_back(&view_of(op.slots[s].tid, op.slots[s].labels, member));
-            }
+    // ── The algebra, one family at a time ───────────────────────────────────
+    bool const chunked = depth > 1;
+    for (auto const &op : plan.ops) {
+        bool const accumulating = plan.accumulator_id != 0 && op.slots[0].tid == plan.accumulator_id;
 
-            switch (op.kind) {
-            case OpKind::Einsum: {
-                auto const &desc = std::get<EinsumDescriptor>(op.op_data);
-                einsum(EinsumFormatString(einsum_spec_of(desc)), as<T>(live_c_prefactor(desc)), operand[0], as<T>(live_ab_prefactor(desc)),
-                       *operand[1], *operand[2]);
+        // [slot][member]. Collected before anything is emitted, because a grouped node takes the
+        // whole chunk at once and an ungrouped one takes it a member at a time.
+        std::vector<std::vector<RuntimeTensorView<T> *>> operand(op.slots.size());
+        for (std::size_t s = 0; s < op.slots.size(); ++s) {
+            operand[s].reserve(depth);
+            for (std::size_t member = 0; member < depth; ++member) {
+                if (s == 0 && accumulating) {
+                    operand[s].push_back(
+                        &view_runtime(*partials[member], std::vector<ViewAxis>(partials[member]->rank(), ViewAxis::full())));
+                } else {
+                    operand[s].push_back(&view_of(op.slots[s].tid, op.slots[s].labels, member));
+                }
+            }
+        }
+        auto sources = [&](std::size_t slot) {
+            std::vector<RuntimeTensorView<T> const *> out;
+            out.reserve(depth);
+            for (auto *view : operand[slot]) {
+                out.push_back(view);
+            }
+            return out;
+        };
+
+        switch (op.kind) {
+        case OpKind::Einsum: {
+            auto const &desc = std::get<EinsumDescriptor>(op.op_data);
+            auto const &spec =
+                desc.indices ? desc.indices->spec : ParsedEinsumSpec{desc.spec.c_indices, desc.spec.a_indices, desc.spec.b_indices};
+            auto const c       = surviving(spec.c_indices, op.slots[0].labels);
+            auto const a       = surviving(spec.a_indices, op.slots[1].labels);
+            auto const b       = surviving(spec.b_indices, op.slots[2].labels);
+            auto const alpha   = real_prefactor(live_ab_prefactor(desc));
+            auto const beta    = real_prefactor(live_c_prefactor(desc));
+            auto const as_gemm = gemm_shape(c, a, b, desc.indices ? desc.indices->link_indices : desc.spec.link_indices);
+            if (chunked && as_gemm.has_value() && alpha.has_value() && beta.has_value() && !live_conj_a(desc) && !live_conj_b(desc)) {
+                grouped_batched_gemm(*alpha, sources(1), sources(2), *beta, operand[0], as_gemm->trans_a, as_gemm->trans_b);
                 break;
             }
-            case OpKind::Permute: {
-                auto const &desc = std::get<PermuteDescriptor>(op.op_data);
-                // A permutation keeps its scalars in the params block where every other kind
-                // does, and its own snapshots are plain complex doubles, so the live block is
-                // read first and the snapshot only stands in for a node that has none.
-                T const alpha = desc.params ? as<T>(desc.params->alpha) : static_cast<T>(desc.alpha.real());
-                T const beta  = desc.params ? as<T>(desc.params->beta) : static_cast<T>(desc.beta.real());
-                permute(PermuteFormatString(permute_spec_of(desc)), beta, operand[0], alpha, *operand[1]);
+            auto const text = einsum_spec_text(a, b, c, live_conj_a(desc), live_conj_b(desc));
+            for (std::size_t member = 0; member < depth; ++member) {
+                einsum(EinsumFormatString(text), as<T>(live_c_prefactor(desc)), operand[0][member], as<T>(live_ab_prefactor(desc)),
+                       *operand[1][member], *operand[2][member]);
+            }
+            break;
+        }
+        case OpKind::Permute: {
+            auto const &desc = std::get<PermuteDescriptor>(op.op_data);
+            // A permutation keeps its scalars in the params block where every other kind does,
+            // and its own snapshots are plain complex doubles, so the live block is read first
+            // and the snapshot only stands in for a node that has none.
+            PrefactorScalar const alpha = desc.params ? desc.params->alpha : PrefactorScalar{desc.alpha};
+            PrefactorScalar const beta  = desc.params ? desc.params->beta : PrefactorScalar{desc.beta};
+            auto const            text  = fmt::format("{} <- {}", fmt::join(surviving(desc.c_indices, op.slots[0].labels), ","),
+                                                      fmt::join(surviving(desc.a_indices, op.slots[1].labels), ","));
+            auto const            re_a  = real_prefactor(alpha);
+            auto const            re_c  = real_prefactor(beta);
+            if (chunked && re_a.has_value() && re_c.has_value()) {
+                grouped_permute(text, operand[0], sources(1), std::vector<double>(depth, *re_c), std::vector<double>(depth, *re_a));
                 break;
             }
-            case OpKind::Axpby: {
-                auto const &desc = std::get<AxpbyDescriptor>(op.op_data);
-                axpby(as<T>(live_alpha(desc)), *operand[1], as<T>(live_beta(desc)), operand[0]);
+            for (std::size_t member = 0; member < depth; ++member) {
+                permute(PermuteFormatString(text), as<T>(beta), operand[0][member], as<T>(alpha), *operand[1][member]);
+            }
+            break;
+        }
+        case OpKind::Axpby: {
+            auto const &desc  = std::get<AxpbyDescriptor>(op.op_data);
+            auto const  alpha = real_prefactor(live_alpha(desc));
+            auto const  beta  = real_prefactor(live_beta(desc));
+            if (chunked && alpha.has_value() && beta.has_value()) {
+                grouped_axpby(std::vector<double>(depth, *alpha), sources(1), std::vector<double>(depth, *beta), operand[0]);
                 break;
             }
-            case OpKind::Scale: {
-                auto const &desc = std::get<ScaleDescriptor>(op.op_data);
-                scale(as<T>(live_factor(desc)), operand[0]);
-                break;
+            for (std::size_t member = 0; member < depth; ++member) {
+                axpby(as<T>(live_alpha(desc)), *operand[1][member], as<T>(live_beta(desc)), operand[0][member]);
             }
-            case OpKind::DirectProduct: {
-                auto const &desc = std::get<ElementwiseBinaryDescriptor>(op.op_data);
-                direct_product(as<T>(live_alpha(desc)), *operand[1], *operand[2], as<T>(live_beta(desc)), operand[0]);
-                break;
+            break;
+        }
+        case OpKind::Scale: {
+            auto const &desc = std::get<ScaleDescriptor>(op.op_data);
+            for (std::size_t member = 0; member < depth; ++member) {
+                scale(as<T>(live_factor(desc)), operand[0][member]);
             }
-            case OpKind::DirectDivision: {
-                auto const &desc = std::get<ElementwiseBinaryDescriptor>(op.op_data);
-                direct_division(as<T>(live_alpha(desc)), *operand[1], *operand[2], as<T>(live_beta(desc)), operand[0]);
-                break;
-            }
-            case OpKind::Dot: {
-                dot_python(operand[0], *operand[1], *operand[2]);
-                if (accumulating) {
-                    // The loop-carried accumulation: the slice's own reduction, added into the
-                    // caller's tensor in the order the members were captured in.
-                    auto const &handle      = parent.tensor(plan.accumulator_id);
-                    auto       &destination = view_of(plan.accumulator_id, std::vector<int>(handle.rank, kFree), 0);
-                    axpby(T{1}, *operand[0], T{1}, &destination);
+            break;
+        }
+        case OpKind::DirectProduct:
+        case OpKind::DirectDivision: {
+            auto const &desc  = std::get<ElementwiseBinaryDescriptor>(op.op_data);
+            T const     alpha = as<T>(live_alpha(desc));
+            T const     beta  = as<T>(live_beta(desc));
+            if (chunked) {
+                if (op.kind == OpKind::DirectProduct) {
+                    grouped_direct_product(std::vector<T>(depth, alpha), sources(1), sources(2), std::vector<T>(depth, beta), operand[0]);
+                } else {
+                    grouped_direct_division(std::vector<T>(depth, alpha), sources(1), sources(2), std::vector<T>(depth, beta), operand[0]);
                 }
                 break;
             }
-            default:
-                break;
+            for (std::size_t member = 0; member < depth; ++member) {
+                if (op.kind == OpKind::DirectProduct) {
+                    direct_product(alpha, *operand[1][member], *operand[2][member], beta, operand[0][member]);
+                } else {
+                    direct_division(alpha, *operand[1][member], *operand[2][member], beta, operand[0][member]);
+                }
             }
+            break;
+        }
+        case OpKind::Dot: {
+            if (chunked) {
+                grouped_dot(operand[0], sources(1), sources(2));
+            } else {
+                for (std::size_t member = 0; member < depth; ++member) {
+                    dot_python(operand[0][member], *operand[1][member], *operand[2][member]);
+                }
+            }
+            if (accumulating) {
+                // The loop-carried accumulation. The destination is repeated, which is what
+                // makes a grouped accumulation run its entries sequentially and sum the chunk
+                // in the order its members were captured in.
+                auto const           &handle = parent.tensor(plan.accumulator_id);
+                RuntimeTensorView<T> &into   = view_of(plan.accumulator_id, std::vector<int>(handle.rank, kFree), 0);
+                if (chunked) {
+                    grouped_axpby(std::vector<double>(depth, 1.0), sources(0), std::vector<double>(depth, 1.0),
+                                  std::vector<RuntimeTensorView<T> *>(depth, &into));
+                } else {
+                    axpby(T{1}, *operand[0][0], T{1}, &into);
+                }
+            }
+            break;
+        }
+        default:
+            break;
         }
     }
 }

@@ -334,9 +334,10 @@ TEST_CASE("AxisTiling emits a loop whose body declares the slice, not the slab",
     auto const *body = loop_body(graph);
     REQUIRE(body != nullptr);
 
-    // Every four-index intermediate is re-declared at ONE pair: the occupied axes are one
-    // element wide and the virtual ones are whole.
-    std::vector<std::size_t> const pair{1, nvir, 1, nvir};
+    // Every four-index intermediate is re-declared at ONE pair. The sliced axes are gone rather
+    // than one element wide: a loop variable is not an axis, and dropping them is what makes the
+    // body's contraction the ordinary matrix product the hand-written pair loop performs.
+    std::vector<std::size_t> const pair{nvir, nvir};
     for (auto const &name : {"K#0", "T#0", "K_again#0", "K_exchange#0", "Kbar#0"}) {
         INFO("body intermediate '" << name << "'");
         CHECK(body_dims(*body, name) == pair);
@@ -411,7 +412,7 @@ TEST_CASE("AxisTiling leaves the storage invariants intact", "[ComputeGraph][Pas
         INFO("body intermediate '" << name << "'");
         CHECK(allocated[name] == 1);
     }
-    CHECK(body_dims(*body, "K#0") == std::vector<std::size_t>{1, nvir, 1, nvir});
+    CHECK(body_dims(*body, "K#0") == std::vector<std::size_t>{nvir, nvir});
 }
 
 TEST_CASE("AxisTiling leaves a pair a permutation exchanges whole, with the reason", "[ComputeGraph][Pass][AxisTiling]") {
@@ -427,4 +428,85 @@ TEST_CASE("AxisTiling leaves a pair a permutation exchanges whole, with the reas
     CHECK(declined_because(*tiling, "a permutation exchanges two of the candidate's sliced axes"));
     CHECK(tiling->axis_letters() == std::vector<std::string>{"a", "b"});
     CHECK(tiling->largest_after() == tiling->depth() * nocc * nocc * sizeof(double));
+}
+
+// ── Chunks ──────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// How many nodes of each kind the loop body holds.
+std::map<cg::OpKind, std::size_t> body_kinds(cg::Graph const &graph) {
+    std::map<cg::OpKind, std::size_t> out;
+    auto const                       *body = loop_body(graph);
+    if (body == nullptr) {
+        return out;
+    }
+    for (auto const &node : body->nodes()) {
+        ++out[node.kind];
+    }
+    return out;
+}
+
+/// Capture, tile at @p cap, optimize, replay, and hand back the energy.
+double tiled_energy(Problem &problem, std::int64_t cap, std::shared_ptr<cg::passes::AxisTiling> *out = nullptr) {
+    cg::Graph graph("mp2 tiled");
+    capture(graph, problem);
+    auto const tiling = decide(graph, cap);
+    if (out != nullptr) {
+        *out = tiling;
+    }
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    problem.energy.data()[0] = 0.0;
+    graph.execute();
+    return problem.energy.data()[0];
+}
+
+} // namespace
+
+TEST_CASE("AxisTiling emits a chunk as one grouped node per family", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem   problem;
+    cg::Graph graph("mp2 chunked");
+    capture(graph, problem);
+
+    // Three pairs would fit; the chunk has to divide the sixteen slices, so the depth is two.
+    auto const tiling = decide(graph, 3 * static_cast<std::int64_t>(pair_bytes));
+    REQUIRE(tiling->depth() == 2);
+    REQUIRE(tiling->num_tiled() == 1);
+
+    auto const kinds = body_kinds(graph);
+    // Two contractions, one permutation, two accumulations, one reduction and the accumulation
+    // into the energy: seven captured nodes, and at a chunk of two each becomes ONE grouped node
+    // rather than two ungrouped ones. Nothing of the ungrouped families survives.
+    CHECK(kinds.at(cg::OpKind::GroupedBatchedGemm) == 2);
+    CHECK(kinds.at(cg::OpKind::GroupedPermute) == 1);
+    CHECK(kinds.at(cg::OpKind::GroupedDirectProduct) == 1);
+    CHECK(kinds.at(cg::OpKind::GroupedDot) == 1);
+    // Two combinations plus the accumulation into the energy.
+    CHECK(kinds.at(cg::OpKind::GroupedAxpby) == 3);
+    CHECK(kinds.count(cg::OpKind::Einsum) == 0);
+    CHECK(kinds.count(cg::OpKind::Dot) == 0);
+
+    // The chunk's members each hold their own pair, so the store scales with the chunk.
+    CHECK(tiling->largest_after() == 2 * pair_bytes);
+    CHECK(body_dims(*loop_body(graph), "K#1") == std::vector<std::size_t>{nvir, nvir});
+}
+
+TEST_CASE("AxisTiling gets the same energy from a chunk of pairs as from one", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem      problem;
+    double const reference = untiled_energy(problem);
+
+    std::shared_ptr<cg::passes::AxisTiling> per_pair;
+    std::shared_ptr<cg::passes::AxisTiling> per_chunk;
+    double const                            one  = tiled_energy(problem, 400, &per_pair);
+    double const                            many = tiled_energy(problem, 3 * static_cast<std::int64_t>(pair_bytes), &per_chunk);
+
+    REQUIRE(per_pair->depth() == 1);
+    REQUIRE(per_chunk->depth() == 2);
+    CHECK(per_chunk->largest_after() == 2 * per_pair->largest_after());
+
+    double const bound = cg::tier_bound(cg::PassTier::ReAssociating, 1e-16) * std::abs(reference) + 1e-14;
+    INFO("per pair " << one << ", per chunk " << many << ", untiled " << reference);
+    CHECK(std::abs(many - one) <= bound);
+    CHECK(std::abs(many - reference) <= bound);
 }
