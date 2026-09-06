@@ -124,13 +124,29 @@ def _denominator(water, name="D"):
 
 
 def _capture(graph, water, denominator, energy):
-    """The full-axis energy, over two copies of the integral.
+    """The full-axis energy, over ONE integral that four statements read."""
+    shape = _shape(water)
+    B = water["fitted"]
+    K = graph.scratch("K", shape, "float64")
+    T = graph.scratch("T", shape, "float64")
+    exchange = graph.scratch("K_exchange", shape, "float64")
+    combination = graph.scratch("Kbar", shape, "float64")
+    with cg.capture(graph):
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
+        la.direct_product(1.0, K, denominator, 0.0, T)
+        einsums.permute("iajb <- ibja", exchange, K)
+        la.axpby(2.0, K, 0.0, combination)
+        la.axpby(-1.0, exchange, 1.0, combination)
+        la.dot(energy, combination, T)
 
-    The transform dissolves the numerator of the direct product it rewrites and declines one
-    anything else reads, so the integral the exchange combination reads has to be a second
-    tensor. That is the transform's constraint and not the search's: the flattener now inlines
-    a definition into each consumer that profits and keeps it for the rest, so a program that
-    does not run the transform reads one integral everywhere.
+
+def _capture_over_two_integrals(graph, water, denominator, energy):
+    """The same energy written with a second copy of the integral, which is also correct.
+
+    Every ground here wrote this until the transform learned to copy the numerator
+    it rides on, and a caller who reads that older advice, or who simply has two
+    integrals in hand, must get the same answer out. That is what the case over
+    this spelling asserts; nothing else uses it.
     """
     shape = _shape(water)
     B = water["fitted"]
@@ -173,12 +189,12 @@ def _exact(water):
     return float(np.asarray(energy)[0])
 
 
-def _laplace_run(water, epsilon):
+def _laplace_run(water, epsilon, capture=None):
     """Capture, transform, execute. Returns the energy and the pass."""
     energy = einsums.create_zero_tensor("E_corr", [1])
     graph = cg.Graph(f"mp2_laplace_{epsilon:g}")
     denominator = _denominator(water)
-    _capture(graph, water, denominator, energy)
+    (capture or _capture)(graph, water, denominator, energy)
     graph.annotate_tag(denominator, _tag())
     transform = _transform(water, epsilon)
     manager = cg.PassManager()
@@ -221,6 +237,32 @@ def test_the_transform_fires_and_lands_inside_its_own_bound(water, epsilon):
     assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING, (
         f"energy error {abs(value - exact):.3e} against a recorded bound of "
         f"{record.bound * abs(exact):.3e}")
+
+
+def test_a_program_that_writes_the_integral_twice_gets_the_same_rewrite(water):
+    """The older spelling is still a correct program and still gets the same answer.
+
+    The transform copies the numerator it rides on, so one integral is what a
+    caller should write and what every ground here writes. A caller who writes
+    two is not wrong: the second definition is the copy the pass would otherwise
+    have taken, so what they must get is the same rewrite at the same point count
+    and the same energy, from a capture that is one node larger and an emitted
+    graph that is not.
+    """
+    one_graph, one_energy, one_pass, one_captured = _laplace_run(water, 1e-6)
+    two_graph, two_energy, two_pass, two_captured = _laplace_run(water, 1e-6, _capture_over_two_integrals)
+
+    assert one_pass.num_numerator_copies == 1
+    assert two_pass.num_numerator_copies == 0, "a private numerator is dissolved, not copied"
+    assert two_captured == one_captured + 1, "the second integral is one captured node"
+    assert two_graph.num_nodes() == one_graph.num_nodes()
+    assert one_pass.last_point_count == two_pass.last_point_count
+
+    for graph in (one_graph, two_graph):
+        graph.apply(cg.default_pass_manager())
+        graph.execute()
+    assert float(np.asarray(two_energy)[0]) == float(np.asarray(one_energy)[0]), (
+        "the two spellings are the same arithmetic and must give the same bits")
 
 
 def test_tightening_the_tolerance_buys_accuracy_with_points(water):
@@ -616,39 +658,36 @@ def _sos_registry():
 
 
 def _sos_capture(graph, water, energy):
-    """``E = sum_iajb (ia|jb)^2 / D``, over all four indices.
+    """``E = sum_iajb (ia|jb)^2 / D``, over all four indices and ONE integral.
 
-    ``K`` is formed twice because the transform dissolves the numerator it
-    rewrites and declines a numerator anything else reads; after the search both
-    copies are gone, so the second one costs nothing in the rewritten graph.
-    The copy is the transform's price rather than the flattener's, which now
-    inlines one definition into each consumer that profits.
+    The direct product and the dot read the same ``K``. The transform takes its
+    own copy of the numerator it rewrites and leaves that definition standing for
+    the dot, and the search then inlines it, so the rewritten graph forms the
+    integral once and then not at all.
     """
     shape = _shape(water)
     B = water["fitted"]
     K = graph.scratch("K", shape, "float64")
     T = graph.scratch("T", shape, "float64")
-    again = graph.scratch("K_again", shape, "float64")
     denominator = graph.scratch("D", shape, "float64")
     _build_denominator(graph, water, denominator)
     with cg.capture(graph):
         einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
         la.direct_product(1.0, K, denominator, 0.0, T)
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, B, B)
-        la.dot(energy, again, T)
+        la.dot(energy, K, T)
     graph.annotate_tag(denominator, _tag())
-    return denominator, (B, K, T, again)
+    return denominator, (B, K, T)
 
 
 def _annotate_sos(graph, water, tensors, denominator):
-    B, K, T, again = tensors
+    B, K, T = tensors
     cg.annotate(B, ("aux", "occ", "vir"), graph=graph)
     # The DENOMINATOR too, and not for symmetry: the transform gives its
     # exponentials the quadrature space and the axis they were built from, all
     # axes or none, so an unannotated denominator leaves the quadrature letter
     # anonymous and one anonymous letter blocks the family's extents for the
     # whole polynomial it appears in.
-    for tensor in (K, T, again, denominator):
+    for tensor in (K, T, denominator):
         cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
 
 
@@ -864,13 +903,13 @@ def test_the_pairless_form_is_declined_where_it_does_not_pay(water):
 # ──────────────────────────────────────────────────────────────────────────
 
 def _full_mp2_run(water, epsilon):
-    """The example's own full-axis MP2, transformed and then searched.
+    """The example's own full-axis MP2 over ONE integral, transformed and then searched.
 
-    Two integrals again, and for the transform's reason: the numerator it
-    dissolves may have no other reader. The three statements that read the
-    second copy are a permute and two scalings, none of which is a product the
-    flattener can inline into, so per-consumer inlining has nothing to offer
-    here and the copy is not something to engineer away.
+    The permute and the two scalings read the same ``K`` the direct product does,
+    so the transform copies the numerator it rides on and the definition stays for
+    them. It stays for good: none of the three is a product the flattener can
+    inline into, so the exchange half keeps the four-index tensor its permute
+    makes and the graph forms the integral exactly once.
     """
     energy = einsums.create_zero_tensor(f"E_full_{epsilon:g}", [1])
     graph = cg.Graph(f"full_mp2_{epsilon:g}")
@@ -880,7 +919,6 @@ def _full_mp2_run(water, epsilon):
     B = water["fitted"]
     K = graph.scratch("K", shape, "float64")
     T = graph.scratch("T", shape, "float64")
-    again = graph.scratch("K_again", shape, "float64")
     exchange = graph.scratch("K_exchange", shape, "float64")
     combination = graph.scratch("Kbar", shape, "float64")
     denominator = graph.scratch("D", shape, "float64")
@@ -888,14 +926,13 @@ def _full_mp2_run(water, epsilon):
     with cg.capture(graph):
         einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
         la.direct_product(1.0, K, denominator, 0.0, T)
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, B, B)
-        einsums.permute("iajb <- ibja", exchange, again)
-        la.axpby(2.0, again, 0.0, combination)
+        einsums.permute("iajb <- ibja", exchange, K)
+        la.axpby(2.0, K, 0.0, combination)
         la.axpby(-1.0, exchange, 1.0, combination)
         la.dot(energy, combination, T)
     graph.annotate_tag(denominator, _tag())
     cg.annotate(B, ("aux", "occ", "vir"), graph=graph)
-    for tensor in (K, T, again, exchange, combination, denominator):
+    for tensor in (K, T, exchange, combination, denominator):
         cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
 
     transform = _transform(water, epsilon)
@@ -938,10 +975,11 @@ def test_full_mp2_keeps_its_exchange_term_and_its_number(water):
 def _split_over_one_integral(water, epsilon):
     """``E = 2 sum K K D - sum K^T K D`` as two reductions over ONE stored integral.
 
-    Each half needs its own numerator, because the transform dissolves the one it
-    rewrites and declines a numerator anything else reads. The integral the two
-    reductions READ is one tensor, which is what the flattener now has to decide
-    about per consumer.
+    Each half is given its own numerator, so that the one thing the two halves
+    share is the integral they READ, which is what the flattener has to decide
+    about per consumer. A half whose numerator the other statements also read
+    would have the transform take a copy of it, and the decision under test here
+    would then be two decisions.
     """
     shape = _shape(water)
     B = water["fitted"]

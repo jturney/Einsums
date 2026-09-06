@@ -130,31 +130,6 @@ def _capture(graph, water, denominator, energy):
         la.dot(energy, combination, T)
 
 
-def _capture_for_the_transform(graph, water, denominator, energy):
-    """The same energy with a PRIVATE numerator, which is what the transform needs.
-
-    ``LaplaceTransform`` dissolves the numerator of the direct product it rewrites and declines
-    one anything else reads, so the integral the exchange combination reads has to be a second
-    tensor. That is the transform's constraint rather than this pass's: the tiling cases above
-    read one integral four times, and only the arm that runs the transform pays for the copy.
-    """
-    shape = _shape(water)
-    B = water["fitted"]
-    K = graph.scratch("K", shape, "float64")
-    T = graph.scratch("T", shape, "float64")
-    again = graph.scratch("K_again", shape, "float64")
-    exchange = graph.scratch("K_exchange", shape, "float64")
-    combination = graph.scratch("Kbar", shape, "float64")
-    with cg.capture(graph):
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
-        la.direct_product(1.0, K, denominator, 0.0, T)
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, B, B)
-        einsums.permute("iajb <- ibja", exchange, again)
-        la.axpby(2.0, again, 0.0, combination)
-        la.axpby(-1.0, exchange, 1.0, combination)
-        la.dot(energy, combination, T)
-
-
 def _tiled(graph, cap):
     """Apply the pass alone at @p cap and hand back what it decided."""
     tiling = _G.AxisTiling()
@@ -257,7 +232,7 @@ def test_after_the_laplace_transform_the_pass_declines(water):
     energy = einsums.create_zero_tensor("E_laplace", [1])
     graph = cg.Graph("mp2 laplace")
     denominator = _denominator(water, "D_tagged")
-    _capture_for_the_transform(graph, water, denominator, energy)
+    _capture(graph, water, denominator, energy)
     graph.annotate_tag(denominator, _G.LaplaceTransform.denominator_tag(
         ["eps_occ", "eps_vir", "eps_occ", "eps_vir"], "+-+-"))
 

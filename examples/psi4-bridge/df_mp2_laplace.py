@@ -320,10 +320,11 @@ def _mp2(problem, denominator, energy, graph=None):
     One spelling for both, because the graph arms are meant to be the eager
     program recorded rather than a second program that agrees with it.
 
-    ``K`` is formed twice on purpose. The transform DISSOLVES the numerator it
-    rewrites, so a numerator anything else reads is declined, and the exchange
-    combination needs its own copy of the integral. At these extents that copy
-    costs 9025 doubles.
+    ``K`` is formed ONCE, and four statements read it. The transform dissolves
+    the numerator it rewrites, so it takes a copy of that numerator's definition
+    and leaves the original standing for the exchange combination; the program
+    that runs holds one integral either way, and the author does not have to know
+    which pass needed what.
     """
     shape = [problem["nocc"], problem["nvir"], problem["nocc"], problem["nvir"]]
     B = problem["fitted"]
@@ -331,15 +332,13 @@ def _mp2(problem, denominator, energy, graph=None):
                else (lambda name: graph.scratch(name, shape, "float64")))
     K = scratch("K")
     T = scratch("T")
-    again = scratch("K_again")
     exchange = scratch("K_exchange")
     combination = scratch("Kbar")
     with contextlib.nullcontext() if graph is None else cg.capture(graph):
         einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
         la.direct_product(1.0, K, denominator, 0.0, T)
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, B, B)
-        einsums.permute("iajb <- ibja", exchange, again)
-        la.axpby(2.0, again, 0.0, combination)
+        einsums.permute("iajb <- ibja", exchange, K)
+        la.axpby(2.0, K, 0.0, combination)
         la.axpby(-1.0, exchange, 1.0, combination)
         la.dot(energy, combination, T)
 
@@ -519,9 +518,10 @@ def _sos_oracle(problem):
 def _sos_capture(graph, problem, energy, left=None, right=None):
     """``E = sum_iajb (ia|jb)^2 / D``, over all four indices.
 
-    ``K`` is formed twice because the transform dissolves the numerator it
-    rewrites. After the search both copies are gone, so the second one costs
-    nothing in the graph that runs.
+    The direct product and the dot read the same ``K``. The transform takes its
+    own copy of the numerator it rewrites and leaves that definition for the dot,
+    and the search then inlines it, so the graph that runs forms the integral once
+    and then not at all.
 
     The denominator is built INSIDE the capture here, and that is the change the
     refusal above no longer forces: an outer sum of the tagged energies followed
@@ -534,7 +534,6 @@ def _sos_capture(graph, problem, energy, left=None, right=None):
     right = problem["fitted"] if right is None else right
     K = graph.scratch("K", shape, "float64")
     T = graph.scratch("T", shape, "float64")
-    again = graph.scratch("K_again", shape, "float64")
     denominator = graph.scratch("D", shape, "float64")
     with cg.capture(graph):
         la.outer_sum(denominator,
@@ -544,10 +543,9 @@ def _sos_capture(graph, problem, energy, left=None, right=None):
         la.element_transform(denominator, "recip")
         einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, left, right)
         la.direct_product(1.0, K, denominator, 0.0, T)
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, left, right)
-        la.dot(energy, again, T)
+        la.dot(energy, K, T)
     graph.annotate_tag(denominator, _TAG)
-    return denominator, (K, T, again)
+    return denominator, (K, T)
 
 
 def _sos_annotate(graph, problem, denominator, tensors, carriers, aux_space):
@@ -932,15 +930,13 @@ def _thc_arm(problem, left, right, epsilon):
     graph = cg.Graph(f"thc mp2 {epsilon}")
     K = graph.scratch("K", shape, "float64")
     T = graph.scratch("T", shape, "float64")
-    again = graph.scratch("K_again", shape, "float64")
     exchange = graph.scratch("K_exchange", shape, "float64")
     combination = graph.scratch("Kbar", shape, "float64")
     with cg.capture(graph):
         einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, L, R)
         la.direct_product(1.0, K, denominator, 0.0, T)
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, L, R)
-        einsums.permute("iajb <- ibja", exchange, again)
-        la.axpby(2.0, again, 0.0, combination)
+        einsums.permute("iajb <- ibja", exchange, K)
+        la.axpby(2.0, K, 0.0, combination)
         la.axpby(-1.0, exchange, 1.0, combination)
         la.dot(energy, combination, T)
 
