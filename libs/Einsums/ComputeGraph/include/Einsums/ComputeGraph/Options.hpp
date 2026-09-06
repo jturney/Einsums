@@ -180,6 +180,24 @@ inline constinit cl::ConfigOption<double> GraphFnoOccupation = cl::config_opt<do
     "states no cutoff of its own. Loosening it shrinks the virtual index and grows the correlation energy the truncation removes",
     "ComputeGraph Passes", 1.0e-5, "OCCUPATION");
 
+/// The largest a single live intermediate may be, in bytes, before ``AxisTiling`` slices the
+/// program so that intermediate is produced and consumed a slice at a time.
+///
+/// A RESOURCE knob rather than a tolerance: nothing here trades accuracy, and the number is a
+/// property of the machine the replay runs on rather than of the program. It is what the axis
+/// choice and the chunk depth are both read off. A program whose largest intermediate already
+/// fits is declined, which is what makes the pass a no-op on the forms that never needed it.
+///
+/// Zero disables the pass, which is the spelling a caller who wants the captured schedule uses.
+/// The default is deliberately large: tiling a program that fits in cache costs kernel
+/// efficiency for memory nobody was short of, so the pass should fire when a caller says the
+/// footprint matters and not because a default guessed that it does.
+inline constinit cl::ConfigOption<std::int64_t> GraphTilingMemoryCap = cl::config_opt<std::int64_t>(
+    "einsums:graph:tiling-memory-cap",
+    "Largest a single live intermediate may be, in bytes, before AxisTiling slices the free axes it is carried over and streams it a "
+    "chunk at a time. A program whose largest intermediate already fits is left alone. Zero disables the pass",
+    "ComputeGraph Passes", std::int64_t{1} << 34, "BYTES");
+
 /// How long a search pass may run, in milliseconds. Zero means unlimited.
 ///
 /// The number is a starting point rather than a measurement, which is what an option is for. What

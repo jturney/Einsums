@@ -9,6 +9,7 @@
 
 #include <Einsums/ComputeGraph.hpp>
 // Not reached through the umbrella header, which does not carry this pass.
+#include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
 #include <Einsums/ComputeGraph/Passes/BasisTruncation.hpp>
 #include <Einsums/ComputeGraph/Passes/FactorizationPass.hpp>
 #include <Einsums/ComputeGraph/Passes/LaplaceTransform.hpp>
@@ -116,6 +117,12 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         // Structural-algebraic because replacing a space changes which quantity every axis over it
         // runs over, and a reload that quietly dropped it would change what the graph computes.
         {"BasisTruncation", cg::PassPhase::StructuralAlgebraic},
+
+        // Outside the pipeline for a different reason from the three above: it is not lossy, it
+        // is a schedule a caller asks for by stating a memory cap. Structural-resource because
+        // what it changes is the node set and it changes it for the machine, so a save keeps the
+        // algebraic form and a load re-derives the loop from whatever cap is in force there.
+        {"AxisTiling", cg::PassPhase::StructuralResource},
     };
     return table;
 }
@@ -171,6 +178,11 @@ std::map<std::string, cg::PassTier> const &expected_tiers() {
         {"FactorizationPass", cg::PassTier::Lossy},
         {"LaplaceTransform", cg::PassTier::Lossy},
         {"BasisTruncation", cg::PassTier::Lossy},
+
+        // Re-associating on one statement only: the per-slice algebra is the captured algebra
+        // operation for operation, and the reduction it turns into an accumulation across
+        // iterations is what adds in a different order.
+        {"AxisTiling", cg::PassTier::ReAssociating}, // legs pending; the accumulation is the whole of it
     };
     return table;
 }
@@ -366,6 +378,10 @@ TEST_CASE("pass tiers - the passes outside the default pipeline are classified t
     cg::passes::BasisTruncation const truncation;
     CHECK(truncation.tier() == cg::PassTier::Lossy);
     CHECK(expected_tiers().at(truncation.name()) == truncation.tier());
+
+    cg::passes::AxisTiling const tiling;
+    CHECK(tiling.tier() == cg::PassTier::ReAssociating);
+    CHECK(expected_tiers().at(tiling.name()) == tiling.tier());
 }
 
 TEST_CASE("pass tiers - an unclassified pass claims the least", "[ComputeGraph][Phases]") {
@@ -424,6 +440,10 @@ TEST_CASE("pass phases - a pass outside the default pipeline is classified too",
     cg::passes::BasisTruncation const truncation;
     CHECK(truncation.phase() == cg::PassPhase::StructuralAlgebraic);
     CHECK(expected_phases().at(truncation.name()) == truncation.phase());
+
+    cg::passes::AxisTiling const tiling;
+    CHECK(tiling.phase() == cg::PassPhase::StructuralResource);
+    CHECK(expected_phases().at(tiling.name()) == tiling.phase());
 }
 
 TEST_CASE("pass phases - the unclassified default is the never-saved one", "[ComputeGraph][Phases]") {

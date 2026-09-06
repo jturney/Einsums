@@ -25,6 +25,7 @@ endfunction()
 
 set(ComputeGraphTests
     Approximation.cpp
+    AxisTiling.cpp
     BisectDriver.cpp
     Blueprints.cpp
     Factorization.cpp
@@ -201,6 +202,7 @@ set(ComputeGraphTests
     test_fno_composition_python.py
     test_laplace_transform_python.py
     test_laplace_mp2_python.py
+    test_axis_tiling_python.py
     test_fuzz_ergonomics_python.py
     test_gemm_views_python.py
     test_gemv_views_python.py

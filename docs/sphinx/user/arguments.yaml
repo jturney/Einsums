@@ -269,6 +269,28 @@
     ``FactorizationPass`` does, knows how many leaves it is about to hand over and takes this as a
     floor rather than a ceiling.
 
+"einsums:graph:tiling-memory-cap":
+  added: "2.1.0"
+  body: |
+    Largest a single live intermediate may be, in bytes, before ``AxisTiling`` rewrites the program
+    as a loop over slices of its free axes.
+
+    This is a resource knob and not a tolerance. Nothing about tiling trades accuracy: the algebra
+    at one slice is the algebra the capture wrote, and the only thing that moves is which axes are
+    loop variables and which are tensor axes. What the pass does owe is the summation order of the
+    reduction it turns into an accumulation across iterations, which is why it declares the
+    re-associating tier.
+
+    The number is read three times. It decides *whether* to tile, since a program whose largest
+    intermediate already fits is declined and left alone. It decides *which* axes, since the pass
+    keeps the candidate set that streams the fewest bytes among those that bring the footprint
+    under the cap. And it decides *how deep*, since the chunk is the largest number of slices whose
+    intermediates still fit.
+
+    Zero disables the pass. The default is deliberately far above any program that needs tiling,
+    because slicing a program that already fits costs kernel efficiency for memory nobody was
+    short of; the pass should fire when a caller states a footprint they have to live inside.
+
 "einsums:graph:thc-epsilon":
   added: "2.0.0"
   body: |
