@@ -1197,3 +1197,123 @@ def test_the_drawn_pairs_record_one_approximation_per_provider():
         assert sorted(r.pass_name for r in graph.approximations()) == ["ThcLeft", "ThcRight"]
         assert np.allclose(got, want, rtol=1e-8, atol=1e-10)
     assert seen > 0, "no drawn pair was ever factorized"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# A truncated auxiliary index
+#
+# ``NaturalAuxiliaryFactorization`` on drawn extents. The tensor is built with a
+# KNOWN rank, so a threshold below the last surviving singular value keeps
+# exactly that many directions and the truncation is exact; anything but the
+# summation order surviving that is a defect. A second arm draws a decaying
+# spectrum instead, where the truncation is genuinely lossy, and checks the
+# property the record is for: the error is under the bound.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class NafProgram(NamedTuple):
+    """One drawn truncation problem: a three-index tensor of a chosen rank."""
+
+    naux: int
+    rank: int
+    rows: int
+    cols: int
+
+
+@st.composite
+def _naf_programs(draw):
+    naux = draw(st.integers(min_value=4, max_value=8))
+    rows = draw(st.integers(min_value=2, max_value=4))
+    cols = draw(st.integers(min_value=2, max_value=4))
+    # Strictly below the auxiliary count, or there is nothing to truncate, and
+    # no larger than the pair space, or the rank is not the rank.
+    top = min(naux - 1, rows * cols)
+    return NafProgram(naux=naux, rank=draw(st.integers(min_value=1, max_value=max(top, 1))),
+                      rows=rows, cols=cols)
+
+
+def _naf_three_index(prog, seed, decaying):
+    """A three-index tensor whose auxiliary spectrum this test controls."""
+    rng = np.random.default_rng(seed)
+    basis, _r = np.linalg.qr(rng.standard_normal((prog.naux, prog.naux)))
+    core = rng.standard_normal((prog.naux, prog.rows * prog.cols))
+    scale = np.zeros(prog.naux)
+    if decaying:
+        scale[:] = 10.0 ** (-np.arange(prog.naux, dtype=float))
+    else:
+        scale[:prog.rank] = 1.0
+    return (basis @ (scale[:, None] * core)).reshape(prog.naux, prog.rows, prog.cols)
+
+
+def _run_naf(prog, seed, threshold, decaying=False):
+    """Contract a tagged three-index tensor with itself and truncate it."""
+    three = np.ascontiguousarray(_naf_three_index(prog, seed, decaying))
+    want = np.einsum("Qmn,Qpq->mnpq", three, three)
+
+    B = einsums.asarray(three)
+    C = einsums.zeros((prog.rows, prog.cols, prog.rows, prog.cols), dtype="float64")
+
+    graph = cg.Graph(_nm("naf"))
+    with cg.capture(graph):
+        einsums.einsum("Q,m,n ; Q,p,q -> m,n,p,q", C, B, B)
+    graph.annotate_tag(B, _G.ProvenanceTag.make("eri"))
+    _G.NaturalAuxiliaryFactorization.register_naf_space(graph, "")
+
+    provider = _G.NaturalAuxiliaryFactorization("eri", B, threshold)
+    registry = _G.FactorizationRegistry()
+    registry.add(provider)
+    factorization = _G.FactorizationPass(registry)
+    pm = cg.PassManager()
+    pm.add(factorization)
+    fired = graph.apply(pm)
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    assert_materialization_invariants(graph, f"auxiliary truncation, {prog!r}")
+    return fired, np.asarray(C), want, graph, factorization, provider
+
+
+@given(prog=_naf_programs())
+@settings(max_examples=sanitizer_examples(30), deadline=None,
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
+def test_an_exact_auxiliary_truncation_keeps_the_answer(prog):
+    """A rank-deficient tensor truncated at its own rank changes nothing.
+
+    The threshold is 1e-6 rather than something smaller, and the reason is a
+    property of the route rather than of this test. The spectrum is read off the
+    eigenvalues of ``B B^T``, which squares the singular values, so a singular
+    value is resolved to about the square root of machine epsilon: below 1e-8 a
+    numerically absent direction and a genuinely small one are indistinguishable.
+    """
+    fired, got, want, _graph, factorization, provider = _run_naf(prog, seed=0, threshold=1e-6)
+    assert fired, f"the truncation declined a drawn problem: {factorization.skip_reasons}"
+    assert factorization.num_factorized == 1
+    assert provider.kept == prog.rank, f"kept {provider.kept} of a rank-{prog.rank} tensor"
+    assert provider.dropped_norm < 1e-6
+    scale = float(np.linalg.norm(np.abs(want))) or 1.0
+    assert float(np.linalg.norm(got - want)) <= 1e-8 * scale
+
+
+def test_a_lossy_auxiliary_truncation_stays_under_its_recorded_bound():
+    """A decaying spectrum, where the truncation genuinely loses something.
+
+    The record's number is the norm of the dropped singular values, which bounds
+    the error in the tensor and therefore in any contraction that reads it once
+    on each side. The property is the ceiling, not the size of the gap.
+    """
+    seen = 0
+    for seed in range(10):
+        rng = np.random.default_rng(seed)
+        prog = NafProgram(naux=int(rng.integers(4, 9)), rank=0,
+                          rows=int(rng.integers(2, 5)), cols=int(rng.integers(2, 5)))
+        prog = prog._replace(rank=min(prog.naux - 1, prog.rows * prog.cols))
+        fired, got, want, graph, _f, provider = _run_naf(prog, seed=seed, threshold=1e-2, decaying=True)
+        if not fired:
+            continue
+        seen += 1
+        assert 0 < provider.kept < prog.naux
+        bound = provider.dropped_norm
+        assert [r.bound for r in graph.approximations()] == [bound]
+        error = float(np.linalg.norm(got - want)) / (float(np.linalg.norm(want)) or 1.0)
+        assert error <= 2.0 * bound + 1e-12, f"error {error:.3e} against a bound of {bound:.3e}"
+    assert seen > 0, "no drawn truncation was ever accepted"

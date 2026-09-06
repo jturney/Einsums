@@ -20,6 +20,7 @@ int register_Einsums_ComputeGraph_options() {
     cl::register_option(option::GraphFactorizationMaxFactors);
     cl::register_option(option::GraphLaplaceEpsilon);
     cl::register_option(option::GraphThcEpsilon);
+    cl::register_option(option::GraphNafThreshold);
     cl::register_option(option::GraphOptimizerBudget);
     cl::register_option(option::GraphProfileGroups);
     cl::register_option(option::GraphVerifyLevels);

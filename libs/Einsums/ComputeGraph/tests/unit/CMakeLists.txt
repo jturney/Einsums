@@ -195,6 +195,7 @@ set(ComputeGraphTests
     test_thc_mp2_python.py
     test_thc_cc_python.py
     test_thc_df_ladder_python.py
+    test_naf_python.py
     test_laplace_transform_python.py
     test_laplace_mp2_python.py
     test_fuzz_ergonomics_python.py

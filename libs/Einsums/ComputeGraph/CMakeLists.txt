@@ -11,6 +11,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Factorization.hpp
     Einsums/ComputeGraph/MetricFitFactorization.hpp
     Einsums/ComputeGraph/ThcFactorization.hpp
+    Einsums/ComputeGraph/NaturalAuxiliaryFactorization.hpp
     Einsums/ComputeGraph/Passes/FactorizationPass.hpp
     Einsums/ComputeGraph/LaplaceQuadrature.hpp
     Einsums/ComputeGraph/Passes/LaplaceTransform.hpp
@@ -103,6 +104,7 @@ set(ComputeGraphSources
     Factorization.cpp
     MetricFitFactorization.cpp
     ThcFactorization.cpp
+    NaturalAuxiliaryFactorization.cpp
     Options.cpp
     EinsumSpec.cpp
     ElementOps.cpp

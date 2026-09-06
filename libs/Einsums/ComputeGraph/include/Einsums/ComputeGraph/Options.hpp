@@ -144,6 +144,25 @@ inline constinit cl::ConfigOption<double> GraphThcEpsilon = cl::config_opt<doubl
     "none of its own",
     "ComputeGraph Passes", 1.0e-4, "EPS");
 
+/// The fraction of the largest singular value below which an auxiliary direction is dropped.
+///
+/// A TOLERANCE in the sense Part 8.3 asks every per-lossy-pass knob to be one, and RELATIVE where
+/// the metric fit's drop threshold is absolute. The two guards run in different places: a metric
+/// fit's is a captured element operation whose policy number is bound when its executor is built,
+/// so a relative cutoff there needs a reduction feeding a value into a guard, while this one runs
+/// in ordinary code at optimize time over eigenvalues held in a local buffer, where comparing
+/// against the largest of them costs nothing.
+///
+/// It reaches the PROVIDER rather than living in a pass, so a graph saved after a truncation means
+/// one thing wherever it is loaded. What the record carries is not this number but the norm of the
+/// singular values it dropped, which is measured rather than claimed.
+inline constinit cl::ConfigOption<double> GraphNafThreshold = cl::config_opt<double>(
+    "einsums:graph:naf-threshold",
+    "Auxiliary directions whose singular value is at or below this fraction of the largest are dropped by a "
+    "NaturalAuxiliaryFactorization, when the caller states no threshold of its own. Loosening it shrinks the auxiliary index and grows the "
+    "dropped norm the approximation record carries",
+    "ComputeGraph Passes", 1.0e-2, "FRACTION");
+
 /// How long a search pass may run, in milliseconds. Zero means unlimited.
 ///
 /// The number is a starting point rather than a measurement, which is what an option is for. What

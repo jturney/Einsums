@@ -292,6 +292,33 @@
     pruning a grid is a setup the caller performs; this option says what the result is asserted
     to be worth and the measured residual says whether the grid delivered it.
 
+"einsums:graph:naf-threshold":
+  added: "2.1.0"
+  body: |
+    Fraction of the largest singular value below which a ``NaturalAuxiliaryFactorization`` drops
+    an auxiliary direction, when the caller states no threshold of its own.
+
+    A *tolerance*, spelled the way every per-lossy-pass knob is, and it reaches the PROVIDER
+    rather than living in a pass, so a graph saved after a truncation means one thing wherever it
+    is loaded. Loosening it shrinks the auxiliary index and grows the error; at water/cc-pVDZ a
+    threshold of ``1e-1`` keeps 39 of 84 auxiliary functions and ``1e-2`` keeps 61.
+
+    RELATIVE, where the drop threshold of a metric fit is absolute, and the difference is where
+    the two guards run. A metric fit's is a captured element operation whose policy number is
+    bound when its executor is built, so a relative cutoff there needs a reduction feeding a value
+    into a guard. This one runs in ordinary code at optimize time over eigenvalues held in a local
+    buffer, where comparing against the largest of them costs nothing.
+
+    What the record carries is not this number. The exact tensor is the one being truncated and
+    the truncation reads it, so the error is measured rather than claimed: the norm of the dropped
+    singular values against the norm of all of them. That number is a bound on the tensor and
+    therefore a loose one on any energy computed from it.
+
+    The spectrum is read off the eigenvalues of the Gram matrix, which are the squares of the
+    singular values, so a singular value is resolved to about the square root of machine epsilon.
+    A threshold below ``1e-8`` is asking the fit to distinguish a numerically absent direction
+    from a genuinely small one, which it cannot.
+
 "einsums:graph:laplace-epsilon":
   added: "2.0.0"
   body: |
