@@ -24,6 +24,7 @@ each side of the decision.
 
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -33,6 +34,8 @@ import einsums
 import einsums._core.graph as _G
 import einsums.graph as cg
 from einsums import linalg as la
+
+from _region_invariants import assert_materialization_invariants
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _FIXTURE = os.path.normpath(
@@ -140,10 +143,17 @@ def _tiled(graph, cap):
 
 
 def _full_axis_graph(water, label="mp2 full axis"):
+    """A graph, its energy, and the denominator it reads.
+
+    The denominator comes back with the rest because the graph holds it by ADDRESS: a caller
+    who lets it fall out of scope leaves the graph pointing at freed storage, and a pass that
+    reads a handle at optimize time finds it there rather than at execute.
+    """
     energy = einsums.create_zero_tensor("E", [1])
     graph = cg.Graph(label)
-    _capture(graph, water, _denominator(water), energy)
-    return graph, energy
+    denominator = _denominator(water)
+    _capture(graph, water, denominator, energy)
+    return graph, energy, denominator
 
 
 def _reason_fragments(tiling):
@@ -157,7 +167,7 @@ def test_the_chosen_axes_are_the_two_occupied_ones(water):
     occupied ones. They are rejected because the exchange permutation exchanges them, so a slice
     of the permuted tensor would need a slice of its source at a pair the body is not at.
     """
-    graph, _ = _full_axis_graph(water)
+    graph, _, _held = _full_axis_graph(water)
     tiling = _tiled(graph, _PAIR_CAP)
 
     assert tiling.axis_letters == ["i", "j"], _reason_fragments(tiling)
@@ -170,7 +180,7 @@ def test_the_chosen_axes_are_the_two_occupied_ones(water):
 def test_the_largest_intermediate_falls_from_the_four_index_tensor_to_one_pair(water):
     """o^2 v^2 becomes v^2, which is the whole of what the pass is for."""
     nocc, nvir = water["nocc"], water["nvir"]
-    graph, _ = _full_axis_graph(water)
+    graph, _, _held = _full_axis_graph(water)
     tiling = _tiled(graph, _PAIR_CAP)
 
     assert tiling.largest_before == nocc * nvir * nocc * nvir * 8
@@ -188,7 +198,7 @@ def test_the_largest_intermediate_falls_from_the_four_index_tensor_to_one_pair(w
 def test_the_cap_decides_and_a_program_that_fits_is_left_alone(water):
     """The decline that makes the pass a no-op on a form that never needed it."""
     nocc, nvir = water["nocc"], water["nvir"]
-    graph, _ = _full_axis_graph(water)
+    graph, _, _held = _full_axis_graph(water)
     tiling = _tiled(graph, nocc * nvir * nocc * nvir * 8)
 
     assert tiling.slice_count == 0
@@ -204,7 +214,7 @@ def test_raising_the_cap_moves_the_decision_from_the_pair_to_the_row(water):
     number of pairs stand in exactly the ratio that makes the two thresholds coincide.
     """
     nocc, nvir = water["nocc"], water["nvir"]
-    graph, _ = _full_axis_graph(water)
+    graph, _, _held = _full_axis_graph(water)
     tiling = _tiled(graph, nocc * nvir * nvir * 8)
 
     assert tiling.axis_letters == ["i"]
@@ -236,7 +246,7 @@ def test_after_the_laplace_transform_the_pass_declines(water):
     manager.add(transform)
     assert graph.apply(manager), f"the transform declined: {transform.skip_reasons}"
 
-    plain, _ = _full_axis_graph(water, "mp2 plain")
+    plain, _, _held = _full_axis_graph(water, "mp2 plain")
     before = _tiled(plain, _PAIR_CAP).largest_before
 
     tiling = _tiled(graph, _PAIR_CAP)
@@ -245,3 +255,99 @@ def test_after_the_laplace_transform_the_pass_declines(water):
     assert tiling.largest_before > before, (
         "the transform is expected to widen the intermediates at this molecule, and the decline "
         "below is about that rather than about the four-index tensor being gone")
+
+
+# ── The rewrite ─────────────────────────────────────────────────────────────
+
+#: The re-associating tier's bound at double precision, which is what the accumulation across
+#: iterations owes: the sum is taken pair by pair rather than over the whole four-index tensor.
+_TIER = 1024.0 * 2.2e-16
+
+
+def _pair_driven_energy(water):
+    """The hand-written pair loop, in numpy, which never forms a four-index tensor.
+
+    This is ``examples/psi4-bridge/df_mp2_graph.py``'s algorithm stated as an oracle: for each
+    occupied pair, one ``v`` by ``v`` integral block, its transpose, the denominator over the
+    virtual pair, and one reduction. Written outside einsums on purpose, so what the tiled
+    graph is compared against is the ALGORITHM rather than another einsums program.
+    """
+    B = np.asarray(water["fitted"])
+    eo = np.asarray(water["occupied_energies"])
+    ev = np.asarray(water["virtual_energies"])
+    total = 0.0
+    for i in range(water["nocc"]):
+        for j in range(water["nocc"]):
+            block = B[:, i, :].T @ B[:, j, :]
+            denominator = 1.0 / (eo[i] + eo[j] - ev[:, None] - ev[None, :])
+            total += float(np.sum((2.0 * block - block.T) * (block * denominator)))
+    return total
+
+
+def _replayed(water, cap):
+    """Capture, tile at @p cap, optimize, execute. Returns the energy and the graph."""
+    energy = einsums.create_zero_tensor("E", [1])
+    graph = cg.Graph("mp2 tiled")
+    denominator = _denominator(water)
+    _capture(graph, water, denominator, energy)
+    tiling = _tiled(graph, cap)
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    return float(np.asarray(energy)[0]), graph, tiling, denominator
+
+
+def _untiled(water):
+    energy = einsums.create_zero_tensor("E_untiled", [1])
+    graph = cg.Graph("mp2 untiled")
+    denominator = _denominator(water)
+    _capture(graph, water, denominator, energy)
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    return float(np.asarray(energy)[0])
+
+
+def test_the_tiled_loop_replays_the_untiled_energy(water):
+    """The number, against the program with no tiling on it and against the pair loop."""
+    reference = _untiled(water)
+    energy, _, tiling, _held = _replayed(water, _PAIR_CAP)
+
+    assert tiling.num_tiled == 1
+    assert energy == pytest.approx(reference, rel=_TIER, abs=1e-13)
+    assert energy == pytest.approx(_pair_driven_energy(water), rel=1e-12, abs=1e-13)
+    assert energy == pytest.approx(water["reference"], abs=1e-9)
+
+
+def test_the_rewritten_program_is_one_loop_and_the_zeroing_of_its_accumulation(water):
+    """The node set, so the assertion is about what was emitted rather than that it ran."""
+    energy = einsums.create_zero_tensor("E_shape", [1])
+    graph = cg.Graph("mp2 tiled")
+    denominator = _denominator(water)
+    _capture(graph, water, denominator, energy)
+    captured = graph.num_nodes()
+    tiling = _tiled(graph, _PAIR_CAP)
+
+    assert captured == 7
+    assert tiling.num_tiled == 1
+    assert graph.num_nodes() == 2
+    assert [n["kind"] for n in json.loads(graph.to_json())["nodes"]] == ["Scale", "Loop"]
+
+
+def test_the_tiled_graph_keeps_the_storage_invariants(water):
+    """No buffer allocated for a tensor the rewrite dissolved, and none allocated twice."""
+    _, graph, _, _held = _replayed(water, _PAIR_CAP)
+    assert_materialization_invariants(graph, "axis tiling")
+
+
+def test_a_replay_restarts_the_sweep_rather_than_continuing_it(water):
+    """The slice index is a cursor, so the second replay has to begin at the first pair again."""
+    energy = einsums.create_zero_tensor("E_replay", [1])
+    graph = cg.Graph("mp2 tiled")
+    denominator = _denominator(water)
+    _capture(graph, water, denominator, energy)
+    _tiled(graph, _PAIR_CAP)
+    graph.apply(cg.default_pass_manager())
+
+    graph.execute()
+    first = float(np.asarray(energy)[0])
+    graph.execute()
+    assert float(np.asarray(energy)[0]) == pytest.approx(first, rel=1e-14)

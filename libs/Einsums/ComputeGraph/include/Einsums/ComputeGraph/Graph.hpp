@@ -2175,6 +2175,24 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     Graph &add_loop(std::string label, size_t max_iterations, PredExpr condition);
 
     /**
+     * @brief Add a loop node at a chosen position rather than at the end.
+     *
+     * @param[in] label Human-readable label for profiling and diagnostics.
+     * @param[in] max_iterations Maximum number of iterations (safety limit).
+     * @param[in] condition Evaluated after each iteration: true continues.
+     * @param[in] position Index in @ref nodes to splice at; clamped to the node count.
+     * @return Reference to the loop body Graph.
+     *
+     * What @ref add_loop is, with the placement made explicit, and the same argument
+     * @ref add_setup_at makes: a CAPTURING caller always wants the end, because program order is
+     * the order they wrote things in, while a PASS that wraps a run of existing nodes in a loop
+     * wants the position that run occupied. Appending and then moving would be a second way of
+     * doing what @ref insert_node_groups already knows how to do.
+     * @versionadded{2.1.0}
+     */
+    Graph &add_loop_at(std::string label, size_t max_iterations, PredExpr condition, std::size_t position);
+
+    /**
      * @brief Add a loop node with lambda-captured body.
      *
      * The body_fn lambda is called during graph construction to capture

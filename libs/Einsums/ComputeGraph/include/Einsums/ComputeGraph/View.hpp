@@ -433,6 +433,23 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
 
     auto const parent_axis = [&perm_ref](size_t i) -> size_t { return perm_ref.empty() ? i : perm_ref[i]; };
 
+    // A bound that is KNOWN at capture, which is a literal, or a named parameter the table
+    // already holds a value for. The second arm is what lets a pass emit a parametric slice
+    // whose extent the capture-time validation can still check: the pass seeds the parameter
+    // with the first iteration's value, and the placeholder below then carries the slice's real
+    // extent rather than the parent's. A CALLBACK is deliberately not resolved, because calling
+    // one is allowed to advance the state it reads from and capture is not an iteration.
+    auto const params_at_capture = ctx.params_ptr();
+    auto const known_bound       = [&params_at_capture](BoundExpr const &bound) -> std::optional<std::int64_t> {
+        if (bound.is_const()) {
+            return bound.const_value();
+        }
+        if (bound.is_param() && params_at_capture && params_at_capture->contains(bound.param_name())) {
+            return params_at_capture->get(bound.param_name());
+        }
+        return std::nullopt;
+    };
+
     // Placeholder: build a "full parent" view (permuted and/or with dropped
     // axes removed) so the holder's address is valid before the first
     // execute() runs and the registered handle below sees the correct
@@ -445,8 +462,12 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     // execute and fall back to the parent dim.
     auto const placeholder_dim = [&](size_t i, size_t p) -> size_t {
         auto const &ax = axes_ref[i];
-        if (ax.kind == ViewAxis::Kind::Range && ax.lo.is_const() && ax.hi.is_const())
-            return static_cast<size_t>(ax.hi.const_value() - ax.lo.const_value());
+        if (ax.kind == ViewAxis::Kind::Range) {
+            auto const lo = known_bound(ax.lo);
+            auto const hi = known_bound(ax.hi);
+            if (lo.has_value() && hi.has_value() && *hi >= *lo)
+                return static_cast<size_t>(*hi - *lo);
+        }
         return parent.dim(p);
     };
     // Also apply the constant slice/drop offset to the placeholder data
@@ -462,8 +483,10 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     for (size_t i = 0; i < rank; ++i) {
         auto const  &ax = axes_ref[i];
         size_t const p  = parent_axis(i);
-        if (ax.kind != ViewAxis::Kind::Full && ax.lo.is_const())
-            ph_offset += ax.lo.const_value() * static_cast<std::ptrdiff_t>(parent.stride(p));
+        if (ax.kind != ViewAxis::Kind::Full) {
+            if (auto const lo = known_bound(ax.lo); lo.has_value())
+                ph_offset += *lo * static_cast<std::ptrdiff_t>(parent.stride(p));
+        }
         if (ax.kind == ViewAxis::Kind::Drop)
             continue; // dropped axes do not appear in the result
         parent_dims.push_back(placeholder_dim(i, p));

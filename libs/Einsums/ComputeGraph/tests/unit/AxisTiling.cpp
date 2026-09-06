@@ -21,7 +21,7 @@
 // Not reached through the umbrella header, which does not carry this pass.
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
-#include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -49,11 +49,24 @@ constexpr std::size_t pair_bytes = nvir * nvir * sizeof(double);
 /// Bytes one occupied ROW of it costs, which is what slicing a single axis leaves.
 constexpr std::size_t row_bytes = nocc * nvir * nvir * sizeof(double);
 
+/// A reproducible filling, so two arms of one comparison see identical inputs.
+RuntimeTensor<double> filled(std::string name, std::vector<std::size_t> dims, unsigned seed) {
+    RuntimeTensor<double> out(std::move(name), std::move(dims));
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        seed          = (seed * 1103515245U) + 12345U;
+        out.data()[i] = (static_cast<double>((seed >> 8U) % 2048U) / 1024.0) - 1.0;
+    }
+    return out;
+}
+
 /// The buffers the caller owns, kept alive for as long as the graph that reads them.
+///
+/// Rank-erased, because the emitted body names its operands' static types and a rank-erased
+/// operand is the one it can name. A statically ranked capture is declined with that reason.
 struct Problem {
-    Tensor<double, 3> fitted{create_random_tensor<double>("B", naux, nocc, nvir)};
-    Tensor<double, 4> denominator{create_random_tensor<double>("D", nocc, nvir, nocc, nvir)};
-    Tensor<double, 1> energy{"E", 1};
+    RuntimeTensor<double> fitted{filled("B", {naux, nocc, nvir}, 7U)};
+    RuntimeTensor<double> denominator{filled("D", {nocc, nvir, nocc, nvir}, 19U)};
+    RuntimeTensor<double> energy{"E", std::vector<std::size_t>{1}};
 };
 
 /// E = sum_iajb (2 K[i,a,j,b] - K[i,b,j,a]) K[i,a,j,b] D[i,a,j,b], with K = sum_Q B B.
@@ -62,11 +75,12 @@ struct Problem {
 /// exchange combination needs its own copy. Everything here is a graph-owned intermediate over
 /// all four indices, which is what makes the program the one that needs tiling.
 void capture(cg::Graph &graph, Problem &problem) {
-    auto &integral    = graph.scratch<double, 4>("K", nocc, nvir, nocc, nvir);
-    auto &amplitude   = graph.scratch<double, 4>("T", nocc, nvir, nocc, nvir);
-    auto &again       = graph.scratch<double, 4>("K_again", nocc, nvir, nocc, nvir);
-    auto &exchange    = graph.scratch<double, 4>("K_exchange", nocc, nvir, nocc, nvir);
-    auto &combination = graph.scratch<double, 4>("Kbar", nocc, nvir, nocc, nvir);
+    std::vector<std::size_t> const shape{nocc, nvir, nocc, nvir};
+    auto                          &integral    = graph.scratch_runtime<double>("K", shape);
+    auto                          &amplitude   = graph.scratch_runtime<double>("T", shape);
+    auto                          &again       = graph.scratch_runtime<double>("K_again", shape);
+    auto                          &exchange    = graph.scratch_runtime<double>("K_exchange", shape);
+    auto                          &combination = graph.scratch_runtime<double>("Kbar", shape);
 
     cg::CaptureGuard const guard(graph);
     cg::einsum("Q,i,a ; Q,j,b -> i,a,j,b", &integral, problem.fitted, problem.fitted);
@@ -87,14 +101,39 @@ void capture(cg::Graph &graph, Problem &problem) {
 /// above cannot exercise, because there the virtual pair is rejected before any size is looked
 /// at.
 void capture_without_exchange(cg::Graph &graph, Problem &problem) {
-    auto &integral    = graph.scratch<double, 4>("K", nocc, nvir, nocc, nvir);
-    auto &amplitude   = graph.scratch<double, 4>("T", nocc, nvir, nocc, nvir);
-    auto &combination = graph.scratch<double, 4>("Kbar", nocc, nvir, nocc, nvir);
+    std::vector<std::size_t> const shape{nocc, nvir, nocc, nvir};
+    auto                          &integral    = graph.scratch_runtime<double>("K", shape);
+    auto                          &amplitude   = graph.scratch_runtime<double>("T", shape);
+    auto                          &combination = graph.scratch_runtime<double>("Kbar", shape);
 
     cg::CaptureGuard const guard(graph);
     cg::einsum("Q,i,a ; Q,j,b -> i,a,j,b", &integral, problem.fitted, problem.fitted);
     cg::direct_product(1.0, integral, problem.denominator, 0.0, &amplitude);
     cg::axpby(2.0, integral, 0.0, &combination);
+    cg::dot_python(&problem.energy, combination, amplitude);
+}
+
+/// The four-index energy whose exchange term permutes the OCCUPIED pair rather than the virtual
+/// one.
+///
+/// Not a physical program: it is the shape the symmetry-partner sentence of the design is about.
+/// At a fixed pair the body holds the ``(i,j)`` slab, and this exchange wants the ``(j,i)`` one,
+/// which the body is not at. So the occupied pair stops being a candidate and the pass says why.
+void capture_with_occupied_exchange(cg::Graph &graph, Problem &problem) {
+    std::vector<std::size_t> const shape{nocc, nvir, nocc, nvir};
+    auto                          &integral    = graph.scratch_runtime<double>("K", shape);
+    auto                          &amplitude   = graph.scratch_runtime<double>("T", shape);
+    auto                          &again       = graph.scratch_runtime<double>("K_again", shape);
+    auto                          &exchange    = graph.scratch_runtime<double>("K_exchange", shape);
+    auto                          &combination = graph.scratch_runtime<double>("Kbar", shape);
+
+    cg::CaptureGuard const guard(graph);
+    cg::einsum("Q,i,a ; Q,j,b -> i,a,j,b", &integral, problem.fitted, problem.fitted);
+    cg::direct_product(1.0, integral, problem.denominator, 0.0, &amplitude);
+    cg::einsum("Q,i,a ; Q,j,b -> i,a,j,b", &again, problem.fitted, problem.fitted);
+    cg::permute("i,a,j,b <- j,a,i,b", &exchange, again);
+    cg::axpby(2.0, again, 0.0, &combination);
+    cg::axpby(-1.0, exchange, 1.0, &combination);
     cg::dot_python(&problem.energy, combination, amplitude);
 }
 
@@ -214,4 +253,178 @@ TEST_CASE("AxisTiling reads the cap the caller states over the option", "[Comput
     CHECK(tiling.memory_cap() == config::get(option::GraphTilingMemoryCap));
     tiling.set_memory_cap(4096);
     CHECK(tiling.memory_cap() == 4096);
+}
+
+// ── The rewrite ─────────────────────────────────────────────────────────────
+
+namespace {
+
+/// The energy the program computes with no tiling on it, which every tiled arm is held to.
+double untiled_energy(Problem &problem) {
+    cg::Graph graph("mp2 untiled");
+    capture(graph, problem);
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    graph.execute();
+    return problem.energy.data()[0];
+}
+
+/// The loop node the rewrite emitted, or nothing when it emitted none.
+cg::Graph const *loop_body(cg::Graph const &graph) {
+    for (auto const &node : graph.nodes()) {
+        if (auto const *loop = std::get_if<cg::LoopDescriptor>(&node.op_data); loop != nullptr && loop->body) {
+            return loop->body.get();
+        }
+    }
+    return nullptr;
+}
+
+/// A body-declared tensor's dims, by name.
+std::vector<std::size_t> body_dims(cg::Graph const &body, std::string_view name) {
+    for (auto const &[id, handle] : body.tensors_map()) {
+        if (handle.name == name) {
+            return handle.dims;
+        }
+    }
+    return {};
+}
+
+} // namespace
+
+TEST_CASE("AxisTiling replays the same energy from the loop it emits", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem      problem;
+    double const reference = untiled_energy(problem);
+
+    cg::Graph graph("mp2 tiled");
+    capture(graph, problem);
+    auto const tiling = decide(graph, 400);
+    REQUIRE(tiling->num_tiled() == 1);
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+    problem.energy.data()[0] = 0.0;
+    graph.execute();
+
+    // Re-associating: the reduction is summed pair by pair rather than over the whole
+    // four-index tensor, so the two agree to the tier's bound and not to the bit.
+    double const tiled = problem.energy.data()[0];
+    INFO("untiled " << reference << " against tiled " << tiled);
+    CHECK(std::abs(tiled - reference) <= cg::tier_bound(cg::PassTier::ReAssociating, 1e-16) * std::abs(reference) + 1e-14);
+    CHECK(tiled != 0.0);
+
+    // Replays restart the sweep rather than continuing it.
+    problem.energy.data()[0] = 0.0;
+    graph.execute();
+    CHECK(problem.energy.data()[0] == Catch::Approx(tiled));
+}
+
+TEST_CASE("AxisTiling emits a loop whose body declares the slice, not the slab", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem   problem;
+    cg::Graph graph("mp2 tiled");
+    capture(graph, problem);
+    auto const tiling = decide(graph, 400);
+    REQUIRE(tiling->num_tiled() == 1);
+
+    // The parent holds the zeroing of the accumulation and the loop, and nothing of the seven
+    // nodes the region was.
+    REQUIRE(graph.num_nodes() == 2);
+    CHECK(graph.nodes()[0].kind == cg::OpKind::Scale);
+    CHECK(graph.nodes()[1].kind == cg::OpKind::Loop);
+
+    auto const *body = loop_body(graph);
+    REQUIRE(body != nullptr);
+
+    // Every four-index intermediate is re-declared at ONE pair: the occupied axes are one
+    // element wide and the virtual ones are whole.
+    std::vector<std::size_t> const pair{1, nvir, 1, nvir};
+    for (auto const &name : {"K#0", "T#0", "K_again#0", "K_exchange#0", "Kbar#0"}) {
+        INFO("body intermediate '" << name << "'");
+        CHECK(body_dims(*body, name) == pair);
+    }
+    // The accumulation's partial is one element, and the caller's energy is not re-declared.
+    CHECK(body_dims(*body, "axtile_partial#0") == std::vector<std::size_t>{1});
+
+    // A slice of a caller's tensor is a VIEW of the caller's buffer, never a copy: every View
+    // node in the body names a parent, and the integral's views name the caller's integral.
+    std::size_t integral_views = 0;
+    for (auto const &node : body->nodes()) {
+        if (node.kind != cg::OpKind::View) {
+            continue;
+        }
+        auto const *desc = std::get_if<cg::ViewDescriptor>(&node.op_data);
+        REQUIRE(desc != nullptr);
+        auto const *parent = body->find_tensor(desc->parent_id);
+        REQUIRE(parent != nullptr);
+        if (parent->name == "B") {
+            ++integral_views;
+            CHECK(parent->data_ptr == problem.fitted.data());
+        }
+    }
+    // Two: one per operand of the contraction, at two different occupied indices.
+    CHECK(integral_views == 2);
+}
+
+TEST_CASE("AxisTiling leaves the storage invariants intact", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem   problem;
+    cg::Graph graph("mp2 tiled");
+    capture(graph, problem);
+    REQUIRE(decide(graph, 400)->num_tiled() == 1);
+
+    auto manager = cg::PassManager::create_default();
+    graph.apply(manager);
+
+    CHECK(cg::passes::duplicate_materializations(graph).empty());
+    CHECK(cg::passes::stranded_materializations(graph).empty());
+
+    // A body-declared intermediate's lifecycle is HOISTED to the parent, ahead of the loop,
+    // which is where the placement rules put a loop body's workspace: a buffer the body reuses
+    // on every iteration is allocated once. A setup body's workspace is the case that stays
+    // inside, and this is not one.
+    auto const *body = loop_body(graph);
+    REQUIRE(body != nullptr);
+    for (auto const &node : body->nodes()) {
+        INFO("body node '" << node.label << "'");
+        CHECK(node.kind != cg::OpKind::Materialize);
+    }
+
+    std::map<std::string, std::size_t> allocated;
+    std::size_t                        loop_position = graph.num_nodes();
+    for (std::size_t i = 0; i < graph.num_nodes(); ++i) {
+        auto const &node = graph.nodes()[i];
+        if (node.kind == cg::OpKind::Loop) {
+            loop_position = i;
+        }
+        if (node.kind != cg::OpKind::Materialize) {
+            continue;
+        }
+        for (auto const tid : node.outputs) {
+            auto const *handle = graph.find_tensor(tid);
+            if (handle != nullptr && handle->name.find('#') != std::string::npos) {
+                INFO("'" << handle->name << "' is materialized behind the loop it feeds");
+                CHECK(i < loop_position);
+                ++allocated[handle->name];
+            }
+        }
+    }
+    // One lifecycle each, and the buffer that is allocated is the PAIR rather than the slab.
+    for (auto const &name : {"K#0", "T#0", "K_again#0", "K_exchange#0", "Kbar#0", "axtile_partial#0"}) {
+        INFO("body intermediate '" << name << "'");
+        CHECK(allocated[name] == 1);
+    }
+    CHECK(body_dims(*body, "K#0") == std::vector<std::size_t>{1, nvir, 1, nvir});
+}
+
+TEST_CASE("AxisTiling leaves a pair a permutation exchanges whole, with the reason", "[ComputeGraph][Pass][AxisTiling]") {
+    Problem   problem;
+    cg::Graph graph("mp2 occupied exchange");
+    capture_with_occupied_exchange(graph, problem);
+
+    auto const tiling = decide(graph, 400);
+
+    // The occupied pair is gone from the decision, and the tally says what took it out. The
+    // pass then takes the virtual pair, which this program's permutation does leave in place:
+    // a partner contraction is not emitted and the candidate is simply not offered.
+    CHECK(declined_because(*tiling, "a permutation exchanges two of the candidate's sliced axes"));
+    CHECK(tiling->axis_letters() == std::vector<std::string>{"a", "b"});
+    CHECK(tiling->largest_after() == tiling->depth() * nocc * nocc * sizeof(double));
 }

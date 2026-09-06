@@ -271,6 +271,14 @@ struct TensorHandle {
     bool                    is_runtime{false}; ///< True if tensor_ptr points at a GeneralRuntimeTensor<T> (passes that cast tensor_ptr to a
                             ///< runtime-tensor type MUST gate on this: statically-typed Tensor<T, Rank> captures pass through
                             ///< the same handles, and a blind cast is type confusion)
+    /// True when @ref tensor_ptr points at a @c RuntimeTensorView<T> rather than at an owning
+    /// @c GeneralRuntimeTensor<T>.
+    ///
+    /// @ref is_runtime says the object is rank-erased and nothing more, and the two rank-erased
+    /// types have different layouts, so a pass that has to name the STATIC type in order to call
+    /// a templated capture entry point needs this second bit as well. Reading a tensor's data
+    /// needs neither: @ref impl_fn answers that for both without asking.
+    bool is_tensor_view{false};
     bool is_distributed{false}; ///< True if this tensor is distributed across ranks
     bool is_replicated{true};   ///< True if distributed tensor is replicated on all ranks
 
@@ -729,6 +737,7 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
     using CleanTensorEarly = std::remove_cvref_t<TensorType>;
     h.id                   = id;
     h.is_runtime           = std::is_base_of_v<tensor_base::RuntimeTensorNoType, CleanTensorEarly>;
+    h.is_tensor_view       = std::is_base_of_v<tensor_base::RuntimeTensorViewNoType, CleanTensorEarly>;
     h.name                 = tensor.name();
     h.rank                 = detail::tensor_rank(tensor);
     h.element_size         = sizeof(typename std::remove_cvref_t<TensorType>::ValueType);

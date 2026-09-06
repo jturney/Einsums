@@ -2853,6 +2853,10 @@ Graph &Graph::add_loop(std::string label, size_t max_iterations, std::function<b
 }
 
 Graph &Graph::add_loop(std::string label, size_t max_iterations, PredExpr condition) {
+    return add_loop_at(std::move(label), max_iterations, std::move(condition), _nodes.size());
+}
+
+Graph &Graph::add_loop_at(std::string label, size_t max_iterations, PredExpr condition, std::size_t position) {
     auto body_graph = std::make_shared<Graph>(label + "/body");
 
     LoopDescriptor desc;
@@ -2871,8 +2875,13 @@ Graph &Graph::add_loop(std::string label, size_t max_iterations, PredExpr condit
     node.label   = std::move(label);
     node.execute = std::move(executor);
     node.op_data = std::move(op_data);
+    // Through insert_node_groups rather than add_node, which is what assigns an id when a
+    // caller appends: the splice does not, so the id is reserved here.
+    node.id = reserve_node_id();
 
-    add_node(std::move(node));
+    std::vector<std::pair<std::size_t, std::vector<Node>>> group;
+    group.emplace_back(std::min(position, _nodes.size()), std::vector<Node>{std::move(node)});
+    insert_node_groups(std::move(group));
 
     return *body_graph;
 }

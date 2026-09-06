@@ -3,19 +3,28 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AxisTiling.hpp>
+#include <Einsums/ComputeGraph/Prefactor.hpp>
+#include <Einsums/ComputeGraph/View.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Options/Get.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <algorithm>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -44,7 +53,9 @@ constexpr std::size_t kMaxSlicedAxes = 3;
 /// A barrier is anything whose value at a slice is not a function of its operands at that
 /// slice: a decomposition, a communication, control flow, an I/O node. @ref OpKind::Gemm is a
 /// barrier for a narrower reason recorded in the header: it names no index letters, so there is
-/// nothing to propagate a labelling through.
+/// nothing to propagate a labelling through, and @ref OpKind::ElementTransform for another:
+/// what it applies is a callable the node carries, and a rewrite that re-emits the operation has
+/// nothing to re-emit it WITH short of a registry name the anonymous arm does not have.
 bool tileable_kind(OpKind kind) {
     switch (kind) {
     case OpKind::Einsum:
@@ -54,7 +65,6 @@ bool tileable_kind(OpKind kind) {
     case OpKind::DirectProduct:
     case OpKind::DirectDivision:
     case OpKind::Dot:
-    case OpKind::ElementTransform:
         return true;
     default:
         return false;
@@ -100,7 +110,6 @@ std::optional<std::vector<SlotRef>> slots_of(Graph const &graph, Node const &nod
         wanted = {node.outputs[0], node.inputs[0]};
         break;
     case OpKind::Scale:
-    case OpKind::ElementTransform:
         if (node.outputs.size() != 1) {
             return std::nullopt;
         }
@@ -176,6 +185,23 @@ struct LabelStore {
 struct Labelling {
     LabelStore store;
     bool       feasible{true};
+
+    /// Why an infeasible candidate is infeasible, shape-independent so the tally aggregates the
+    /// candidates that fail the same way into one counted line.
+    std::string reason;
+};
+
+/// One operand of one node of the region, with the labelling the decision gave it.
+struct SlotPlan {
+    TensorId         tid{0};
+    std::vector<int> labels;
+};
+
+/// One node of the region, everything the rewrite needs to re-emit it at a slice.
+struct NodePlan {
+    OpKind                kind{OpKind::Custom};
+    OpData                op_data;
+    std::vector<SlotPlan> slots;
 };
 
 /// The description of one tiled region, produced by the analysis and consumed by the rewrite.
@@ -195,7 +221,57 @@ struct Plan {
     std::vector<std::string> whole;
     std::string              accumulator;
     LabelStore               store;
+
+    std::vector<NodePlan> ops;
+
+    /// Graph-owned intermediates carrying a sliced axis, re-declared at slice extents inside
+    /// the body: the tensor, and where its sliced axes are.
+    std::vector<std::pair<TensorId, std::vector<int>>> body_owned;
+
+    /// The tensor the reduction accumulates into across iterations, zero when the region has
+    /// no such reduction.
+    TensorId accumulator_id{0};
+
+    packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown};
 };
+
+/// How far one view bound has advanced through the slice sequence.
+///
+/// One cursor per bound rather than one shared by the whole body. Every bound's node runs
+/// exactly once per iteration, so independent cursors stay in lockstep whatever order the
+/// schedule puts them in, where a shared counter would depend on which node read it first.
+/// A replay starts the sweep over rather than continuing it without the counter being reset,
+/// because the decode below is periodic in the slice count: the second replay's counts are the
+/// first replay's plus a whole sweep, and a whole sweep is what the decode divides out.
+struct TileCursor {
+    std::size_t calls{0};
+};
+
+/// The bound one axis of one chunk member takes, resolved afresh on every iteration.
+std::function<std::int64_t()> slice_bound(std::shared_ptr<TileCursor> cursor, std::size_t depth, std::size_t member, std::size_t stride,
+                                          std::size_t extent, std::int64_t bias) {
+    return [cursor = std::move(cursor), depth, member, stride, extent, bias]() -> std::int64_t {
+        std::size_t const slice = (cursor->calls++ * depth) + member;
+        return static_cast<std::int64_t>((slice / stride) % extent) + bias;
+    };
+}
+
+/// The canonical spelling of a contraction's index lists, which is what the capture entry point
+/// parses back into the same lists.
+std::string einsum_spec_of(EinsumDescriptor const &desc) {
+    auto const &spec = desc.indices ? desc.indices->spec : ParsedEinsumSpec{desc.spec.c_indices, desc.spec.a_indices, desc.spec.b_indices};
+    auto        side = [](std::vector<std::string> const &indices, bool conjugated) {
+        std::string const joined = fmt::format("{}", fmt::join(indices, ","));
+        return conjugated ? fmt::format("conj({})", joined) : joined;
+    };
+    return fmt::format("{} ; {} -> {}", side(spec.a_indices, live_conj_a(desc)), side(spec.b_indices, live_conj_b(desc)),
+                       fmt::format("{}", fmt::join(spec.c_indices, ",")));
+}
+
+/// The same for a permutation.
+std::string permute_spec_of(PermuteDescriptor const &desc) {
+    return fmt::format("{} <- {}", fmt::join(desc.c_indices, ","), fmt::join(desc.a_indices, ","));
+}
 
 /// Unify two label vectors position by position, failing on a genuine disagreement.
 bool unify(std::vector<int> &lhs, std::vector<int> &rhs, bool &changed) {
@@ -247,6 +323,13 @@ class RegionAnalysis {
     [[nodiscard]] std::vector<TensorId> const &written() const noexcept { return _written; }
     [[nodiscard]] std::size_t                  largest_written_bytes() const noexcept { return _largest_written_bytes; }
     [[nodiscard]] TensorId                     seed() const noexcept { return _seed; }
+    [[nodiscard]] packed_gemm::ScalarType      dtype() const noexcept { return _dtype; }
+    [[nodiscard]] bool                         all_runtime() const noexcept { return _all_runtime; }
+
+    /// Fill in what the rewrite reads: the nodes at a slice, the intermediates to re-declare,
+    /// and the reduction to accumulate. False when an intermediate the body would re-declare is
+    /// still wanted whole by something outside the run.
+    [[nodiscard]] bool build(Labelling const &labelling, Plan &plan, std::string &reason) const;
 
     /// Propagate a seed labelling through the region. An infeasible candidate comes back with
     /// @ref Labelling::feasible false.
@@ -254,7 +337,7 @@ class RegionAnalysis {
 
     /// Whether a labelling can be turned into a loop: every unlabelled tensor the region
     /// writes is either its reduction target or purely internal.
-    [[nodiscard]] bool closes(Labelling const &labelling, std::string &accumulator, std::string &reason) const;
+    [[nodiscard]] bool closes(Labelling const &labelling, std::string &accumulator, TensorId &accumulator_id, std::string &reason) const;
 
     /// Bytes per slice of the largest intermediate, and the traffic the schedule streams.
     void cost(Labelling const &labelling, std::vector<std::size_t> const &extents, std::size_t depth, std::size_t &largest,
@@ -279,9 +362,12 @@ class RegionAnalysis {
 
     std::vector<TensorId>             _written;
     std::unordered_set<TensorId>      _written_set;
+    std::unordered_set<TensorId>      _touched_outside;
     std::vector<std::vector<SlotRef>> _slots;
     std::size_t                       _largest_written_bytes{0};
     TensorId                          _seed{0};
+    packed_gemm::ScalarType           _dtype{packed_gemm::ScalarType::Unknown};
+    bool                              _all_runtime{true};
 };
 
 bool RegionAnalysis::collect() {
@@ -303,6 +389,22 @@ bool RegionAnalysis::collect() {
             if (handle == nullptr || handle->is_tiled || handle->is_distributed) {
                 return false;
             }
+            // The rewrite reaches the tensor OBJECT at optimize time, where every other pass
+            // reaches only the handle, so a caller whose tensor has already been destroyed gets
+            // a decline here rather than a dereference of freed storage. Execute-time
+            // validation reports the same thing later; this is the same check asked earlier.
+            if (handle->validator && !handle->validator()) {
+                return false;
+            }
+            // The rewrite emits through the capture API, which is templated on the operand's
+            // STATIC type, so a rank-erased operand is one it can name and a statically ranked
+            // one is not.
+            _all_runtime = _all_runtime && handle->is_runtime;
+            if (_dtype == packed_gemm::ScalarType::Unknown) {
+                _dtype = handle->dtype;
+            } else if (handle->dtype != packed_gemm::ScalarType::Unknown && handle->dtype != _dtype) {
+                return false;
+            }
         }
         // A contraction or a permutation whose descriptor is the tiled one names no letters.
         if ((nodes[i].kind == OpKind::Einsum || nodes[i].kind == OpKind::Permute) && !letters_of(nodes[i]).has_value()) {
@@ -313,6 +415,20 @@ bool RegionAnalysis::collect() {
             _written.push_back(destination);
         }
         _slots.push_back(std::move(*slots));
+    }
+
+    // What a node OUTSIDE the run touches, so an intermediate the body would re-declare at
+    // slice extents is refused when something downstream still wants the whole of it.
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        if (i >= _first && i < _last) {
+            continue;
+        }
+        for (TensorId const tid : nodes[i].inputs) {
+            _touched_outside.insert(_graph.resolve_alias(tid));
+        }
+        for (TensorId const tid : nodes[i].outputs) {
+            _touched_outside.insert(_graph.resolve_alias(tid));
+        }
     }
 
     for (TensorId const tid : _written) {
@@ -369,9 +485,15 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
             }
 
             if (node.kind == OpKind::Einsum || node.kind == OpKind::Permute) {
+                char const *const conflict =
+                    node.kind == OpKind::Permute
+                        ? "a permutation exchanges two of the candidate's sliced axes, so the body would need a slice of a tensor it "
+                          "is not at"
+                        : "a contraction relates two of the candidate's sliced axes through one index letter";
                 auto const letters = letters_of(node);
                 if (!letters.has_value() || letters->size() < slots.size()) {
                     out.feasible = false;
+                    out.reason   = "a node of the run names index lists this pass cannot read";
                     return out;
                 }
                 std::unordered_map<std::string, int> by_letter;
@@ -388,6 +510,7 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
                         auto [it, inserted] = by_letter.try_emplace((*letters)[s][p], label);
                         if (!inserted && it->second != label) {
                             out.feasible = false;
+                            out.reason   = conflict;
                             return out;
                         }
                     }
@@ -397,6 +520,7 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
                 for (auto const &link : link_letters_of(node)) {
                     if (by_letter.contains(link)) {
                         out.feasible = false;
+                        out.reason   = "a contraction sums over one of the candidate's sliced axes, which would cut it in half";
                         return out;
                     }
                 }
@@ -411,6 +535,7 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
                             changed         = true;
                         } else if ((*labels[s])[p] != hit->second) {
                             out.feasible = false;
+                            out.reason   = conflict;
                             return out;
                         }
                     }
@@ -420,16 +545,19 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
                 // which is what makes it the reduction the loop accumulates.
                 if (slots.size() != 3 || !unify(*labels[1], *labels[2], changed)) {
                     out.feasible = false;
+                    out.reason   = "the reduction's two operands do not carry the candidate's sliced axes in the same places";
                     return out;
                 }
                 if (std::ranges::any_of(*labels[0], [](int v) { return v != kFree; })) {
                     out.feasible = false;
+                    out.reason   = "the reduction's destination carries a sliced axis, so it is not the accumulation the loop makes";
                     return out;
                 }
             } else {
                 for (std::size_t s = 1; s < slots.size(); ++s) {
                     if (!unify(*labels[0], *labels[s], changed)) {
                         out.feasible = false;
+                        out.reason   = "an elementwise operation relates two of the candidate's sliced axes to one position";
                         return out;
                     }
                 }
@@ -468,6 +596,7 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
     for (auto const &[tid, labels] : out.store.tensor) {
         if (!check(tid, labels)) {
             out.feasible = false;
+            out.reason   = "one tensor would carry a sliced axis twice, or two of its uses disagree about that axis's extent";
             return out;
         }
     }
@@ -475,6 +604,7 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
         auto const &slots = _slots[key.first - _first];
         if (!check(slots[key.second].tid, labels)) {
             out.feasible = false;
+            out.reason   = "one tensor would carry a sliced axis twice, or two of its uses disagree about that axis's extent";
             return out;
         }
     }
@@ -483,15 +613,17 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
             // An axis of one slice is not a schedule, and an axis nothing carries is a
             // candidate the propagation dissolved.
             out.feasible = false;
+            out.reason   = "one of the candidate's axes spans a single slice, so cutting it is not a schedule";
             return out;
         }
     }
     return out;
 }
 
-bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator, std::string &reason) const {
+bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator, TensorId &accumulator_id, std::string &reason) const {
     auto const &nodes = _graph.nodes();
     accumulator.clear();
+    accumulator_id = 0;
 
     for (TensorId const tid : _written) {
         auto const hit = labelling.store.tensor.find(tid);
@@ -533,7 +665,15 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
             reason = "the region reduces into more than one scalar, so there is no single accumulation to carry";
             return false;
         }
-        accumulator = handle->name;
+        // A reduction writes element zero of its destination and the accumulation adds the
+        // whole of it, so the two are the same statement only for a one-element tensor.
+        if (handle->total_bytes() != handle->element_size) {
+            reason = "the reduction's destination holds more than one element, so accumulating the whole of it is not what the "
+                     "reduction wrote";
+            return false;
+        }
+        accumulator    = handle->name;
+        accumulator_id = tid;
     }
     return true;
 }
@@ -651,6 +791,60 @@ void RegionAnalysis::partition(Labelling const &labelling, std::vector<std::stri
     }
 }
 
+bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &reason) const {
+    auto const &nodes = _graph.nodes();
+    plan.ops.clear();
+    plan.body_owned.clear();
+    plan.dtype = _dtype;
+
+    auto labels_of = [&](std::size_t node_index, std::size_t slot) -> std::vector<int> {
+        auto const &ref = _slots[node_index - _first][slot];
+        if (_written_set.contains(ref.tid)) {
+            auto const hit = labelling.store.tensor.find(ref.tid);
+            return hit == labelling.store.tensor.end() ? std::vector<int>(ref.rank, kFree) : hit->second;
+        }
+        auto const hit = labelling.store.use.find({node_index, slot});
+        return hit == labelling.store.use.end() ? std::vector<int>(ref.rank, kFree) : hit->second;
+    };
+
+    for (std::size_t i = _first; i < _last; ++i) {
+        NodePlan op;
+        op.kind    = nodes[i].kind;
+        op.op_data = nodes[i].op_data;
+        for (std::size_t slot = 0; slot < _slots[i - _first].size(); ++slot) {
+            op.slots.push_back(SlotPlan{.tid = _slots[i - _first][slot].tid, .labels = labels_of(i, slot)});
+        }
+        plan.ops.push_back(std::move(op));
+    }
+
+    for (TensorId const tid : _written) {
+        auto const hit = labelling.store.tensor.find(tid);
+        if (hit == labelling.store.tensor.end()) {
+            continue;
+        }
+        if (!std::ranges::any_of(hit->second, [](int v) { return v != kFree; })) {
+            continue;
+        }
+        auto const *handle = _graph.find_tensor(tid);
+        if (handle == nullptr) {
+            reason = "a tensor the region writes has no handle";
+            return false;
+        }
+        // A caller's tensor keeps its own buffer and is written through a slice of it; only a
+        // graph-owned intermediate is re-declared at slice extents, and only when nothing
+        // outside the run still wants the whole of it.
+        if (!handle->is_intermediate) {
+            continue;
+        }
+        if (_touched_outside.contains(_graph.resolve_alias(tid))) {
+            reason = "an intermediate the loop would declare at slice extents is read outside the run, where the whole of it is wanted";
+            return false;
+        }
+        plan.body_owned.emplace_back(tid, hit->second);
+    }
+    return true;
+}
+
 /// The largest chunk that fits the cap and divides the slice count.
 ///
 /// Divides, because a grouped node's member count is fixed when the body is captured: a ragged
@@ -690,6 +884,234 @@ std::vector<std::vector<std::size_t>> candidate_sets(std::size_t rank) {
     std::ranges::stable_sort(
         out, [](auto const &lhs, auto const &rhs) { return lhs.size() != rhs.size() ? lhs.size() < rhs.size() : lhs < rhs; });
     return out;
+}
+
+/// Zero the accumulator in the PARENT, before the loop.
+///
+/// The reduction the region wrote OVERWROTE its destination, and the loop accumulates into it,
+/// so the two agree only if the destination starts at zero on every replay. A scale by zero
+/// assigns rather than multiplies, which is what keeps a destination holding a non-finite value
+/// from carrying it into the sum.
+template <typename T>
+void zero_accumulator(Graph &graph, TensorHandle const &handle) {
+    CaptureGuard const guard(graph);
+    if (handle.is_tensor_view) {
+        scale(T{0}, static_cast<RuntimeTensorView<T> *>(handle.tensor_ptr));
+    } else {
+        scale(T{0}, static_cast<RuntimeTensor<T> *>(handle.tensor_ptr));
+    }
+}
+
+/// Build the loop body: one chunk member at a time, one node per member per captured node.
+///
+/// Every operand the body reads or writes is a VIEW. A caller's tensor is viewed at the slice
+/// the member is at, or in full when it carries no sliced axis, so what the body touches is the
+/// caller's own buffer and a rebind at a new geometry follows it. An intermediate carrying a
+/// sliced axis is re-declared on the body at slice extents and viewed in full, which is what
+/// makes every operand one type and the emission one function rather than a dispatch over which
+/// of them happen to be views.
+template <typename T>
+void emit_body(Graph &parent, Graph &body, Plan const &plan) {
+    std::size_t const depth = std::max<std::size_t>(1, plan.depth);
+    std::size_t const axes  = plan.extents.size();
+
+    // Row-major strides over the sliced axes, so one integer names one slice.
+    std::vector<std::size_t> stride(axes, 1);
+    for (std::size_t k = axes; k-- > 0;) {
+        stride[k] = (k + 1 < axes) ? stride[k + 1] * plan.extents[k + 1] : 1;
+    }
+
+    // ── Declarations, before the guard ──────────────────────────────────────
+    // A declaration is not a capture, and a buffer the resource phase is to place has to exist
+    // before the nodes that read it do.
+    std::map<std::pair<TensorId, std::size_t>, RuntimeTensor<T> *> owned;
+    for (auto const &[tid, labels] : plan.body_owned) {
+        auto const              &handle = parent.tensor(tid);
+        std::vector<std::size_t> dims;
+        dims.reserve(handle.dims.size());
+        for (std::size_t p = 0; p < handle.dims.size(); ++p) {
+            dims.push_back(p < labels.size() && labels[p] != kFree ? 1 : handle.dims[p]);
+        }
+        for (std::size_t member = 0; member < depth; ++member) {
+            owned[{tid, member}] = &body.declare_runtime_tensor<T>(fmt::format("{}#{}", handle.name, member), dims, /*intermediate=*/true);
+        }
+    }
+    std::vector<RuntimeTensor<T> *> partials(depth, nullptr);
+    if (plan.accumulator_id != 0) {
+        for (std::size_t member = 0; member < depth; ++member) {
+            partials[member] = &body.declare_runtime_tensor<T>(fmt::format("axtile_partial#{}", member), std::vector<std::size_t>{1},
+                                                               /*intermediate=*/true);
+        }
+    }
+
+    CaptureGuard const guard(body);
+
+    // ── The slice index, one parameter per bound per axis per member ────────
+    std::vector<std::vector<std::pair<std::string, std::string>>> bounds(depth);
+    for (std::size_t member = 0; member < depth; ++member) {
+        for (std::size_t k = 0; k < axes; ++k) {
+            auto const lo = fmt::format("axtile:{}:{}:lo", k, member);
+            auto const hi = fmt::format("axtile:{}:{}:hi", k, member);
+            write_param(lo, slice_bound(std::make_shared<TileCursor>(), depth, member, stride[k], plan.extents[k], 0));
+            write_param(hi, slice_bound(std::make_shared<TileCursor>(), depth, member, stride[k], plan.extents[k], 1));
+            // Seed the table with the first iteration's bound, so a view recorded below carries
+            // the SLICE's extent rather than the parent's and the capture-time shape checks see
+            // the program that will run. The writes above overwrite it on every iteration.
+            std::size_t const first = ((member / stride[k]) % plan.extents[k]);
+            body.params_ptr()->set(lo, static_cast<std::int64_t>(first));
+            body.params_ptr()->set(hi, static_cast<std::int64_t>(first) + 1);
+            bounds[member].emplace_back(lo, hi);
+        }
+    }
+
+    // ── The operands ────────────────────────────────────────────────────────
+    std::map<std::tuple<TensorId, std::vector<int>, std::size_t>, RuntimeTensorView<T> *> views;
+
+    auto axes_for = [&](std::vector<int> const &labels, std::size_t rank, std::size_t member) {
+        std::vector<ViewAxis> out;
+        out.reserve(rank);
+        for (std::size_t p = 0; p < rank; ++p) {
+            if (p < labels.size() && labels[p] != kFree) {
+                auto const &[lo, hi] = bounds[member][static_cast<std::size_t>(labels[p])];
+                out.push_back(ViewAxis::range(BoundExpr(lo), BoundExpr(hi)));
+            } else {
+                out.push_back(ViewAxis::full());
+            }
+        }
+        return out;
+    };
+
+    auto view_of = [&](TensorId tid, std::vector<int> const &labels, std::size_t member) -> RuntimeTensorView<T> & {
+        auto const key = std::tuple{tid, labels, member};
+        if (auto const hit = views.find(key); hit != views.end()) {
+            return *hit->second;
+        }
+        RuntimeTensorView<T> *made = nullptr;
+        if (auto const local = owned.find({tid, member}); local != owned.end()) {
+            made = &view_runtime(*local->second, std::vector<ViewAxis>(local->second->rank(), ViewAxis::full()));
+        } else {
+            auto const &handle = parent.tensor(tid);
+            auto        recipe = axes_for(labels, handle.rank, member);
+            made = handle.is_tensor_view ? &view_runtime(*static_cast<RuntimeTensorView<T> *>(handle.tensor_ptr), std::move(recipe))
+                                         : &view_runtime(*static_cast<RuntimeTensor<T> *>(handle.tensor_ptr), std::move(recipe));
+        }
+        views.emplace(key, made);
+        return *made;
+    };
+
+    // ── The algebra, unchanged, one member at a time ────────────────────────
+    for (std::size_t member = 0; member < depth; ++member) {
+        for (auto const &op : plan.ops) {
+            std::vector<RuntimeTensorView<T> *> operand;
+            operand.reserve(op.slots.size());
+            bool accumulating = false;
+            for (std::size_t s = 0; s < op.slots.size(); ++s) {
+                if (s == 0 && op.slots[s].tid == plan.accumulator_id && plan.accumulator_id != 0) {
+                    accumulating = true;
+                    operand.push_back(&view_runtime(*partials[member], std::vector<ViewAxis>(partials[member]->rank(), ViewAxis::full())));
+                    continue;
+                }
+                operand.push_back(&view_of(op.slots[s].tid, op.slots[s].labels, member));
+            }
+
+            switch (op.kind) {
+            case OpKind::Einsum: {
+                auto const &desc = std::get<EinsumDescriptor>(op.op_data);
+                einsum(EinsumFormatString(einsum_spec_of(desc)), as<T>(live_c_prefactor(desc)), operand[0], as<T>(live_ab_prefactor(desc)),
+                       *operand[1], *operand[2]);
+                break;
+            }
+            case OpKind::Permute: {
+                auto const &desc = std::get<PermuteDescriptor>(op.op_data);
+                // A permutation keeps its scalars in the params block where every other kind
+                // does, and its own snapshots are plain complex doubles, so the live block is
+                // read first and the snapshot only stands in for a node that has none.
+                T const alpha = desc.params ? as<T>(desc.params->alpha) : static_cast<T>(desc.alpha.real());
+                T const beta  = desc.params ? as<T>(desc.params->beta) : static_cast<T>(desc.beta.real());
+                permute(PermuteFormatString(permute_spec_of(desc)), beta, operand[0], alpha, *operand[1]);
+                break;
+            }
+            case OpKind::Axpby: {
+                auto const &desc = std::get<AxpbyDescriptor>(op.op_data);
+                axpby(as<T>(live_alpha(desc)), *operand[1], as<T>(live_beta(desc)), operand[0]);
+                break;
+            }
+            case OpKind::Scale: {
+                auto const &desc = std::get<ScaleDescriptor>(op.op_data);
+                scale(as<T>(live_factor(desc)), operand[0]);
+                break;
+            }
+            case OpKind::DirectProduct: {
+                auto const &desc = std::get<ElementwiseBinaryDescriptor>(op.op_data);
+                direct_product(as<T>(live_alpha(desc)), *operand[1], *operand[2], as<T>(live_beta(desc)), operand[0]);
+                break;
+            }
+            case OpKind::DirectDivision: {
+                auto const &desc = std::get<ElementwiseBinaryDescriptor>(op.op_data);
+                direct_division(as<T>(live_alpha(desc)), *operand[1], *operand[2], as<T>(live_beta(desc)), operand[0]);
+                break;
+            }
+            case OpKind::Dot: {
+                dot_python(operand[0], *operand[1], *operand[2]);
+                if (accumulating) {
+                    // The loop-carried accumulation: the slice's own reduction, added into the
+                    // caller's tensor in the order the members were captured in.
+                    auto const &handle      = parent.tensor(plan.accumulator_id);
+                    auto       &destination = view_of(plan.accumulator_id, std::vector<int>(handle.rank, kFree), 0);
+                    axpby(T{1}, *operand[0], T{1}, &destination);
+                }
+                break;
+            }
+            default:
+                break;
+            }
+        }
+    }
+}
+
+/// The dtype dispatch, and the only place the pass names an element type.
+bool emit_tiled_loop(Graph &graph, Plan const &plan) {
+    auto emit = [&]<typename T>() {
+        if (plan.accumulator_id != 0) {
+            zero_accumulator<T>(graph, graph.tensor(plan.accumulator_id));
+        }
+        // The zeroing was appended; it belongs where the region was, ahead of the loop. One
+        // splice moves it there and erases the region in the same edit, so no writer can end up
+        // behind a reader that survived.
+        std::vector<bool> remove(graph.nodes().size(), false);
+        std::vector<Node> moved;
+        if (plan.accumulator_id != 0) {
+            remove.back() = true;
+            moved.push_back(graph.nodes().back());
+        }
+        for (std::size_t i = plan.first; i < plan.last; ++i) {
+            remove[i] = true;
+        }
+        graph.replace_nodes(remove, {{plan.first, std::move(moved)}});
+
+        std::size_t const position = plan.first + (plan.accumulator_id != 0 ? 1 : 0);
+        Graph            &body =
+            graph.add_loop_at("AxisTiling", plan.iterations,
+                              PredExpr::iteration(CmpOp::Lt, BoundExpr(static_cast<std::int64_t>(plan.iterations) - 1)), position);
+        emit_body<T>(graph, body, plan);
+    };
+
+    switch (plan.dtype) {
+    case packed_gemm::ScalarType::Float32:
+        emit.template operator()<float>();
+        return true;
+    case packed_gemm::ScalarType::Float64:
+        emit.template operator()<double>();
+        return true;
+    case packed_gemm::ScalarType::Complex64:
+        emit.template operator()<std::complex<float>>();
+        return true;
+    case packed_gemm::ScalarType::Complex128:
+        emit.template operator()<std::complex<double>>();
+        return true;
+    default:
+        return false;
+    }
 }
 
 } // namespace
@@ -769,6 +1191,11 @@ bool AxisTiling::run(Graph &graph) {
         note_skip("a node of the run names operands this pass cannot read as a dense, single-buffer slice");
         return tiled.moved();
     }
+    if (!analysis.all_runtime()) {
+        note_skip("the run names an operand this pass cannot slice, because a rank-erased operand is one the emitted body can name "
+                  "and a statically ranked one is not");
+        return tiled.moved();
+    }
     _largest_before = analysis.largest_written_bytes();
 
     if (_largest_before <= static_cast<std::size_t>(cap)) {
@@ -791,11 +1218,13 @@ bool AxisTiling::run(Graph &graph) {
         auto const labelling = analysis.propagate(positions);
         if (!labelling.feasible) {
             ++infeasible;
+            note_skip(labelling.reason, fmt::format("candidate axes {}", fmt::join(positions, ",")));
             continue;
         }
         std::string accumulator;
+        TensorId    accumulator_id = 0;
         std::string reason;
-        if (!analysis.closes(labelling, accumulator, reason)) {
+        if (!analysis.closes(labelling, accumulator, accumulator_id, reason)) {
             note_skip(reason, fmt::format("candidate axes {}", fmt::join(positions, ",")));
             continue;
         }
@@ -829,7 +1258,12 @@ bool AxisTiling::run(Graph &graph) {
         plan.largest_after  = largest;
         plan.traffic        = traffic;
         plan.accumulator    = accumulator;
+        plan.accumulator_id = accumulator_id;
         plan.store          = labelling.store;
+        if (!analysis.build(labelling, plan, reason)) {
+            note_skip(reason, fmt::format("candidate axes {}", fmt::join(positions, ",")));
+            continue;
+        }
         analysis.describe(positions, plan.axis_names, plan.axis_letters);
         analysis.partition(labelling, plan.streamed, plan.whole);
 
@@ -856,6 +1290,14 @@ bool AxisTiling::run(Graph &graph) {
     _streamed    = best->streamed;
     _whole       = best->whole;
     _accumulator = best->accumulator;
+
+    if (!emit_tiled_loop(graph, *best)) {
+        note_skip("the run's element type is not one the emitted body can name", fmt::format("dtype {}", static_cast<int>(best->dtype)));
+        return tiled.moved();
+    }
+    ++_num_tiled;
+    graph.note_structural_change();
+    graph.topological_sort();
 
     report(1, fmt::format("slicing {} into {} slice(s), chunks of {}, largest intermediate {} -> {} bytes", fmt::join(_axis_names, " x "),
                           _slice_count, _depth, _largest_before, _largest_after));
