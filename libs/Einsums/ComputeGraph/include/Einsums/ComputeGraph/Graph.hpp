@@ -3844,6 +3844,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_EXPOSE void bind_ragged_extents(std::string const &name, std::size_t axis, std::vector<std::size_t> extents);
 
     /**
+     * @brief Re-derive every graph-owned intermediate's extents from what now writes it.
+     *
+     * A bind runs this because the tensors it supplies may be a different size; a PASS that
+     * repoints an operand at a tensor of a different size has made the same change from the
+     * other end, and the intermediates downstream of it describe a graph that no longer
+     * exists. @ref passes::BasisTruncation is the case this is public for: it points the
+     * algebra at tensors projected into a smaller space, and everything that contraction
+     * chain writes on the way is then declared over the space that was replaced.
+     *
+     * Only storage the graph OWNS is reshaped. A caller's tensor that no longer fits is not
+     * this graph's to resize, and the mismatch is reported against the node that reads it.
+     *
+     * @throws std::invalid_argument When a derived shape cannot be applied (an intermediate
+     *         that is already materialized, or one whose handle carries no resize hook), or
+     *         when a node's operands no longer agree on an extent.
+     * @versionadded{2.1.0}
+     */
+    void rederive_intermediate_extents() {
+        rederive_owned_extents();
+        validate_node_extents();
+    }
+
+    /**
      * @brief Every ragged extent table @ref bind_ragged_extents has accepted.
      * @return The tables, in the order they were supplied.
      * @versionadded{2.0.0}

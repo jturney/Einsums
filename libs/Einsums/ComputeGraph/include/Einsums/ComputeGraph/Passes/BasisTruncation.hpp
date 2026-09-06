@@ -70,6 +70,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -166,6 +167,29 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     void set_fock(Tensor<double, 2> const &fock);
 
     /**
+     * @brief Hand the pass the orbital energies of the space the amplitudes' other axes run over.
+     *
+     * @param[in] energies @c eps[i], one per occupied orbital, rank 1.
+     * @throws std::invalid_argument When @p energies is not rank 1 or does not have one entry
+     *         per occupied axis of the amplitudes. Set the amplitudes first.
+     *
+     * @par What it is for, since the construction does not need it
+     * The record this pass writes carries @f$E_{MP2}(\text{full}) - E_{MP2}(\text{fno})@f$ as
+     * its measured effect, and the two energies are what needs these. The integrals are not
+     * asked for separately because the amplitudes already carry them: a first-order amplitude
+     * is the integral over its denominator, and the denominator is these energies against the
+     * diagonal of the Fock block the pass already holds.
+     *
+     * A projection with no way to measure its own effect is declined rather than recorded with
+     * a bound nobody computed, so these are required to PROJECT and not to build the space.
+     */
+    APIARY_EXPOSE void set_occupied_energies(RuntimeTensor<double> const &energies);
+
+    /// @brief The same, taking a compile-time-rank tensor.
+    /// @param[in] energies @c eps[i].
+    void set_occupied_energies(Tensor<double, 1> const &energies);
+
+    /**
      * @brief Override ``einsums:graph:fno-occupation`` for this pipeline.
      * @param[in] occupation Natural orbitals whose occupation exceeds this are kept.
      * @throws std::invalid_argument When @p occupation is not finite or is negative.
@@ -218,6 +242,47 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return ``"fno_keep"``. See the file note on why the selection is a contraction.
     APIARY_EXPOSE [[nodiscard]] static std::string keep_matrix_name();
 
+    /**
+     * @brief What the setup writes the projection of @p name into.
+     * @param[in] name The name of the tensor being projected.
+     * @return ``"<name>@fno"``.
+     *
+     * @par Not a manifest entry, and the difference is the whole of the contract
+     * A manifest entry is something a bind must SUPPLY. These are graph-owned intermediates
+     * whose value the setup supplies and which nobody may bind. What a rebind supplies is the
+     * UNTRUNCATED tensor, under its own name for whatever else reads it and under
+     * @ref projection_input_name for the projection to read.
+     */
+    APIARY_EXPOSE [[nodiscard]] static std::string projected_name(std::string const &name);
+
+    /**
+     * @brief The interface name the projection reads @p name under.
+     * @param[in] name The name of the tensor being projected.
+     * @return ``"<name>@fno_in"``.
+     *
+     * The projection is captured, so what it reads becomes an interface tensor of the
+     * transformed graph. The caller's own algebra no longer reads that tensor at all, so
+     * naming the projection's copy is what keeps the untruncated tensor bindable; a rebind
+     * supplies the same tensor under this name. The same shape a fit that reads the tensor it
+     * replaces already has.
+     */
+    APIARY_EXPOSE [[nodiscard]] static std::string projection_input_name(std::string const &name);
+
+    /// @brief The names the last run projected, in the order they were projected.
+    /// @return One entry per projected tensor, spelled by @ref projected_name.
+    APIARY_EXPOSE APIARY_GETTER("projected") [[nodiscard]] std::vector<std::string> projected() const { return _projected; }
+
+    /**
+     * @brief The MP2 energy the truncation removed, @f$E_{MP2}(\text{full}) - E_{MP2}(\text{fno})@f$.
+     * @return The correction, or zero when the last run projected nothing.
+     *
+     * The record's measured quantity rather than an extra output: a program that wants the
+     * corrected number adds this to whatever the correlated method produced in the truncated
+     * space, which is the same place the density-fitting and quadrature effects already
+     * compose.
+     */
+    APIARY_EXPOSE APIARY_GETTER("correction") [[nodiscard]] double correction() const noexcept { return _correction; }
+
     /// @copydoc OptimizerPass::phase
     /// Structural-algebraic, for the reason the other two lossy passes are: replacing a space is a
     /// statement about the arithmetic, and one a reload quietly dropped would change what the graph
@@ -234,16 +299,37 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     void reset_stats() override;
 
   private:
+    /// @brief One tensor of the caller's whose axes run over the space being replaced.
+    struct Target {
+        TensorId                  source{0};            ///< The caller's tensor, as this graph knows it.
+        TensorId                  projected{0};         ///< The graph-owned tensor the setup writes.
+        RuntimeTensorView<double> input;                ///< The projection's own view of the caller's tensor.
+        RuntimeTensor<double>    *destination{nullptr}; ///< Where the projection writes.
+        std::vector<std::size_t>  axes;                 ///< Which of its axes carry the space being replaced.
+        std::string               name;                 ///< The caller's name for it.
+    };
+
     /// @brief Read the occupations off the amplitudes and decide how many survive.
     /// @return The occupations, largest first, or a reason there are none.
     [[nodiscard]] expected<std::vector<double>, std::string> decide_count() const;
 
     /// @brief Capture the construction of @ref transformation and @ref energies into @p body.
     /// @param[in,out] body The setup body.
-    void emit_setup(Graph &body) const;
+    /// @param[in] targets The tensors whose projection is captured under the same guard.
+    void emit_setup(Graph &body, std::vector<Target> const &targets) const;
+
+    /// @brief The transformation and the energies, computed here rather than read off the graph.
+    /// @return The isometry over the full space by the truncated one, and the semicanonical
+    ///         energies, in the order @ref emit_setup will produce them.
+    [[nodiscard]] std::pair<std::vector<double>, std::vector<double>> ordinary_truncation() const;
+
+    /// @brief The MP2 energy the truncation removed, from the amplitudes and the two energy sets.
+    /// @return The difference, or a reason it could not be measured.
+    [[nodiscard]] expected<double, std::string> measure_correction() const;
 
     std::optional<RuntimeTensorView<double>> _amplitudes;
     std::optional<RuntimeTensorView<double>> _fock;
+    std::optional<RuntimeTensorView<double>> _occupied;
     std::string                              _virtual_space{"vir"};
     double                                   _occupation{0}; ///< Zero means "read the option".
 
@@ -253,9 +339,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// the setup reads it and a captured read is what makes it an interface tensor.
     std::shared_ptr<RuntimeTensor<double>> _keep;
 
-    std::size_t         _kept{0};
-    std::vector<double> _occupations;
-    std::size_t         _num_truncated{0};
+    std::size_t              _kept{0};
+    std::vector<double>      _occupations;
+    std::size_t              _num_truncated{0};
+    std::vector<std::string> _projected;
+    double                   _correction{0};
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)
