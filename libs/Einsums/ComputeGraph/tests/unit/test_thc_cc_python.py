@@ -287,7 +287,13 @@ def test_fitting_the_amplitude_alone_does_not_make_the_ladder_cheaper(water, cap
     # the captured contraction PLUS the arithmetic that rebuilds the amplitude.
     line = next(l for l in err.splitlines() if "not symbolically cheaper" in l)
     before, after = line.split(" vs ")
-    assert after.strip().rstrip(")") in before, line
+    # The detail names the rung that decided as well as the two costs, so the captured cost is
+    # what stands between " vs " and that clause.
+    assert ", decided by " in after, line
+    after = after.split(", decided by ")[0]
+    assert after.strip() in before, line
+    # And the rung is the top one: this decline is the family argument rather than a tie-break.
+    assert "decided by ScaleOrder" in line, line
 
 
 def test_the_ladder_energy_is_unchanged_by_a_declined_rewrite(water):

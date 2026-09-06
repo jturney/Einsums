@@ -988,6 +988,45 @@ TEST_CASE("SaveLoad - an approximation record's measured-parameter key round-tri
     CHECK(back.approximations().front().setup == "Thc(T2)");
 }
 
+TEST_CASE("SaveLoad - a partial space annotation crosses the file with its hole intact", "[ComputeGraph][SaveLoad]") {
+    // A tensor may mix axes over an index space with axes nobody has named, which is what
+    // annotate_space_axis exists to build: a fitted auxiliary axis beside a basis axis of a
+    // program nobody annotated is the case a factorization emits, and the same shape is a DIIS
+    // history depth beside a pair of orbital indices.
+    //
+    // The format could not hold one. A tensor's `spaces` array was all axes or none, the writer
+    // resolved every slot through a call that throws on an id naming nothing, and saving such a
+    // graph failed outright. An EMPTY NAME is that axis now, which is a value earlier files
+    // simply never carry, so a reader needs no default for it. It is applied through
+    // annotate_space_axis rather than annotate_spaces, because that one rightly refuses a hole
+    // in a vector a caller handed over whole.
+    auto             &registry = cg::global_space_registry();
+    cg::SpaceId const aux      = registry.register_space(cg::IndexSpace{.name = "saveload_partial_aux"});
+
+    auto X = create_random_tensor<double>("X", 3, 4);
+    auto Y = create_random_tensor<double>("Y", 4, 3);
+    auto Z = create_zero_tensor<double>("Z", 3, 3);
+
+    cg::Graph          graph("partial_spaces");
+    cg::TensorId const x_id = graph.register_operand(X);
+    graph.register_operand(Y);
+    graph.register_operand(Z);
+    // Axis 1 only: axis 0 is a basis index this program says nothing about.
+    graph.annotate_space_axis(x_id, 1, aux);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ia ; aj", 0.0, &Z, 1.0, X, Y);
+    }
+
+    cg::Graph loaded = must_load(must_save(graph));
+
+    auto const &spaces = loaded.tensor_spaces(loaded.manifest().find("X")->id);
+    REQUIRE(spaces.size() == 2);
+    CHECK_FALSE(spaces[0].valid());
+    CHECK(spaces[1].valid());
+    CHECK(loaded.space_registry().name_of(spaces[1]) == "saveload_partial_aux");
+}
+
 // ── Tier 4: goldens ────────────────────────────────────────────────────────
 
 TEST_CASE("SaveLoad - every checked-in golden still loads", "[ComputeGraph][SaveLoad]") {
@@ -999,6 +1038,12 @@ TEST_CASE("SaveLoad - every checked-in golden still loads", "[ComputeGraph][Save
     // rather than only the present.
     std::filesystem::path const directory{EINSUMS_GRAPH_IR_GOLDEN_DIR};
     REQUIRE(std::filesystem::is_directory(directory));
+
+    // A golden that names an index space needs this process to know the name: a SpaceId is
+    // registry-local, so a file carries names and the reader resolves them against whatever the
+    // program has declared. Registering it here rather than relying on another case having done
+    // so keeps the corpus loadable whatever order the cases run in.
+    cg::global_space_registry().register_space(cg::IndexSpace{.name = "golden_partial_aux", .scale_symbol = "a"});
 
     size_t loaded_count = 0;
     for (auto const &entry : std::filesystem::directory_iterator(directory)) {

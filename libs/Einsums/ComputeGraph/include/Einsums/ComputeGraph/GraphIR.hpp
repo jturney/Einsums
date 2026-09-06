@@ -20,13 +20,13 @@
  * be, which is why it refuses a graph it cannot write instead of writing a
  * partial one.
  *
- * @par The schema: ``einsums_graph_ir``, semver, currently 1.5.0
+ * @par The schema: ``einsums_graph_ir``, semver, currently 1.6.0
  * One JSON object with a FIXED top-level key order, so a tool can validate the
  * interface before it parses a single node:
  *
  * @code{.json}
  * {
- *   "einsums_graph_ir": "1.5.0",
+ *   "einsums_graph_ir": "1.6.0",
  *   "provenance":       { ... },
  *   "name":             "ccsd_doubles",
  *   "manifest":         [ ... ],
@@ -64,6 +64,14 @@
  * is what lets a record state a number a bind found without a record having to be
  * rewritten per bind; for a fit re-fitted inside a loop body it is the last
  * iteration's fit that stands in it when the solver stops.
+ *
+ * An EMPTY STRING in a tensor's ``spaces`` array arrived at 1.6.0 and means that axis is
+ * unannotated. Before it the array was all axes or none, which is still what a complete
+ * annotation writes and what every earlier file holds, so a reader needs no default: the value
+ * simply did not occur. It occurs now because a tensor may mix axes over an index space with
+ * axes nobody has named, which ``Graph::annotate_space_axis`` has always been able to build and
+ * which this format could not hold; a factorization emitting an intermediate over a fitted
+ * auxiliary space and an unannotated basis is the case that reached it.
  *
  * @ref OpKind::LaplaceQuadrature arrived at 1.4.0. All three of its keys are
  * REQUIRED rather than defaulted, which is the same reasoning
@@ -207,7 +215,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.5.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.6.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

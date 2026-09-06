@@ -214,12 +214,19 @@ InterfaceManifest Graph::manifest() {
         entry.spaces.reserve(handle.spaces.size());
         for (SpaceId const space : handle.spaces) {
             if (!space.valid()) {
-                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                        "Graph '{}': manifest of tensor '{}' (id {}) carries an invalid index-space id; the "
-                                        "annotation is corrupt, not merely absent",
-                                        _name, handle.name, id);
+                // An axis nobody has named, which is what a PARTIAL annotation is made of and
+                // what annotate_space_axis exists to build. This used to be refused as corrupt,
+                // on the reading that a whole vector says something about every axis; that is
+                // right for the vector a caller hands to annotate_spaces and wrong for the
+                // handle, which is where the deliberate hole lives. It renders as the empty
+                // name, and a bind checks the axes that name something.
+                entry.spaces.emplace_back();
+                continue;
             }
             try {
+                // space() and not name_of() for a VALID id: an id past the end of this graph's
+                // registry is a graph carrying somebody else's ids, which is the error below,
+                // and the tolerant lookup would report it as an unannotated axis.
                 entry.spaces.emplace_back(space_registry().space(space).name);
             } catch (std::exception const &e) {
                 EINSUMS_THROW_EXCEPTION(std::invalid_argument,
@@ -415,8 +422,10 @@ void Graph::validate_bind_spaces(ManifestEntry const &entry, std::vector<SpaceId
     incoming_names.reserve(incoming.size());
     for (SpaceId const space : incoming) {
         if (!space.valid()) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': bind('{}'): the given tensor carries an invalid index-space id",
-                                    _name, entry.name);
+            // An unannotated axis of a partial annotation, checked against nothing rather than
+            // refused, for the reason the manifest builder above states.
+            incoming_names.emplace_back();
+            continue;
         }
         incoming_names.emplace_back(space_registry().space(space).name);
     }

@@ -273,6 +273,81 @@ def test_both_tags_are_substituted_in_one_decision(water):
     assert sorted(r.pass_name for r in arm["graph"].approximations()) == ["ThcAmplitude", "ThcThreeIndex"]
 
 
+def test_which_rung_of_the_comparison_decides_the_grid_verdict(water):
+    """What "symbolically cheaper" actually means on this rewrite.
+
+    The chain is scale order, then typical extents, then bound extents, then a
+    documented lexicographic tie-break that is arbitrary on purpose. On this
+    program every rung above the last abstains, and the reasons are all
+    structural rather than accidental:
+
+    * the substituted cost mentions a grid variable the captured cost does not,
+      and no dominance rule can order a monomial holding a variable the other
+      side has no relation to, so scale order says nothing;
+    * ``register_grid_space`` declares no typical extent, deliberately, because
+      a grid is chosen per problem, so the typical-extent rung cannot substitute
+      it either;
+    * the grid axis carries a dim symbol, so the family abstention withholds the
+      capture-size extents from the bound-extent rung for the same reason the
+      numeric veto abstains: 280 points is a placeholder for whatever the next
+      bind supplies.
+
+    So the tie-break decides, and the point of asserting it is that the phrase
+    "symbolically cheaper" on a grid fit is not the family argument a reader
+    would take it for. What actually stands behind this rewrite is the veto's
+    abstention, and the honest statement of the trade is a family bet taken with
+    a measured constant-factor loss at the capture size, which the pass reports
+    rather than leaving to be discovered.
+    """
+    arm = _arm(water)
+    assert arm["fired"]
+    assert arm["pass"].accept_rung == "Lexicographic"
+
+    # And the same program with the amplitude alone declines at the TOP rung, so the
+    # abstentions above are a property of this substitution rather than of the program.
+    alone = _arm(water, fit_integral=False, fit_amplitude=True, name="ladder_amplitude_rung")
+    assert not alone["fired"]
+    assert dict(alone["pass"].skip_reasons).get("the decomposed form is not symbolically cheaper", 0) >= 1
+
+
+def test_the_cost_self_check_passes_on_the_grid_rewrite(water):
+    """The report's polynomial and the emitted nodes' polynomial are the same one.
+
+    ``set_verify_costs`` re-derives the region's after-cost from the nodes the
+    rewrite emitted and compares it against the cost the report prints. It could
+    not be turned on for a grid fit before: an emitted tensor was annotated with
+    its spaces only when EVERY axis of it resolved, and in a grid rewrite of a
+    program nobody annotated the auxiliary letters resolve and the basis letters
+    do not, so every mixed intermediate said nothing at all. The node side then
+    named the grid anonymously where the algebra named it by its space, and the
+    two derivations held the same monomials under different variables.
+
+    The spaces are written axis by axis now, which says less than a complete
+    annotation and nothing false, and it says the one thing the two derivations
+    have to agree on.
+    """
+    graph, three, amplitude, result = _flat_ladder(water, "ladder_verify")
+    _G.ThcFactorization.register_grid_space(graph)
+    graph.annotate_tag(three, _G.ProvenanceTag.make("eri"))
+    graph.annotate_tag(amplitude, _G.ProvenanceTag.make("amplitude"))
+    X_occ = _tensor("X_occ", water["X_occ"])
+    X_vir = _tensor("X_vir", water["X_vir"])
+    X_vir_eri = _tensor("X_vir_eri", water["X_vir"])
+
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.ThcFactorization.for_amplitude("amplitude", amplitude, [X_occ, X_vir, X_occ, X_vir], 1e-2, 1e-8))
+    registry.add(_G.ThcFactorization.for_three_index("eri", three, [X_vir_eri, X_vir_eri], 1e-2, 1e-8))
+    factorization = _G.FactorizationPass(registry)
+    factorization.set_verify_costs(True)
+    manager = cg.PassManager()
+    manager.add(cg.ProvenancePropagation())
+    manager.add(factorization)
+
+    assert graph.apply(manager)
+    assert factorization.num_multi_substituted == 1
+    assert list(factorization.cost_mismatches) == []
+
+
 def test_no_intermediate_of_the_shape_the_rewrite_exists_to_remove_survives(water):
     """What the rewrite bought, as shapes rather than as a cost line.
 

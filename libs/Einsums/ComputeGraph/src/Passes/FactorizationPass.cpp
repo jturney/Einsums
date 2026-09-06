@@ -247,17 +247,24 @@ std::optional<std::vector<ExprStatement>> emit_tree(EmitRequest const &request) 
             target_name = fmt::format("{}_{}_x{}", request.provider, request.stem, scratch_index++);
             target      = request.make(target_name, request.dtype, dims);
 
-            // What the intermediate is OVER, where every axis of it resolves. Without this the
-            // cost the pass reports and the cost its own nodes carry name the same letter two
-            // ways, one through a space variable and one anonymously, and the self-check that
-            // compares the two derivations fires on a rewrite that is perfectly correct.
-            std::vector<SpaceId> spaces;
-            spaces.reserve(axes.size());
-            for (auto const &index : axes) {
-                spaces.push_back(index.space);
-            }
-            if (request.graph->find_tensor(target) != nullptr && std::ranges::all_of(spaces, [](SpaceId id) { return id.valid(); })) {
-                request.graph->annotate_spaces(target, spaces);
+            // What the intermediate is OVER, AXIS BY AXIS. Without it the cost the pass reports
+            // and the cost its own nodes carry name the same letter two ways, one through a
+            // space variable and one anonymously, and the self-check that compares the two
+            // derivations fires on a rewrite that is perfectly correct.
+            //
+            // Per axis rather than all or nothing, which is the change a grid rewrite forced.
+            // The letters a provider introduces resolve and the basis letters of a program
+            // nobody annotated do not, so every intermediate that mixes the two got no
+            // annotation at all and the self-check could not be turned on for a grid fit. A
+            // hole made deliberately is what annotate_space_axis is for. It says less than a
+            // complete annotation and nothing false, and it says the one thing the two
+            // derivations have to agree on, which is that the grid axis is the grid.
+            if (request.graph->find_tensor(target) != nullptr) {
+                for (std::size_t axis = 0; axis < axes.size(); ++axis) {
+                    if (axes[axis].space.valid()) {
+                        request.graph->annotate_space_axis(target, axis, axes[axis].space);
+                    }
+                }
             }
         }
 
@@ -374,9 +381,10 @@ SymbolicCost expression_cost(Graph const &graph, TensorExpr const &expr,
 void FactorizationPass::reset_stats() {
     RegionRewrite::reset_stats();
     _num_factorized = 0;
-    _num_dissolved  = 0;
-    _num_multi      = 0;
-    _num_joint      = 0;
+    _accept_rung.reset();
+    _num_dissolved = 0;
+    _num_multi     = 0;
+    _num_joint     = 0;
     _pending.clear();
     _pending_quadrature.clear();
     _considered.clear();
@@ -827,6 +835,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             search::LetterTable         table;
             search::TreePlan            tree;
             SymbolicCost                cost;
+            CompareRung                 rung{CompareRung::Lexicographic}; ///< What decided this candidate's accept.
         };
         std::optional<Candidate> best;
 
@@ -974,7 +983,18 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                     return;
                 }
                 for (std::size_t axis = 0; axis < indices.size() && axis < held->dims.size(); ++axis) {
-                    table.observe(indices[axis], held->dims[axis]);
+                    // The space comes from the OPERAND's current handle where the raised letter
+                    // carries none, which is what MultiTermFactorization does for its own
+                    // factors and for the same reason: the descriptor froze its index spaces at
+                    // capture, and a program annotated afterwards, which is every program
+                    // annotated from Python, has them only on the handles. A letter left
+                    // anonymous is a letter the comparison cannot rank by scale order, so this
+                    // is what decides whether the family argument is reachable at all.
+                    ExprIndex index = indices[axis];
+                    if (!index.space.valid() && axis < held->spaces.size()) {
+                        index.space = held->spaces[axis];
+                    }
+                    table.observe(index, held->dims[axis]);
                     // An EMPTY dim_symbols means every axis is literal; an empty ENTRY means
                     // this one is. Anything else is a symbol or a ragged axis, both resizable.
                     if (axis < held->dim_symbols.size() && !held->dim_symbols[axis].empty()) {
@@ -1087,12 +1107,34 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             // replaces is a real case rather than a pathological one. A pass that rewrote a
             // graph into something slower at the size it was captured at would be trading a
             // measurable regression for a promise, so the bound extents get a veto.
-            if (compare(after, before, ctx) >= 0) {
+            // The bound extents belong on the comparison itself, as the rung below scale order
+            // and typical extents that Part 2's chain puts them on. Without them a grid
+            // rewrite's verdict was decided by the documented lexicographic tie-break: the
+            // substituted cost mentions a variable the captured one does not, which no
+            // domination rule can order, and a grid space declares no typical extent. The
+            // tie-break is arbitrary on purpose, so "symbolically cheaper" was a phrase over an
+            // arbitrary answer. The table the search ranked its brackets with supplies them.
+            //
+            // Withheld where the veto abstains and for the same reason. A symbolically
+            // annotated axis is one a later bind resizes, so its capture-time number is a
+            // placeholder, and ranking two forms of an equation by it would settle the family
+            // question on a toy geometry, which is the failure the abstention exists to stop.
+            ComparisonContext accept_ctx;
+            accept_ctx.registry = ctx.registry;
+            if (!any_symbolic_extent) {
+                accept_ctx.bound_extent = table.lookup();
+            }
+
+            auto const verdict = compare_explain(after, before, accept_ctx);
+            if (verdict.order >= 0) {
+                // The rung goes in the DETAIL and not in the reason: the reason is the tally's
+                // key, and a key that carried the rung would count one refusal as four.
                 note_skip("the decomposed form is not symbolically cheaper",
-                          fmt::format("on '{}': {} vs {}", tagged_name, after.flops.to_string(ctx.registry),
-                                      before.flops.to_string(ctx.registry)));
+                          fmt::format("on '{}': {} vs {}, decided by {}", tagged_name, after.flops.to_string(ctx.registry),
+                                      before.flops.to_string(ctx.registry), compare_rung_name(verdict.rung)));
                 continue;
             }
+            report(2, fmt::format("'{}': the decomposed form is cheaper by {}", tagged_name, compare_rung_name(verdict.rung)));
 
             // The bound-extent veto applies only where the capture extents ARE the problem
             // size. An axis annotated symbolic is one a later bind may resize, so a number
@@ -1105,21 +1147,30 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             auto const         before_flops = before.flops.evaluate(extent_of);
             auto const         after_flops  = after.flops.evaluate(extent_of);
             if (any_symbolic_extent) {
+                // Said WITH the number the veto is declining to act on, because an abstention
+                // that hides it reads as a rewrite nothing measured. A family win that is a
+                // loss at the capture size is the case this abstention was built for, and a
+                // reader of the line should be able to see which of the two it is looking at.
+                std::string measured = "no capture-size number to compare";
+                if (before_flops.has_value() && after_flops.has_value() && *before_flops > 0.0) {
+                    measured = fmt::format("{:.2f}x the captured flops at the extents this graph holds", *after_flops / *before_flops);
+                }
                 report(2, fmt::format("the extent veto abstains on '{}': a symbolic axis makes the captured size a "
-                                      "placeholder, so the symbolic verdict stands alone",
-                                      tagged_name));
+                                      "placeholder, so the verdict by {} stands alone ({})",
+                                      tagged_name, compare_rung_name(verdict.rung), measured));
             } else if (before_flops.has_value() && after_flops.has_value() && *after_flops >= *before_flops) {
                 note_skip("the decomposed form is not cheaper at the extents this graph holds",
                           fmt::format("on '{}': {:g} vs {:g} flops", tagged_name, *after_flops, *before_flops));
                 continue;
             }
-            if (best.has_value() && compare(after, best->cost, ctx) >= 0) {
+            if (best.has_value() && compare(after, best->cost, accept_ctx) >= 0) {
                 continue;
             }
 
             candidate.table = std::move(table);
             candidate.tree  = tree;
             candidate.cost  = after;
+            candidate.rung  = verdict.rung;
             best            = std::move(candidate);
         }
         if (!best.has_value()) {
@@ -1217,9 +1268,13 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         // from the plan through the rename; a symbol comes from the space where the space has
         // one and from the tagged tensor's own annotation where the letter is one of its axes.
         //
-        // Annotated only when EVERY axis of a factor resolves, which is the rule
-        // `MultiTermFactorization` states for its shared intermediates: a partial annotation is
-        // what makes a bind move some extents and not others, which is worse than none at all.
+        // The SYMBOLS are written only when every axis of a factor resolves, because a partial
+        // one is what makes a bind move some extents and not others, which is worse than none.
+        // The SPACES are written axis by axis, because they say what an axis ranges over and
+        // nothing about resizing it: on a grid fit of an unannotated program the auxiliary
+        // letter resolves and the basis letters do not, and all-or-nothing left the factor
+        // saying nothing at all, so the cost derived from the emitted nodes named the grid
+        // anonymously where the algebra named it by its space and the two could never agree.
         for (auto const &sub : best->subs) {
             std::vector<TensorId> const  &ids              = factor_ids[fit_index(sub)];
             std::vector<ExprIndex> const &occurrence_index = leaves[sub.occurrence].indices;
@@ -1247,11 +1302,12 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                     every_axis_symbolic = every_axis_symbolic && !symbol.empty();
                     symbols.push_back(std::move(symbol));
                 }
-                // Every axis or none, which is what `annotate_spaces` requires and is the same
-                // all-or-nothing rule the symbols get: a partial annotation is what makes a
-                // bind move some extents and not others.
-                if (std::ranges::all_of(spaces, [](SpaceId id) { return id.valid(); })) {
-                    graph.annotate_spaces(ids[which], spaces);
+                // Axis by axis, so a factor mixing a resolved auxiliary axis with unannotated
+                // basis axes still says what the auxiliary one is.
+                for (std::size_t axis = 0; axis < spaces.size(); ++axis) {
+                    if (spaces[axis].valid()) {
+                        graph.annotate_space_axis(ids[which], axis, spaces[axis]);
+                    }
                 }
                 if (every_axis_symbolic) {
                     graph.annotate_dims(ids[which], symbols);
@@ -1313,6 +1369,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 .label = labels[which], .factors = factor_ids[which], .emit = plan.emit_setup, .refit = tagged[fits[which].first].refit});
         }
         ++_num_factorized;
+        _accept_rung = best->rung;
         if (fits.size() > 1) {
             ++_num_multi;
         }
@@ -1450,6 +1507,7 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
         double                      quadrature_measured{0};
         double                      quadrature_tolerance{0};
         std::string                 quadrature_label;
+        CompareRung                 rung{CompareRung::Lexicographic};
     };
     std::optional<Candidate> best;
     SymbolicCost const       before = expression_cost(graph, expr, {}, {});
@@ -1615,24 +1673,35 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
         // The joint verdict. Both halves are asked of the PAIR, because the substitution on its
         // own rebuilds a tensor the caller already has and the transform on its own has nothing
         // to ride on: a veto taken on either alone would refuse a rewrite the other makes pay.
-        if (compare(after, before, ctx) >= 0) {
+        // Bound extents on the accept comparison, as the rung below scale order and typical
+        // extents, and withheld where the veto abstains. Same rule as the substitution arm
+        // above, and stated there.
+        ComparisonContext accept_ctx;
+        accept_ctx.registry = ctx.registry;
+        if (!any_symbolic_extent) {
+            accept_ctx.bound_extent = table.lookup();
+        }
+        auto const verdict = compare_explain(after, before, accept_ctx);
+        if (verdict.order >= 0) {
             note_skip("the fit and the quadrature together are not symbolically cheaper than the region they replace",
-                      fmt::format("'{}' on '{}': {} vs {}", provider->name(), tagged_name, after.flops.to_string(ctx.registry),
-                                  before.flops.to_string(ctx.registry)));
+                      fmt::format("'{}' on '{}': {} vs {}, decided by {}", provider->name(), tagged_name,
+                                  after.flops.to_string(ctx.registry), before.flops.to_string(ctx.registry),
+                                  compare_rung_name(verdict.rung)));
             continue;
         }
         ExtentLookup const extent_of    = table.lookup();
         auto const         before_flops = before.flops.evaluate(extent_of);
         auto const         after_flops  = after.flops.evaluate(extent_of);
         if (any_symbolic_extent) {
-            report(2, fmt::format("the extent veto abstains on '{}' ({}): a symbolic axis makes the captured size a placeholder",
-                                  tagged_name, provider->name()));
+            report(2, fmt::format("the extent veto abstains on '{}' ({}): a symbolic axis makes the captured size a "
+                                  "placeholder, so the verdict by {} stands alone",
+                                  tagged_name, provider->name(), compare_rung_name(verdict.rung)));
         } else if (before_flops.has_value() && after_flops.has_value() && *after_flops >= *before_flops) {
             note_skip("the fit and the quadrature together are not cheaper at the extents this graph holds",
                       fmt::format("'{}' on '{}': {:g} vs {:g} flops", provider->name(), tagged_name, *after_flops, *before_flops));
             continue;
         }
-        if (best.has_value() && compare(after, best->after, ctx) >= 0) {
+        if (best.has_value() && compare(after, best->after, accept_ctx) >= 0) {
             continue;
         }
 
@@ -1644,7 +1713,8 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
                          .quadrature_points    = applied->points,
                          .quadrature_measured  = applied->measured,
                          .quadrature_tolerance = applied->tolerance,
-                         .quadrature_label     = applied->setup_label};
+                         .quadrature_label     = applied->setup_label,
+                         .rung                 = verdict.rung};
     }
 
     if (!best.has_value()) {
@@ -1720,6 +1790,7 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
 
     _pending.push_back(PendingSetup{.label = fit.setup, .factors = factor_ids, .emit = best->plan.emit_setup});
     ++_num_factorized;
+    _accept_rung = best->rung;
     ++_num_joint;
     report(1, fmt::format("factorized '{}' through {} and decoupled its denominator in one decision: neither pays alone", tagged_name,
                           best->plan.provider));

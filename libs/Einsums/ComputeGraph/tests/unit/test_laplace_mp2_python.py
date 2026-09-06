@@ -547,7 +547,14 @@ def test_a_fit_and_a_transform_compose_on_one_output(water):
 
 
 def test_the_veto_stands_where_nothing_is_annotated(water):
-    """Without the family annotation the fit declines on the size in hand, and says so."""
+    """Without the family annotation the fit declines on the size in hand, and says so.
+
+    WHICH check applies those extents moved. The accept comparison sets bound extents now, as
+    the rung below scale order and typical extents, so a form that is more expensive at the
+    sizes this graph holds is refused by the comparison itself and the separate veto below it
+    is never reached. The verdict and the extents behind it are the same; the line naming them
+    is the comparison's.
+    """
     nocc, nvir = water["nocc"], water["nvir"]
     dense = einsums.create_zero_tensor("(ia|jb)", [nocc, nvir, nocc, nvir])
     einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", dense, water["fitted"], water["fitted"])
@@ -564,7 +571,7 @@ def test_the_veto_stands_where_nothing_is_annotated(water):
     manager = cg.PassManager()
     manager.add(factorization)
     assert not graph.apply(manager)
-    assert any("not cheaper at the extents" in reason for reason, _count in factorization.skip_reasons)
+    assert any("not symbolically cheaper" in reason for reason, _count in factorization.skip_reasons)
 
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -393,6 +393,25 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE SpaceRegi
     }
 
     /**
+     * @brief The name an id resolves to, or the empty string when it names nothing.
+     * @param[in] id The id to resolve.
+     * @return The registered space's name, or "" for an invalid or out-of-range id.
+     *
+     * The tolerant sibling of @ref space, for the readers of a PARTIAL annotation. A tensor
+     * mixing axes over a space with axes nobody has named carries an invalid id in the slots
+     * nobody spoke for, which is what @ref Graph::annotate_space_axis exists to make, and every
+     * consumer that renders an annotation as names has to be able to render that hole rather
+     * than to throw on it.
+     */
+    [[nodiscard]] std::string name_of(SpaceId id) const {
+        std::scoped_lock const guard(_mutex);
+        if (!id.valid() || id.value() >= _spaces.size()) {
+            return {};
+        }
+        return _spaces[id.value()].name;
+    }
+
+    /**
      * @brief Number of registered spaces.
      * @return The count.
      */

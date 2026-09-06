@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/Factorization.hpp>
 #include <Einsums/ComputeGraph/Passes/LaplaceTransform.hpp>
 #include <Einsums/ComputeGraph/Passes/RegionRewrite.hpp>
+#include <Einsums/ComputeGraph/SymbolicCost.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
@@ -185,6 +186,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_joint") [[nodiscard]] std::size_t num_joint() const { return _num_joint; }
 
+    /**
+     * @brief Which rung of the symbolic comparison decided the last rewrite this pass took.
+     *
+     * The chain is scale order, then typical extents, then bound extents, then a documented
+     * lexicographic tie-break that is arbitrary on purpose. "Symbolically cheaper" therefore
+     * says very different things depending on where it was settled, and a caller measuring a
+     * rewrite needs to know which: a verdict at the scale-order rung is the family argument,
+     * and one at the tie-break is the chain running out of ways to rank two polynomials.
+     *
+     * @return The rung's name, or an empty string when no rewrite was taken.
+     */
+    APIARY_EXPOSE APIARY_GETTER("accept_rung") [[nodiscard]] std::string accept_rung() const {
+        return _accept_rung.has_value() ? std::string(compare_rung_name(*_accept_rung)) : std::string{};
+    }
+
   protected:
     /// @copydoc RegionRewrite::rewrite
     bool rewrite(Graph &graph, Region const &region, TensorExpr &expr) override;
@@ -236,6 +252,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     std::size_t               _num_factorized{0};
     std::size_t               _num_dissolved{0};
     std::size_t               _num_multi{0};
+
+    /// What decided the accept comparison of the last rewrite taken. See @ref accept_rung.
+    std::optional<CompareRung> _accept_rung;
 
     /// Every tagged tensor some contraction offered this pass, whatever became of it. What the
     /// end-of-run sweep subtracts from the tagged tensors the graph holds, so a tag nothing

@@ -250,6 +250,15 @@ TEST_CASE("Factorization - a tagged operand is replaced by its factors and the c
     REQUIRE(graph.apply(pm));
     REQUIRE(factorization.num_factorized() == 1);
 
+    // WHICH RUNG said the decomposed form is cheaper. Nothing here is annotated, so every
+    // letter is an anonymous per-letter variable: scale order has no declared relation to
+    // rank two monomials by and abstains, and typical extents resolve only space variables
+    // and abstain too. That used to leave the documented lexicographic tie-break deciding a
+    // question phrased as "symbolically cheaper", which is a coin toss with a reason attached.
+    // The bound extents are the rung between: the same table the bracketing search ranks with
+    // resolves every letter of both polynomials from the operands this graph holds.
+    REQUIRE(factorization.accept_rung() == "BoundExtent");
+
     // One contraction became two, plus a setup node holding the fitting.
     REQUIRE(graph.nodes().front().kind == cg::OpKind::Setup);
 
@@ -305,15 +314,22 @@ TEST_CASE("Factorization - a split that is not cheaper is declined", "[ComputeGr
     REQUIRE(graph.approximations().empty());
     REQUIRE(std::ranges::none_of(graph.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::Setup; }));
 
-    // Declined by the BOUND-EXTENT veto rather than by the symbolic comparison, and the
-    // distinction is the point. Symbolically two degree-three contractions beat one of degree
-    // four whatever the extents are, which is the DF argument and is right for a family; it is
-    // also blind to constants, and an auxiliary index larger than the product it replaces is
-    // an ordinary case rather than a pathological one. The numeric check is what keeps the
-    // pass from trading a measurable regression for that promise.
+    // Declined on the bound extents, and which check applies them is the narrowing this case
+    // records. Symbolically two degree-three contractions beat one of degree four whatever the
+    // extents are, which is the DF argument and is right for a family; it is also blind to
+    // constants, and an auxiliary index larger than the product it replaces is an ordinary case
+    // rather than a pathological one.
+    //
+    // The bound extents used to reach this only through the separate veto that runs after the
+    // symbolic comparison, because the comparison set none and its unresolvable polynomials
+    // fell to the lexicographic tie-break. They are the comparison's own third rung now, so a
+    // form that is more expensive at the extents this graph holds is refused by the comparison
+    // itself and the veto below it is never reached. The veto stays for what it alone carries,
+    // which is the abstention the next case is about, and for the equal-flops case the rung
+    // passes over.
     bool named_the_cost = false;
     for (auto const &[reason, count] : factorization.skip_reasons()) {
-        if (reason.find("not cheaper at the extents") != std::string::npos) {
+        if (reason.find("not symbolically cheaper") != std::string::npos) {
             named_the_cost = true;
         }
     }

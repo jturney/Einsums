@@ -1,0 +1,78 @@
+{
+  "einsums_graph_ir": "1.6.0",
+  "provenance": {"library_version":"2.0.0","config_fingerprint":"0x3163ced3f54d794c","structural_passes":[]},
+  "name": "golden_partial_spaces",
+  "manifest": [
+    {
+      "id": 0,
+      "name": "X",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,4],
+      "dim_symbols": [],
+      "spaces": ["","golden_partial_aux"],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 1,
+      "name": "Y",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [4,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 2,
+      "name": "Z",
+      "direction": "output",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    }
+  ],
+  "spaces": {"names":["golden_partial_aux"],"symbol_ties":[]},
+  "approximations": [],
+  "params": [],
+  "gate_flags": [],
+  "tensors": [],
+  "slot_redirects": [],
+  "nodes": [
+    {
+      "id": 0,
+      "kind": "Einsum",
+      "label": "einsum: C[i,j] = A[i,a] * B[a,j]",
+      "inputs": [0,1],
+      "outputs": [2],
+      "dtype": "float64",
+      "rank": 2,
+      "descriptor": {
+        "c_indices": ["i","j"],
+        "a_indices": ["i","a"],
+        "b_indices": ["a","j"],
+        "link_indices": ["a"],
+        "target_indices": ["i","j"],
+        "all_indices": ["i","j","a"],
+        "scalar_output": false,
+        "conj_a": false,
+        "conj_b": false,
+        "c_prefactor": {"dtype":"float64","re":0.0},
+        "ab_prefactor": {"dtype":"float64","re":1.0},
+        "letter_spaces": [],
+        "gemm_hint": {"m":3,"n":3,"k":4,"trans_a":"N","trans_b":"N","a":{"id":0,"leading_dim":3},"b":{"id":1,"leading_dim":4},"c":{"id":2,"leading_dim":3}}
+      }
+    }
+  ]
+}

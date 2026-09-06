@@ -281,7 +281,7 @@ TEST_CASE("Manifest - spaces round-trip as names, with the inferred flag", "[Com
     REQUIRE(entry_named(contract, "C").spaces.empty());
 }
 
-TEST_CASE("Manifest - a SpaceId the registry cannot resolve is an error naming the tensor", "[ComputeGraph][Manifest][Spaces]") {
+TEST_CASE("Manifest - an unnamed axis is a hole and a foreign SpaceId is an error naming the tensor", "[ComputeGraph][Manifest][Spaces]") {
     cg::SpaceRegistry registry;
     auto const        occ = registry.register_space(cg::make_index_space("occ", "no", 8.0));
 
@@ -296,12 +296,31 @@ TEST_CASE("Manifest - a SpaceId the registry cannot resolve is an error naming t
     }
     graph.annotate_spaces(A, {occ, occ});
 
-    // A default-constructed SpaceId on a populated annotation is a corrupted
-    // annotation, not an "unannotated axis". Reading it as the latter is how a
-    // wrong space silently becomes no space.
+    // A default-constructed SpaceId in a populated annotation is an axis NOBODY HAS NAMED, and
+    // the premise this case was written on is the one that had to be narrowed. It read such a
+    // slot as a corrupted annotation, on the argument that a caller handing over a whole vector
+    // has said something about every axis. That argument is about the vector a caller passes to
+    // annotate_spaces, which still refuses a hole; it is not about the handle, where
+    // annotate_space_axis makes a hole on purpose, for a tensor mixing axes over a space with
+    // axes whose extent means nothing chemically. The manifest cannot tell the two apart from
+    // the id alone, so it reports the hole as the empty name rather than refusing a graph the
+    // public API can build.
     cg::TensorId const a_id      = graph.live_tensor_id_by_ptr(&A, {});
     graph.tensor(a_id).spaces[1] = cg::SpaceId{};
 
+    auto const  contract = graph.manifest();
+    auto const *entry    = contract.find("A");
+    REQUIRE(entry != nullptr);
+    REQUIRE(entry->spaces == std::vector<std::string>{"occ", ""});
+
+    // A VALID id past the end of this graph's registry is the other thing entirely: a graph
+    // carrying somebody else's ids, which nothing can resolve and which no tolerant lookup
+    // should quietly report as an unannotated axis.
+    cg::SpaceRegistry elsewhere;
+    elsewhere.register_space(cg::make_index_space("other_a", "a", 1.0));
+    elsewhere.register_space(cg::make_index_space("other_b", "b", 1.0));
+    elsewhere.register_space(cg::make_index_space("other_c", "c", 1.0));
+    graph.tensor(a_id).spaces[1] = elsewhere.ids().back();
     REQUIRE_THROWS_WITH(graph.manifest(), Catch::Matchers::ContainsSubstring("'A'"));
 }
 

@@ -663,7 +663,11 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
     out.set("id", Value{dense});
     out.set("name", Value{handle.name});
     write_shape(out, handle.dtype, handle.rank, handle.dims, handle.dim_symbols,
-                to_array(handle.spaces, [&graph](SpaceId space) { return Value{graph.space_registry().space(space).name}; }),
+                // name_of and not space(), because an axis nobody has named carries an invalid id
+                // and renders as the empty string. That is the deliberate hole annotate_space_axis
+                // makes, and a writer that threw on it could not save a graph the public API can
+                // build. The reader turns an empty name back into an unannotated axis.
+                to_array(handle.spaces, [&graph](SpaceId space) { return Value{graph.space_registry().name_of(space)}; }),
                 handle.spaces_inferred, &handle.tag);
     out.set("intermediate", Value{handle.is_intermediate});
     out.set("scope", Value{std::string(tensor_ownership_name(handle.ownership))});
@@ -872,7 +876,11 @@ Object write_structure(Graph const &graph) {
     std::vector<std::string> space_names;
     for (auto const &[id, handle] : graph.tensors_map()) {
         for (auto const space : handle.spaces) {
-            space_names.push_back(graph.space_registry().space(space).name);
+            // An unannotated axis of a partial annotation names no space, so it contributes
+            // nothing to the section that declares which spaces the file mentions.
+            if (std::string name = graph.space_registry().name_of(space); !name.empty()) {
+                space_names.push_back(std::move(name));
+            }
         }
     }
     for (auto const &[symbol, space] : graph.symbol_spaces()) {
@@ -2227,16 +2235,34 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         if (spec.spaces.empty()) {
             continue;
         }
+        // An EMPTY name is an axis nobody spoke for, which a partial annotation has and a
+        // complete one never does. The two are applied through different calls because
+        // annotate_spaces rightly refuses a hole: a caller handing over a whole vector has said
+        // something about every axis, so a hole there is a mistake, and annotate_space_axis is
+        // where one is made deliberately.
+        bool const           partial = std::ranges::any_of(spec.spaces, [](std::string const &name) { return name.empty(); });
         std::vector<SpaceId> ids;
         ids.reserve(spec.spaces.size());
         for (auto const &name : spec.spaces) {
+            if (partial && name.empty()) {
+                ids.emplace_back();
+                continue;
+            }
             auto const id = registry.find(name);
             if (!id.has_value()) {
                 throw BuildFailure(fmt::format("tensor '{}' names index space '{}', which is not registered", spec.name, name));
             }
             ids.push_back(*id);
         }
-        graph.annotate_spaces(loaded[spec.id].id, std::move(ids));
+        if (partial) {
+            for (std::size_t axis = 0; axis < ids.size(); ++axis) {
+                if (ids[axis].valid()) {
+                    graph.annotate_space_axis(loaded[spec.id].id, axis, ids[axis]);
+                }
+            }
+        } else {
+            graph.annotate_spaces(loaded[spec.id].id, std::move(ids));
+        }
         // annotate_spaces records a DECLARATION; the file says whether the
         // original was one, and a derived annotation must read back as derived
         // so a validation pass still reports the weaker verdict on it.
