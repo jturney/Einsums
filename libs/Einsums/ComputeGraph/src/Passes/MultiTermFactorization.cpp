@@ -829,9 +829,11 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
                     // is always available to the inlined term, by contracting the factors it was
                     // built from first, so this says the search found nothing better than that.
                     retained_for.emplace(definition, site);
-                    note_skip(
-                        "inlining a definition into one of its consumers buys that consumer nothing, so it reads it",
-                        fmt::format("target '{}' into '{}'", expr.statements[definition].target_name, expr.statements[site].target_name));
+                    note_skip("inlining a definition into one of its consumers buys that consumer nothing, so it reads it",
+                              fmt::format("target '{}' into '{}': inlined it costs {} and reading it costs {}",
+                                          expr.statements[definition].target_name, expr.statements[site].target_name,
+                                          inlined.ok ? inlined.cost.flops.to_string(&graph.space_registry()) : "no tree",
+                                          kept.ok ? kept.cost.flops.to_string(&graph.space_registry()) : "no tree"));
                 }
             }
         }
@@ -972,6 +974,63 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     /// The occurrences of each committed pair, in commit order, as the plan records them.
     std::vector<std::vector<std::array<std::size_t, 3>>> commit_log;
 
+    // Which occurrence of a candidate pair, if any, is a statement that ALREADY computes it.
+    //
+    // A definition kept for one consumer and copied into another is a term of two factors, and a
+    // consumer that wants exactly that product does not need a second tensor for it: the
+    // definition is the shared intermediate. Without this the search declares one beside it and
+    // the program forms one value twice, which is what a full-axis energy does the moment its
+    // exchange half keeps the integral its opposite-spin half went past.
+    //
+    // Four things have to hold, and each of them is a way for the substitution to name a value the
+    // tensor does not hold: the term must be exactly the pair, in the axis order the definition's
+    // own target has; nothing else may write that tensor; it must be written outright rather than
+    // accumulated into and without a prefactor; and every consumer must come after it in program
+    // order.
+    auto provider_site = [&](std::vector<PairSite> const &sites) -> std::optional<std::size_t> {
+        std::optional<std::size_t> found;
+        for (std::size_t index = 0; index < sites.size(); index++) {
+            Term const &term = terms[sites[index].term];
+            if (term.factors.size() != 2) {
+                continue;
+            }
+            if (found.has_value()) {
+                return std::nullopt; // two of them; the second would be left holding a copy
+            }
+            found = index;
+        }
+        if (!found.has_value()) {
+            return std::nullopt;
+        }
+        PairSite const &site      = sites[*found];
+        Term const     &term      = terms[site.term];
+        auto const     &statement = expr.statements[term.statement];
+        if (retained[site.term] == 0 || !term.searchable) {
+            return std::nullopt;
+        }
+        auto const own = writer.find(statement.target);
+        if (own == writer.end() || own->second != term.statement) {
+            return std::nullopt;
+        }
+        if (!is_zero(statement.target_prefactor) || !is_one(term.factor)) {
+            return std::nullopt;
+        }
+        if (term.output.size() != site.result.size()) {
+            return std::nullopt;
+        }
+        for (std::size_t axis = 0; axis < term.output.size(); axis++) {
+            if (term.output[axis].letter != site.result[axis].letter) {
+                return std::nullopt; // the same axes in another order is a permute, not a read
+            }
+        }
+        for (auto const &other : sites) {
+            if (other.term != site.term && terms[other.term].statement <= term.statement) {
+                return std::nullopt;
+            }
+        }
+        return found;
+    };
+
     // Declare the intermediate one committed pair needs and rewrite its occurrences onto it. The
     // search reaches this after picking a winner and a replay reaches it straight away, which is
     // what makes the two produce the same graph rather than two graphs that agree on a test.
@@ -979,6 +1038,36 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         auto const  &first = sites.front();
         Factor const left  = terms[first.term].factors[first.left];
         Factor const right = terms[first.term].factors[first.right];
+
+        // A statement that already computes this product IS the shared intermediate.
+        auto const provider = provider_site(sites);
+        if (provider.has_value()) {
+            std::vector<std::array<std::size_t, 3>> record;
+            record.reserve(sites.size());
+            TensorId const held = expr.statements[terms[sites[*provider].term].statement].target;
+            for (std::size_t index = 0; index < sites.size(); index++) {
+                auto const &site = sites[index];
+                record.push_back({site.term, site.left, site.right});
+                if (index == *provider) {
+                    continue; // its own statement is what emits the value
+                }
+                Term               &term = terms[site.term];
+                Factor              placeholder{.tensor = held, .indices = site.result, .conjugate = false};
+                std::vector<Factor> kept;
+                kept.reserve(term.factors.size() - 1);
+                for (std::size_t f = 0; f < term.factors.size(); f++) {
+                    if (f != site.left && f != site.right) {
+                        kept.push_back(term.factors[f]);
+                    }
+                }
+                kept.push_back(std::move(placeholder));
+                term.factors = std::move(kept);
+            }
+            commit_log.push_back(std::move(record));
+            _num_shared++;
+            report(2, fmt::format("share {} across {} term(s), through the definition that already computes it", label, sites.size()));
+            return true;
+        }
 
         std::vector<std::size_t> dims;
         std::vector<SpaceId>     spaces;
@@ -1077,12 +1166,16 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         for (auto const &commit : cached->commits) {
             fits = fits && !commit.empty();
             for (auto const &site : commit) {
-                fits = fits && site[0] < terms.size() && terms[site[0]].searchable && factor_count[site[0]] >= 3 && site[1] < site[2] &&
+                // Two factors is the occurrence a statement already computes, which keeps its
+                // factors and gives the others a tensor to read; anything else loses its two and
+                // gains one, so it needs a third to be left with.
+                std::size_t const needs = factor_count[site[0]] == 2 ? std::size_t{2} : std::size_t{3};
+                fits = fits && site[0] < terms.size() && terms[site[0]].searchable && factor_count[site[0]] >= needs && site[1] < site[2] &&
                        site[2] < factor_count[site[0]];
                 if (!fits) {
                     break;
                 }
-                factor_count[site[0]]--;
+                factor_count[site[0]] -= needs == 2 ? 0 : 1;
             }
             if (!fits) {
                 break;
@@ -1142,8 +1235,12 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         // keys rather than of a hash table's buckets.
         std::map<PairKey, std::vector<PairSite>> candidates;
         for (std::size_t t = 0; t < terms.size(); t++) {
-            if (!terms[t].searchable || terms[t].factors.size() < 3) {
-                continue; // a two-factor term has nothing to share that is not the whole term
+            // A two-factor term offers its one pair, which is the whole term. That is not a
+            // candidate to build a new intermediate for, since committing it would leave a copy
+            // behind; it is a candidate to READ, because the statement already computes the
+            // product something else wants. `provider_site` is what says whether it may.
+            if (!terms[t].searchable || retained[t] == 0 || terms[t].factors.size() < 2) {
+                continue;
             }
             for (std::size_t i = 0; i + 1 < terms[t].factors.size(); i++) {
                 for (std::size_t j = i + 1; j < terms[t].factors.size(); j++) {
@@ -1156,16 +1253,54 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
 
         SymbolicCost const     baseline = total_cost(plans);
         std::optional<PairKey> best_key;
+        std::vector<PairSite>  best_sites;
         SymbolicCost           best_cost;
         std::vector<TreePlan>  best_plans;
 
-        for (auto const &[key, sites] : candidates) {
+        for (auto const &[key, offered] : candidates) {
             if (budget().expired()) {
                 _cut_off = true;
                 break;
             }
-            if (sites.size() < 2) {
+            if (offered.size() < 2) {
                 continue;
+            }
+            // Reading a value a statement already computes is decided PER CONSUMER, where building
+            // a new intermediate is decided for all the occurrences at once. The difference is that
+            // the value exists either way: a consumer that is cheaper reading it takes it and one
+            // that is cheaper rebuilding the product goes past it, which is the same shape the
+            // per-consumer inlining decision has and the reason an energy's two halves can want
+            // opposite things about one integral.
+            std::vector<PairSite> sites;
+            if (auto const offers = provider_site(offered); offers.has_value()) {
+                sites.push_back(offered[*offers]);
+                for (std::size_t index = 0; index < offered.size(); index++) {
+                    if (index == *offers || offered[index].term == offered[*offers].term) {
+                        continue;
+                    }
+                    Term const &term = terms[offered[index].term];
+                    if (term.factors.size() < 3 || !plans[offered[index].term].ok) {
+                        continue;
+                    }
+                    std::vector<Factor> reading;
+                    reading.reserve(term.factors.size() - 1);
+                    for (std::size_t f = 0; f < term.factors.size(); f++) {
+                        if (f != offered[index].left && f != offered[index].right) {
+                            reading.push_back(term.factors[f]);
+                        }
+                    }
+                    reading.push_back(Factor{.tensor = TensorId{0}, .indices = offered[index].result, .conjugate = false});
+                    TreePlan const takes = solve_tree(reading, term.output, table, ctx);
+                    if (takes.ok && compare(takes.cost, plans[offered[index].term].cost, ctx) < 0) {
+                        sites.push_back(offered[index]);
+                    }
+                }
+                if (sites.size() < 2) {
+                    continue;
+                }
+                std::ranges::sort(sites, [](PairSite const &lhs, PairSite const &rhs) { return lhs.term < rhs.term; });
+            } else {
+                sites = offered;
             }
             // Two occurrences in ONE term are declined, and this is a defect the wider flattener
             // made reachable rather than a restriction of the idea. Applying a site rebuilds that
@@ -1180,10 +1315,15 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             // Applying the candidate: each occurrence loses its two factors and gains one naming
             // the intermediate. A term left with a single factor would need a copy rather than a
             // contraction, which this pass does not emit.
-            std::vector<Term> trial  = terms;
-            bool              usable = true;
-            for (auto const &site : sites) {
-                Term &term = trial[site.term];
+            auto const        provider = provider_site(sites);
+            std::vector<Term> trial    = terms;
+            bool              usable   = true;
+            for (std::size_t index = 0; index < sites.size(); index++) {
+                auto const &site = sites[index];
+                Term       &term = trial[site.term];
+                if (provider.has_value() && index == *provider) {
+                    continue; // unchanged: its own statement is what computes the value
+                }
                 if (term.factors.size() < 3) {
                     usable = false;
                     break;
@@ -1223,14 +1363,19 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             for (auto const &index : first.result) {
                 result_letters.insert(index.letter);
             }
+            // The pair costs nothing extra when a statement already computes it: that cost is
+            // inside the provider's own tree, which is in the total above.
             SymbolicCost const trial_cost =
-                add_cost(total_cost(trial_plans), contraction_cost(left_letters, right_letters, result_letters, table));
+                provider.has_value()
+                    ? total_cost(trial_plans)
+                    : add_cost(total_cost(trial_plans), contraction_cost(left_letters, right_letters, result_letters, table));
 
             if (compare(trial_cost, baseline, ctx) >= 0) {
                 continue;
             }
             if (!best_key.has_value() || compare(trial_cost, best_cost, ctx) < 0) {
                 best_key   = key;
+                best_sites = sites;
                 best_cost  = trial_cost;
                 best_plans = std::move(trial_plans);
             }
@@ -1240,7 +1385,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             break;
         }
 
-        if (!commit_pair(candidates.at(*best_key), best_key->text)) {
+        if (!commit_pair(best_sites, best_key->text)) {
             break;
         }
         plans = std::move(best_plans);

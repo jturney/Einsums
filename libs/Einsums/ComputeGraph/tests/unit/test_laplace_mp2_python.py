@@ -823,31 +823,22 @@ def test_full_mp2_keeps_its_exchange_term_and_its_number(water):
     assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING
 
 
-def test_the_opposite_spin_half_needs_its_own_amplitude_and_integral(water):
-    """Splitting the energy into two reductions is not enough, and why.
+def _split_over_one_integral(water, epsilon):
+    """``E = 2 sum K K D - sum K^T K D`` as two reductions over ONE stored integral.
 
-    Writing ``E = 2 sum K K D - sum K^T K D`` as two dots gives the opposite-spin
-    half a statement of its own, and it still does not reach the pairless form:
-    both halves read ONE amplitude and one integral, and a value two consumers
-    need is not absorbed into either of them. Giving each half its own copy is
-    what does it, and then the opposite-spin half is rewritten and the exchange
-    half keeps the four-index tensor its permute makes.
-
-    Which is the design's own point restated by the implementation: the author
-    has to write SOS-MP2 as SOS-MP2. The optimizer does not decide to drop a
-    term.
+    Each half needs its own numerator, because the transform dissolves the one it
+    rewrites and declines a numerator anything else reads. The integral the two
+    reductions READ is one tensor, which is what the flattener now has to decide
+    about per consumer.
     """
-    exact = _exact(water)
     shape = _shape(water)
     B = water["fitted"]
-    energy = einsums.create_zero_tensor("E_split", [1])
-    opposite = einsums.create_zero_tensor("E_os", [1])
-    same = einsums.create_zero_tensor("E_ss", [1])
+    opposite = einsums.create_zero_tensor(f"E_os_{epsilon:g}", [1])
+    same = einsums.create_zero_tensor(f"E_ss_{epsilon:g}", [1])
 
-    graph = cg.Graph("full_mp2_split")
-    registry = _sos_registry()
-    graph.set_space_registry(registry)
-    names = ("K_os", "T_os", "A_os", "D_os", "K_ss", "T_ss", "A_ss", "X_ss", "D_ss")
+    graph = cg.Graph(f"full_mp2_split_{epsilon:g}")
+    graph.set_space_registry(_sos_registry())
+    names = ("K_os", "T_os", "D_os", "K_ss", "T_ss", "X_ss", "D_ss", "A")
     held = {name: graph.scratch(name, shape, "float64") for name in names}
     for half in ("os", "ss"):
         with cg.capture(graph):
@@ -860,9 +851,9 @@ def test_the_opposite_spin_half_needs_its_own_amplitude_and_integral(water):
         for half in ("os", "ss"):
             einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", held[f"K_{half}"], B, B)
             la.direct_product(1.0, held[f"K_{half}"], held[f"D_{half}"], 0.0, held[f"T_{half}"])
-            einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", held[f"A_{half}"], B, B)
-        einsums.permute("iajb <- ibja", held["X_ss"], held["A_ss"])
-        la.dot(opposite, held["A_os"], held["T_os"])
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", held["A"], B, B)
+        einsums.permute("iajb <- ibja", held["X_ss"], held["A"])
+        la.dot(opposite, held["A"], held["T_os"])
         la.dot(same, held["X_ss"], held["T_ss"])
     for half in ("os", "ss"):
         graph.annotate_tag(held[f"D_{half}"], _tag())
@@ -870,7 +861,7 @@ def test_the_opposite_spin_half_needs_its_own_amplitude_and_integral(water):
     for tensor in held.values():
         cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
 
-    transform = _transform(water, 1e-8)
+    transform = _transform(water, epsilon)
     search = cg.MultiTermFactorization()
     search.set_search_enabled(True)
     manager = cg.PassManager()
@@ -878,13 +869,57 @@ def test_the_opposite_spin_half_needs_its_own_amplitude_and_integral(water):
     manager.add(search)
     manager.run(graph)
     assert transform.num_transformed == 2
+    return graph, opposite, same, transform, search
+
+
+def _integrals_formed(graph):
+    """Every contraction in the optimized graph that forms ``(ia|jb)`` from the fitted tensor.
+
+    Named by what it WRITES, since what is under test is how many of them there
+    are: a program that formed the integral once and then rebuilt the same
+    product inside a consumer would read as one definition and two contractions.
+    """
+    ir = json.loads(graph.to_json())
+    names_by_id = {tensor["id"]: tensor["name"] for tensor in ir["tensors"]}
+    written = []
+    for node in ir["nodes"]:
+        if node["kind"] != "Einsum":
+            continue
+        if [names_by_id.get(t) for t in node.get("inputs", [])] != ["B", "B"]:
+            continue
+        written += [names_by_id.get(t) for t in node.get("outputs", [])]
+    return written
+
+
+def test_the_opposite_spin_half_takes_a_copy_of_the_one_integral_the_exchange_half_keeps(water):
+    """Two reductions, one integral, and only the half that pays takes a copy.
+
+    The integral both halves read is one tensor. The exchange half reads it
+    through a permute, which is not a product and cannot take it, so the
+    definition is kept; the opposite-spin dot takes a copy and re-brackets it
+    into the pairless form. The emitted graph holds exactly ONE contraction
+    forming the integral, which is the point: giving each half its own copy of
+    the integral is what this used to need.
+
+    Which is the design's own point restated by the implementation: the author
+    has to write SOS-MP2 as SOS-MP2, and what that costs is one copy in the half
+    that profits rather than a second integral in the program.
+    """
+    exact = _exact(water)
+    graph, opposite, same, transform, search = _split_over_one_integral(water, 1e-3)
     assert search.num_rebracketed >= 1, search.skip_reasons
+
+    # Kept, because the permute cannot take it, and copied into the one consumer
+    # that profits.
+    assert search.num_copies == 1, search.skip_reasons
+    assert _integrals_formed(graph) == ["A"], _integrals_formed(graph)
 
     # The exchange half's permuted integral is still formed, and must be.
     four_index = [water["nocc"], water["nvir"], water["nocc"], water["nvir"]]
     written = _written_dims(graph)
     assert four_index in written
-    # And the opposite-spin half reached the pairless form beside it.
+    # And the opposite-spin half reached the pairless form beside it, over the
+    # integral it copied rather than over one the program formed twice.
     naux, points = water["naux"], transform.last_point_count
     assert any(sorted(shape_) == sorted([naux, naux, points]) for shape_ in written), (
         f"the opposite-spin half did not reach the pairless form: {written}")
@@ -892,7 +927,40 @@ def test_the_opposite_spin_half_needs_its_own_amplitude_and_integral(water):
     graph.apply(cg.default_pass_manager())
     graph.execute()
     value = 2.0 * float(np.asarray(opposite)[0]) - float(np.asarray(same)[0])
-    np.asarray(energy)[0] = value
+    record = graph.approximations()[0]
+    assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING, (
+        f"the split energy {value} is outside the bound against {exact}")
+
+
+def test_the_same_program_at_a_tighter_tolerance_reads_the_integral_instead(water):
+    """The copy is a cost decision, and the point count is one of its terms.
+
+    Decoupling trades ``o^2 v^2 Q`` for ``o v Q^2 t``, so the quadrature's own
+    point count is on the losing side of it. At ``1e-3`` it is sixteen points and
+    the copy pays; at ``1e-8`` it is sixty and it does not, so the opposite-spin
+    half reads the integral the exchange half keeps rather than rebuilding it
+    pairlessly. Both halves then read one tensor, which is the other outcome the
+    sharing has to reach, and the integral is still formed exactly once.
+
+    The tolerance SOS-MP2 is actually run at is the loose one, which is where the
+    decoupling fires. This is the same program said at the other end of it.
+    """
+    exact = _exact(water)
+    graph, opposite, same, transform, search = _split_over_one_integral(water, 1e-8)
+
+    assert search.num_copies == 0, search.skip_reasons
+    assert any("buys that consumer nothing" in reason for reason, _count in search.skip_reasons), (
+        search.skip_reasons)
+    assert _integrals_formed(graph) == ["A"], _integrals_formed(graph)
+
+    naux, points = water["naux"], transform.last_point_count
+    written = _written_dims(graph)
+    assert not any(sorted(shape_) == sorted([naux, naux, points]) for shape_ in written), (
+        f"the pairless form was taken where it costs more: {written}")
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    value = 2.0 * float(np.asarray(opposite)[0]) - float(np.asarray(same)[0])
     record = graph.approximations()[0]
     assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING, (
         f"the split energy {value} is outside the bound against {exact}")
