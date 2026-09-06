@@ -61,43 +61,59 @@ TEST_CASE("Setup - the body runs on the first replay and no replay after it", "[
     REQUIRE(out(0, 0) == Catch::Approx(1.0));
 }
 
-TEST_CASE("Setup - the parent node reports the body's reads and writes as its own", "[ComputeGraph][Setup]") {
+TEST_CASE("Setup - the node lists the body's reads and writes as its own", "[ComputeGraph][Setup]") {
     auto ones  = create_zero_tensor<double>("ones", 2, 2);
     auto fit   = create_zero_tensor<double>("fit", 2, 2);
     auto out   = create_zero_tensor<double>("out", 2, 2);
     ones(0, 0) = 1.0;
 
-    cg::Graph graph("setup_effective_io");
+    cg::Graph  graph("setup_effective_io");
+    auto const find_setup = [&]() -> cg::Node const * {
+        for (auto const &node : graph.nodes()) {
+            if (node.kind == cg::OpKind::Setup) {
+                return &node;
+            }
+        }
+        return nullptr;
+    };
     {
         auto                  &body = graph.add_setup("fit");
         cg::CaptureGuard const guard(body);
         cg::axpy(1.0, ones, &fit);
     }
+
+    // Nothing yet, and that is what makes the lists derived rather than fixed at construction:
+    // this spelling of add_setup hands back the body and the caller captures into it afterwards,
+    // so there is no moment inside the call at which they could be final.
+    REQUIRE(find_setup() != nullptr);
+    REQUIRE(find_setup()->inputs.empty());
+    REQUIRE(find_setup()->outputs.empty());
+
     {
         cg::CaptureGuard const guard(graph);
         cg::permute("ij <- ij", 0.0, &out, 1.0, fit);
     }
 
-    // The Setup node lists nothing of its own: its body was captured after the node existed,
-    // exactly as a loop body is. What orders it against the rest of the graph is the subtree
-    // expansion, and this is the assertion that the expansion reaches through a setup body -
-    // without it the consumer of a fitted tensor has no edge to its producer and the sort is
-    // free to run them in either order.
-    cg::Node const *setup_node = nullptr;
-    for (auto const &node : graph.nodes()) {
-        if (node.kind == cg::OpKind::Setup) {
-            setup_node = &node;
-        }
-    }
-    REQUIRE(setup_node != nullptr);
-    REQUIRE(setup_node->inputs.empty());
-    REQUIRE(setup_node->outputs.empty());
+    cg::TensorId const ones_id = graph.live_tensor_id_by_ptr(&ones, {});
+    cg::TensorId const fit_id  = graph.live_tensor_id_by_ptr(&fit, {});
 
+    // A sort is one of the points that says the node list may have moved, and the lists are
+    // refreshed there, which is why closing the capture above was enough. From here the setup is
+    // an ordinary node: it declares the tensor its body writes as its own output and the tensor
+    // its body reads as its own input, which is what every rule that asks "which node produces
+    // this buffer" then gets the right answer from.
+    graph.topological_sort();
+    cg::Node const *setup_node = find_setup();
+    REQUIRE(setup_node != nullptr);
+    REQUIRE(std::find(setup_node->inputs.begin(), setup_node->inputs.end(), ones_id) != setup_node->inputs.end());
+    REQUIRE(std::find(setup_node->outputs.begin(), setup_node->outputs.end(), fit_id) != setup_node->outputs.end());
+
+    // And the subtree expansion agrees with them rather than being a second source for them.
     auto const [eff_in, eff_out] = graph.effective_io(*setup_node);
-    cg::TensorId const ones_id   = graph.live_tensor_id_by_ptr(&ones, {});
-    cg::TensorId const fit_id    = graph.live_tensor_id_by_ptr(&fit, {});
     REQUIRE(std::find(eff_in.begin(), eff_in.end(), ones_id) != eff_in.end());
     REQUIRE(std::find(eff_out.begin(), eff_out.end(), fit_id) != eff_out.end());
+    REQUIRE(eff_in.size() == setup_node->inputs.size());
+    REQUIRE(eff_out.size() == setup_node->outputs.size());
 }
 
 TEST_CASE("Setup - a body placed before its consumers runs before them", "[ComputeGraph][Setup]") {
@@ -365,6 +381,25 @@ TEST_CASE("Setup - a saved graph reloads having fitted nothing, and fits once", 
 
     loaded->execute();
     REQUIRE(run_count(fit2) == Catch::Approx(1.0));
+
+    // The node's own operand lists crossed the file. They are ordinary per-node keys, so no
+    // schema key was added and a file written before setups carried them loads with the empty
+    // lists it was written with, which is the state the derivation refreshes from anyway.
+    cg::Node const *loaded_setup = nullptr;
+    for (auto const &node : loaded->nodes()) {
+        if (node.kind == cg::OpKind::Setup) {
+            loaded_setup = &node;
+        }
+    }
+    REQUIRE(loaded_setup != nullptr);
+    auto const named = [&](std::vector<cg::TensorId> const &ids, std::string_view want) {
+        return std::ranges::any_of(ids, [&](cg::TensorId id) {
+            cg::TensorHandle const *handle = loaded->find_tensor(loaded->resolve_alias(id));
+            return handle != nullptr && handle->name == want;
+        });
+    };
+    REQUIRE(named(loaded_setup->inputs, "ones"));
+    REQUIRE(named(loaded_setup->outputs, "fit"));
 }
 
 TEST_CASE("Setup - a body carrying an unwritable node is refused by the serializability report", "[ComputeGraph][Setup][SaveLoad]") {

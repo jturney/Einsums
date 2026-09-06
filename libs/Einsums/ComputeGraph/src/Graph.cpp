@@ -1814,14 +1814,7 @@ void Graph::collect_subtree_referenced_ptrs(std::unordered_set<void const *> &ou
     });
 }
 
-std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node const &node) {
-    std::vector<TensorId> ins  = node.inputs;
-    std::vector<TensorId> outs = node.outputs;
-
-    if (!is_control_flow(node.kind)) {
-        return {ins, outs};
-    }
-
+std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::subtree_io(Node const &node) {
     // Walk the node's subtree (body / branches, recursively) and collect the
     // buffer pointers it reads and writes, keeping one representative handle per
     // buffer. Each sub-graph resolves its own TensorIds, so we key on the stable
@@ -1883,6 +1876,19 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node
         add_out.insert(resolve(p));
     }
 
+    return {std::vector<TensorId>(add_in.begin(), add_in.end()), std::vector<TensorId>(add_out.begin(), add_out.end())};
+}
+
+std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node const &node) {
+    std::vector<TensorId> ins  = node.inputs;
+    std::vector<TensorId> outs = node.outputs;
+
+    if (!is_control_flow(node.kind)) {
+        return {ins, outs};
+    }
+
+    auto [add_in, add_out] = subtree_io(node);
+
     std::unordered_set<TensorId> have_in(ins.begin(), ins.end());
     std::unordered_set<TensorId> have_out(outs.begin(), outs.end());
     for (TensorId const tid : add_in) {
@@ -1897,6 +1903,22 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::effective_io(Node
     }
 
     return {ins, outs};
+}
+
+// NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest, so the refresh does too.
+void Graph::refresh_setup_io() {
+    // Recursively, because a fitting emitted into a loop body puts its setup there and the
+    // body is the graph whose sort has to place it.
+    for_each_subgraph([](Graph &sub) { sub.refresh_setup_io(); });
+
+    for (auto &node : _nodes) {
+        if (node.kind != OpKind::Setup) {
+            continue;
+        }
+        auto [ins, outs] = subtree_io(node);
+        node.inputs      = std::move(ins);
+        node.outputs     = std::move(outs);
+    }
 }
 
 std::pair<std::span<TensorId const>, std::span<TensorId const>> Graph::effective_io_cached(Node const &node, EffectiveIoCache &cache) {
@@ -2670,6 +2692,10 @@ void Graph::topological_sort() {
         return;
     }
 
+    // A setup body captured since the last sort makes the node's lists stale, and the sort is
+    // the first consumer of them. Idempotent, and a no-op on the graphs that hold no setup.
+    refresh_setup_io();
+
     if (_sorted) {
         // A pass rebuilt or filtered the node list and vouched for the order
         // via mark_sorted(); only the position-keyed _deps are stale. This
@@ -2903,9 +2929,14 @@ Graph &Graph::add_setup_at(std::string label, std::size_t position) {
 }
 
 void Graph::add_setup(std::string label, std::function<void()> body_fn) {
-    auto              &body = add_setup(std::move(label));
-    CaptureGuard const g(body);
-    body_fn();
+    {
+        auto              &body = add_setup(std::move(label));
+        CaptureGuard const g(body);
+        body_fn();
+    }
+    // The one add_setup spelling that HAS a moment when the body is complete, so the node's
+    // lists are right from here on without waiting for a sort or a pass.
+    refresh_setup_io();
 }
 
 bool Graph::has_setup() const noexcept {

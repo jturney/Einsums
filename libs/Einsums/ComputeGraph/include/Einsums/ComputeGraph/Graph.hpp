@@ -1557,7 +1557,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * because the body/branches are captured after the node is created, this
      * augments them with the tensors the *subtree* reads (→ inputs) and writes
      * (→ outputs), mapped from the subtree's buffer pointers back to this
-     * graph's TensorIds.
+     * graph's TensorIds. A Setup node carries those lists on itself (see
+     * @ref refresh_setup_io), and the augmentation is then a no-op that agrees
+     * with them rather than a second source for them.
      *
      * Schedulers (``topological_sort`` and the Reorder pass) must use this
      * instead of the raw node lists, or a control-flow node has no dependency
@@ -1574,6 +1576,41 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * harmless: no parent node references it).
      */
     std::pair<std::vector<TensorId>, std::vector<TensorId>> effective_io(Node const &node);
+
+    /**
+     * @brief The buffers a control-flow node's subtree reads and writes, as ids of THIS graph.
+     *
+     * The subtree half of @ref effective_io, factored out because @ref refresh_setup_io needs
+     * the same answer and two derivations of one relation disagreeing is this module's
+     * signature bug. Not const for the reason @ref effective_io is not: a buffer named only
+     * inside a body gets a parent handle minted for it on first sight.
+     */
+    std::pair<std::vector<TensorId>, std::vector<TensorId>> subtree_io(Node const &node);
+
+    /**
+     * @brief Write each Setup node's own input/output lists from what its body touches.
+     *
+     * A setup node is an ordinary node for the sort, for @ref UsageAnalysis and for
+     * @ref passes::Reorder: its outputs are the parent tensors its body writes (the fitted
+     * factors, the records' tensors) and its inputs the parent tensors its body reads (the
+     * fit copy of a tagged tensor, the collocation matrices, the metric). Carrying them means
+     * every rule that asks "which node produces this buffer" gets the setup by the ordinary
+     * answer instead of by a special case, which is what four position-based bugs in
+     * @ref passes::Materialization came down to.
+     *
+     * The lists are DERIVED and refreshed rather than fixed at construction, because a body is
+     * captured after @ref add_setup returns and a pass may emit into one at any point: there
+     * is no moment at which they could be final. This is called at the declaration points that
+     * already say the node list may have moved (@ref topological_sort, each pass in
+     * @ref PassManager::run) and after the capturing @ref add_setup overload closes its guard.
+     * It is idempotent and costs a walk of the setup bodies.
+     *
+     * A Loop or Conditional node is deliberately left alone. Its body runs a variable number
+     * of times against its neighbours, so a pass reading its outputs as "produced once, here"
+     * would be reading something false; a setup body runs at most once per bound problem,
+     * which is exactly what an ordinary node's outputs mean.
+     */
+    void refresh_setup_io();
 
     /// Memoization store for effective_io_cached(). Keyed by NodeId so
     /// entries stay valid across in-sort node moves. Scoped to a single

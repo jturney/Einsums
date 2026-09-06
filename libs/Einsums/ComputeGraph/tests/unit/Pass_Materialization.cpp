@@ -686,3 +686,127 @@ TEST_CASE("Materialization - a setup nested in a loop body materializes its work
     g.execute();
     CHECK(out(0, 0) == Catch::Approx(2.0));
 }
+
+TEST_CASE("Materialization - a factor's lifecycle follows the setup that writes it through a reorder",
+          "[ComputeGraph][Passes][Materialization][Reorder]") {
+    // Two setups that share no tensor have no dependency between them, so Reorder is free to
+    // put either first, and its memory heuristic does exactly that: the one whose body frees
+    // the most is scheduled first whichever order the program declared them in. Every rule that
+    // asked "which node produces this buffer" by looking at a POSITION got a different answer
+    // per platform out of that, and two CI failures this week were the same shape.
+    //
+    // A setup lists the parent tensors its body writes as its outputs now, so the question has
+    // an ordinary answer. This case asserts the answer twice, once per schedule order: the
+    // setup that writes a factor carries it in node.outputs, and the factor's lifecycle lands
+    // in that setup's body and nowhere else.
+    //
+    // Both orders are reached by moving the LARGE workspace from the first-declared setup to
+    // the second: whichever body frees more is scheduled first, so one arm reorders and the
+    // other does not, and between them both final orders are exercised.
+    auto const run_arm = [](bool first_setup_is_large) {
+        CAPTURE(first_setup_is_large);
+
+        std::size_t const large = 48;
+        std::size_t const small = 2;
+        std::size_t const dim_a = first_setup_is_large ? large : small;
+        std::size_t const dim_b = first_setup_is_large ? small : large;
+
+        auto seed_a  = create_zero_tensor<double>("seed_a", dim_a, dim_a);
+        auto seed_b  = create_zero_tensor<double>("seed_b", dim_b, dim_b);
+        seed_a(0, 0) = 1.0;
+        seed_b(0, 0) = 1.0;
+        auto out_a   = create_zero_tensor<double>("out_a", dim_a, dim_a);
+        auto out_b   = create_zero_tensor<double>("out_b", dim_b, dim_b);
+
+        cg::Graph g("two_setups");
+        auto     &factor_a = g.declare_runtime_tensor<double>("factor_a", {dim_a, dim_a}, /*intermediate=*/true);
+        auto     &factor_b = g.declare_runtime_tensor<double>("factor_b", {dim_b, dim_b}, /*intermediate=*/true);
+
+        cg::Graph *body_a = nullptr;
+        cg::Graph *body_b = nullptr;
+        {
+            // Both bodies name their workspace identically, so the two are told apart by
+            // identity and never by name.
+            auto &body = g.add_setup("fit_a");
+            body_a     = &body;
+            cg::CaptureGuard const guard(body);
+            auto                  &scratch = body.declare_runtime_tensor<double>("workspace", {dim_a, dim_a}, /*intermediate=*/true);
+            cg::permute("ij <- ij", 0.0, &scratch, 1.0, seed_a);
+            cg::permute("ij <- ij", 0.0, &factor_a, 1.0, scratch);
+        }
+        {
+            auto &body = g.add_setup("fit_b");
+            body_b     = &body;
+            cg::CaptureGuard const guard(body);
+            auto                  &scratch = body.declare_runtime_tensor<double>("workspace", {dim_b, dim_b}, /*intermediate=*/true);
+            cg::permute("ij <- ij", 0.0, &scratch, 1.0, seed_b);
+            cg::permute("ij <- ij", 0.0, &factor_b, 1.0, scratch);
+        }
+        {
+            cg::CaptureGuard const guard(g);
+            cg::permute("ij <- ij", 0.0, &out_a, 1.0, factor_a);
+            cg::permute("ij <- ij", 0.0, &out_b, 1.0, factor_b);
+        }
+
+        cg::TensorId const id_a = g.find_tensor_id_by_ptr(&factor_a);
+        cg::TensorId const id_b = g.find_tensor_id_by_ptr(&factor_b);
+        REQUIRE(id_a != 0);
+        REQUIRE(id_b != 0);
+
+        auto pm = cg::PassManager::create_default();
+        g.apply(pm);
+
+        auto const setup_at = [&](std::string const &label) -> std::size_t {
+            auto const &nodes = g.nodes();
+            for (std::size_t i = 0; i < nodes.size(); i++) {
+                if (nodes[i].kind == cg::OpKind::Setup && nodes[i].label == label) {
+                    return i;
+                }
+            }
+            FAIL(fmt::format("no setup node labelled '{}'", label));
+            return 0;
+        };
+        std::size_t const pos_a = setup_at("fit_a");
+        std::size_t const pos_b = setup_at("fit_b");
+
+        // The larger body is scheduled first, so the two arms put the setups in opposite
+        // orders and neither assertion below is reading a fixed schedule.
+        CHECK((first_setup_is_large ? pos_a < pos_b : pos_b < pos_a));
+
+        // The mechanism: each setup names what its body produces, and nothing else's.
+        auto const writes = [&](std::size_t pos, cg::TensorId tid) {
+            auto const &outs = g.nodes()[pos].outputs;
+            return std::ranges::any_of(outs, [&](cg::TensorId out) { return g.resolve_alias(out) == g.resolve_alias(tid); });
+        };
+        CHECK(writes(pos_a, id_a));
+        CHECK_FALSE(writes(pos_a, id_b));
+        CHECK(writes(pos_b, id_b));
+        CHECK_FALSE(writes(pos_b, id_a));
+
+        // The consequence: the lifecycle of a factor is inside the body that writes it.
+        auto const materialize_of = [](cg::Graph const &graph, std::string const &name) {
+            return std::ranges::count_if(graph.nodes(), [&](cg::Node const &node) {
+                return node.kind == cg::OpKind::Materialize && node.label == fmt::format("materialize({})", name);
+            });
+        };
+        CHECK(materialize_of(*body_a, "factor_a") == 1);
+        CHECK(materialize_of(*body_b, "factor_b") == 1);
+        CHECK(materialize_of(*body_a, "factor_b") == 0);
+        CHECK(materialize_of(*body_b, "factor_a") == 0);
+        CHECK(materialize_of(g, "factor_a") == 0);
+        CHECK(materialize_of(g, "factor_b") == 0);
+        CHECK(materialize_of(*body_a, "workspace") == 1);
+        CHECK(materialize_of(*body_b, "workspace") == 1);
+        CHECK(materialize_of(g, "workspace") == 0);
+
+        CHECK(cg::passes::duplicate_materializations(g).empty());
+        CHECK(cg::passes::stranded_materializations(g).empty());
+
+        g.execute();
+        CHECK(out_a(0, 0) == Catch::Approx(1.0));
+        CHECK(out_b(0, 0) == Catch::Approx(1.0));
+    };
+
+    run_arm(true);
+    run_arm(false);
+}

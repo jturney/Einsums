@@ -693,12 +693,19 @@ Value write_node(Node const &node, std::size_t dense_id, Graph const &graph, Gra
     out.set("outputs", to_array(node.outputs, dense_of));
 
     // Rank is keyed on the DESTINATION, which is the rule build_executor states;
-    // a kind with no tensor destination (write_param's expression arm, the two
+    // a kind with no tensor destination (write_param's expression arm, the
     // control-flow kinds) records rank 0 and an unknown dtype, neither of which
     // that builder dispatches on.
+    //
+    // Asked of the KIND and not of the operand lists, because a Setup node carries lists of
+    // its own: its body's writes are its outputs. Reading a dtype off the first of them would
+    // give a control-flow node a destination it does not have and would make one node's record
+    // depend on which tensor a set happened to order first.
     packed_gemm::ScalarType dtype = packed_gemm::ScalarType::Unknown;
     std::size_t             rank  = 0;
-    if (!node.outputs.empty()) {
+    if (is_control_flow(node.kind)) {
+        // Nothing to derive.
+    } else if (!node.outputs.empty()) {
         if (TensorHandle const *handle = graph.find_tensor(node.outputs[0]); handle != nullptr) {
             dtype = handle->dtype;
             rank  = handle->rank;
@@ -711,8 +718,10 @@ Value write_node(Node const &node, std::size_t dense_id, Graph const &graph, Gra
     out.set("dtype", Value{std::string(scalar_type_name(dtype))});
     out.set("rank", Value{rank});
 
-    // A control-flow node's own operand lists are EMPTY: its body is captured after the node
-    // exists, so what it touches is known only through the subtree. The parent frame therefore
+    // A Loop or Conditional node's own operand lists are EMPTY: its body is captured after the
+    // node exists, so what it touches is known only through the subtree. A Setup node's lists
+    // are refreshed from its body and name the same buffers, but the walk below is what interns
+    // the ones only a DESCENDANT of the body names, so it runs for all three. The parent frame
     // has to be told about the buffers the body names BEFORE the fragment is written, because
     // a fragment tensor is matched to an enclosing frame by address and a frame that has not
     // interned the buffer yet reports no match. The body then writes its own tensor record,

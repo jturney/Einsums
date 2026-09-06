@@ -479,14 +479,15 @@ bool Materialization::run(Graph &graph) {
     };
     //
     // The setup is found by SCANNING the node list in order rather than by looking at the node at
-    // the buffer's recorded first use. A setup node carries no inputs or outputs of its own and
-    // orders itself against its neighbours through effective io alone, so two setups that share
-    // no tensor are free to be reordered, and a first-use position taken before such a reorder
-    // names whichever setup now sits there. On one platform that happened to be the setup that
-    // writes the buffer and on another it was not, and the buffer's lifecycle then went to a node
-    // the writing body's validation could not see. The earliest setup that writes the buffer is a
-    // property of the graph, not of a position, so it is what is looked for.
-    auto setup_body_writing = [&](std::size_t /*position*/, void const *ptr) -> Graph * {
+    // the buffer's recorded first use, and it stays a scan now that a setup lists what its body
+    // writes. The reason it has to is not the one that made it a scan: a recorded first use is the
+    // EARLIEST use of the buffer and a use is a read as readily as a write, so the node sitting
+    // there is the writing setup only when nothing touches the buffer before it. The requests are
+    // deduplicated by buffer at the smallest position across every use besides, so a workspace a
+    // loop body also names carries the loop's position rather than the setup's. The earliest setup
+    // that writes the buffer is a property of the graph and not of a position, so it is what is
+    // looked for.
+    auto setup_body_writing = [&](void const *ptr) -> Graph * {
         if (ptr == nullptr) {
             return nullptr;
         }
@@ -546,10 +547,12 @@ bool Materialization::run(Graph &graph) {
             placed.insert(handle.tensor_ptr);
         }
 
-        if (Graph *body = setup_body_writing(r.position, handle.tensor_ptr); body != nullptr) {
+        if (Graph *body = setup_body_writing(handle.tensor_ptr); body != nullptr) {
             if (auto const body_tid = body_tid_for(*body, handle.tensor_ptr); body_tid.has_value()) {
                 auto body_nodes = lifecycle_for(handle, *body_tid);
-                report(2, fmt::format("materialize deferred tensor '{}' inside setup body '{}'", handle.name, nodes[r.position].label));
+                // Named after the body the search FOUND. It used to name the node sitting at the
+                // request's position, which is the node the search stopped trusting.
+                report(2, fmt::format("materialize deferred tensor '{}' inside setup body '{}'", handle.name, body->name()));
                 insert_at_front(*body, std::move(body_nodes));
                 continue;
             }

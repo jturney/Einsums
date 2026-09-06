@@ -374,6 +374,12 @@ bool PassManager::run(Graph &graph) {
         // deadline that survived a run would hand the second graph whatever the first left over.
         pass->set_budget(pass_budget());
 
+        // A setup node's own operand lists are derived from its body, and a pass earlier in
+        // this pipeline may have captured one (FactorizationPass emits a fitting) or emitted
+        // into one. Refreshed here so every pass sees a setup as the ordinary writer of what
+        // it produces, whether or not it goes on to ask for a sort.
+        graph.refresh_setup_io();
+
         if (analyze) {
             // Analysis-only: save node list, run pass, log results, restore.
             // Sub-graph recursion is intentionally skipped here, we only
