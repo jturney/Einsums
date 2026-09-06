@@ -26,7 +26,7 @@
 # that deliberately no longer exist.
 
 "einsums:max-memory":
-  added: "2.1.0"
+  added: "2.0.0"
   body: |
     Ceiling on the memory Einsums plans against. It takes a string containing a number and
     units; see :cpp:func:`einsums::string_util::memory_string`. Set to ``0`` to disable.
@@ -270,7 +270,7 @@
     floor rather than a ceiling.
 
 "einsums:graph:factorization-max-readers":
-  added: "2.1.0"
+  added: "2.0.0"
   body: |
     How many consumers a definition may be inlined into before ``MultiTermFactorization`` leaves
     it whole.
@@ -295,7 +295,7 @@
     ``MultiTermFactorization::set_max_readers`` overrides this for one pipeline, in both directions.
 
 "einsums:graph:tiling-memory-cap":
-  added: "2.1.0"
+  added: "2.0.0"
   body: |
     Largest a single live intermediate may be, in bytes, before ``AxisTiling`` rewrites the program
     as a loop over slices of its free axes.
@@ -340,7 +340,7 @@
     to be worth and the measured residual says whether the grid delivered it.
 
 "einsums:graph:naf-threshold":
-  added: "2.1.0"
+  added: "2.0.0"
   body: |
     Fraction of the largest singular value below which a ``NaturalAuxiliaryFactorization`` drops
     an auxiliary direction, when the caller states no threshold of its own.
@@ -367,7 +367,7 @@
     from a genuinely small one, which it cannot.
 
 "einsums:graph:fno-occupation":
-  added: "2.1.0"
+  added: "2.0.0"
   body: |
     Occupation below which ``BasisTruncation`` drops a natural orbital from the correlated
     space, when the caller states no cutoff of its own.

@@ -28,14 +28,14 @@ EINSUMS_NAMESPACE_BEGIN(memory)
  * Unmetered, unlike @ref einsums::BufferAllocator, which meters against
  * @c --einsums:buffer-size before landing here. Returns null on failure.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT void *aligned_alloc(size_t bytes);
 
 /**
  * @brief Release memory obtained from @ref aligned_alloc. Null is a no-op.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 EINSUMS_EXPORT void aligned_free(void *ptr);
 
@@ -52,7 +52,7 @@ class MemoryPool;
 /**
  * @brief Accounting snapshot for one @ref MemoryPool.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 struct MemoryPoolStats {
     size_t bytes_reserved{0}; ///< Total arena bytes registered with mimalloc.
@@ -79,7 +79,7 @@ struct MemoryPoolStats {
  *   surviving blocks move to the pool's base heap and stay valid, to be freed
  *   individually when their tokens die.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY MemoryPoolEpoch {
   public:
@@ -100,7 +100,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY MemoryPoolEpoch {
      * @throws std::runtime_error if a keepalive token from this scope is still
      *         held, or if an inner epoch is still open.
      *
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     APIARY_EXPOSE void close();
 
@@ -154,7 +154,7 @@ APIARY_EXPOSE EINSUMS_EXPORT size_t pool_reserve_cost(size_t bytes);
  * process. Pools are therefore meant to be FEW, LONG-LIVED, and reserved to
  * their peak size once rather than grown in steps.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
   public:
@@ -181,7 +181,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
      *
      * @throws std::runtime_error if the arena cannot be reserved.
      *
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     APIARY_EXPOSE explicit MemoryPool(size_t reserve_bytes, std::string name = "pool", size_t warn_bytes = 0, bool pinned = false);
 
@@ -205,7 +205,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
      * @throws std::runtime_error if called off the owning thread, or if the
      *         pool could neither carve nor grow.
      *
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     void *allocate(size_t bytes);
 
@@ -217,7 +217,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
      * write. Zeroing a multi-megabyte tensor costs full memory bandwidth
      * either way, which is why the pool's speedup is on uninitialized carves.
      *
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     void *allocate_zeroed(size_t bytes);
 
@@ -230,7 +230,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
      * This is what makes a pooled tensor's death its own reclamation: the token
      * rides along as the tensor's storage owner, on any thread.
      *
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     [[nodiscard]] std::shared_ptr<void const> borrow(void *ptr);
 
@@ -248,7 +248,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
      * once rather than in steps: each growth takes another arena, mimalloc caps
      * how many arenas a process may hold, and it never reclaims one.
      *
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     APIARY_EXPOSE void reserve(size_t bytes);
 
@@ -259,7 +259,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
      *         an epoch is open. Destroying the heaps under live tensors is a
      *         use-after-free; this makes it a recoverable error instead.
      *
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     APIARY_EXPOSE void reset();
 
@@ -294,7 +294,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
      * token, so it is indistinguishable from an owned tensor to every consumer
      * and frees its bytes back to the pool when it dies.
      *
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     template <typename TensorT, typename Dims>
     [[nodiscard]] TensorT empty_as(std::string tensor_name, Dims const &dims) {
@@ -341,7 +341,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_NOCOPY APIARY_NOMOVE MemoryPool {
      * deep-copying copy constructor can get between the carve and the caller.
      * The factories above are the ergonomic form.
      *
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     template <typename TensorT>
     void place(TensorT &t, bool zeroed = false) {

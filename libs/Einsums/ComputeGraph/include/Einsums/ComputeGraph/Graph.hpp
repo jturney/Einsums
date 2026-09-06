@@ -2188,7 +2188,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * the order they wrote things in, while a PASS that wraps a run of existing nodes in a loop
      * wants the position that run occupied. Appending and then moving would be a second way of
      * doing what @ref insert_node_groups already knows how to do.
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     Graph &add_loop_at(std::string label, size_t max_iterations, PredExpr condition, std::size_t position);
 
@@ -3877,7 +3877,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @throws std::invalid_argument When a derived shape cannot be applied (an intermediate
      *         that is already materialized, or one whose handle carries no resize hook), or
      *         when a node's operands no longer agree on an extent.
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     void rederive_intermediate_extents() {
         rederive_owned_extents();
@@ -3900,7 +3900,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * @throws std::invalid_argument Under the conditions @ref rederive_intermediate_extents
      *         lists, for this one tensor.
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     void resize_intermediate(TensorId id, std::vector<std::size_t> const &dims, std::string_view producer) {
         resize_derived_extent(id, dims, producer);

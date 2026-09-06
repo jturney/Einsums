@@ -79,7 +79,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @brief Truncate an index space to the natural orbitals a density says are occupied.
  *
  * @see BasisTruncation.hpp for the construction and for what chemistry calls it
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT BasisTruncation : public OptimizerPass {
   public:

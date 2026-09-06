@@ -69,7 +69,7 @@
  * rather than tiling what is already small.
  *
  * @see option::GraphTilingMemoryCap
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 
 #include <Einsums/Config.hpp>
@@ -100,7 +100,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * Not a member of @ref PassManager::create_default. The cap's default is far above anything a
  * captured program declares, so a default-pipeline membership would only ever pay for the
  * analysis; a caller who has a footprint to live inside says so and adds the pass.
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT AxisTiling : public OptimizerPass {
   public:
@@ -139,73 +139,73 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      *
      * Beats @ref option::GraphTilingMemoryCap, which is the two-level shape every other
      * per-pass knob in this module has.
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     APIARY_EXPOSE void set_memory_cap(std::int64_t bytes);
 
     /// @brief The cap in force: this pipeline's override, or the option's value.
     /// @return The cap in bytes.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("memory_cap") [[nodiscard]] std::int64_t memory_cap() const;
 
     /// @brief How many regions the last apply tiled.
     /// @return The count, zero when the pass declined.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("num_tiled") [[nodiscard]] std::size_t num_tiled() const noexcept { return _num_tiled; }
 
     /// @brief The sliced axes of the last decision, named ``tensor[position]``.
     /// @return One entry per sliced axis, outermost first.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("axis_names") [[nodiscard]] std::vector<std::string> axis_names() const { return _axis_names; }
 
     /// @brief The index letter each sliced axis carries, where a contraction names one.
     /// @return One entry per sliced axis, empty where no node names the axis with a letter.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("axis_letters") [[nodiscard]] std::vector<std::string> axis_letters() const { return _axis_letters; }
 
     /// @brief The extent of each sliced axis.
     /// @return One entry per sliced axis, in the same order as @ref axis_names.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("axis_extents") [[nodiscard]] std::vector<std::int64_t> axis_extents() const { return _axis_extents; }
 
     /// @brief How many slices the chosen axes cut the program into.
     /// @return The product of the sliced extents, zero when the pass declined.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("slice_count") [[nodiscard]] std::size_t slice_count() const noexcept { return _slice_count; }
 
     /// @brief How many slices one iteration of the emitted loop handles.
     /// @return The chunk depth, zero when the pass declined.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("depth") [[nodiscard]] std::size_t depth() const noexcept { return _depth; }
 
     /// @brief How many iterations the emitted loop runs.
     /// @return @ref slice_count divided by @ref depth, zero when the pass declined.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("iterations") [[nodiscard]] std::size_t iterations() const noexcept { return _iterations; }
 
     /// @brief The largest single intermediate the region declared before the rewrite, in bytes.
     /// @return The size, zero when no region was examined.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("largest_before") [[nodiscard]] std::size_t largest_before() const noexcept { return _largest_before; }
 
     /// @brief The largest single intermediate the body declares after the rewrite, in bytes.
     /// @return The size at the chosen depth, zero when the pass declined.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("largest_after") [[nodiscard]] std::size_t largest_after() const noexcept { return _largest_after; }
 
     /// @brief The intermediates the rewrite streams, by name.
     /// @return One entry per re-declared tensor, in region order.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("streamed") [[nodiscard]] std::vector<std::string> streamed() const { return _streamed; }
 
     /// @brief The tensors the rewrite left whole, by name.
     /// @return One entry per tensor read or written without a sliced axis.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("whole") [[nodiscard]] std::vector<std::string> whole() const { return _whole; }
 
     /// @brief The tensor the reduction accumulates into across iterations, if there is one.
     /// @return Its name, or an empty string when the region has no such reduction.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     APIARY_EXPOSE APIARY_GETTER("accumulator") [[nodiscard]] std::string accumulator() const { return _accumulator; }
 
   private:

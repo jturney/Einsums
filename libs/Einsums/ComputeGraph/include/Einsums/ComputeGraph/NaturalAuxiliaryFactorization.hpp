@@ -98,7 +98,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * @brief Offer a three-index tensor over a truncated auxiliary index.
  *
  * @see NaturalAuxiliaryFactorization.hpp for the mathematics and for what chemistry calls it
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT NaturalAuxiliaryFactorization
     : public FactorizationProvider {

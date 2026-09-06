@@ -1246,7 +1246,7 @@ template <BasicTensorConcept TensorType, typename Pivots>
  * right-hand side.
  * @throws std::length_error If the pivot array is shorter than the order of @p A.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 template <CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, typename Pivots>
     requires requires(Pivots a, size_t ind) {

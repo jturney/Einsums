@@ -38,7 +38,7 @@ EINSUMS_NAMESPACE_BEGIN()
 /**
  * @brief Runtime-rank tensor carved from @p pool, contents uninitialized.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 template <typename T, typename Alloc = std::allocator<T>>
 [[nodiscard]] GeneralRuntimeTensor<T, Alloc> pool_empty(MemoryPool &pool, std::string name, std::vector<size_t> const &dims) {
@@ -48,7 +48,7 @@ template <typename T, typename Alloc = std::allocator<T>>
 /**
  * @brief Runtime-rank tensor carved from @p pool and zeroed.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 template <typename T, typename Alloc = std::allocator<T>>
 [[nodiscard]] GeneralRuntimeTensor<T, Alloc> pool_zeros(MemoryPool &pool, std::string name, std::vector<size_t> const &dims) {
@@ -58,7 +58,7 @@ template <typename T, typename Alloc = std::allocator<T>>
 /**
  * @brief Compile-time-rank tensor carved from @p pool, contents uninitialized.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 template <typename T, size_t Rank, std::integral... Dims>
     requires(sizeof...(Dims) == Rank)
@@ -69,7 +69,7 @@ template <typename T, size_t Rank, std::integral... Dims>
 /**
  * @brief Compile-time-rank tensor carved from @p pool and zeroed.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 template <typename T, size_t Rank, std::integral... Dims>
     requires(sizeof...(Dims) == Rank)
@@ -102,7 +102,7 @@ std::unique_ptr<TensorT> new_pooled(MemoryPool &pool, std::string name, std::vec
  * Bound as ``einsums.pool_empty(pool, name, dims, dtype)`` and reachable as
  * ``pool.empty(...)`` after the Python layer attaches it to the class.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 template <typename T, typename Alloc = std::allocator<T>>
 APIARY_EXPOSE APIARY_INSTANTIATE_AS("pool_empty", float, std::allocator<float>)
@@ -117,7 +117,7 @@ pool_new_empty(MemoryPool &pool, std::string name, std::vector<size_t> dims) {
 /**
  * @brief Python entry point for @ref pool_zeros.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 template <typename T, typename Alloc = std::allocator<T>>
 APIARY_EXPOSE APIARY_INSTANTIATE_AS("pool_zeros", float, std::allocator<float>)
