@@ -12,7 +12,7 @@ all four orbital indices rather than pair by pair::
     T          = K * D
     E          = sum_iajb (2 K - K[i,b,j,a]) T
 
-At water/cc-pVDZ that declares five tensors of 5 x 19 x 5 x 19 doubles, 72200 bytes each, which
+At water/cc-pVDZ that declares four tensors of 5 x 19 x 5 x 19 doubles, 72200 bytes each, which
 is exactly the object density fitting exists to avoid. The hand-written pair-driven form in
 ``examples/psi4-bridge/df_mp2_graph.py`` holds one 19 x 19 block instead. This shard is what says
 the pass derives the second schedule from the first.
@@ -114,7 +114,30 @@ def _denominator(water, name="D"):
 
 
 def _capture(graph, water, denominator, energy):
-    """The full-axis energy. ``K`` is formed twice because the exchange term needs its own copy."""
+    """The full-axis energy, over one integral that four statements read."""
+    shape = _shape(water)
+    B = water["fitted"]
+    K = graph.scratch("K", shape, "float64")
+    T = graph.scratch("T", shape, "float64")
+    exchange = graph.scratch("K_exchange", shape, "float64")
+    combination = graph.scratch("Kbar", shape, "float64")
+    with cg.capture(graph):
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
+        la.direct_product(1.0, K, denominator, 0.0, T)
+        einsums.permute("iajb <- ibja", exchange, K)
+        la.axpby(2.0, K, 0.0, combination)
+        la.axpby(-1.0, exchange, 1.0, combination)
+        la.dot(energy, combination, T)
+
+
+def _capture_for_the_transform(graph, water, denominator, energy):
+    """The same energy with a PRIVATE numerator, which is what the transform needs.
+
+    ``LaplaceTransform`` dissolves the numerator of the direct product it rewrites and declines
+    one anything else reads, so the integral the exchange combination reads has to be a second
+    tensor. That is the transform's constraint rather than this pass's: the tiling cases above
+    read one integral four times, and only the arm that runs the transform pays for the copy.
+    """
     shape = _shape(water)
     B = water["fitted"]
     K = graph.scratch("K", shape, "float64")
@@ -191,7 +214,7 @@ def test_the_largest_intermediate_falls_from_the_four_index_tensor_to_one_pair(w
     # Every four-index intermediate streams, and so does the three-index integral, because one
     # of its axes is an occupied one. The energy is the only thing left whole, and it is the
     # accumulation.
-    assert set(tiling.streamed) == {"K", "T", "K_again", "K_exchange", "Kbar", "B", "D"}
+    assert set(tiling.streamed) == {"K", "T", "K_exchange", "Kbar", "B", "D"}
     assert tiling.whole == ["E"]
 
 
@@ -234,7 +257,7 @@ def test_after_the_laplace_transform_the_pass_declines(water):
     energy = einsums.create_zero_tensor("E_laplace", [1])
     graph = cg.Graph("mp2 laplace")
     denominator = _denominator(water, "D_tagged")
-    _capture(graph, water, denominator, energy)
+    _capture_for_the_transform(graph, water, denominator, energy)
     graph.annotate_tag(denominator, _G.LaplaceTransform.denominator_tag(
         ["eps_occ", "eps_vir", "eps_occ", "eps_vir"], "+-+-"))
 
@@ -318,7 +341,14 @@ def test_the_tiled_loop_replays_the_untiled_energy(water):
 
 
 def test_the_rewritten_program_is_one_loop_and_the_zeroing_of_its_accumulation(water):
-    """The node set, so the assertion is about what was emitted rather than that it ran."""
+    """The node set, so the assertion is about what was emitted rather than that it ran.
+
+    Six captured nodes, one contraction each for the integral and the reduction and four
+    statements between them, and two emitted: the zeroing of the accumulation and the loop that
+    is the rest of the program. The captured count was seven while this shard formed the
+    integral a second time for the exchange combination to read; nothing about the schedule
+    depended on that, which is why the copy is gone.
+    """
     energy = einsums.create_zero_tensor("E_shape", [1])
     graph = cg.Graph("mp2 tiled")
     denominator = _denominator(water)
@@ -326,7 +356,7 @@ def test_the_rewritten_program_is_one_loop_and_the_zeroing_of_its_accumulation(w
     captured = graph.num_nodes()
     tiling = _tiled(graph, _PAIR_CAP)
 
-    assert captured == 7
+    assert captured == 6
     assert tiling.num_tiled == 1
     assert graph.num_nodes() == 2
     assert [n["kind"] for n in json.loads(graph.to_json())["nodes"]] == ["Scale", "Loop"]
@@ -454,10 +484,9 @@ def test_an_auxiliary_truncation_composes_with_the_tiling_on_one_program(water, 
     assert graph.apply(manager), f"the truncation declined: {factorization.skip_reasons}"
 
     records = graph.approximations()
-    # One record per substituted occurrence of the integral, which is what a term reading it
-    # twice produces and what the composition rule is there to add up.
+    # One record per substituted occurrence of the integral, and the program forms it once.
     assert {r.pass_name for r in records} == {"NaturalAuxiliary"}
-    assert len(records) == 2
+    assert len(records) == 1
 
     # The schedule, decided on the truncated program. The occupied pair is still the answer:
     # what the truncation moved is the length of a summed index, and a summed index was never a

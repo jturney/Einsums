@@ -124,7 +124,14 @@ def _denominator(water, name="D"):
 
 
 def _capture(graph, water, denominator, energy):
-    """The full-axis energy. ``K`` is formed twice because the rewrite dissolves one."""
+    """The full-axis energy, over two copies of the integral.
+
+    The transform dissolves the numerator of the direct product it rewrites and declines one
+    anything else reads, so the integral the exchange combination reads has to be a second
+    tensor. That is the transform's constraint and not the search's: the flattener now inlines
+    a definition into each consumer that profits and keeps it for the rest, so a program that
+    does not run the transform reads one integral everywhere.
+    """
     shape = _shape(water)
     B = water["fitted"]
     K = graph.scratch("K", shape, "float64")
@@ -612,8 +619,10 @@ def _sos_capture(graph, water, energy):
     """``E = sum_iajb (ia|jb)^2 / D``, over all four indices.
 
     ``K`` is formed twice because the transform dissolves the numerator it
-    rewrites; after the search both copies are gone, so the second one costs
-    nothing in the rewritten graph.
+    rewrites and declines a numerator anything else reads; after the search both
+    copies are gone, so the second one costs nothing in the rewritten graph.
+    The copy is the transform's price rather than the flattener's, which now
+    inlines one definition into each consumer that profits.
     """
     shape = _shape(water)
     B = water["fitted"]
@@ -759,7 +768,14 @@ def test_the_pairless_form_is_declined_where_it_does_not_pay(water):
 # ──────────────────────────────────────────────────────────────────────────
 
 def _full_mp2_run(water, epsilon):
-    """The example's own full-axis MP2, transformed and then searched."""
+    """The example's own full-axis MP2, transformed and then searched.
+
+    Two integrals again, and for the transform's reason: the numerator it
+    dissolves may have no other reader. The three statements that read the
+    second copy are a permute and two scalings, none of which is a product the
+    flattener can inline into, so per-consumer inlining has nothing to offer
+    here and the copy is not something to engineer away.
+    """
     energy = einsums.create_zero_tensor(f"E_full_{epsilon:g}", [1])
     graph = cg.Graph(f"full_mp2_{epsilon:g}")
     registry = _sos_registry()
