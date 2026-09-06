@@ -319,6 +319,31 @@
     A threshold below ``1e-8`` is asking the fit to distinguish a numerically absent direction
     from a genuinely small one, which it cannot.
 
+"einsums:graph:fno-occupation":
+  added: "2.1.0"
+  body: |
+    Occupation below which ``BasisTruncation`` drops a natural orbital from the correlated
+    space, when the caller states no cutoff of its own.
+
+    A *tolerance*, spelled the way every per-lossy-pass knob is, and ABSOLUTE where the auxiliary
+    truncation's threshold is relative: an occupation number already is a fraction, since it says
+    how much of an electron a virtual orbital carries, and the conventional cutoffs are quoted as
+    such rather than against whichever orbital happens to be the most occupied.
+
+    It reaches the PASS rather than a provider, because a basis truncation factors nothing: it
+    replaces one index space by a contained subspace and projects every tensor that runs over the
+    space it replaced.
+
+    What the approximation record carries is not this number. It is the MP2 correlation energy the
+    truncation removed, measured at optimize time from the amplitudes the pass was handed, which is
+    an absolute energy-like effect rather than a relative one.
+
+    Loosening it shrinks the virtual index and removes more correlation energy. At water/cc-pVDZ
+    the natural occupations run from ``2.3e-2`` down to ``4.7e-5`` over 19 virtual orbitals, so a
+    cutoff of ``1e-3`` keeps 9 of them and one of ``1e-4`` keeps 17; there is no cutoff that halves
+    that molecule's virtual space cheaply, which is a property of a small basis rather than of the
+    method.
+
 "einsums:graph:laplace-epsilon":
   added: "2.0.0"
   body: |

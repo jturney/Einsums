@@ -163,6 +163,23 @@ inline constinit cl::ConfigOption<double> GraphNafThreshold = cl::config_opt<dou
     "dropped norm the approximation record carries",
     "ComputeGraph Passes", 1.0e-2, "FRACTION");
 
+/// The occupation below which a natural orbital is dropped from the correlated space.
+///
+/// A TOLERANCE in the sense Part 8.3 asks every per-lossy-pass knob to be one, and an ABSOLUTE one
+/// where the auxiliary truncation's is relative, because an occupation number already is a
+/// fraction: it says how much of an electron a virtual orbital carries, and the conventional
+/// cutoffs are quoted as such rather than against whichever orbital happens to be the most
+/// occupied.
+///
+/// It reaches the pass rather than a provider, since a basis truncation factors nothing. What the
+/// record carries is not this number but the MP2 correlation energy the truncation removed, which
+/// is measured rather than claimed.
+inline constinit cl::ConfigOption<double> GraphFnoOccupation = cl::config_opt<double>(
+    "einsums:graph:fno-occupation",
+    "Natural orbitals whose occupation does not exceed this are dropped from the correlated space by BasisTruncation, when the caller "
+    "states no cutoff of its own. Loosening it shrinks the virtual index and grows the correlation energy the truncation removes",
+    "ComputeGraph Passes", 1.0e-5, "OCCUPATION");
+
 /// How long a search pass may run, in milliseconds. Zero means unlimited.
 ///
 /// The number is a starting point rather than a measurement, which is what an option is for. What

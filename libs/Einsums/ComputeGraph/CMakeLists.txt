@@ -13,6 +13,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/ThcFactorization.hpp
     Einsums/ComputeGraph/NaturalAuxiliaryFactorization.hpp
     Einsums/ComputeGraph/Passes/FactorizationPass.hpp
+    Einsums/ComputeGraph/Passes/BasisTruncation.hpp
     Einsums/ComputeGraph/LaplaceQuadrature.hpp
     Einsums/ComputeGraph/Passes/LaplaceTransform.hpp
     Einsums/ComputeGraph/Blueprints/Orthogonalization.hpp
@@ -132,6 +133,7 @@ set(ComputeGraphSources
     Passes/ContractionPlanning.cpp
     Passes/DeltaElimination.cpp
     Passes/FactorizationPass.cpp
+    Passes/BasisTruncation.cpp
     LaplaceQuadrature.cpp
     Passes/LaplaceTransform.cpp
     Passes/ProvenancePropagation.cpp

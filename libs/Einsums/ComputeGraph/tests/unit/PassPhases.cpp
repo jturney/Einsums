@@ -9,6 +9,7 @@
 
 #include <Einsums/ComputeGraph.hpp>
 // Not reached through the umbrella header, which does not carry this pass.
+#include <Einsums/ComputeGraph/Passes/BasisTruncation.hpp>
 #include <Einsums/ComputeGraph/Passes/FactorizationPass.hpp>
 #include <Einsums/ComputeGraph/Passes/LaplaceTransform.hpp>
 #include <Einsums/ComputeGraphTypes/Spaces.hpp>
@@ -109,6 +110,12 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         // a quadrature is a statement about the arithmetic, and one a reload quietly dropped
         // would change what the graph computes.
         {"LaplaceTransform", cg::PassPhase::StructuralAlgebraic},
+
+        // The third lossy pass, and the one that is outside the default pipeline most obviously:
+        // it does nothing until a caller hands it a density to truncate a space from.
+        // Structural-algebraic because replacing a space changes which quantity every axis over it
+        // runs over, and a reload that quietly dropped it would change what the graph computes.
+        {"BasisTruncation", cg::PassPhase::StructuralAlgebraic},
     };
     return table;
 }
@@ -163,6 +170,7 @@ std::map<std::string, cg::PassTier> const &expected_tiers() {
         // Lossy: trades accuracy under a recorded tolerance, never in a default manager.
         {"FactorizationPass", cg::PassTier::Lossy},
         {"LaplaceTransform", cg::PassTier::Lossy},
+        {"BasisTruncation", cg::PassTier::Lossy},
     };
     return table;
 }
@@ -354,6 +362,10 @@ TEST_CASE("pass tiers - the passes outside the default pipeline are classified t
     cg::passes::LaplaceTransform const laplace;
     CHECK(laplace.tier() == cg::PassTier::Lossy);
     CHECK(expected_tiers().at(laplace.name()) == laplace.tier());
+
+    cg::passes::BasisTruncation const truncation;
+    CHECK(truncation.tier() == cg::PassTier::Lossy);
+    CHECK(expected_tiers().at(truncation.name()) == truncation.tier());
 }
 
 TEST_CASE("pass tiers - an unclassified pass claims the least", "[ComputeGraph][Phases]") {
@@ -408,6 +420,10 @@ TEST_CASE("pass phases - a pass outside the default pipeline is classified too",
     cg::passes::LaplaceTransform const laplace;
     CHECK(laplace.phase() == cg::PassPhase::StructuralAlgebraic);
     CHECK(expected_phases().at(laplace.name()) == laplace.phase());
+
+    cg::passes::BasisTruncation const truncation;
+    CHECK(truncation.phase() == cg::PassPhase::StructuralAlgebraic);
+    CHECK(expected_phases().at(truncation.name()) == truncation.phase());
 }
 
 TEST_CASE("pass phases - the unclassified default is the never-saved one", "[ComputeGraph][Phases]") {
