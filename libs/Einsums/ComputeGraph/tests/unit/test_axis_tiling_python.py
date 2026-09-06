@@ -351,3 +351,135 @@ def test_a_replay_restarts_the_sweep_rather_than_continuing_it(water):
     first = float(np.asarray(energy)[0])
     graph.execute()
     assert float(np.asarray(energy)[0]) == pytest.approx(first, rel=1e-14)
+
+
+# ── The round trip ──────────────────────────────────────────────────────────
+
+def test_the_tiled_loop_is_re_derived_on_the_other_side_of_a_file(water, tmp_path):
+    """A saved graph carries the ALGEBRA and a load re-derives the schedule from it.
+
+    That is the phase rule rather than a limitation met halfway: tiling is a resource decision,
+    it is taken against the machine the replay runs on, and a cap stated where the graph was
+    built is not the cap in force where it is loaded. So the file holds the full-axis program,
+    the load rebinds it to fresh buffers, and the loop is emitted there.
+    """
+    graph, _, denominator = _full_axis_graph(water, "mp2 to save")
+    path = str(tmp_path / "mp2_full_axis.eig")
+    cg.save_graph(graph, path)
+
+    loaded = cg.load_graph(path)
+    names = set(loaded.manifest_names())
+    replayed = einsums.create_zero_tensor("E", [1])
+    mapping = {"B": water["fitted"], "D": denominator, "E": replayed}
+    cg.bind(loaded, {name: tensor for name, tensor in mapping.items() if name in names})
+
+    tiling = _tiled(loaded, _PAIR_CAP)
+    assert tiling.num_tiled == 1
+    assert tiling.axis_letters == ["i", "j"]
+    assert tiling.largest_after == water["nvir"] * water["nvir"] * 8
+
+    loaded.apply(cg.default_pass_manager())
+    loaded.execute()
+    assert float(np.asarray(replayed)[0]) == pytest.approx(_untiled(water), rel=_TIER, abs=1e-13)
+
+
+def test_a_tiled_graph_says_which_of_its_nodes_a_file_cannot_hold(water):
+    """The narrowing, pinned rather than left to be rediscovered.
+
+    A tiled graph does not save, and the report names the two reasons. The slice index is a
+    ``write_param`` whose source is a callback, because a parameter that advances by a chunk
+    every iteration is arithmetic no ``BoundExpr`` arm expresses. And a ``View`` node is not
+    reconstructible at all: it has no builder entry and no IR encoding, so a parametric slice
+    cannot cross a file whatever its bounds are spelled as.
+
+    Neither costs anything, because the schedule is never what a file is supposed to hold. What
+    would have to change for a tiled graph to save is the View node kind, and the slice index
+    after it.
+    """
+    graph, _, _held = _full_axis_graph(water, "mp2 blockers")
+    assert _tiled(graph, _PAIR_CAP).num_tiled == 1
+
+    blockers = graph.serializability_report()
+    assert blockers, "a tiled graph is expected not to save"
+    kinds = {b.kind_name for b in blockers}
+    assert kinds == {"WriteParam", "View"}, kinds
+
+    by_kind = {b.kind_name: b.reason for b in blockers}
+    assert "callback arm" in by_kind["WriteParam"]
+    assert "not yet reconstructible" in by_kind["View"]
+    assert all(b.subgraph_path.startswith("loop(") for b in blockers), (
+        "every blocker is expected to be inside the emitted body")
+
+
+# ── The composition ─────────────────────────────────────────────────────────
+
+#: The family, declared with the extents ``test_naf_python.py`` declares them with. The registry
+#: is process-global and a derived space cannot be declared twice from two different families,
+#: so the two shards have to agree; only the RATIOS matter to the comparison.
+_FAMILY = (("occ", "o", 300.0, "nocc"), ("vir", "v", 2700.0, "nvir"), ("aux", "x", 8100.0, "naux"))
+
+
+@pytest.fixture(scope="module")
+def naf_family():
+    registry = cg.global_space_registry()
+    for name, symbol, extent, dim in _FAMILY:
+        registry.register_space(cg.index_space(name, symbol, extent, cg.GrowthClass.linear(), dim))
+    _G.NaturalAuxiliaryFactorization.register_naf_space(cg.Graph("naf_family"))
+    return registry
+
+
+def test_an_auxiliary_truncation_composes_with_the_tiling_on_one_program(water, naf_family):
+    """Two passes, two phases, one program: the algebra is truncated, then the schedule sliced.
+
+    A truncation shortens an index and changes nothing about which axes are free, so the tiling
+    decision has to come out the same on the truncated program as on the full one. That is the
+    claim, and it is what makes the two composable at all: one is a statement about the algebra
+    and the other about the machine, and the phase order is what keeps them from arguing.
+    """
+    energy = einsums.create_zero_tensor("E_naf", [1])
+    graph = cg.Graph("mp2 naf then tiled")
+    denominator = _denominator(water)
+    _capture(graph, water, denominator, energy)
+
+    B = water["fitted"]
+    cg.annotate(B, ("aux", "occ", "vir"), graph=graph)
+    graph.annotate_tag(B, _G.ProvenanceTag.make("eri"))
+
+    registry = _G.FactorizationRegistry()
+    registry.add(_G.NaturalAuxiliaryFactorization("eri", B, 1e-1))
+    factorization = _G.FactorizationPass(registry)
+    manager = cg.PassManager()
+    manager.add(cg.ProvenancePropagation())
+    manager.add(factorization)
+    assert graph.apply(manager), f"the truncation declined: {factorization.skip_reasons}"
+
+    records = graph.approximations()
+    # One record per substituted occurrence of the integral, which is what a term reading it
+    # twice produces and what the composition rule is there to add up.
+    assert {r.pass_name for r in records} == {"NaturalAuxiliary"}
+    assert len(records) == 2
+
+    # The schedule, decided on the truncated program. The occupied pair is still the answer:
+    # what the truncation moved is the length of a summed index, and a summed index was never a
+    # candidate. The CAP has to move, and that is the composition's one visible cost: the
+    # truncation leaves a Y-by-Y coupling that carries no orbital index at all, so it is
+    # loop-invariant, it is formed whole outside the loop, and it is now the largest live
+    # intermediate. A cap tight enough to force per-pair streaming on the untruncated program
+    # does not clear it, and the pass says so rather than tiling around it.
+    assert _tiled(graph, _PAIR_CAP).num_tiled == 0
+
+    coupling = 39 * 39 * 8
+    tiling = _tiled(graph, 13000)
+    assert tiling.num_tiled == 1, _reason_fragments(tiling)
+    assert tiling.axis_letters == ["i", "j"]
+    assert tiling.largest_after == coupling
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    value = float(np.asarray(energy)[0])
+
+    exact = _untiled(water)
+    bound = sum(r.bound for r in records) * abs(exact)
+    assert abs(value - exact) <= bound + 1e-13, (
+        f"the composed energy {value} is outside the truncation's own bound {bound:.3e} against {exact}")
+    assert value != exact, "the truncation is expected to move the number it approximates"

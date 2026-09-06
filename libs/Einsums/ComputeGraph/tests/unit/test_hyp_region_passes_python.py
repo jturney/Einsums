@@ -38,7 +38,7 @@ from typing import NamedTuple
 
 import numpy as np
 import pytest
-from hypothesis import HealthCheck, example, given, settings
+from hypothesis import HealthCheck, assume, example, given, settings
 from hypothesis import strategies as st
 
 import einsums
@@ -416,7 +416,7 @@ def _replayed(prog):
     return list(prog.stmts[:start]) + list(prog.stmts[start:stop]) * count + list(prog.stmts[stop:])
 
 
-def _run(prog, arrays, dtype, region):
+def _run(prog, arrays, dtype, region, tiling_cap=None):
     """Build the program into a graph, optimize it, execute it.
 
     Returns the result arrays, the pass manager and the pass objects, so a
@@ -474,6 +474,16 @@ def _run(prog, arrays, dtype, region):
 
     if region:
         pm, passes = _region_pass_manager()
+    elif tiling_cap is not None:
+        # The tiling arm. The schedule pass and then the same lone Materialization the plain arm
+        # runs, so the comparison isolates the tiling: the full pipeline strands a lifecycle on a
+        # program whose intermediate is used only inside a loop body, with or without this pass,
+        # and an arm that ran it would be measuring that instead.
+        tiling = _G.AxisTiling()
+        tiling.set_memory_cap(tiling_cap)
+        pm, passes = cg.PassManager(), [tiling, cg.Materialization()]
+        pm.add(tiling)
+        pm.add(passes[1])
     else:
         pm, passes = cg.PassManager(), [cg.Materialization()]
         pm.add(passes[0])
@@ -1317,3 +1327,97 @@ def test_a_lossy_auxiliary_truncation_stays_under_its_recorded_bound():
         error = float(np.linalg.norm(got - want)) / (float(np.linalg.norm(want)) or 1.0)
         assert error <= 2.0 * bound + 1e-12, f"error {error:.3e} against a bound of {bound:.3e}"
     assert seen > 0, "no drawn truncation was ever accepted"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The schedule arm: AxisTiling under a drawn memory cap
+#
+# Every arm above rewrites ALGEBRA. This one rewrites the schedule: the same
+# statements, evaluated a slice of their free axes at a time, inside a loop the
+# pass emits. Nothing about the arithmetic of one slice differs from what was
+# captured, so the corpus is the same corpus and the only new draw is the cap.
+#
+# The cap is drawn as a FRACTION of the program's own largest intermediate, so
+# a trial either declines because everything already fits or fires on an axis
+# set that brings it under; drawing bytes would have made almost every trial
+# one or the other.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@st.composite
+def _tiling_programs(draw):
+    return draw(_programs()), draw(st.sampled_from([1, 2, 4, 16, 256]))
+
+
+def _largest_intermediate_bytes(prog, dtype):
+    itemsize = np.dtype(dtype).itemsize
+    sizes = [int(np.prod(dims)) * itemsize for dims in prog.inter.values()]
+    return max(sizes) if sizes else 0
+
+
+def _check_tiled(prog, divisor, dtype, seed=0):
+    """The tiled replay against the untiled one and against numpy."""
+    arrays = _arrays(prog, dtype, seed)
+    expected = _numpy_result(prog, arrays, dtype)
+    if not _finite(expected):
+        pytest.skip("numerically degenerate program")
+
+    largest = _largest_intermediate_bytes(prog, dtype)
+    if largest == 0:
+        pytest.skip("the program declares no intermediate to stream")
+    cap = max(1, largest // divisor)
+
+    plain, _plain_graph, _plain_pm, _plain_passes = _run(prog, arrays, dtype, region=False)
+    tiled, graph, _pm, passes = _run(prog, arrays, dtype, region=False, tiling_cap=cap)
+    tiling = passes[0]
+
+    assert_materialization_invariants(graph, f"axis tiling, dtype={dtype}, cap={cap}")
+
+    eps = float(np.finfo(np.dtype(dtype)).eps)
+    scale = _numpy_magnitude(prog, arrays, dtype)
+    gap = _norm_gap(tiled, plain)
+    assert gap <= 1024.0 * eps * scale, (
+        f"the tiled schedule moved the answer by {gap:.3e}, past the re-associating bound "
+        f"{1024.0 * eps * scale:.3e} (dtype={dtype}, cap={cap}, tiled={tiling.num_tiled})\n"
+        f"program={prog!r}\naxes={tiling.axis_names}")
+
+    oracle_gap = _norm_gap(tiled, expected)
+    assert oracle_gap <= 4096.0 * eps * scale, (
+        f"the tiled schedule disagrees with numpy by {oracle_gap:.3e}, past "
+        f"{4096.0 * eps * scale:.3e} (dtype={dtype}, cap={cap})\nprogram={prog!r}")
+    return tiling
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+@given(drawn=_tiling_programs())
+@settings(max_examples=sanitizer_examples(50), deadline=None,
+          suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
+def test_the_tiled_schedule_keeps_the_answer(drawn, dtype):
+    prog, divisor = drawn
+    try:
+        _check_tiled(prog, divisor, dtype)
+    except pytest.skip.Exception:
+        # A skip inside a hypothesis test skips the WHOLE property, so a draw with nothing to
+        # stream rejects the example instead of retiring the shard.
+        assume(False)
+
+
+def test_the_drawn_caps_reach_both_sides_of_the_tiling_decision():
+    """A corpus on which the pass never fires proves nothing about it."""
+    fired = 0
+    declined = 0
+    for seed in range(60):
+        prog = _rng_program(seed)
+        if _largest_intermediate_bytes(prog, "float64") == 0:
+            continue
+        for divisor in (1, 4, 256):
+            try:
+                tiling = _check_tiled(prog, divisor, "float64", seed=seed)
+            except pytest.skip.Exception:
+                continue
+            if tiling.num_tiled:
+                fired += 1
+            else:
+                declined += 1
+    assert fired > 0, f"the tiling never fired over the corpus ({declined} declines)"
+    assert declined > 0, "every trial tiled, so the decline half of the decision is untested"

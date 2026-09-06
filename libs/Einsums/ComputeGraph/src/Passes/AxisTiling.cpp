@@ -224,6 +224,12 @@ struct Plan {
 
     std::vector<NodePlan> ops;
 
+    /// Positions in the parent's node list the loop replaces, ascending. A statement none of
+    /// whose operands carries a sliced axis is LOOP-INVARIANT and is not one of them: it stays
+    /// where it is, ahead of the loop once the dependency sort has placed it, because a value
+    /// the body would compute identically on every iteration belongs outside.
+    std::vector<std::size_t> replaced;
+
     /// Graph-owned intermediates carrying a sliced axis, re-declared at slice extents inside
     /// the body: the tensor, and where its sliced axes are.
     std::vector<std::pair<TensorId, std::vector<int>>> body_owned;
@@ -350,6 +356,9 @@ class RegionAnalysis {
   private:
     [[nodiscard]] std::vector<int> *labels_for(LabelStore &store, std::size_t node_index, std::size_t slot, SlotRef const &ref) const;
 
+    /// Whether any operand of the node at @p index carries a sliced axis under @p labelling.
+    [[nodiscard]] bool node_is_sliced(Labelling const &labelling, std::size_t index) const;
+
     Graph const &_graph;
     std::size_t  _first{0};
     std::size_t  _last{0};
@@ -413,14 +422,20 @@ bool RegionAnalysis::collect() {
 
     // What a node OUTSIDE the run touches, so an intermediate the body would re-declare at
     // slice extents is refused when something downstream still wants the whole of it.
+    //
+    // EFFECTIVE io rather than the node's own lists, because a control-flow node carries none:
+    // a loop whose body reads the intermediate lists nothing at all, and a scan of the raw
+    // lists would have declared it unread and re-declared it at one slice underneath a reader
+    // that wanted the whole of it. The region fuzz found exactly that.
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         if (i >= _first && i < _last) {
             continue;
         }
-        for (TensorId const tid : nodes[i].inputs) {
+        auto const [reads, writes] = const_cast<Graph &>(_graph).effective_io(nodes[i]);
+        for (TensorId const tid : reads) {
             _touched_outside.insert(_graph.resolve_alias(tid));
         }
-        for (TensorId const tid : nodes[i].outputs) {
+        for (TensorId const tid : writes) {
             _touched_outside.insert(_graph.resolve_alias(tid));
         }
     }
@@ -652,9 +667,22 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
             reason = "a tensor the region writes has no handle";
             return false;
         }
-        // The one unlabelled destination a loop can produce is a reduction: written once, by a
-        // reduction to a scalar over operands that do carry sliced axes, and read by nothing
-        // else inside the region.
+        // Two unlabelled destinations a loop can live with. The first is a statement none of
+        // whose operands carries a sliced axis: it is loop-invariant, and it stays outside the
+        // loop rather than being computed identically on every iteration.
+        bool invariant = true;
+        for (std::size_t i = _first; i < _last; ++i) {
+            if (_slots[i - _first][0].tid != tid) {
+                continue;
+            }
+            invariant = invariant && !node_is_sliced(labelling, i);
+        }
+        if (invariant) {
+            continue;
+        }
+
+        // The second is a reduction: written once, by a reduction to a scalar over operands
+        // that do carry sliced axes, and read by nothing else inside the region.
         std::size_t writers      = 0;
         std::size_t readers      = 0;
         std::size_t writer_index = 0;
@@ -804,6 +832,24 @@ void RegionAnalysis::partition(Labelling const &labelling, std::vector<std::stri
     }
 }
 
+bool RegionAnalysis::node_is_sliced(Labelling const &labelling, std::size_t index) const {
+    auto const &slots = _slots[index - _first];
+    for (std::size_t slot = 0; slot < slots.size(); ++slot) {
+        std::vector<int> const *labels = nullptr;
+        if (_written_set.contains(slots[slot].tid)) {
+            auto const hit = labelling.store.tensor.find(slots[slot].tid);
+            labels         = hit == labelling.store.tensor.end() ? nullptr : &hit->second;
+        } else {
+            auto const hit = labelling.store.use.find({index, slot});
+            labels         = hit == labelling.store.use.end() ? nullptr : &hit->second;
+        }
+        if (labels != nullptr && std::ranges::any_of(*labels, [](int v) { return v != kFree; })) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &reason) const {
     auto const &nodes = _graph.nodes();
     plan.ops.clear();
@@ -820,7 +866,11 @@ bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &
         return hit == labelling.store.use.end() ? std::vector<int>(ref.rank, kFree) : hit->second;
     };
 
+    plan.replaced.clear();
     for (std::size_t i = _first; i < _last; ++i) {
+        if (!node_is_sliced(labelling, i)) {
+            continue;
+        }
         NodePlan op;
         op.kind    = nodes[i].kind;
         op.op_data = nodes[i].op_data;
@@ -828,7 +878,13 @@ bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &
             op.slots.push_back(SlotPlan{.tid = _slots[i - _first][slot].tid, .labels = labels_of(i, slot)});
         }
         plan.ops.push_back(std::move(op));
+        plan.replaced.push_back(i);
     }
+    if (plan.ops.empty()) {
+        reason = "no statement of the run carries a sliced axis, so there is nothing for a loop to hold";
+        return false;
+    }
+    plan.first = plan.replaced.front();
 
     for (TensorId const tid : _written) {
         auto const hit = labelling.store.tensor.find(tid);
@@ -963,6 +1019,19 @@ std::optional<GemmShape> gemm_shape(std::vector<std::string> const &c, std::vect
         return std::nullopt;
     }
     return shape;
+}
+
+/// Whether an operand is one a vendor GEMM can read: a column-major matrix, whose first axis
+/// steps by one element.
+///
+/// The other grouped kernels do not ask, because they call the same per-member routine the
+/// ungrouped form calls and that routine reads strides. A batched GEMM does not: it hands BLAS
+/// a leading dimension and a base pointer, so an operand whose first axis steps by more than one
+/// is not a matrix it can describe. Dropping a MIDDLE axis of a three-index tensor leaves
+/// exactly that, and the region fuzz found it as a wrong answer rather than as a refusal.
+template <typename T>
+bool gemm_readable(RuntimeTensorView<T> const &view) {
+    return view.rank() < 2 || view.stride(0) == 1;
 }
 
 /// A prefactor a grouped kernel can take, which is a real number however the tensor is typed.
@@ -1107,13 +1176,20 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
             auto const &desc = std::get<EinsumDescriptor>(op.op_data);
             auto const &spec =
                 desc.indices ? desc.indices->spec : ParsedEinsumSpec{desc.spec.c_indices, desc.spec.a_indices, desc.spec.b_indices};
-            auto const c       = surviving(spec.c_indices, op.slots[0].labels);
-            auto const a       = surviving(spec.a_indices, op.slots[1].labels);
-            auto const b       = surviving(spec.b_indices, op.slots[2].labels);
-            auto const alpha   = real_prefactor(live_ab_prefactor(desc));
-            auto const beta    = real_prefactor(live_c_prefactor(desc));
-            auto const as_gemm = gemm_shape(c, a, b, desc.indices ? desc.indices->link_indices : desc.spec.link_indices);
-            if (chunked && as_gemm.has_value() && alpha.has_value() && beta.has_value() && !live_conj_a(desc) && !live_conj_b(desc)) {
+            auto const c        = surviving(spec.c_indices, op.slots[0].labels);
+            auto const a        = surviving(spec.a_indices, op.slots[1].labels);
+            auto const b        = surviving(spec.b_indices, op.slots[2].labels);
+            auto const alpha    = real_prefactor(live_ab_prefactor(desc));
+            auto const beta     = real_prefactor(live_c_prefactor(desc));
+            auto const as_gemm  = gemm_shape(c, a, b, desc.indices ? desc.indices->link_indices : desc.spec.link_indices);
+            bool       readable = true;
+            for (auto const &slot : operand) {
+                for (auto const *view : slot) {
+                    readable = readable && gemm_readable(*view);
+                }
+            }
+            if (chunked && readable && as_gemm.has_value() && alpha.has_value() && beta.has_value() && !live_conj_a(desc) &&
+                !live_conj_b(desc)) {
                 grouped_batched_gemm(*alpha, sources(1), sources(2), *beta, operand[0], as_gemm->trans_a, as_gemm->trans_b);
                 break;
             }
@@ -1230,12 +1306,21 @@ bool emit_tiled_loop(Graph &graph, Plan const &plan) {
             remove.back() = true;
             moved.push_back(graph.nodes().back());
         }
-        for (std::size_t i = plan.first; i < plan.last; ++i) {
-            remove[i] = true;
+        for (std::size_t const position : plan.replaced) {
+            remove[position] = true;
         }
-        graph.replace_nodes(remove, {{plan.first, std::move(moved)}});
+        // At the LAST replaced position rather than the first. A statement none of whose
+        // operands carries a sliced axis stays where it is, and one of those may sit between two
+        // sliced statements: the loop reads what it writes, and a loop node carries no operand
+        // lists of its own for the dependency sort to order it by. The graph was sorted before
+        // the rewrite, so every such writer precedes the sliced statement that reads it, and
+        // therefore precedes the last of them.
+        std::size_t const site = plan.replaced.back();
+        graph.replace_nodes(remove, {{site, std::move(moved)}});
 
-        std::size_t const position = plan.first + (plan.accumulator_id != 0 ? 1 : 0);
+        // Where that landed: the splice shifts an insert down by the erased nodes BELOW it, and
+        // every replaced node but the last is below the site. The loop follows the zeroing.
+        std::size_t const position = (site - (plan.replaced.size() - 1)) + (plan.accumulator_id != 0 ? 1 : 0);
         Graph            &body =
             graph.add_loop_at("AxisTiling", plan.iterations,
                               PredExpr::iteration(CmpOp::Lt, BoundExpr(static_cast<std::int64_t>(plan.iterations) - 1)), position);
