@@ -71,8 +71,10 @@ struct Problem {
 
 /// E = sum_iajb (2 K[i,a,j,b] - K[i,b,j,a]) K[i,a,j,b] D[i,a,j,b], with K = sum_Q B B.
 ///
-/// The integral is formed twice on purpose, exactly as the Laplace proving ground forms it: the
-/// exchange combination needs its own copy. Everything here is a graph-owned intermediate over
+/// The integral is formed twice on purpose, and here the duplicate is load-bearing rather than
+/// inherited: two contractions are what give the emitted chunk two grouped families, and the
+/// exchange permutation reads the copy rather than the tensor the amplitude reads, which is what
+/// the occupied-exchange case below is about. Everything here is a graph-owned intermediate over
 /// all four indices, which is what makes the program the one that needs tiling.
 void capture(cg::Graph &graph, Problem &problem) {
     std::vector<std::size_t> const shape{nocc, nvir, nocc, nvir};

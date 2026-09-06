@@ -377,15 +377,13 @@ def _mp2_arms(water, epsilon=None):
     graph = cg.Graph(f"thc_mp2_{epsilon}")
     K = graph.scratch("K", shape, "float64")
     T = graph.scratch("T", shape, "float64")
-    again = graph.scratch("K_again", shape, "float64")
     exchange = graph.scratch("K_exchange", shape, "float64")
     combination = graph.scratch("Kbar", shape, "float64")
     with cg.capture(graph):
         einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, L, R)
         la.direct_product(1.0, K, denominator, 0.0, T)
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, L, R)
-        einsums.permute("iajb <- ibja", exchange, again)
-        la.axpby(2.0, again, 0.0, combination)
+        einsums.permute("iajb <- ibja", exchange, K)
+        la.axpby(2.0, K, 0.0, combination)
         la.axpby(-1.0, exchange, 1.0, combination)
         la.dot(energy, combination, T)
 
@@ -482,20 +480,18 @@ def _sos_grid_arm(water, epsilon):
     graph.set_space_registry(registry)
     K = graph.scratch("K", shape, "float64")
     T = graph.scratch("T", shape, "float64")
-    again = graph.scratch("K_again", shape, "float64")
     denominator = graph.scratch("D", shape, "float64")
     with cg.capture(graph):
         la.outer_sum(denominator, [occupied, virtual, occupied, virtual], [1.0, -1.0, 1.0, -1.0])
         la.element_transform(denominator, "recip")
         einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, L, R)
         la.direct_product(1.0, K, denominator, 0.0, T)
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, L, R)
-        la.dot(energy, again, T)
+        la.dot(energy, K, T)
     graph.annotate_tag(denominator, _G.LaplaceTransform.denominator_tag(
         ["eps_occ", "eps_vir", "eps_occ", "eps_vir"], "+-+-"))
     for tensor in (L, R):
         cg.annotate(tensor, ("grid", "occ", "vir"), graph=graph)
-    for tensor in (K, T, again, denominator):
+    for tensor in (K, T, denominator):
         cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
 
     transform = cg.LaplaceTransform()

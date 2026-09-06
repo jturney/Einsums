@@ -64,7 +64,6 @@ def _program(problem, name):
     graph = cg.Graph(name)
     integrals = graph.scratch("K", shape, "float64")
     amplitudes = graph.scratch("T", shape, "float64")
-    again = graph.scratch("K_again", shape, "float64")
     exchange = graph.scratch("K_exchange", shape, "float64")
     combination = graph.scratch("Kbar", shape, "float64")
     denominator = graph.scratch("D", shape, "float64")
@@ -74,16 +73,15 @@ def _program(problem, name):
         la.element_transform(denominator, "recip")
         einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", integrals, three, three)
         la.direct_product(1.0, integrals, denominator, 0.0, amplitudes)
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", again, three, three)
-        einsums.permute("iajb <- ibja", exchange, again)
-        la.axpby(2.0, again, 0.0, combination)
+        einsums.permute("iajb <- ibja", exchange, integrals)
+        la.axpby(2.0, integrals, 0.0, combination)
         la.axpby(-1.0, exchange, 1.0, combination)
         la.dot(energy, combination, amplitudes)
 
     cg.annotate(three, ("aux", "occ", "vir"), graph=graph)
     cg.annotate(occupied, ("occ",), graph=graph)
     cg.annotate(virtual, ("vir",), graph=graph)
-    for scratch in (integrals, amplitudes, again, exchange, combination, denominator):
+    for scratch in (integrals, amplitudes, exchange, combination, denominator):
         cg.annotate(scratch, ("occ", "vir", "occ", "vir"), graph=graph)
     graph.annotate_tag(denominator, _G.LaplaceTransform.denominator_tag(
         ["eps_occ", "eps_vir", "eps_occ", "eps_vir"], "+-+-"))
