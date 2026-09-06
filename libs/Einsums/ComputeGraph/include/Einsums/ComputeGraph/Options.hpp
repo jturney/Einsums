@@ -116,6 +116,25 @@ inline constinit cl::ConfigOption<std::int64_t> GraphFactorizationMaxFactors = c
     "so a value above the mid-teens is a request to run under the optimizer budget and keep the best tree found",
     "ComputeGraph Passes", 14, "COUNT", cl::RangeBetween<std::int64_t>(2, 32));
 
+/// How many consumers a definition may be inlined into before it is left whole.
+///
+/// The bound on the OTHER direction the search can grow in. A definition several statements read
+/// is inlined into each of them that profits, and every copy is a term of its own, so the search
+/// sees as many terms as the copies it made and each of them is capped by
+/// `einsums:graph:factorization-max-factors` separately. Four is the default because the shapes
+/// that ask for this have two or three consumers, an energy split into its spin halves and an
+/// integral a residual reads from two routes, and because a value more consumers than that read is
+/// far more likely to be a quantity the program genuinely shares than an artifact of how the
+/// author bracketed it.
+///
+/// Raising it costs search time linearly and memory not at all, since a copy that does not pay is
+/// refused where it lands rather than emitted and regretted.
+inline constinit cl::ConfigOption<std::int64_t> GraphFactorizationMaxReaders = cl::config_opt<std::int64_t>(
+    "einsums:graph:factorization-max-readers",
+    "How many consumers a definition may be inlined into before MultiTermFactorization leaves it whole. Each copy is a term the factor "
+    "cap bounds on its own, so the search grows linearly in this number",
+    "ComputeGraph Passes", 4, "COUNT", cl::RangeBetween<std::int64_t>(1, 32));
+
 /// The relative accuracy a Laplace-transform quadrature is built to.
 ///
 /// A TOLERANCE and not a point count, because a tolerance is what composes with the accuracy

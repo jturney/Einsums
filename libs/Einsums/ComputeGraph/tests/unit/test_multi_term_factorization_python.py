@@ -586,3 +586,244 @@ def test_an_accumulating_direct_product_is_not_folded():
     graph.execute()
     expected = np.sum((np.ones((EI, EJ)) + (arrays[0] @ arrays[1]) * arrays[4]) * arrays[4])
     assert_close(np.asarray(energy)[0], np.asarray(expected), dtype="float64")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Per-consumer inlining
+#
+# A definition several statements read used to stay a stored leaf that pinned
+# the algebra around it. It is now inlined into each consumer whose bracketing
+# it improves and KEPT for the rest, so the shapes below are about which
+# consumer took what and how many contractions form the value afterwards.
+# ──────────────────────────────────────────────────────────────────────────
+
+#: A matrix product with a short inner dimension, so contracting a vector into
+#: its right factor first is much cheaper than forming the product and then
+#: contracting the vector into it. That is what makes one consumer profit.
+CI, CJ, CK = 32, 32, 4
+
+
+def _copy_operands(seed=17):
+    rng = np.random.default_rng(seed)
+    return (rng.standard_normal((CI, CK)), rng.standard_normal((CK, CJ)),
+            rng.standard_normal((CJ,)), rng.standard_normal((CI, CJ)))
+
+
+def _one_profits(graph, arrays, dtype="float64"):
+    """``M`` read by a contraction that gains from inlining and a scaling that does not.
+
+    ``R1[i] = M[i,j] v[j]`` re-brackets into ``A (B v)`` and drops a whole
+    factor of the loop space. ``R2 = M * w`` cannot: every bracketing of
+    ``A B w`` that does not form ``A B`` first costs more than forming it, so
+    that consumer reads the definition instead.
+    """
+    a, b, v, w = arrays
+    A = _tensor("A", a, dtype)
+    B = _tensor("B", b, dtype)
+    V = _tensor("v", v, dtype)
+    W = _tensor("w", w, dtype)
+    R1 = _tensor("R1", np.zeros((CI,)), dtype)
+    R2 = _tensor("R2", np.zeros((CI, CJ)), dtype)
+    M = graph.declare_tensor("M", [CI, CJ], intermediate=True, dtype=dtype)
+    with cg.capture(graph):
+        einsums.einsum("i,j <- i,k ; k,j", M, A, B)
+        einsums.einsum("i <- i,j ; j", R1, M, V)
+        la.direct_product(1.0, M, W, 0.0, R2)
+    return M, R1, R2
+
+
+def test_a_definition_one_consumer_profits_from_is_copied_and_kept():
+    """The rule, at its smallest: one copy, one definition, and both answers.
+
+    The mechanism rather than the outcome. Exactly one consumer takes a copy of
+    ``M``, the other reads it, the definition survives as the single contraction
+    that forms it, and the pass says so through its counters. Under the
+    resolves-to-one-consumer rule that preceded this, ``M`` had two consumers
+    and stayed a stored leaf, so neither consumer was re-bracketed and the pass
+    declined the region outright.
+    """
+    arrays = _copy_operands()
+    graph = cg.Graph("mtf-one-consumer-profits")
+    _M, R1, R2 = _one_profits(graph, arrays)
+
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    pm = cg.PassManager()
+    pm.add(mtf)
+    pm.add(cg.Materialization())
+    assert pm.run(graph), mtf.skip_reasons
+
+    # Kept, not dissolved, and copied exactly once.
+    assert mtf.num_inlined == 0, mtf.skip_reasons
+    assert mtf.num_copies == 1
+    assert mtf.num_shared == 0
+
+    # The consumer that gained nothing said so, and the reason names both ends.
+    assert any("buys that consumer nothing" in reason for reason, _count in mtf.skip_reasons), mtf.skip_reasons
+
+    # The emitted node set: M is formed once, R1 goes through the short
+    # intermediate the re-bracketing introduced, and R2 reads M.
+    ir = json.loads(graph.to_json())
+    dims = {t["id"]: t["dims"] for t in ir["tensors"]}
+    names = {t["id"]: t["name"] for t in ir["tensors"]}
+    einsum_nodes = [n for n in ir["nodes"] if n["kind"] == "Einsum"]
+    assert len(einsum_nodes) == 4, [n["label"] for n in einsum_nodes]
+    written = [names[t] for n in einsum_nodes for t in n["outputs"]]
+    assert written.count("M") == 1, written
+    scratch = [name for name in written if "_mtf_t" in name]
+    assert len(scratch) == 1, written
+    assert dims[next(t for t, name in names.items() if name == scratch[0])] == [CK], (
+        "the re-bracketing did not go through B v")
+
+    graph.execute()
+    a, b, v, w = arrays
+    assert_close(np.asarray(R1), (a @ b) @ v, dtype="float64")
+    assert_close(np.asarray(R2), (a @ b) * w, dtype="float64")
+
+
+def test_a_definition_no_consumer_profits_from_is_left_whole():
+    """Two consumers, neither gaining, and the definition is not copied at all.
+
+    The other half of the rule. A copy that only adds arithmetic is refused
+    where it lands, so a value two scalings read is computed once and read
+    twice, which is what the captured program already said.
+    """
+    a, b, _v, w = _copy_operands()
+    rng = np.random.default_rng(23)
+    second = rng.standard_normal((CI, CJ))
+    graph = cg.Graph("mtf-neither-consumer-profits")
+    A = _tensor("A", a, "float64")
+    B = _tensor("B", b, "float64")
+    W1 = _tensor("w1", w, "float64")
+    W2 = _tensor("w2", second, "float64")
+    R1 = _tensor("R1", np.zeros((CI, CJ)), "float64")
+    R2 = _tensor("R2", np.zeros((CI, CJ)), "float64")
+    M = graph.declare_tensor("M", [CI, CJ], intermediate=True, dtype="float64")
+    with cg.capture(graph):
+        einsums.einsum("i,j <- i,k ; k,j", M, A, B)
+        la.direct_product(1.0, M, W1, 0.0, R1)
+        la.direct_product(1.0, M, W2, 0.0, R2)
+
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    pm = cg.PassManager()
+    pm.add(mtf)
+    pm.add(cg.Materialization())
+    pm.run(graph)
+    assert mtf.num_inlined == 0
+    assert mtf.num_copies == 0
+    assert sum(count for reason, count in mtf.skip_reasons
+               if "buys that consumer nothing" in reason) == 2, mtf.skip_reasons
+
+    kinds = [n["kind"] for n in json.loads(graph.to_json())["nodes"]]
+    assert kinds.count("DirectProduct") == 2, kinds
+
+    graph.execute()
+    assert_close(np.asarray(R1), (a @ b) * w, dtype="float64")
+    assert_close(np.asarray(R2), (a @ b) * second, dtype="float64")
+
+
+def _many_consumers(graph, arrays, count):
+    """``M`` read by @p count contractions, every one of which would profit."""
+    a, b = arrays[0], arrays[1]
+    A = _tensor("A", a, "float64")
+    B = _tensor("B", b, "float64")
+    M = graph.declare_tensor("M", [CI, CJ], intermediate=True, dtype="float64")
+    rng = np.random.default_rng(29)
+    vectors = [rng.standard_normal((CJ,)) for _ in range(count)]
+    held = [_tensor(f"v{n}", vec, "float64") for n, vec in enumerate(vectors)]
+    results = [_tensor(f"R{n}", np.zeros((CI,)), "float64") for n in range(count)]
+    with cg.capture(graph):
+        einsums.einsum("i,j <- i,k ; k,j", M, A, B)
+        for vector, result in zip(held, results):
+            einsums.einsum("i <- i,j ; j", result, M, vector)
+    return results, vectors
+
+
+def test_a_definition_more_consumers_than_the_cap_admits_is_left_whole():
+    """The growth bound, and the cap that states it.
+
+    Every copy is a term of its own, so a definition many statements read
+    multiplies the search's size by how many of them there are. Five consumers
+    is past the default of four and the definition is left whole with the
+    reason; the same program under a cap of five is inlined into all five, which
+    is what says the cap decided it rather than the program.
+    """
+    arrays = _copy_operands()
+    assert cg.MultiTermFactorization().max_readers == 4
+
+    capped = cg.Graph("mtf-past-the-reader-cap")
+    results, vectors = _many_consumers(capped, arrays, 5)
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    pm = cg.PassManager()
+    pm.add(mtf)
+    pm.add(cg.Materialization())
+    pm.run(capped)
+    assert mtf.num_inlined == 0 and mtf.num_copies == 0
+    assert any("more consumers than the reader cap admits" in reason
+               for reason, _count in mtf.skip_reasons), mtf.skip_reasons
+
+    lifted = cg.Graph("mtf-reader-cap-lifted")
+    lifted_results, _vectors = _many_consumers(lifted, arrays, 5)
+    raised = cg.MultiTermFactorization()
+    raised.set_search_enabled(True)
+    raised.set_max_readers(5)
+    assert raised.max_readers == 5
+    pm_lifted = cg.PassManager()
+    pm_lifted.add(raised)
+    pm_lifted.add(cg.Materialization())
+    assert pm_lifted.run(lifted), raised.skip_reasons
+    # Dissolved once and computed again in each of the other four consumers.
+    assert raised.num_inlined == 1
+    assert raised.num_copies == 4
+
+    a, b = arrays[0], arrays[1]
+    capped.execute()
+    lifted.execute()
+    for result, lifted_result, vector in zip(results, lifted_results, vectors):
+        want = (a @ b) @ vector
+        assert_close(np.asarray(result), want, dtype="float64")
+        assert_close(np.asarray(lifted_result), want, dtype="float64")
+
+
+def test_a_definition_whose_operand_is_rewritten_before_its_consumer_stays_put():
+    """Inlining moves a read, and a read may not travel past a write.
+
+    A definition is computed where the author put it and used later, so folding
+    it into its consumer moves every read it makes to the consumer's position.
+    An operand something rewrites in between would then be read at its new
+    value, and the program would quietly compute something else. The definition
+    is left whole instead.
+    """
+    rng = np.random.default_rng(31)
+    first = rng.standard_normal((CK, CJ))
+    second = rng.standard_normal((CK, CJ))
+    a = rng.standard_normal((CI, CK))
+    v = rng.standard_normal((CJ,))
+
+    graph = cg.Graph("mtf-operand-rewritten-between")
+    P1 = _tensor("P1", first, "float64")
+    P2 = _tensor("P2", second, "float64")
+    A = _tensor("A", a, "float64")
+    V = _tensor("v", v, "float64")
+    R = _tensor("R", np.zeros((CI,)), "float64")
+    scratch = graph.declare_tensor("t", [CK, CJ], intermediate=True, dtype="float64")
+    M = graph.declare_tensor("M", [CI, CJ], intermediate=True, dtype="float64")
+    with cg.capture(graph):
+        la.axpby(1.0, P1, 0.0, scratch)
+        einsums.einsum("i,j <- i,k ; k,j", M, A, scratch)
+        la.axpby(1.0, P2, 0.0, scratch)      # the operand M read, rewritten
+        einsums.einsum("i <- i,j ; j", R, M, V)
+
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    pm = cg.PassManager()
+    pm.add(mtf)
+    pm.add(cg.Materialization())
+    pm.run(graph)
+    assert mtf.num_inlined == 0 and mtf.num_copies == 0
+    assert any("cannot travel there" in reason for reason, _count in mtf.skip_reasons), mtf.skip_reasons
+
+    graph.execute()
+    assert_close(np.asarray(R), (a @ first) @ v, dtype="float64")

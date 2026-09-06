@@ -18,6 +18,7 @@ int register_Einsums_ComputeGraph_options() {
     cl::register_option(option::GraphStructuralSearch);
     cl::register_option(option::GraphFactorizationCache);
     cl::register_option(option::GraphFactorizationMaxFactors);
+    cl::register_option(option::GraphFactorizationMaxReaders);
     cl::register_option(option::GraphLaplaceEpsilon);
     cl::register_option(option::GraphThcEpsilon);
     cl::register_option(option::GraphNafThreshold);

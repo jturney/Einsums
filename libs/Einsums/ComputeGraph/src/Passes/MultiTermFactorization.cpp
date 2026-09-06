@@ -61,6 +61,22 @@ struct CapturedStep {
     std::set<std::string> left;
     std::set<std::string> right;
     std::set<std::string> out;
+    /// The statement this step prices. One definition inlined into two consumers appears in two
+    /// terms and is ONE node of the captured program, so the sum counts each origin once.
+    std::size_t origin{0};
+};
+
+/// @brief One definition spliced into a term, and where its factors landed.
+///
+/// The factors a splice contributes are contiguous, since the walk is depth first, so the term
+/// the author wrote can be recovered from the flattened one by putting the leaf back over that
+/// range. That is what lets the profit question be asked without flattening the term twice: the
+/// two candidates are then over one set of letters rather than two alpha-renamings of it.
+struct Splice {
+    std::size_t            definition{0};
+    std::size_t            first{0};
+    std::size_t            count{0};
+    std::vector<ExprIndex> as_seen; ///< The definition's axes in the consumer's letters.
 };
 
 /// @brief One statement, flattened into a product of leaf factors.
@@ -73,9 +89,45 @@ struct Term {
     std::vector<Factor>       factors;
     std::vector<ExprIndex>    output;
     std::vector<CapturedStep> steps;
+    std::vector<Splice>       splices;
     PrefactorScalar           factor{double{1}};
     bool                      searchable{false};
 };
+
+/// @brief The term with one definition's factors put back as the leaf they came from.
+/// @param[in] term       The flattened term.
+/// @param[in] definition The statement whose splices are to be undone.
+/// @return The factors and output the consumer would have had reading that definition, or nothing
+///         when this term spliced it nowhere.
+std::optional<std::vector<Factor>> without_splice(Term const &term, std::size_t definition) {
+    std::vector<Splice> undone;
+    for (auto const &splice : term.splices) {
+        if (splice.definition == definition) {
+            undone.push_back(splice);
+        }
+    }
+    if (undone.empty()) {
+        return std::nullopt;
+    }
+    // Highest first, so an earlier range's positions still mean what they said. Two splices of one
+    // definition cannot nest, since a value is not inside itself.
+    std::ranges::sort(undone, [](Splice const &lhs, Splice const &rhs) { return lhs.first > rhs.first; });
+
+    std::vector<Factor> factors = term.factors;
+    for (auto const &splice : undone) {
+        if (splice.first + splice.count > factors.size()) {
+            return std::nullopt;
+        }
+        Factor leaf{.tensor = TensorId{0}, .indices = splice.as_seen, .conjugate = false};
+        factors.erase(factors.begin() + static_cast<std::ptrdiff_t>(splice.first),
+                      factors.begin() + static_cast<std::ptrdiff_t>(splice.first + splice.count));
+        factors.insert(factors.begin() + static_cast<std::ptrdiff_t>(splice.first), std::move(leaf));
+    }
+    if (factors.size() < 2) {
+        return std::nullopt; // a product of one factor is a copy, which is not a shape to compare
+    }
+    return factors;
+}
 
 /// @brief One statement seen as a two-operand product, whatever node kind wrote it.
 ///
@@ -279,6 +331,7 @@ void MultiTermFactorization::reset_stats() {
     _num_rebracketed  = 0;
     _num_shared       = 0;
     _num_inlined      = 0;
+    _num_copies       = 0;
     _num_cache_hits   = 0;
     _num_cache_misses = 0;
     _cut_off          = false;
@@ -299,6 +352,16 @@ std::size_t MultiTermFactorization::max_factors() const {
     }
     auto const cap = config::get(option::GraphFactorizationMaxFactors);
     return cap < 2 ? std::size_t{2} : static_cast<std::size_t>(cap);
+}
+
+std::size_t MultiTermFactorization::max_readers() const {
+    // The two-level shape every knob in this module has, clamped on the way out for the reason the
+    // setter clamps: a definition no consumer may take is one this pass never inlines at all.
+    if (_max_readers_explicit) {
+        return _max_readers;
+    }
+    auto const cap = config::get(option::GraphFactorizationMaxReaders);
+    return cap < 1 ? std::size_t{1} : static_cast<std::size_t>(cap);
 }
 
 bool MultiTermFactorization::cache_enabled() const {
@@ -341,10 +404,10 @@ bool MultiTermFactorization::applicable(Graph const &graph) const {
 
 std::vector<std::string> MultiTermFactorization::describe() const {
     std::vector<std::string> lines;
-    if (_num_inlined != 0 || _num_rebracketed != 0 || _num_shared != 0) {
-        lines.push_back(fmt::format("MultiTermFactorization: dissolved {} captured intermediate(s), re-bracketed {} term(s), "
-                                    "introduced {} shared intermediate(s)",
-                                    _num_inlined, _num_rebracketed, _num_shared));
+    if (_num_inlined != 0 || _num_rebracketed != 0 || _num_shared != 0 || _num_copies != 0) {
+        lines.push_back(fmt::format("MultiTermFactorization: dissolved {} captured intermediate(s), copied {} into a consumer that "
+                                    "profits while keeping the definition, re-bracketed {} term(s), introduced {} shared intermediate(s)",
+                                    _num_inlined, _num_copies, _num_rebracketed, _num_shared));
     }
     if (_num_cache_hits != 0 || _num_cache_misses != 0) {
         lines.push_back(fmt::format("MultiTermFactorization: {} region(s) replayed a kept plan and {} searched; {} plan(s) held",
@@ -363,8 +426,9 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     //
     // Asked before anything is computed, because the answer "nothing here is worth rewriting"
     // costs a whole search to reach and is worth keeping for exactly that reason.
-    std::size_t const        cap = max_factors();
-    PlanKey const            key{_graph_key, region.first, region.last, cap};
+    std::size_t const        cap          = max_factors();
+    std::size_t const        consumer_cap = max_readers();
+    PlanKey const            key{_graph_key, region.first, region.last, cap, consumer_cap};
     FactorizationPlan const *cached = nullptr;
     if (_graph_key_valid) {
         if (auto const it = _cache.find(key); it != _cache.end()) {
@@ -430,17 +494,40 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         return product.has_value() && is_one(product->factor);
     };
 
-    // Which statement, if any, ABSORBS each definition.
+    // What a statement's value READS, transitively through the definitions this pass may fold into
+    // it. Inlining moves a read from where the author put it to where the value is used, so an
+    // operand something in between overwrites would be read at its new value instead of the one
+    // the captured bracketing saw. Program order is what a region is in, and this is what says
+    // which of its reads may travel.
+    std::vector<std::set<TensorId>> cone_reads(expr.statements.size());
+    for (std::size_t s = 0; s < expr.statements.size(); s++) {
+        auto const &statement = expr.statements[s];
+        if (statement.value == invalid_term || statement.value >= expr.terms.size()) {
+            continue;
+        }
+        for (auto const operand : expr.at(statement.value).operands) {
+            TensorId const id = expr.at(operand).tensor;
+            cone_reads[s].insert(id);
+            auto const own = writer.find(id);
+            if (own != writer.end() && own->second < s && foldable(own->second)) {
+                cone_reads[s].insert(cone_reads[own->second].begin(), cone_reads[own->second].end());
+            }
+        }
+    }
+
+    // Which statements ABSORB each definition.
     //
-    // The rule the first version had was "exactly one reader", and it is too narrow for the shape
-    // this pass now flattens: an amplitude read both by the product that scales it and by the dot
-    // that reduces it has two readers, and both of them end up inside one statement once the first
-    // is folded into the second. So a definition is absorbed by the statement every one of its
-    // readers resolves to, walking backwards so a reader's own owner is known before its
-    // producer's is asked for. A definition whose readers resolve to two different statements
-    // stays a statement of its own, which is what keeps a value two consumers need from being
-    // computed twice.
-    std::vector<std::optional<std::size_t>> owner(expr.statements.size());
+    // The rule the first version had was "exactly one reader" and the second's was "every reader
+    // resolves to one consumer". Both leave a value two consumers want as a stored leaf that pins
+    // the algebra around it, and neither is what soundness asks for: what is unsound is
+    // DISSOLVING a definition something still reads, not inlining it where it pays. So this is a
+    // SET of consuming statements, walked backwards so a reader's own consumer is known before its
+    // producer's is asked for, and the definition is kept for whichever of them does not profit.
+    //
+    // A reader that is itself absorbed contributes the statements it is absorbed into rather than
+    // itself, which is what makes a chain of intermediates one product; a reader that is not
+    // contributes itself.
+    std::vector<std::set<std::size_t>> absorbers(expr.statements.size());
     for (std::size_t back = expr.statements.size(); back-- > 0;) {
         if (!foldable(back)) {
             continue;
@@ -449,23 +536,53 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         if (it == readers.end() || it->second.empty()) {
             continue;
         }
-        std::optional<std::size_t> resolved;
-        bool                       agreed = true;
+        std::set<std::size_t> sites;
+        bool                  ordered = true;
         for (auto const reader : it->second) {
             if (reader <= back) {
-                agreed = false; // a read before the write; a region is in program order, so decline
+                ordered = false; // a read before the write; a region is in program order, so decline
                 break;
             }
-            std::size_t const root = owner[reader].value_or(reader);
-            if (!resolved.has_value()) {
-                resolved = root;
-            } else if (*resolved != root) {
-                agreed = false;
-                break;
+            if (absorbers[reader].empty()) {
+                sites.insert(reader);
+            } else {
+                sites.insert(absorbers[reader].begin(), absorbers[reader].end());
             }
         }
-        if (agreed && resolved.has_value() && *resolved > back) {
-            owner[back] = resolved;
+        if (!ordered) {
+            continue;
+        }
+        // The growth bound, stated rather than discovered: every consumer that takes a copy is a
+        // term of its own, so the search's size is the factor cap's program times the number of
+        // copies. A value more consumers than this read is far more likely to be a quantity the
+        // program genuinely shares than an artifact of the author's bracketing.
+        if (sites.size() > consumer_cap) {
+            note_skip("a definition has more consumers than the reader cap admits, so it is left whole",
+                      fmt::format("target '{}' has {} consumer(s), einsums:graph:factorization-max-readers is {}",
+                                  expr.statements[back].target_name, sites.size(), consumer_cap));
+            continue;
+        }
+        bool travels = true;
+        for (auto const site : sites) {
+            for (std::size_t between = back + 1; between < site && travels; between++) {
+                travels = cone_reads[back].count(expr.statements[between].target) == 0;
+            }
+        }
+        if (!travels) {
+            note_skip("a definition reads an operand something rewrites before its consumer, so it cannot travel there",
+                      fmt::format("target '{}'", expr.statements[back].target_name));
+            continue;
+        }
+        absorbers[back] = std::move(sites);
+    }
+
+    // The consumers a definition is KEPT for, which the profit probe below fills in and a replayed
+    // plan states outright. A pair in here is a consumer that reads the definition rather than
+    // recomputing it.
+    std::set<std::pair<std::size_t, std::size_t>> retained_for;
+    if (cached != nullptr) {
+        for (auto const &entry : cached->retained_for) {
+            retained_for.emplace(entry[0], entry[1]);
         }
     }
 
@@ -474,12 +591,20 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         if (it == writer.end() || it->second >= expr.statements.size() || it->second >= root) {
             return std::nullopt;
         }
-        return owner[it->second] == root ? std::optional<std::size_t>{it->second} : std::nullopt;
+        if (absorbers[it->second].count(root) == 0 || retained_for.count({it->second, root}) != 0) {
+            return std::nullopt;
+        }
+        return it->second;
     };
 
     LetterTable                     table;
     std::unordered_set<std::size_t> consumed; // statements folded into a consumer
     std::size_t                     fresh_letter = 0;
+    // Which letter each alpha-renamed one stands for. A renamed axis is the same axis, and a cost
+    // model that did not know it would rank every re-bracketing below the form it came from: the
+    // searched side would mention a variable the captured side never heard of, and the dominance
+    // rung can only match a variable against itself.
+    std::unordered_map<std::string, std::string> renamed_from;
 
     auto observe_factor = [&](Factor const &factor) -> bool {
         TensorHandle const *handle = graph.find_tensor(factor.tensor);
@@ -499,7 +624,12 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             if (!index.space.valid() && axis < handle->spaces.size()) {
                 index.space = handle->spaces[axis];
             }
-            table.observe(index, handle->dims[axis]);
+            auto const origin = renamed_from.find(index.letter);
+            if (origin == renamed_from.end()) {
+                table.observe(index, handle->dims[axis]);
+            } else {
+                table.observe_renamed(index, handle->dims[axis], origin->second);
+            }
         }
         return true;
     };
@@ -552,7 +682,9 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             for (auto const &index : indices) {
                 auto const [it, fresh] = substitution.try_emplace(index.letter, index);
                 if (fresh) {
-                    it->second.letter = fmt::format("~{}", fresh_letter++);
+                    it->second.letter    = fmt::format("~{}", fresh_letter++);
+                    auto const inherited = renamed_from.find(index.letter);
+                    renamed_from.emplace(it->second.letter, inherited == renamed_from.end() ? index.letter : inherited->second);
                 }
                 out.push_back(it->second);
             }
@@ -567,88 +699,164 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         }
         // What the captured form paid for this value, in the consumer's letters. A dissolved
         // definition is arithmetic the rewrite removes, so a comparison that ignored it would
-        // decline a tree that pays for the whole flattening.
-        term.steps.push_back(
-            CapturedStep{.left = step_letters(renamed[0]), .right = step_letters(renamed[1]), .out = step_letters(as_seen)});
+        // decline a tree that pays for the whole flattening. The origin is what keeps one
+        // definition inlined into two consumers from being counted twice on the captured side.
+        term.steps.push_back(CapturedStep{
+            .left = step_letters(renamed[0]), .right = step_letters(renamed[1]), .out = step_letters(as_seen), .origin = *definition});
+        std::size_t const first = term.factors.size();
         for (std::size_t operand = 0; operand < product->operands.size(); operand++) {
             bool const operand_conj = operand < product->conjugate.size() && product->conjugate[operand];
             if (!expand(product->operands[operand], renamed[operand], operand_conj, term, depth + 1, root)) {
                 return false;
             }
         }
+        term.splices.push_back(Splice{.definition = *definition, .first = first, .count = term.factors.size() - first, .as_seen = as_seen});
         return true;
     };
 
-    // One walk. A statement whose own flattening fails must not take its folded producers with
-    // it, so the consumed set is snapshotted before each statement and restored when that
-    // statement turns out to be unmodellable: those producers keep their own statements.
-    std::vector<Term>               terms;
-    std::unordered_set<std::size_t> folded;
-    // Which root statement's flattening consumed each definition, so one root can be reverted
-    // without disturbing another's.
-    std::unordered_map<std::size_t, std::size_t> consumed_by;
-    terms.reserve(expr.statements.size());
-    for (std::size_t s = 0; s < expr.statements.size(); s++) {
-        Term term;
-        term.statement        = s;
-        auto const &statement = expr.statements[s];
-        auto const  product   = model_statement(expr, statement);
-        term.output           = product.has_value() ? product->output : statement.target_indices;
-        term.factor           = product.has_value() ? product->factor : PrefactorScalar{double{1}};
+    // One walk per statement, repeated once when the profit probe below changes a decision. A
+    // statement whose own flattening fails must not take its folded producers with it, so a
+    // statement's consumed set reaches the run's only when that statement stands.
+    std::vector<Term> terms;
+    // Which statements each definition was spliced into. A definition every one of them took is
+    // dissolved; one a consumer kept is copied into the others and stays a statement of its own.
+    std::map<std::size_t, std::vector<std::size_t>> dissolved_into;
 
-        std::unordered_set<std::size_t> const before = consumed;
-        if (product.has_value()) {
-            term.searchable = true;
-            term.steps.push_back(CapturedStep{.left  = step_letters(product->operand_indices[0]),
-                                              .right = step_letters(product->operand_indices[1]),
-                                              .out   = step_letters(product->output)});
-            for (std::size_t operand = 0; operand < product->operands.size() && term.searchable; operand++) {
-                bool const operand_conj = operand < product->conjugate.size() && product->conjugate[operand];
-                term.searchable         = expand(product->operands[operand], product->operand_indices[operand], operand_conj, term, 0, s);
-            }
-        }
-        if (term.searchable) {
-            // A repeated letter inside one operand is a diagonal access, which the loop-space cost
-            // model above does not describe, and a term priced wrongly is worse than one declined.
-            for (auto const &factor : term.factors) {
-                std::set<std::string> seen;
-                for (auto const &index : factor.indices) {
-                    term.searchable = term.searchable && seen.insert(index.letter).second;
+    auto build_all = [&](bool announce) {
+        // From scratch, letters included. A walk that carried the previous one's counter would
+        // name the same axis differently depending on how many walks ran, and a plan replayed in
+        // one walk would then emit a different program than the search that found it in two.
+        terms.clear();
+        dissolved_into.clear();
+        renamed_from.clear();
+        table        = LetterTable{};
+        fresh_letter = 0;
+        terms.reserve(expr.statements.size());
+        for (std::size_t s = 0; s < expr.statements.size(); s++) {
+            Term term;
+            term.statement        = s;
+            auto const &statement = expr.statements[s];
+            auto const  product   = model_statement(expr, statement);
+            term.output           = product.has_value() ? product->output : statement.target_indices;
+            term.factor           = product.has_value() ? product->factor : PrefactorScalar{double{1}};
+
+            consumed.clear();
+            if (product.has_value()) {
+                term.searchable = true;
+                term.steps.push_back(CapturedStep{.left   = step_letters(product->operand_indices[0]),
+                                                  .right  = step_letters(product->operand_indices[1]),
+                                                  .out    = step_letters(product->output),
+                                                  .origin = s});
+                for (std::size_t operand = 0; operand < product->operands.size() && term.searchable; operand++) {
+                    bool const operand_conj = operand < product->conjugate.size() && product->conjugate[operand];
+                    term.searchable = expand(product->operands[operand], product->operand_indices[operand], operand_conj, term, 0, s);
                 }
             }
-            std::set<std::string> target_seen;
-            for (auto const &index : term.output) {
-                term.searchable = term.searchable && target_seen.insert(index.letter).second;
+            if (term.searchable) {
+                // A repeated letter inside one operand is a diagonal access, which the loop-space
+                // cost model above does not describe, and a term priced wrongly is worse than one
+                // declined.
+                for (auto const &factor : term.factors) {
+                    std::set<std::string> seen;
+                    for (auto const &index : factor.indices) {
+                        term.searchable = term.searchable && seen.insert(index.letter).second;
+                    }
+                }
+                std::set<std::string> target_seen;
+                for (auto const &index : term.output) {
+                    term.searchable = term.searchable && target_seen.insert(index.letter).second;
+                }
+                if (term.factors.size() < 2 || term.factors.size() > cap) {
+                    term.searchable = false;
+                }
             }
-            if (term.factors.size() < 2 || term.factors.size() > cap) {
-                term.searchable = false;
+            if (!term.searchable) {
+                if (announce) {
+                    note_skip("statement is not a product this pass can model",
+                              fmt::format("target '{}' has {} factor(s)", statement.target_name, term.factors.size()));
+                }
+            } else {
+                for (auto const folded_here : consumed) {
+                    dissolved_into[folded_here].push_back(s);
+                }
             }
+            terms.push_back(std::move(term));
         }
-        if (!term.searchable) {
-            consumed = before;
-            note_skip("statement is not a product this pass can model",
-                      fmt::format("target '{}' has {} factor(s)", statement.target_name, term.factors.size()));
-        } else {
-            for (auto const folded_here : consumed) {
-                if (before.count(folded_here) == 0) {
-                    consumed_by.emplace(folded_here, s);
+    };
+
+    // Installed before anything is ranked and after the first walk has observed every letter, so
+    // no comparison ever resolves half a polynomial. The lookup reads the table as it stands, and
+    // the second walk only adds letters to it.
+    build_all(cached != nullptr);
+    ctx.bound_extent = table.lookup();
+
+    // ── Per-consumer inlining ──────────────────────────────────────────────────────────────
+    //
+    // A definition with one consumer goes there whole, which is the rule this pass has always
+    // had. With several, each consumer decides for itself: inlining hands the search the factors
+    // behind the value and it re-brackets around them, which is either cheaper than reading the
+    // value or it is not, and the consumer that gains nothing reads the definition instead. What
+    // is left over is priced once, because a kept definition is still one node.
+    //
+    // The probe is greedy across definitions, holding every other decision at "inlined": two
+    // definitions inside one term interact, and asking the question jointly is a second subset
+    // program over the decisions rather than a cheaper way to ask this one.
+    if (cached == nullptr) {
+        for (std::size_t definition = 0; definition < terms.size(); definition++) {
+            if (absorbers[definition].size() < 2) {
+                continue;
+            }
+            for (auto const site : absorbers[definition]) {
+                if (budget().expired()) {
+                    _cut_off = true;
+                    break;
+                }
+                if (!terms[site].searchable) {
+                    // Nothing was spliced there in any case, and saying so is what lets a
+                    // consumer the inlining pushed past the factor cap read the definition and be
+                    // searchable on the next walk.
+                    retained_for.emplace(definition, site);
+                    continue;
+                }
+                auto const reading = without_splice(terms[site], definition);
+                if (!reading.has_value()) {
+                    continue;
+                }
+                TreePlan const inlined = solve_tree(terms[site].factors, terms[site].output, table, ctx);
+                TreePlan const kept    = solve_tree(*reading, terms[site].output, table, ctx);
+                if (!inlined.ok || !kept.ok || compare(inlined.cost, kept.cost, ctx) >= 0) {
+                    // A copy that only adds arithmetic. The bracketing that reads the definition
+                    // is always available to the inlined term, by contracting the factors it was
+                    // built from first, so this says the search found nothing better than that.
+                    retained_for.emplace(definition, site);
+                    note_skip(
+                        "inlining a definition into one of its consumers buys that consumer nothing, so it reads it",
+                        fmt::format("target '{}' into '{}'", expr.statements[definition].target_name, expr.statements[site].target_name));
                 }
             }
         }
-        terms.push_back(std::move(term));
+        // The final walk, which is the one every decision below reads. Announced here rather
+        // than on the probe's walk so a statement this pass cannot model is reported once.
+        build_all(true);
     }
-    folded = consumed;
 
-    // A definition is absorbed only when every path into it folded. One path may decline where
-    // another folds -- a conjugated use, or a nesting past the depth limit -- and the value would
-    // then be read from a statement that is no longer emitted. So the flattening is CHECKED
-    // against what survives it, and a root whose dissolution left a live reader behind is reverted
-    // whole rather than patched.
+    // What survives the flattening.
+    //
+    // A definition is dissolved only when nothing still emitted reads it. That covers the consumer
+    // that kept it, which is the ordinary outcome of the rule above, and it covers the path that
+    // could not fold where another one did: a conjugated use, or a nesting past the depth limit.
+    // The definition comes back as its own statement either way, which is always possible because
+    // a term is a valid flattening of the statement it was built from, and the producers it reads
+    // come back with it.
+    std::vector<char> retained(terms.size(), 1);
+    for (auto const &[definition, sites] : dissolved_into) {
+        retained[definition] = 0;
+    }
     for (bool settled = false; !settled;) {
         settled = true;
         std::unordered_set<TensorId> still_read;
         for (std::size_t t = 0; t < terms.size(); t++) {
-            if (folded.count(t) != 0) {
+            if (retained[t] == 0) {
                 continue;
             }
             if (terms[t].searchable) {
@@ -657,24 +865,35 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
                 }
                 continue;
             }
+            if (expr.statements[t].value == invalid_term || expr.statements[t].value >= expr.terms.size()) {
+                continue;
+            }
             for (auto const operand : expr.at(expr.statements[t].value).operands) {
                 still_read.insert(expr.at(operand).tensor);
             }
         }
-        for (auto const s : folded) {
-            if (still_read.count(expr.statements[s].target) == 0) {
+        for (auto const &[definition, sites] : dissolved_into) {
+            if (retained[definition] != 0 || still_read.count(expr.statements[definition].target) == 0) {
                 continue;
             }
-            std::size_t const root = consumed_by.at(s);
-            terms[root].searchable = false;
-            for (auto it = folded.begin(); it != folded.end();) {
-                it = consumed_by.at(*it) == root ? folded.erase(it) : std::next(it);
-            }
-            note_skip("a flattening left one of its dissolved definitions with a reader",
-                      fmt::format("target '{}'", expr.statements[root].target_name));
-            settled = false;
-            break;
+            retained[definition] = 1;
+            settled              = false;
         }
+    }
+
+    std::unordered_set<std::size_t> folded;
+    std::size_t                     copies = 0;
+    for (auto const &[definition, sites] : dissolved_into) {
+        if (retained[definition] == 0) {
+            // Moved rather than copied: the definition is gone, so the consumer that took its
+            // place is where the value is computed and only the others are copies.
+            folded.insert(definition);
+            copies += sites.size() - 1;
+            continue;
+        }
+        copies += sites.size();
+        report(2, fmt::format("'{}' is kept and copied into {} consumer(s) that profit", expr.statements[definition].target_name,
+                              sites.size()));
     }
     for (auto const s : folded) {
         terms[s].searchable = false;
@@ -715,22 +934,25 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         return plans;
     };
 
-    // Installed here rather than at construction: the table is only complete once every factor of
-    // every term has been observed, and a lookup that resolved half a polynomial would make the
-    // rung decide on a subset, which is the discipline SymbolicCost.hpp asks callers for.
-    ctx.bound_extent = table.lookup();
-
     // What the CAPTURED program pays for the statements this pass may rewrite: the bracketing the
     // author wrote, plus every definition the flattening dissolves, priced through the model the
     // search ranks its own trees with. Comparing against the searched cost instead would ask
     // whether a search improves on itself, which it never does, and would leave the pass unable to
     // fire on a re-bracketing that shares nothing.
-    SymbolicCost captured;
+    //
+    // Each origin ONCE. A definition copied into two consumers appears in both their step lists
+    // and is one node of the captured program, so a sum that took it twice would credit the
+    // rewrite with removing arithmetic that was only ever there once.
+    SymbolicCost                    captured;
+    std::unordered_set<std::size_t> priced;
     for (std::size_t t = 0; t < terms.size(); t++) {
         if (!terms[t].searchable || folded.count(t) != 0) {
             continue;
         }
         for (auto const &step : terms[t].steps) {
+            if (!priced.insert(step.origin).second) {
+                continue;
+            }
             captured = add_cost(captured, contraction_cost(step.left, step.right, step.out, table));
         }
     }
@@ -849,6 +1071,9 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             factor_count[t] = terms[t].factors.size();
         }
         bool fits = cached->trees.size() == terms.size();
+        for (auto const &pair : cached->retained_for) {
+            fits = fits && pair[0] < terms.size() && pair[1] < terms.size();
+        }
         for (auto const &commit : cached->commits) {
             fits = fits && !commit.empty();
             for (auto const &site : commit) {
@@ -1025,7 +1250,12 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     //
     // Nothing above touched the expression, so a decision to leave it alone costs nothing.
     if (!replayed && compare(add_cost(total_cost(plans), shared_total), captured, ctx) >= 0) {
-        note_skip("no re-bracketing or sharing beats the captured form", fmt::format("{} term(s) examined", terms.size()));
+        // With the numbers, because a decline that only says "nothing beat it" is the reporting
+        // gap this pass's own before-and-after line exists to close.
+        note_skip("no re-bracketing or sharing beats the captured form",
+                  fmt::format("{} term(s) examined; the captured product(s) cost {} and the best tree(s) {}", terms.size(),
+                              captured.flops.to_string(&graph.space_registry()),
+                              add_cost(total_cost(plans), shared_total).flops.to_string(&graph.space_registry())));
         keep({});
         return false;
     }
@@ -1049,6 +1279,24 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         fmt::format("{}_r{}", graph.name(), region.nodes.empty() ? std::size_t{0} : static_cast<std::size_t>(region.nodes.front()));
     std::size_t scratch_index = 0;
 
+    // The emitted terms are priced in the letters the NODES will carry, which is not what the
+    // search ranks against. The table above resolves an alpha-renamed letter to the axis it was
+    // renamed from, because a fresh anonymous variable on one side of a comparison and not the
+    // other is enough to make the scale-order rung decide on the naming; the cost the framework
+    // checks against the emitted nodes has to name what those nodes name, and a node carries the
+    // fresh letter because that is the letter that cannot collide with the consumer's.
+    LetterTable emit_table = table;
+    for (auto const &[fresh, origin] : renamed_from) {
+        auto const variable = emit_table.var.find(fresh);
+        if (variable == emit_table.var.end() || !variable->second.is_anonymous()) {
+            continue;
+        }
+        variable->second = SymbolicVar::anonymous(fresh);
+        if (auto const extent = emit_table.extent.find(fresh); extent != emit_table.extent.end()) {
+            emit_table.anonymous_extent[fresh] = static_cast<double>(extent->second);
+        }
+    }
+
     auto emit_contraction = [&](Factor const &a, Factor const &b, TensorId target, std::string const &target_name,
                                 std::vector<ExprIndex> const &target_indices, PrefactorScalar target_prefactor, PrefactorScalar factor,
                                 std::string const &label) {
@@ -1066,7 +1314,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         for (auto const &index : target_indices) {
             out_letters.insert(index.letter);
         }
-        term.cost = contraction_cost(letters_of(a), letters_of(b), out_letters, table);
+        term.cost = contraction_cost(letters_of(a), letters_of(b), out_letters, emit_table);
 
         ExprStatement statement;
         statement.target           = target;
@@ -1207,6 +1455,10 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     FactorizationPlan plan;
     plan.rewrites = true;
     plan.commits  = commit_log;
+    plan.retained_for.reserve(retained_for.size());
+    for (auto const &[definition, site] : retained_for) {
+        plan.retained_for.push_back({definition, site});
+    }
     plan.trees.reserve(plans.size());
     for (auto const &tree : plans) {
         plan.trees.push_back(FactorizationPlan::Tree{.ok = tree.ok, .split = tree.split, .resolved = tree.resolved});
@@ -1218,8 +1470,10 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     // expression exactly as it was, and a counter that had already been raised would report
     // intermediates as dissolved on a run that dissolved nothing.
     _num_inlined += folded.size();
-    EINSUMS_LOG_INFO("MultiTermFactorization: {} shared intermediate(s), {} term(s) re-bracketed, {} captured intermediate(s) dissolved",
-                     _num_shared, _num_rebracketed, _num_inlined);
+    _num_copies += copies;
+    EINSUMS_LOG_INFO("MultiTermFactorization: {} shared intermediate(s), {} term(s) re-bracketed, {} captured intermediate(s) dissolved, "
+                     "{} copied into a consumer that profits",
+                     _num_shared, _num_rebracketed, _num_inlined, _num_copies);
     report(1, fmt::format("{} shared intermediate(s), {} term(s) re-bracketed", _num_shared, _num_rebracketed));
     // The pass's OWN before-and-after, which is not the region framework's: that one prices the
     // raised statements and an elementwise statement claims no cost, so a region holding a direct

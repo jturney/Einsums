@@ -98,6 +98,30 @@ struct LetterTable {
         }
     }
 
+    /// @brief Note a letter that is an alpha-renaming of another and stands for the same extent.
+    ///
+    /// A flattener renames a dissolved definition's summed letters so they cannot collide with the
+    /// consumer's, and a fresh NAME would otherwise be a fresh anonymous VARIABLE. That is enough
+    /// on its own to make the scale-order rung rank a re-bracketing below the form it came from,
+    /// since one side then mentions a variable the other has never heard of and dominance can only
+    /// match a variable against itself. The renamed axis is the same axis, so it is the same
+    /// variable; only the NAME has to be unique, and it stays unique here.
+    ///
+    /// A letter carrying a space needs none of this: the space is what the variable is built from
+    /// and the rename never touches it.
+    ///
+    /// @param[in] index        The renamed index.
+    /// @param[in] extent_value Its extent.
+    /// @param[in] origin       The letter it was renamed from.
+    void observe_renamed(ExprIndex const &index, std::size_t extent_value, std::string const &origin) {
+        observe(index, extent_value);
+        if (index.space.valid() || origin.empty() || origin == index.letter) {
+            return;
+        }
+        var[index.letter] = SymbolicVar::anonymous(origin);
+        anonymous_extent.try_emplace(origin, static_cast<double>(extent_value));
+    }
+
     /// @brief The space a letter was observed over, if any.
     /// @param[in] letter The index letter.
     /// @return The space, or an invalid id when the letter is anonymous or unknown.

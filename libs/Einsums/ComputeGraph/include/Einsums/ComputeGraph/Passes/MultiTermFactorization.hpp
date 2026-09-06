@@ -41,10 +41,14 @@
  * Per term, the optimal binary tree comes from the standard subset dynamic program: the best way
  * to contract a set of factors, built up from the best way to contract each of its subsets. That
  * is @c 3^N in the factor count, so the factor count is capped and a term above the cap is
- * declined rather than approximated. The cap is TEN, which is what the opposite-spin correlation
- * energy needs: flattened through its direct product and its dot, and with the Laplace transform's
- * exponentials already in place, it is a nine-factor product over seven letters, and @c 3^9 is
- * nineteen thousand subsets.
+ * declined rather than approximated. The cap is `einsums:graph:factorization-max-factors`, and
+ * what it has to admit is an energy: the opposite-spin one, flattened through its direct product
+ * and its dot and with the Laplace transform's exponentials already in place, is a nine-factor
+ * product over seven letters, and @c 3^9 is nineteen thousand subsets.
+ *
+ * A definition several statements consume is inlined into each of them that profits, so the term
+ * count grows with the copies rather than the factor count. That growth is bounded separately, by
+ * `einsums:graph:factorization-max-readers`, and it is linear where the other is exponential.
  *
  * Across terms, the candidates are PAIRS of factors that occur in more than one term. Restricting
  * to pairs is what keeps the candidate set quadratic instead of exponential, and it costs less
@@ -75,12 +79,12 @@
  * @par The result cache
  * The search is the expensive thing this pass does and it is a pure function of the region's
  * structure, so its answer is kept and replayed when a structurally identical region comes back.
- * The key is @ref Graph::content_hash together with the region's node span and the factor cap;
+ * The key is @ref Graph::content_hash together with the region's node span and both caps;
  * everything a plan depends on is inside those. The entry holds a PLAN and not a graph: the shared
- * pairs that were committed, in commit order, and the contraction tree chosen for each term. Both
- * are written as positions and bitmasks rather than as `TensorId`s, which is what lets a plan
- * found on one graph apply to another that hashes the same, and it is the same discipline the
- * saved IR uses for exactly the same reason.
+ * pairs that were committed, in commit order, the consumers each definition was kept for, and the
+ * contraction tree chosen for each term. All three are written as positions and bitmasks rather
+ * than as `TensorId`s, which is what lets a plan found on one graph apply to another that hashes
+ * the same, and it is the same discipline the saved IR uses for exactly the same reason.
  *
  * The case it pays for is a `Pipeline` whose stages present the same program: the second stage
  * flattens, replays, and emits, and never runs the subset program at all. It does NOT pay for
@@ -137,6 +141,16 @@ struct FactorizationPlan {
     /// answer that took the whole search to reach.
     bool rewrites{false};
 
+    /// Per-consumer inlining, as the consumers a definition was KEPT for.
+    ///
+    /// Each entry is a ``(definition, consumer)`` pair of statement positions the flattener
+    /// refused to inline across, so the definition survives as a statement of its own and that
+    /// consumer reads it. The inlined consumers are the rest of the definition's own set, which a
+    /// replay re-derives from the structure; recording the refusals is what makes a replay
+    /// reproduce the CHOICE rather than take the flattening's default. Positions, never a
+    /// @c TensorId, for the reason the commits are positions.
+    std::vector<std::array<std::size_t, 2>> retained_for;
+
     /// Committed shared pairs in commit order. Each entry lists its occurrences as
     /// ``(term, left factor, right factor)``, in the factor numbering left by the previous commits.
     std::vector<std::vector<std::array<std::size_t, 3>>> commits;
@@ -178,9 +192,12 @@ struct FactorizationPlan {
  * @par Limitations
  * - A term's factors are flattened out of the captured chain only through intermediates the region
  *   can dissolve: written once, overwritten rather than accumulated, carrying a product prefactor
- *   of one, and read only by statements that all resolve to ONE consumer once the folding is done.
- *   Anything else stays a factor in its own right, which is correct but hides the products inside
- *   it from the search.
+ *   of one, and reading nothing a statement in between overwrites. Anything else stays a factor in
+ *   its own right, which is correct but hides the products inside it from the search.
+ * - A definition several statements consume is inlined into each consumer whose bracketing it
+ *   improves and KEPT for the rest, which is why a consumer that gains nothing costs nothing.
+ *   The definition is dissolved only when every consumer took it. At most @ref max_readers
+ *   consumers are considered; a definition more of them read is left whole with the reason.
  * - Three node kinds present the product the flattener reads: a contraction, a
  *   @c OpKind::DirectProduct (the same product with no summed letter) and a @c OpKind::Dot (the
  *   same product summed over every letter). An amplitude formed by a contraction, scaled by a
@@ -254,6 +271,26 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
         _max_factors_explicit = true;
     }
 
+    /**
+     * @brief How many consumers a definition may be inlined into before it is left whole.
+     *
+     * The bound on the other direction the search grows in. A definition several statements read
+     * is inlined into each of them that profits and kept for the rest, so a definition with @c k
+     * consumers costs at most @c k terms and each of them is capped by @ref max_factors on its
+     * own. Taken from ``einsums:graph:factorization-max-readers`` unless
+     * @ref set_max_readers has stated one for this pipeline.
+     *
+     * @return The cap. Search time grows linearly in it, not exponentially.
+     */
+    APIARY_EXPOSE APIARY_GETTER("max_readers") [[nodiscard]] std::size_t max_readers() const;
+
+    /// @brief Set the consumer cap for this pipeline, overriding the option.
+    /// @param[in] cap The new cap, clamped to at least one.
+    APIARY_EXPOSE void set_max_readers(std::size_t cap) {
+        _max_readers          = cap < 1 ? 1 : cap;
+        _max_readers_explicit = true;
+    }
+
     /// @brief How many multi-factor terms the search re-bracketed.
     /// @return The count.
     APIARY_EXPOSE APIARY_GETTER("num_rebracketed") [[nodiscard]] std::size_t num_rebracketed() const { return _num_rebracketed; }
@@ -263,8 +300,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE APIARY_GETTER("num_shared") [[nodiscard]] std::size_t num_shared() const { return _num_shared; }
 
     /// @brief How many captured intermediates it dissolved into their consumers.
-    /// @return The count.
+    /// @return The count. A definition kept for one consumer and inlined into another is not
+    ///         dissolved and is counted by @ref num_copies instead.
     APIARY_EXPOSE APIARY_GETTER("num_inlined") [[nodiscard]] std::size_t num_inlined() const { return _num_inlined; }
+
+    /// @brief How many times the flattening made a captured value be computed again.
+    /// @return The count. A definition every consumer inlined MOVES rather than copies, so the
+    ///         consumer that took its place is not a copy and the others are; a definition a
+    ///         consumer kept is a copy in each of the consumers that took it.
+    APIARY_EXPOSE APIARY_GETTER("num_copies") [[nodiscard]] std::size_t num_copies() const { return _num_copies; }
 
     /**
      * @brief Keep and replay plans on this pipeline whatever ``einsums:graph:factorization-cache``
@@ -342,12 +386,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::size_t min_region_nodes() const override { return 2; }
 
   private:
-    /// @brief A cached plan's identity: which graph, which region of it, under which cap.
+    /// @brief A cached plan's identity: which graph, which region of it, under which caps.
     ///
     /// The region is named by its node span rather than by an ordinal, because a span is what the
     /// content hash already covers and an ordinal would silently rename every region after one
     /// that failed to raise.
-    using PlanKey = std::tuple<std::uint64_t, std::size_t, std::size_t, std::size_t>;
+    using PlanKey = std::tuple<std::uint64_t, std::size_t, std::size_t, std::size_t, std::size_t>;
 
     bool        _search_enabled{false};
     bool        _search_explicit{false};
@@ -355,9 +399,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     bool        _cache_explicit{false};
     bool        _max_factors_explicit{false};
     std::size_t _max_factors{14};
+    bool        _max_readers_explicit{false};
+    std::size_t _max_readers{4};
     std::size_t _num_rebracketed{0};
     std::size_t _num_shared{0};
     std::size_t _num_inlined{0};
+    std::size_t _num_copies{0};
     std::size_t _num_cache_hits{0};
     std::size_t _num_cache_misses{0};
     bool        _cut_off{false};

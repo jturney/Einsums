@@ -269,6 +269,31 @@
     ``FactorizationPass`` does, knows how many leaves it is about to hand over and takes this as a
     floor rather than a ceiling.
 
+"einsums:graph:factorization-max-readers":
+  added: "2.1.0"
+  body: |
+    How many consumers a definition may be inlined into before ``MultiTermFactorization`` leaves
+    it whole.
+
+    An author-named intermediate several statements read is inlined into each of them whose
+    bracketing it improves and kept for the rest, so a value two consumers want no longer pins the
+    algebra around it. Every copy is a term of its own, which is the growth this bounds: the search
+    sees as many terms as the copies it made, and each of them is capped by
+    :option:`--einsums:graph:factorization-max-factors` separately. Raising this costs search time
+    linearly where raising the factor cap costs it exponentially.
+
+    Four is the default because the shapes that ask for this have two or three consumers, a
+    correlation energy split into its spin halves and an integral a residual reads from two routes,
+    and because a value more consumers than that read is far more likely to be a quantity the
+    program genuinely shares than an artifact of how the author bracketed it. A definition past the
+    cap is reported through the pass's skip tally rather than dropped silently.
+
+    A copy is never emitted for its own sake: a consumer that gains nothing from the inlining reads
+    the definition instead, and the whole rewrite is still measured against the captured bracketing
+    before anything is emitted.
+
+    ``MultiTermFactorization::set_max_readers`` overrides this for one pipeline, in both directions.
+
 "einsums:graph:tiling-memory-cap":
   added: "2.1.0"
   body: |
