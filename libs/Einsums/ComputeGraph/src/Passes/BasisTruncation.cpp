@@ -321,6 +321,9 @@ expected<std::vector<double>, std::string> BasisTruncation::decide_count() const
 }
 
 std::pair<std::vector<double>, std::vector<double>> BasisTruncation::ordinary_truncation() const {
+    if (!_amplitudes.has_value() || !_fock.has_value()) {
+        return {}; // Only reachable from run(), which has already refused without both.
+    }
     std::size_t const nvir = _amplitudes->dim(1);
     std::size_t const kept = _kept;
 
@@ -375,7 +378,7 @@ std::pair<std::vector<double>, std::vector<double>> BasisTruncation::ordinary_tr
 
 expected<double, std::string> BasisTruncation::measure_correction(std::vector<double> const &rotation,
                                                                   std::vector<double> const &energies) const {
-    if (!_occupied.has_value()) {
+    if (!_occupied.has_value() || !_amplitudes.has_value() || !_fock.has_value()) {
         return unexpected(std::string{"no occupied orbital energies were handed to the pass"});
     }
     std::size_t const                nocc = _amplitudes->dim(0);
@@ -468,6 +471,9 @@ expected<double, std::string> BasisTruncation::measure_correction(std::vector<do
 }
 
 void BasisTruncation::emit_setup(Graph &body, std::vector<Target> const &targets) const {
+    if (!_amplitudes.has_value() || !_fock.has_value()) {
+        return; // Only reachable from run(), which has already refused without both.
+    }
     std::size_t const               nocc = _amplitudes->dim(0);
     std::size_t const               nvir = _amplitudes->dim(1);
     std::size_t const               kept = _kept;
@@ -486,9 +492,9 @@ void BasisTruncation::emit_setup(Graph &body, std::vector<Target> const &targets
     auto &half       = body.declare_runtime_tensor<double>(named("fno_half"), {kept, nvir}, /*intermediate=*/true);
     auto &block      = body.declare_runtime_tensor<double>(named("fno_block"), {kept, kept}, /*intermediate=*/true);
 
-    RuntimeTensor<double> *rotation = _transformation.get();
-    RuntimeTensor<double> *spectrum = _energies.get();
-    RuntimeTensor<double> *keep     = _keep.get();
+    RuntimeTensor<double>       *rotation = _transformation.get();
+    RuntimeTensor<double>       *spectrum = _energies.get();
+    RuntimeTensor<double> const *keep     = _keep.get();
 
     // One intermediate per target whose axes over the space being replaced number two, which is
     // every four-external integral and every amplitude. Declared HERE, before the guard opens,
@@ -502,7 +508,7 @@ void BasisTruncation::emit_setup(Graph &body, std::vector<Target> const &targets
         }
         std::vector<std::size_t> dims(target.input.rank(), 0);
         for (std::size_t axis = 0; axis < dims.size(); ++axis) {
-            dims[axis] = target.input.dim(axis);
+            dims[axis] = target.input.dim(static_cast<int>(axis));
         }
         dims[target.axes[0]] = kept;
         halves[which]        = &body.declare_runtime_tensor<double>(named(fmt::format("fno_project_{}", which)), dims,
