@@ -810,3 +810,58 @@ TEST_CASE("Materialization - a factor's lifecycle follows the setup that writes 
     run_arm(true);
     run_arm(false);
 }
+
+TEST_CASE("Materialization - a top-level setup's chain intermediate is materialized inside the body",
+          "[ComputeGraph][Passes][Materialization][Setup]") {
+    // The shape a basis truncation's projection has: a setup body writes a parent-declared
+    // tensor through a CHAIN, and the buffer between the two steps belongs to nobody the
+    // parent's algebra names. It is not a setup output, because no parent node reads it, and
+    // it is not the parent's own scratch, because the parent never declared it; it reaches a
+    // lifecycle only because a setup node lists what its body writes, so the parent's usage
+    // analysis puts a request at the setup's position and the search descends from there.
+    //
+    // Asserted as a PLACE and not as a successful execute, which is the lesson the placement
+    // note records: a lifecycle in the parent runs before the setup often enough that execute
+    // says nothing about where it landed, and a body's own validation looks in its nodes and
+    // its descendants and never in its ancestors.
+    auto out  = create_zero_tensor<double>("out", 3, 3);
+    auto one  = create_zero_tensor<double>("one", 3, 3);
+    one(0, 0) = 2.0;
+
+    cg::Graph  g("chain_setup");
+    auto      &projected = g.declare_runtime_tensor<double>("projected", {3, 3}, /*intermediate=*/true);
+    cg::Graph *body      = nullptr;
+    {
+        auto &fit = g.add_setup_at("project", 0);
+        body      = &fit;
+        // Declared BEFORE the guard, which is where a workspace of a setup body belongs: a
+        // declaration is not a capture, and the buffer has to exist before the nodes reading it.
+        auto &half = fit.declare_runtime_tensor<double>("chain_half", {3, 3}, /*intermediate=*/true);
+
+        cg::CaptureGuard const guard(fit);
+        cg::permute("ij <- ij", 0.0, &half, 0.5, one);
+        cg::permute("ij <- ij", 0.0, &projected, 1.0, half);
+    }
+    {
+        cg::CaptureGuard const guard(g);
+        cg::permute("ij <- ij", 0.0, &out, 1.0, projected);
+    }
+
+    auto pm = cg::PassManager::create_default();
+    g.apply(pm);
+
+    auto const materialize_of = [](cg::Graph const &graph, std::string const &name) {
+        return std::ranges::count_if(graph.nodes(), [&](cg::Node const &node) {
+            return node.kind == cg::OpKind::Materialize && node.label == fmt::format("materialize({})", name);
+        });
+    };
+    CHECK(materialize_of(*body, "chain_half") == 1);
+    CHECK(materialize_of(g, "chain_half") == 0);
+    CHECK(materialize_of(*body, "projected") == 1);
+    CHECK(materialize_of(g, "projected") == 0);
+    CHECK(cg::passes::duplicate_materializations(g).empty());
+    CHECK(cg::passes::stranded_materializations(g).empty());
+
+    g.execute();
+    CHECK(out(0, 0) == Catch::Approx(1.0));
+}
