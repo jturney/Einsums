@@ -232,6 +232,28 @@ def _draw_program(pick_int) -> Program:
         stmts.append((reduced, (), scaled, letters[0] + letters[2],
                       pool_key(shape), letters[0] + letters[2], 0.0, 1.0, "dot"))
 
+    # An intermediate SEVERAL statements read, which is the shape per-consumer
+    # inlining exists for. One or two extra consumers on top of the chain's own,
+    # so a definition reaches two or three of them, and each is drawn as a
+    # scaling or as a reduction because the two want opposite things: the
+    # factors behind the value buy a reduction a better bracketing and buy a
+    # scaling nothing at all, so a corpus of one kind would only ever see one
+    # outcome of the rule.
+    if inter and pick_int(0, 1) == 0:
+        keys = sorted(inter)
+        target = keys[pick_int(0, len(keys) - 1)]
+        letters = next(stmt[1] for stmt in stmts if stmt[0] == target)
+        dims = inter[target]
+        for _ in range(pick_int(1, 2)):
+            partner = pool_key(tuple(dims))
+            result = f"r{len(outs)}"
+            if pick_int(0, 1):
+                outs[result] = tuple(dims)
+                stmts.append((result, letters, target, letters, partner, letters, 0.0, 1.0, "dp"))
+            else:
+                outs[result] = (1,)
+                stmts.append((result, (), target, letters, partner, letters, 0.0, 1.0, "dot"))
+
     disjoint = None
     if pick_int(0, 1):
         uses: dict = {}
@@ -669,6 +691,48 @@ def test_the_generator_draws_the_shapes_the_passes_need():
     assert shared_output, "no two terms ever accumulate into one output"
     assert annotated, "no program ever declares a disjointness"
     assert reduced, "no program ever scales a contraction and reduces it to a scalar"
+
+
+def test_the_corpus_reaches_both_outcomes_of_per_consumer_inlining():
+    """An intermediate several statements read, and the two answers to it.
+
+    A definition with one consumer goes there whole. With several, each consumer
+    decides for itself: a reduction is cheaper over the factors behind the value
+    and a scaling is cheaper reading it, so one program copies the definition
+    into the consumer that profits and keeps it for the rest, and another leaves
+    it whole because no consumer profits. Both are asserted, because a corpus
+    that only ever reached one of them would leave the rule's other half covered
+    by nothing.
+
+    The numbers are the same equivalence every program in this shard is held to:
+    ``_check`` compares the optimized program against the untouched one inside
+    the re-associating tier's bound before any of this is counted.
+    """
+    two = three = copied = left_whole = 0
+    for seed in range(48):
+        prog = _rng_program(seed)
+        readers: dict = {}
+        for index, stmt in enumerate(prog.stmts):
+            for key in (stmt[2], stmt[4]):
+                if key.startswith("t"):
+                    readers.setdefault(key, set()).add(index)
+        counts = [len(statements) for statements in readers.values()]
+        two += any(count == 2 for count in counts)
+        three += any(count >= 3 for count in counts)
+
+        for pass_obj in _check(prog, "float64", seed=seed):
+            if pass_obj.name != "MultiTermFactorization":
+                continue
+            declined = any("buys that consumer nothing" in reason for reason, _ in pass_obj.skip_reasons)
+            if int(pass_obj.num_copies) > 0:
+                copied += 1
+            elif declined:
+                left_whole += 1
+
+    assert two > 0, "no intermediate is ever read by exactly two statements"
+    assert three > 0, "no intermediate is ever read by three statements"
+    assert copied > 0, "no definition was ever copied into a consumer and kept for another"
+    assert left_whole > 0, "no definition was ever left whole because no consumer profited"
 
 
 def test_the_corpus_draws_loops_and_the_rewrites_fire_inside_them():
@@ -1388,10 +1452,38 @@ def _check_tiled(prog, divisor, dtype, seed=0):
     return tiling
 
 
+def _partial_reduction_program() -> Program:
+    """A reduction over an intermediate that carries ONE of two sliceable axes.
+
+    Found by this shard once the generator started drawing intermediates several
+    statements read. ``t0_0[d,b]`` is read by the chain and by a reduction, and
+    the reduction's operands carry ``d`` and not ``a``. A loop over both slices
+    therefore adds the reduction's contribution once per ``a``, and the energy
+    came out at exactly twice its value. Pinned as the shape rather than as the
+    number: what the pass owes is that an accumulation only rides on a loop over
+    axes it varies over.
+    """
+    return Program(
+        pool={"p0": (6, 2), "p2": (2, 6), "p4": (6, 2, 8), "p6": (6, 6)},
+        inter={"t0_0": (6, 6), "t1_0": (2, 2, 8)},
+        outs={"r0": (6, 2, 8), "r1": (1,)},
+        stmts=(
+            ("t0_0", ("d", "b"), "p0", ("d", "c"), "p2", ("c", "b"), 0.0, 1.0),
+            ("r0", ("d", "a", "f"), "t0_0", ("d", "b"), "p4", ("b", "a", "f"), 0.0, 1.0),
+            ("t1_0", ("c", "a", "f"), "p2", ("c", "b"), "p4", ("b", "a", "f"), 0.0, 1.0),
+            ("r0", ("d", "a", "f"), "p0", ("d", "c"), "t1_0", ("c", "a", "f"), 1.0, 1.0),
+            ("r1", (), "t0_0", ("d", "b"), "p6", ("d", "b"), 0.0, 1.0, "dot"),
+        ),
+        terms=(("p0", "p2", "p4"), ("p0", "p2", "p4")),
+        disjoint=None,
+    )
+
+
 @pytest.mark.parametrize("dtype", ALL_DTYPES)
 @given(drawn=_tiling_programs())
 @settings(max_examples=sanitizer_examples(50), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
+@example(drawn=(_partial_reduction_program(), 2))
 def test_the_tiled_schedule_keeps_the_answer(drawn, dtype):
     prog, divisor = drawn
     try:

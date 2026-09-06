@@ -863,3 +863,45 @@ TEST_CASE("ContractionPlanning - two chains of one shape get two scratch names",
     CHECK(scratch == 2);
     CHECK(names.size() == scratch);
 }
+
+TEST_CASE("ContractionPlanning - an interior a loop body reads blocks the fold", "[ComputeGraph][Passes][CP]") {
+    // Found by the region fuzz. A Loop node does not say what its body touches,
+    // so a chain whose interior a body reads looks unobserved from the parent's
+    // node list, and re-parenthesizing elides the write the body is waiting for:
+    // the body then reads a buffer nothing computes any more. The scan cannot be
+    // keyed on the buffer either, because a body keeps its own tensor table and
+    // a deferred intermediate has no buffer yet; the name is what crosses.
+    auto A  = create_random_tensor<double>("A", 100, 1);
+    auto B  = create_random_tensor<double>("B", 1, 100);
+    auto C  = create_random_tensor<double>("C", 100, 1);
+    auto D  = create_zero_tensor<double>("D", 100, 100);
+    auto T2 = create_zero_tensor<double>("T2", 100, 1);
+
+    auto T1r = create_zero_tensor<double>("T1r", 100, 100);
+    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+
+    cg::Graph graph("cp_interior_read_in_body");
+    auto     &T1 = graph.declare_runtime_tensor<double>("T1", {100, 100}, /*intermediate=*/true);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &T2, 1.0, T1, C);
+    }
+    auto &body = graph.add_loop("reads_the_interior", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::axpby(1.0, T1, 0.0, &D); // the body's read, invisible from the parent's node list
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    pass.run(graph);
+    CHECK(pass.chains_restructured() == 0);
+
+    cg::PassManager manager;
+    manager.add(std::make_shared<cg::passes::Materialization>());
+    graph.apply(manager);
+    graph.execute();
+    for (size_t ii = 0; ii < 100; ii++) {
+        CHECK(D(ii, 0) == Catch::Approx(T1r(ii, 0)).margin(1e-8));
+    }
+}

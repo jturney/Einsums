@@ -6,6 +6,7 @@
 #include <Einsums/Comm/Runtime.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
@@ -15,12 +16,14 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <set>
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -726,6 +729,36 @@ bool ContractionPlanning::run(Graph &graph) {
                                 interior_observable = true; // outside reader of an interior value
                                 break;
                             }
+                        }
+                    }
+                }
+                // A sub-graph's reads are not in that node list at all: a Loop does not say what
+                // its body touches, so a chain whose interior a body reads looks unobserved from
+                // here and re-parenthesizing would elide the write the body is waiting for. Keyed
+                // by NAME, because a body keeps its own tensor table and its own ids and a
+                // deferred intermediate has no buffer yet to compare either; that is the same key
+                // `Materialization` audits its own sub-graph uses by, for the same reason.
+                if (!interior_observable) {
+                    std::unordered_set<std::string>          below;
+                    std::function<void(Graph const &)> const collect = [&](Graph const &sub) {
+                        for (auto const &node : sub.nodes()) {
+                            if (is_lifecycle(node.kind)) {
+                                continue;
+                            }
+                            for (auto const tid : node.inputs) {
+                                if (auto const hit = sub.tensors_map().find(tid); hit != sub.tensors_map().end()) {
+                                    below.insert(hit->second.name);
+                                }
+                            }
+                        }
+                        sub.for_each_subgraph(collect);
+                    };
+                    std::as_const(graph).for_each_subgraph(collect);
+                    for (auto const tid : interior) {
+                        auto const hit = graph.tensors_map().find(tid);
+                        if (hit != graph.tensors_map().end() && below.count(hit->second.name) != 0) {
+                            interior_observable = true;
+                            break;
                         }
                     }
                 }

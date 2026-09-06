@@ -26,6 +26,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -359,6 +360,12 @@ class RegionAnalysis {
     /// Whether any operand of the node at @p index carries a sliced axis under @p labelling.
     [[nodiscard]] bool node_is_sliced(Labelling const &labelling, std::size_t index) const;
 
+    /// @brief Which sliced axes one node of the region carries, by label.
+    /// @param[in] labelling The candidate.
+    /// @param[in] index     The node, in the parent's numbering.
+    /// @return The labels its operands and destination carry, empty for a loop-invariant node.
+    [[nodiscard]] std::set<int> node_labels(Labelling const &labelling, std::size_t index) const;
+
     Graph const &_graph;
     std::size_t  _first{0};
     std::size_t  _last{0};
@@ -648,6 +655,45 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
     return out;
 }
 
+namespace {
+
+/// @brief Whether a node ADDS to its destination rather than overwriting it.
+///
+/// The question a loop asks of every statement it carries, since a statement run once per slice
+/// of an axis it does not vary over is recomputed harmlessly when it overwrites and counted
+/// again when it adds. A kind this cannot read is treated as adding, which declines a schedule
+/// rather than risking one.
+///
+/// @param[in] node The node.
+/// @return True when the destination's prior contents survive the call.
+bool node_accumulates(Node const &node) {
+    switch (node.kind) {
+    case OpKind::Einsum: {
+        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        return desc == nullptr || !is_zero(live_c_prefactor(*desc));
+    }
+    case OpKind::Permute: {
+        auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data);
+        return desc == nullptr || !is_zero(desc->params ? desc->params->beta : PrefactorScalar{desc->beta});
+    }
+    case OpKind::Axpby: {
+        auto const *desc = std::get_if<AxpbyDescriptor>(&node.op_data);
+        return desc == nullptr || !is_zero(live_beta(*desc));
+    }
+    case OpKind::DirectProduct:
+    case OpKind::DirectDivision: {
+        auto const *desc = std::get_if<ElementwiseBinaryDescriptor>(&node.op_data);
+        return desc == nullptr || !is_zero(live_beta(*desc));
+    }
+    case OpKind::Dot:
+        return false; // it writes element zero; the LOOP is what accumulates it
+    default:
+        return true;
+    }
+}
+
+} // namespace
+
 bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator, TensorId &accumulator_id, std::string &reason) const {
     auto const &nodes = _graph.nodes();
     accumulator.clear();
@@ -715,6 +761,42 @@ bool RegionAnalysis::closes(Labelling const &labelling, std::string &accumulator
         }
         accumulator    = handle->name;
         accumulator_id = tid;
+    }
+
+    // Every node that ADDS to its destination has to carry every sliced axis. One carrying none
+    // of them is loop-invariant and stays outside the loop, which is the first case above; one
+    // carrying some but not all runs once per slice of an axis it never varied over, and an
+    // overwrite recomputed identically is only waste where an accumulation adds its contribution
+    // again on every one of those iterations. The loop-carried reduction counts as an
+    // accumulation whatever its own node does, since the loop is what adds it up: a reduction
+    // over a tensor carrying one of two sliced axes is the shape that found this, and it read
+    // exactly twice its own value.
+    std::set<int> sliced;
+    for (auto const &[tid, labels] : labelling.store.tensor) {
+        for (int const label : labels) {
+            if (label != kFree) {
+                sliced.insert(label);
+            }
+        }
+    }
+    for (auto const &[site, labels] : labelling.store.use) {
+        for (int const label : labels) {
+            if (label != kFree) {
+                sliced.insert(label);
+            }
+        }
+    }
+    for (std::size_t i = _first; i < _last; ++i) {
+        bool const adds = node_accumulates(nodes[i]) || (accumulator_id != 0 && _slots[i - _first][0].tid == accumulator_id);
+        if (!adds) {
+            continue;
+        }
+        std::set<int> const carried = node_labels(labelling, i);
+        if (!carried.empty() && carried != sliced) {
+            reason = "a statement accumulates over some of the sliced axes and not all of them, so the loop would add its contribution "
+                     "once per slice of an axis it does not vary over";
+            return false;
+        }
     }
     return true;
 }
@@ -832,8 +914,9 @@ void RegionAnalysis::partition(Labelling const &labelling, std::vector<std::stri
     }
 }
 
-bool RegionAnalysis::node_is_sliced(Labelling const &labelling, std::size_t index) const {
-    auto const &slots = _slots[index - _first];
+std::set<int> RegionAnalysis::node_labels(Labelling const &labelling, std::size_t index) const {
+    std::set<int> carried;
+    auto const   &slots = _slots[index - _first];
     for (std::size_t slot = 0; slot < slots.size(); ++slot) {
         std::vector<int> const *labels = nullptr;
         if (_written_set.contains(slots[slot].tid)) {
@@ -843,11 +926,20 @@ bool RegionAnalysis::node_is_sliced(Labelling const &labelling, std::size_t inde
             auto const hit = labelling.store.use.find({index, slot});
             labels         = hit == labelling.store.use.end() ? nullptr : &hit->second;
         }
-        if (labels != nullptr && std::ranges::any_of(*labels, [](int v) { return v != kFree; })) {
-            return true;
+        if (labels == nullptr) {
+            continue;
+        }
+        for (int const label : *labels) {
+            if (label != kFree) {
+                carried.insert(label);
+            }
         }
     }
-    return false;
+    return carried;
+}
+
+bool RegionAnalysis::node_is_sliced(Labelling const &labelling, std::size_t index) const {
+    return !node_labels(labelling, index).empty();
 }
 
 bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &reason) const {
