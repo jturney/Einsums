@@ -389,3 +389,52 @@ def test_a_bound_tensor_is_addressable_by_the_object_bound_to_it():
     # And the graph no longer claims to know the tensor it was moved off.
     with pytest.raises(Exception, match="is not registered"):
         g.tensor_spaces(A)
+
+
+def test_an_intermediate_an_elementwise_product_writes_follows_the_bind():
+    """The derivation reaches an output no index list describes.
+
+    A deferred intermediate's extents are re-derived at bind from the operands
+    around it, and the walk that does it reads a contraction's letters. An
+    elementwise product has none: ``direct_product`` writes an output whose
+    extents ARE its inputs', and the kernel refuses operands that differ at all,
+    so there is nothing to read letters from and nothing to derive from unless
+    the walk knows that.
+
+    Without that, a bind moved every tensor a contraction wrote and left the one
+    an elementwise product wrote at the extents it was captured on, which fails
+    at execute rather than at bind, inside the kernel, with a message about
+    sizes rather than about the graph. The energy expression of a correlated
+    method is exactly this shape: an integral from a contraction, an amplitude
+    from an elementwise product against a denominator.
+    """
+    reg, occ, virt = _spaces()
+
+    amp = einsums.create_zero_tensor("amp", [4, 8])
+    weights = einsums.create_zero_tensor("weights", [4, 8])
+    out = einsums.create_zero_tensor("out", [4, 8])
+    np.asarray(amp)[...] = np.random.default_rng(17).standard_normal((4, 8))
+    np.asarray(weights)[...] = 0.5
+
+    g = cg.Graph("elementwise_extents")
+    g.set_space_registry(reg)
+    for tensor in (amp, weights, out):
+        g.annotate_spaces(tensor, [occ, virt])
+        g.annotate_dims(tensor, ["no", "nv"])
+    scaled = g.declare_zero_tensor_over("scaled", [cg.SpaceDim(occ), cg.SpaceDim(virt)], True)
+    with cg.capture(g):
+        einsums.linalg.direct_product(1.0, amp, weights, 0.0, scaled)
+        einsums.linalg.axpby(1.0, scaled, 0.0, out)
+
+    amp2 = einsums.create_zero_tensor("amp2", [3, 5])
+    weights2 = einsums.create_zero_tensor("weights2", [3, 5])
+    out2 = einsums.create_zero_tensor("out2", [3, 5])
+    np.asarray(amp2)[...] = np.random.default_rng(19).standard_normal((3, 5))
+    np.asarray(weights2)[...] = 0.5
+    cg.bind(g, {"amp": amp2, "weights": weights2, "out": out2})
+
+    assert [scaled.dim(i) for i in range(2)] == [3, 5]
+
+    g.optimize()
+    g.execute()
+    assert np.allclose(np.asarray(out2), 0.5 * np.asarray(amp2))

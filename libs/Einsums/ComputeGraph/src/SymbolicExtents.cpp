@@ -108,8 +108,15 @@ NodeIndices node_indices(Node const &node) {
 }
 
 /// Whether @p kind writes an output whose extents equal every input's, slot for slot.
+///
+/// The elementwise products belong here for the same reason the scalings do: the kernel
+/// refuses operands whose sizes differ at all, so the output's extents are its inputs'.
+/// Leaving them out left a hole rather than a conservatism, because nothing else in this
+/// walk reaches such an output: a direct product carries no index lists, so the letter arm
+/// below cannot derive it either, and a deferred intermediate written by one stayed at the
+/// extents of the problem it was captured on while everything around it moved.
 bool is_extent_preserving(OpKind kind) {
-    return kind == OpKind::Scale || kind == OpKind::Axpby;
+    return kind == OpKind::Scale || kind == OpKind::Axpby || kind == OpKind::DirectProduct || kind == OpKind::DirectDivision;
 }
 
 /// The live extents and strides of @p handle, read through its rank-erased impl rather
