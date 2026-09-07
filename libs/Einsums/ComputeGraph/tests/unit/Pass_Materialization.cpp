@@ -896,24 +896,27 @@ TEST_CASE("Materialization - a body handle whose last use a rewrite removed gets
         cg::einsum("qs;sr->qr", 0.0, &out, 1.0, half, left);
     }
 
-    // The reference: the same arithmetic, with nothing rewritten.
-    auto reference = create_zero_tensor<double>("reference", big, small);
+    // The rewrites that reach this state are LoopInvariantHoisting followed by
+    // ContractionPlanning, and whether the second one fires depends on the MEASURED cost model
+    // of the machine: it re-associated the chain on one platform and left it alone on three
+    // others, and a precondition that depends on that is not a precondition. So the state is
+    // constructed directly. The body's one statement and the parent's writer are removed, as
+    // the two rewrites remove them, and what is left is exactly what the pass then walked: a
+    // body holding a handle for a tensor no node anywhere names.
+    body.erase_nodes(std::vector<bool>(body.nodes().size(), true));
     {
-        auto      product = create_zero_tensor<double>("product", big, big);
-        cg::Graph plain("plain");
-        {
-            cg::CaptureGuard const guard(plain);
-            cg::einsum("qp;ps->qs", 0.0, &product, 1.0, left, right);
-            cg::einsum("qs;sr->qr", 0.0, &reference, 1.0, product, left);
+        std::vector<bool> remove(g.nodes().size(), false);
+        for (size_t i = 0; i < g.nodes().size(); ++i) {
+            remove[i] = g.nodes()[i].kind == cg::OpKind::Einsum;
         }
-        plain.execute();
+        g.erase_nodes(remove);
     }
 
     auto pm = cg::PassManager::create_default();
     g.apply(pm);
 
-    // The precondition, asserted rather than assumed: the rewrites really did take the use away,
-    // so the case is about a handle nothing names and not about an ordinary live intermediate.
+    // The precondition, asserted rather than assumed: nothing names the tensor, so the case is
+    // about a handle nothing uses and not about an ordinary live intermediate.
     auto const uses_of = [](cg::Graph const &graph, std::string const &name) {
         size_t seen = 0;
         for (auto const &node : graph.nodes()) {
@@ -945,8 +948,7 @@ TEST_CASE("Materialization - a body handle whose last use a rewrite removed gets
     CHECK(cg::passes::stranded_materializations(g).empty());
     CHECK(cg::passes::duplicate_materializations(g).empty());
 
+    // Nothing computes `out` any more; what execute proves is that validation reaches no
+    // deferred handle, which is the failure a hoisted lifecycle for this tensor used to hide.
     g.execute();
-    for (size_t i = 0; i < out.size(); ++i) {
-        REQUIRE_THAT(out.data()[i], Catch::Matchers::WithinRel(reference.data()[i], 1e-10));
-    }
 }
