@@ -904,6 +904,32 @@ bool layout_matches_flag(::einsums::detail::TensorImpl<T> const &impl) {
     return true;
 }
 
+/**
+ * @brief Whether a BLAS call can address @p impl as a matrix at all.
+ *
+ * A GEMM is handed a base pointer and a leading dimension, so the minor axis has to step by one
+ * element. A view that drops a LEADING axis of a three-index tensor leaves a rank-two operand
+ * whose minor stride is the parent's next extent: a perfectly good operand for the generic
+ * algorithm and not a matrix BLAS can describe. @ref layout_matches_flag does not settle it,
+ * because what that checks is strides INCREASING in layout order and ``(6, 36)`` increases.
+ *
+ * Extent-1 axes are never traversed, so an operand whose every axis holds one element is
+ * addressable whatever its strides claim.
+ */
+template <typename T>
+bool minor_stride_is_unit(::einsums::detail::TensorImpl<T> const &impl) {
+    bool const   row_major = impl.is_row_major();
+    size_t const rank      = impl.rank();
+    for (size_t n = 0; n < rank; ++n) {
+        size_t const d = row_major ? rank - 1 - n : n;
+        if (impl.dim(d) <= 1) {
+            continue;
+        }
+        return impl.stride(d) == 1;
+    }
+    return true;
+}
+
 } // namespace
 
 OperandAccessor try_resolve_operand(Graph &graph, TensorId id) {
@@ -978,6 +1004,9 @@ std::shared_ptr<GemmHint> derive_gemm_hint(packed_gemm::ScalarType dtype, packed
             return nullptr;
         }
         if (!layout_matches_flag(*a_impl) || !layout_matches_flag(*b_impl) || !layout_matches_flag(*c_impl)) {
+            return nullptr;
+        }
+        if (!minor_stride_is_unit(*a_impl) || !minor_stride_is_unit(*b_impl) || !minor_stride_is_unit(*c_impl)) {
             return nullptr;
         }
 

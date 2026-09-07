@@ -89,6 +89,11 @@ bool GEMMBatching::run(Graph &graph) {
             continue; // non-GEMM-pattern einsums skipped by capture
         if (desc->conj_a || desc->conj_b)
             continue; // conjugated einsums aren't batched (conj not threaded through the batch rewrite)
+        // A GEMM-shaped einsum lists its two operands first and its destination as its one output;
+        // an accumulating one also lists the destination among its inputs, after them. The batch
+        // reads the operands off these lists, so a node not shaped that way is not a candidate.
+        if (nodes[nd].inputs.size() < 2 || nodes[nd].outputs.size() != 1)
+            continue;
 
         BatchKey key;
         key.m       = desc->gemm_hint->m;
@@ -234,18 +239,28 @@ bool GEMMBatching::run(Graph &graph) {
         batched_outputs.reserve(group.size());
 
         for (size_t const idx : group) {
-            auto *g_desc = std::get_if<EinsumDescriptor>(&nodes[idx].op_data);
-            // Bound to the graph's slots, so the batch follows every later
-            // rebind() and redirect_slot() the way the member einsums did.
-            a_ops.push_back(
-                detail::BatchedGemmOperand{.accessor = resolve_operand(graph, g_desc->gemm_hint->a.id, "GEMMBatching", "A"), .offset = 0});
-            b_ops.push_back(
-                detail::BatchedGemmOperand{.accessor = resolve_operand(graph, g_desc->gemm_hint->b.id, "GEMMBatching", "B"), .offset = 0});
-            c_ops.push_back(
-                detail::BatchedGemmOperand{.accessor = resolve_operand(graph, g_desc->gemm_hint->c.id, "GEMMBatching", "C"), .offset = 0});
-            batched_inputs.push_back(nodes[idx].inputs[0]);
-            batched_inputs.push_back(nodes[idx].inputs[1]);
-            batched_outputs.push_back(nodes[idx].outputs[0]);
+            // The operands come from the node's own DATAFLOW LISTS rather than from the ids the
+            // hint records, which is the authority rule the descriptors state: a recorded id is a
+            // structural record of what capture saw, and the node's inputs and outputs are what
+            // every pass rewrites. A node MOVED between graphs is where the two part company.
+            // `LoopInvariantHoisting` lifts a body statement into the parent and remaps the lists
+            // it carries, because a body id means nothing in the parent's table, and the hint's
+            // copy of the same ids stays as capture left it. Resolving through those against the
+            // parent then reaches a different buffer or none, which is a batch writing somewhere
+            // else: the two hoisted contractions left their destinations untouched, and a wider
+            // program segfaulted inside the batch.
+            //
+            // Bound to the graph's slots, so the batch follows every later rebind() and
+            // redirect_slot() the way the member einsums did.
+            TensorId const a_id = nodes[idx].inputs[0];
+            TensorId const b_id = nodes[idx].inputs[1];
+            TensorId const c_id = nodes[idx].outputs[0];
+            a_ops.push_back(detail::BatchedGemmOperand{.accessor = resolve_operand(graph, a_id, "GEMMBatching", "A"), .offset = 0});
+            b_ops.push_back(detail::BatchedGemmOperand{.accessor = resolve_operand(graph, b_id, "GEMMBatching", "B"), .offset = 0});
+            c_ops.push_back(detail::BatchedGemmOperand{.accessor = resolve_operand(graph, c_id, "GEMMBatching", "C"), .offset = 0});
+            batched_inputs.push_back(a_id);
+            batched_inputs.push_back(b_id);
+            batched_outputs.push_back(c_id);
         }
 
         // beta != 0 means gemm_batch READS every destination before writing it.

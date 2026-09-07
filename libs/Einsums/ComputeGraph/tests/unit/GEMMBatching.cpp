@@ -606,3 +606,111 @@ TEST_CASE("batched_gemm_blocked matches the list form", "[ComputeGraph][GEMMBatc
         REQUIRE_THROWS(cg::batched_gemm_blocked(1.0, a_list, b_list, 0.0, &got, offsets, m + 1, n));
     }
 }
+
+TEST_CASE("GEMMBatching: an operand BLAS cannot address as a matrix is left alone", "[ComputeGraph][Optimizer][GEMMBatching]") {
+    // A view that drops the LEADING axis of a three-index tensor leaves a rank-two operand whose
+    // minor axis steps by the parent's next extent. A GEMM is handed a base pointer and a leading
+    // dimension and has no way to say that, so such an operand is not a matrix and a batch that
+    // addressed it as one would read the wrong elements. The generic algorithm reads strides and
+    // is right either way, which is why the unbatched form of this program has always been
+    // correct and only the collapsed one was wrong.
+    //
+    // Found by the region fuzz's tiling arm once it ran the full default pipeline: the schedule
+    // that slices a leading axis writes exactly these operands, several of one shape, at one
+    // dependency level, which is the batch's own grouping key.
+    constexpr size_t Slices = 2, M = 5, K = 4, N = 3;
+    auto             A  = create_random_tensor<double>("A", Slices, M, K);
+    auto             B1 = create_random_tensor<double>("B1", K, N);
+    auto             B2 = create_random_tensor<double>("B2", K, N);
+
+    auto slice0 = A(0, All, All);
+    auto slice1 = A(1, All, All);
+    REQUIRE(slice0.stride(0) != 1);
+    REQUIRE(slice1.stride(0) == slice0.stride(0));
+
+    auto C1_ref = create_zero_tensor<double>("C1_ref", M, N);
+    auto C2_ref = create_zero_tensor<double>("C2_ref", M, N);
+    {
+        cg::Graph              g("ref");
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", &C1_ref, slice0, B1);
+        cg::einsum("ik;kj->ij", &C2_ref, slice1, B2);
+        g.execute();
+    }
+
+    auto      C1 = create_zero_tensor<double>("C1", M, N);
+    auto      C2 = create_zero_tensor<double>("C2", M, N);
+    cg::Graph graph("strided_operands");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C1, slice0, B1);
+        cg::einsum("ik;kj->ij", &C2, slice1, B2);
+    }
+    REQUIRE(graph.num_nodes() == 2);
+
+    auto [modified, pass] = graph.apply<cg::passes::GEMMBatching>();
+    CHECK_FALSE(modified);
+    CHECK(pass.num_batches() == 0);
+    CHECK(graph.num_nodes() == 2);
+
+    graph.execute();
+    require_close(C1, C1_ref);
+    require_close(C2, C2_ref);
+}
+
+TEST_CASE("GEMMBatching: members hoisted out of a loop body are batched against the parent's ids",
+          "[ComputeGraph][Optimizer][GEMMBatching]") {
+    // The batch resolves its operands through the node's own dataflow lists rather than through
+    // the ids the hint recorded at capture, and this is the program where the two part company.
+    // Both contractions are loop-invariant, so `LoopInvariantHoisting` lifts them into the parent
+    // and remaps the lists they carry, because a body id means nothing in the parent's table. The
+    // hint's copy of those ids stays as capture left it, and a batch built from them writes
+    // somewhere else entirely: before the fix both destinations came back untouched.
+    constexpr size_t M = 6, K = 2, N = 2;
+    auto             A  = create_random_tensor<double>("A", M, K);
+    auto             B1 = create_random_tensor<double>("B1", K, N);
+    auto             B2 = create_random_tensor<double>("B2", K, N);
+
+    auto C1_ref = create_zero_tensor<double>("C1_ref", M, N);
+    auto C2_ref = create_zero_tensor<double>("C2_ref", M, N);
+    {
+        cg::Graph              g("ref");
+        cg::CaptureGuard const guard(g);
+        cg::einsum("ik;kj->ij", &C1_ref, A, B1);
+        cg::einsum("ik;kj->ij", &C2_ref, A, B2);
+        g.execute();
+    }
+
+    auto      C1 = create_zero_tensor<double>("C1", M, N);
+    auto      C2 = create_zero_tensor<double>("C2", M, N);
+    cg::Graph graph("hoisted_then_batched");
+    // Unrelated work in the parent FIRST, so the parent's id counter is ahead of the body's and a
+    // body id does not happen to name the same buffer in both tables. Without it the two numbering
+    // schemes coincide and the stale ids read the right buffers by accident.
+    auto D  = create_random_tensor<double>("D", N, N);
+    auto DD = create_zero_tensor<double>("DD", N, N);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &DD, D, D);
+    }
+    auto &body = graph.add_loop("iteration", 1, [](size_t it) { return it < 0; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ik;kj->ij", &C1, A, B1);
+        cg::einsum("ik;kj->ij", &C2, A, B2);
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::LoopInvariantHoisting>();
+    pm.add<cg::passes::GEMMBatching>();
+    REQUIRE(pm.run(graph));
+
+    // The precondition: the hoist really did move both statements up, and the batch really did
+    // form in the parent, so the case is about ids that crossed a graph boundary.
+    REQUIRE(body.num_nodes() == 0);
+    REQUIRE(std::ranges::count_if(graph.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::BatchedGemm; }) == 1);
+
+    graph.execute();
+    require_close(C1, C1_ref);
+    require_close(C2, C2_ref);
+}
