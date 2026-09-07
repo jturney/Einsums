@@ -389,6 +389,16 @@ class ScalarAccessor {
  *       builder can lower in this process, and refusing it there would only
  *       force the capture site to hand-bake a lambda again, which is the thing
  *       this file exists to stop.
+ *
+ * @note The GROUPED family is the one place the two questions come apart at the
+ *       KIND level rather than per node, and it is a decision rather than a
+ *       gap. @ref build_executor has an entry for every grouped kind, because a
+ *       region rewrite that raised one has the live operands in front of it and
+ *       rebuilds the node's shape parameters from them; this predicate stays
+ *       false for all of them, because a group table is a function of ONE
+ *       problem's extents and writing it to a file would freeze that problem
+ *       into the file. Saving a grouped node means saving the algebraic form
+ *       and re-grouping on load, which is a different piece of work.
  */
 [[nodiscard]] constexpr bool is_reconstructible(OpKind kind) noexcept {
     switch (kind) {

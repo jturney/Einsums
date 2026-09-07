@@ -5,6 +5,8 @@
 
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
+#include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
+#include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
@@ -760,6 +762,222 @@ std::function<void()> build_syev(packed_gemm::ScalarType dtype, SyevDescriptor c
     });
 }
 
+// ── The grouped family ──────────────────────────────────────────────────────
+//
+// A grouped node is one operation over a family of members, and the operand
+// lists on the node are the family: member `i` is at a fixed place in them.
+// These builders read those places back and call, per member, the SAME
+// rank-erased kernel the ungrouped builder above calls, which is what makes a
+// node a region rewrite emitted run the arithmetic the captured node ran.
+//
+// The member loop is `detail::run_grouped_members` for the element-wise kinds
+// and a plain loop for the two reductions, matching the capture sites: an
+// element-wise member's bits do not depend on how the run was divided, while a
+// reduction's summation order is its thread count's.
+
+/// Resolve @p count operands at a fixed stride through @p ids, starting at @p first.
+std::vector<OperandAccessor> resolve_members(Graph &graph, std::span<TensorId const> ids, std::size_t first, std::size_t stride,
+                                             std::size_t count, OpKind kind, char const *role) {
+    std::vector<OperandAccessor> out;
+    out.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        std::size_t const at = first + i * stride;
+        if (at >= ids.size()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): the {} list is shorter than the member count says",
+                                    op_kind_name(kind), role);
+        }
+        out.push_back(resolve_operand(graph, ids[at], kind, role));
+    }
+    return out;
+}
+
+/// ``C_i = alpha*op(A_i) op(B_i) + beta*C_i`` over members whose shapes differ.
+///
+/// The plan and the call itself are @ref detail::make_grouped_batched_gemm_executor,
+/// the one dispatch the capture site also goes through; what this adds is
+/// reading the per-member operands off the node instead of off a capture-time
+/// slot list.
+std::function<void()> build_grouped_batched_gemm(GroupedBatchedGemmDescriptor const &desc, Graph &graph, std::span<TensorId const> inputs,
+                                                 std::span<TensorId const> outputs) {
+    auto const count = static_cast<std::size_t>(desc.total);
+    if (outputs.size() != count || inputs.size() < 2 * count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "build_executor(GroupedBatchedGemm): {} member(s) want {} input(s) and {} output(s), and the node "
+                                "carries {} and {}",
+                                count, 2 * count, count, inputs.size(), outputs.size());
+    }
+    if (desc.blocked) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "build_executor(GroupedBatchedGemm): a blocked batch writes offsets into shared bases, and the offsets "
+                                "are not on the node");
+    }
+    detail::BatchedGemmOperands a_ops, b_ops, c_ops;
+    a_ops.reserve(count);
+    b_ops.reserve(count);
+    c_ops.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        a_ops.push_back(
+            detail::BatchedGemmOperand{.accessor = resolve_operand(graph, inputs[2 * i], OpKind::GroupedBatchedGemm, "A"), .offset = 0});
+        b_ops.push_back(detail::BatchedGemmOperand{.accessor = resolve_operand(graph, inputs[2 * i + 1], OpKind::GroupedBatchedGemm, "B"),
+                                                   .offset   = 0});
+        c_ops.push_back(
+            detail::BatchedGemmOperand{.accessor = resolve_operand(graph, outputs[i], OpKind::GroupedBatchedGemm, "C"), .offset = 0});
+    }
+    return detail::make_grouped_batched_gemm_executor(desc, std::move(a_ops), std::move(b_ops), std::move(c_ops));
+}
+
+/// ``result_i = sum(A_i * B_i)`` over every member, under one vendor fence.
+std::function<void()> build_grouped_dot(packed_gemm::ScalarType dtype, GroupedDotDescriptor const &desc, Graph &graph,
+                                        std::span<TensorId const> inputs, std::span<TensorId const> outputs) {
+    auto const count = static_cast<std::size_t>(desc.total);
+    if (outputs.size() != count || inputs.size() != 2 * count) {
+        EINSUMS_THROW_EXCEPTION(
+            std::invalid_argument,
+            "build_executor(GroupedDot): {} member(s) want {} input(s) and {} output(s), and the node carries {} and {}", count, 2 * count,
+            count, inputs.size(), outputs.size());
+    }
+    auto                        a = resolve_members(graph, inputs, 0, 2, count, OpKind::GroupedDot, "A");
+    auto                        b = resolve_members(graph, inputs, 1, 2, count, OpKind::GroupedDot, "B");
+    std::vector<ScalarAccessor> results;
+    results.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        results.push_back(resolve_scalar_operand(graph, outputs[i], scalar_context(OpKind::GroupedDot), "result"));
+    }
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        return [a = std::move(a), b = std::move(b), results = std::move(results)]() {
+            LabeledSection("grouped_dot execute");
+            blas::SerialVendorScope const serial;
+            for (std::size_t i = 0; i < results.size(); ++i) {
+                *results[i].address<T>() = linear_algebra::detail::dot(*a[i].impl<T>(), *b[i].impl<T>());
+            }
+        };
+    });
+}
+
+/// ``Y_i = alphas[i]*X_i + betas[i]*Y_i`` over every member.
+///
+/// No axpy fast path, which is the one place this departs from
+/// @ref build_axpby: the capture site calls ``linear_algebra::axpby``
+/// unconditionally, so taking BLAS's axpy for a member whose beta is one would
+/// run a different kernel than the node being rebuilt ran.
+std::function<void()> build_grouped_axpby(packed_gemm::ScalarType dtype, GroupedAxpbyDescriptor const &desc, Graph &graph,
+                                          std::span<TensorId const> inputs, std::span<TensorId const> outputs) {
+    auto const count = static_cast<std::size_t>(desc.total);
+    if (outputs.size() != count || desc.alphas.size() != count || desc.betas.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "build_executor(GroupedAxpby): the descriptor names {} member(s) and the node writes {}", count,
+                                outputs.size());
+    }
+    // The destination joins the inputs only for a member that reads it, so the
+    // betas are what say where each member's source sits.
+    std::vector<OperandAccessor> x;
+    x.reserve(count);
+    std::size_t cursor = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        if (cursor >= inputs.size()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(GroupedAxpby): the input list is shorter than the members say");
+        }
+        x.push_back(resolve_operand(graph, inputs[cursor++], OpKind::GroupedAxpby, "X"));
+        if (!is_zero(desc.betas[i])) {
+            ++cursor;
+        }
+    }
+    std::vector<OperandAccessor> y;
+    y.reserve(count);
+    for (auto const id : outputs) {
+        y.push_back(resolve_operand(graph, id, OpKind::GroupedAxpby, "Y"));
+    }
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        std::vector<T> alphas, betas;
+        alphas.reserve(count);
+        betas.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            alphas.push_back(as<T>(desc.alphas[i]));
+            betas.push_back(as<T>(desc.betas[i]));
+        }
+        return [alphas = std::move(alphas), betas = std::move(betas), x = std::move(x), y = std::move(y)]() {
+            LabeledSection("grouped_axpby execute");
+            for (std::size_t i = 0; i < y.size(); ++i) {
+                linear_algebra::detail::axpby(alphas[i], *x[i].impl<T>(), betas[i], y[i].impl<T>());
+            }
+        };
+    });
+}
+
+/// ``C_i = betas[i]*C_i + alphas[i]*permute(A_i)`` over every member, all under
+/// one spec, and ``C_i = alphas[i]*(A_i op B_i) + betas[i]*C_i`` for the
+/// grouped product and quotient. One builder for the three, matching the one
+/// descriptor they share.
+std::function<void()> build_grouped_elementwise(OpKind kind, packed_gemm::ScalarType dtype, GroupedElementwiseDescriptor const &desc,
+                                                Graph &graph, std::span<TensorId const> inputs, std::span<TensorId const> outputs) {
+    auto const count   = static_cast<std::size_t>(desc.total);
+    auto const sources = kind == OpKind::GroupedPermute ? std::size_t{1} : std::size_t{2};
+    if (outputs.size() != count || desc.alphas.size() != count || desc.betas.size() != count) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): the descriptor names {} member(s) and the node writes {}",
+                                op_kind_name(kind), count, outputs.size());
+    }
+    std::vector<OperandAccessor> a, b, c;
+    a.reserve(count);
+    b.reserve(count);
+    c.reserve(count);
+    std::size_t cursor = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        if (cursor + sources > inputs.size()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): the input list is shorter than the members say",
+                                    op_kind_name(kind));
+        }
+        a.push_back(resolve_operand(graph, inputs[cursor++], kind, "A"));
+        if (sources == 2) {
+            b.push_back(resolve_operand(graph, inputs[cursor++], kind, "B"));
+        }
+        if (!is_zero(desc.betas[i])) {
+            ++cursor;
+        }
+        c.push_back(resolve_operand(graph, outputs[i], kind, "C"));
+    }
+
+    ParsedPermuteSpec parsed;
+    if (kind == OpKind::GroupedPermute) {
+        if (desc.c_indices.empty() || desc.a_indices.empty()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "build_executor(GroupedPermute): the descriptor carries no index lists, so the permutation every "
+                                    "member runs is not on the node");
+        }
+        parsed.c_indices = desc.c_indices;
+        parsed.a_indices = desc.a_indices;
+        parsed.raw       = parsed.render();
+    }
+
+    bool const divide = kind == OpKind::GroupedDirectDivision;
+    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        std::vector<T> alphas, betas;
+        alphas.reserve(count);
+        betas.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            alphas.push_back(as<T>(desc.alphas[i]));
+            betas.push_back(as<T>(desc.betas[i]));
+        }
+        if (kind == OpKind::GroupedPermute) {
+            return [parsed, alphas = std::move(alphas), betas = std::move(betas), a = std::move(a), c = std::move(c)]() {
+                LabeledSection("grouped_permute execute");
+                detail::run_grouped_members(c.size(), [&](std::size_t i) {
+                    dispatch::string_permute_impl<T>(parsed, betas[i], c[i].impl<T>(), alphas[i], *a[i].impl<T>());
+                });
+            };
+        }
+        return [divide, alphas = std::move(alphas), betas = std::move(betas), a = std::move(a), b = std::move(b), c = std::move(c)]() {
+            LabeledSection("grouped_elementwise execute");
+            detail::run_grouped_members(c.size(), [&](std::size_t i) {
+                if (divide) {
+                    linear_algebra::detail::direct_division<T, T, T>(alphas[i], *a[i].impl<T>(), *b[i].impl<T>(), betas[i], c[i].impl<T>());
+                } else {
+                    linear_algebra::detail::direct_product<T, T, T>(alphas[i], *a[i].impl<T>(), *b[i].impl<T>(), betas[i], c[i].impl<T>());
+                }
+            });
+        };
+    });
+}
+
 /// One name per @ref OpData alternative, in the variant's own declaration order.
 ///
 /// Indexed by ``index()`` rather than matched by a chain of
@@ -1270,6 +1488,29 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
         need(kind, "outputs", outputs, 1);
         auto const &d = expect<AxpbyDescriptor>(kind, desc, "AxpbyDescriptor");
         return build_axpby(dtype, d, resolve_operand(graph, inputs[0], kind, "X"), resolve_operand(graph, outputs[0], kind, "Y"));
+    }
+    // The grouped family. Building one of these is a different question from
+    // SAVING one: @ref reconstruction_blocker still refuses a grouped batch,
+    // because a group table is a function of one problem's extents, while a
+    // region rewrite lowering a term it just raised has the live operands in
+    // front of it and rebuilds the table from them.
+    case OpKind::GroupedBatchedGemm: {
+        auto const &d = expect<GroupedBatchedGemmDescriptor>(kind, desc, "GroupedBatchedGemmDescriptor");
+        return build_grouped_batched_gemm(d, graph, inputs, outputs);
+    }
+    case OpKind::GroupedDot: {
+        auto const &d = expect<GroupedDotDescriptor>(kind, desc, "GroupedDotDescriptor");
+        return build_grouped_dot(dtype, d, graph, inputs, outputs);
+    }
+    case OpKind::GroupedAxpby: {
+        auto const &d = expect<GroupedAxpbyDescriptor>(kind, desc, "GroupedAxpbyDescriptor");
+        return build_grouped_axpby(dtype, d, graph, inputs, outputs);
+    }
+    case OpKind::GroupedPermute:
+    case OpKind::GroupedDirectProduct:
+    case OpKind::GroupedDirectDivision: {
+        auto const &d = expect<GroupedElementwiseDescriptor>(kind, desc, "GroupedElementwiseDescriptor");
+        return build_grouped_elementwise(kind, dtype, d, graph, inputs, outputs);
     }
     case OpKind::DirectProduct:
     case OpKind::DirectDivision: {

@@ -223,10 +223,22 @@ TEST_CASE("ExecutorBuilder - the predicate and the builder's dispatch agree", "[
     // they would drift is a builder entry landing without its bit, so a save
     // refuses a node it could actually reconstruct. Walk EVERY kind and require
     // the two to answer the same.
+    //
+    // The grouped family is exempt, and the exemption is a decision rather than
+    // a hole: it has a builder entry, because a region rewrite that raised one
+    // rebuilds its shape parameters from the live operands, and it deliberately
+    // has no bit, because a group table is a function of one problem's extents
+    // and a file holding it would be wrong at the next geometry. That is the
+    // only pair of answers this walk is allowed to see disagree, and naming the
+    // set here is what keeps a genuinely forgotten bit from hiding behind it.
     cg::Graph graph("agreement");
 
     for (int raw = 0; raw <= static_cast<int>(cg::OpKind::Custom); ++raw) {
         auto const kind = static_cast<cg::OpKind>(raw);
+        if (cg::is_grouped_raisable(kind)) {
+            REQUIRE_FALSE(cg::is_reconstructible(kind));
+            continue;
+        }
         INFO("kind: " << cg::op_kind_name(kind));
 
         // Called with no operands and no descriptor, so a kind WITH an entry

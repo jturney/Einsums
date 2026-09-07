@@ -328,6 +328,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      */
     [[nodiscard]] virtual std::size_t min_region_nodes() const { return 1; }
 
+    /**
+     * @brief Whether this pass may have grouped nodes raised into its regions.
+     *
+     * Off by default, which keeps a grouped node a barrier for every client
+     * that has not been taught to read one. That is a correctness gate rather
+     * than a convenience: a grouped statement's value is a member LIST, so
+     * @ref ExprTerm::tensor is empty on its leaves and
+     * @ref ExprStatement::target on its statements, and a rewrite that reads
+     * either without gating on @ref ExprTerm::ragged would name a tensor the
+     * statement does not write.
+     *
+     * @return True when the pass reads ragged terms.
+     */
+    [[nodiscard]] virtual bool raises_grouped() const { return false; }
+
   private:
     /// Record a region turned away, counting the reason for the structural report as well as
     /// for the skip tally. One call rather than two statements at each site, because the two
@@ -409,6 +424,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      *         pass that returned false would skip the lowering and test nothing.
      */
     bool rewrite(Graph &graph, Region const &region, TensorExpr &expr) override;
+
+    /// @copydoc RegionRewrite::raises_grouped
+    /// True, and it is the gate the grouped raise is proved through: this pass
+    /// rewrites nothing, so a grouped region that comes back with different
+    /// numbers or a different node set says the raise and the lowering
+    /// disagree about what the family computes.
+    [[nodiscard]] bool raises_grouped() const override { return true; }
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Detail/BatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
+#include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeElementwise.hpp>
 #include <Einsums/ComputeGraph/Diis.hpp>
@@ -3799,36 +3800,6 @@ void require_distinct_destinations(std::vector<CType *> const &c_list, char cons
     }
 }
 
-/// Run @p member over every index as one OpenMP team, carrying the first
-/// exception out by hand: one may not cross a region boundary.
-template <typename F>
-void run_grouped_members(size_t count, F &&member) {
-    // A run of one IS the call the grouped form replaces, and forking a team
-    // for it costs more than the member does. Worth the branch because a gated
-    // capture is full of them: a conditional over one entity still wants the
-    // grouped spelling, so that the ungated capture beside it can be the same
-    // emitter with a longer list.
-    if (count == 1) {
-        member(size_t{0});
-        return;
-    }
-    std::exception_ptr first;
-    EINSUMS_OMP_PRAGMA(parallel for schedule(dynamic))
-    for (size_t i = 0; i < count; i++) {
-        try {
-            member(i);
-        } catch (...) {
-            EINSUMS_OMP_PRAGMA(critical(grouped_elementwise_failure))
-            if (!first) {
-                first = std::current_exception();
-            }
-        }
-    }
-    if (first) {
-        std::rethrow_exception(first);
-    }
-}
-
 } // namespace detail
 
 /// @brief Emit one `blas::gemm_batch_grouped` over independent GEMMs whose
@@ -4155,6 +4126,7 @@ void grouped_batched_gemm_blocked(double alpha, std::vector<AType const *> a_lis
     }
 
     auto [d, flat] = detail::group_gemm_shapes<T>(keys, trans_a, trans_b, alpha, beta, " into blocks");
+    d.blocked      = true;
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -4685,7 +4657,9 @@ void grouped_permute(std::string const &spec, std::vector<CType *> c_list, std::
     };
 
     GroupedElementwiseDescriptor d;
-    d.total = static_cast<int>(count);
+    d.total     = static_cast<int>(count);
+    d.c_indices = parsed.c_indices;
+    d.a_indices = parsed.a_indices;
     d.alphas.reserve(count);
     d.betas.reserve(count);
     for (size_t i = 0; i < count; i++) {

@@ -355,3 +355,296 @@ TEST_CASE("a refused lowering leaves the graph exactly as it was", "[ComputeGrap
         }
     }
 }
+
+// ── The grouped family ──────────────────────────────────────────────────────
+//
+// A grouped node is one operation over a family of members whose extents
+// differ, and it raises to a term carrying one more free letter. What these
+// cases pin is the MECHANISM as well as the numbers: that a family raises at
+// all, that the member letter is outermost on every operand, that the ragged
+// extents on the family are the members' own, and that the lowering emits the
+// grouped kind again rather than a per-member loop of ordinary nodes, which is
+// the one thing the grouped family exists to avoid.
+
+namespace {
+
+/// A run of rank-two tensors whose extents differ member by member, which is
+/// the shape a local-correlation method's per-pair work has and the reason the
+/// grouped family exists.
+std::vector<Tensor<double, 2>> ragged_pool(std::string const &stem, std::vector<std::size_t> const &rows,
+                                           std::vector<std::size_t> const &cols) {
+    std::vector<Tensor<double, 2>> out;
+    out.reserve(rows.size());
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        out.push_back(create_random_tensor<double>(fmt::format("{}{}", stem, i), rows[i], cols[i]));
+    }
+    return out;
+}
+
+std::vector<Tensor<double, 2> const *> as_inputs(std::vector<Tensor<double, 2>> const &pool) {
+    std::vector<Tensor<double, 2> const *> out;
+    out.reserve(pool.size());
+    for (auto const &tensor : pool) {
+        out.push_back(&tensor);
+    }
+    return out;
+}
+
+std::vector<Tensor<double, 2> *> as_outputs(std::vector<Tensor<double, 2>> &pool) {
+    std::vector<Tensor<double, 2> *> out;
+    out.reserve(pool.size());
+    for (auto &tensor : pool) {
+        out.push_back(&tensor);
+    }
+    return out;
+}
+
+std::vector<double> flatten_pool(std::vector<Tensor<double, 2>> const &pool) {
+    std::vector<double> out;
+    for (auto const &tensor : pool) {
+        auto const one = flatten(tensor);
+        out.insert(out.end(), one.begin(), one.end());
+    }
+    return out;
+}
+
+/// Every region of @p graph, formed with the grouped kinds admitted.
+std::vector<cg::Region> grouped_regions(cg::Graph const &graph) {
+    cg::RegionOptions options;
+    options.grouped = true;
+    return cg::form_regions(graph, cg::EscapeAnalysis::over(graph), options);
+}
+
+/// How many nodes of @p kind the graph holds.
+std::size_t count_kind(cg::Graph const &graph, cg::OpKind kind) {
+    std::size_t total = 0;
+    for (auto const &node : graph.nodes()) {
+        total += node.kind == kind ? 1 : 0;
+    }
+    return total;
+}
+
+} // namespace
+
+TEST_CASE("a grouped batch raises to a contraction over a member letter", "[ComputeGraph][RegionRewrite][Identity][Grouped]") {
+    std::vector<std::size_t> const rows{2, 3, 4, 3};
+    std::vector<std::size_t> const links{5, 2, 3, 6};
+    std::vector<std::size_t> const cols{4, 4, 2, 5};
+    auto                           A = ragged_pool("A", rows, links);
+    auto                           B = ragged_pool("B", links, cols);
+    auto                           C = ragged_pool("C", rows, cols);
+
+    cg::Graph graph("grouped raise");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::grouped_batched_gemm(2.0, as_inputs(A), as_inputs(B), 0.0, as_outputs(C));
+    }
+
+    auto const regions = grouped_regions(graph);
+    REQUIRE(regions.size() == 1);
+    auto const raised = cg::raise_region(graph, regions[0]);
+    REQUIRE(raised.has_value());
+
+    REQUIRE(raised->families.size() == 1);
+    REQUIRE(raised->statements.size() == 1);
+    auto const &family    = raised->families[0];
+    auto const &statement = raised->statements[0];
+    CHECK(family.letter == "#m0");
+    CHECK(family.members == rows.size());
+    CHECK(family.kind == cg::OpKind::GroupedBatchedGemm);
+    CHECK(statement.family == 0);
+    CHECK(statement.targets.size() == rows.size());
+
+    // The member letter is OUTERMOST on the output and on both operands, which
+    // is the rule that makes a batched letter cheap to carry: the search reads
+    // it as a letter neither operand sums, exactly as it reads an ordinary
+    // batched one.
+    auto const &term = raised->at(statement.value);
+    REQUIRE(term.kind == cg::TermKind::Contraction);
+    REQUIRE(statement.target_indices.size() == 3);
+    CHECK(statement.target_indices[0].letter == family.letter);
+    REQUIRE(term.operand_indices.size() == 2);
+    for (auto const &operand : term.operand_indices) {
+        REQUIRE(operand.size() == 3);
+        CHECK(operand[0].letter == family.letter);
+    }
+    // Both operands are RAGGED leaves whose identity is the member list.
+    for (auto const leaf : term.operands) {
+        CHECK(raised->at(leaf).ragged());
+        CHECK(raised->at(leaf).members.size() == rows.size());
+    }
+
+    // The per-instance extent table is the members' own extents, and the
+    // typical extent the cost model reads is their mean.
+    std::string const row_letter = statement.target_indices[1].letter;
+    std::string const col_letter = statement.target_indices[2].letter;
+    bool              saw_rows   = false;
+    for (auto const &[letter, values] : family.extents) {
+        if (letter == row_letter) {
+            saw_rows = true;
+            CHECK(values == rows);
+        }
+        if (letter == col_letter) {
+            CHECK(values == cols);
+        }
+    }
+    CHECK(saw_rows);
+    CHECK(family.typical_extent(row_letter) == 3); // (2 + 3 + 4 + 3) / 4
+}
+
+TEST_CASE("identity round-trip - a grouped batch", "[ComputeGraph][RegionRewrite][Identity][Grouped]") {
+    std::vector<std::size_t> const rows{2, 3, 4, 3};
+    std::vector<std::size_t> const links{5, 2, 3, 6};
+    std::vector<std::size_t> const cols{4, 4, 2, 5};
+    auto                           A    = ragged_pool("A", rows, links);
+    auto                           B    = ragged_pool("B", links, cols);
+    auto                           C    = ragged_pool("C", rows, cols);
+    auto const                     seed = C;
+
+    require_identity(
+        [&](cg::Graph &graph) {
+            cg::CaptureGuard const guard(graph);
+            // Two calls, one transposing and accumulating, so the round trip has
+            // a transpose flag and a destination prefactor to carry as well as
+            // the shapes.
+            cg::grouped_batched_gemm(2.0, as_inputs(A), as_inputs(B), 0.0, as_outputs(C));
+            cg::grouped_batched_gemm(0.5, as_inputs(A), as_inputs(B), -1.5, as_outputs(C));
+        },
+        [&] { C = seed; }, [&] { return flatten_pool(C); });
+}
+
+TEST_CASE("identity round-trip - the grouped scalar and element-wise kinds", "[ComputeGraph][RegionRewrite][Identity][Grouped]") {
+    std::vector<std::size_t> const rows{3, 2, 4};
+    std::vector<std::size_t> const cols{2, 5, 3};
+    auto                           X      = ragged_pool("X", rows, cols);
+    auto                           Y      = ragged_pool("Y", rows, cols);
+    auto                           Z      = ragged_pool("Z", rows, cols);
+    auto                           P      = ragged_pool("P", cols, rows);
+    auto                           r      = ragged_pool("r", {1, 1, 1}, {1, 1, 1});
+    auto const                     y_seed = Y;
+    auto const                     z_seed = Z;
+    auto const                     p_seed = P;
+    auto const                     r_seed = r;
+
+    require_identity(
+        [&](cg::Graph &graph) {
+            cg::CaptureGuard const guard(graph);
+            cg::grouped_axpby({2.0, -1.0, 0.5}, as_inputs(X), {0.0, 1.0, -2.0}, as_outputs(Y));
+            cg::grouped_dot(as_outputs(r), as_inputs(X), as_inputs(Y));
+            cg::grouped_permute("ba <- ab", as_outputs(P), as_inputs(Y), {0.0, 0.0, 1.0}, {3.0, 1.0, -1.0});
+            cg::grouped_direct_product(std::vector<double>{1.5, 1.0, -0.5}, as_inputs(X), as_inputs(Y), std::vector<double>{0.0, 2.0, 1.0},
+                                       as_outputs(Z));
+            cg::grouped_direct_division(std::vector<double>{1.0, 2.0, 0.25}, as_inputs(X), as_inputs(Z), std::vector<double>{1.0, 0.0, 3.0},
+                                        as_outputs(Z));
+        },
+        [&] {
+            Y = y_seed;
+            Z = z_seed;
+            P = p_seed;
+            r = r_seed;
+        },
+        [&] {
+            auto       out = flatten_pool(Y);
+            auto const z   = flatten_pool(Z);
+            auto const p   = flatten_pool(P);
+            auto const s   = flatten_pool(r);
+            out.insert(out.end(), z.begin(), z.end());
+            out.insert(out.end(), p.begin(), p.end());
+            out.insert(out.end(), s.begin(), s.end());
+            return out;
+        });
+}
+
+TEST_CASE("a lowered grouped region is grouped nodes, not a per-member loop", "[ComputeGraph][RegionRewrite][Identity][Grouped]") {
+    // The rule the design states and the reason it states it: a member loop is
+    // what the grouped family exists to avoid, so a rewrite must emit the
+    // grouped kind or decline. Counted on the node set rather than believed
+    // from the report.
+    std::vector<std::size_t> const rows{2, 3, 4, 3, 2};
+    std::vector<std::size_t> const links{5, 2, 3, 6, 4};
+    std::vector<std::size_t> const cols{4, 4, 2, 5, 3};
+    auto                           A = ragged_pool("A", rows, links);
+    auto                           B = ragged_pool("B", links, cols);
+    auto                           C = ragged_pool("C", rows, cols);
+    auto                           D = ragged_pool("D", rows, cols);
+
+    cg::Graph graph("grouped lowering");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::grouped_batched_gemm(1.0, as_inputs(A), as_inputs(B), 0.0, as_outputs(C));
+        cg::grouped_axpby({1.0, 1.0, 1.0, 1.0, 1.0}, as_inputs(C), {0.0, 0.0, 0.0, 0.0, 0.0}, as_outputs(D));
+    }
+
+    auto            pass = std::make_shared<cg::passes::RegionIdentity>();
+    cg::PassManager pm;
+    pm.add(pass);
+    REQUIRE(pm.run(graph));
+    CHECK(graph.num_nodes() == 2);
+    CHECK(count_kind(graph, cg::OpKind::GroupedBatchedGemm) == 1);
+    CHECK(count_kind(graph, cg::OpKind::GroupedAxpby) == 1);
+    CHECK(count_kind(graph, cg::OpKind::Einsum) == 0);
+    CHECK(count_kind(graph, cg::OpKind::Axpby) == 0);
+}
+
+TEST_CASE("a blocked grouped batch stays a barrier", "[ComputeGraph][RegionRewrite][Identity][Grouped]") {
+    // Its destinations are column ranges of shared bases and the offsets that
+    // say where each member lands are held by the executor, not by the node, so
+    // the member list of destinations is not there to raise. Left whole.
+    std::vector<std::size_t> const rows{3, 3};
+    std::vector<std::size_t> const links{2, 4};
+    auto                           A    = ragged_pool("A", rows, links);
+    auto                           B    = ragged_pool("B", links, {2, 2});
+    auto                           base = create_zero_tensor<double>("base", 3, 4);
+
+    cg::Graph graph("blocked");
+    {
+        cg::CaptureGuard const                 guard(graph);
+        std::vector<Tensor<double, 2> *> const bases{&base, &base};
+        cg::grouped_batched_gemm_blocked(1.0, as_inputs(A), as_inputs(B), 0.0, bases, std::vector<size_t>{0, 6});
+    }
+    CHECK(grouped_regions(graph).empty());
+}
+
+TEST_CASE("a grouped family whose members disagree on a shape contract is declined", "[ComputeGraph][RegionRewrite][Identity][Grouped]") {
+    // The capture API writes one transpose pair for the whole call, so this is
+    // reached by rewriting the group table the way a future producer of these
+    // nodes might. A term has one index list per operand and cannot say that
+    // one member transposes and another does not, so the family is left whole
+    // with that reason rather than raised into an algebra that is wrong for
+    // half of it.
+    std::vector<std::size_t> const rows{2, 3};
+    std::vector<std::size_t> const links{5, 2};
+    std::vector<std::size_t> const cols{4, 4};
+    auto                           A = ragged_pool("A", rows, links);
+    auto                           B = ragged_pool("B", links, cols);
+    auto                           C = ragged_pool("C", rows, cols);
+
+    cg::Graph graph("disagreement");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::grouped_batched_gemm(1.0, as_inputs(A), as_inputs(B), 0.0, as_outputs(C));
+    }
+    for (auto &node : graph.nodes()) {
+        if (auto *desc = std::get_if<cg::GroupedBatchedGemmDescriptor>(&node.op_data); desc != nullptr) {
+            REQUIRE(desc->groups.size() == 2);
+            desc->groups[1].trans_a = 'T';
+        }
+    }
+
+    auto const regions = grouped_regions(graph);
+    REQUIRE(regions.size() == 1);
+    auto const raised = cg::raise_region(graph, regions[0]);
+    REQUIRE_FALSE(raised.has_value());
+    INFO("decline: " << raised.error().reason << " (" << raised.error().detail << ")");
+    CHECK(raised.error().reason.find("disagree on a shape contract") != std::string::npos);
+}
+
+TEST_CASE("the fused grouped kernels are barriers", "[ComputeGraph][RegionRewrite][Identity][Grouped]") {
+    // A sandwich dresses a slice and accumulates a symmetric product per
+    // auxiliary tile, and a gather-rotate gathers a block out of a shared
+    // parent before rotating it. Neither is one algebraic term, so neither has
+    // a term to raise to nor a grouped kind a rewritten term could lower onto.
+    CHECK_FALSE(cg::is_grouped_raisable(cg::OpKind::GroupedSandwich));
+    CHECK_FALSE(cg::is_grouped_raisable(cg::OpKind::GroupedGatherRotate));
+    CHECK_FALSE(cg::is_raisable(cg::OpKind::GroupedBatchedGemm));
+}

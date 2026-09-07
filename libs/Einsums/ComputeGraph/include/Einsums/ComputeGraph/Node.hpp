@@ -603,6 +603,20 @@ struct GroupedElementwiseDescriptor {
     int                          total{0}; ///< How many members the node holds.
     std::vector<PrefactorScalar> alphas;   ///< Per-member prefactor on the sources.
     std::vector<PrefactorScalar> betas;    ///< Per-member prefactor on the destination.
+
+    /// @ref OpKind::GroupedPermute only: the one permutation every member runs
+    /// under, as @ref PermuteDescriptor spells it. Empty for the grouped
+    /// element-wise product and quotient, which have no index lists.
+    ///
+    /// Recorded rather than left in the closure because a permutation is
+    /// ALGEBRA: a region rewrite has to read what a member computes and to
+    /// rebuild the node from it, and a spec only the executor knows is a spec
+    /// the rewrite would have to invent. That is the same argument
+    /// @ref PermuteDescriptor already makes for the ungrouped node.
+    /// @{
+    std::vector<std::string> c_indices; ///< Output index names, e.g. ``{"j","i"}``.
+    std::vector<std::string> a_indices; ///< Input index names, e.g. ``{"i","j"}``.
+    /// @}
 };
 
 /**

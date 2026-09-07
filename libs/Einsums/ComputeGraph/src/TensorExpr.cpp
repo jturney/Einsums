@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
@@ -13,10 +14,14 @@
 #include <Einsums/ComputeGraph/TensorExpr.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/TensorImpl/TensorImpl.hpp>
 
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <complex>
+#include <map>
+#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -55,6 +60,39 @@ bool is_raisable(OpKind kind) {
     default:
         return false;
     }
+}
+
+bool is_grouped_raisable(OpKind kind) {
+    switch (kind) {
+    case OpKind::GroupedBatchedGemm:
+    case OpKind::GroupedDot:
+    case OpKind::GroupedAxpby:
+    case OpKind::GroupedPermute:
+    case OpKind::GroupedDirectProduct:
+    case OpKind::GroupedDirectDivision:
+        return true;
+    default:
+        return false;
+    }
+}
+
+std::size_t RaggedFamily::typical_extent(std::string_view letter) const {
+    for (auto const &[name, values] : extents) {
+        if (name != letter) {
+            continue;
+        }
+        if (values.empty()) {
+            return 0;
+        }
+        std::size_t total = 0;
+        for (auto const value : values) {
+            total += value;
+        }
+        // Rounded to nearest rather than truncated, so a family whose members
+        // are all 3 does not read as 2 through an off-by-one in the division.
+        return (total + values.size() / 2) / values.size();
+    }
+    return 0;
 }
 
 TermId TensorExpr::add(ExprTerm term) {
@@ -228,7 +266,15 @@ namespace {
 /// from the algebra, which is the same reason it cannot be saved. Treating it as
 /// a barrier is the honest answer: raising it would produce a term that lowers
 /// into a different kernel or none.
-bool raisable_here(Node const &node) {
+bool raisable_here(Node const &node, RegionOptions const &options) {
+    if (options.grouped && is_grouped_raisable(node.kind)) {
+        // A blocked grouped batch writes column ranges of shared bases and
+        // declares only the DISTINCT bases as outputs, so its member list of
+        // destinations is not on the node at all. It stays a barrier rather
+        // than raising into an algebra that would name the wrong destinations.
+        auto const *gemm = std::get_if<GroupedBatchedGemmDescriptor>(&node.op_data);
+        return gemm == nullptr || !gemm->blocked;
+    }
     if (!is_raisable(node.kind)) {
         return false;
     }
@@ -247,12 +293,12 @@ std::vector<Region> form_regions(Graph const &graph, EscapeAnalysis const &escap
 
     std::size_t position = 0;
     while (position < nodes.size()) {
-        if (!raisable_here(nodes[position])) {
+        if (!raisable_here(nodes[position], options)) {
             ++position;
             continue;
         }
         std::size_t const first = position;
-        while (position < nodes.size() && raisable_here(nodes[position])) {
+        while (position < nodes.size() && raisable_here(nodes[position], options)) {
             ++position;
         }
 
@@ -288,6 +334,22 @@ std::vector<Region> form_regions(Graph const &graph, EscapeAnalysis const &escap
             }
         }
 
+        // A grouped node's destinations are ONE value. A rewrite that dissolved
+        // half a family would leave the other half being written by a node it
+        // had just removed, so a family whose every member is dissolvable is
+        // dissolvable and one with a single escaping member is not.
+        std::unordered_set<TensorId> pinned_by_family;
+        for (std::size_t i = first; i < position; ++i) {
+            if (!is_grouped_raisable(nodes[i].kind)) {
+                continue;
+            }
+            bool const whole =
+                std::ranges::all_of(nodes[i].outputs, [&](TensorId tid) { return escapes.classify(tid, members) == Escape::Dissolvable; });
+            if (!whole) {
+                pinned_by_family.insert(nodes[i].outputs.begin(), nodes[i].outputs.end());
+            }
+        }
+
         for (auto const tid : mentioned) {
             bool written_inside = false;
             for (std::size_t i = first; i < position && !written_inside; ++i) {
@@ -297,7 +359,7 @@ std::vector<Region> form_regions(Graph const &graph, EscapeAnalysis const &escap
                 region.inputs.push_back(tid);
                 continue;
             }
-            if (escapes.classify(tid, members) == Escape::Dissolvable) {
+            if (pinned_by_family.count(tid) == 0 && escapes.classify(tid, members) == Escape::Dissolvable) {
                 region.internal.push_back(tid);
             } else {
                 region.outputs.push_back(tid);
@@ -370,11 +432,439 @@ TermId leaf_for(TensorExpr &expr, std::unordered_map<TensorId, TermId> &cache, G
     return term;
 }
 
+// ── Grouped families ───────────────────────────────────────────────────────
+
+/// The live shape of one member, read through the handle's impl rather than off
+/// the registration snapshot, which is what the handle's own note asks for: the
+/// snapshot is null for a tensor that was deferred when it was registered.
+struct MemberShape {
+    std::vector<std::size_t> dims;
+    std::size_t              leading{0};
+    bool                     ok{false};
+};
+
+MemberShape member_shape(Graph const &graph, TensorId id) {
+    MemberShape         out;
+    TensorHandle const *handle = graph.find_tensor(id);
+    if (handle == nullptr || handle->impl_fn == nullptr) {
+        return out;
+    }
+    void *raw = handle->impl_fn();
+    if (raw == nullptr) {
+        return out;
+    }
+    detail::dispatch_scalar_type(handle->dtype, [&]<typename T>(T /*tag*/) {
+        auto const *impl = static_cast<einsums::detail::TensorImpl<T> const *>(raw);
+        out.dims.reserve(impl->rank());
+        for (std::size_t axis = 0; axis < impl->rank(); ++axis) {
+            out.dims.push_back(static_cast<std::size_t>(impl->dim(axis)));
+        }
+        out.leading = impl->rank() == 2 ? static_cast<std::size_t>(impl->get_lda()) : 0;
+        out.ok      = true;
+    });
+    return out;
+}
+
+/// The member letter of family @p id. ``#`` so it cannot collide with an
+/// author's letter, and a dump reads it as the synthetic axis it is.
+std::string member_letter(FamilyId id) {
+    return fmt::format("#m{}", static_cast<std::uint32_t>(id));
+}
+
+/// A letter family @p id introduces for one of its ragged axes.
+std::string family_letter(FamilyId id, std::string_view tag) {
+    return fmt::format("#{}{}", static_cast<std::uint32_t>(id), tag);
+}
+
+/// The space a family's member letter ranges over.
+///
+/// Keyed on the MEMBER COUNT rather than on the node, for two reasons that pull
+/// the same way. Registration has no inverse, so a name minted per node would
+/// grow the process registry by one entry per optimize call; and two grouped
+/// nodes over one pair list have the same count by construction, so a
+/// count-keyed space is the one they should share. Re-registering an identical
+/// space is a lookup, which is what makes raising the same region twice free.
+SpaceId family_space(Graph const &graph, std::size_t members) {
+    return graph.space_registry().register_space(IndexSpace{.name           = fmt::format("grouped-members-{}", members),
+                                                            .scale_symbol   = fmt::format("gm{}", members),
+                                                            .dim_symbol     = fmt::format("ngm{}", members),
+                                                            .typical_extent = static_cast<double>(members),
+                                                            .growth         = GrowthClass::linear()});
+}
+
+/// One leaf per MEMBER LIST, so two statements naming the same ordered list
+/// read one value. Identity is the list rather than any one member's buffer,
+/// which is the whole of what makes a rewrite able to see that a grouped
+/// statement consumes what another grouped statement produced.
+TermId ragged_leaf_for(TensorExpr &expr, std::map<std::vector<TensorId>, TermId> &cache, Graph const &graph,
+                       std::vector<TensorId> const &members, std::vector<ExprIndex> indices) {
+    if (auto const hit = cache.find(members); hit != cache.end()) {
+        return hit->second;
+    }
+    ExprTerm leaf;
+    leaf.kind         = TermKind::Leaf;
+    leaf.name         = fmt::format("{{{} x{}}}", name_of(graph, members.front()), members.size());
+    leaf.members      = members;
+    leaf.indices      = std::move(indices);
+    TermId const term = expr.add(std::move(leaf));
+    cache.emplace(members, term);
+    return term;
+}
+
+/// An index over @p space, spelled @p letter.
+ExprIndex indexed(std::string letter, SpaceId space) {
+    ExprIndex out;
+    out.letter = std::move(letter);
+    out.space  = space;
+    return out;
+}
+
+/// Record one letter's per-member extents on @p family, appending when the
+/// letter is new and leaving the first statement of it alone when it is not.
+void note_extent(RaggedFamily &family, std::string const &letter, std::size_t member, std::size_t value) {
+    for (auto &[name, values] : family.extents) {
+        if (name == letter) {
+            if (values.size() <= member) {
+                values.resize(member + 1, 0);
+            }
+            values[member] = value;
+            return;
+        }
+    }
+    std::vector<std::size_t> values(member + 1, 0);
+    values[member] = value;
+    family.extents.emplace_back(letter, std::move(values));
+}
+
+RaiseFailure grouped_refusal(Node const &node, std::string reason, std::string detail = {}) {
+    return RaiseFailure{.reason = std::move(reason),
+                        .detail = detail.empty() ? fmt::format("node '{}'", node.label) : fmt::format("node '{}': {}", node.label, detail)};
+}
+
+/// The per-member source lists of a grouped element-wise node, recovered from
+/// the node's flat input list and the per-member destination prefactors.
+///
+/// The capture sites append the destination to the inputs only for a member
+/// whose beta is non-zero, so the list is variable-length per member and the
+/// betas are what say where each member's sources start.
+expected<std::vector<std::vector<TensorId>>, std::string> grouped_sources(Node const &node, std::vector<PrefactorScalar> const &betas,
+                                                                          std::size_t sources_per_member) {
+    std::vector<std::vector<TensorId>> out(sources_per_member);
+    for (auto &list : out) {
+        list.reserve(betas.size());
+    }
+    std::size_t cursor = 0;
+    for (std::size_t member = 0; member < betas.size(); ++member) {
+        for (std::size_t slot = 0; slot < sources_per_member; ++slot) {
+            if (cursor >= node.inputs.size()) {
+                return unexpected(std::string{"the input list is shorter than the member count says"});
+            }
+            out[slot].push_back(node.inputs[cursor++]);
+        }
+        if (!is_zero(betas[member])) {
+            if (cursor >= node.inputs.size() || node.inputs[cursor] != node.outputs[member]) {
+                return unexpected(fmt::format("member {} accumulates but does not read its own destination", member));
+            }
+            ++cursor;
+        }
+    }
+    if (cursor != node.inputs.size()) {
+        return unexpected(std::string{"the input list holds more operands than the members account for"});
+    }
+    return out;
+}
+
+/// Raise one grouped node into a statement over a member letter.
+///
+/// Every arm declines rather than approximating, and the reasons are
+/// shape-independent so the skip tally folds them into one counted line. A
+/// family whose members disagree on a shape contract beyond their extents - a
+/// transpose flag, a prefactor, a rank - is left whole with that reason,
+/// because the algebra has one term per family and a term cannot say that one
+/// member transposes and another does not.
+expected<ExprStatement, RaiseFailure> raise_grouped(Graph const &graph, Node const &node, TensorExpr &expr,
+                                                    std::map<std::vector<TensorId>, TermId> &ragged) {
+    auto const family_id = static_cast<FamilyId>(expr.families.size());
+
+    RaggedFamily family;
+    family.kind       = node.kind;
+    family.descriptor = node.op_data;
+    family.letter     = member_letter(family_id);
+
+    ExprStatement statement;
+    statement.origin       = node.id;
+    statement.origin_kind  = node.kind;
+    statement.origin_label = node.label;
+    statement.family       = family_id;
+    statement.targets      = node.outputs;
+
+    if (node.kind == OpKind::GroupedBatchedGemm) {
+        auto const *desc = std::get_if<GroupedBatchedGemmDescriptor>(&node.op_data);
+        if (desc == nullptr || desc->groups.empty()) {
+            return unexpected(grouped_refusal(node, "a grouped batch carries no group table"));
+        }
+        auto const count = static_cast<std::size_t>(desc->total);
+        if (node.outputs.size() != count || node.inputs.size() < 2 * count) {
+            return unexpected(grouped_refusal(node, "a grouped batch's operand lists do not match its member count"));
+        }
+        // One transpose pair and one prefactor pair for the whole call is what
+        // the capture API records; a group table that disagrees came from
+        // somewhere else and the algebra has no way to say so.
+        auto const &first = desc->groups.front();
+        for (auto const &group : desc->groups) {
+            if (group.trans_a != first.trans_a || group.trans_b != first.trans_b) {
+                return unexpected(grouped_refusal(node, "a grouped family's members disagree on a shape contract",
+                                                  "the groups carry different transpose flags"));
+            }
+            if (group.alpha != first.alpha || group.beta != first.beta) {
+                return unexpected(grouped_refusal(node, "a grouped family's members disagree on a shape contract",
+                                                  "the groups carry different prefactors"));
+            }
+        }
+        auto const trans = [](char flag) { return flag == 'T' || flag == 't' || flag == 'C' || flag == 'c'; };
+        auto const conj  = [](char flag) { return flag == 'C' || flag == 'c'; };
+
+        family.members      = count;
+        family.space        = family_space(graph, count);
+        SpaceId const space = family.space;
+
+        std::string const mem = family.letter;
+        std::string const li  = family_letter(family_id, "m");
+        std::string const lk  = family_letter(family_id, "k");
+        std::string const lj  = family_letter(family_id, "n");
+
+        std::vector<TensorId> a_members, b_members;
+        a_members.reserve(count);
+        b_members.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            a_members.push_back(node.inputs[2 * i]);
+            b_members.push_back(node.inputs[2 * i + 1]);
+        }
+        // Every group's members are contiguous in the flattened lists, so the
+        // shape a member runs at is its group's.
+        for (auto const &group : desc->groups) {
+            for (int slot = 0; slot < group.count; ++slot) {
+                auto const member = static_cast<std::size_t>(group.first + slot);
+                note_extent(family, li, member, static_cast<std::size_t>(group.m));
+                note_extent(family, lj, member, static_cast<std::size_t>(group.n));
+                note_extent(family, lk, member, static_cast<std::size_t>(group.k));
+            }
+        }
+
+        std::vector<ExprIndex> a_idx{indexed(mem, space)};
+        std::vector<ExprIndex> b_idx{indexed(mem, space)};
+        std::vector<ExprIndex> c_idx{indexed(mem, space), indexed(li, SpaceId{}), indexed(lj, SpaceId{})};
+        if (trans(first.trans_a)) {
+            a_idx.push_back(indexed(lk, SpaceId{}));
+            a_idx.push_back(indexed(li, SpaceId{}));
+        } else {
+            a_idx.push_back(indexed(li, SpaceId{}));
+            a_idx.push_back(indexed(lk, SpaceId{}));
+        }
+        if (trans(first.trans_b)) {
+            b_idx.push_back(indexed(lj, SpaceId{}));
+            b_idx.push_back(indexed(lk, SpaceId{}));
+        } else {
+            b_idx.push_back(indexed(lk, SpaceId{}));
+            b_idx.push_back(indexed(lj, SpaceId{}));
+        }
+
+        ExprTerm term;
+        term.kind    = TermKind::Contraction;
+        term.family  = family_id;
+        term.factor  = PrefactorScalar{first.alpha};
+        term.indices = c_idx;
+        term.operands.push_back(ragged_leaf_for(expr, ragged, graph, a_members, a_idx));
+        term.operands.push_back(ragged_leaf_for(expr, ragged, graph, b_members, b_idx));
+        term.operand_indices.push_back(a_idx);
+        term.operand_indices.push_back(b_idx);
+        term.conjugate.push_back(conj(first.trans_a));
+        term.conjugate.push_back(conj(first.trans_b));
+
+        statement.target_indices   = std::move(c_idx);
+        statement.target_prefactor = PrefactorScalar{first.beta};
+        statement.target_name      = fmt::format("{{{} x{}}}", name_of(graph, node.outputs.front()), count);
+        statement.value            = expr.add(std::move(term));
+        expr.families.push_back(std::move(family));
+        return statement;
+    }
+
+    if (node.kind == OpKind::GroupedDot) {
+        auto const *desc = std::get_if<GroupedDotDescriptor>(&node.op_data);
+        if (desc == nullptr) {
+            return unexpected(grouped_refusal(node, "a grouped reduction carries no descriptor"));
+        }
+        auto const count = static_cast<std::size_t>(desc->total);
+        if (node.outputs.size() != count || node.inputs.size() != 2 * count) {
+            return unexpected(grouped_refusal(node, "a grouped reduction's operand lists do not match its member count"));
+        }
+        std::vector<TensorId> a_members, b_members;
+        a_members.reserve(count);
+        b_members.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            a_members.push_back(node.inputs[2 * i]);
+            b_members.push_back(node.inputs[2 * i + 1]);
+        }
+        auto const zeroth = member_shape(graph, a_members.front());
+        if (!zeroth.ok || zeroth.dims.empty()) {
+            return unexpected(grouped_refusal(node, "a grouped family's members have no readable shape"));
+        }
+        std::size_t const rank = zeroth.dims.size();
+
+        family.members      = count;
+        family.space        = family_space(graph, count);
+        SpaceId const space = family.space;
+
+        std::vector<ExprIndex> operand_idx{indexed(family.letter, space)};
+        for (std::size_t axis = 0; axis < rank; ++axis) {
+            operand_idx.push_back(indexed(family_letter(family_id, fmt::format("a{}", axis)), SpaceId{}));
+        }
+        for (std::size_t i = 0; i < count; ++i) {
+            auto const shape = member_shape(graph, a_members[i]);
+            if (!shape.ok || shape.dims.size() != rank) {
+                return unexpected(grouped_refusal(node, "a grouped family's members disagree on a shape contract",
+                                                  fmt::format("member {} has a different rank", i)));
+            }
+            for (std::size_t axis = 0; axis < rank; ++axis) {
+                note_extent(family, operand_idx[axis + 1].letter, i, shape.dims[axis]);
+            }
+        }
+
+        ExprTerm term;
+        term.kind    = TermKind::Contraction;
+        term.family  = family_id;
+        term.indices = {indexed(family.letter, space)};
+        term.operands.push_back(ragged_leaf_for(expr, ragged, graph, a_members, operand_idx));
+        term.operands.push_back(ragged_leaf_for(expr, ragged, graph, b_members, operand_idx));
+        term.operand_indices.push_back(operand_idx);
+        term.operand_indices.push_back(operand_idx);
+        term.conjugate.assign({false, false});
+
+        statement.target_indices   = {indexed(family.letter, space)};
+        statement.target_prefactor = PrefactorScalar{double{0}};
+        statement.target_name      = fmt::format("{{{} x{}}}", name_of(graph, node.outputs.front()), count);
+        statement.value            = expr.add(std::move(term));
+        expr.families.push_back(std::move(family));
+        return statement;
+    }
+
+    // The grouped element-wise kinds. Named and carried, exactly as their dense
+    // counterparts are: a rewrite may move one of these or delete it, and the
+    // per-member prefactors it holds are not a rewrite surface.
+    std::vector<PrefactorScalar> betas;
+    std::size_t                  sources = 0;
+    if (node.kind == OpKind::GroupedAxpby) {
+        auto const *desc = std::get_if<GroupedAxpbyDescriptor>(&node.op_data);
+        if (desc == nullptr) {
+            return unexpected(grouped_refusal(node, "a grouped accumulation carries no descriptor"));
+        }
+        betas   = desc->betas;
+        sources = 1;
+    } else {
+        auto const *desc = std::get_if<GroupedElementwiseDescriptor>(&node.op_data);
+        if (desc == nullptr) {
+            return unexpected(grouped_refusal(node, "a grouped element-wise node carries no descriptor"));
+        }
+        if (node.kind == OpKind::GroupedPermute && desc->c_indices.empty()) {
+            return unexpected(grouped_refusal(node, "a grouped permute carries no index lists"));
+        }
+        betas   = desc->betas;
+        sources = node.kind == OpKind::GroupedPermute ? 1 : 2;
+    }
+    auto const count = betas.size();
+    if (count == 0 || node.outputs.size() != count) {
+        return unexpected(grouped_refusal(node, "a grouped family's operand lists do not match its member count"));
+    }
+    auto const lists = grouped_sources(node, betas, sources);
+    if (!lists) {
+        return unexpected(grouped_refusal(node, "a grouped family's operand lists do not match its member count", lists.error()));
+    }
+
+    auto const zeroth = member_shape(graph, node.outputs.front());
+    if (!zeroth.ok) {
+        return unexpected(grouped_refusal(node, "a grouped family's members have no readable shape"));
+    }
+    std::size_t const rank = zeroth.dims.size();
+
+    family.members      = count;
+    family.space        = family_space(graph, count);
+    SpaceId const space = family.space;
+
+    // A permute's own letters, prefixed so two families cannot collide on one.
+    // Everything else names its axes positionally, which is what a dense
+    // element-wise term already does.
+    auto const *elementwise = std::get_if<GroupedElementwiseDescriptor>(&node.op_data);
+    auto const  axis_name   = [&](std::size_t axis, bool source) {
+        if (node.kind == OpKind::GroupedPermute && elementwise != nullptr) {
+            auto const &names = source ? elementwise->a_indices : elementwise->c_indices;
+            if (axis < names.size()) {
+                return family_letter(family_id, names[axis]);
+            }
+        }
+        return family_letter(family_id, fmt::format("a{}", axis));
+    };
+
+    std::vector<ExprIndex> out_idx{indexed(family.letter, space)};
+    std::vector<ExprIndex> src_idx{indexed(family.letter, space)};
+    for (std::size_t axis = 0; axis < rank; ++axis) {
+        out_idx.push_back(indexed(axis_name(axis, false), SpaceId{}));
+    }
+    std::size_t const source_rank = node.kind == OpKind::GroupedPermute && elementwise != nullptr ? elementwise->a_indices.size() : rank;
+    for (std::size_t axis = 0; axis < source_rank; ++axis) {
+        src_idx.push_back(indexed(axis_name(axis, true), SpaceId{}));
+    }
+
+    for (std::size_t i = 0; i < count; ++i) {
+        auto const shape = member_shape(graph, node.outputs[i]);
+        if (!shape.ok || shape.dims.size() != rank) {
+            return unexpected(grouped_refusal(node, "a grouped family's members disagree on a shape contract",
+                                              fmt::format("member {} has a different rank", i)));
+        }
+        for (std::size_t axis = 0; axis < rank; ++axis) {
+            note_extent(family, out_idx[axis + 1].letter, i, shape.dims[axis]);
+        }
+        auto const source = member_shape(graph, lists->front()[i]);
+        if (!source.ok || source.dims.size() != source_rank) {
+            return unexpected(grouped_refusal(node, "a grouped family's members disagree on a shape contract",
+                                              fmt::format("member {}'s source has a different rank", i)));
+        }
+        for (std::size_t axis = 0; axis < source_rank; ++axis) {
+            note_extent(family, src_idx[axis + 1].letter, i, source.dims[axis]);
+        }
+    }
+
+    ExprTerm term;
+    term.kind         = TermKind::Elementwise;
+    term.family       = family_id;
+    term.element_kind = node.kind;
+    term.descriptor   = node.op_data;
+    term.indices      = out_idx;
+    for (auto const &list : *lists) {
+        term.operands.push_back(ragged_leaf_for(expr, ragged, graph, list, src_idx));
+        term.operand_indices.push_back(&list == &lists->front() ? src_idx : out_idx);
+    }
+
+    statement.target_indices = std::move(out_idx);
+    // One destination prefactor for a family whose members each have their own.
+    // The descriptor is what the executor reads and what a rewrite must not
+    // reinterpret; the statement's own prefactor exists to say whether the
+    // value READS its destination, which is the question the hazard edges and
+    // the escape rule ask, and any accumulating member makes the answer yes.
+    statement.target_prefactor = std::ranges::any_of(betas, [](PrefactorScalar const &beta) { return !is_zero(beta); })
+                                     ? PrefactorScalar{double{1}}
+                                     : PrefactorScalar{double{0}};
+    statement.target_name      = fmt::format("{{{} x{}}}", name_of(graph, node.outputs.front()), count);
+    statement.value            = expr.add(std::move(term));
+    expr.families.push_back(std::move(family));
+    return statement;
+}
+
 } // namespace
 
 expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const &region) {
-    TensorExpr                           expr;
-    std::unordered_map<TensorId, TermId> leaves;
+    TensorExpr                              expr;
+    std::unordered_map<TensorId, TermId>    leaves;
+    std::map<std::vector<TensorId>, TermId> ragged;
 
     for (std::size_t offset = 0; offset < region.nodes.size(); ++offset) {
         std::size_t const position = region.first + offset;
@@ -391,6 +881,15 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
         Node const *node = &graph.nodes()[position];
         if (node->outputs.empty()) {
             return unexpected(RaiseFailure{.reason = "a region node writes nothing", .detail = fmt::format("node '{}'", node->label)});
+        }
+
+        if (is_grouped_raisable(node->kind)) {
+            auto grouped = raise_grouped(graph, *node, expr, ragged);
+            if (!grouped) {
+                return unexpected(std::move(grouped.error()));
+            }
+            expr.statements.push_back(std::move(*grouped));
+            continue;
         }
 
         ExprStatement statement;
@@ -484,6 +983,304 @@ std::pair<packed_gemm::ScalarType, std::size_t> destination_key(Graph const &gra
     return {packed_gemm::ScalarType::Unknown, 0};
 }
 
+/// What makes two members of a grouped batch belong to one uniform group.
+///
+/// The same six numbers the capture API groups on, restated here rather than
+/// shared with it: the capture site's copy lives in a header this source has no
+/// reason to include, and the tuple is the BLAS call's own signature rather
+/// than either site's invention.
+struct GemmShapeKey {
+    int m, n, k, lda, ldb, ldc;
+
+    auto operator<=>(GemmShapeKey const &) const = default;
+};
+
+/// The BLAS scalar tag naming @p dtype, which is what the grouped batched
+/// descriptor dispatches its typed plan on.
+BlasScalar blas_scalar_from(packed_gemm::ScalarType dtype) {
+    return detail::dispatch_scalar_type(dtype, []<typename T>(T /*tag*/) { return blas_scalar_of<T>(); });
+}
+
+RaiseFailure lower_refusal(ExprStatement const &statement, std::string reason, std::string detail = {}) {
+    return RaiseFailure{.reason = std::move(reason),
+                        .detail = detail.empty() ? statement.target_name : fmt::format("'{}': {}", statement.target_name, detail)};
+}
+
+/// Rebuild a grouped batched GEMM from the algebra.
+///
+/// Every shape parameter is re-derived: the transpose flags from the index
+/// lists, the extents and leading dimensions from the live operands, and the
+/// grouping by first appearance the way the capture API groups it. Nothing is
+/// carried over from the descriptor the raise saw, which is what makes a
+/// rewrite that changed a member's extents emit a group table that describes
+/// what it actually wrote rather than what the capture happened to hold.
+expected<Node, RaiseFailure> lower_grouped_gemm(Graph &graph, TensorExpr const &expr, ExprStatement const &statement) {
+    auto const &term   = expr.at(statement.value);
+    auto const &a_leaf = expr.at(term.operands[0]);
+    auto const &b_leaf = expr.at(term.operands[1]);
+    auto const  count  = statement.targets.size();
+    if (a_leaf.members.size() != count || b_leaf.members.size() != count) {
+        return unexpected(lower_refusal(statement, "a grouped term's operand lists disagree on their member count"));
+    }
+    if (term.operand_indices.size() != 2 || term.operand_indices[0].size() != 3 || term.operand_indices[1].size() != 3) {
+        return unexpected(lower_refusal(statement, "a grouped term's shape maps onto no grouped kind",
+                                        "a batched matrix product wants two rank-two operands"));
+    }
+
+    std::string const &mem = statement.target_indices[0].letter;
+    std::string const &row = statement.target_indices[1].letter;
+    std::string const &col = statement.target_indices[2].letter;
+    auto const        &a   = term.operand_indices[0];
+    auto const        &b   = term.operand_indices[1];
+    if (a[0].letter != mem || b[0].letter != mem) {
+        return unexpected(lower_refusal(statement, "a grouped term's shape maps onto no grouped kind",
+                                        "the member letter is not outermost on every operand"));
+    }
+    // The link letter is the one both operands carry and the output does not.
+    std::string link;
+    for (std::size_t slot = 1; slot < 3; ++slot) {
+        if (a[slot].letter != row && a[slot].letter != col) {
+            link = a[slot].letter;
+        }
+    }
+    if (link.empty() || (a[1].letter != row && a[2].letter != row)) {
+        return unexpected(
+            lower_refusal(statement, "a grouped term's shape maps onto no grouped kind", "the operands do not spell a matrix product"));
+    }
+    if ((b[1].letter != link || b[2].letter != col) && (b[1].letter != col || b[2].letter != link)) {
+        return unexpected(lower_refusal(statement, "a grouped term's shape maps onto no grouped kind",
+                                        "the second operand does not carry the link and the column"));
+    }
+    bool const trans_a = a[1].letter == link;
+    bool const trans_b = b[1].letter == col;
+    bool const conj_a  = !term.conjugate.empty() && term.conjugate[0];
+    bool const conj_b  = term.conjugate.size() > 1 && term.conjugate[1];
+
+    // Shape keys read off the live operands, then grouped by first appearance.
+    // Applied to a list the capture already flattened this is the identity,
+    // which is what keeps an unchanged region's node identical to the one it
+    // was raised from.
+    std::vector<GemmShapeKey> keys(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        auto const a_shape = member_shape(graph, a_leaf.members[i]);
+        auto const b_shape = member_shape(graph, b_leaf.members[i]);
+        auto const c_shape = member_shape(graph, statement.targets[i]);
+        if (!a_shape.ok || !b_shape.ok || !c_shape.ok || a_shape.dims.size() != 2 || b_shape.dims.size() != 2 || c_shape.dims.size() != 2) {
+            return unexpected(lower_refusal(statement, "a grouped batch's members are not rank-two matrices", fmt::format("member {}", i)));
+        }
+        keys[i] = GemmShapeKey{.m   = static_cast<int>(c_shape.dims[0]),
+                               .n   = static_cast<int>(c_shape.dims[1]),
+                               .k   = static_cast<int>(trans_a ? a_shape.dims[0] : a_shape.dims[1]),
+                               .lda = static_cast<int>(a_shape.leading),
+                               .ldb = static_cast<int>(b_shape.leading),
+                               .ldc = static_cast<int>(c_shape.leading)};
+    }
+
+    auto const [dtype, rank] = destination_key(graph, statement.targets.front());
+    auto const alpha         = as<std::complex<double>>(term.factor);
+    auto const beta          = as<std::complex<double>>(statement.target_prefactor);
+
+    std::map<GemmShapeKey, std::size_t>   index_of;
+    std::vector<GemmShapeKey>             order;
+    std::vector<std::vector<std::size_t>> grouped;
+    for (std::size_t i = 0; i < count; ++i) {
+        auto const [it, fresh] = index_of.try_emplace(keys[i], order.size());
+        if (fresh) {
+            order.push_back(keys[i]);
+            grouped.emplace_back();
+        }
+        grouped[it->second].push_back(i);
+    }
+
+    GroupedBatchedGemmDescriptor desc;
+    desc.total  = static_cast<int>(count);
+    desc.scalar = blas_scalar_from(dtype);
+    desc.groups.reserve(order.size());
+    desc.labels.reserve(order.size());
+    char const ta    = conj_a ? 'C' : (trans_a ? 'T' : 'N');
+    char const tb    = conj_b ? 'C' : (trans_b ? 'T' : 'N');
+    int        first = 0;
+    for (std::size_t g = 0; g < order.size(); ++g) {
+        auto const &key = order[g];
+        desc.groups.push_back(GemmGroup{.m       = key.m,
+                                        .n       = key.n,
+                                        .k       = key.k,
+                                        .lda     = key.lda,
+                                        .ldb     = key.ldb,
+                                        .ldc     = key.ldc,
+                                        .trans_a = ta,
+                                        .trans_b = tb,
+                                        .alpha   = alpha,
+                                        .beta    = beta,
+                                        .count   = static_cast<int>(grouped[g].size()),
+                                        .first   = first});
+        desc.labels.push_back(fmt::format("gemm {}x{}x{} trans={}{} x{}", key.m, key.k, key.n, ta, tb, grouped[g].size()));
+        first += static_cast<int>(grouped[g].size());
+    }
+
+    Node node;
+    node.id    = graph.reserve_node_id();
+    node.kind  = OpKind::GroupedBatchedGemm;
+    node.label = statement.origin_label.empty()
+                     ? fmt::format("gemm_batch_grouped x{} in {} shapes (trans={}{})", count, order.size(), ta, tb)
+                     : statement.origin_label;
+    node.inputs.reserve(3 * count);
+    node.outputs.reserve(count);
+    for (auto const &members : grouped) {
+        for (auto const member : members) {
+            node.inputs.push_back(a_leaf.members[member]);
+            node.inputs.push_back(b_leaf.members[member]);
+            node.outputs.push_back(statement.targets[member]);
+        }
+    }
+    // A non-zero destination prefactor reads every destination before writing
+    // it, so the RAW edge from whoever produced each one has to survive.
+    if (!is_zero(statement.target_prefactor)) {
+        node.inputs.insert(node.inputs.end(), node.outputs.begin(), node.outputs.end());
+    }
+    node.op_data = std::move(desc);
+    try {
+        node.execute = build_executor(node.kind, dtype, rank, node.op_data, graph, std::span<TensorId const>{node.inputs},
+                                      std::span<TensorId const>{node.outputs});
+    } catch (std::exception const &error) {
+        return unexpected(lower_refusal(statement, "a grouped batch could not be rebuilt from the algebra", error.what()));
+    }
+    return node;
+}
+
+/// Rebuild a grouped reduction from the algebra: one contraction per member
+/// summed over every letter but the member one.
+expected<Node, RaiseFailure> lower_grouped_dot(Graph &graph, TensorExpr const &expr, ExprStatement const &statement) {
+    auto const &term   = expr.at(statement.value);
+    auto const &a_leaf = expr.at(term.operands[0]);
+    auto const &b_leaf = expr.at(term.operands[1]);
+    auto const  count  = statement.targets.size();
+    if (a_leaf.members.size() != count || b_leaf.members.size() != count) {
+        return unexpected(lower_refusal(statement, "a grouped term's operand lists disagree on their member count"));
+    }
+    if (term.operand_indices.size() != 2 || term.operand_indices[0] != term.operand_indices[1]) {
+        return unexpected(lower_refusal(statement, "a grouped term's shape maps onto no grouped kind",
+                                        "a batched reduction wants two operands over one index list"));
+    }
+    if (term.operand_indices[0].empty() || term.operand_indices[0][0].letter != statement.target_indices[0].letter) {
+        return unexpected(lower_refusal(statement, "a grouped term's shape maps onto no grouped kind",
+                                        "the member letter is not outermost on every operand"));
+    }
+    if (!is_zero(statement.target_prefactor)) {
+        return unexpected(lower_refusal(statement, "a grouped term's shape maps onto no grouped kind",
+                                        "a batched reduction writes its destinations and cannot accumulate"));
+    }
+
+    GroupedDotDescriptor desc;
+    desc.total = static_cast<int>(count);
+
+    Node node;
+    node.id    = graph.reserve_node_id();
+    node.kind  = OpKind::GroupedDot;
+    node.label = statement.origin_label.empty() ? fmt::format("dot x{}", count) : statement.origin_label;
+    node.inputs.reserve(2 * count);
+    node.outputs = statement.targets;
+    for (std::size_t i = 0; i < count; ++i) {
+        node.inputs.push_back(a_leaf.members[i]);
+        node.inputs.push_back(b_leaf.members[i]);
+    }
+    node.op_data             = desc;
+    auto const [dtype, rank] = destination_key(graph, statement.targets.front());
+    try {
+        node.execute = build_executor(node.kind, dtype, rank, node.op_data, graph, std::span<TensorId const>{node.inputs},
+                                      std::span<TensorId const>{node.outputs});
+    } catch (std::exception const &error) {
+        return unexpected(lower_refusal(statement, "a grouped reduction could not be rebuilt from the algebra", error.what()));
+    }
+    return node;
+}
+
+/// Rebuild a grouped element-wise node from the algebra. The descriptor is
+/// carried rather than re-derived, exactly as a dense element-wise term's is;
+/// what the algebra rebuilds is the operand list, from the member lists and the
+/// per-member destination prefactors.
+expected<Node, RaiseFailure> lower_grouped_elementwise(Graph &graph, TensorExpr const &expr, ExprStatement const &statement) {
+    auto const &term  = expr.at(statement.value);
+    auto const  count = statement.targets.size();
+
+    std::vector<PrefactorScalar> betas;
+    if (term.element_kind == OpKind::GroupedAxpby) {
+        auto const *desc = std::get_if<GroupedAxpbyDescriptor>(&term.descriptor);
+        if (desc == nullptr || desc->betas.size() != count) {
+            return unexpected(lower_refusal(statement, "a grouped accumulation's descriptor does not match its member count"));
+        }
+        betas = desc->betas;
+    } else {
+        auto const *desc = std::get_if<GroupedElementwiseDescriptor>(&term.descriptor);
+        if (desc == nullptr || desc->betas.size() != count) {
+            return unexpected(lower_refusal(statement, "a grouped element-wise node's descriptor does not match its member count"));
+        }
+        betas = desc->betas;
+    }
+    for (auto const operand : term.operands) {
+        if (expr.at(operand).members.size() != count) {
+            return unexpected(lower_refusal(statement, "a grouped term's operand lists disagree on their member count"));
+        }
+    }
+
+    Node node;
+    node.id      = graph.reserve_node_id();
+    node.kind    = term.element_kind;
+    node.label   = statement.origin_label.empty() ? fmt::format("{} x{}", op_kind_name(term.element_kind), count) : statement.origin_label;
+    node.outputs = statement.targets;
+    node.inputs.reserve((term.operands.size() + 1) * count);
+    for (std::size_t i = 0; i < count; ++i) {
+        for (auto const operand : term.operands) {
+            node.inputs.push_back(expr.at(operand).members[i]);
+        }
+        if (!is_zero(betas[i])) {
+            node.inputs.push_back(statement.targets[i]);
+        }
+    }
+    node.op_data             = term.descriptor;
+    auto const [dtype, rank] = destination_key(graph, statement.targets.front());
+    try {
+        node.execute = build_executor(node.kind, dtype, rank, node.op_data, graph, std::span<TensorId const>{node.inputs},
+                                      std::span<TensorId const>{node.outputs});
+    } catch (std::exception const &error) {
+        return unexpected(lower_refusal(statement, "a grouped element-wise node could not be rebuilt from the algebra", error.what()));
+    }
+    return node;
+}
+
+/// The grouped kind a statement carrying a member letter lowers onto.
+///
+/// A shape that maps onto none of them is DECLINED. It is never emitted as a
+/// per-member loop of ordinary nodes: that loop is what the grouped family
+/// exists to avoid, and a rewrite that quietly produced one would trade a
+/// factor of nearly three in dispatch for whatever the rewrite saved.
+expected<Node, RaiseFailure> lower_grouped(Graph &graph, TensorExpr const &expr, ExprStatement const &statement) {
+    auto const &term = expr.at(statement.value);
+    if (statement.targets.empty()) {
+        return unexpected(lower_refusal(statement, "a grouped statement names no destinations"));
+    }
+    if (term.kind == TermKind::Contraction) {
+        if (term.operands.size() != 2 || !expr.at(term.operands[0]).ragged() || !expr.at(term.operands[1]).ragged()) {
+            return unexpected(lower_refusal(statement, "a grouped term's shape maps onto no grouped kind",
+                                            "a grouped contraction wants exactly two ragged operands"));
+        }
+        if (statement.target_indices.size() == 3) {
+            return lower_grouped_gemm(graph, expr, statement);
+        }
+        if (statement.target_indices.size() == 1) {
+            return lower_grouped_dot(graph, expr, statement);
+        }
+        return unexpected(lower_refusal(
+            statement, "a grouped term's shape maps onto no grouped kind",
+            fmt::format("a batched output of rank {} is neither a matrix nor a scalar", statement.target_indices.size() - 1)));
+    }
+    if (term.kind == TermKind::Elementwise && is_grouped_raisable(term.element_kind)) {
+        return lower_grouped_elementwise(graph, expr, statement);
+    }
+    return unexpected(
+        lower_refusal(statement, "a grouped term's shape maps onto no grouped kind", fmt::format("a {} term", term_kind_name(term.kind))));
+}
+
 } // namespace
 
 expected<void, RaiseFailure> lower_region(Graph &graph, Region const &region, TensorExpr const &expr) {
@@ -495,6 +1292,15 @@ expected<void, RaiseFailure> lower_region(Graph &graph, Region const &region, Te
             return unexpected(RaiseFailure{.reason = "a statement has no value term", .detail = statement.target_name});
         }
         auto const &term = expr.at(statement.value);
+
+        if (statement.family != invalid_family) {
+            auto grouped = lower_grouped(graph, expr, statement);
+            if (!grouped) {
+                return unexpected(std::move(grouped.error()));
+            }
+            emitted.push_back(std::move(*grouped));
+            continue;
+        }
 
         if (term.kind == TermKind::Contraction) {
             if (term.operands.size() != 2 || term.operand_indices.size() != 2) {

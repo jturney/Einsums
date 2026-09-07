@@ -89,6 +89,12 @@ using TermId = std::uint32_t;
 /// @brief The term id no term has, for an empty slot.
 inline constexpr TermId invalid_term = static_cast<TermId>(-1);
 
+/// @brief Index into @ref TensorExpr::families. Positional and dense, like @ref TermId.
+using FamilyId = std::uint32_t;
+
+/// @brief The family id a term that carries no member letter has.
+inline constexpr FamilyId invalid_family = static_cast<FamilyId>(-1);
+
 /**
  * @brief One index of a term, with the space it ranges over.
  *
@@ -103,6 +109,70 @@ struct ExprIndex {
     SpaceId     space;  ///< The space this letter ranges over here, or an invalid id.
 
     friend bool operator==(ExprIndex const &lhs, ExprIndex const &rhs) = default;
+};
+
+/**
+ * @brief One grouped node's members, raised as a batched axis of the algebra.
+ *
+ * A grouped node is one operation applied to a family of members whose extents
+ * differ, which is a contraction with one more free letter. The letter is the
+ * MEMBER letter, spelled ``#m<n>`` so it cannot collide with an author's, and
+ * this is what it ranges over.
+ *
+ * @par Ragged extents
+ * Every letter but the member one has a different extent per member, so a
+ * single number cannot describe it. @ref extents is the per-instance table
+ * Part 3.7 of the design gives such a family, one row per letter the family
+ * introduces and one column per member. The cost model reads a TYPICAL extent
+ * off it, which sits below the scale rung of the comparison, so a ragged letter
+ * is ranked the way an ordinary bound one is and never decides an asymptotic
+ * question on one member's numbers.
+ *
+ * @par Identity
+ * A ragged tensor's identity is its MEMBER LIST, not any one member's buffer:
+ * two statements read the same ragged value exactly when they name the same
+ * ordered list. @ref ExprTerm::members carries it and @ref raise_region interns
+ * one leaf per distinct list, which is what lets a rewrite recognize that two
+ * grouped statements read one value.
+ *
+ * @par The descriptor is carried
+ * @ref descriptor holds the grouped node's own descriptor, for the same reason
+ * an elementwise term carries one: the per-member prefactors and the
+ * conjugation are data a rewrite may move but must not reinterpret. The SHAPE
+ * parameters of a grouped GEMM are deliberately NOT trusted from it - the
+ * lowering re-derives every group from the algebra and the live operands, so a
+ * rewrite that changed a member's extents cannot leave a stale group behind.
+ */
+struct RaggedFamily {
+    /// The member letter, ``#m<n>``.
+    std::string letter;
+
+    /// The space the member letter ranges over, registered at raise time.
+    SpaceId space;
+
+    /// How many members the family holds.
+    std::size_t members{0};
+
+    /// The grouped node kind this family was raised from.
+    OpKind kind{OpKind::Custom};
+
+    /// The grouped node's descriptor, carried rather than interpreted.
+    OpData descriptor;
+
+    /// Per-letter, per-member extents. One entry per letter the family
+    /// introduces; each holds one extent per member, in member order.
+    std::vector<std::pair<std::string, std::vector<std::size_t>>> extents;
+
+    /// @brief The typical extent of @p letter over the members.
+    /// @param[in] letter The letter to look up.
+    /// @return The arithmetic mean, rounded to nearest, or 0 when this family
+    ///         does not introduce that letter.
+    ///
+    /// The MEAN rather than the maximum or the first member's: a bound extent
+    /// is what settles a comparison the scale order left tied, and a family's
+    /// arithmetic is the sum over its members, so the average member is the one
+    /// whose size that sum is proportional to.
+    [[nodiscard]] EINSUMS_EXPORT std::size_t typical_extent(std::string_view letter) const;
 };
 
 /// @brief What an @ref ExprTerm computes.
@@ -145,8 +215,21 @@ struct ExprTerm {
     /// registered kernel's name. Empty otherwise.
     std::string name;
 
-    /// @ref TermKind::Leaf: the graph tensor this leaf denotes.
+    /// @ref TermKind::Leaf: the graph tensor this leaf denotes. Left at its
+    /// default on a RAGGED leaf, whose value is a list rather than a tensor;
+    /// read @ref members instead and gate on @ref ragged.
     TensorId tensor{};
+
+    /// @ref TermKind::Leaf: the member list of a RAGGED leaf, in member order,
+    /// which is also its identity. Empty on an ordinary leaf.
+    std::vector<TensorId> members;
+
+    /// The family whose member letter this term carries, or @ref invalid_family.
+    FamilyId family{invalid_family};
+
+    /// @brief Whether this term is a ragged leaf, standing for a member list.
+    /// @return True when the term is a leaf over @ref members.
+    [[nodiscard]] bool ragged() const { return kind == TermKind::Leaf && !members.empty(); }
 
     /// @ref TermKind::Scale: the factor. @ref TermKind::Contraction: the product
     /// prefactor on the operands.
@@ -180,8 +263,16 @@ struct ExprTerm {
  * temporary the rewrite chooses not to dissolve has to stay a statement.
  */
 struct ExprStatement {
-    /// Where the value lands.
+    /// Where the value lands. Left at its default on a GROUPED statement, whose
+    /// destination is a list; read @ref targets and gate on @ref family.
     TensorId target{};
+
+    /// The destination member list of a GROUPED statement, in member order.
+    /// Empty on an ordinary statement.
+    std::vector<TensorId> targets;
+
+    /// The family this statement's value is batched over, or @ref invalid_family.
+    FamilyId family{invalid_family};
 
     /// The target's name, for dumps.
     std::string target_name;
@@ -226,6 +317,16 @@ class EINSUMS_EXPORT TensorExpr {
 
     /// @brief The statements, in dependency order.
     std::vector<ExprStatement> statements;
+
+    /// @brief The grouped families this expression's terms are batched over.
+    std::vector<RaggedFamily> families;
+
+    /// @brief The family at @p id, or nullptr when @p id is @ref invalid_family.
+    /// @param[in] id The family index.
+    /// @return The family, or nullptr.
+    [[nodiscard]] RaggedFamily const *family_at(FamilyId id) const {
+        return id == invalid_family || id >= families.size() ? nullptr : &families[id];
+    }
 
     /**
      * @brief Append a term and return its id.
@@ -321,12 +422,38 @@ struct Region {
  */
 [[nodiscard]] EINSUMS_EXPORT bool is_raisable(OpKind kind);
 
+/**
+ * @brief Whether a GROUPED node kind can be raised into the algebra.
+ *
+ * Separate from @ref is_raisable because raising one produces a statement over
+ * a member list rather than over a tensor, and a rewrite that reads
+ * @ref ExprTerm::tensor without gating on @ref ExprTerm::ragged would act on a
+ * tensor the statement does not name. A client opts in through
+ * ``RegionRewrite::raises_grouped``; everything else keeps these as barriers.
+ *
+ * The two grouped kinds that are NOT here are fused kernels rather than one
+ * algebraic term: @ref OpKind::GroupedSandwich dresses a slice and accumulates
+ * a symmetric product per auxiliary tile, and @ref OpKind::GroupedGatherRotate
+ * gathers a block out of a shared parent before rotating it. Neither is a
+ * contraction, an elementwise op or a permute, so neither has a term to raise
+ * to and neither has a grouped kind a rewritten term could lower back onto.
+ *
+ * @param[in] kind The op kind.
+ * @return True when a node of this kind may join a region that raises grouped nodes.
+ */
+[[nodiscard]] EINSUMS_EXPORT bool is_grouped_raisable(OpKind kind);
+
 /// @brief Knobs for @ref form_regions.
 struct RegionOptions {
     /// Regions smaller than this are not formed. One-node regions are legal and
     /// useful for the identity test, which wants to raise everything; a rewriting
     /// pass usually wants at least two nodes before there is anything to say.
     std::size_t min_nodes{1};
+
+    /// Whether @ref is_grouped_raisable kinds may join a region. Off by default,
+    /// so a client that has not been taught to read a ragged leaf keeps meeting
+    /// grouped nodes as barriers.
+    bool grouped{false};
 };
 
 /**

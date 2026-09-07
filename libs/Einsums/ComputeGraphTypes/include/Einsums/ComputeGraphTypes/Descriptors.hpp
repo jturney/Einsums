@@ -169,6 +169,17 @@ struct GroupedBatchedGemmDescriptor {
     /// Human-readable name per group, parallel to @ref groups. Shape-derived
     /// when the capture API grouped the batch itself.
     std::vector<std::string> labels;
+
+    /// Whether each member's destination is a BLOCK of a shared base, described
+    /// by an offset the executor holds, rather than a tensor of its own.
+    ///
+    /// The two forms are indistinguishable from the node otherwise: the blocked
+    /// one declares each DISTINCT base as an output, so its output list is
+    /// neither one entry per member nor reliably shorter than one. A reader
+    /// that needs to know which member writes what has to be told, and a region
+    /// rewrite is exactly such a reader: it declines a blocked batch, because
+    /// the offsets that say where a member lands are not on the node.
+    bool blocked{false};
 };
 
 /**
