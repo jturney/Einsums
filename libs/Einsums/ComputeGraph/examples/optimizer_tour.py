@@ -510,6 +510,12 @@ def arm_tiling(problem, exact):
 def arm_round_trip(problem, exact):
     """Save the algebra, load it in a graph with no storage, bind, replay.
 
+    The graph that crosses the file is the SEARCHED one, which is what the whole
+    feature is for: the search is asked once, offline, and the answer is replayed
+    wherever the file is opened. So the transform and the search both run before
+    the save, and the numbers below are the ones arm 2 reports rather than the
+    ones arm 3 does.
+
     What crosses the file is the structure, the interface and the approximation
     records. What does not is anything a machine decided: allocation, batching,
     thread widths, and the schedule. So a load re-runs the resource and tuning
@@ -523,9 +529,21 @@ def arm_round_trip(problem, exact):
     transform.set_epsilon(1e-6)
     transform.add_energy("eps_occ", program["occupied"])
     transform.add_energy("eps_vir", program["virtual"])
+    search = cg.MultiTermFactorization()
+    search.set_search_enabled(True)
     manager = cg.PassManager()
+    # The allowance is removed, because what is being saved here is the tree the
+    # search found. A search cut off by its wall clock keeps the best candidate
+    # it had reached, which is a valid graph and a different one, so the file
+    # would otherwise hold a property of this machine.
+    manager.set_optimizer_budget(0)
     manager.add(transform)
+    manager.add(search)
     manager.run(program["graph"])
+    if search.was_cut_off:
+        raise SystemExit("the search ran out of its allowance, so the file would be the machine's")
+    print(f"\n    saved                  {program['graph'].num_nodes()} nodes, "
+          f"largest intermediate {largest_intermediate(program['graph'])} bytes")
 
     path = os.path.join(tempfile.mkdtemp(), "optimizer_tour.eig")
     try:
@@ -535,10 +553,15 @@ def arm_round_trip(problem, exact):
         cg.save_graph(program["graph"], path)
         loaded = cg.load_graph(path)
         names = set(loaded.manifest_names())
-        print(f"\n    manifest               {sorted(names)}")
+        print(f"    loaded                 {loaded.num_nodes()} nodes, "
+              f"largest intermediate {largest_intermediate(loaded)} bytes")
+        print(f"    manifest               {sorted(names)}")
         print(f"    records carried        {[r.pass_name for r in loaded.approximations()]}")
         print("    the denominator is gone from the interface, and the orbital energies are in "
-              "it,\n    which is what lets the quadrature be refitted at whatever a bind supplies.")
+              "it,\n    which is what lets the quadrature be refitted at whatever a bind supplies."
+              "\n    Each energy vector is ONE slot however many handles stand behind it: the"
+              "\n    capture registered one for the recipe that built the denominator and the"
+              "\n    transform's setup body reads the same buffer through a view of its own.")
 
         replayed = einsums.create_zero_tensor("E_corr", [1])
         supplied = {"B_ov": program["three"], "E_corr": replayed,
