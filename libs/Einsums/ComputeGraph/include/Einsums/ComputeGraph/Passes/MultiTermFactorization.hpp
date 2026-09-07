@@ -355,6 +355,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * A report that could not distinguish this from "the graph was already optimal" would be
      * useless in exactly the case a budget exists for, so the pass says which one happened.
      *
+     * @par What a cut-off means for the emitted graph
+     * The tree the pass emits becomes a function of how fast the machine is, because the search
+     * keeps the best candidate it had reached rather than the best one there is. That costs
+     * optimization and not correctness, and a partial plan is never cached, so nothing durable
+     * carries the machine in it. A caller that needs the SAME graph out of two runs, a test
+     * asserting a shape above all, therefore has to take the allowance away rather than make it
+     * generous: ``PassManager::set_optimizer_budget(0)``, which wins over
+     * ``einsums:graph:optimizer-budget``, and this getter is then what says the removal took.
+     * A generous allowance only moves the point at which the machine decides the answer.
+     *
      * @return True when the search was cut off.
      */
     APIARY_EXPOSE APIARY_GETTER("was_cut_off") [[nodiscard]] bool was_cut_off() const { return _cut_off; }

@@ -360,6 +360,14 @@ def _region_pass_manager():
     for region_pass in (delta, mtf):
         region_pass.set_verify_costs(True)
     pm = cg.PassManager()
+    # No wall-clock allowance. A search that runs out of one keeps the best
+    # candidate it has reached, which is a valid graph and a DIFFERENT one, so a
+    # shard asserting what a rewrite produced would be asserting how fast the
+    # machine is; a CI runner is slower than the machine a corpus is tuned on
+    # and is where that first shows. The per-pipeline setting wins over
+    # ``einsums:graph:optimizer-budget``, and the corpus guard asserts no search
+    # was cut off.
+    pm.set_optimizer_budget(0)
     for p in passes:
         pm.add(p)
     return pm, passes
@@ -652,12 +660,20 @@ def _rng_program(seed):
 
 def test_the_corpus_provokes_the_region_passes():
     fired = {name: 0 for name in _FIRED_ATTR}
+    cut_off = 0
     for seed in range(48):
         prog = _rng_program(seed)
         for pass_obj in _check(prog, "float64", seed=seed):
             attr = _FIRED_ATTR.get(pass_obj.name)
             if attr is not None and int(getattr(pass_obj, attr)):
                 fired[pass_obj.name] += 1
+            if pass_obj.name == "MultiTermFactorization" and pass_obj.was_cut_off:
+                cut_off += 1
+
+    # The pipeline runs with no wall-clock allowance, and this is what says the
+    # removal took. A cut-off search emits a valid but different graph, so a
+    # corpus that tolerated one would be counting rewrites the machine chose.
+    assert cut_off == 0, f"{cut_off} search(es) were cut off by a wall-clock allowance"
 
     # MultiTermFactorization is the pass this corpus was built for, and
     # DeltaElimination's zero-block half is what the space annotation reaches.

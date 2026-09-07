@@ -33,6 +33,16 @@ import einsums.graph as cg
 from einsums import linalg as la
 from einsums.testing import ALL_DTYPES, assert_close
 
+#: Why every pipeline below sets ``set_optimizer_budget(0)``, marked at each site
+#: rather than repeated: a search that runs out of its wall-clock allowance keeps
+#: the best candidate it has reached, so it emits a VALID graph and a DIFFERENT
+#: one. A case asserting what the pass produced would then be asserting how fast
+#: the machine is, and a CI runner is slower than the machine the case was
+#: written on, which is where that first shows. The per-pipeline setting wins over
+#: ``einsums:graph:optimizer-budget``; the one case that pins an allowance sets its
+#: own, and ``was_cut_off`` is what says the removal took.
+_NO_ALLOWANCE = "einsums:graph:optimizer-budget"
+
 # (A B) C is the cheaper bracketing for both terms with these, which is what makes
 # building the shared product once worth more than the re-bracketing costs.
 I, K, L, J = 3, 12, 3, 12
@@ -81,6 +91,7 @@ def test_the_shared_product_is_found_and_the_answer_holds(dtype):
     mtf = cg.MultiTermFactorization()
     mtf.set_search_enabled(True)
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     pm.add(cg.Materialization())
     assert pm.run(graph), "the pass reported no change on a graph with a product to share"
@@ -105,6 +116,7 @@ def test_the_search_is_off_unless_it_is_asked_for():
     mtf = cg.MultiTermFactorization()
     assert not mtf.search_enabled
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     pm.set_verbosity(2)  # the skip tally is what a decline is read through
     assert not pm.run(graph)
@@ -120,6 +132,7 @@ def test_the_second_identical_graph_replays_the_plan():
     mtf.set_search_enabled(True)
     assert mtf.cache_enabled
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
 
     first = cg.Graph("mtf-cache")
@@ -140,6 +153,7 @@ def test_the_second_identical_graph_replays_the_plan():
     assert mtf.num_rebracketed == 2
 
     pm2 = cg.PassManager()
+    pm2.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm2.add(cg.Materialization())
     pm2.run(second)
     second.execute()
@@ -156,6 +170,7 @@ def test_the_cache_can_be_switched_off_and_cleared():
     mtf.set_cache_enabled(False)
     assert not mtf.cache_enabled
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
 
     graph = cg.Graph("mtf-cache-off")
@@ -182,6 +197,7 @@ def test_the_report_names_what_it_shared():
     mtf = cg.MultiTermFactorization()
     mtf.set_search_enabled(True)
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     assert pm.run(graph)
 
@@ -220,6 +236,7 @@ def test_the_factor_cap_declines_rather_than_approximating():
     mtf.set_max_factors(2)  # both terms flatten to three factors
     assert mtf.max_factors == 2
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     pm.set_verbosity(2)
     assert not pm.run(graph)
@@ -263,6 +280,7 @@ def test_the_ccsd_tau_terms_share_the_occupied_intermediate(dtype):
     mtf.set_search_enabled(True)
     mat = cg.Materialization()
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     pm.add(mat)
     assert pm.run(graph)
@@ -301,6 +319,7 @@ def test_the_ccsd_tau_terms_share_the_occupied_intermediate(dtype):
     plain = cg.Graph("ccsd-tau-plain")
     t2n_plain, _pool_plain = _build_ccsd_tau_terms(plain, tau_np, oovv_np, dtype)
     pm_plain = cg.PassManager()
+    pm_plain.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm_plain.add(cg.Materialization())
     pm_plain.run(plain)
     plain.execute()
@@ -359,6 +378,7 @@ def test_the_tau_terms_share_the_occupied_intermediate_inside_a_loop_body():
     mtf = cg.MultiTermFactorization()
     mtf.set_search_enabled(True)
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     pm.add(cg.Materialization())
     assert pm.run(graph), mtf.skip_reasons
@@ -419,6 +439,7 @@ def test_a_setup_body_is_not_a_region_this_framework_rewrites():
     mtf = cg.MultiTermFactorization()
     mtf.set_search_enabled(True)
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     assert not pm.run(graph)
     assert any("setup body" in reason for reason, _count in mtf.skip_reasons), mtf.skip_reasons
@@ -443,6 +464,7 @@ def test_the_reported_cost_agrees_with_the_nodes_it_emitted():
     mtf.set_search_enabled(True)
     mtf.set_verify_costs(True)
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     assert pm.run(graph)
     assert mtf.num_shared == 1
@@ -455,6 +477,7 @@ def test_the_reported_cost_agrees_with_the_nodes_it_emitted():
     second = cg.Graph("mtf-cost-check-off")
     _r, _p = _build_ccsd_tau_terms(second, tau_np, oovv_np, "float64")
     pm2 = cg.PassManager()
+    pm2.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm2.add(quiet)
     assert pm2.run(second)
     assert quiet.cost_mismatches == []
@@ -514,6 +537,7 @@ def test_a_scaled_product_reduced_by_a_dot_is_re_associated(dtype):
     mtf.set_search_enabled(True)
     mtf.set_verify_costs(True)
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     assert pm.run(graph), pm.explain()
 
@@ -533,6 +557,7 @@ def test_a_scaled_product_reduced_by_a_dot_is_re_associated(dtype):
     # the caller holds the handle, and Materialization leaves an unused deferred
     # intermediate unallocated.
     pm2 = cg.PassManager()
+    pm2.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm2.add(cg.Materialization())
     pm2.run(graph)
     materialized = {node["label"] for node in json.loads(graph.to_json())["nodes"]
@@ -577,6 +602,7 @@ def test_an_accumulating_direct_product_is_not_folded():
     mtf = cg.MultiTermFactorization()
     mtf.set_search_enabled(True)
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     pm.run(graph)
     kinds = {node["kind"] for node in json.loads(graph.to_json())["nodes"]}
@@ -649,6 +675,7 @@ def test_a_definition_one_consumer_profits_from_is_copied_and_kept():
     mtf = cg.MultiTermFactorization()
     mtf.set_search_enabled(True)
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     pm.add(cg.Materialization())
     assert pm.run(graph), mtf.skip_reasons
@@ -707,6 +734,7 @@ def test_a_definition_no_consumer_profits_from_is_left_whole():
     mtf = cg.MultiTermFactorization()
     mtf.set_search_enabled(True)
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     pm.add(cg.Materialization())
     pm.run(graph)
@@ -757,6 +785,7 @@ def test_a_definition_more_consumers_than_the_cap_admits_is_left_whole():
     mtf = cg.MultiTermFactorization()
     mtf.set_search_enabled(True)
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     pm.add(cg.Materialization())
     pm.run(capped)
@@ -819,6 +848,7 @@ def test_a_definition_whose_operand_is_rewritten_before_its_consumer_stays_put()
     mtf = cg.MultiTermFactorization()
     mtf.set_search_enabled(True)
     pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
     pm.add(mtf)
     pm.add(cg.Materialization())
     pm.run(graph)

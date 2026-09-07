@@ -165,6 +165,27 @@ def _capture_over_two_integrals(graph, water, denominator, energy):
         la.dot(energy, combination, T)
 
 
+def _searching_manager(*passes, budget_ms=0):
+    """A pipeline whose search is allowed to finish.
+
+    What the cases below assert is the TREE the search emits, and a wall-clock
+    allowance makes that tree a function of how fast the machine is: a search
+    that runs out of time keeps the best candidate it has found so far and
+    reports having been cut off, which on a slower runner is a different and
+    worse tree over the same program. So a case that pins a shape removes the
+    allowance, and ``einsums:graph:optimizer-budget`` is what it removes; the
+    per-pipeline setting wins over the option, which is what lets one file do
+    this without touching process-global configuration.
+
+    ``budget_ms`` is for the one case that pins the other side of that rule.
+    """
+    manager = cg.PassManager()
+    manager.set_optimizer_budget(budget_ms)
+    for entry in passes:
+        manager.add(entry)
+    return manager
+
+
 def _transform(water, epsilon):
     transform = cg.LaplaceTransform()
     transform.set_epsilon(epsilon)
@@ -731,10 +752,9 @@ def _sos_run(water, epsilon, annotate):
     transform = _transform(water, epsilon)
     search = cg.MultiTermFactorization()
     search.set_search_enabled(True)
-    manager = cg.PassManager()
-    manager.add(transform)
-    manager.add(search)
+    manager = _searching_manager(transform, search)
     manager.run(graph)
+    assert not search.was_cut_off, "the search was cut off, so the tree below is the machine's"
     return graph, energy, transform, search, captured, registry
 
 
@@ -825,9 +845,9 @@ def test_the_transform_copies_a_numerator_the_dot_also_reads(water):
 
     search = cg.MultiTermFactorization()
     search.set_search_enabled(True)
-    after = cg.PassManager()
-    after.add(search)
+    after = _searching_manager(search)
     assert graph.apply(after), search.skip_reasons
+    assert not search.was_cut_off, "the search was cut off, so the tree below is the machine's"
     assert _integrals_formed(graph) == [], _integrals_formed(graph)
 
     four_index = [water["nocc"], water["nvir"], water["nocc"], water["nvir"]]
@@ -938,10 +958,9 @@ def _full_mp2_run(water, epsilon):
     transform = _transform(water, epsilon)
     search = cg.MultiTermFactorization()
     search.set_search_enabled(True)
-    manager = cg.PassManager()
-    manager.add(transform)
-    manager.add(search)
+    manager = _searching_manager(transform, search)
     manager.run(graph)
+    assert not search.was_cut_off, "the search was cut off, so the tree below is the machine's"
     return graph, energy, transform, search, registry
 
 
@@ -972,7 +991,7 @@ def test_full_mp2_keeps_its_exchange_term_and_its_number(water):
     assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING
 
 
-def _split_over_one_integral(water, epsilon):
+def _split_over_one_integral(water, epsilon, budget_ms=0):
     """``E = 2 sum K K D - sum K^T K D`` as two reductions over ONE stored integral.
 
     Each half is given its own numerator, so that the one thing the two halves
@@ -1014,9 +1033,7 @@ def _split_over_one_integral(water, epsilon):
     transform = _transform(water, epsilon)
     search = cg.MultiTermFactorization()
     search.set_search_enabled(True)
-    manager = cg.PassManager()
-    manager.add(transform)
-    manager.add(search)
+    manager = _searching_manager(transform, search, budget_ms=budget_ms)
     manager.run(graph)
     assert transform.num_transformed == 2
     return graph, opposite, same, transform, search
@@ -1038,6 +1055,7 @@ def test_the_opposite_spin_half_takes_a_copy_of_the_one_integral_the_exchange_ha
     """
     exact = _exact(water)
     graph, opposite, same, transform, search = _split_over_one_integral(water, 1e-3)
+    assert not search.was_cut_off, "the search was cut off, so the tree below is the machine's"
     assert search.num_rebracketed >= 1, search.skip_reasons
 
     # Kept, because the permute cannot take it, and copied into the one consumer
@@ -1079,6 +1097,7 @@ def test_the_same_program_at_a_tighter_tolerance_reads_the_integral_instead(wate
     exact = _exact(water)
     graph, opposite, same, transform, search = _split_over_one_integral(water, 1e-8)
 
+    assert not search.was_cut_off, "the search was cut off, so the tree below is the machine's"
     assert search.num_copies == 0, search.skip_reasons
     assert any("buys that consumer nothing" in reason for reason, _count in search.skip_reasons), (
         search.skip_reasons)
@@ -1095,3 +1114,42 @@ def test_the_same_program_at_a_tighter_tolerance_reads_the_integral_instead(wate
     record = graph.approximations()[0]
     assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING, (
         f"the split energy {value} is outside the bound against {exact}")
+
+
+def test_a_search_cut_off_by_its_allowance_emits_a_different_tree(water):
+    """The emitted tree is a function of the allowance, which is why the cases above remove it.
+
+    The same program at ``1e-3``, searched under an allowance too small to
+    finish in. The pass keeps the best candidate it had found, says so through
+    ``was_cut_off``, and the graph it emits forms the four-index integral a
+    second time, because the candidate that reads the one the exchange half
+    already computes is never reached. Nothing about that is wrong: a cut-off
+    costs optimization rather than correctness, and the energy is still inside
+    the recorded bound.
+
+    What it is wrong for is a case that PINS a shape. This is the graph the two
+    Linux CI legs emitted against a commit that passed on a faster machine, and
+    the difference between the machines was the allowance rather than anything
+    numerical: the point count, the letter extents and every comparison the
+    search makes are the same on both.
+    """
+    exact = _exact(water)
+    graph, opposite, same, _transform, search = _split_over_one_integral(water, 1e-3, budget_ms=1)
+    assert search.was_cut_off, search.skip_reasons
+    assert any("wall-clock budget" in reason for reason, _count in search.skip_reasons), search.skip_reasons
+    assert len(_integrals_formed(graph)) > 1, (
+        f"the allowance did not change the tree: {_integrals_formed(graph)}")
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    value = 2.0 * float(np.asarray(opposite)[0]) - float(np.asarray(same)[0])
+    record = graph.approximations()[0]
+    assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING, (
+        f"the cut-off split energy {value} is outside the bound against {exact}")
+
+    # And the same program with the allowance removed, which is what every case
+    # above runs, forms it exactly once.
+    unbounded, _o, _s, _t, finished = _split_over_one_integral(water, 1e-3)
+    assert not finished.was_cut_off, finished.skip_reasons
+    assert _integrals_formed(unbounded) == ["A"], _integrals_formed(unbounded)
+

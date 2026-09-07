@@ -728,6 +728,10 @@ def region_pass_manager():
     mtf = cg.MultiTermFactorization()
     mtf.set_search_enabled(True)
     pm = cg.PassManager()
+    # No wall-clock allowance, for the reason the region shard's own pipeline
+    # gives: a search that runs out of one emits a valid but different graph, so
+    # what a slower machine would be comparing is not what a faster one compared.
+    pm.set_optimizer_budget(0)
     for p in (cg.DeltaElimination(), cg.LinearCombinationContractionFolding(),
               cg.DistributiveFactoring(), mtf, cg.LayoutAssignment(),
               cg.ContractionPlanning(), cg.Materialization()):
@@ -1183,6 +1187,10 @@ def _run_program_single_pass(prog, m_arrays, v_arrays, t_arrays, name, pass_name
     if hasattr(pass_obj, "set_search_enabled"):
         pass_obj.set_search_enabled(True)
     pm = cg.PassManager()
+    # A tier measurement compares what one pass did to the numbers, so it has to
+    # be the pass deciding and not the clock: a search cut off by a wall-clock
+    # allowance emits a different graph and the tier would be classifying that.
+    pm.set_optimizer_budget(0)
     pm.add(pass_obj)
     # Materialization is correctness-enabling rather than an optimization: it
     # allocates the deferred tensors a generator declared and does nothing else,

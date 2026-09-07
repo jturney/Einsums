@@ -501,9 +501,15 @@ def _sos_grid_arm(water, epsilon):
     search = cg.MultiTermFactorization()
     search.set_search_enabled(True)
     manager = cg.PassManager()
+    # No wall-clock allowance: the shapes collected below are what the caller
+    # asserts on, and a search that runs out of one keeps the best candidate it
+    # has reached, which is a valid graph with different shapes in it. The
+    # per-pipeline setting wins over ``einsums:graph:optimizer-budget``.
+    manager.set_optimizer_budget(0)
     manager.add(transform)
     manager.add(search)
     manager.run(graph)
+    assert not search.was_cut_off, "the search was cut off, so the shapes below are the machine's"
 
     ir = json.loads(graph.to_json())
     dims = {tensor["id"]: tensor["dims"] for tensor in ir["tensors"]}
