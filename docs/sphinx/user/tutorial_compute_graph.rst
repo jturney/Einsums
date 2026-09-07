@@ -17,6 +17,16 @@ algorithms where the same operations run many times with changing data.
 Inspired by CUDA Graphs and PyTorch FX, the Einsums compute graph also supports
 optimization passes, parallel execution, control flow, and profiler integration.
 
+Capture is also what the optimizer works on. Every pass, every factorization and
+every schedule rewrite in the library reads a captured graph; eager execution
+gets none of them, and that is deliberate. Eager is the reference semantics this
+layer is validated against, so a numpy-style script stays eager and computes
+exactly what it wrote. Capture is how you ask for something else.
+
+This page covers capturing, replaying and running the passes. For what the
+passes can do to the *mathematics* of a program, and for the annotations that
+let them, see :ref:`tutorial-optimizer`.
+
 Setup
 =====
 
@@ -104,8 +114,14 @@ The graph can be optimized before execution:
 The default pipeline runs the passes below, in this order. The GPU and MPI
 passes join it only when the corresponding backend (or its mock) is built in:
 
+``ProvenancePropagation``
+    Carry a tag declared on a tensor down to the handles the passes below read,
+    including a loop or setup body's own handle for the same buffer.
 ``TiledExpansion``
     Lower tiled operations into per-tile dense nodes so every pass below can read them.
+``DeltaElimination``
+    Rewrite a contraction against a tagged Kronecker delta as a rename, and a
+    contraction over two spaces declared disjoint as a scaling.
 ``ConstantFolding``
     Pre-compute constant subexpressions.
 ``ScaleAbsorption``
@@ -122,10 +138,19 @@ passes join it only when the corresponding backend (or its mock) is built in:
     Merge consecutive element-wise operations on one tensor.
 ``LinearCombinationContractionFolding``
     Fold transpose-paired contractions over one operand into a single contraction.
+``DistributiveFactoring``
+    Rewrite ``A*B1 + A*B2`` as ``A*(B1 + B2)``.
 ``LoopInvariantHoisting``
     Hoist invariant ops out of loops.
 ``ScratchPrivatization``
     Rename reused scratch onto clones so false dependencies stop serializing the graph.
+``MultiTermFactorization``
+    Re-bracket products and share partial products between them. The search half
+    is off unless asked for; see :ref:`tutorial-optimizer`.
+``LayoutAssignment``
+    Choose each intermediate's storage order so that contraction kernels make
+    fewer internal copies, and fold away a permuted copy the choice makes an
+    identity.
 ``ContractionPlanning``
     Cost-model-driven contraction ordering.
 ``GEMMBatching``
@@ -158,6 +183,11 @@ passes join it only when the corresponding backend (or its mock) is built in:
 
 See the :ref:`pass catalog <computegraph_optimization_passes>` for what each one
 matches and what it reports.
+
+No lossy pass is ever in this list. A factorization, a quadrature, a basis
+truncation or a memory cap is something a program asks for by name, so until it
+does, the answer this pipeline computes is the answer the program wrote.
+:ref:`tutorial-optimizer` covers what asking looks like.
 
 You can also apply a single pass:
 
@@ -224,6 +254,13 @@ with ``cg.index_space``, and annotation takes names rather than ids:
 
 Cost polynomials reach Python as their renderings - ``scaling.total_flops_str()``
 and ``scaling.node_flops()`` - rather than as objects to compute with.
+
+Annotating a program buys more than a report. A space carries a dim symbol, and
+an axis annotated with one is an axis a later bind may resize, which is what
+lets a saved graph be replayed on a different molecule; and a rewrite whose
+value depends on how the spaces compare is judged for the declared family rather
+than for the geometry the capture happened to hold.
+:ref:`tutorial-optimizer` covers both.
 
 Pipeline: Multi-Stage Workflows
 ================================
@@ -776,6 +813,8 @@ See :ref:`Hardware profiles <computegraph_hardware_profiles>` for full details.
 What's Next
 ===========
 
+- :ref:`tutorial-optimizer` -- Annotations, tags, providers, and the rewrites
+  that change what a program computes
 - :ref:`tutorial-performance` -- Understanding dispatch and profiler usage
 - ``GPUOffload.cpp`` in the ComputeGraph examples --- full GPU offloading demo
 - ``SCFSimulation.cpp`` --- iterative SCF with custom operations and loops

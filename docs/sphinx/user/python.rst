@@ -111,3 +111,71 @@ so ``np.asarray(t)`` is zero-copy. These are documented on the
    to :py:mod:`einsums.linalg` rather than falling through to
    NumPy, so they compose inside a captured :ref:`ComputeGraph
    <modules_Einsums_ComputeGraph>` workflow.
+
+Capturing and optimizing
+------------------------
+
+``einsums.graph`` is the Python surface of the ComputeGraph. It captures a
+sequence of operations, runs the optimization passes over the result, and
+replays it:
+
+.. code-block:: python
+
+    import einsums.graph as cg
+
+    g = cg.Graph("mp2")
+    with cg.capture(g):
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
+        ...
+
+    g.apply(cg.default_pass_manager())
+    g.execute()
+
+Beside ``default_pass_manager`` are ``analysis_pass_manager``,
+``structural_pass_manager``, ``resource_pass_manager`` and
+``tuning_pass_manager``, which are the phase-filtered views of the same
+pipeline; the last two are what a caller runs over a graph loaded from a file.
+The module builds each in place through the ``populate_*`` methods, because a
+``PassManager`` holds passes it owns and cannot be returned by value.
+
+The whole optimizer surface is reachable from Python, and the pieces a program
+touches are these:
+
+``cg.annotate(tensor, spaces=..., tag=..., graph=...)``
+    Say what a tensor's axes range over and what the tensor *is*. Spaces are
+    given by registered name, and a tag as a name or as a mapping carrying
+    ``"name"`` plus attributes. One call, because a caller with both should not
+    have two chances to make one and forget the other.
+
+``cg.global_space_registry()`` and ``cg.private_space_registry(graph)``
+    Where spaces are declared. The default is process-global, which is what
+    makes a saved graph's space names resolvable when it is loaded. A program
+    that does not share files takes a registry of its own, which is one line;
+    a registry refuses a second declaration of one name with different content
+    rather than overwriting it.
+
+``cg.FactorizationRegistry`` and ``cg.FactorizationPass``
+    Register a provider on a tag and let one generic pass substitute and
+    re-associate. ``cg.MetricFitFactorization``, ``cg.ThcFactorization`` and
+    ``cg.NaturalAuxiliaryFactorization`` are the providers that ship;
+    ``cg.LaplaceTransform``, ``cg.BasisTruncation`` and ``cg.AxisTiling`` are
+    passes a program adds directly.
+
+``g.approximations()`` and ``g.approximation_tolerance(output)``
+    What a lossy rewrite recorded: the tolerance it was asked for, the bound it
+    states, the units that bound is in, and whether the number was measured or
+    asserted. ``einsums.testing.assert_close(..., graph=g, output=...)`` reads
+    them, so a comparison against an approximated result does not need a
+    tolerance picked by hand.
+
+``cg.save_graph``, ``cg.load_graph`` / ``cg.load_graph_into`` and ``cg.bind``
+    A graph's structure, interface and approximation records, written to a file
+    and bound to a fresh set of tensors on the other side. ``cg.bind`` takes the
+    whole mapping at once, because a dim symbol is a constraint across slots.
+
+A provider cannot yet be *authored* in Python: ``FactorizationProvider`` is
+exposed so the registry can hand one back, and a Python subclass of it does not
+dispatch back into Python.
+
+The narrative for all of it, with a runnable tour, is
+:ref:`tutorial-optimizer`.

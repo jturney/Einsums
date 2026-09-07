@@ -278,6 +278,64 @@ TaskPool advantages over raw OpenMP:
 - Profiler integration shows per-task and per-worker timing
 - Future-proof for MPI distribution
 
+7. State a memory cap instead of writing the loop
+--------------------------------------------------
+
+A captured program declares the tensors its equations mention, and for a
+density-fitted method those are exactly the objects density fitting exists to
+avoid holding. The usual answer is to write the pair loop by hand. The other
+answer is to state the footprint you have to live inside and let ``AxisTiling``
+derive the loop:
+
+.. code-block:: python
+
+    tiling = cg.AxisTiling()
+    tiling.set_memory_cap(4096)          # bytes
+    pm = cg.PassManager()
+    pm.add(tiling)
+    g.apply(pm)
+    g.apply(cg.default_pass_manager())
+
+The pass slices free axes of the program and streams every intermediate that
+carries them, so the body is the same algebra at one slice, and a chunk of
+slices deeper than one takes the grouped kernels. The cap,
+:option:`--einsums:graph:tiling-memory-cap`, is read three times over: whether
+to tile at all, since a program whose largest intermediate already fits is left
+alone; which axes to slice; and how deep a chunk may be.
+
+It is **not** in the default pipeline, and the default cap is deliberately far
+above anything a captured program declares. Slicing a program that already fits
+costs kernel efficiency for memory nobody was short of, so this fires when a
+caller asks for it. Zero is the spelling for the captured schedule.
+
+On the full-axis DF-MP2 capture at water in cc-pVDZ, a cap of 4096 bytes takes
+the largest intermediate inside the loop from 72200 bytes to 2888 and turns six
+captured nodes into a ``Scale`` and a ``Loop``. ``optimizer_tour.py`` in the
+ComputeGraph examples prints the decision and the buffers the tiled graph
+allocates.
+
+8. Give a search pass room, or take its allowance away
+-------------------------------------------------------
+
+Most passes walk the graph once. ``MultiTermFactorization`` searches, and its
+runtime is a function of how many candidates the program offers rather than of
+how large it is, which is why the search half is off unless a program asks for
+it with :option:`--einsums:graph:structural-search`.
+
+:option:`--einsums:graph:optimizer-budget` is the wall-clock allowance each
+search pass gets, in milliseconds, with ``PassManager.set_optimizer_budget`` as
+the per-pipeline override and zero meaning unlimited. Running out of it costs
+optimization rather than correctness: the pass keeps the best candidate it had
+reached and reports that it was cut off. That candidate is a **different graph**
+from the one an unbounded search would emit, so a program that compares two
+emitted graphs, or a measurement that has to be reproducible across machines,
+should take the allowance away with ``set_optimizer_budget(0)`` and check
+``was_cut_off``.
+
+Within one process, the plan a search chose is cached and replayed for a
+structurally identical graph, which is what makes a pipeline whose stages
+present the same program search once. See :ref:`tutorial-optimizer`.
+
 Dispatch Reference: What Is and Isn't Accelerated
 ===================================================
 
@@ -438,3 +496,7 @@ What's Not Covered
 
 This tutorial covers CPU performance. For GPU acceleration, see the HIP/CUDA
 documentation (when available).
+
+It also covers only the schedule. Choosing a cheaper *algorithm*, by factoring
+an integral, decoupling an energy denominator or truncating a space, is
+:ref:`tutorial-optimizer`.

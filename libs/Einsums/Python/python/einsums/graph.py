@@ -9,6 +9,20 @@ Surface for ``einsums._core.graph`` plus a few Pythonic helpers such as
 ``default_pass_manager`` and ``capture``. The C-extension submodule is
 loaded lazily on first attribute access, so importing ``einsums.graph``
 does not by itself fire ``einsums::initialize()``.
+
+Everything the C++ ComputeGraph exposes is reachable through this module,
+including the optimizer's own vocabulary: index spaces and the registries
+that hold them, provenance tags, the factorization providers and the pass
+that applies them, the lossy passes and the approximation records they
+leave on a graph, and save, load and bind. The helpers defined here are the
+ones the C++ static factories cannot be bound as, plus ``annotate`` and
+``bind``, which exist so a caller writes one statement where the bound
+surface takes several.
+
+No lossy pass is in ``default_pass_manager()``. A factorization, a
+quadrature, a basis truncation or a memory cap is added by name, which is
+also what makes the answer a plain pipeline computes the answer the program
+wrote. The user guide's optimizer page is the narrative.
 """
 
 import contextlib as _contextlib
