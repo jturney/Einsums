@@ -770,22 +770,40 @@ def _written_dims(graph):
     return out
 
 
-def _integrals_formed(graph):
-    """Every contraction in the optimized graph that forms ``(ia|jb)`` from the fitted tensor.
+def _integrals_formed(graph, water):
+    """Every contraction in the optimized graph that BUILDS ``(ia|jb)``.
 
     Named by what it WRITES, since what is under test is how many of them there
     are: a program that formed the integral once and then rebuilt the same
-    product inside a consumer would read as one definition and two contractions.
+    product inside a consumer reads as one definition and two contractions.
+
+    Recognized by the OUTPUT it writes and not by its operands alone, which is
+    what the shape test below is for. A pairless bracketing contracts the fitted
+    factor with itself over the pair index and writes a ``[Q, Q']`` or a
+    ``[Q, i, Q']`` intermediate, which is the form the whole rewrite exists to
+    reach and which forms no integral at all; a rule reading "both operands are
+    the fitted factor" counts that as one and reports the successful rewrite as
+    the failure it is the opposite of.
+
+    A node forms the integral, then, when it writes a rank-four tensor over the
+    occupied and virtual axes OUT OF the density fit. The shape is what says it
+    is the integral rather than a decoupled product over the quadrature, which
+    also lands on those four axes and is built from no fitted factor at all; the
+    operand is what says the value was BUILT here rather than transformed, which
+    keeps the permute of the integral and the elementwise products over it out.
     """
     ir = json.loads(graph.to_json())
     names_by_id = {tensor["id"]: tensor["name"] for tensor in ir["tensors"]}
+    dims_by_id = {tensor["id"]: tensor["dims"] for tensor in ir["tensors"]}
+    four_index = _shape(water)
     written = []
     for node in ir["nodes"]:
         if node["kind"] != "Einsum":
             continue
-        if [names_by_id.get(t) for t in node.get("inputs", [])] != ["B", "B"]:
+        if "B" not in [names_by_id.get(t) for t in node.get("inputs", [])]:
             continue
-        written += [names_by_id.get(t) for t in node.get("outputs", [])]
+        written += [names_by_id.get(t) for t in node.get("outputs", [])
+                    if dims_by_id.get(t) == four_index]
     return written
 
 
@@ -840,7 +858,7 @@ def test_the_transform_copies_a_numerator_the_dot_also_reads(water):
     assert transform.num_numerator_copies == 1, transform.skip_reasons
 
     # The definition stands, once, and the dot still reads it.
-    assert _integrals_formed(graph) == ["K"], _integrals_formed(graph)
+    assert _integrals_formed(graph, water) == ["K"], _integrals_formed(graph, water)
     assert _readers_of(graph, "K") == ["Dot"], _readers_of(graph, "K")
 
     search = cg.MultiTermFactorization()
@@ -848,7 +866,7 @@ def test_the_transform_copies_a_numerator_the_dot_also_reads(water):
     after = _searching_manager(search)
     assert graph.apply(after), search.skip_reasons
     assert not search.was_cut_off, "the search was cut off, so the tree below is the machine's"
-    assert _integrals_formed(graph) == [], _integrals_formed(graph)
+    assert _integrals_formed(graph, water) == [], _integrals_formed(graph, water)
 
     four_index = [water["nocc"], water["nvir"], water["nocc"], water["nvir"]]
     written = _written_dims(graph)
@@ -1061,7 +1079,7 @@ def test_the_opposite_spin_half_takes_a_copy_of_the_one_integral_the_exchange_ha
     # Kept, because the permute cannot take it, and copied into the one consumer
     # that profits.
     assert search.num_copies == 1, search.skip_reasons
-    assert _integrals_formed(graph) == ["A"], _integrals_formed(graph)
+    assert _integrals_formed(graph, water) == ["A"], _integrals_formed(graph, water)
 
     # The exchange half's permuted integral is still formed, and must be.
     four_index = [water["nocc"], water["nvir"], water["nocc"], water["nvir"]]
@@ -1101,7 +1119,7 @@ def test_the_same_program_at_a_tighter_tolerance_reads_the_integral_instead(wate
     assert search.num_copies == 0, search.skip_reasons
     assert any("buys that consumer nothing" in reason for reason, _count in search.skip_reasons), (
         search.skip_reasons)
-    assert _integrals_formed(graph) == ["A"], _integrals_formed(graph)
+    assert _integrals_formed(graph, water) == ["A"], _integrals_formed(graph, water)
 
     naux, points = water["naux"], transform.last_point_count
     written = _written_dims(graph)
@@ -1137,8 +1155,8 @@ def test_a_search_cut_off_by_its_allowance_emits_a_different_tree(water):
     graph, opposite, same, _transform, search = _split_over_one_integral(water, 1e-3, budget_ms=1)
     assert search.was_cut_off, search.skip_reasons
     assert any("wall-clock budget" in reason for reason, _count in search.skip_reasons), search.skip_reasons
-    assert len(_integrals_formed(graph)) > 1, (
-        f"the allowance did not change the tree: {_integrals_formed(graph)}")
+    assert len(_integrals_formed(graph, water)) > 1, (
+        f"the allowance did not change the tree: {_integrals_formed(graph, water)}")
 
     graph.apply(cg.default_pass_manager())
     graph.execute()
@@ -1151,5 +1169,21 @@ def test_a_search_cut_off_by_its_allowance_emits_a_different_tree(water):
     # above runs, forms it exactly once.
     unbounded, _o, _s, _t, finished = _split_over_one_integral(water, 1e-3)
     assert not finished.was_cut_off, finished.skip_reasons
-    assert _integrals_formed(unbounded) == ["A"], _integrals_formed(unbounded)
+    assert _integrals_formed(unbounded, water) == ["A"], _integrals_formed(unbounded, water)
 
+
+def test_the_fit_contracted_with_itself_over_the_pair_forms_no_integral(water):
+    """``sum_ia B[Q,i,a] B[Q',i,a]`` is the pairless form, not the integral.
+
+    The decoupled opposite-spin energy is built out of exactly this product, so
+    a reading of "a contraction of the fit with itself forms the integral" calls
+    the rewrite's whole point a regression. What separates the two is the shape
+    that comes out: the integral is rank four over the occupied and virtual
+    axes, and this is rank two over the auxiliary one.
+    """
+    naux = water["naux"]
+    graph = cg.Graph("pairless_shape")
+    matrix = graph.scratch("X", [naux, naux], "float64")
+    with cg.capture(graph):
+        einsums.einsum("Q,i,a ; R,i,a -> Q,R", matrix, water["fitted"], water["fitted"])
+    assert _integrals_formed(graph, water) == [], _integrals_formed(graph, water)
