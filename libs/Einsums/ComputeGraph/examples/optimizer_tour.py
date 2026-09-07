@@ -500,6 +500,11 @@ def arm_tiling(problem, exact):
             for tid in node.get("outputs", []):
                 name, extents = dims.get(tid, ("?", []))
                 print(f"    allocated              {name} {extents}")
+    print("\n    Four of the five four-index scratches are one v by v block each, and D is not."
+          "\n    Its writer is an outer sum, which is not an operation the schedule can re-emit"
+          "\n    at one pair, so the recipe stays outside the loop and the tensor is formed"
+          "\n    whole. The figure above is the largest intermediate of the region the pass"
+          "\n    rewrote. Removing that last four-index tensor is what the Laplace arm does.")
 
 
 def arm_round_trip(problem, exact):
