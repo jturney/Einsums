@@ -685,7 +685,7 @@ expected<ExprStatement, RaiseFailure> raise_grouped(Graph const &graph, Node con
         // shape a member runs at is its group's.
         for (auto const &group : desc->groups) {
             for (int slot = 0; slot < group.count; ++slot) {
-                auto const member = static_cast<std::size_t>(group.first + slot);
+                auto const member = static_cast<std::size_t>(group.first) + static_cast<std::size_t>(slot);
                 note_extent(family, li, member, static_cast<std::size_t>(group.m));
                 note_extent(family, lj, member, static_cast<std::size_t>(group.n));
                 note_extent(family, lk, member, static_cast<std::size_t>(group.k));
