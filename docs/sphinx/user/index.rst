@@ -36,6 +36,7 @@ details are found in the reference. Follow the links below to find more informat
     tutorial_views
     tutorial_linalg
     tutorial_compute_graph
+    optimizer
     tutorial_performance
     tutorial_best_practices
 
