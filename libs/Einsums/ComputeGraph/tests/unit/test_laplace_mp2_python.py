@@ -28,6 +28,7 @@ quadrature on the rebind.
 from __future__ import annotations
 
 import json
+import math
 import os
 
 import numpy as np
@@ -334,6 +335,154 @@ def test_the_transformed_graph_saves_loads_rebinds_and_replays(water, tmp_path):
     mapping = {"B": water["fitted"], "E_corr": replayed,
                "eps_occ": water["occupied_energies"], "eps_vir": water["virtual_energies"]}
     cg.bind(loaded, {name: tensor for name, tensor in mapping.items() if name in names})
+    loaded.apply(cg.default_pass_manager())
+    loaded.execute()
+
+    value = float(np.asarray(replayed)[0])
+    assert value == pytest.approx(in_process, abs=1e-14), (
+        "the loaded graph refitted to something else on the same problem")
+    record = loaded.approximations()[0]
+    assert abs(value - exact) <= _SAFETY * record.bound * abs(exact) + _ROUNDING
+
+
+def test_the_interface_is_the_same_the_second_time_it_is_asked(water):
+    """A manifest is a reading of the graph, so asking twice says the same thing.
+
+    It did not. The first reading MINTS a parent handle for a buffer only the
+    transform's setup body names, because that is what effective I/O does with an
+    orphan, and the alias derivation that runs ahead of the reading has not seen
+    the new handle. The next reading links it to the handle the capture
+    registered, which changes the owner every usage is keyed by, and the cached
+    analysis was stamped against the node list alone. Both handles then asked for
+    an owner nobody had recorded, and the two energy vectors were simply gone
+    from the interface the second time.
+
+    What makes the energies the case that reaches it is the dissolution: the
+    transform erases the statements that built the denominator from them, so the
+    handle the capture registered has no top-level reader left to answer for it.
+    """
+    energy = einsums.create_zero_tensor("E_corr", [1])
+    graph = cg.Graph("mp2_manifest_asked_twice")
+    denominator = graph.scratch("D", _shape(water), "float64")
+    _build_denominator(graph, water, denominator)
+    _capture(graph, water, denominator, energy)
+    graph.annotate_tag(denominator, _tag())
+
+    transform = _transform(water, 1e-6)
+    manager = cg.PassManager()
+    manager.add(transform)
+    assert graph.apply(manager), f"the pass declined: {transform.skip_reasons}"
+
+    first = graph.manifest_names()
+    assert {"eps_occ", "eps_vir"} <= set(first), first
+    assert graph.manifest_names() == first
+    assert graph.manifest_names() == first
+
+
+def _largest_written_bytes(graph):
+    """Bytes in the largest tensor some node of the graph writes."""
+    ir = json.loads(graph.to_json())
+    size = {tensor["id"]: tensor["element_size"] * math.prod(tensor["dims"] or [1])
+            for tensor in ir["tensors"]}
+    return max((size[tid] for node in ir["nodes"] for tid in node.get("outputs", []) if tid in size),
+               default=0)
+
+
+def _annotated_full_axis(graph, water, energy):
+    """The full-axis energy with the recipe in the capture and everything annotated.
+
+    Including the two orbital-energy vectors, which is what a caller who has said
+    what the four-index tensors range over says about the vectors behind them.
+    That annotation is what the manifest saw two different answers to: the
+    transform hands the energies to its setup body through views of its own, so
+    the body's capture identity is an object the parent has never seen, and the
+    parent minted a second handle under the same name that nobody had annotated.
+    """
+    shape = _shape(water)
+    B = water["fitted"]
+    K = graph.scratch("K", shape, "float64")
+    T = graph.scratch("T", shape, "float64")
+    exchange = graph.scratch("K_exchange", shape, "float64")
+    combination = graph.scratch("Kbar", shape, "float64")
+    denominator = graph.scratch("D", shape, "float64")
+    _build_denominator(graph, water, denominator)
+    with cg.capture(graph):
+        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", K, B, B)
+        la.direct_product(1.0, K, denominator, 0.0, T)
+        einsums.permute("iajb <- ibja", exchange, K)
+        la.axpby(2.0, K, 0.0, combination)
+        la.axpby(-1.0, exchange, 1.0, combination)
+        la.dot(energy, combination, T)
+    graph.annotate_tag(denominator, _tag())
+    cg.annotate(B, ("aux", "occ", "vir"), graph=graph)
+    cg.annotate(water["occupied_energies"], ("occ",), graph=graph)
+    cg.annotate(water["virtual_energies"], ("vir",), graph=graph)
+    for tensor in (K, T, exchange, combination, denominator):
+        cg.annotate(tensor, ("occ", "vir", "occ", "vir"), graph=graph)
+
+
+def test_the_searched_graph_is_what_crosses_the_file(water, tmp_path):
+    """Search once offline, replay the answer: the file holds the searched form.
+
+    The graph a transform alone leaves carries one exponential-dressed integral
+    per quadrature point, which at this molecule is larger than the tensor it
+    replaced; the search then re-brackets that into a chain whose largest
+    intermediate is the four-index tensor again. Saving the searched graph is the
+    pipeline the whole feature exists for, and it used to be impossible: the
+    transform's setup body reads the caller's energy vectors through views of its
+    own, and both the parent id a body's handle resolves to and the boundary
+    reference a saved body writes were keyed on the tensor OBJECT, so the program
+    ended up with two handles named ``eps_occ`` where the caller had annotated
+    one. A manifest binds by name and refused them.
+    """
+    exact = _exact(water)
+    registry = _sos_registry()
+    graph = cg.Graph("mp2_laplace_searched")
+    graph.set_space_registry(registry)
+    energy = einsums.create_zero_tensor("E_corr", [1])
+    _annotated_full_axis(graph, water, energy)
+
+    transform = _transform(water, 1e-6)
+    search = cg.MultiTermFactorization()
+    search.set_search_enabled(True)
+    assert graph.apply(_searching_manager(transform, search))
+    assert not search.was_cut_off, "the search was cut off, so the form below is the machine's"
+    assert transform.num_transformed == 1
+    assert search.num_rebracketed == 2, search.skip_reasons
+
+    # ONE SLOT per energy, however many handles stand behind it.
+    names = graph.manifest_names()
+    assert names.count("eps_occ") == 1, names
+    assert names.count("eps_vir") == 1, names
+
+    nodes = graph.num_nodes()
+    largest = _largest_written_bytes(graph)
+    assert (nodes, largest) == (10, 72200), (nodes, largest)
+
+    path = str(tmp_path / "mp2_laplace_searched.eig")
+    cg.save_graph(graph, path)
+
+    graph.apply(cg.default_pass_manager())
+    graph.execute()
+    in_process = float(np.asarray(energy)[0])
+
+    # The MECHANISM, not just the number: the file carries the tree the search
+    # found, so the loaded graph has the same node count and the same high-water
+    # mark. A file holding the pre-search form would replay to the same energy
+    # through 2489760 bytes of exponential-dressed integral.
+    loaded = cg.load_graph_into(path, registry)
+    assert loaded.num_nodes() == nodes
+    assert _largest_written_bytes(loaded) == largest
+    assert [r.pass_name for r in loaded.approximations()] == ["LaplaceTransform"]
+
+    loaded_names = set(loaded.manifest_names())
+    assert {"eps_occ", "eps_vir"} <= loaded_names
+    assert "D" not in loaded_names
+
+    replayed = einsums.create_zero_tensor("E_corr", [1])
+    mapping = {"B": water["fitted"], "E_corr": replayed,
+               "eps_occ": water["occupied_energies"], "eps_vir": water["virtual_energies"]}
+    cg.bind(loaded, {name: tensor for name, tensor in mapping.items() if name in loaded_names})
     loaded.apply(cg.default_pass_manager())
     loaded.execute()
 

@@ -718,6 +718,105 @@ TEST_CASE("Manifest - one name over two handles of one buffer is one slot a bind
     }
 }
 
+TEST_CASE("Manifest - a handle nobody annotated folds into the slot rather than contradicting it",
+          "[ComputeGraph][Manifest][Spaces][Bind]") {
+    // The shape a pass produces, and the one that took the fold apart. A caller's vector is an
+    // operand of the captured program AND the input of a setup body the pass emits, and the
+    // pass hands it to the body wrapped in a view of its own, so the body's capture identity
+    // is an object the parent has never seen and the parent mints a SECOND handle for it.
+    //
+    // Only one of the two is the handle the caller annotated, and the fold used to require
+    // that the two say the same thing about spaces. Saying nothing is not saying something
+    // different: an axis nobody has named is the hole annotate_space_axis exists to make, so
+    // the slot takes the annotation the caller did write and the graph stays one slot.
+    cg::SpaceRegistry registry;
+    auto const        occ = registry.register_space(cg::make_index_space("occ", "no", 8.0));
+
+    auto eps    = create_random_tensor<double>("eps", 4);
+    auto scaled = create_zero_tensor<double>("scaled", 4);
+    auto fitted = create_zero_tensor<double>("fitted", 4);
+
+    cg::Graph graph("a_body_view_of_an_annotated_operand");
+    graph.set_space_registry(registry);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("i <- i", 0.0, &scaled, 2.0, eps);
+    }
+    graph.annotate_spaces(eps, {occ});
+    graph.annotate_dims(eps, {"no"});
+
+    // What a pass holds: a view of the caller's vector, at an address the pass owns.
+    RuntimeTensorView<double> held{eps};
+    held.set_name("eps");
+    {
+        auto                  &body = graph.add_setup("quadrature");
+        cg::CaptureGuard const guard(body);
+        cg::permute("i <- i", 0.0, &fitted, 1.0, held);
+    }
+    graph.topological_sort();
+
+    cg::TensorId const annotated = graph.find_tensor_id_by_ptr(&eps);
+    cg::TensorId const minted    = graph.find_tensor_id_by_ptr(&held);
+    REQUIRE(annotated != 0);
+    REQUIRE(minted != 0);
+    REQUIRE(annotated != minted);
+    REQUIRE(graph.tensor_spaces(minted).empty());
+
+    auto const contract = graph.manifest();
+    REQUIRE(std::ranges::count(contract.names(), "eps") == 1);
+    auto const &entry = entry_named(contract, "eps");
+    REQUIRE(entry.also == std::vector<cg::TensorId>{minted});
+    // The slot carries what the caller said, from whichever handle said it.
+    REQUIRE(entry.spaces == std::vector<std::string>{"occ"});
+    REQUIRE(entry.dim_symbols == std::vector<std::string>{"no"});
+
+    // And the bind still reaches the body, which is what a slot standing over two handles is
+    // for: it repoints both, so the fit reads what was supplied rather than what was captured.
+    auto other = create_random_tensor<double>("other", 4);
+    graph.bind("eps", other, "scaled", scaled, "fitted", fitted);
+    graph.execute();
+    for (std::size_t i = 0; i < 4; ++i) {
+        REQUIRE(fitted(i) == Catch::Approx(other(i)));
+    }
+}
+
+TEST_CASE("Manifest - a fold still refuses two different answers for one axis", "[ComputeGraph][Manifest][Spaces]") {
+    // The relaxation above is about SILENCE, not about disagreement. Two handles over one
+    // buffer whose annotations name different spaces on one axis have no answer a bind could
+    // give, and the refusal is the same one two live buffers get.
+    cg::SpaceRegistry registry;
+    auto const        occ  = registry.register_space(cg::make_index_space("occ", "no", 8.0));
+    auto const        virt = registry.register_space(cg::make_index_space("virt", "nv", 40.0));
+
+    auto M = create_random_tensor<double>("M", 4);
+    auto C = create_zero_tensor<double>("C", 4);
+    auto D = create_zero_tensor<double>("D", 4);
+
+    RuntimeTensorView<double> first{M};
+    RuntimeTensorView<double> second{M};
+    first.set_name("M");
+    second.set_name("M");
+
+    cg::Graph graph("two_answers_one_axis");
+    graph.set_space_registry(registry);
+    {
+        auto                  &body = graph.add_setup("fit_a");
+        cg::CaptureGuard const guard(body);
+        cg::permute("i <- i", 0.0, &C, 1.0, first);
+    }
+    {
+        auto                  &body = graph.add_setup("fit_b");
+        cg::CaptureGuard const guard(body);
+        cg::permute("i <- i", 0.0, &D, 1.0, second);
+    }
+    graph.topological_sort();
+
+    graph.annotate_spaces(graph.find_tensor_id_by_ptr(&first), {occ});
+    graph.annotate_spaces(graph.find_tensor_id_by_ptr(&second), {virt});
+
+    REQUIRE_THROWS_WITH(graph.manifest(), Catch::Matchers::ContainsSubstring("'M'"));
+}
+
 TEST_CASE("Manifest - one name over two different buffers is still the ambiguity it was", "[ComputeGraph][Manifest]") {
     // The fold is about one slot standing over more than one handle, not about letting a name
     // mean two things. Two live buffers under one name have no answer a bind could give, so the

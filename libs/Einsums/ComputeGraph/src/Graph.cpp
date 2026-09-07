@@ -1297,6 +1297,8 @@ void Graph::clear_alias_links() noexcept {
     }
     _aliases_linked = false;
     _deps_valid     = false;
+    // Owner-keyed analyses were keyed on the relation this just dropped; see link_alias_storage.
+    _analysis_version++;
 }
 
 void Graph::apply_declared_aliases() {
@@ -1381,6 +1383,15 @@ void Graph::link_alias_storage() {
         return;
     }
     _aliases_linked = true;
+
+    // A DERIVATION IS ABOUT TO RUN, so anything stamped with analysis_version is stale. That
+    // counter reads as a node-list version and UsageAnalysis is keyed by alias OWNER, so a
+    // relation this call is about to change is as much an input to it as the node list is.
+    // Missed, the table stays keyed on the ids the previous derivation resolved to and every
+    // lookup of a newly linked handle asks for an owner nobody recorded: an interface tensor
+    // that a first manifest() reported vanished from the second, since the mint that made the
+    // link happens inside the very analysis the link then invalidates.
+    _analysis_version++;
 
     // A declaration is authoritative and an address coincidence is not, so
     // declarations go on first and the containment search below leaves them

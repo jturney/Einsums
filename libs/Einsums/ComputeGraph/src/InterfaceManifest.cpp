@@ -179,6 +179,22 @@ InterfaceManifest Graph::manifest() {
     // ManifestEntry::aliases_input is derived from that link. Idempotent.
     link_alias_storage();
 
+    // The analysis REGISTERS HANDLES: a buffer only a sub-graph names gets a parent id out of
+    // effective I/O, and a setup body a pass emitted reads the caller's tensors through views
+    // of the pass's own, so this is the ordinary case rather than a corner. Those handles are
+    // minted after the link above has run and are therefore unlinked, which makes them look
+    // like operands of their own rather than the ones the caller annotated.
+    //
+    // So the derivation is taken to a fixed point instead of run once. Without it the first
+    // reading of a graph and every later one disagree, and the first is the wrong one: the
+    // handle the caller annotated is left out wherever a rewrite dissolved the statement that
+    // read it, and the slot goes into the file with literal extents where the caller had
+    // written a dim symbol. One extra round, and only when something was registered.
+    static_cast<void>(usage());
+    if (!_aliases_linked) {
+        link_alias_storage();
+    }
+
     UsageAnalysis const &uses = usage();
 
     std::vector<ManifestEntry> collected;
@@ -273,6 +289,35 @@ InterfaceManifest Graph::manifest() {
     // same storage or all still be waiting for it. A loaded graph is the second case, since
     // nothing is allocated until a bind, which is what lets one file's slot be supplied once.
     // Two different live buffers under one name are still the ambiguity they always were.
+    //
+    // AGREEING is not the same as saying the same thing, and the difference is an axis NOBODY
+    // HAS NAMED. That is a hole rather than a contradiction, which is the reading every other
+    // consumer of the annotation already takes one axis at a time: annotate_space_axis exists
+    // to make exactly such a hole, and it renders as the empty name here. A handle a pass
+    // registered for a caller's tensor carries no annotation at all, so refusing it against
+    // the annotated handle beside it refuses a slot the caller described once and completely.
+    // What a fold cannot do is take two DIFFERENT answers for one axis, and it does not.
+    auto const reconcile = [](std::vector<std::string> &into, std::vector<std::string> const &from) {
+        if (from.empty()) {
+            return true;
+        }
+        if (into.empty()) {
+            into = from;
+            return true;
+        }
+        if (into.size() != from.size()) {
+            return false;
+        }
+        for (std::size_t axis = 0; axis < into.size(); ++axis) {
+            if (into[axis].empty()) {
+                into[axis] = from[axis];
+            } else if (!from[axis].empty() && from[axis] != into[axis]) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     std::vector<ManifestEntry> folded;
     folded.reserve(collected.size());
     for (auto &entry : collected) {
@@ -282,18 +327,32 @@ InterfaceManifest Graph::manifest() {
         }
         ManifestEntry &first = folded.back();
 
-        auto const shape_of = [](ManifestEntry const &e) { return std::tie(e.dtype, e.rank, e.dims, e.dim_symbols, e.spaces, e.scope); };
+        auto const          shape_of    = [](ManifestEntry const &e) { return std::tie(e.dtype, e.rank, e.dims, e.scope); };
         TensorHandle const *lhs         = find_tensor(first.id);
         TensorHandle const *rhs         = find_tensor(entry.id);
         bool const          one_storage = lhs != nullptr && rhs != nullptr && lhs->data_ptr == rhs->data_ptr;
         bool const          none_yet    = lhs != nullptr && rhs != nullptr && lhs->data_ptr == nullptr && rhs->data_ptr == nullptr;
-        if (!(shape_of(first) == shape_of(entry)) || !(one_storage || none_yet)) {
+
+        // Reconciled onto copies, so a refusal leaves the entry it was about to fold into as
+        // it was and the message below describes the two handles rather than a half-merged one.
+        std::vector<std::string> spaces      = first.spaces;
+        std::vector<std::string> dim_symbols = first.dim_symbols;
+        bool const               one_shape =
+            shape_of(first) == shape_of(entry) && reconcile(spaces, entry.spaces) && reconcile(dim_symbols, entry.dim_symbols);
+        if (!one_shape || !(one_storage || none_yet)) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                     "Graph '{}': two interface tensors are both named '{}' (ids {} and {}) and they are not one slot: "
                                     "they describe different shapes or different storage. A manifest binds by name, so give one of "
                                     "them a distinct name",
                                     _name, entry.name, first.id, entry.id);
         }
+        if (first.spaces.empty() && !entry.spaces.empty()) {
+            // The annotation came from the other handle, and so does the statement about where
+            // it came from: an inference is only as good as the declarations behind it.
+            first.spaces_inferred = entry.spaces_inferred;
+        }
+        first.spaces      = std::move(spaces);
+        first.dim_symbols = std::move(dim_symbols);
         // A slot read through one handle and written through the other is read and written.
         if (first.direction != entry.direction) {
             first.direction = ManifestDirection::InOut;
