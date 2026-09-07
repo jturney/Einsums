@@ -175,9 +175,13 @@ auxiliary count from 84 to 141, and every intermediate follows the symbols.
 .. note::
 
    The exact algebra is what crosses a size boundary today. A graph carrying a
-   quadrature binds at the geometry whose orbital energies it was fitted from,
-   because the transform registers those vectors as interface entries with
-   literal extents.
+   quadrature still binds at the geometry whose orbital energies it was fitted
+   from, and the interface is no longer the reason: annotate the energy vectors
+   and their slots carry the dim symbols, whichever of the handles behind a slot
+   the annotation was written on. What is still literal is the quadrature's own
+   working set, the exponential matrices and the scaled integrals the transform
+   declares, so a bind at another size meets them at the extents they were
+   fitted on and is refused there.
 
 Saying what a tensor is
 =======================

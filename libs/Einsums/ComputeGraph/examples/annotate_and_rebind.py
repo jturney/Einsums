@@ -350,10 +350,14 @@ def main():
     print("\n" + "=" * 78)
     print("What does not move yet")
     print("=" * 78)
-    print("A graph carrying a quadrature binds at the geometry whose orbital energies it was\n"
-          "fitted from: the transform registers those vectors as interface entries with literal\n"
-          "extents, so a bind at a larger molecule is refused, naming the axis. What crosses a\n"
-          "size boundary today is the exact algebra, which is the case above.")
+    print("A graph carrying a quadrature still binds at the geometry whose orbital energies it\n"
+          "was fitted from, and the interface is no longer the reason: annotate the energy\n"
+          "vectors and their slots carry the dim symbols, whichever of the handles behind a\n"
+          "slot the annotation was written on. What is still literal is the quadrature's own\n"
+          "working set, the exponential matrices and the scaled integrals the transform\n"
+          "declares, so a bind at a larger molecule meets them at the extents they were fitted\n"
+          "on and is refused there, naming the index. What crosses a size boundary today is\n"
+          "the exact algebra, which is the case above.")
 
 
 if __name__ == "__main__":
