@@ -29,6 +29,7 @@ set(example_programs
     PipelineWorkflow
     SCFSimulation
     StringEinsum
+    TagsAndProviders
     TaskPoolIntegration
     FockBuildTaskPool
     IntegralTransform
@@ -81,8 +82,10 @@ if(EINSUMS_BUILD_PYTHON
   set(_einsums_python_example_preload "${EINSUMS_PYTEST_SANITIZER_PRELOAD}")
 
   set(python_example_scripts
+      annotate_and_rebind.py
       ccsd_tiled.py
       mp2_simulation.py
+      optimizer_tour.py
       scf_simulation.py
   )
   foreach(_script ${python_example_scripts})
