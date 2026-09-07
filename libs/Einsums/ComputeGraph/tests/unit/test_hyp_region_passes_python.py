@@ -1147,6 +1147,7 @@ def _run_chain(prog, seed):
         einsums.einsum("m,n,p,q ; p,q -> m,n", C, M, T)
     graph.annotate_tag(M, _G.ProvenanceTag.make("eri"))
     graph.annotate_dims(M, ["nbf"] * 4)
+    cg.private_space_registry(graph)
     _G.ThcFactorization.register_grid_space(graph)
 
     registry = _G.FactorizationRegistry()
@@ -1251,6 +1252,7 @@ def _run_pair(prog, seed):
         einsums.einsum("m,n,p,q ; p,q,r,s -> m,n,r,s", C, M, N)
     graph.annotate_tag(M, _G.ProvenanceTag.make("eri_left"))
     graph.annotate_tag(N, _G.ProvenanceTag.make("eri_right"))
+    cg.private_space_registry(graph)
     _G.ThcFactorization.register_grid_space(graph)
 
     # One matrix per provider, because a fitting is captured and two providers
@@ -1365,6 +1367,11 @@ def _run_naf(prog, seed, threshold, decaying=False):
     with cg.capture(graph):
         einsums.einsum("Q,m,n ; Q,p,q -> m,n,p,q", C, B, B)
     graph.annotate_tag(B, _G.ProvenanceTag.make("eri"))
+    # A registry of this graph's own. The truncated space's typical extent is DERIVED from the
+    # space it sits inside, so a corpus that declares it with nothing to sit inside and a shard
+    # that declares it under a family are two different spaces of one name, which one registry
+    # rightly refuses. Nothing here saves a graph, so nothing here needs the shared namespace.
+    cg.private_space_registry(graph)
     _G.NaturalAuxiliaryFactorization.register_naf_space(graph, "")
 
     provider = _G.NaturalAuxiliaryFactorization("eri", B, threshold)

@@ -144,6 +144,31 @@ def current_graph():
     return _capture_graph_stack[-1] if _capture_graph_stack else None
 
 
+def private_space_registry(graph):
+    """Give ``graph`` a ``SpaceRegistry`` of its own and return it.
+
+    The default registry is process-global, which is what makes a saved graph's
+    space names resolvable on load and what makes two unrelated callers in one
+    process share a namespace. Sharing is only safe while every caller means
+    the same thing by a name: a registry refuses a second declaration of one
+    name with different content rather than overwriting it, so two programs at
+    two problem sizes registering a space whose typical extent is DERIVED from
+    the space it sits inside are a conflict, not a redeclaration.
+
+    A caller that does not save the graph has no use for the shared namespace
+    and should take one of these instead, which is one line at the top of the
+    program. A caller that does save reads the file back with
+    ``load_graph_into(path, registry)`` against the same registry.
+
+    The binding keeps the registry alive for as long as the graph holds it, so
+    the returned object does not have to be stored to stay valid; it is
+    returned because a caller usually wants to register spaces in it.
+    """
+    registry = _core().SpaceRegistry()
+    graph.set_space_registry(registry)
+    return registry
+
+
 def _resolve_space(registry, space):
     """Turn one entry of an ``annotate`` spaces argument into a ``SpaceId``.
 

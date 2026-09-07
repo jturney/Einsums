@@ -141,6 +141,49 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
 };
 
 /**
+ * @brief Name the fields two same-named spaces disagree on, with both values.
+ * @param[in] held What the registry already holds.
+ * @param[in] offered What the second declaration asked for.
+ * @return A comma-separated list such as @c "typical extent 4050 against 0", never empty for two
+ *         spaces that compare unequal.
+ *
+ * A conflict is a caller error, and the caller has to be able to see WHICH declaration it is
+ * making twice. A derived typical extent is the case that matters: two graphs at two problem sizes
+ * declaring the same truncated space produce the same name carrying two different numbers, and a
+ * message that says only "different content" leaves the reader to guess which of the two callers
+ * it is talking about.
+ */
+[[nodiscard]] inline std::string describe_space_conflict(IndexSpace const &held, IndexSpace const &offered) {
+    auto number = [](double value) {
+        std::string text = std::to_string(value);
+        if (text.find('.') != std::string::npos) {
+            text.erase(text.find_last_not_of('0') + 1);
+            if (!text.empty() && text.back() == '.') {
+                text.pop_back();
+            }
+        }
+        return text;
+    };
+
+    std::string differences;
+    auto        add = [&differences](std::string_view field, std::string const &held_value, std::string const &offered_value) {
+        if (held_value == offered_value) {
+            return;
+        }
+        if (!differences.empty()) {
+            differences += ", ";
+        }
+        differences += std::string(field) + " " + held_value + " against " + offered_value;
+    };
+
+    add("scale symbol", "'" + held.scale_symbol + "'", "'" + offered.scale_symbol + "'");
+    add("dim symbol", "'" + held.dim_symbol + "'", "'" + offered.dim_symbol + "'");
+    add("typical extent", number(held.typical_extent), number(offered.typical_extent));
+    add("growth exponent", number(held.growth.exponent), number(offered.growth.exponent));
+    return differences;
+}
+
+/**
  * @brief Build an @ref IndexSpace from its parts.
  * @param[in] name Human-readable name, unique within a registry.
  * @param[in] scale_symbol Letter this space contributes to a symbolic cost polynomial.
@@ -341,7 +384,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE SpaceRegi
      * @param[in] space The space to register. Its name must not be empty.
      * @return The id of the registered space.
      * @throws std::invalid_argument if the name is empty, or if a space of that name is already
-     *         registered with different content.
+     *         registered with different content. The message names every field the two
+     *         declarations disagree on and both values, through @ref describe_space_conflict.
+     *
+     * A conflicting redeclaration is never absorbed by overwriting what is held. Two callers that
+     * mean two different spaces need two registries, which is what @ref Graph::set_space_registry
+     * gives a graph, and two callers that mean the same space have to agree on its content.
      */
     APIARY_EXPOSE SpaceId register_space(IndexSpace space) {
         std::scoped_lock const guard(_mutex);
@@ -355,7 +403,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE SpaceRegi
             IndexSpace const &held = _spaces[existing->second];
             if (!(held == space)) {
                 throw std::invalid_argument("SpaceRegistry::register_space: space '" + space.name +
-                                            "' is already registered with different content");
+                                            "' is already registered with different content: " + describe_space_conflict(held, space) +
+                                            ". One registry holds one declaration per name, so declare it once, or give the second "
+                                            "caller a registry of its own");
             }
             return SpaceId{existing->second};
         }

@@ -48,6 +48,24 @@ TEST_CASE("SpaceRegistry - registration and lookup", "[ComputeGraph][Spaces]") {
     // An empty name is rejected outright.
     CHECK_THROWS_AS(registry.register_space(make_space("", "q")), std::invalid_argument);
 
+    // The refusal NAMES the fields that disagree and both values. A derived typical extent is
+    // what makes this matter: two callers at two problem sizes declare one name carrying two
+    // numbers, and a message that says only "different content" leaves them guessing which of
+    // the two declarations it is talking about.
+    try {
+        registry.register_space(make_space("occ", "p", 12.0, cg::GrowthClass::constant()));
+        FAIL("a conflicting redeclaration is expected to throw");
+    } catch (std::invalid_argument const &error) {
+        std::string const message{error.what()};
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("scale symbol 'o' against 'p'"));
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("typical extent 10 against 12"));
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("growth exponent 1 against 0"));
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("registry of its own"));
+    }
+    // Refused, never absorbed by overwriting: what is held is still the first declaration.
+    CHECK(registry.space(occ).typical_extent == 10.0);
+    CHECK(registry.space(occ).scale_symbol == "o");
+
     // Lookup by name.
     auto const found = registry.find("virt");
     REQUIRE(found.has_value());

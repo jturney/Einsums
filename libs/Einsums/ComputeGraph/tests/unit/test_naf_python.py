@@ -337,6 +337,46 @@ def test_the_truncated_space_is_declared_inside_the_auxiliary_one(water):
     assert bare_registry.space(bare_registry.find("naf")).typical_extent == 0.0
 
 
+def test_two_families_declaring_the_truncated_space_need_two_registries():
+    """A derived extent turns one name into two spaces, and the registry says so.
+
+    ``register_naf_space`` reads the typical extent off the space the truncated
+    one sits inside, so the same name carries a different number for every
+    family a process declares. A registry is a namespace and holds one
+    declaration per name: the second one is refused rather than absorbed, and
+    the message names the field and BOTH values, because a caller that cannot
+    see which two declarations collided cannot tell which of them to move.
+
+    The answer is a registry per caller rather than a looser registry. The same
+    two declarations against two private registries both stand, each carrying
+    its own extent, and that is the one line a program that does not save a
+    graph should be written with.
+    """
+    shared = cg.Graph("naf_shared_registry")
+    registry = cg.private_space_registry(shared)
+    registry.register_space(cg.index_space("aux_small", "x", 100.0, cg.GrowthClass.linear(), "naux"))
+    registry.register_space(cg.index_space("aux_large", "x", 900.0, cg.GrowthClass.linear(), "naux"))
+    _G.NaturalAuxiliaryFactorization.register_naf_space(shared, "aux_small")
+
+    with pytest.raises(ValueError) as conflict:
+        _G.NaturalAuxiliaryFactorization.register_naf_space(shared, "aux_large")
+    message = str(conflict.value)
+    assert "typical extent 50 against 450" in message, message
+    assert "registry of its own" in message, message
+    # Refused, never overwritten: what the registry holds is still the first claim.
+    assert registry.space(registry.find("naf")).typical_extent == pytest.approx(50.0)
+
+    # The same two declarations, one registry each, both stand.
+    extents = []
+    for outer, extent in (("aux", 100.0), ("aux", 900.0)):
+        graph = cg.Graph("naf_own_registry")
+        own = cg.private_space_registry(graph)
+        own.register_space(cg.index_space(outer, "x", extent, cg.GrowthClass.linear(), "naux"))
+        truncated = _G.NaturalAuxiliaryFactorization.register_naf_space(graph, outer)
+        extents.append(own.space(truncated).typical_extent)
+    assert extents == [pytest.approx(50.0), pytest.approx(450.0)]
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # What it declines
 # ──────────────────────────────────────────────────────────────────────────
