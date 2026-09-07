@@ -179,6 +179,13 @@ std::optional<Modelled> model_statement(TensorExpr const &expr, ExprStatement co
         return std::nullopt;
     }
 
+    // The GROUPED element-wise kinds are deliberately not modelled as products, which is where
+    // the grouped family departs from the dense one. A dense direct product enters a term because
+    // an einsum whose output carries every letter of both operands is exactly it, and the emitted
+    // node is that einsum. There is no grouped einsum: a term carrying a member letter lowers onto
+    // a grouped batched GEMM or a grouped reduction, and neither computes a Hadamard product. Its
+    // per-member prefactors would have nowhere to go besides, since a grouped batch carries one
+    // prefactor for the whole call.
     if (value.element_kind == OpKind::DirectProduct) {
         auto const *scalars = std::get_if<ElementwiseBinaryDescriptor>(&value.descriptor);
         if (scalars == nullptr) {
@@ -262,7 +269,7 @@ std::optional<std::pair<PairKey, PairSite>> describe_pair(Term const &term, std:
         }
         return letters;
     };
-    if (std::make_tuple(fj.tensor, fj.conjugate, pattern(fj)) < std::make_tuple(fi.tensor, fi.conjugate, pattern(fi))) {
+    if (std::make_tuple(fj.key(), fj.conjugate, pattern(fj)) < std::make_tuple(fi.key(), fi.conjugate, pattern(fi))) {
         std::swap(left, right);
     }
 
@@ -315,9 +322,13 @@ std::optional<std::pair<PairKey, PairSite>> describe_pair(Term const &term, std:
         return std::nullopt; // a scalar intermediate; nothing here emits one
     }
 
+    // The IDENTITY of each operand, which for a ragged factor is its member list
+    // rather than its tensor id: every ragged factor's id is the same empty one,
+    // so a key built from that alone would make two unrelated families' pairs
+    // look like one candidate.
     PairKey key;
-    key.text = fmt::format("{}{}:{}|{}{}:{}->{}", a.tensor, a.conjugate ? "*" : "", a_pattern, b.tensor, b.conjugate ? "*" : "", b_pattern,
-                           out_pattern);
+    key.text = fmt::format("{}{}:{}|{}{}:{}->{}", fmt::join(a.key(), "."), a.conjugate ? "*" : "", a_pattern, fmt::join(b.key(), "."),
+                           b.conjugate ? "*" : "", b_pattern, out_pattern);
     return std::make_pair(key, PairSite{.term = term_index, .left = left, .right = right, .result = std::move(result)});
 }
 
@@ -376,9 +387,17 @@ bool MultiTermFactorization::applicable(Graph const &graph) const {
     // Every kind the flattener reads as a product, not the contractions alone: an energy written
     // as one contraction, one direct product and one dot has a nine-factor product in it and a
     // gate counting einsums would have declined before looking.
+    // The grouped batch and the grouped reduction count too, and for the same reason: a grouped
+    // node is one operation over a family of members, which raises to a contraction carrying one
+    // more free letter, and a pair body made entirely of them holds nothing else for this gate to
+    // find.
     std::size_t products = 0;
     for (auto const &node : graph.nodes()) {
-        products += node.kind == OpKind::Einsum || node.kind == OpKind::DirectProduct || node.kind == OpKind::Dot ? 1 : 0;
+        products += node.kind == OpKind::Einsum || node.kind == OpKind::DirectProduct || node.kind == OpKind::Dot ||
+                            node.kind == OpKind::GroupedBatchedGemm || node.kind == OpKind::GroupedDot ||
+                            node.kind == OpKind::GroupedDirectProduct
+                        ? 1
+                        : 0;
     }
     if (products < 2) {
         note_skip("fewer than two products to search over", fmt::format("{} product(s)", products));
@@ -449,7 +468,17 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     ComparisonContext ctx;
     ctx.registry = &graph.space_registry();
 
-    std::unordered_set<TensorId> dissolvable(region.internal.begin(), region.internal.end());
+    // A GROUPED statement writes a member list, and it is dissolvable exactly when
+    // every one of its members is: half a family dissolved would leave the other
+    // half written by a node the rewrite had just removed.
+    std::unordered_set<TensorId> internal(region.internal.begin(), region.internal.end());
+    std::set<ValueKey>           dissolvable;
+    for (auto const &statement : expr.statements) {
+        auto const key = value_key(statement);
+        if (std::ranges::all_of(key, [&internal](TensorId id) { return internal.count(id) != 0; })) {
+            dissolvable.insert(key);
+        }
+    }
 
     // ── Flatten ────────────────────────────────────────────────────────────────────────────
     //
@@ -457,18 +486,23 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     // an artifact of how the equations were written down, not of what has to be computed, so a
     // search that respected them would be searching the author's bracketing rather than the
     // problem's.
-    std::unordered_map<TensorId, std::size_t>              writer;  // tensor -> defining statement
-    std::unordered_map<TensorId, std::vector<std::size_t>> readers; // tensor -> statements reading it
+    std::map<ValueKey, std::size_t>              writer;  // value -> defining statement
+    std::map<ValueKey, std::vector<std::size_t>> readers; // value -> statements reading it
     for (std::size_t s = 0; s < expr.statements.size(); s++) {
         auto const &statement = expr.statements[s];
-        if (auto const [it, fresh] = writer.try_emplace(statement.target, s); !fresh) {
-            writer[statement.target] = expr.statements.size(); // more than one writer: never inline
+        auto const  target    = value_key(statement);
+        if (auto const [it, fresh] = writer.try_emplace(target, s); !fresh) {
+            writer[target] = expr.statements.size(); // more than one writer: never inline
         }
         auto const &term = expr.at(statement.value);
         for (auto const operand : term.operands) {
             auto const &leaf = expr.at(operand);
-            if (leaf.kind == TermKind::Leaf && (readers[leaf.tensor].empty() || readers[leaf.tensor].back() != s)) {
-                readers[leaf.tensor].push_back(s);
+            if (leaf.kind != TermKind::Leaf) {
+                continue;
+            }
+            auto const source = value_key(leaf);
+            if (readers[source].empty() || readers[source].back() != s) {
+                readers[source].push_back(s);
             }
         }
     }
@@ -477,10 +511,11 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     // reads it.
     auto foldable = [&](std::size_t s) -> bool {
         auto const &statement = expr.statements[s];
-        if (dissolvable.count(statement.target) == 0) {
+        auto const  target    = value_key(statement);
+        if (dissolvable.count(target) == 0) {
             return false;
         }
-        auto const own = writer.find(statement.target);
+        auto const own = writer.find(target);
         if (own == writer.end() || own->second != s) {
             return false; // written more than once, or not by itself
         }
@@ -499,14 +534,14 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     // operand something in between overwrites would be read at its new value instead of the one
     // the captured bracketing saw. Program order is what a region is in, and this is what says
     // which of its reads may travel.
-    std::vector<std::set<TensorId>> cone_reads(expr.statements.size());
+    std::vector<std::set<ValueKey>> cone_reads(expr.statements.size());
     for (std::size_t s = 0; s < expr.statements.size(); s++) {
         auto const &statement = expr.statements[s];
         if (statement.value == invalid_term || statement.value >= expr.terms.size()) {
             continue;
         }
         for (auto const operand : expr.at(statement.value).operands) {
-            TensorId const id = expr.at(operand).tensor;
+            ValueKey const id = value_key(expr.at(operand));
             cone_reads[s].insert(id);
             auto const own = writer.find(id);
             if (own != writer.end() && own->second < s && foldable(own->second)) {
@@ -532,7 +567,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         if (!foldable(back)) {
             continue;
         }
-        auto const it = readers.find(expr.statements[back].target);
+        auto const it = readers.find(value_key(expr.statements[back]));
         if (it == readers.end() || it->second.empty()) {
             continue;
         }
@@ -565,7 +600,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         bool travels = true;
         for (auto const site : sites) {
             for (std::size_t between = back + 1; between < site && travels; between++) {
-                travels = cone_reads[back].count(expr.statements[between].target) == 0;
+                travels = cone_reads[back].count(value_key(expr.statements[between])) == 0;
             }
         }
         if (!travels) {
@@ -586,7 +621,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         }
     }
 
-    auto inlinable = [&](TensorId id, std::size_t root) -> std::optional<std::size_t> {
+    auto inlinable = [&](ValueKey const &id, std::size_t root) -> std::optional<std::size_t> {
         auto const it = writer.find(id);
         if (it == writer.end() || it->second >= expr.statements.size() || it->second >= root) {
             return std::nullopt;
@@ -606,7 +641,38 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     // rung can only match a variable against itself.
     std::unordered_map<std::string, std::string> renamed_from;
 
+    // What a RAGGED letter measures. The member letter's extent is the family's
+    // member count; every other letter a family introduces has one extent per
+    // member, so the table carries the whole column and the cost model reads the
+    // typical one off it. Below the scale rung, exactly where a bound extent for
+    // an ordinary letter sits.
+    std::map<std::string, std::size_t>              ragged_typical;
+    std::map<std::string, std::vector<std::size_t>> ragged_members;
+    for (auto const &family : expr.families) {
+        ragged_typical[family.letter] = family.members;
+        for (auto const &[letter, values] : family.extents) {
+            ragged_typical[letter] = family.typical_extent(letter);
+            ragged_members[letter] = values;
+        }
+    }
+
     auto observe_factor = [&](Factor const &factor) -> bool {
+        if (factor.ragged()) {
+            for (auto const &index : factor.indices) {
+                auto const        origin = renamed_from.find(index.letter);
+                std::string const source = origin == renamed_from.end() ? index.letter : origin->second;
+                auto const        hit    = ragged_typical.find(source);
+                if (hit == ragged_typical.end()) {
+                    return false;
+                }
+                if (origin == renamed_from.end()) {
+                    table.observe(index, hit->second);
+                } else {
+                    table.observe_renamed(index, hit->second, origin->second);
+                }
+            }
+            return true;
+        }
         TensorHandle const *handle = graph.find_tensor(factor.tensor);
         if (handle == nullptr || handle->dims.size() != factor.indices.size()) {
             return false;
@@ -655,9 +721,9 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         // A conjugated leaf is never folded. Conjugation does distribute over a product, but
         // carrying the flag onto every factor is a rewrite of its own and declining costs one
         // opportunity rather than risking a wrong sign.
-        auto const definition = depth < 16 && !conjugate ? inlinable(leaf.tensor, root) : std::nullopt;
+        auto const definition = depth < 16 && !conjugate ? inlinable(value_key(leaf), root) : std::nullopt;
         if (!definition.has_value()) {
-            Factor factor{.tensor = leaf.tensor, .indices = as_seen, .conjugate = conjugate};
+            Factor factor{.tensor = leaf.tensor, .indices = as_seen, .conjugate = conjugate, .members = leaf.members};
             if (!observe_factor(factor)) {
                 return false;
             }
@@ -965,6 +1031,10 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         Factor                 left;
         Factor                 right;
         std::vector<ExprIndex> result;
+        /// The per-member destinations when the shared value is a grouped one,
+        /// empty otherwise. A shared intermediate carrying a member letter IS a
+        /// grouped tensor and is allocated per member from the extent table.
+        std::vector<TensorId> members;
     };
     std::vector<Shared> shared;
     /// What the committed shared intermediates themselves cost, which the per-term plans do not
@@ -1008,7 +1078,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         if (retained[site.term] == 0 || !term.searchable) {
             return std::nullopt;
         }
-        auto const own = writer.find(statement.target);
+        auto const own = writer.find(value_key(statement));
         if (own == writer.end() || own->second != term.statement) {
             return std::nullopt;
         }
@@ -1034,6 +1104,56 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     // Declare the intermediate one committed pair needs and rewrite its occurrences onto it. The
     // search reaches this after picking a winner and a replay reaches it straight away, which is
     // what makes the two produce the same graph rather than two graphs that agree on a test.
+    // ── Declaring a grouped intermediate ───────────────────────────────────────────────────
+    //
+    // An intermediate carrying a member letter is a grouped tensor: one buffer per
+    // member, sized from the family's own per-instance extents rather than from the
+    // typical one the cost model reads. The member letter is not an axis of any
+    // member's buffer, so it is skipped; what is left is that member's shape.
+    std::set<std::string> member_letters;
+    for (auto const &family : expr.families) {
+        member_letters.insert(family.letter);
+    }
+    auto origin_letter = [&](std::string const &letter) {
+        auto const hit = renamed_from.find(letter);
+        return hit == renamed_from.end() ? letter : hit->second;
+    };
+    auto is_member_letter = [&](std::string const &letter) { return member_letters.count(origin_letter(letter)) != 0; };
+    auto per_member       = [&](std::string const &letter) -> std::vector<std::size_t> const       *{
+        auto const hit = ragged_members.find(origin_letter(letter));
+        return hit == ragged_members.end() ? nullptr : &hit->second;
+    };
+    auto declare_ragged = [&](std::vector<ExprIndex> const &axes, std::string const &stem, packed_gemm::ScalarType dtype,
+                              std::size_t members) -> std::optional<std::vector<TensorId>> {
+        std::vector<TensorId> ids;
+        ids.reserve(members);
+        for (std::size_t member = 0; member < members; member++) {
+            std::vector<std::size_t> dims;
+            for (auto const &index : axes) {
+                if (is_member_letter(index.letter)) {
+                    continue;
+                }
+                auto const *values = per_member(index.letter);
+                if (values == nullptr || member >= values->size()) {
+                    return std::nullopt;
+                }
+                dims.push_back((*values)[member]);
+            }
+            if (dims.empty()) {
+                return std::nullopt;
+            }
+            TensorId const id = detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
+                auto &tensor = graph.declare_runtime_tensor<T>(fmt::format("{}_m{}", stem, member), dims, /*intermediate=*/true);
+                return graph.find_tensor_id_by_ptr(&tensor);
+            });
+            if (id == 0) {
+                return std::nullopt;
+            }
+            ids.push_back(id);
+        }
+        return ids;
+    };
+
     auto commit_pair = [&](std::vector<PairSite> const &sites, std::string_view label) -> bool {
         auto const  &first = sites.front();
         Factor const left  = terms[first.term].factors[first.left];
@@ -1095,28 +1215,41 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             return false;
         }
 
-        TensorHandle const *model = graph.find_tensor(left.tensor);
+        TensorHandle const *model = graph.find_tensor(left.ragged() ? left.members.front() : left.tensor);
         if (model == nullptr) {
             return false;
         }
         // The tensor is declared now, because a committed intermediate is one this pass will
         // emit, and a declaration for a candidate it merely considered would leave the graph
         // holding shells nothing writes.
-        TensorId const shared_id = detail::dispatch_scalar_type(model->dtype, [&]<typename T>(T /*tag*/) {
+        //
+        // A shared value carrying a member letter is a GROUPED tensor: one buffer per member,
+        // sized from the family's per-instance extents, since the typical extent the cost model
+        // ranks with is not a shape anything runs at.
+        std::vector<TensorId> shared_members;
+        if (left.ragged()) {
+            auto declared = declare_ragged(first.result, fmt::format("mtf_shared{}", shared.size()), model->dtype, left.members.size());
+            if (!declared) {
+                note_skip("a shared grouped candidate has an axis with no per-member extent", std::string{label});
+                return false;
+            }
+            shared_members = std::move(*declared);
+        }
+        TensorId const shared_id = left.ragged() ? TensorId{} : detail::dispatch_scalar_type(model->dtype, [&]<typename T>(T /*tag*/) {
             auto &tensor = graph.declare_runtime_tensor<T>(fmt::format("mtf_shared{}", shared.size()), dims, /*intermediate=*/true);
             return graph.find_tensor_id_by_ptr(&tensor);
         });
-        if (shared_id == 0) {
+        if (!left.ragged() && shared_id == 0) {
             return false;
         }
         // EVERY axis or none. `annotate_spaces` rightly refuses a hole in an annotation, so an
         // "any axis is valid" guard throws on the mixed case, which is what an intermediate over
         // one annotated space and one unannotated letter is; a decoupled energy has exactly that
         // shape as soon as its quadrature index is a space and something else is not.
-        if (std::ranges::all_of(spaces, [](SpaceId id) { return id.valid(); })) {
+        if (!left.ragged() && std::ranges::all_of(spaces, [](SpaceId id) { return id.valid(); })) {
             graph.annotate_spaces(shared_id, spaces);
         }
-        if (every_axis_symbolic) {
+        if (!left.ragged() && every_axis_symbolic) {
             // Only when EVERY axis has a symbol: a partial annotation is what makes a bind move
             // some extents and not others, which is worse than none at all.
             graph.annotate_dims(shared_id, symbols);
@@ -1127,7 +1260,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         for (auto const &site : sites) {
             record.push_back({site.term, site.left, site.right});
             Term               &term = terms[site.term];
-            Factor              placeholder{.tensor = shared_id, .indices = site.result, .conjugate = false};
+            Factor              placeholder{.tensor = shared_id, .indices = site.result, .conjugate = false, .members = shared_members};
             std::vector<Factor> kept;
             kept.reserve(term.factors.size() - 1);
             for (std::size_t f = 0; f < term.factors.size(); f++) {
@@ -1139,7 +1272,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             term.factors = std::move(kept);
         }
         commit_log.push_back(std::move(record));
-        shared.push_back(Shared{.tensor = shared_id, .left = left, .right = right, .result = first.result});
+        shared.push_back(Shared{.tensor = shared_id, .left = left, .right = right, .result = first.result, .members = shared_members});
         shared_total = add_cost(shared_total, contraction_cost(letters_of(left), letters_of(right), letters_of(first.result), table));
         _num_shared++;
         report(2, fmt::format("share {} across {} term(s)", label, sites.size()));
@@ -1405,15 +1538,35 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         return false;
     }
 
-    auto leaf_for = [&](TensorId id, std::string const &name) {
+    auto leaf_for = [&](Factor const &factor, std::string const &name) {
         ExprTerm leaf;
-        leaf.kind   = TermKind::Leaf;
-        leaf.tensor = id;
-        leaf.name   = name;
+        leaf.kind    = TermKind::Leaf;
+        leaf.tensor  = factor.tensor;
+        leaf.members = factor.members;
+        leaf.name    = name;
         return expr.add(std::move(leaf));
     };
 
+    // Which family a letter belongs to, so an emitted statement carrying a member letter names
+    // the family whose extents describe it. The flattener maps a definition's output letters onto
+    // the consumer's positionally, so a member letter is never alpha-renamed; resolving through
+    // the rename table anyway costs nothing and makes that an observation rather than a premise.
+    std::map<std::string, FamilyId> family_of_letter;
+    for (FamilyId id = 0; id < expr.families.size(); id++) {
+        family_of_letter.emplace(expr.families[id].letter, id);
+    }
+    auto family_for = [&](std::vector<ExprIndex> const &indices) {
+        for (auto const &index : indices) {
+            auto const hit = family_of_letter.find(origin_letter(index.letter));
+            if (hit != family_of_letter.end()) {
+                return hit->second;
+            }
+        }
+        return invalid_family;
+    };
+
     std::vector<ExprStatement> emitted;
+    bool                       ok_to_emit = true;
     emitted.reserve(expr.statements.size() + shared.size() + terms.size());
     // Unique across the REGIONS of one graph as well as across graphs. The counter restarts per
     // region and this pass descends into loop bodies, so a program with two regions would
@@ -1442,13 +1595,13 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         }
     }
 
-    auto emit_contraction = [&](Factor const &a, Factor const &b, TensorId target, std::string const &target_name,
-                                std::vector<ExprIndex> const &target_indices, PrefactorScalar target_prefactor, PrefactorScalar factor,
-                                std::string const &label) {
+    auto emit_contraction = [&](Factor const &a, Factor const &b, TensorId target, std::vector<TensorId> const &targets,
+                                std::string const &target_name, std::vector<ExprIndex> const &target_indices,
+                                PrefactorScalar target_prefactor, PrefactorScalar factor, std::string const &label) {
         ExprTerm term;
         term.kind            = TermKind::Contraction;
         term.indices         = target_indices;
-        term.operands        = {leaf_for(a.tensor, {}), leaf_for(b.tensor, {})};
+        term.operands        = {leaf_for(a, {}), leaf_for(b, {})};
         term.operand_indices = {a.indices, b.indices};
         term.conjugate       = {a.conjugate, b.conjugate};
         term.factor          = factor;
@@ -1463,23 +1616,75 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
 
         ExprStatement statement;
         statement.target           = target;
+        statement.targets          = targets;
+        statement.family           = targets.empty() ? invalid_family : family_for(target_indices);
         statement.target_name      = target_name;
         statement.target_indices   = target_indices;
         statement.target_prefactor = target_prefactor;
         statement.value            = expr.add(std::move(term));
-        statement.origin_kind      = OpKind::Einsum;
-        statement.origin_label     = label;
+        std::size_t free_axes      = 0;
+        for (auto const &index : target_indices) {
+            free_axes += is_member_letter(index.letter) ? 0 : 1;
+        }
+        statement.origin_kind  = targets.empty() ? OpKind::Einsum : (free_axes == 0 ? OpKind::GroupedDot : OpKind::GroupedBatchedGemm);
+        statement.origin_label = label;
         emitted.push_back(std::move(statement));
+    };
+
+    // A grouped term lowers onto a grouped kind or it is declined; it is NEVER emitted as a
+    // per-member loop of ordinary nodes, because that loop is what the grouped family exists to
+    // avoid. Two axes beside the member letter is a batched matrix product and none is a batched
+    // reduction; anything else maps onto no grouped kind and the tree that produced it is refused
+    // here, where the reason can name the shape, rather than at the lowering.
+    auto grouped_shape_lowers = [&](Factor const &a, Factor const &b, std::vector<ExprIndex> const &indices) {
+        auto const free_of = [&](std::vector<ExprIndex> const &list) {
+            std::vector<std::string> out;
+            for (auto const &index : list) {
+                if (!is_member_letter(index.letter)) {
+                    out.push_back(index.letter);
+                }
+            }
+            return out;
+        };
+        auto const out   = free_of(indices);
+        auto const left  = free_of(a.indices);
+        auto const right = free_of(b.indices);
+        // A batched reduction sums everything but the member letter, and its two operands run
+        // over one index list; a batched matrix product has one free axis from each operand and
+        // one link they share.
+        if (out.empty()) {
+            return left == right && !left.empty();
+        }
+        if (out.size() != 2 || left.size() != 2 || right.size() != 2) {
+            return false;
+        }
+        std::set<std::string> const in_left(left.begin(), left.end());
+        std::set<std::string> const in_right(right.begin(), right.end());
+        std::size_t                 link = 0;
+        for (auto const &letter : left) {
+            link += in_right.count(letter) != 0 && std::ranges::find(out, letter) == out.end() ? 1 : 0;
+        }
+        // Either assignment of the two free axes to the two operands: the lowering reads the
+        // roles off the letters and reverses the pair where it has to, so a search that settled
+        // on the other order is a matrix product all the same.
+        return link == 1 &&
+               ((in_left.count(out[0]) != 0 && in_right.count(out[1]) != 0) || (in_right.count(out[0]) != 0 && in_left.count(out[1]) != 0));
     };
 
     // The shared intermediates come first, in commit order, which is also dependency order: a
     // candidate over an already-shared factor could only be found after that one was committed.
     for (auto const &entry : shared) {
-        emit_contraction(entry.left, entry.right, entry.tensor, {}, entry.result, PrefactorScalar{double{0}}, PrefactorScalar{double{1}},
-                         fmt::format("mtf shared {}", entry.tensor));
+        if (!entry.members.empty() && !grouped_shape_lowers(entry.left, entry.right, entry.result)) {
+            note_skip("a shared grouped candidate has a shape that maps onto no grouped kind",
+                      fmt::format("{} axes beside the member letter", entry.result.size() - 1));
+            ok_to_emit = false;
+            break;
+        }
+        emit_contraction(entry.left, entry.right, entry.tensor, entry.members, {}, entry.result, PrefactorScalar{double{0}},
+                         PrefactorScalar{double{1}}, fmt::format("mtf shared {}", entry.tensor));
     }
 
-    bool ok = true;
+    bool ok = ok_to_emit;
     for (std::size_t t = 0; t < terms.size() && ok; t++) {
         auto const &statement = expr.statements[terms[t].statement];
         if (folded.count(t) != 0) {
@@ -1534,12 +1739,18 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             }
 
             if (mask == full) {
+                // The outermost combine of a grouped term is gated too: re-bracketing changes what
+                // its two operands are, so a family that raised as a batched matrix product can
+                // reach this having become a shape no grouped kind computes.
+                if (!statement.targets.empty() && !grouped_shape_lowers(*left, *right, term.output)) {
+                    return std::nullopt;
+                }
                 // The MODELLED output, not the statement's own index list: a dot writes a scalar
                 // and the tensor holding it has an axis of its own, which is not a letter of this
                 // product and would name one the operands already use for something else.
-                emit_contraction(*left, *right, statement.target, statement.target_name, term.output, statement.target_prefactor,
-                                 term.factor, statement.origin_label);
-                return Factor{.tensor = statement.target, .indices = term.output, .conjugate = false};
+                emit_contraction(*left, *right, statement.target, statement.targets, statement.target_name, term.output,
+                                 statement.target_prefactor, term.factor, statement.origin_label);
+                return Factor{.tensor = statement.target, .indices = term.output, .conjugate = false, .members = statement.targets};
             }
 
             std::vector<std::size_t> dims;
@@ -1556,9 +1767,22 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
                 // capture is annotated too.
                 spaces.push_back(index.space.valid() ? index.space : table.space_for(index.letter));
             }
-            TensorHandle const *model = graph.find_tensor(left->tensor);
+            TensorHandle const *model = graph.find_tensor(left->ragged() ? left->members.front() : left->tensor);
             if (model == nullptr || dims.empty()) {
                 return std::nullopt;
+            }
+            if (left->ragged()) {
+                if (!grouped_shape_lowers(*left, *right, axes)) {
+                    return std::nullopt;
+                }
+                auto declared =
+                    declare_ragged(axes, fmt::format("{}_mtf_t{}", scratch_stem, scratch_index++), model->dtype, left->members.size());
+                if (!declared) {
+                    return std::nullopt;
+                }
+                emit_contraction(*left, *right, TensorId{}, *declared, {}, axes, PrefactorScalar{double{0}}, PrefactorScalar{double{1}},
+                                 fmt::format("mtf grouped t{}", scratch_index));
+                return Factor{.tensor = TensorId{}, .indices = axes, .conjugate = false, .members = std::move(*declared)};
             }
             TensorId const scratch = detail::dispatch_scalar_type(model->dtype, [&]<typename T>(T /*tag*/) {
                 // Named after the graph it is declared in. This pass descends into loop bodies,
@@ -1576,7 +1800,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             if (std::ranges::all_of(spaces, [](SpaceId id) { return id.valid(); })) {
                 graph.annotate_spaces(scratch, spaces);
             }
-            emit_contraction(*left, *right, scratch, {}, axes, PrefactorScalar{double{0}}, PrefactorScalar{double{1}},
+            emit_contraction(*left, *right, scratch, {}, {}, axes, PrefactorScalar{double{0}}, PrefactorScalar{double{1}},
                              fmt::format("mtf {}", scratch));
             return Factor{.tensor = scratch, .indices = axes, .conjugate = false};
         };

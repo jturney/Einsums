@@ -1015,11 +1015,9 @@ RaiseFailure lower_refusal(ExprStatement const &statement, std::string reason, s
 /// rewrite that changed a member's extents emit a group table that describes
 /// what it actually wrote rather than what the capture happened to hold.
 expected<Node, RaiseFailure> lower_grouped_gemm(Graph &graph, TensorExpr const &expr, ExprStatement const &statement) {
-    auto const &term   = expr.at(statement.value);
-    auto const &a_leaf = expr.at(term.operands[0]);
-    auto const &b_leaf = expr.at(term.operands[1]);
-    auto const  count  = statement.targets.size();
-    if (a_leaf.members.size() != count || b_leaf.members.size() != count) {
+    auto const &term  = expr.at(statement.value);
+    auto const  count = statement.targets.size();
+    if (expr.at(term.operands[0]).members.size() != count || expr.at(term.operands[1]).members.size() != count) {
         return unexpected(lower_refusal(statement, "a grouped term's operand lists disagree on their member count"));
     }
     if (term.operand_indices.size() != 2 || term.operand_indices[0].size() != 3 || term.operand_indices[1].size() != 3) {
@@ -1030,8 +1028,17 @@ expected<Node, RaiseFailure> lower_grouped_gemm(Graph &graph, TensorExpr const &
     std::string const &mem = statement.target_indices[0].letter;
     std::string const &row = statement.target_indices[1].letter;
     std::string const &col = statement.target_indices[2].letter;
-    auto const        &a   = term.operand_indices[0];
-    auto const        &b   = term.operand_indices[1];
+    // A contraction's operands are unordered and a GEMM's are not: the first is
+    // what contributes the destination's ROWS. A rewrite hands them over in
+    // whatever order its search settled on, so the roles are read off the
+    // letters here rather than assumed from the positions. Reversing the pair
+    // is the whole of what that costs, since C = A B and C = B A over the same
+    // letters are the same arithmetic read from the other side.
+    bool const  flip   = term.operand_indices[0][1].letter != row && term.operand_indices[0][2].letter != row;
+    auto const &a      = term.operand_indices[flip ? 1 : 0];
+    auto const &b      = term.operand_indices[flip ? 0 : 1];
+    auto const &a_leaf = expr.at(term.operands[flip ? 1 : 0]);
+    auto const &b_leaf = expr.at(term.operands[flip ? 0 : 1]);
     if (a[0].letter != mem || b[0].letter != mem) {
         return unexpected(lower_refusal(statement, "a grouped term's shape maps onto no grouped kind",
                                         "the member letter is not outermost on every operand"));
@@ -1053,8 +1060,8 @@ expected<Node, RaiseFailure> lower_grouped_gemm(Graph &graph, TensorExpr const &
     }
     bool const trans_a = a[1].letter == link;
     bool const trans_b = b[1].letter == col;
-    bool const conj_a  = !term.conjugate.empty() && term.conjugate[0];
-    bool const conj_b  = term.conjugate.size() > 1 && term.conjugate[1];
+    bool const conj_a  = term.conjugate.size() > (flip ? 1U : 0U) && term.conjugate[flip ? 1 : 0];
+    bool const conj_b  = term.conjugate.size() > (flip ? 0U : 1U) && term.conjugate[flip ? 0 : 1];
 
     // Shape keys read off the live operands, then grouped by first appearance.
     // Applied to a list the capture already flattened this is the identity,

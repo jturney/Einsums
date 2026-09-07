@@ -395,6 +395,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return Two.
     [[nodiscard]] std::size_t min_region_nodes() const override { return 2; }
 
+    /// @copydoc RegionRewrite::raises_grouped
+    /// True. A grouped node is one operation over a family of members, which is a contraction
+    /// with one more free letter, and the residual terms of one pair body are several products
+    /// over the same per-pair operands. This pass reads a ragged leaf through its member list and
+    /// declares a shared intermediate carrying a member letter per member.
+    [[nodiscard]] bool raises_grouped() const override { return true; }
+
   private:
     /// @brief A cached plan's identity: which graph, which region of it, under which caps.
     ///

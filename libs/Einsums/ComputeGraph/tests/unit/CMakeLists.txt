@@ -192,6 +192,7 @@ set(ComputeGraphTests
     test_tier_opportunities_python.py
     test_pass_operand_lifetime_after_rewrite_python.py
     test_factorization_python.py
+    test_grouped_factorization_python.py
     test_thc_python.py
     test_thc_mp2_python.py
     test_thc_cc_python.py

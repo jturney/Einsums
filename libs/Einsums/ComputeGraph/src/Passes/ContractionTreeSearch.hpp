@@ -47,10 +47,24 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes::search)
 using Mask = std::uint32_t;
 
 /// @brief One leaf factor of a product the search brackets.
+///
+/// @ref members is the identity of a RAGGED factor, a grouped family's member
+/// list, and is empty for an ordinary one. It sits beside @ref tensor rather
+/// than replacing it because every caller but one has only ordinary factors,
+/// and @ref key is what a caller comparing two factors asks for.
 struct Factor {
     TensorId               tensor{};
     std::vector<ExprIndex> indices;
     bool                   conjugate{false};
+    std::vector<TensorId>  members;
+
+    /// @brief Whether this factor stands for a member list rather than a tensor.
+    /// @return True when @ref members is non-empty.
+    [[nodiscard]] bool ragged() const { return !members.empty(); }
+
+    /// @brief The value this factor reads.
+    /// @return Its member list when ragged, else its tensor id alone.
+    [[nodiscard]] ValueKey key() const { return ragged() ? members : ValueKey{tensor}; }
 };
 
 /// @brief Everything the cost model needs to know about an index letter.

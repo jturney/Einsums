@@ -306,6 +306,31 @@ struct ExprStatement {
 };
 
 /**
+ * @brief The identity of a value: one tensor, or a grouped family's member list.
+ *
+ * A rewrite asks "do these two statements read the same value" many times, and
+ * for an ordinary leaf the answer is a tensor id while for a ragged one it is
+ * the ordered member list. One type for the two, with a single-element list
+ * standing for a tensor, so a client keys one map instead of two and cannot
+ * accidentally compare a member's buffer against a family.
+ */
+using ValueKey = std::vector<TensorId>;
+
+/// @brief The value @p leaf denotes.
+/// @param[in] leaf The leaf term.
+/// @return Its member list when ragged, else its tensor id alone.
+[[nodiscard]] inline ValueKey value_key(ExprTerm const &leaf) {
+    return leaf.ragged() ? leaf.members : ValueKey{leaf.tensor};
+}
+
+/// @brief The value @p statement writes.
+/// @param[in] statement The statement.
+/// @return Its destination member list when grouped, else its target alone.
+[[nodiscard]] inline ValueKey value_key(ExprStatement const &statement) {
+    return statement.targets.empty() ? ValueKey{statement.target} : statement.targets;
+}
+
+/**
  * @brief The raised algebra of one region.
  *
  * @see raise_region, lower_region
