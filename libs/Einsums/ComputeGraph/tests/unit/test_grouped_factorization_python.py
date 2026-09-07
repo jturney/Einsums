@@ -154,6 +154,27 @@ def test_a_grouped_pair_body_shares_one_grouped_intermediate():
         assert deviation < 1e-12, f"output {index} moved by {deviation:.3e}"
 
 
+def test_the_shared_intermediate_is_priced_by_the_families_typical_extents():
+    """Which rung of the comparison decides, asserted rather than assumed.
+
+    A ragged letter has one extent per member and no space says which, so it is an
+    ANONYMOUS variable in the cost polynomial and the member letter is the
+    family's registered space. One anonymous variable blocks the typical-extent
+    rung for the whole polynomial, so what decides is the BOUND-extent rung,
+    below the scale order, fed with each ragged letter's typical extent. The
+    report's cost line is where that shows: the member letter appears as its
+    space's scale symbol and every other letter as an anonymous one.
+    """
+    _, mtf, _ = _run(search=True)
+    lines = [line for line in mtf.dump_text.splitlines() if "#" in line and "*gm" in line]
+    assert lines, f"no priced statement in the dump:\n{mtf.dump_text}"
+    for line in lines:
+        cost = line.split("#", 1)[1] if line.count("#") else ""
+        assert "gm4" in line, f"the member letter is not priced by its family's space: {line}"
+        assert "?#" in line or "?~" in line, (
+            f"a ragged letter should be anonymous, so the bound-extent rung is what decides: {line}")
+
+
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
 def test_the_rewritten_body_agrees_with_numpy(dtype):
     """The oracle, per member, over the shapes the family actually has."""

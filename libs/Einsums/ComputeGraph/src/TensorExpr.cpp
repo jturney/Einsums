@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <complex>
 #include <map>
+#include <set>
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
@@ -536,6 +537,46 @@ void note_extent(RaggedFamily &family, std::string const &letter, std::size_t me
     family.extents.emplace_back(letter, std::move(values));
 }
 
+/// The variable a raised grouped letter contributes to a cost polynomial.
+///
+/// The member letter is the family's registered space, so a dump names it and
+/// two families over one member count compare by scale order. Every other
+/// letter is ragged and therefore ANONYMOUS: it has one extent per member and
+/// no space says which, so the number that prices it is the typical extent a
+/// client feeds the comparison as a bound extent, below the scale rung, which
+/// is where a bound extent for an ordinary letter already sits.
+SymbolicVar grouped_variable(RaggedFamily const &family, std::string const &letter) {
+    return letter == family.letter ? SymbolicVar::space(family.space) : SymbolicVar::anonymous(letter);
+}
+
+/// The product of the distinct letters of @p indices, coefficient one.
+SymbolicPoly grouped_poly(RaggedFamily const &family, std::vector<ExprIndex> const &indices) {
+    SymbolicPoly          poly = SymbolicPoly::constant(1.0);
+    std::set<std::string> seen;
+    for (auto const &index : indices) {
+        if (seen.insert(index.letter).second) {
+            poly *= SymbolicPoly::variable(grouped_variable(family, index.letter));
+        }
+    }
+    return poly;
+}
+
+/// The cost of one grouped contraction, in the conventions @ref symbolic_cost_for
+/// uses: flops is twice the loop space, traffic is the three operand sizes, and
+/// resident equals traffic. Deliberately the same conventions rather than a
+/// second opinion, so a region's before-and-after prices both sides one way.
+SymbolicCost grouped_cost(RaggedFamily const &family, std::vector<ExprIndex> const &a, std::vector<ExprIndex> const &b,
+                          std::vector<ExprIndex> const &c) {
+    std::vector<ExprIndex> loop = a;
+    loop.insert(loop.end(), b.begin(), b.end());
+
+    SymbolicCost cost;
+    cost.flops    = grouped_poly(family, loop) * 2.0;
+    cost.traffic  = grouped_poly(family, c) + grouped_poly(family, a) + grouped_poly(family, b);
+    cost.resident = cost.traffic;
+    return cost;
+}
+
 RaiseFailure grouped_refusal(Node const &node, std::string reason, std::string detail = {}) {
     return RaiseFailure{.reason = std::move(reason),
                         .detail = detail.empty() ? fmt::format("node '{}'", node.label) : fmt::format("node '{}': {}", node.label, detail)};
@@ -680,6 +721,7 @@ expected<ExprStatement, RaiseFailure> raise_grouped(Graph const &graph, Node con
         term.operand_indices.push_back(b_idx);
         term.conjugate.push_back(conj(first.trans_a));
         term.conjugate.push_back(conj(first.trans_b));
+        term.cost = grouped_cost(family, a_idx, b_idx, c_idx);
 
         statement.target_indices   = std::move(c_idx);
         statement.target_prefactor = PrefactorScalar{first.beta};
@@ -739,6 +781,7 @@ expected<ExprStatement, RaiseFailure> raise_grouped(Graph const &graph, Node con
         term.operand_indices.push_back(operand_idx);
         term.operand_indices.push_back(operand_idx);
         term.conjugate.assign({false, false});
+        term.cost = grouped_cost(family, operand_idx, operand_idx, term.indices);
 
         statement.target_indices   = {indexed(family.letter, space)};
         statement.target_prefactor = PrefactorScalar{double{0}};

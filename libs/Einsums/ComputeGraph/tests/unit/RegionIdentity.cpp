@@ -648,3 +648,91 @@ TEST_CASE("the fused grouped kernels are barriers", "[ComputeGraph][RegionRewrit
     CHECK_FALSE(cg::is_grouped_raisable(cg::OpKind::GroupedGatherRotate));
     CHECK_FALSE(cg::is_raisable(cg::OpKind::GroupedBatchedGemm));
 }
+
+// ── What prices a ragged letter ─────────────────────────────────────────────
+
+TEST_CASE("a ragged letter is priced by its typical extent, below the scale rung", "[ComputeGraph][RegionRewrite][Identity][Grouped]") {
+    // The rule, and which rung of the comparison it puts the decision on.
+    //
+    // A grouped family's member letter is the family's registered space, so a
+    // dump names it and two families over one member count compare by scale
+    // order. Every other letter it introduces is RAGGED: one extent per member
+    // and no space says which, so it is an anonymous variable. One anonymous
+    // variable is enough to make the typical-extent rung abstain over the whole
+    // polynomial, which leaves the BOUND-extent rung, and what a client feeds
+    // that rung for a ragged letter is the family's typical extent. That is
+    // exactly where a bound extent for an ordinary letter already sits.
+    std::vector<std::size_t> const rows{2, 3, 4, 3};
+    std::vector<std::size_t> const links{5, 2, 3, 6};
+    std::vector<std::size_t> const cols{4, 4, 2, 5};
+    auto                           A = ragged_pool("A", rows, links);
+    auto                           B = ragged_pool("B", links, cols);
+    auto                           C = ragged_pool("C", rows, cols);
+
+    cg::Graph graph("grouped cost");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::grouped_batched_gemm(1.0, as_inputs(A), as_inputs(B), 0.0, as_outputs(C));
+    }
+    auto const regions = grouped_regions(graph);
+    REQUIRE(regions.size() == 1);
+    auto const raised = cg::raise_region(graph, regions[0]);
+    REQUIRE(raised.has_value());
+    REQUIRE(raised->families.size() == 1);
+    auto const &family = raised->families[0];
+
+    // The flops polynomial names the member letter's SPACE and every other
+    // letter anonymously, which is what forces the rung below.
+    auto const flops = raised->total_cost().flops;
+    REQUIRE_FALSE(flops.is_zero());
+    bool saw_space = false;
+    bool saw_anon  = false;
+    for (auto const &variable : flops.variables()) {
+        saw_space = saw_space || (variable.is_space() && variable.space_id() == family.space);
+        saw_anon  = saw_anon || variable.is_anonymous();
+    }
+    CHECK(saw_space);
+    CHECK(saw_anon);
+
+    // The rung, asked of the comparison rather than assumed from the shape. The
+    // two candidates are this contraction and the same one with its link axis
+    // one longer, which nothing but a number can separate.
+    cg::ComparisonContext ctx;
+    ctx.registry = &graph.space_registry();
+    std::map<std::string, double> extents;
+    extents[family.letter] = static_cast<double>(family.members);
+    for (auto const &[letter, values] : family.extents) {
+        extents[letter] = static_cast<double>(family.typical_extent(letter));
+    }
+    ctx.bound_extent = [&extents](cg::SymbolicVar const &variable) -> std::optional<double> {
+        if (variable.is_anonymous()) {
+            auto const hit = extents.find(std::string(variable.letter()));
+            return hit == extents.end() ? std::nullopt : std::optional<double>{hit->second};
+        }
+        return std::optional<double>{4.0}; // the member count, which the family's space stands for
+    };
+
+    // The link letter is the one neither the row nor the column letter is.
+    auto const &target = raised->statements[0].target_indices;
+    auto const &term   = raised->at(raised->statements[0].value);
+    std::string link;
+    for (auto const &index : term.operand_indices[0]) {
+        if (index.letter != target[0].letter && index.letter != target[1].letter && index.letter != target[2].letter) {
+            link = index.letter;
+        }
+    }
+    REQUIRE_FALSE(link.empty());
+
+    auto const cheaper = flops;
+    auto       dearer  = flops;
+    dearer *= cg::SymbolicPoly::constant(1.5); // the same shape at a longer link
+    auto const verdict = cg::compare_explain(cheaper, dearer, ctx);
+    INFO("rung: " << cg::compare_rung_name(verdict.rung));
+    CHECK(cg::compare_rung_name(verdict.rung) == "BoundExtent");
+    CHECK(verdict.order == std::strong_ordering::less);
+
+    // And the typical extent IS the mean of the members', which is the number
+    // that rung was handed.
+    CHECK(family.typical_extent(target[1].letter) == 3); // (2 + 3 + 4 + 3) / 4
+    CHECK(family.typical_extent(link) == 4);             // (5 + 2 + 3 + 6) / 4
+}
