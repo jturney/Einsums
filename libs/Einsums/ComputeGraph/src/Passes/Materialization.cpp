@@ -423,6 +423,37 @@ bool Materialization::run(Graph &graph) {
     }
     for (auto const &h : hoists) {
         auto &handle = h.handle_owner->tensor(h.tid);
+        // The same question the parent's own arm asks, asked of the body that holds the handle.
+        //
+        // A body's handle survives a rewrite that moves or deletes the node it was an operand of:
+        // hoisting the body's only statement out of the loop leaves the handle behind, and a
+        // re-association of the resulting chain then reads the two inputs directly and drops the
+        // intermediate altogether. Nothing anywhere uses the buffer at that point, and hoisting a
+        // lifecycle for it allocates a tensor whose whole point was to stop existing. The parent's
+        // arm has declined that since the CCSD tau terms; the descendants' arm asked only whether
+        // a body HELD a deferred handle, which a body goes on doing after its last use is gone.
+        //
+        // Intermediacy is read off the DECLARATION rather than off the body's handle. A body
+        // registers an operand of its own at capture and that registration carries no ownership
+        // claim, so a parent intermediate reaches the body's table with the flag clear; asking
+        // the body would decline to skip anything and the check would be inert. The buffer is the
+        // identity the two tables share, which is what @c find_tensor_by_ptr resolves.
+        bool used = false;
+        if (auto const *use = h.handle_owner->usage().find_owner(h.tid)) {
+            used = use->first_use() != TensorUsage::npos;
+        }
+        bool intermediate = handle.is_intermediate;
+        if (!intermediate && handle.tensor_ptr != nullptr) {
+            if (TensorHandle const *declared = graph.find_tensor_by_ptr(handle.tensor_ptr); declared != nullptr) {
+                intermediate = declared->is_intermediate;
+            }
+        }
+        if (!used && intermediate) {
+            _num_unused++;
+            report(2,
+                   fmt::format("deferred tensor '{}' is used by no node of '{}'; left unallocated", handle.name, h.handle_owner->name()));
+            continue;
+        }
         add_req(handle.tensor_ptr, h.owning_node_index, /*owns_tid=*/false, h.handle_owner, h.tid);
     }
 

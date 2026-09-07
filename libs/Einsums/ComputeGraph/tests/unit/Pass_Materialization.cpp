@@ -865,3 +865,88 @@ TEST_CASE("Materialization - a top-level setup's chain intermediate is materiali
     g.execute();
     CHECK(out(0, 0) == Catch::Approx(1.0));
 }
+
+TEST_CASE("Materialization - a body handle whose last use a rewrite removed gets no lifecycle", "[ComputeGraph][Materialization][audit]") {
+    // The program shape the region fuzz found: an intermediate written in the parent and read
+    // only inside a loop body. Two of the default pipeline's rewrites then take the use away.
+    // LoopInvariantHoisting moves the body's one statement up, because nothing in it varies with
+    // the iteration, which leaves the BODY holding a handle for the intermediate and no node that
+    // names it. ContractionPlanning then re-associates the chain the hoist assembled, reads the
+    // two inputs directly and drops the intermediate altogether.
+    //
+    // Nothing anywhere uses the buffer at that point. The pass's own arm for the parent's tensors
+    // has declined to allocate such a tensor since the CCSD tau terms; its arm for a descendant's
+    // asked only whether the body HELD a deferred handle, which a body goes on doing after its
+    // last use is gone, and so it hoisted a lifecycle for a tensor whose whole point was to stop
+    // existing.
+    constexpr size_t big = 64, small = 16;
+    auto             left  = create_random_tensor<double>("left", big, small);
+    auto             right = create_random_tensor<double>("right", small, big);
+    auto             out   = create_zero_tensor<double>("out", big, small);
+
+    cg::Graph g("body_handle_without_a_use");
+    auto     &half = g.scratch<double, 2>("half", big, big);
+    {
+        cg::CaptureGuard const guard(g);
+        cg::einsum("qp;ps->qs", 0.0, &half, 1.0, left, right);
+    }
+    auto &body = g.add_loop("iteration", 1, [](size_t it) { return it < 0; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("qs;sr->qr", 0.0, &out, 1.0, half, left);
+    }
+
+    // The reference: the same arithmetic, with nothing rewritten.
+    auto reference = create_zero_tensor<double>("reference", big, small);
+    {
+        auto      product = create_zero_tensor<double>("product", big, big);
+        cg::Graph plain("plain");
+        {
+            cg::CaptureGuard const guard(plain);
+            cg::einsum("qp;ps->qs", 0.0, &product, 1.0, left, right);
+            cg::einsum("qs;sr->qr", 0.0, &reference, 1.0, product, left);
+        }
+        plain.execute();
+    }
+
+    auto pm = cg::PassManager::create_default();
+    g.apply(pm);
+
+    // The precondition, asserted rather than assumed: the rewrites really did take the use away,
+    // so the case is about a handle nothing names and not about an ordinary live intermediate.
+    auto const uses_of = [](cg::Graph const &graph, std::string const &name) {
+        size_t seen = 0;
+        for (auto const &node : graph.nodes()) {
+            if (node.kind == cg::OpKind::Materialize || node.kind == cg::OpKind::Initialize) {
+                continue;
+            }
+            auto const note = [&](cg::TensorId tid) {
+                if (cg::TensorHandle const *handle = graph.find_tensor(graph.resolve_alias(tid)); handle != nullptr) {
+                    seen += static_cast<size_t>(handle->name == name);
+                }
+            };
+            std::ranges::for_each(node.inputs, note);
+            std::ranges::for_each(node.outputs, note);
+        }
+        return seen;
+    };
+    REQUIRE(uses_of(g, "half") == 0);
+    REQUIRE(uses_of(body, "half") == 0);
+    // And the body still HOLDS the handle, which is what the pass was walking.
+    REQUIRE(std::ranges::any_of(body.tensors_map(), [](auto const &entry) { return entry.second.name == "half"; }));
+
+    auto const materialize_of = [](cg::Graph const &graph, std::string const &name) {
+        return std::ranges::count_if(graph.nodes(), [&](cg::Node const &node) {
+            return node.kind == cg::OpKind::Materialize && node.label == fmt::format("materialize({})", name);
+        });
+    };
+    CHECK(materialize_of(g, "half") == 0);
+    CHECK(materialize_of(body, "half") == 0);
+    CHECK(cg::passes::stranded_materializations(g).empty());
+    CHECK(cg::passes::duplicate_materializations(g).empty());
+
+    g.execute();
+    for (size_t i = 0; i < out.size(); ++i) {
+        REQUIRE_THAT(out.data()[i], Catch::Matchers::WithinRel(reference.data()[i], 1e-10));
+    }
+}

@@ -497,15 +497,15 @@ def _run(prog, arrays, dtype, region, tiling_cap=None):
     if region:
         pm, passes = _region_pass_manager()
     elif tiling_cap is not None:
-        # The tiling arm. The schedule pass and then the same lone Materialization the plain arm
-        # runs, so the comparison isolates the tiling: the full pipeline strands a lifecycle on a
-        # program whose intermediate is used only inside a loop body, with or without this pass,
-        # and an arm that ran it would be measuring that instead.
+        # The tiling arm. The schedule pass and then the whole default pipeline behind it, the way
+        # the factorization arms run one: the schedule the pass emits has to survive the resource
+        # passes, and a lifecycle stranded on the loop it emits is exactly what an arm stopping at
+        # a lone Materialization cannot see.
         tiling = _G.AxisTiling()
         tiling.set_memory_cap(tiling_cap)
-        pm, passes = cg.PassManager(), [tiling, cg.Materialization()]
+        pm, passes = cg.PassManager(), [tiling]
         pm.add(tiling)
-        pm.add(passes[1])
+        pm.populate_default()
     else:
         pm, passes = cg.PassManager(), [cg.Materialization()]
         pm.add(passes[0])
