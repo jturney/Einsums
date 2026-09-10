@@ -78,4 +78,51 @@ APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT void set_mock_device_memory_li
 /// Mock: returns ""
 APIARY_EXPOSE APIARY_MODULE("gpu") [[nodiscard]] EINSUMS_EXPORT std::string device_name();
 
+
+// ===========================================================================
+// mock-discrete: the device-kernel boundary
+// ===========================================================================
+
+#if defined(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
+
+/**
+ * @brief Marks a region of code that is standing in for a DEVICE KERNEL.
+ *
+ * Under mock-discrete, device allocations sit at PROT_NONE so that host code
+ * touching a device pointer faults instead of silently succeeding. But the mock
+ * backend implements its "device" kernels with host CPU BLAS, and those must be
+ * able to read the buffers - on a real GPU, cuBLAS reads device memory as a
+ * matter of course. Without this scope the very first mock GEMM segfaults
+ * inside OpenBLAS.
+ *
+ * So the rule the mock enforces is not "nothing may touch device memory", it is
+ * "only the backend may". Entering this scope unprotects every live mock
+ * allocation; leaving the outermost one re-protects them. Anything outside a
+ * scope - most importantly the ComputeGraph executor running a CPU lambda while
+ * tensor pointers are still swapped to shadows - still faults.
+ *
+ * Re-entrant: the templated gpu::blas entry points forward to the typed ones,
+ * so scopes nest, and only the outermost re-protects.
+ */
+struct EINSUMS_EXPORT MockDeviceKernelScope {
+    MockDeviceKernelScope();
+    ~MockDeviceKernelScope();
+
+    MockDeviceKernelScope(MockDeviceKernelScope const &)            = delete;
+    MockDeviceKernelScope &operator=(MockDeviceKernelScope const &) = delete;
+};
+
+#    define EINSUMS_GPU_MOCK_KERNEL_SCOPE_CAT2(a, b) a##b
+#    define EINSUMS_GPU_MOCK_KERNEL_SCOPE_CAT(a, b)  EINSUMS_GPU_MOCK_KERNEL_SCOPE_CAT2(a, b)
+/// Declare a device-kernel scope for the rest of the enclosing block.
+#    define EINSUMS_GPU_MOCK_KERNEL_SCOPE                                                                                                  \
+        ::einsums::gpu::MockDeviceKernelScope EINSUMS_GPU_MOCK_KERNEL_SCOPE_CAT(_einsums_mock_kernel_scope_, __LINE__)
+
+#else
+
+/// No-op on every backend except mock-discrete.
+#    define EINSUMS_GPU_MOCK_KERNEL_SCOPE ((void)0)
+
+#endif
+
 EINSUMS_NAMESPACE_END(gpu)

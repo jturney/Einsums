@@ -463,6 +463,37 @@ if(EINSUMS_WITH_MPS)
   include(Einsums_SetupMPS)
 endif()
 
+# Mock backend in discrete-device mode. Only meaningful when no real GPU backend
+# is enabled: it makes the CPU mock imitate a discrete card (no unified memory,
+# device pointers that fault if dereferenced on the host, unimplemented entry
+# points throwing exactly where they throw on CUDA).
+#
+# Its purpose is to make the device-transfer code path reachable in CI without a
+# GPU. The plain mock is a CPU-BLAS passthrough with unified memory, so it can
+# neither execute the host-to-device shadow path nor notice that a vendor entry
+# point is a silent no-op - which is how several CUDA stubs survived unnoticed.
+einsums_option(
+  EINSUMS_WITH_GPU_MOCK_DISCRETE BOOL
+  "Make the mock GPU backend imitate a discrete device (no unified memory, poisoned device pointers). Testing aid; requires no GPU."
+  OFF ADVANCED CATEGORY "Build Targets"
+)
+if(EINSUMS_WITH_GPU_MOCK_DISCRETE)
+  if(EINSUMS_WITH_CUDA OR EINSUMS_WITH_HIP OR EINSUMS_WITH_MPS)
+    einsums_error(
+      "EINSUMS_WITH_GPU_MOCK_DISCRETE only applies to the mock GPU backend, but a real backend (CUDA/HIP/MPS) is enabled."
+    )
+  endif()
+  # The poisoned-pointer allocator is built on mmap/mprotect. Windows would need
+  # VirtualAlloc/VirtualProtect; nobody has written that, so refuse rather than
+  # silently degrade to the ordinary mock and report a pass that proved nothing.
+  if(WIN32)
+    einsums_error(
+      "EINSUMS_WITH_GPU_MOCK_DISCRETE is POSIX-only (needs mmap/mprotect); it is not supported on Windows."
+    )
+  endif()
+  einsums_add_config_define(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
+endif()
+
 if(EINSUMS_WITH_CUDA OR EINSUMS_WITH_HIP)
   einsums_add_config_define(EINSUMS_HAVE_GPU_SUPPORT)
   set(EINSUMS_WITH_GPU_SUPPORT ON)
