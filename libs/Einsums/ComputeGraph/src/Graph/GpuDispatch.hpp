@@ -22,6 +22,23 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::gpu_dispatch)
 
+/// The tensor's CURRENT host data pointer, read through its rank-erased impl.
+///
+/// TensorHandle::data_ptr is a registration-time snapshot that nothing
+/// refreshes - the header says so, and says not to build an executor on it. It
+/// is null for any tensor that was deferred when registered, which is every
+/// tensor a Materialize node later allocates. The device-shadow path was built
+/// on that field, so for lazily materialized tensors it skipped the upload and,
+/// worse, had nowhere to copy a GPU result back to: the answer was computed on
+/// the device and then dropped.
+///
+/// Shared with `Execute.cpp`, which needs the same answer for its host-to-device
+/// and device-to-host transfers as the fast paths need for their operands.
+///
+/// Returns nullptr when the tensor genuinely has no single buffer (tile-wise
+/// sparse) or is not materialized yet.
+[[nodiscard]] void *live_host_ptr(TensorHandle const &h);
+
 /// Try to dispatch a GPU node via gpu::blas (GEMM or GEMV).
 /// Returns true if dispatched, false if not applicable (caller should use CPU fallback).
 bool try_gpu_blas_dispatch(Node const &node, std::unordered_map<TensorId, TensorHandle> const &tensors, DeviceShadowMap &shadows);

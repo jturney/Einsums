@@ -61,7 +61,60 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::gpu_dispatch)
 
+/// @see GpuDispatch.hpp for why this exists rather than reading
+/// TensorHandle::data_ptr.
+[[nodiscard]] void *live_host_ptr(TensorHandle const &h) {
+    if (!h.impl_fn || h.dtype == packed_gemm::ScalarType::Unknown) {
+        return h.data_ptr; // no impl to read through; snapshot is all there is
+    }
+    void *raw = h.impl_fn();
+    if (raw == nullptr) {
+        return h.data_ptr;
+    }
+    void *out = nullptr;
+    detail::dispatch_scalar_type(h.dtype, [&]<typename T>(T /*tag*/) {
+        auto *impl = static_cast<::einsums::detail::TensorImpl<T> *>(raw);
+        out        = static_cast<void *>(impl->data());
+    });
+    return out;
+}
+
 namespace {
+
+/// Live rank-2 geometry, and whether the buffer is plain column-major packed.
+///
+/// The gpu::blas dispatchers hand cuBLAS a bare pointer plus a leading
+/// dimension, which only describes the data when the operand is contiguous
+/// column-major. They took M, N, K and lda/ldb/ldc from TensorHandle::dims -
+/// registration-time snapshots, with no stride check at all - so a view, a
+/// sliced operand, or a tensor whose extents changed after registration was
+/// passed to the GEMM with the wrong shape and the wrong leading dimension.
+///
+/// @return False when the tensor is not a materialized, contiguous,
+/// column-major rank-2 buffer, in which case the caller must decline and let
+/// the CPU path handle it.
+[[nodiscard]] bool live_colmajor_2d(TensorHandle const &h, int64_t &rows, int64_t &cols) {
+    if (!h.impl_fn || h.dtype == packed_gemm::ScalarType::Unknown) {
+        return false;
+    }
+    void *raw = h.impl_fn();
+    if (raw == nullptr) {
+        return false;
+    }
+    bool ok = false;
+    detail::dispatch_scalar_type(h.dtype, [&]<typename T>(T /*tag*/) {
+        auto const *impl = static_cast<::einsums::detail::TensorImpl<T> const *>(raw);
+        auto const &d    = impl->dims();
+        auto const &st   = impl->strides();
+        if (d.size() != 2 || st.size() != 2) {
+            return;
+        }
+        rows = static_cast<int64_t>(d[0]);
+        cols = static_cast<int64_t>(d[1]);
+        ok   = (st[0] == 1) && (static_cast<int64_t>(st[1]) == rows);
+    });
+    return ok;
+}
 
 /// Resolve the device-visible pointer for one operand. On unified memory the GPU
 /// reads the host tensor's data directly; on a discrete device the data has been
@@ -148,8 +201,15 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
 
     // C is column-major: C[row, col] with dims[0]=rows, dims[1]=cols.
     // M = C rows, N = C cols.
-    auto    M = static_cast<int64_t>(hc.dims[0]);
-    auto    N = static_cast<int64_t>(hc.dims[1]);
+    // Live, contiguity-checked geometry. Declining here costs a CPU fallback;
+    // trusting the snapshot costs a wrong answer.
+    int64_t a_rows = 0, a_cols = 0, b_rows = 0, b_cols = 0, c_rows = 0, c_cols = 0;
+    if (!live_colmajor_2d(ha, a_rows, a_cols) || !live_colmajor_2d(hb, b_rows, b_cols) || !live_colmajor_2d(hc, c_rows, c_cols)) {
+        return false;
+    }
+
+    auto    M = c_rows;
+    auto    N = c_cols;
     int64_t K = 0;
 
     // Find K from the link index dimension.
@@ -157,7 +217,7 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
     // K is the dimension of the link index in A (or B).
     for (size_t d = 0; d < 2; d++) {
         if (ai[d] == link) {
-            K = static_cast<int64_t>(ha.dims[d]);
+            K = (d == 0) ? a_rows : a_cols;
             break;
         }
     }
@@ -186,9 +246,25 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
         return false;
     }
 
-    auto lda = static_cast<int64_t>(ha.dims[0]); // leading dimension = rows in column-major
-    auto ldb = static_cast<int64_t>(hb.dims[0]);
-    auto ldc = static_cast<int64_t>(hc.dims[0]);
+    // Verify the operands really have the shapes the index analysis just
+    // assigned them. A and B were picked by position in node.inputs, on the
+    // assumption that the first non-C input is the spec's A - nothing enforces
+    // that, and when the order differs the transpose flags and leading
+    // dimensions are computed against the wrong tensor, which produces a
+    // confidently wrong GEMM rather than a failure. Cross-check against the
+    // live extents and decline if they disagree.
+    auto const a_ok = (transa == 'n') ? (a_rows == M && a_cols == K) : (a_rows == K && a_cols == M);
+    auto const b_ok = (transb == 'n') ? (b_rows == K && b_cols == N) : (b_rows == N && b_cols == K);
+    if (!a_ok || !b_ok) {
+        EINSUMS_LOG_DEBUG("try_gpu_gemm: operand extents disagree with the index analysis "
+                          "(A={}x{} transa={}, B={}x{} transb={}, M={} N={} K={}); leaving node {} on the host",
+                          a_rows, a_cols, transa, b_rows, b_cols, transb, M, N, K, node.id);
+        return false;
+    }
+
+    auto lda = a_rows; // leading dimension = rows, valid because the operand is packed
+    auto ldb = b_rows;
+    auto ldc = c_rows;
 
     // Dispatch based on dtype.
     if (ha.dtype == packed_gemm::ScalarType::Float32) {
@@ -269,8 +345,12 @@ bool try_gpu_gemv(EinsumDescriptor const &desc, Node const &node, std::unordered
         return false;
 
     // A is M×N column-major (dims[0]=M=rows, dims[1]=N=cols).
-    auto          M   = static_cast<int64_t>(ha.dims[0]);
-    auto          N   = static_cast<int64_t>(ha.dims[1]);
+    int64_t a_rows = 0, a_cols = 0;
+    if (!live_colmajor_2d(ha, a_rows, a_cols)) {
+        return false;
+    }
+    auto          M   = a_rows;
+    auto          N   = a_cols;
     int64_t const lda = M;
 
     // Determine transpose: does the target index appear as A's row or column?

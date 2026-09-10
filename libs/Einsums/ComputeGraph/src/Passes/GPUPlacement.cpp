@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
+#include <iostream>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
@@ -33,43 +34,70 @@ GPUPlacement::GPUPlacement(CostModel const &cost_model, size_t min_bytes) : _min
 
 namespace {
 
-/// Check if an OpKind is one the executor can actually dispatch to the GPU.
+/// Can the executor actually dispatch this node to the GPU?
 ///
-/// This list must match try_gpu_blas_dispatch in Graph.cpp, and nothing wider.
-/// It used to advertise the whole BLAS/LAPACK surface - Syev, Heev, Gesv, Getrf,
-/// Getrs, Getri, Invert, SVD, SVD_DD, QR, Geev, Ger, Dot, DirectProduct,
-/// SymmGemm - none of which has a GPU execution path. Placing them marked every
-/// one Target::GPU and then dropped it into the CPU fallback, which on a
-/// discrete device means running a host kernel while the operand pointers are
-/// swapped to device shadows. The fallback now restores host pointers first, so
-/// that is no longer fatal, but the transfers and the placement bookkeeping were
-/// pure overhead for work that was never going to run on the device.
+/// try_gpu_blas_dispatch in Graph.cpp keys on the DESCRIPTOR carried by the
+/// node, not on its OpKind, so this predicate does too. OpKind::Gemm for
+/// instance carries a GemmDescriptor, which no dispatcher looks at - placing it
+/// only bought a host-to-device round trip around work that then ran on the
+/// CPU anyway.
 ///
-/// Add a kind back here only together with its dispatch path.
-bool is_gpu_capable_op(OpKind kind) {
-    switch (kind) {
-    case OpKind::Gemm:        // try_gpu_gemm
-    case OpKind::BatchedGemm: // try_gpu_batched_gemm (strided only)
-    case OpKind::Gemv:        // try_gpu_gemv
-    case OpKind::Axpby:       // try_gpu_axpy
-    case OpKind::Scale:       // try_gpu_scale
-        return true;
-    default:
+/// This list used to name about twenty kinds, including the whole LAPACK
+/// surface (Syev, Heev, Gesv, Getrf, Getrs, Getri, Invert, SVD, SVD_DD, QR,
+/// Geev) for which gpu::solver has no implementation at all. Keep it in step
+/// with try_gpu_blas_dispatch.
+bool node_is_dispatchable(Node const &node, Graph const &graph);
+
+/// Can the executor actually dispatch THIS einsum to the GPU?
+///
+/// OpKind::Einsum covers every contraction the library can express, but
+/// try_gpu_blas_dispatch in Graph.cpp only recognizes two shapes: a plain
+/// matrix GEMM (two target indices, one link index, all operands rank 2) and a
+/// GEMV (one target index, one link index, rank-2 matrix into a rank-1 vector).
+/// A rank-4 tensor contraction matches neither and falls straight back to the
+/// CPU.
+///
+/// Placing those anyway is not free: TransferInsertion wraps them in host-to-
+/// device and device-to-host nodes, so the graph pays a full round trip for
+/// work that never leaves the host. It was worse than wasteful until the
+/// executor learned to skip a device-to-host copy whose GPU node fell back -
+/// before that, the stale upload was copied back over the CPU result.
+///
+/// Keep this in step with try_gpu_gemm / try_gpu_gemv.
+bool einsum_is_dispatchable(Node const &node, Graph const &graph) {
+    auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+    if (desc == nullptr) {
         return false;
     }
+
+    size_t const n_target = desc->spec.target_indices.size();
+    size_t const n_link   = desc->spec.link_indices.size();
+    if (n_link != 1 || (n_target != 1 && n_target != 2)) {
+        return false;
+    }
+
+    // Every operand must be small-rank in the way the dispatchers require:
+    // rank 2 throughout for GEMM, and rank 2 / rank 1 for GEMV.
+    for (auto tid : node.inputs) {
+        if (graph.tensor(tid).rank > 2) {
+            return false;
+        }
+    }
+    for (auto tid : node.outputs) {
+        if (graph.tensor(tid).rank > 2) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// Check if the backend supports GPU BLAS for the given element type.
 ///
-/// MPS only supports float32.
-///
-/// For CUDA/HIP/mock this reports the dtypes the executor's dispatch helpers
-/// actually handle. Of those, only the strided-batched GEMM path takes complex;
-/// try_gpu_gemm, try_gpu_gemv, try_gpu_scale and try_gpu_axpy all return false
-/// for anything but Float32/Float64. Claiming complex here (as this did) placed
-/// complex einsums on the GPU that the executor then handed straight back to the
-/// CPU. The node's OpKind is threaded in so the complex case can be answered
-/// per-op rather than per-backend.
+/// MPS only supports float32. For CUDA/HIP/mock this reports the dtypes the
+/// executor's dispatch helpers actually handle: of those, only the
+/// strided-batched GEMM path takes complex - try_gpu_gemm, try_gpu_gemv,
+/// try_gpu_scale and try_gpu_axpy all return false for anything but
+/// Float32/Float64.
 bool backend_supports_dtype(packed_gemm::ScalarType dtype, OpKind kind) {
     if constexpr (gpu::has_mps) {
         return dtype == packed_gemm::ScalarType::Float32;
@@ -81,6 +109,27 @@ bool backend_supports_dtype(packed_gemm::ScalarType dtype, OpKind kind) {
     // Complex reaches the device only through gemm_strided_batched.
     if (dtype == packed_gemm::ScalarType::Complex64 || dtype == packed_gemm::ScalarType::Complex128) {
         return kind == OpKind::BatchedGemm;
+    }
+    return false;
+}
+
+bool node_is_dispatchable(Node const &node, Graph const &graph) {
+    // Einsum -> try_gpu_gemm / try_gpu_gemv
+    if (std::holds_alternative<EinsumDescriptor>(node.op_data)) {
+        return einsum_is_dispatchable(node, graph);
+    }
+    // BatchedGemm -> try_gpu_batched_gemm, strided form only; the pointer-array
+    // form is explicitly CPU-only.
+    if (auto const *bd = std::get_if<BatchedGemmDescriptor>(&node.op_data)) {
+        return bd->strided;
+    }
+    // Scale -> try_gpu_scale, Axpby -> try_gpu_axpy. Both are real-scalar only,
+    // which the dtype gate also enforces.
+    if (node.kind == OpKind::Scale && std::holds_alternative<ScaleDescriptor>(node.op_data)) {
+        return true;
+    }
+    if (node.kind == OpKind::Axpby && std::holds_alternative<AxpbyDescriptor>(node.op_data)) {
+        return true;
     }
     return false;
 }
@@ -185,8 +234,7 @@ bool GPUPlacement::run(Graph &graph) {
             if (node.target == Target::GPU)
                 continue;
 
-            bool const is_candidate = is_gpu_capable_op(node.kind) || node.kind == OpKind::Einsum;
-            if (!is_candidate)
+            if (!node_is_dispatchable(node, g))
                 continue;
 
             if (!node_dtypes_supported(node, g)) {
@@ -247,7 +295,7 @@ bool GPUPlacement::run(Graph &graph) {
         }
 
         placed_node.target       = Target::GPU;
-        placed_node.cpu_fallback = placed_node.execute; // Save original CPU executor for fallback.
+        placed_node.cpu_fallback = placed_node.execute;
         used += cand.eff_bytes;
         _num_placed++;
 
