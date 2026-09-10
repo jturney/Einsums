@@ -7,6 +7,7 @@ include(Einsums_Message)
 
 include(Einsums_Option)
 include(Einsums_AddCompileFlag)
+include(Einsums_NVHPCCudaFlags)
 include(Einsums_AddCompileTest)
 include(Einsums_AddExecutable)
 include(Einsums_AddLibrary)

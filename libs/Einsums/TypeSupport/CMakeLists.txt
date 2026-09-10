@@ -24,7 +24,15 @@ set(TypeSupportSources)
 if(EINSUMS_WITH_GPU_SUPPORT)
   list(APPEND TypeSupportHeaders Einsums/TypeSupport/GPUCast.hpp Einsums/TypeSupport/GPUComplex.hpp Einsums/TypeSupport/GPUTypes.hpp)
 
-  set(TypeSupportGPUDeps hip::host hip::device)
+  # Vendor-conditional: hip::host / hip::device only exist under ROCm. Requesting
+  # them unconditionally on EINSUMS_WITH_GPU_SUPPORT broke CUDA builds, which have
+  # no ROCm at all. CUDA needs no extra target here - the GPU*.hpp headers above are
+  # header-only type mappings and pull their vendor headers through Einsums_GPU.
+  if(EINSUMS_WITH_HIP)
+    set(TypeSupportGPUDeps hip::host hip::device)
+  else()
+    set(TypeSupportGPUDeps)
+  endif()
 else()
   set(TypeSupportGPUDeps)
 endif()

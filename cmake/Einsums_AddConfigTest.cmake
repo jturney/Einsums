@@ -281,7 +281,15 @@ function(einsums_add_config_test variable)
         set(${variable}_RESULT FALSE)
       endif()
     else()
-      if(EINSUMS_WITH_CUDA AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC")
+      # CMAKE_CUDA_STANDARD is only set once Einsums_SetupCUDA has run, and some
+      # config tests fire before that (einsums_check_for_omp_tools_h at
+      # CMakeLists.txt:667 runs ahead of the include at :673). Passing the keyword
+      # with an empty value is a hard try_compile error - "Error after keyword
+      # CUDA_STANDARD: missing required value" - so only pass it when it has one.
+      if(EINSUMS_WITH_CUDA
+         AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "NVHPC"
+         AND CMAKE_CUDA_STANDARD
+      )
         set(cuda_parameters CUDA_STANDARD ${CMAKE_CUDA_STANDARD})
       endif()
       # if(EINSUMS_WITH_HIP) set(hip_parameters HIP_STANDARD "${CMAKE_HIP_STANDARD}") endif()

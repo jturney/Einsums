@@ -3,20 +3,38 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-if(EINSUMS_WITH_CUDA AND NOT TARGET cuda)
+# CUDA backend setup.
+#
+# This file previously routed CUDA through ROCm-on-NVIDIA: it did
+# find_package(hip/hipblas/hipsolver REQUIRED) with HIP_PLATFORM=nvidia and never
+# called find_package(CUDAToolkit). That could not work on a CUDA-only machine -
+# there is no ROCm to find - and it never provided the CUDA::cublas / CUDA::cusolver
+# / CUDA::cudart imported targets that libs/Einsums/GPU/CMakeLists.txt links against.
+# Those targets come from CUDAToolkit and nothing else.
+#
+# Building with HIP on an NVIDIA card is still possible: set EINSUMS_WITH_HIP=ON
+# with a ROCm install configured for the nvidia platform. That is Einsums_SetupHIP's
+# job, not this file's.
+
+if(EINSUMS_WITH_CUDA AND NOT TARGET CUDA::cudart)
   include(Einsums_Utils)
   include(Einsums_AddDefinitions)
-  if(EINSUMS_WTIH_HIP)
+
+  if(EINSUMS_WITH_HIP)
     einsums_error(
       "Both EINSUMS_WITH_CUDA and EINSUMS_WITH_HIP are ON. Please choose one of them for einsums to work properly"
     )
   endif()
 
-  # Check and set HIP standard
+  # ------------------------------------------------------------------------------
+  # CUDA language standard
+  # ------------------------------------------------------------------------------
+  # Device code has to be compiled at the same standard as host code, or the two
+  # halves of a TU disagree about the ABI of anything they share.
   if(NOT EINSUMS_FIND_PACKAGE)
-    if(DEFINED CMAKE_CUDA_STANDARD AND NOT CMAKE_CUDA_STANDARD STREQUAL EINSUMS_WITH_CXX_STANDARD)
+    if(DEFINED CMAKE_CUDA_STANDARD AND NOT CMAKE_CUDA_STANDARD STREQUAL CMAKE_CXX_STANDARD)
       einsums_error(
-        "You've set CMAKE_CUDA_STANDARD to ${CMAKE_CUDA_STANDARD} and EINSUMS_WITH_CXX_STANDARD to ${EINSUMS_WITH_CXX_STANDARD}. Please unset CMAKE_CUDA_STANDARD."
+        "You've set CMAKE_CUDA_STANDARD to ${CMAKE_CUDA_STANDARD} and CMAKE_CXX_STANDARD to ${CMAKE_CXX_STANDARD}. Please unset CMAKE_CUDA_STANDARD."
       )
     endif()
   endif()
@@ -25,64 +43,64 @@ if(EINSUMS_WITH_CUDA AND NOT TARGET cuda)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
   set(CMAKE_CUDA_EXTENSIONS OFF)
 
-  set(CMAKE_CUDA_STANDARD_DEFAULT 98)
-
-  set(HIP_PLATFORM "nvidia")
-
-  if(NOT CMAKE_HIP_COMPILER_ROCM_ROOT AND NOT HIP_ROCM_ROOT)
-    message(
-      WARNING
-        "CMAKE_HIP_COMPILER_ROCM_ROOT is not set. CMake may not be able to find all of the libraries needed for HIP."
-        " Please set this variable. As a shorter alternative, HIP_ROCM_ROOT can be set, and this will set the longer macro."
+  # ------------------------------------------------------------------------------
+  # Target architectures
+  # ------------------------------------------------------------------------------
+  # CMP0104 requires CMAKE_CUDA_ARCHITECTURES to be set before enable_language(CUDA);
+  # nothing in the tree set it, so a CUDA build had no -arch at all.
+  #
+  # `native` compiles only for the cards in this machine, which is what a developer
+  # wants and is much faster to build. It resolves to the literal string
+  # "No CUDA devices found." when CMake cannot see a device, so it is only safe when
+  # a driver is actually present - hence the probe rather than a bare default.
+  #
+  # The probe is skipped once the cache variable exists, so a reconfigure does not
+  # shell out again and an explicit -DEINSUMS_WITH_CUDA_ARCHITECTURES always wins.
+  set(_einsums_default_cuda_arch "all-major")
+  if(NOT DEFINED EINSUMS_WITH_CUDA_ARCHITECTURES)
+    execute_process(
+      COMMAND nvidia-smi -L
+      RESULT_VARIABLE _einsums_nvidia_smi_result
+      OUTPUT_VARIABLE _einsums_nvidia_smi_output
+      ERROR_QUIET
+      OUTPUT_STRIP_TRAILING_WHITESPACE
     )
-
-  elseif(NOT CMAKE_HIP_COMPILER_ROCM_ROOT AND HIP_ROCM_ROOT)
-    set(CMAKE_HIP_COMPILER_ROCM_ROOT ${HIP_ROCM_ROOT})
+    # Otherwise leave the "all-major" fallback set above: no visible device means
+    # build a portable fat binary. This is the CI and cross-build case.
+    if(_einsums_nvidia_smi_result EQUAL 0 AND _einsums_nvidia_smi_output MATCHES "GPU 0:")
+      set(_einsums_default_cuda_arch "native")
+    endif()
+    unset(_einsums_nvidia_smi_result)
+    unset(_einsums_nvidia_smi_output)
   endif()
 
-  if(CMAKE_HIP_COMPILER_ROCM_ROOT)
-    list(APPEND CMAKE_MODULE_PATH "${CMAKE_HIP_COMPILER_ROCM_ROOT}/lib/cmake/hip")
+  einsums_option(
+    EINSUMS_WITH_CUDA_ARCHITECTURES STRING
+    "CUDA architectures to build for; passed to CMAKE_CUDA_ARCHITECTURES. 'native' targets only the cards in this machine and requires a visible device; 'all-major' builds a portable fat binary."
+    "${_einsums_default_cuda_arch}" CATEGORY "Build Targets"
+  )
+  unset(_einsums_default_cuda_arch)
 
-    cmake_path(APPEND CMAKE_HIP_COMPILER_ROCM_ROOT "lib" "cmake" OUTPUT_VARIABLE __hip_cmake_dir)
+  set(CMAKE_CUDA_ARCHITECTURES "${EINSUMS_WITH_CUDA_ARCHITECTURES}")
 
-    cmake_path(APPEND __hip_cmake_dir "hip" OUTPUT_VARIABLE hip_DIR)
-    set(ENV{hip_DIR} ${hip_DIR})
-
-  endif()
-
+  # ------------------------------------------------------------------------------
+  # Enable the language and find the toolkit
+  # ------------------------------------------------------------------------------
+  # enable_language(CUDA) is needed even though libs/ has no .cu sources today:
+  # einsums_check_for_cxx23_static_call_operator_gpu (Einsums_AddConfigTest.cmake)
+  # compiles cmake/tests/cxx23_static_call_operator.cu whenever GPU support is on.
   enable_language(CUDA)
 
-  file(GLOB_RECURSE src_hip "${CMAKE_CURRENT_SOURCE_DIR}/*.hip")
-  foreach(X IN ITEMS ${src_hip})
-    set_source_files_properties(${X} PROPERTIES LANGUAGE CUDA)
-  endforeach()
+  # CUDAToolkit is what defines CUDA::cudart, CUDA::cublas and CUDA::cusolver.
+  find_package(CUDAToolkit REQUIRED)
 
-  list(APPEND CMAKE_CUDA_SOURCE_FILE_EXTENSIONS hip)
-
-  set(HIP_PLATFORM "nvidia")
-  set(USE_CUDA ON)
-
-  find_package(hip REQUIRED)
-
-  set(HIP_PLATFORM "nvidia")
-  set(USE_CUDA ON)
-
-  include(Einsums_SetuphipBlas)
-
-  set(HIP_PLATFORM "nvidia")
-  set(USE_CUDA ON)
-
-  include(Einsums_SetuphipSolver)
-
-  set(HIP_PLATFORM "nvidia")
-  set(USE_CUDA ON)
+  einsums_info("CUDA backend: toolkit ${CUDAToolkit_VERSION} (${CUDAToolkit_LIBRARY_ROOT})")
+  einsums_info("CUDA backend: architectures ${CMAKE_CUDA_ARCHITECTURES}")
 
   include(Einsums_ExportTargets)
 
   if(NOT EINSUMS_FIND_PACKAGE)
     einsums_add_config_define(EINSUMS_HAVE_CUDA)
   endif()
-
-  set(ENABLE_CUDA "ON")
 
 endif()

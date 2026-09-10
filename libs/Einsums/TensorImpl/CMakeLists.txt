@@ -9,9 +9,11 @@ set(TensorImplHeaders Einsums/TensorImpl/TensorImpl.hpp Einsums/TensorImpl/Tenso
 
 set(TensorImplSources)
 
-if(EINSUMS_WITH_GPU_SUPPORT)
-set(EinsumsTensorImplGPUDeps Einsums_hipBLASVendor)
-endif()
+# No extra GPU module dependency. This used to be Einsums_hipBLASVendor, a module
+# that does not exist anywhere in the tree - it only ever "worked" because no build
+# turned EINSUMS_WITH_GPU_SUPPORT on. The GPU vendor BLAS lives in Einsums_GPU, and
+# TensorImpl does not call it.
+set(EinsumsTensorImplGPUDeps)
 
 include(Einsums_AddModule)
 einsums_add_module(
