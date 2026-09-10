@@ -9,9 +9,11 @@ set(BlockManagerHeaders Einsums/BlockManager/BlockManager.hpp)
 
 set(BlockManagerSources  BlockManager.cpp)
 
-if(EINSUMS_WITH_GPU_SUPPORT)
-set(EinsumsBlockAllocatorGPUDeps Einsums_GPUMemory)
-endif()
+# No extra GPU module dependency. This used to be Einsums_GPUMemory, a module that
+# does not exist anywhere in the tree; it went unnoticed because no build turned
+# EINSUMS_WITH_GPU_SUPPORT on. Device allocation lives in Einsums_GPU
+# (gpu::device_malloc / gpu::DeviceAllocator).
+set(EinsumsBlockAllocatorGPUDeps)
 
 include(Einsums_AddModule)
 einsums_add_module(
