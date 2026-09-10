@@ -26,6 +26,31 @@
 
 EINSUMS_NAMESPACE_BEGIN(gpu)
 
+/**
+ * @brief Report a GPU entry point that has no implementation on this backend.
+ *
+ * Several vendor entry points are declared and dispatched to but not yet
+ * written for CUDA/HIP. They used to cast their arguments to void and return,
+ * which is the worst available behavior: the caller sees a successful call and
+ * an untouched output buffer, so a missing kernel is indistinguishable from a
+ * correct one that happened to compute zeros. Under the mock backend the same
+ * functions delegate to CPU BLAS and are numerically right, so nothing in the
+ * test suite noticed.
+ *
+ * Throwing instead makes the gap loud at the call site. Callers that can fall
+ * back (the ComputeGraph executor catches around its GPU dispatch) still do so;
+ * callers that cannot get a diagnosable error instead of silent corruption.
+ *
+ * @param what Name of the entry point, e.g. "gpu::solver::syev<float>".
+ */
+[[noreturn]] inline void not_implemented(char const                *what,
+                                         std::source_location const loc = std::source_location::current()) {
+    EINSUMS_THROW_EXCEPTION(std::runtime_error, "{} is not implemented for this GPU backend (at {}:{})", what, loc.file_name(), loc.line());
+    // EINSUMS_THROW_EXCEPTION always throws; this satisfies [[noreturn]] for
+    // compilers that cannot see through the macro.
+    throw std::runtime_error(what);
+}
+
 // ===========================================================================
 // Unified error checking macros for GPU runtime, BLAS, and solver calls.
 //
