@@ -33,31 +33,26 @@ GPUPlacement::GPUPlacement(CostModel const &cost_model, size_t min_bytes) : _min
 
 namespace {
 
-/// Check if an OpKind is a BLAS/LAPACK operation that has a GPU implementation.
+/// Check if an OpKind is one the executor can actually dispatch to the GPU.
+///
+/// This list must match try_gpu_blas_dispatch in Graph.cpp, and nothing wider.
+/// It used to advertise the whole BLAS/LAPACK surface - Syev, Heev, Gesv, Getrf,
+/// Getrs, Getri, Invert, SVD, SVD_DD, QR, Geev, Ger, Dot, DirectProduct,
+/// SymmGemm - none of which has a GPU execution path. Placing them marked every
+/// one Target::GPU and then dropped it into the CPU fallback, which on a
+/// discrete device means running a host kernel while the operand pointers are
+/// swapped to device shadows. The fallback now restores host pointers first, so
+/// that is no longer fatal, but the transfers and the placement bookkeeping were
+/// pure overhead for work that was never going to run on the device.
+///
+/// Add a kind back here only together with its dispatch path.
 bool is_gpu_capable_op(OpKind kind) {
     switch (kind) {
-    // BLAS Level 2/3
-    case OpKind::Gemm:
-    case OpKind::BatchedGemm:
-    case OpKind::Gemv:
-    case OpKind::Ger:
-    case OpKind::Dot:
-    case OpKind::Axpby:
-    case OpKind::Scale:
-    case OpKind::DirectProduct:
-    case OpKind::SymmGemm:
-    // LAPACK
-    case OpKind::Syev:
-    case OpKind::Heev:
-    case OpKind::Gesv:
-    case OpKind::Getrf:
-    case OpKind::Getrs:
-    case OpKind::Getri:
-    case OpKind::Invert:
-    case OpKind::SVD:
-    case OpKind::SVD_DD:
-    case OpKind::QR:
-    case OpKind::Geev:
+    case OpKind::Gemm:        // try_gpu_gemm
+    case OpKind::BatchedGemm: // try_gpu_batched_gemm (strided only)
+    case OpKind::Gemv:        // try_gpu_gemv
+    case OpKind::Axpby:       // try_gpu_axpy
+    case OpKind::Scale:       // try_gpu_scale
         return true;
     default:
         return false;
@@ -65,24 +60,39 @@ bool is_gpu_capable_op(OpKind kind) {
 }
 
 /// Check if the backend supports GPU BLAS for the given element type.
-/// MPS only supports float32. CUDA/HIP support float32, float64, and complex.
-bool backend_supports_dtype(packed_gemm::ScalarType dtype) {
+///
+/// MPS only supports float32.
+///
+/// For CUDA/HIP/mock this reports the dtypes the executor's dispatch helpers
+/// actually handle. Of those, only the strided-batched GEMM path takes complex;
+/// try_gpu_gemm, try_gpu_gemv, try_gpu_scale and try_gpu_axpy all return false
+/// for anything but Float32/Float64. Claiming complex here (as this did) placed
+/// complex einsums on the GPU that the executor then handed straight back to the
+/// CPU. The node's OpKind is threaded in so the complex case can be answered
+/// per-op rather than per-backend.
+bool backend_supports_dtype(packed_gemm::ScalarType dtype, OpKind kind) {
     if constexpr (gpu::has_mps) {
         return dtype == packed_gemm::ScalarType::Float32;
     }
-    // CUDA/HIP/mock: support all standard types.
-    return dtype == packed_gemm::ScalarType::Float32 || dtype == packed_gemm::ScalarType::Float64 ||
-           dtype == packed_gemm::ScalarType::Complex64 || dtype == packed_gemm::ScalarType::Complex128;
+
+    if (dtype == packed_gemm::ScalarType::Float32 || dtype == packed_gemm::ScalarType::Float64) {
+        return true;
+    }
+    // Complex reaches the device only through gemm_strided_batched.
+    if (dtype == packed_gemm::ScalarType::Complex64 || dtype == packed_gemm::ScalarType::Complex128) {
+        return kind == OpKind::BatchedGemm;
+    }
+    return false;
 }
 
 /// Check if all tensors involved in a node are supported by the GPU backend.
 bool node_dtypes_supported(Node const &node, Graph const &graph) {
     for (auto tid : node.inputs) {
-        if (!backend_supports_dtype(graph.tensor(tid).dtype))
+        if (!backend_supports_dtype(graph.tensor(tid).dtype, node.kind))
             return false;
     }
     for (auto tid : node.outputs) {
-        if (!backend_supports_dtype(graph.tensor(tid).dtype))
+        if (!backend_supports_dtype(graph.tensor(tid).dtype, node.kind))
             return false;
     }
     return true;
@@ -133,8 +143,15 @@ void GPUPlacement::reset_stats() {
 
 bool GPUPlacement::run(Graph &graph) {
     PassCounter const placed{_num_placed};
-    // No GPU backend available, nothing to do.
-    if constexpr (!gpu::has_gpu && !gpu::is_mock) {
+
+    // Is there a usable device right now? gpu::has_gpu cannot answer that - it is
+    // a build flag, and `!has_gpu && !is_mock` was a tautologically false guard
+    // (is_mock is defined as !has_gpu), so this never returned early at all. A
+    // CUDA-enabled binary on a node with no driver therefore still placed work on
+    // a "GPU": device_malloc failed, the shadow map cached nullptr, and the
+    // executor swapped a tensor's data pointer to it.
+    if (!gpu::gpu_available()) {
+        EINSUMS_LOG_INFO("GPUPlacement: no usable GPU device, keeping every node on the host");
         return false;
     }
 

@@ -38,8 +38,21 @@ class DeviceShadowMap {
     /// Returns the device pointer.
     void *ensure(TensorId tid, size_t bytes) {
         auto it = _shadows.find(tid);
-        if (it != _shadows.end())
+        if (it != _shadows.end()) {
+            // First writer wins on size, and the two call sites disagree about
+            // what to pass: the HostToDevice path uses TransferDescriptor::
+            // size_bytes while the GPU-node path uses TensorHandle::total_bytes().
+            // If those ever diverge, whichever ran first silently sizes the
+            // allocation and the other overruns it. Grow rather than truncate,
+            // since a too-small device buffer is a heap corruption on the device.
+            if (bytes > it->second.bytes) {
+                gpu::device_free(it->second.ptr);
+                auto grown      = gpu::device_malloc(bytes);
+                it->second.ptr   = grown ? grown.value() : nullptr;
+                it->second.bytes = bytes;
+            }
             return it->second.ptr;
+        }
 
         auto  result  = gpu::device_malloc(bytes);
         void *ptr     = result ? result.value() : nullptr;

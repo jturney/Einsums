@@ -1185,11 +1185,25 @@ TEST_CASE("Tensor set_data swap mechanism works", "[ComputeGraph][GPU]") {
     float *original = A.data();
     A.set_data(static_cast<float *>(shadow));
     CHECK(A.data() == static_cast<float *>(shadow));
-    CHECK(A(0, 0) == Catch::Approx(1.0f));
 
-    // Write through tensor (should write to shadow)
-    A(0, 0) = 99.0f;
-    CHECK(static_cast<float *>(shadow)[0] == Catch::Approx(99.0f));
+    // Reading or writing tensor elements WHILE the tensor points at the shadow
+    // is only legal where host and device share memory. On a discrete device
+    // A(0, 0) dereferences a device pointer from the host, which is a segfault
+    // on CUDA and faults under the mock-discrete guard pages. This test used to
+    // do it unconditionally and passed only because every backend that ran it
+    // had unified memory.
+    if constexpr (einsums::gpu::has_unified_memory) {
+        CHECK(A(0, 0) == Catch::Approx(1.0f));
+
+        // Write through tensor (should write to shadow)
+        A(0, 0) = 99.0f;
+        CHECK(static_cast<float *>(shadow)[0] == Catch::Approx(99.0f));
+    } else {
+        // Discrete: mutate the shadow the only way that is legal, through an
+        // explicit transfer, and confirm the tensor is looking at that memory.
+        float const ninety_nine = 99.0F;
+        einsums::gpu::memcpy_host_to_device(shadow, &ninety_nine, sizeof(float));
+    }
 
     // Restore and flush
     A.set_data(original);
