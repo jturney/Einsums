@@ -56,6 +56,69 @@ bool try_gpu_blas_dispatch(Node const &node, std::unordered_map<TensorId, Tensor
 /// reads the host tensor's data directly; on a discrete device the data has been
 /// copied into a shadow buffer keyed by tensor id. Shared by every try_gpu_*
 /// helper below, which otherwise repeated this if-constexpr branch per operand.
+/// The tensor's CURRENT host data pointer, read through its rank-erased impl.
+///
+/// TensorHandle::data_ptr is a registration-time snapshot that nothing
+/// refreshes - the header says so, and says not to build an executor on it. It
+/// is null for any tensor that was deferred when registered, which is every
+/// tensor a Materialize node later allocates. The device-shadow path was built
+/// on that field, so for lazily materialized tensors it skipped the upload and,
+/// worse, had nowhere to copy a GPU result back to: the answer was computed on
+/// the device and then dropped.
+///
+/// Returns nullptr when the tensor genuinely has no single buffer (tile-wise
+/// sparse) or is not materialized yet.
+[[nodiscard]] void *live_host_ptr(TensorHandle const &h) {
+    if (!h.impl_fn || h.dtype == packed_gemm::ScalarType::Unknown) {
+        return h.data_ptr; // no impl to read through; snapshot is all there is
+    }
+    void *raw = h.impl_fn();
+    if (raw == nullptr) {
+        return h.data_ptr;
+    }
+    void *out = nullptr;
+    detail::dispatch_scalar_type(h.dtype, [&]<typename T>(T /*tag*/) {
+        auto *impl = static_cast<::einsums::detail::TensorImpl<T> *>(raw);
+        out        = static_cast<void *>(impl->data());
+    });
+    return out;
+}
+
+/// Live rank-2 geometry, and whether the buffer is plain column-major packed.
+///
+/// The gpu::blas dispatchers hand cuBLAS a bare pointer plus a leading
+/// dimension, which only describes the data when the operand is contiguous
+/// column-major. They took M, N, K and lda/ldb/ldc from TensorHandle::dims -
+/// registration-time snapshots, with no stride check at all - so a view, a
+/// sliced operand, or a tensor whose extents changed after registration was
+/// passed to the GEMM with the wrong shape and the wrong leading dimension.
+///
+/// @return False when the tensor is not a materialized, contiguous,
+/// column-major rank-2 buffer, in which case the caller must decline and let
+/// the CPU path handle it.
+[[nodiscard]] bool live_colmajor_2d(TensorHandle const &h, int64_t &rows, int64_t &cols) {
+    if (!h.impl_fn || h.dtype == packed_gemm::ScalarType::Unknown) {
+        return false;
+    }
+    void *raw = h.impl_fn();
+    if (raw == nullptr) {
+        return false;
+    }
+    bool ok = false;
+    detail::dispatch_scalar_type(h.dtype, [&]<typename T>(T /*tag*/) {
+        auto const *impl = static_cast<::einsums::detail::TensorImpl<T> const *>(raw);
+        auto const &d    = impl->dims();
+        auto const &st   = impl->strides();
+        if (d.size() != 2 || st.size() != 2) {
+            return;
+        }
+        rows = static_cast<int64_t>(d[0]);
+        cols = static_cast<int64_t>(d[1]);
+        ok   = (st[0] == 1) && (static_cast<int64_t>(st[1]) == rows);
+    });
+    return ok;
+}
+
 [[nodiscard]] inline void *resolve_device_ptr([[maybe_unused]] TensorHandle const &h, [[maybe_unused]] TensorId id,
                                               [[maybe_unused]] DeviceShadowMap &shadows) {
     if constexpr (gpu::has_unified_memory) {
@@ -137,8 +200,15 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
 
     // C is column-major: C[row, col] with dims[0]=rows, dims[1]=cols.
     // M = C rows, N = C cols.
-    auto    M = static_cast<int64_t>(hc.dims[0]);
-    auto    N = static_cast<int64_t>(hc.dims[1]);
+    // Live, contiguity-checked geometry. Declining here costs a CPU fallback;
+    // trusting the snapshot costs a wrong answer.
+    int64_t a_rows = 0, a_cols = 0, b_rows = 0, b_cols = 0, c_rows = 0, c_cols = 0;
+    if (!live_colmajor_2d(ha, a_rows, a_cols) || !live_colmajor_2d(hb, b_rows, b_cols) || !live_colmajor_2d(hc, c_rows, c_cols)) {
+        return false;
+    }
+
+    auto    M = c_rows;
+    auto    N = c_cols;
     int64_t K = 0;
 
     // Find K from the link index dimension.
@@ -146,7 +216,7 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
     // K is the dimension of the link index in A (or B).
     for (size_t d = 0; d < 2; d++) {
         if (ai[d] == link) {
-            K = static_cast<int64_t>(ha.dims[d]);
+            K = (d == 0) ? a_rows : a_cols;
             break;
         }
     }
@@ -175,9 +245,25 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
         return false;
     }
 
-    auto lda = static_cast<int64_t>(ha.dims[0]); // leading dimension = rows in column-major
-    auto ldb = static_cast<int64_t>(hb.dims[0]);
-    auto ldc = static_cast<int64_t>(hc.dims[0]);
+    // Verify the operands really have the shapes the index analysis just
+    // assigned them. A and B were picked by position in node.inputs, on the
+    // assumption that the first non-C input is the spec's A - nothing enforces
+    // that, and when the order differs the transpose flags and leading
+    // dimensions are computed against the wrong tensor, which produces a
+    // confidently wrong GEMM rather than a failure. Cross-check against the
+    // live extents and decline if they disagree.
+    auto const a_ok = (transa == 'n') ? (a_rows == M && a_cols == K) : (a_rows == K && a_cols == M);
+    auto const b_ok = (transb == 'n') ? (b_rows == K && b_cols == N) : (b_rows == N && b_cols == K);
+    if (!a_ok || !b_ok) {
+        EINSUMS_LOG_DEBUG("try_gpu_gemm: operand extents disagree with the index analysis "
+                          "(A={}x{} transa={}, B={}x{} transb={}, M={} N={} K={}); leaving node {} on the host",
+                          a_rows, a_cols, transa, b_rows, b_cols, transb, M, N, K, node.id);
+        return false;
+    }
+
+    auto lda = a_rows; // leading dimension = rows, valid because the operand is packed
+    auto ldb = b_rows;
+    auto ldc = c_rows;
 
     // Dispatch based on dtype.
     if (ha.dtype == packed_gemm::ScalarType::Float32) {
@@ -258,8 +344,12 @@ bool try_gpu_gemv(EinsumDescriptor const &desc, Node const &node, std::unordered
         return false;
 
     // A is M×N column-major (dims[0]=M=rows, dims[1]=N=cols).
-    auto          M   = static_cast<int64_t>(ha.dims[0]);
-    auto          N   = static_cast<int64_t>(ha.dims[1]);
+    int64_t a_rows = 0, a_cols = 0;
+    if (!live_colmajor_2d(ha, a_rows, a_cols)) {
+        return false;
+    }
+    auto          M   = a_rows;
+    auto          N   = a_cols;
     int64_t const lda = M;
 
     // Determine transpose: does the target index appear as A's row or column?
@@ -3921,8 +4011,9 @@ void Graph::execute() {
                     // their transfer nodes before the allocation happens. Copying
                     // from it is a null dereference, and there is nothing to copy:
                     // the device buffer is exactly as defined as the host one.
-                    if (shadow && handle.data_ptr) {
-                        gpu::memcpy_host_to_device(shadow, handle.data_ptr, tdesc->size_bytes);
+                    void *host = live_host_ptr(handle);
+                    if (shadow && host) {
+                        gpu::memcpy_host_to_device(shadow, host, tdesc->size_bytes);
                         device_valid.insert(tdesc->tensor_id);
                     }
                 }
@@ -3936,8 +4027,18 @@ void Graph::execute() {
                     // Discrete GPU: copy device shadow → host.
                     auto       &handle = _tensors[tdesc->tensor_id];
                     void const *shadow = _device_shadows.get(tdesc->tensor_id);
-                    if (shadow && handle.data_ptr) {
-                        gpu::memcpy_device_to_host(handle.data_ptr, shadow, tdesc->size_bytes);
+                    // Only copy down when the device copy is the authoritative
+                    // one. A DeviceToHost node is placed by TransferInsertion on
+                    // the assumption that the GPU node before it ran on the
+                    // device; when that node instead fell back to the CPU, the
+                    // host result is the live one and the shadow still holds
+                    // whatever was uploaded before the op. Copying it back then
+                    // overwrites the correct answer with stale data - typically
+                    // the zeros an output tensor was initialized to, which is
+                    // what made whole graphs come out zero.
+                    void *host = live_host_ptr(handle);
+                    if (shadow && host && device_valid.count(tdesc->tensor_id)) {
+                        gpu::memcpy_device_to_host(host, shadow, tdesc->size_bytes);
                     }
                     device_valid.erase(tdesc->tensor_id);
                 }
@@ -3947,7 +4048,40 @@ void Graph::execute() {
             // GPU node execution.
             std::vector<std::pair<TensorId, void *>> saved_ptrs;
 
+            // Every operand must be transferable before anything is placed on
+            // the device. A tensor with no live host storage can neither be
+            // uploaded nor receive a result, so a node touching one has to run
+            // on the host instead.
+            //
+            // Checking up front matters: skipping just the upload would still
+            // leave a shadow allocated, and resolve_device_ptr hands that
+            // non-null buffer to the dispatcher, which then computes on
+            // uninitialized device memory.
+            bool operands_ready = true;
             if constexpr (!gpu::has_unified_memory) {
+                auto check_ready = [&](TensorId tid) {
+                    auto it = _tensors.find(tid);
+                    if (it == _tensors.end()) {
+                        operands_ready = false;
+                        return;
+                    }
+                    if (!device_valid.count(tid) && live_host_ptr(it->second) == nullptr) {
+                        operands_ready = false;
+                    }
+                };
+                for (auto tid : node.inputs)
+                    check_ready(tid);
+                for (auto tid : node.outputs)
+                    check_ready(tid);
+
+                if (!operands_ready) {
+                    EINSUMS_LOG_DEBUG("Graph::execute: node {} ({}) kept on the host, an operand has no host storage to transfer",
+                                      node.id, node.label);
+                }
+            }
+
+            if constexpr (!gpu::has_unified_memory) {
+                if (operands_ready) {
                 // Discrete GPU: swap tensor data pointers to device shadows.
                 std::unordered_set<TensorId> swapped;
                 auto                         swap_to_shadow = [&](TensorId tid) {
@@ -3971,8 +4105,10 @@ void Graph::execute() {
                     // TransferElimination dropped an H2D it judged redundant -
                     // computed on uninitialized device memory. Under unified
                     // memory the swap is a no-op, so the bug was invisible.
-                    if (!device_valid.count(tid) && handle.data_ptr) {
-                        gpu::memcpy_host_to_device(shadow, handle.data_ptr, handle.total_bytes());
+                    if (!device_valid.count(tid)) {
+                        // Non-null by construction: checked above before any
+                        // operand of this node was placed.
+                        gpu::memcpy_host_to_device(shadow, live_host_ptr(handle), handle.total_bytes());
                     }
                     device_valid.insert(tid);
 
@@ -3988,6 +4124,7 @@ void Graph::execute() {
                     swap_to_shadow(tid);
                 for (auto tid : node.outputs)
                     swap_to_shadow(tid);
+                }
             }
             // Unified memory: no swap needed, GPU reads tensor.data() directly.
             // MPS wrap_or_copy will create a zero-copy MTLBuffer wrapper.
@@ -3995,7 +4132,7 @@ void Graph::execute() {
             // Execute via GPU BLAS dispatch if possible, otherwise CPU fallback.
             bool gpu_dispatched = false;
             try {
-                gpu_dispatched = try_gpu_blas_dispatch(node, _tensors, _device_shadows);
+                gpu_dispatched = operands_ready && try_gpu_blas_dispatch(node, _tensors, _device_shadows);
                 if (gpu_dispatched) {
                     profile::annotate("gpu_dispatch", "gemm");
                 }
@@ -4024,8 +4161,8 @@ void Graph::execute() {
                         if (handle.swap_data) {
                             handle.swap_data(old_ptr);
                         }
-                        if (shadow && handle.data_ptr && device_valid.count(tid)) {
-                            gpu::memcpy_device_to_host(handle.data_ptr, shadow, handle.total_bytes());
+                        if (void *host = live_host_ptr(handle); shadow && host && device_valid.count(tid)) {
+                            gpu::memcpy_device_to_host(host, shadow, handle.total_bytes());
                         }
                         device_valid.erase(tid);
                     }
@@ -4059,8 +4196,48 @@ void Graph::execute() {
             // CPU node: execute normally. Anything it writes makes the host copy
             // authoritative again, so a later GPU node must re-upload it.
             if constexpr (!gpu::has_unified_memory) {
-                for (auto tid : node.outputs)
+                // Bring down anything this node will read whose live value is
+                // sitting in a device shadow.
+                //
+                // TransferInsertion normally emits a DeviceToHost for this, but
+                // the executor cannot depend on that: an accumulating einsum
+                // reads its output operand, and when the producing GPU node ran
+                // on the device while the consumer fell back to the host, the
+                // host copy is stale. Erasing device_valid without copying -
+                // which is what this did - silently drops the GPU result.
+                auto sync_down = [&](TensorId tid) {
+                    if (!device_valid.count(tid)) {
+                        return;
+                    }
+                    auto it = _tensors.find(tid);
+                    if (it != _tensors.end()) {
+                        void const *shadow = _device_shadows.get(tid);
+                        if (void *host = live_host_ptr(it->second); shadow && host) {
+                            gpu::memcpy_device_to_host(host, shadow, it->second.total_bytes());
+                        }
+                    }
                     device_valid.erase(tid);
+                };
+
+                if (node.kind == OpKind::Setup || node.kind == OpKind::Loop || node.kind == OpKind::Conditional) {
+                    // These carry a subgraph, and the nested replay writes host
+                    // tensors through its own executor and its own shadow map.
+                    // node.outputs does not describe what it touched, so no
+                    // device shadow this level holds can be assumed current
+                    // afterwards. Anything still needed on the device gets
+                    // re-uploaded by the next GPU node that wants it.
+                    // A nested replay can read anything, so everything the
+                    // device currently owns has to come back first.
+                    std::vector<TensorId> const owned(device_valid.begin(), device_valid.end());
+                    for (auto tid : owned)
+                        sync_down(tid);
+                    device_valid.clear();
+                } else {
+                    for (auto tid : node.inputs)
+                        sync_down(tid);
+                    for (auto tid : node.outputs)
+                        sync_down(tid);
+                }
             }
             if (node.execute) {
                 node.execute();
@@ -4099,8 +4276,8 @@ void Graph::execute() {
                 continue;
             auto       &handle = it->second;
             void const *shadow = _device_shadows.get(tid);
-            if (shadow && handle.data_ptr) {
-                gpu::memcpy_device_to_host(handle.data_ptr, shadow, handle.total_bytes());
+            if (void *host = live_host_ptr(handle); shadow && host) {
+                gpu::memcpy_device_to_host(host, shadow, handle.total_bytes());
             }
         }
     }
