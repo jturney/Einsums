@@ -47,11 +47,13 @@ other system-level dependencies to build it on your system.
   both can be overridden. The compiler options are ``default`` (gcc on Linux,
   clang on macOS/Windows), ``gcc``, ``clang``, and ``intel``. The BLAS options
   are ``openblas``, ``mkl``, and ``accelerate`` (macOS). If you plan on building
-  the docs, add the ``--docs`` flag. For example:
+  the docs, add the ``--docs`` flag. To build the CUDA backend, add ``--gpu cuda``
+  (Linux x86_64 only, and it requires a gcc or clang toolchain - see
+  :doc:`compilers_and_options`). For example:
 
   .. code:: bash
 
-    python3 devtools/conda-envs/merge_yml.py --output=einsums.yml [--docs] <compiler> <blas>
+    python3 devtools/conda-envs/merge_yml.py --output=einsums.yml [--docs] [--gpu cuda] <compiler> <blas>
     conda env create -f einsums.yml
     conda activate einsums-dev
 
@@ -101,7 +103,9 @@ other system-level dependencies to build it on your system.
     * For the Fourier Transform abilities, you will need either `FFTW3 <https://www.fftw.org>`__
       or MKL.
 
-    * HIP for GPU support. If using an Nvidia platform, CUDA is also required.
+    * CUDA (cudart, cuBLAS, cuSolver) or HIP for GPU support. With conda, add
+      ``--gpu cuda`` to the merge script rather than installing a system toolkit.
+      HIP can also target Nvidia hardware, in which case CUDA is required too.
 
     * pybind11 for the Python extension module.
 
