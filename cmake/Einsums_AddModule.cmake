@@ -496,6 +496,17 @@ function(einsums_add_module libname modulename)
       set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_HEADERS_${modulename} ${headers})
       set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_RELHEADERS_${modulename} ${${modulename}_HEADERS})
       set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_DEPS_${modulename} ${${modulename}_MODULE_DEPENDENCIES})
+      # Non-module DEPENDENCIES carry usage requirements the annotated headers
+      # need just as much as MODULE_DEPENDENCIES do. The GPU module is the case
+      # that exposed this: its vendor deps (CUDA::cublas, CUDA::cudart, ...) are
+      # what supply -I<toolkit>/include, so without them apiary's libclang parse
+      # of GPU/Types.hpp fails with "'cuComplex.h' file not found" even though
+      # the C++ compile of the very same header succeeds.
+      #
+      # Kept in a separate property from EINSUMS_PYBIND_DEPS_* because that list
+      # is also walked to collect per-module Defines.hpp files, which only exist
+      # for Einsums modules.
+      set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_EXTDEPS_${modulename} ${${modulename}_DEPENDENCIES})
       set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_HEADER_ROOT_${modulename} "${HEADER_ROOT}")
       set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_BIN_INC_${modulename} "${CMAKE_CURRENT_BINARY_DIR}/include")
       set_property(GLOBAL APPEND PROPERTY EINSUMS_PYBIND_LIBNAME_${modulename} "${libname}")

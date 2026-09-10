@@ -107,6 +107,19 @@ function(einsums_finalize_pybind)
         get_property(_headers      GLOBAL PROPERTY EINSUMS_PYBIND_HEADERS_${_mod})
         get_property(_relheaders   GLOBAL PROPERTY EINSUMS_PYBIND_RELHEADERS_${_mod})
         get_property(_deps         GLOBAL PROPERTY EINSUMS_PYBIND_DEPS_${_mod})
+        get_property(_extdeps      GLOBAL PROPERTY EINSUMS_PYBIND_EXTDEPS_${_mod})
+
+        # Non-module dependencies (CUDA::cublas, HDF5, hip::host, Apple
+        # frameworks ...) contribute include directories through the same
+        # DEPENDS_TARGETS channel. Filter to real targets: DEPENDENCIES may also
+        # hold bare library paths (the MPS backend passes ${METAL_FRAMEWORK} and
+        # friends), and apiary reads usage requirements off targets only.
+        set(_extdep_targets "")
+        foreach(_extdep IN LISTS _extdeps)
+            if(TARGET "${_extdep}")
+                list(APPEND _extdep_targets "${_extdep}")
+            endif()
+        endforeach()
         get_property(_header_root  GLOBAL PROPERTY EINSUMS_PYBIND_HEADER_ROOT_${_mod})
         get_property(_bin_inc      GLOBAL PROPERTY EINSUMS_PYBIND_BIN_INC_${_mod})
         get_property(_libname      GLOBAL PROPERTY EINSUMS_PYBIND_LIBNAME_${_mod})
@@ -151,7 +164,7 @@ function(einsums_finalize_pybind)
             SOURCE_INCLUDES ${_relheaders}
             REGISTER_FUNCTION apiary_register_${_mod}
             MODULE einsums
-            DEPENDS_TARGETS ${_deps}
+            DEPENDS_TARGETS ${_deps} ${_extdep_targets}
             OUTPUT_DIR "${CMAKE_BINARY_DIR}/generated/pybind"
             OUTPUT_NAME "${_libname}_${_mod}"
             CXX_STANDARD ${EINSUMS_WITH_CXX_STANDARD}
