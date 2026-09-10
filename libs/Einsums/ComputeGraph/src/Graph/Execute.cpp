@@ -151,6 +151,16 @@ void Graph::execute() {
     // (defensive: an undeclared mutation after the rebuild above).
     static NodeProfileStrings const kEmptyEntry{};
 
+    // Tensors whose DEVICE shadow currently holds the authoritative data.
+    //
+    // Tracked at run time rather than read off TensorHandle::residency, which
+    // is a static annotation left by TransferInsertion and says nothing about a
+    // tensor produced by one GPU node and consumed by the next: no transfer is
+    // inserted for those, so residency stays Host while the live value is on the
+    // device. Copying the host side up on that basis would clobber the producer's
+    // result.
+    std::unordered_set<TensorId> device_valid;
+
     for (size_t idx = 0; idx < _nodes.size(); idx++) {
         Node &node = _nodes[idx];
 
@@ -190,7 +200,15 @@ void Graph::execute() {
                     // Discrete GPU: copy host data → device shadow.
                     auto &handle = _tensors[tdesc->tensor_id];
                     void *shadow = _device_shadows.ensure(tdesc->tensor_id, tdesc->size_bytes);
-                    gpu::memcpy_host_to_device(shadow, handle.data_ptr, tdesc->size_bytes);
+                    // A tensor whose storage has not been materialized yet has a
+                    // null data_ptr - graphs built inside a Setup closure reach
+                    // their transfer nodes before the allocation happens. Copying
+                    // from it is a null dereference, and there is nothing to copy:
+                    // the device buffer is exactly as defined as the host one.
+                    if (shadow && handle.data_ptr) {
+                        gpu::memcpy_host_to_device(shadow, handle.data_ptr, tdesc->size_bytes);
+                        device_valid.insert(tdesc->tensor_id);
+                    }
                 }
                 // Unified memory: no copy needed, GPU reads host memory directly.
             }
@@ -202,9 +220,10 @@ void Graph::execute() {
                     // Discrete GPU: copy device shadow → host.
                     auto       &handle = _tensors[tdesc->tensor_id];
                     void const *shadow = _device_shadows.get(tdesc->tensor_id);
-                    if (shadow) {
+                    if (shadow && handle.data_ptr) {
                         gpu::memcpy_device_to_host(handle.data_ptr, shadow, tdesc->size_bytes);
                     }
+                    device_valid.erase(tdesc->tensor_id);
                 }
                 // Unified memory: no copy needed, result is already in host-accessible memory.
             }
@@ -220,12 +239,35 @@ void Graph::execute() {
                         return;
                     auto &handle = _tensors[tid];
                     void *shadow = _device_shadows.ensure(tid, handle.total_bytes());
+                    if (!shadow)
+                        return;
+
+                    // Populate the shadow when the host copy is still the
+                    // authoritative one. TransferInsertion normally emits an
+                    // explicit HostToDevice node and marks the tensor
+                    // Residency::Device, in which case this is skipped.
+                    //
+                    // Doing it here as well is what keeps the executor correct
+                    // independently of which passes ran. Previously this branch
+                    // called ensure() and swapped the pointer but never copied,
+                    // so a GPU node reached without a preceding H2D - a graph
+                    // with Target::GPU set by hand, or one where
+                    // TransferElimination dropped an H2D it judged redundant -
+                    // computed on uninitialized device memory. Under unified
+                    // memory the swap is a no-op, so the bug was invisible.
+                    if (!device_valid.count(tid) && handle.data_ptr) {
+                        gpu::memcpy_host_to_device(shadow, handle.data_ptr, handle.total_bytes());
+                    }
+                    device_valid.insert(tid);
+
                     if (handle.swap_data) {
                         void *old_ptr = handle.swap_data(shadow);
                         saved_ptrs.emplace_back(tid, old_ptr);
                         swapped.insert(tid);
                     }
                 };
+                // Outputs are copied up too: an accumulating op (nonzero C
+                // prefactor) reads its output operand before writing it.
                 for (auto tid : node.inputs)
                     swap_to_shadow(tid);
                 for (auto tid : node.outputs)
@@ -246,28 +288,51 @@ void Graph::execute() {
             }
 
             if (!gpu_dispatched) {
-                // Fall back to CPU lambda (with pointers still swapped to shadows).
                 profile::annotate("gpu_dispatch", "cpu_fallback");
-                if (node.cpu_fallback) {
-                    try {
-                        node.execute();
-                    } catch (std::exception const &e) {
-                        EINSUMS_LOG_WARN("GPU execution failed for node {} ({}): {}. Using CPU fallback.", node.id, node.label, e.what());
-                        profile::annotate("gpu_fallback", "true");
-                        node.cpu_fallback();
-                        for (auto tid : node.outputs) {
-                            auto it = _tensors.find(tid);
-                            if (it != _tensors.end()) {
-                                it->second.residency = Residency::Host;
-                            }
+
+                // The CPU lambda must run on HOST pointers. Restoring them first
+                // is not a tidiness detail: on a discrete device the tensors are
+                // currently pointing at cudaMalloc'd shadows, so calling a host
+                // BLAS kernel on them is a segfault. This code used to run the
+                // fallback "with pointers still swapped to shadows" - harmless
+                // only because every backend that ever executed it had unified
+                // memory, which made the swap a no-op.
+                //
+                // Inputs that were copied up must also come back down, because a
+                // preceding GPU node in the same chain may have produced them on
+                // the device and the host copy is then stale.
+                if constexpr (!gpu::has_unified_memory) {
+                    for (auto const &[tid, old_ptr] : saved_ptrs) {
+                        auto &handle = _tensors[tid];
+                        void *shadow = _device_shadows.get(tid);
+                        if (handle.swap_data) {
+                            handle.swap_data(old_ptr);
                         }
+                        if (shadow && handle.data_ptr && device_valid.count(tid)) {
+                            gpu::memcpy_device_to_host(handle.data_ptr, shadow, handle.total_bytes());
+                        }
+                        device_valid.erase(tid);
                     }
-                } else {
+                    saved_ptrs.clear();
+                }
+
+                // node.cpu_fallback and node.execute are the same callable -
+                // GPUPlacement assigns cpu_fallback = execute - so the old
+                // try/catch-then-retry structure re-ran an identical call and
+                // could only fail twice. One call, one place to report.
+                if (node.execute) {
                     node.execute();
+                }
+                for (auto tid : node.outputs) {
+                    auto it = _tensors.find(tid);
+                    if (it != _tensors.end()) {
+                        it->second.residency = Residency::Host;
+                    }
                 }
             }
 
             // 3. Restore original host pointers (only needed on discrete GPU).
+            // Empty when the fallback above already restored them.
             for (auto const &[tid, old_ptr] : saved_ptrs) {
                 auto &handle = _tensors[tid];
                 if (handle.swap_data) {
@@ -275,7 +340,12 @@ void Graph::execute() {
                 }
             }
         } else {
-            // CPU node: execute normally.
+            // CPU node: execute normally. Anything it writes makes the host copy
+            // authoritative again, so a later GPU node must re-upload it.
+            if constexpr (!gpu::has_unified_memory) {
+                for (auto tid : node.outputs)
+                    device_valid.erase(tid);
+            }
             if (node.execute) {
                 node.execute();
             } else if (node.async_start && node.async_finish) {
@@ -299,18 +369,19 @@ void Graph::execute() {
     // Final D2H flush (discrete GPU only).
     // On unified memory, GPU wrote directly to host-accessible tensor data, no copy needed.
     if constexpr (!gpu::has_unified_memory) {
-        // Copy shadows for tensors whose last writer was a GPU node.
-        std::unordered_set<TensorId> cpu_written;
-        for (auto const &n : _nodes) {
-            if (n.target == Target::CPU && n.kind != OpKind::HostToDevice && n.kind != OpKind::DeviceToHost) {
-                for (auto tid : n.outputs)
-                    cpu_written.insert(tid);
-            }
-        }
-
-        for (auto &[tid, handle] : _tensors) {
-            if (cpu_written.count(tid))
+        // Copy back every tensor whose device shadow is still the authoritative
+        // copy at the end of the replay.
+        //
+        // device_valid is maintained as the nodes run, so it answers this
+        // exactly. The previous version scanned the whole node list for "was
+        // any CPU node an output writer" - order-blind, and wrong in both
+        // directions: a tensor written CPU-then-GPU was excluded and its GPU
+        // result silently dropped.
+        for (auto &tid : device_valid) {
+            auto const it = _tensors.find(tid);
+            if (it == _tensors.end())
                 continue;
+            auto       &handle = it->second;
             void const *shadow = _device_shadows.get(tid);
             if (shadow && handle.data_ptr) {
                 gpu::memcpy_device_to_host(handle.data_ptr, shadow, handle.total_bytes());
