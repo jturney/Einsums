@@ -5,6 +5,7 @@
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Error.hpp>
+#include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/GPU/Solver.hpp>
 #include <Einsums/GPU/Stream.hpp>
 
@@ -36,14 +37,9 @@ EINSUMS_NAMESPACE_BEGIN(gpu::solver)
 
 template <>
 EINSUMS_EXPORT int syev<float>(char jobz, char uplo, int64_t n, float *A, int64_t lda, float *W) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)jobz;
-    (void)uplo;
-    (void)n;
-    (void)A;
-    (void)lda;
-    (void)W;
-    return -1;
+    not_implemented("gpu::solver::syev<float>");
 #else
     return static_cast<int>(::einsums::blas::vendor::ssyevd(jobz, uplo, static_cast<int_t>(n), A, static_cast<int_t>(lda), W));
 #endif
@@ -51,14 +47,9 @@ EINSUMS_EXPORT int syev<float>(char jobz, char uplo, int64_t n, float *A, int64_
 
 template <>
 EINSUMS_EXPORT int syev<double>(char jobz, char uplo, int64_t n, double *A, int64_t lda, double *W) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)jobz;
-    (void)uplo;
-    (void)n;
-    (void)A;
-    (void)lda;
-    (void)W;
-    return -1;
+    not_implemented("gpu::solver::syev<double>");
 #else
     return static_cast<int>(::einsums::blas::vendor::dsyevd(jobz, uplo, static_cast<int_t>(n), A, static_cast<int_t>(lda), W));
 #endif
@@ -70,14 +61,9 @@ EINSUMS_EXPORT int syev<double>(char jobz, char uplo, int64_t n, double *A, int6
 
 template <>
 EINSUMS_EXPORT int heev<float>(char jobz, char uplo, int64_t n, std::complex<float> *A, int64_t lda, float *W) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)jobz;
-    (void)uplo;
-    (void)n;
-    (void)A;
-    (void)lda;
-    (void)W;
-    return -1;
+    not_implemented("gpu::solver::heev<float>");
 #else
     std::complex<float> lwork_query;
     std::vector<float>  rwork(std::max(int64_t(1), 3 * n - 2));
@@ -91,14 +77,9 @@ EINSUMS_EXPORT int heev<float>(char jobz, char uplo, int64_t n, std::complex<flo
 
 template <>
 EINSUMS_EXPORT int heev<double>(char jobz, char uplo, int64_t n, std::complex<double> *A, int64_t lda, double *W) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)jobz;
-    (void)uplo;
-    (void)n;
-    (void)A;
-    (void)lda;
-    (void)W;
-    return -1;
+    not_implemented("gpu::solver::heev<double>");
 #else
     std::complex<double> lwork_query;
     std::vector<double>  rwork(std::max(int64_t(1), 3 * n - 2));
@@ -116,15 +97,9 @@ EINSUMS_EXPORT int heev<double>(char jobz, char uplo, int64_t n, std::complex<do
 
 template <>
 EINSUMS_EXPORT int gesv<float>(int64_t n, int64_t nrhs, float *A, int64_t lda, int64_t *ipiv, float *B, int64_t ldb) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)n;
-    (void)nrhs;
-    (void)A;
-    (void)lda;
-    (void)ipiv;
-    (void)B;
-    (void)ldb;
-    return -1;
+    not_implemented("gpu::solver::gesv<float>");
 #else
     // CPU gesv uses int* for ipiv, need to convert
     std::vector<int_t> ipiv32(n);
@@ -138,15 +113,9 @@ EINSUMS_EXPORT int gesv<float>(int64_t n, int64_t nrhs, float *A, int64_t lda, i
 
 template <>
 EINSUMS_EXPORT int gesv<double>(int64_t n, int64_t nrhs, double *A, int64_t lda, int64_t *ipiv, double *B, int64_t ldb) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)n;
-    (void)nrhs;
-    (void)A;
-    (void)lda;
-    (void)ipiv;
-    (void)B;
-    (void)ldb;
-    return -1;
+    not_implemented("gpu::solver::gesv<double>");
 #else
     std::vector<int_t> ipiv32(n);
     int info = ::einsums::blas::vendor::dgesv(static_cast<int>(n), static_cast<int>(nrhs), A, static_cast<int>(lda), ipiv32.data(), B,
@@ -163,13 +132,9 @@ EINSUMS_EXPORT int gesv<double>(int64_t n, int64_t nrhs, double *A, int64_t lda,
 
 template <>
 EINSUMS_EXPORT int getrf<float>(int64_t m, int64_t n, float *A, int64_t lda, int64_t *ipiv) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)m;
-    (void)n;
-    (void)A;
-    (void)lda;
-    (void)ipiv;
-    return -1;
+    not_implemented("gpu::solver::getrf<float>");
 #else
     std::vector<int_t> ipiv32(std::min(m, n));
     int info = ::einsums::blas::vendor::sgetrf(static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), ipiv32.data());
@@ -181,13 +146,9 @@ EINSUMS_EXPORT int getrf<float>(int64_t m, int64_t n, float *A, int64_t lda, int
 
 template <>
 EINSUMS_EXPORT int getrf<double>(int64_t m, int64_t n, double *A, int64_t lda, int64_t *ipiv) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)m;
-    (void)n;
-    (void)A;
-    (void)lda;
-    (void)ipiv;
-    return -1;
+    not_implemented("gpu::solver::getrf<double>");
 #else
     std::vector<int_t> ipiv32(std::min(m, n));
     int info = ::einsums::blas::vendor::dgetrf(static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), ipiv32.data());
@@ -203,12 +164,9 @@ EINSUMS_EXPORT int getrf<double>(int64_t m, int64_t n, double *A, int64_t lda, i
 
 template <>
 EINSUMS_EXPORT int getri<float>(int64_t n, float *A, int64_t lda, int64_t const *ipiv) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)n;
-    (void)A;
-    (void)lda;
-    (void)ipiv;
-    return -1;
+    not_implemented("gpu::solver::getri<float>");
 #else
     std::vector<int_t> ipiv32(n);
     for (int64_t i = 0; i < n; ++i)
@@ -220,12 +178,9 @@ EINSUMS_EXPORT int getri<float>(int64_t n, float *A, int64_t lda, int64_t const 
 
 template <>
 EINSUMS_EXPORT int getri<double>(int64_t n, double *A, int64_t lda, int64_t const *ipiv) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)n;
-    (void)A;
-    (void)lda;
-    (void)ipiv;
-    return -1;
+    not_implemented("gpu::solver::getri<double>");
 #else
     std::vector<int_t> ipiv32(n);
     for (int64_t i = 0; i < n; ++i)
@@ -242,19 +197,9 @@ EINSUMS_EXPORT int getri<double>(int64_t n, double *A, int64_t lda, int64_t cons
 template <>
 EINSUMS_EXPORT int gesvd<float>(char jobu, char jobvt, int64_t m, int64_t n, float *A, int64_t lda, float *S, float *U, int64_t ldu,
                                 float *VT, int64_t ldvt) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)jobu;
-    (void)jobvt;
-    (void)m;
-    (void)n;
-    (void)A;
-    (void)lda;
-    (void)S;
-    (void)U;
-    (void)ldu;
-    (void)VT;
-    (void)ldvt;
-    return -1;
+    not_implemented("gpu::solver::gesvd<float>");
 #else
     std::vector<float> superb(std::min(m, n));
     int info = ::einsums::blas::vendor::sgesvd(jobu, jobvt, static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), S, U,
@@ -266,19 +211,9 @@ EINSUMS_EXPORT int gesvd<float>(char jobu, char jobvt, int64_t m, int64_t n, flo
 template <>
 EINSUMS_EXPORT int gesvd<double>(char jobu, char jobvt, int64_t m, int64_t n, double *A, int64_t lda, double *S, double *U, int64_t ldu,
                                  double *VT, int64_t ldvt) {
+    EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
-    (void)jobu;
-    (void)jobvt;
-    (void)m;
-    (void)n;
-    (void)A;
-    (void)lda;
-    (void)S;
-    (void)U;
-    (void)ldu;
-    (void)VT;
-    (void)ldvt;
-    return -1;
+    not_implemented("gpu::solver::gesvd<double>");
 #else
     std::vector<double> superb(std::min(m, n));
     int info = ::einsums::blas::vendor::dgesvd(jobu, jobvt, static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), S, U,
