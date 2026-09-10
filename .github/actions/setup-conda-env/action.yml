@@ -23,6 +23,14 @@ inputs:
       against it also needs -DPython_FIND_ABI="OFF;ANY;ANY;ON" at configure time.
     required: false
     default: "false"
+  gpu:
+    description: >
+      GPU backend dependencies to install (none | cuda). 'cuda' is Linux x86_64
+      only and pairs with -DEINSUMS_WITH_CUDA=ON at configure time. Note that the
+      packages only provide the toolkit; running GPU tests also needs a runner
+      with an NVIDIA driver and --gpus passthrough.
+    required: false
+    default: "none"
   source-dir:
     description: "Path to the checked-out repository root, relative to the workspace."
     required: false
@@ -55,7 +63,9 @@ runs:
         if [ "${{ inputs.docs }}" = "true" ]; then docs_flag="--docs"; fi
         ft_flag=""
         if [ "${{ inputs.free-threaded }}" = "true" ]; then ft_flag="--free-threaded"; fi
-        python merge_yml.py ${docs_flag} ${ft_flag} ${{ inputs.compiler }} ${{ inputs.blas }}
+        gpu_flag=""
+        if [ "${{ inputs.gpu }}" != "none" ]; then gpu_flag="--gpu ${{ inputs.gpu }}"; fi
+        python merge_yml.py ${docs_flag} ${ft_flag} ${gpu_flag} ${{ inputs.compiler }} ${{ inputs.blas }}
 
     # The conda env is deliberately NOT cached. The env tarballs weighed
     # ~1GB each (per OS/compiler/blas/week/yml-hash, duplicated per branch)

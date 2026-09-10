@@ -199,7 +199,31 @@ def free_threaded_pin(dependencies):
     )
 
 
-def merge_environment(output_file, system, compiler, blas, docs, free_threaded=False):
+def gpu_snippet(gpu, system):
+    """Return the GPU snippet path for ``gpu``, or None when no GPU backend is wanted.
+
+    Raises SystemExit on a (gpu, platform) pair conda-forge cannot satisfy, rather
+    than emitting a yml that fails to solve several minutes later.
+    """
+    if gpu == "none":
+        return None
+
+    arch = conda_arch_suffix(system)
+
+    if gpu == "cuda":
+        # conda-forge builds the CUDA packages for linux-64, linux-aarch64 and
+        # win-64. Only linux-64 is exercised here; the others are rejected until
+        # someone has actually built on them.
+        if system != "Linux" or arch != "linux-64":
+            raise SystemExit(
+                f"--gpu cuda is only supported on Linux x86_64 (requested on {system} / {arch})."
+            )
+        return "snippets/gpu/cuda.yml"
+
+    raise SystemExit(f"Unknown GPU backend: {gpu!r}.")
+
+
+def merge_environment(output_file, system, compiler, blas, docs, free_threaded=False, gpu="none"):
     yaml = YAML()
     merged = {"name": "einsums-dev", "channels": [], "dependencies": []}
 
@@ -210,6 +234,10 @@ def merge_environment(output_file, system, compiler, blas, docs, free_threaded=F
     ]
     if docs:
         snippets.append("snippets/docs.yml")
+
+    gpu_rel = gpu_snippet(gpu, system)
+    if gpu_rel:
+        snippets.append(gpu_rel)
 
     for rel in snippets:
         path = os.path.join(DIR_PATH, rel)
@@ -254,8 +282,12 @@ def merge_environment(output_file, system, compiler, blas, docs, free_threaded=F
         yaml.dump(merged, f)
 
     label = f"{system} / {compiler} / {blas}{' / docs' if docs else ''}"
+    if gpu != "none":
+        label += f" / {gpu}"
     print(f"Wrote {output_file}  [{label}]")
     print("  toolchain: " + ", ".join(compiler_packages(compiler, system)))
+    if gpu_rel:
+        print(f"  gpu backend: {gpu} (from {gpu_rel})")
     if python_pin:
         print(f"  interpreter: {python_pin} (free-threaded)")
 
@@ -269,7 +301,8 @@ if __name__ == "__main__":
 %(prog)s [OPTIONS] [COMPILER=default] [BLAS=openblas]
 
 Options:
-  --docs    Include documentation build dependencies (Sphinx, Doxygen, etc.)""",
+  --docs        Include documentation build dependencies (Sphinx, Doxygen, etc.)
+  --gpu cuda    Include the CUDA build dependencies (Linux x86_64 only)""",
     )
 
     parser.add_argument("--output", help="Name of the output yml file", default="conda.yml")
@@ -282,6 +315,14 @@ Options:
         help="Pin the free-threaded (no-GIL) CPython ABI instead of the regular one. "
         "Building against it also needs the Python_FIND_ABI CMake hint; see "
         "docs/sphinx/building/blas_threading.rst.",
+    )
+    parser.add_argument(
+        "--gpu",
+        choices=["none", "cuda"],
+        default="none",
+        help="Add the dependencies for a GPU backend (default: none). "
+        "'cuda' pins CUDA 13.1 and is Linux x86_64 only; see snippets/gpu/cuda.yml. "
+        "Build with -DEINSUMS_WITH_CUDA=ON to use it.",
     )
     parser.add_argument(
         "compiler",
@@ -314,5 +355,5 @@ Options:
         args.blas = "mkl"
 
     merge_environment(
-        args.output, system, args.compiler, args.blas, args.docs, args.free_threaded
+        args.output, system, args.compiler, args.blas, args.docs, args.free_threaded, args.gpu
     )

@@ -1,0 +1,38 @@
+name: einsums-dev
+channels:
+  - conda-forge
+  - nodefaults
+# CUDA build dependencies, added by `merge_yml.py --gpu cuda`.
+#
+# Pinned to 13.1 to match the driver this is developed against (590.44.01
+# reports CUDA 13.1). conda-forge ships newer 13.x, and CUDA 13 has minor
+# version compatibility, but pinning to the driver's own minor removes the
+# guesswork - a runtime newer than the driver fails at cuInit, not at link
+# time, so the failure surfaces far from its cause.
+#
+# The `-dev` suffix matters: conda-forge splits every CUDA library into
+# `libfoo` (runtime .so only), `libfoo-dev` (headers, the unversioned .so
+# symlink, and the CMake config that find_package(CUDAToolkit) consumes) and
+# `libfoo-static`. Building needs `-dev`.
+#
+# Only the libraries einsums actually links are listed. The `cuda-toolkit`
+# metapackage would drag in cuFFT, cuRAND, cuSPARSE, NPP, nvJPEG, cuda-gdb
+# and the Nsight tools for roughly 5GB, none of which the tree references.
+dependencies:
+  - cuda-version 13.1.*
+  # cudart: cudaMalloc/cudaMemcpy/cudaStream*/cudaEvent* in Einsums/GPU.
+  - cuda-cudart-dev
+  # cuBLAS backs gpu::blas; cuSolver backs gpu::solver.
+  - libcublas-dev
+  - libcusolver-dev
+  # nvcc is required even though libs/ currently has no .cu sources:
+  # einsums_check_for_cxx23_static_call_operator_gpu (Einsums_AddConfigTest.cmake)
+  # compiles cmake/tests/cxx23_static_call_operator.cu whenever GPU support is
+  # on, and Einsums_SetupCUDA does enable_language(CUDA).
+  - cuda-nvcc
+  # NVTX ranges for the Profile module's GPU timelines.
+  - cuda-nvtx-dev
+  # compute-sanitizer. The GPU path swaps host tensor pointers to device
+  # shadows (see ComputeGraph Graph.cpp), which is exactly the class of bug
+  # memcheck catches and a plain test run does not.
+  - cuda-sanitizer-api
