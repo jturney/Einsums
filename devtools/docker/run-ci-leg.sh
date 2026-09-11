@@ -20,6 +20,8 @@
 #     ./devtools/docker/run-ci-leg.sh asan                 # Sanitizers/address,leak,undefined (Debug, BUILD_PYTHON=ON)
 #     ./devtools/docker/run-ci-leg.sh asan-nopy            # same without Python, if the pybind TUs exhaust memory
 #     ./devtools/docker/run-ci-leg.sh free-threaded        # free-threaded CPython (cp314t), BUILD_PYTHON=ON
+#     ./devtools/docker/run-ci-leg.sh mock-discrete       # mock GPU as a DISCRETE device (no unified memory, poisoned device pointers)
+#     ./devtools/docker/run-ci-leg.sh mock-discrete-nopy  # same without Python, if the pybind TUs exhaust memory
 #     ./devtools/docker/run-ci-leg.sh valgrind             # memcheck under valgrind (Debug, BUILD_PYTHON=OFF)
 #
 #     # Valgrind runs each test 20-50x slower, so the whole suite is an
@@ -223,6 +225,40 @@ leg_settings() {
             BLAS=openblas
             BUILD_TYPE=Debug
             EXTRA=("-DEINSUMS_WITH_SANITIZERS=address,leak,undefined" "-DEINSUMS_BUILD_PYTHON=OFF")
+            ;;
+        mock-discrete|mock-discrete-nopy)
+            # The mock GPU backend pretending to be a discrete card: no unified
+            # memory, and device allocations held at PROT_NONE behind guard
+            # pages so a host dereference of a device pointer faults instead of
+            # quietly working.
+            #
+            # This leg exists because the ORDINARY mock cannot fail. It routes
+            # every gpu::blas call to CPU BLAS over malloc'd memory, so it is
+            # numerically correct however broken the real CUDA path is, and
+            # has_unified_memory being true compiles out the entire
+            # host-to-device transfer path in the graph executor. A CUDA backend
+            # whose gemv, complex gemm and whole solver were silent no-ops passed
+            # this suite; so did an executor that computed on uninitialized
+            # device memory and one that dropped GPU results on the floor.
+            #
+            # It needs no GPU and no CUDA toolkit - same conda env as
+            # gcc-openblas, hence no MERGE_EXTRA - which is the point: any runner
+            # can defend the discrete-memory paths.
+            #
+            # Python is ON deliberately. Of the fifteen failures this
+            # configuration first exposed, fourteen were Python tests: the
+            # graphs that use Setup closures and nested subgraph replay live
+            # there, and that is exactly where the host/device ownership bugs
+            # were. A -nopy run is much weaker; use it only if the pybind TUs
+            # exhaust your Docker memory allowance.
+            COMPILER=default
+            BLAS=openblas
+            BUILD_TYPE=RelWithDebInfo
+            if [[ "$1" == mock-discrete-nopy ]]; then
+                EXTRA=("-DEINSUMS_WITH_GPU_MOCK_DISCRETE=ON" "-DEINSUMS_BUILD_PYTHON=OFF")
+            else
+                EXTRA=("-DEINSUMS_WITH_GPU_MOCK_DISCRETE=ON" "-DEINSUMS_BUILD_PYTHON=ON")
+            fi
             ;;
         free-threaded)
             # Free-threaded CPython (cp314t), mirroring the CI leg of the same

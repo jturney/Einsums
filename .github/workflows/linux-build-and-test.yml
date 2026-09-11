@@ -49,6 +49,26 @@ jobs:
             variant: no-profiler
             cmake_extra: >
               -DEINSUMS_WITH_PROFILER=OFF
+          # The mock GPU backend as a DISCRETE device. Guards the host/device
+          # transfer path in the ComputeGraph executor, which is compiled out
+          # everywhere else: gpu::has_unified_memory is true for the ordinary
+          # mock, so ~75 lines of shadow allocation, upload, copy-back and
+          # pointer swapping never run. Worse, the plain mock routes every
+          # gpu::blas call to CPU BLAS over malloc'd memory, so it is
+          # numerically correct no matter what the real CUDA path does - a
+          # backend whose gemv, complex gemm and entire solver were silent
+          # no-ops passed the full suite.
+          #
+          # This leg needs no GPU and no CUDA toolkit, so it runs on an ordinary
+          # runner. Python must stay ON: the graphs that use Setup closures and
+          # nested subgraph replay are Python tests, and that is where the
+          # ownership bugs between host and device copies actually showed up.
+          - compiler: default
+            blas: openblas
+            build_type: RelWithDebInfo
+            variant: mock-discrete
+            cmake_extra: >
+              -DEINSUMS_WITH_GPU_MOCK_DISCRETE=ON
           # Free-threaded CPython (cp314t). Guards two distinct things: that the
           # tree still compiles and links against the `t` ABI, and that nothing in
           # the bindings assumes the GIL exists. The second needs PYTHON_GIL=0 —
