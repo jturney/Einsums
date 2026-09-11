@@ -20,6 +20,7 @@
 #include <Einsums/Runtime.hpp>
 
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <vector>
 
@@ -35,6 +36,23 @@ int einsums_main() {
     std::cout << "  is_mock:            " << gpu::is_mock << "\n";
     std::cout << "  has_unified_memory: " << gpu::has_unified_memory << "\n";
     std::cout << "  has_fp16_gemm:      " << gpu::has_fp16_gemm << "\n";
+
+    // Runtime availability is a separate question from the compile-time flags
+    // above: has_cuda only says this binary was built with CUDA support, not
+    // that a usable device is present. On a driverless machine, or one whose
+    // driver has faulted, everything below would fail - device_malloc returns
+    // an error and .value() on it throws.
+    std::cout << "  gpu_available():    " << gpu::gpu_available() << "\n";
+    if (!gpu::gpu_available()) {
+        std::cout << "\nNo usable GPU device, so there is nothing to demonstrate.\n"
+                  << "This is not a failure: a CUDA-enabled build is expected to run on\n"
+                  << "machines without a GPU, it just cannot do GPU work there.\n";
+        return EXIT_SUCCESS;
+    }
+
+    auto const &caps = gpu::device_capabilities();
+    std::cout << "  Device:             " << caps.name << " (compute " << caps.compute_major << "." << caps.compute_minor << ", "
+              << caps.device_count << " visible)\n";
 
     size_t mem = gpu::available_device_memory();
     std::cout << "  Device memory:      " << mem / (1024 * 1024) << " MB\n\n";

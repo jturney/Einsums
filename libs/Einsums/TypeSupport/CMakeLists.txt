@@ -22,7 +22,15 @@ set(TypeSupportHeaders
 set(TypeSupportSources)
 
 if(EINSUMS_WITH_GPU_SUPPORT)
-  list(APPEND TypeSupportHeaders Einsums/TypeSupport/GPUCast.hpp Einsums/TypeSupport/GPUComplex.hpp Einsums/TypeSupport/GPUTypes.hpp)
+  # GPUCast/GPUComplex/GPUTypes are HIP-ONLY headers: they include <hip/hip_common.h>
+  # and friends unconditionally and traffic in hipFloatComplex. Listing them for any
+  # GPU support meant a CUDA build tried to compile them without ROCm anywhere on the
+  # machine, which the header-compile tests catch as
+  # "fatal error: hip/hip_common.h: No such file or directory". It went unnoticed
+  # because no build had EINSUMS_WITH_GPU_SUPPORT on until now.
+  if(EINSUMS_WITH_HIP)
+    list(APPEND TypeSupportHeaders Einsums/TypeSupport/GPUCast.hpp Einsums/TypeSupport/GPUComplex.hpp Einsums/TypeSupport/GPUTypes.hpp)
+  endif()
 
   # Vendor-conditional: hip::host / hip::device only exist under ROCm. Requesting
   # them unconditionally on EINSUMS_WITH_GPU_SUPPORT broke CUDA builds, which have
