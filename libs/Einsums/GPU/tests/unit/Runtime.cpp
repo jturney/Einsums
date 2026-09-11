@@ -13,6 +13,11 @@
 #include <Einsums/Tensor/Tensor.hpp>
 
 #include <cmath>
+#include <csignal>
+#if defined(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
+#    include <sys/wait.h>
+#    include <unistd.h>
+#endif
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -28,6 +33,23 @@ void *test_malloc(size_t bytes) {
 }
 } // namespace
 
+/// Skip a test that needs a usable device.
+///
+/// A CUDA-enabled build on a machine with no GPU - a driverless CI runner, or a
+/// workstation whose driver has faulted - is a perfectly ordinary situation, and
+/// these tests cannot run there: they allocate device memory directly, or assert
+/// that GPUPlacement placed work. Without this they fail rather than skip, which
+/// reads as a broken build instead of an absent device.
+///
+/// Note this does NOT fire on the mock backends: for them the host is the
+/// device, so gpu_available() is true and every test still runs.
+#define EINSUMS_SKIP_WITHOUT_GPU()                                                                                                         \
+    do {                                                                                                                                   \
+        if (!::einsums::gpu::gpu_available()) {                                                                                            \
+            SKIP("no usable GPU device (gpu::gpu_available() is false)");                                                                  \
+        }                                                                                                                                  \
+    } while (0)
+
 TEST_CASE("Platform detection", "[gpu]") {
     INFO("has_cuda = " << has_cuda);
     INFO("has_hip  = " << has_hip);
@@ -39,12 +61,14 @@ TEST_CASE("Platform detection", "[gpu]") {
 }
 
 TEST_CASE("device_malloc and device_free", "[gpu]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     void *ptr = test_malloc(1024);
     REQUIRE(ptr != nullptr);
     device_free(ptr);
 }
 
 TEST_CASE("memcpy host to device and back", "[gpu]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     constexpr int      N = 256;
     std::vector<float> host_src(N), host_dst(N, 0.0f);
 
@@ -65,6 +89,7 @@ TEST_CASE("memcpy host to device and back", "[gpu]") {
 }
 
 TEST_CASE("device_memset", "[gpu]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     constexpr int N   = 128;
     void         *dev = test_malloc(N * sizeof(int));
     REQUIRE(dev != nullptr);
@@ -82,6 +107,7 @@ TEST_CASE("device_memset", "[gpu]") {
 }
 
 TEST_CASE("memcpy device to device", "[gpu]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     constexpr int       N = 64;
     std::vector<double> host_src(N), host_dst(N, 0.0);
 
@@ -106,6 +132,7 @@ TEST_CASE("memcpy device to device", "[gpu]") {
 }
 
 TEMPLATE_TEST_CASE("gpu::blas::gemm mock correctness", "[gpu][blas]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Simple 2x2 GEMM: C = A * B
     constexpr int N = 2;
 
@@ -142,12 +169,14 @@ TEMPLATE_TEST_CASE("gpu::blas::gemm mock correctness", "[gpu][blas]", float, dou
 }
 
 TEST_CASE("stream create and destroy", "[gpu]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto s = create_stream();
     // Just verify it doesn't crash
     destroy_stream(s);
 }
 
 TEST_CASE("event create, record, and query", "[gpu]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto s = create_stream();
     auto e = create_event();
 
@@ -167,6 +196,7 @@ TEST_CASE("event create, record, and query", "[gpu]") {
 // ===========================================================================
 
 TEMPLATE_TEST_CASE("gpu::solver::syev mock correctness", "[gpu][solver]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Symmetric 3x3 matrix (column-major):
     // [2  1  0]
     // [1  3  1]
@@ -195,6 +225,7 @@ TEMPLATE_TEST_CASE("gpu::solver::syev mock correctness", "[gpu][solver]", float,
 }
 
 TEMPLATE_TEST_CASE("gpu::solver::gesv mock correctness", "[gpu][solver]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Solve: [2 1; 1 3] * x = [5; 7]
     // Expected: x = [8/5, 9/5] = [1.6, 1.8]
     constexpr int64_t N = 2, NRHS = 1;
@@ -221,6 +252,7 @@ TEMPLATE_TEST_CASE("gpu::solver::gesv mock correctness", "[gpu][solver]", float,
 }
 
 TEMPLATE_TEST_CASE("gpu::solver::getrf + getri round trip", "[gpu][solver]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // A = [4 7; 2 6] column-major, inverse = [0.6 -0.7; -0.2 0.4].
     // Factor then invert, which covers both entry points and checks the pivots
     // survive the round trip through the caller's host int64_t buffer.
@@ -254,6 +286,7 @@ TEMPLATE_TEST_CASE("gpu::solver::getrf + getri round trip", "[gpu][solver]", flo
 }
 
 TEMPLATE_TEST_CASE("gpu::solver::heev correctness", "[gpu][solver]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Hermitian [2, 1-i; 1+i, 3]: trace 5, det 6 - |1-i|^2 = 4, so the
     // eigenvalues are exactly 1 and 4.
     constexpr int64_t    N   = 2;
@@ -280,6 +313,7 @@ TEMPLATE_TEST_CASE("gpu::solver::heev correctness", "[gpu][solver]", float, doub
 }
 
 TEMPLATE_TEST_CASE("gpu::solver::gesvd correctness", "[gpu][solver]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // diag(3, 2): singular values are 3 and 2, descending as LAPACK returns them.
     // Square, so the cuSOLVER m >= n restriction is satisfied.
     constexpr int64_t M = 2, N = 2;
@@ -307,11 +341,67 @@ TEMPLATE_TEST_CASE("gpu::solver::gesvd correctness", "[gpu][solver]", float, dou
     device_free(dVT);
 }
 
+#if defined(EINSUMS_HAVE_GPU_MOCK_DISCRETE)
+TEST_CASE("mock-discrete: a host dereference of a device pointer faults", "[gpu][mock-discrete]") {
+    // The whole value of mock-discrete rests on device memory being
+    // inaccessible to host code. If mock_set_payload_prot ever stops
+    // protecting, this backend silently degrades into the ordinary mock: still
+    // green, but no longer catching the host-touches-device-pointer bugs it was
+    // built to catch. Nothing else asserts the guard has teeth.
+    //
+    // Skipped on every other backend: real device memory would fault for
+    // unrelated reasons, and the unified-memory mock is supposed to be
+    // host-readable.
+    constexpr std::size_t kCount = 8;
+    void                 *dev    = test_malloc(kCount * sizeof(double));
+
+    // The legitimate route still works: explicit transfers unprotect for the
+    // duration of the copy.
+    double host[kCount];
+    for (std::size_t i = 0; i < kCount; ++i) {
+        host[i] = static_cast<double>(i) + 0.5;
+    }
+    memcpy_host_to_device(dev, host, sizeof(host));
+
+    double back[kCount] = {};
+    memcpy_device_to_host(back, dev, sizeof(back));
+    for (std::size_t i = 0; i < kCount; ++i) {
+        CHECK(back[i] == Catch::Approx(host[i]));
+    }
+
+    // The illegitimate route must not. Done in a forked child, because the
+    // whole point is that the access is fatal.
+    pid_t const pid = fork();
+    REQUIRE(pid >= 0);
+    if (pid == 0) {
+        // Drop einsums' fatal-signal handler so the child dies quietly on the
+        // signal rather than printing a backtrace the parent would have to read
+        // past.
+        signal(SIGSEGV, SIG_DFL);
+        signal(SIGBUS, SIG_DFL);
+        // volatile so the read cannot be optimized out.
+        double const sink = *static_cast<double volatile *>(dev);
+        // Only reached if the guard is not guarding.
+        _exit(sink == 0.0 ? 17 : 17);
+    }
+
+    int status = 0;
+    REQUIRE(waitpid(pid, &status, 0) == pid);
+    INFO("child exited: signalled=" << WIFSIGNALED(status) << " signal=" << (WIFSIGNALED(status) ? WTERMSIG(status) : 0)
+                                    << " exited=" << WIFEXITED(status) << " code=" << (WIFEXITED(status) ? WEXITSTATUS(status) : 0));
+    REQUIRE(WIFSIGNALED(status));
+    CHECK((WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS));
+
+    device_free(dev);
+}
+#endif // EINSUMS_HAVE_GPU_MOCK_DISCRETE
+
 // ===========================================================================
 // GPUTensor tests: GeneralTensor with DeviceAllocator
 // ===========================================================================
 
 TEMPLATE_TEST_CASE("GPUTensor creation and zero", "[gpu][tensor]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     using namespace einsums;
 
     constexpr size_t       N = 32;
@@ -337,6 +427,7 @@ TEMPLATE_TEST_CASE("GPUTensor creation and zero", "[gpu][tensor]", float, double
 }
 
 TEMPLATE_TEST_CASE("GPUTensor GEMM via gpu::blas", "[gpu][tensor]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     using namespace einsums;
 
     constexpr size_t N = 4;
@@ -373,6 +464,7 @@ TEMPLATE_TEST_CASE("GPUTensor GEMM via gpu::blas", "[gpu][tensor]", float, doubl
 }
 
 TEMPLATE_TEST_CASE("Tensor to GPUTensor transfer via assignment", "[gpu][tensor]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     using namespace einsums;
 
     constexpr size_t N = 8;
@@ -400,6 +492,7 @@ TEMPLATE_TEST_CASE("Tensor to GPUTensor transfer via assignment", "[gpu][tensor]
 }
 
 TEMPLATE_TEST_CASE("GPUTensor copy construction from Tensor", "[gpu][tensor]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     using namespace einsums;
 
     constexpr size_t N = 4;
@@ -420,6 +513,7 @@ TEMPLATE_TEST_CASE("GPUTensor copy construction from Tensor", "[gpu][tensor]", f
 }
 
 TEST_CASE("GPUTensor IsDeviceTensor trait", "[gpu][tensor]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     using namespace einsums;
 
     // Regular tensor is NOT a device tensor
@@ -437,6 +531,7 @@ TEST_CASE("GPUTensor IsDeviceTensor trait", "[gpu][tensor]") {
 // ===========================================================================
 
 TEMPLATE_TEST_CASE("RuntimeGPUTensor creation and zero", "[gpu][runtime_tensor]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     using namespace einsums;
 
     constexpr size_t           N = 32;
@@ -459,6 +554,7 @@ TEMPLATE_TEST_CASE("RuntimeGPUTensor creation and zero", "[gpu][runtime_tensor]"
 }
 
 TEMPLATE_TEST_CASE("RuntimeTensor to RuntimeGPUTensor cross-allocator copy", "[gpu][runtime_tensor]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     using namespace einsums;
 
     constexpr size_t N = 8;
@@ -481,6 +577,7 @@ TEMPLATE_TEST_CASE("RuntimeTensor to RuntimeGPUTensor cross-allocator copy", "[g
 }
 
 TEMPLATE_TEST_CASE("RuntimeGPUTensor cross-allocator assignment", "[gpu][runtime_tensor]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
     using namespace einsums;
 
     constexpr size_t N = 8;
@@ -505,6 +602,7 @@ TEMPLATE_TEST_CASE("RuntimeGPUTensor cross-allocator assignment", "[gpu][runtime
 }
 
 TEST_CASE("RuntimeGPUTensor IsDeviceTensor trait", "[gpu][runtime_tensor]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     using namespace einsums;
 
     CHECK(RuntimeTensor<double>::IsDeviceTensor == false);
@@ -516,6 +614,7 @@ TEST_CASE("RuntimeGPUTensor IsDeviceTensor trait", "[gpu][runtime_tensor]") {
 }
 
 TEST_CASE("gpu::blas::gemm large matrix correctness", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Larger GEMM to exercise the MPS GPU path more thoroughly.
     constexpr int N = 64;
 
@@ -554,6 +653,7 @@ TEST_CASE("gpu::blas::gemm large matrix correctness", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::gemm transa=T transb=N", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // C(M×N) = A^T(M×K) * B(K×N), A stored as K×M
     constexpr int M = 4, K = 3, N = 5;
 
@@ -589,6 +689,7 @@ TEST_CASE("gpu::blas::gemm transa=T transb=N", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::gemm transa=N transb=T", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // C(M×N) = A(M×K) * B^T(K×N), B stored as N×K
     constexpr int M = 4, K = 3, N = 5;
 
@@ -624,6 +725,7 @@ TEST_CASE("gpu::blas::gemm transa=N transb=T", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::gemm transa=T transb=T", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // C(M×N) = A^T(M×K) * B^T(K×N), A stored as K×M, B stored as N×K
     constexpr int M = 4, K = 3, N = 5;
 
@@ -659,6 +761,7 @@ TEST_CASE("gpu::blas::gemm transa=T transb=T", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::gemm non-square matrices transa=N transb=N", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // C(M×N) = A(M×K) * B(K×N) with M≠N≠K
     constexpr int M = 7, K = 5, N = 3;
 
@@ -694,6 +797,7 @@ TEST_CASE("gpu::blas::gemm non-square matrices transa=N transb=N", "[gpu][blas]"
 }
 
 TEST_CASE("gpu::blas::gemm with alpha and beta", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     constexpr int N = 4;
 
     std::vector<float> A(N * N), B(N * N), C(N * N), C_ref(N * N);
@@ -731,6 +835,7 @@ TEST_CASE("gpu::blas::gemm with alpha and beta", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::gemv transa=N", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // y(M) = alpha * A(M×N) * x(N) + beta * y(M)
     constexpr int M = 5, N = 4;
 
@@ -766,6 +871,7 @@ TEST_CASE("gpu::blas::gemv transa=N", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::gemv transa=T", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // y(N) = alpha * A^T(N×M) * x(M) + beta * y(N), A stored as M×N
     constexpr int M = 5, N = 4;
 
@@ -801,6 +907,7 @@ TEST_CASE("gpu::blas::gemv transa=T", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::gemv with alpha and beta", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     constexpr int M = 4, N = 3;
 
     std::vector<float> A(M * N), x(N), y(M, 1.0f), y_ref(M, 1.0f);
@@ -836,6 +943,7 @@ TEST_CASE("gpu::blas::gemv with alpha and beta", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::hgemm Float16 GEMM", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // FP16 GEMM: C_float = alpha * A_fp16 * B_fp16 + beta * C_float
     if constexpr (!einsums::gpu::has_fp16_gemm) {
         SKIP("No FP16 GEMM support");
@@ -885,6 +993,7 @@ TEST_CASE("gpu::blas::hgemm Float16 GEMM", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::bfgemm BFloat16 GEMM", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // BFloat16 GEMM: C_float = alpha * A_bf16 * B_bf16 + beta * C_float
     if constexpr (!einsums::gpu::has_mps) {
         SKIP("BFloat16 GEMM only available on MPS");
@@ -932,6 +1041,7 @@ TEST_CASE("gpu::blas::bfgemm BFloat16 GEMM", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::cgemm ComplexFloat32", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Complex GEMM: C = A * B where A, B, C are complex<float> matrices.
     constexpr int N = 4;
 
@@ -1003,6 +1113,7 @@ TEST_CASE("MPS supported datatypes for GEMM", "[gpu][mps]") {
 }
 
 TEST_CASE("gpu::blas::scal", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     constexpr int      N = 128;
     std::vector<float> x(N), x_ref(N);
 
@@ -1026,6 +1137,7 @@ TEST_CASE("gpu::blas::scal", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::axpy", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     constexpr int      N = 128;
     std::vector<float> x(N), y(N), y_ref(N);
 
@@ -1053,6 +1165,7 @@ TEST_CASE("gpu::blas::axpy", "[gpu][blas]") {
 }
 
 TEST_CASE("gpu::blas::dot", "[gpu][blas]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     constexpr int      N = 64;
     std::vector<float> x(N), y(N);
 
@@ -1077,6 +1190,7 @@ TEST_CASE("gpu::blas::dot", "[gpu][blas]") {
 }
 
 TEST_CASE("MPS platform detection", "[gpu][mps]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     INFO("has_mps  = " << einsums::gpu::has_mps);
     INFO("has_gpu  = " << einsums::gpu::has_gpu);
     INFO("is_mock  = " << einsums::gpu::is_mock);
@@ -1093,6 +1207,7 @@ TEST_CASE("MPS platform detection", "[gpu][mps]") {
 }
 
 TEST_CASE("DeviceTensorConcept recognizes GPUTensor", "[gpu][tensor][concepts]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     using namespace einsums;
 
     // GPUTensor satisfies DeviceTensorConcept

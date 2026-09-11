@@ -267,8 +267,17 @@ void device_memset(void *ptr, int value, size_t bytes) {
 
 void device_synchronize() {
 #if defined(EINSUMS_HAVE_CUDA)
+    // Nothing was ever queued when there is no device, so there is nothing to
+    // wait for. Raising here would make a bare "flush the GPU" call fatal on a
+    // driverless machine.
+    if (!gpu_available()) {
+        return;
+    }
     gpu_catch(cudaDeviceSynchronize());
 #elif defined(EINSUMS_HAVE_HIP)
+    if (!gpu_available()) {
+        return;
+    }
     gpu_catch(hipDeviceSynchronize());
 #elif defined(EINSUMS_HAVE_MPS)
     mps::device_synchronize();
@@ -314,12 +323,29 @@ size_t available_device_memory() {
         return override_val;
 
 #if defined(EINSUMS_HAVE_CUDA)
+    // A query must answer, not raise. This used to gpu_catch the call, so on a
+    // machine with no usable device it threw out of a function whose whole job
+    // is to report a budget - and the optimizer passes that ask for that budget
+    // run on every graph, so a CUDA-enabled binary on a driverless node died
+    // inside an ordinary CPU workload.
+    if (!gpu_available()) {
+        return 0;
+    }
     size_t free_mem = 0, total_mem = 0;
-    gpu_catch(cudaMemGetInfo(&free_mem, &total_mem));
+    if (cudaMemGetInfo(&free_mem, &total_mem) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return 0;
+    }
     return free_mem;
 #elif defined(EINSUMS_HAVE_HIP)
+    if (!gpu_available()) {
+        return 0;
+    }
     size_t free_mem = 0, total_mem = 0;
-    gpu_catch(hipMemGetInfo(&free_mem, &total_mem));
+    if (hipMemGetInfo(&free_mem, &total_mem) != hipSuccess) {
+        (void)hipGetLastError();
+        return 0;
+    }
     return free_mem;
 #elif defined(EINSUMS_HAVE_MPS)
     return mps::available_device_memory();

@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <Einsums/GPU/Platform.hpp>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -64,6 +66,23 @@ size_t count_gpu_nodes(std::vector<cg::Node> const &nodes) {
 // Infrastructure tests
 // ===========================================================================
 
+/// Skip a test that needs a usable device.
+///
+/// A CUDA-enabled build on a machine with no GPU - a driverless CI runner, or a
+/// workstation whose driver has faulted - is a perfectly ordinary situation, and
+/// these tests cannot run there: they allocate device memory directly, or assert
+/// that GPUPlacement placed work. Without this they fail rather than skip, which
+/// reads as a broken build instead of an absent device.
+///
+/// Note this does NOT fire on the mock backends: for them the host is the
+/// device, so gpu_available() is true and every test still runs.
+#define EINSUMS_SKIP_WITHOUT_GPU()                                                                                                         \
+    do {                                                                                                                                   \
+        if (!::einsums::gpu::gpu_available()) {                                                                                            \
+            SKIP("no usable GPU device (gpu::gpu_available() is false)");                                                                  \
+        }                                                                                                                                  \
+    } while (0)
+
 TEST_CASE("Residency enum on TensorHandle defaults to Host", "[ComputeGraph][GPU]") {
     cg::TensorHandle const h;
     CHECK(h.residency == cg::Residency::Host);
@@ -92,6 +111,7 @@ TEST_CASE("TransferDescriptor in OpData variant", "[ComputeGraph][GPU]") {
 // ===========================================================================
 
 TEST_CASE("GPUPlacement - large Einsum placed on GPU", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -114,6 +134,7 @@ TEST_CASE("GPUPlacement - large Einsum placed on GPU", "[ComputeGraph][GPU]") {
 }
 
 TEST_CASE("GPUPlacement - double precision rejected on MPS", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // MPS only supports float32 GEMM. Double-precision operations should stay on CPU.
     auto A = create_random_tensor<double>("A", 64, 64);
     auto B = create_random_tensor<double>("B", 64, 64);
@@ -136,6 +157,7 @@ TEST_CASE("GPUPlacement - double precision rejected on MPS", "[ComputeGraph][GPU
 }
 
 TEST_CASE("GPUPlacement - small operation stays on CPU", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 2, 2);
     auto B = create_random_tensor<float>("B", 2, 2);
     auto C = create_zero_tensor<float>("C", 2, 2);
@@ -156,6 +178,7 @@ TEST_CASE("GPUPlacement - small operation stays on CPU", "[ComputeGraph][GPU]") 
 }
 
 TEST_CASE("GPUPlacement - mix of large and small nodes places selectively", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -185,6 +208,7 @@ TEST_CASE("GPUPlacement - mix of large and small nodes places selectively", "[Co
 }
 
 TEST_CASE("GPUPlacement - places a GEMM inside a loop body", "[ComputeGraph][GPU][Loop]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // The hot GEMM lives entirely inside an SCF-style loop body. The
     // loop-aware placement walks the tree and must place it on GPU, a
     // flat-graph-only pass would leave it on CPU.
@@ -213,6 +237,7 @@ TEST_CASE("GPUPlacement - places a GEMM inside a loop body", "[ComputeGraph][GPU
 }
 
 TEST_CASE("GPUPlacement - shared budget across loop boundary", "[ComputeGraph][GPU][Loop]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Two large GEMMs compete for device memory: one at the parent level,
     // one inside the loop body. With a budget that fits only one, the
     // shared-budget placement must place exactly one (the larger), not
@@ -253,6 +278,7 @@ TEST_CASE("GPUPlacement - shared budget across loop boundary", "[ComputeGraph][G
 }
 
 TEST_CASE("TransferInsertion - inserts transfers inside a loop body", "[ComputeGraph][GPU][Loop]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // After GPUPlacement marks a body GEMM as GPU, TransferInsertion must
     // recurse and insert H2D before it (and D2H after) so the body is
     // self-contained, otherwise the GPU op reads host-only memory.
@@ -319,6 +345,7 @@ size_t count_transfer_by_label(std::vector<cg::Node> const &nodes, cg::OpKind ki
 } // namespace
 
 TEST_CASE("TransferInsertion - loop seam: body GPU consumer of a parent producer gets an H2D in the body", "[ComputeGraph][GPU][Loop]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     if constexpr (einsums::gpu::has_gpu || einsums::gpu::is_mock) {
         auto A   = create_random_tensor<float>("A", 128, 128);
         auto B   = create_random_tensor<float>("B", 128, 128);
@@ -389,6 +416,7 @@ TEST_CASE("TransferInsertion - loop seam: body GPU consumer of a parent producer
 }
 
 TEST_CASE("TransferInsertion - loop seam: no boundary transfers when the body op stays on CPU", "[ComputeGraph][GPU][Loop]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Guard against spurious seam transfers: with the body einsum left on CPU,
     // the pass must insert nothing anywhere (parent or body).
     if constexpr (einsums::gpu::has_gpu || einsums::gpu::is_mock) {
@@ -427,6 +455,7 @@ TEST_CASE("TransferInsertion - loop seam: no boundary transfers when the body op
 }
 
 TEST_CASE("TransferInsertion - loop seam: re-running does not duplicate the body H2D", "[ComputeGraph][GPU][Loop]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Idempotency at the boundary: TransferInsertion tracks residency on the
     // TensorHandle, so a second run sees X already Device-resident in the body
     // and inserts no second H2D for it.
@@ -465,6 +494,7 @@ TEST_CASE("TransferInsertion - loop seam: re-running does not duplicate the body
 }
 
 TEST_CASE("GPUPlacement - idempotent (running twice has no effect)", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -487,6 +517,7 @@ TEST_CASE("GPUPlacement - idempotent (running twice has no effect)", "[ComputeGr
 }
 
 TEST_CASE("GPUPlacement - empty graph is a no-op", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     cg::Graph graph("empty");
 
     auto [modified, pass] = graph.apply<cg::passes::GPUPlacement>();
@@ -496,6 +527,7 @@ TEST_CASE("GPUPlacement - empty graph is a no-op", "[ComputeGraph][GPU]") {
 }
 
 TEST_CASE("GPUPlacement - Scale op is GPU-capable", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto C = create_random_tensor<float>("C", 128, 128);
 
     cg::Graph graph("scale-placement");
@@ -515,6 +547,7 @@ TEST_CASE("GPUPlacement - Scale op is GPU-capable", "[ComputeGraph][GPU]") {
 }
 
 TEST_CASE("GPUPlacement - cost model rejects when transfer overhead dominates", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -541,6 +574,7 @@ TEST_CASE("GPUPlacement - cost model rejects when transfer overhead dominates", 
 }
 
 TEST_CASE("GPUPlacement - cost model accepts when compute dominates", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -567,6 +601,7 @@ TEST_CASE("GPUPlacement - cost model accepts when compute dominates", "[ComputeG
 }
 
 TEST_CASE("GPUPlacement - budget limits placement", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -608,6 +643,7 @@ TEST_CASE("GPUPlacement - budget limits placement", "[ComputeGraph][GPU]") {
 }
 
 TEST_CASE("GPUPlacement - unlimited budget places all candidates", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -635,6 +671,7 @@ TEST_CASE("GPUPlacement - unlimited budget places all candidates", "[ComputeGrap
 // ===========================================================================
 
 TEST_CASE("TransferInsertion - precise H2D/D2H counts for single GPU node", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -674,6 +711,7 @@ TEST_CASE("TransferInsertion - precise H2D/D2H counts for single GPU node", "[Co
 }
 
 TEST_CASE("TransferInsertion - skips H2D for dead input (c_prefactor=0)", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -712,6 +750,7 @@ TEST_CASE("TransferInsertion - skips H2D for dead input (c_prefactor=0)", "[Comp
 }
 
 TEST_CASE("TransferInsertion - GPU→GPU chain: no D2H between consecutive GPU nodes", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -769,6 +808,7 @@ TEST_CASE("TransferInsertion - GPU→GPU chain: no D2H between consecutive GPU n
 }
 
 TEST_CASE("TransferInsertion - D2H inserted when CPU node reads GPU output", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -805,6 +845,7 @@ TEST_CASE("TransferInsertion - D2H inserted when CPU node reads GPU output", "[C
 }
 
 TEST_CASE("TransferInsertion - no transfers for CPU-only graph", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 4, 4);
     auto B = create_random_tensor<float>("B", 4, 4);
     auto C = create_zero_tensor<float>("C", 4, 4);
@@ -821,6 +862,7 @@ TEST_CASE("TransferInsertion - no transfers for CPU-only graph", "[ComputeGraph]
 }
 
 TEST_CASE("TransferInsertion - empty graph is a no-op", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     cg::Graph graph("empty");
 
     auto [modified, pass] = graph.apply<cg::passes::TransferInsertion>();
@@ -829,6 +871,7 @@ TEST_CASE("TransferInsertion - empty graph is a no-op", "[ComputeGraph][GPU]") {
 }
 
 TEST_CASE("TransferInsertion - residency updated on TensorHandle", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -862,6 +905,7 @@ TEST_CASE("TransferInsertion - residency updated on TensorHandle", "[ComputeGrap
 // ===========================================================================
 
 TEST_CASE("TransferElimination - no redundancy when insertion is optimal", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // TransferInsertion already tracks residency, so consecutive GPU nodes
     // sharing an input (A, B) do NOT get duplicate H2D nodes.
     // Elimination should be a no-op in this case.
@@ -895,6 +939,7 @@ TEST_CASE("TransferElimination - no redundancy when insertion is optimal", "[Com
 }
 
 TEST_CASE("TransferElimination - removes manually injected redundant H2D", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Manually construct a graph with a redundant H2D to test that
     // elimination actually removes it when redundancy exists.
     auto A = create_random_tensor<float>("A", 128, 128);
@@ -932,6 +977,7 @@ TEST_CASE("TransferElimination - removes manually injected redundant H2D", "[Com
 }
 
 TEST_CASE("TransferElimination - removes manually injected redundant D2H", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Manually inject a duplicate D2H node and verify elimination removes it.
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
@@ -980,6 +1026,7 @@ TEST_CASE("TransferElimination - removes manually injected redundant D2H", "[Com
 }
 
 TEST_CASE("TransferElimination - Belady eviction under memory pressure", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Three large GEMMs, each reading different tensors but sharing B.
     // With tight budget, some tensors must be evicted between operations.
     auto A1 = create_random_tensor<float>("A1", 128, 128);
@@ -1048,6 +1095,7 @@ TEST_CASE("TransferElimination - Belady eviction under memory pressure", "[Compu
 }
 
 TEST_CASE("GPUDiagnostics - reports correct counts after pipeline", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -1084,6 +1132,7 @@ TEST_CASE("GPUDiagnostics - reports correct counts after pipeline", "[ComputeGra
 }
 
 TEST_CASE("GPUDiagnostics - aggregates node counts inside a loop body", "[ComputeGraph][GPU][Loop]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Two CPU einsums inside a loop body. A flat-graph-only pass would
     // count zero nodes (the top-level graph holds just the Loop node); the
     // aggregating pass must count the body's nodes.
@@ -1111,6 +1160,7 @@ TEST_CASE("GPUDiagnostics - aggregates node counts inside a loop body", "[Comput
 }
 
 TEST_CASE("MemoryPlanning - device memory tracking", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -1149,6 +1199,7 @@ TEST_CASE("MemoryPlanning - device memory tracking", "[ComputeGraph][GPU]") {
 }
 
 TEST_CASE("MemoryPlanning - CPU-only graph has zero device memory", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 4, 4);
     auto B = create_random_tensor<float>("B", 4, 4);
     auto C = create_zero_tensor<float>("C", 4, 4);
@@ -1168,6 +1219,7 @@ TEST_CASE("MemoryPlanning - CPU-only graph has zero device memory", "[ComputeGra
 }
 
 TEST_CASE("Tensor set_data swap mechanism works", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     Tensor<float, 2> A("A", 4, 4);
     for (size_t i = 0; i < 4; i++)
         for (size_t j = 0; j < 4; j++)
@@ -1216,6 +1268,7 @@ TEST_CASE("Tensor set_data swap mechanism works", "[ComputeGraph][GPU]") {
 }
 
 TEST_CASE("available_device_memory and set_mock_device_memory_limit", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Default: returns a large value (system RAM / 2 or 4GB fallback).
     einsums::gpu::set_mock_device_memory_limit(0);
     size_t const default_mem = einsums::gpu::available_device_memory();
@@ -1232,6 +1285,7 @@ TEST_CASE("available_device_memory and set_mock_device_memory_limit", "[ComputeG
 }
 
 TEST_CASE("TransferElimination - nothing to eliminate in CPU-only graph", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -1248,6 +1302,7 @@ TEST_CASE("TransferElimination - nothing to eliminate in CPU-only graph", "[Comp
 }
 
 TEST_CASE("TransferElimination - empty graph is a no-op", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     cg::Graph graph("empty");
 
     auto [modified, pass] = graph.apply<cg::passes::TransferElimination>();
@@ -1256,6 +1311,7 @@ TEST_CASE("TransferElimination - empty graph is a no-op", "[ComputeGraph][GPU]")
 }
 
 TEST_CASE("TransferElimination - residency updated on TensorHandle", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -1288,6 +1344,7 @@ TEST_CASE("TransferElimination - residency updated on TensorHandle", "[ComputeGr
 // ===========================================================================
 
 TEST_CASE("GPU pass pipeline end-to-end: chained GEMMs", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -1332,6 +1389,7 @@ TEST_CASE("GPU pass pipeline end-to-end: chained GEMMs", "[ComputeGraph][GPU]") 
 }
 
 TEST_CASE("GPU pass pipeline: mixed GPU/CPU graph produces correct results", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // A * B → C (GPU, large), then scale C by 2.0 (CPU, forced small threshold).
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
@@ -1373,6 +1431,7 @@ TEST_CASE("GPU pass pipeline: mixed GPU/CPU graph produces correct results", "[C
 }
 
 TEST_CASE("GPU runtime fallback when dispatch is not applicable", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Test CPU fallback for a GPU-placed node that isn't GEMM-dispatchable.
     // Scale is GPU-capable for placement but has no gpu::blas dispatch,
     // so the executor falls back to the CPU lambda.
@@ -1416,6 +1475,7 @@ TEST_CASE("GPU runtime fallback when dispatch is not applicable", "[ComputeGraph
 }
 
 TEST_CASE("StreamAssignment - transfers get stream 1, compute gets stream 0", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -1444,6 +1504,7 @@ TEST_CASE("StreamAssignment - transfers get stream 1, compute gets stream 0", "[
 }
 
 TEST_CASE("StreamAssignment - no transfers means no assignments", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 4, 4);
     auto B = create_random_tensor<float>("B", 4, 4);
     auto C = create_zero_tensor<float>("C", 4, 4);
@@ -1462,6 +1523,7 @@ TEST_CASE("StreamAssignment - no transfers means no assignments", "[ComputeGraph
 }
 
 TEST_CASE("GPU pipeline: GEMM then Scale stays on GPU", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Scale should run on GPU via gpu::blas::scal when the tensor is already on device.
     // No D2H round-trip between GEMM and Scale.
     auto A = create_random_tensor<float>("A", 128, 128);
@@ -1527,6 +1589,7 @@ TEST_CASE("GPU pipeline: GEMM then Scale stays on GPU", "[ComputeGraph][GPU]") {
 }
 
 TEST_CASE("StreamAssignment - idempotent across runs", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -1551,6 +1614,7 @@ TEST_CASE("StreamAssignment - idempotent across runs", "[ComputeGraph][GPU]") {
 }
 
 TEST_CASE("StreamAssignment - independent GPU chains all share the compute stream", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     // Surprising truth: StreamAssignment is transfer-vs-compute only. It does NOT
     // hand independent GPU compute chains distinct streams; every non-transfer
     // node lands on stream 0. (The audit notes stream_id is never read at
@@ -1586,6 +1650,7 @@ TEST_CASE("StreamAssignment - independent GPU chains all share the compute strea
 }
 
 TEST_CASE("GPUDiagnostics - is non-mutating on a mixed CPU/GPU graph", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
@@ -1617,6 +1682,7 @@ TEST_CASE("GPUDiagnostics - is non-mutating on a mixed CPU/GPU graph", "[Compute
 }
 
 TEST_CASE("GPUDiagnostics - CPU-only graph reports zero GPU nodes and zero device bytes", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 8, 8);
     auto B = create_random_tensor<float>("B", 8, 8);
     auto C = create_zero_tensor<float>("C", 8, 8);
@@ -1637,6 +1703,7 @@ TEST_CASE("GPUDiagnostics - CPU-only graph reports zero GPU nodes and zero devic
 }
 
 TEST_CASE("GPU pass pipeline: node ordering is valid after all passes", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);
     auto B = create_random_tensor<float>("B", 128, 128);
     auto C = create_zero_tensor<float>("C", 128, 128);
