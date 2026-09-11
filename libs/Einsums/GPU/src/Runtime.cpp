@@ -376,8 +376,8 @@ namespace {
 /// One-shot probe behind device_capabilities(). Never throws and never lets a
 /// vendor error escape: a machine with no driver must yield available == false,
 /// not an exception out of a query function.
-DeviceCapabilities detect_capabilities() {
-    DeviceCapabilities caps;
+DeviceCaps detect_capabilities() {
+    DeviceCaps caps;
 
 #if defined(EINSUMS_HAVE_CUDA)
     int count = 0;
@@ -448,10 +448,10 @@ DeviceCapabilities detect_capabilities() {
 
 } // namespace
 
-DeviceCapabilities const &device_capabilities() {
+DeviceCaps const &device_capabilities() {
     // Function-local static: thread-safe initialization, probed once. The CUDA
     // probe creates a context, which is far too expensive to repeat per query.
-    static DeviceCapabilities const caps = detect_capabilities();
+    static DeviceCaps const caps = detect_capabilities();
     return caps;
 }
 

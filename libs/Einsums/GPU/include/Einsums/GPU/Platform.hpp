@@ -127,8 +127,15 @@ inline constexpr bool has_fp8_gemm = false;
  * On the mock backends the host is the device, so `available` is true and
  * `device_count` is 1; the arithmetic fields are false because the mock
  * implements no reduced-precision kernels.
+ *
+ * Named `DeviceCaps` rather than the fuller `DeviceCapabilities` because
+ * `windows.h` claims the latter: winspool.h defines it as a macro for
+ * `DeviceCapabilitiesA`/`DeviceCapabilitiesW`. A translation unit that included
+ * `windows.h` first would rename this type along with the declaration of
+ * `device_capabilities()`, which still compiles but mangles to a symbol the
+ * shipped library does not export.
  */
-struct DeviceCapabilities {
+struct DeviceCaps {
     /// A device is present AND usable: driver loaded, at least one device
     /// enumerated, and a context creatable. False on a CUDA-enabled build
     /// running on a machine with no GPU or a broken driver.
@@ -163,7 +170,7 @@ struct DeviceCapabilities {
  * default-constructed value with `available == false`, so a CUDA-enabled binary
  * stays usable on a machine without a GPU.
  */
-[[nodiscard]] EINSUMS_EXPORT DeviceCapabilities const &device_capabilities();
+[[nodiscard]] EINSUMS_EXPORT DeviceCaps const &device_capabilities();
 
 /**
  * @brief True when GPU work can actually run right now.
