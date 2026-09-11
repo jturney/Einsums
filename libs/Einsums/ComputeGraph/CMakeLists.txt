@@ -115,6 +115,14 @@ set(ComputeGraphSources
     ExecutorBuilder.cpp
     ABILayout.cpp
     Graph.cpp
+    Graph/GpuDispatch.cpp
+    Graph/AliasGeometry.cpp
+    Graph/Alias.cpp
+    Graph/Schedule.cpp
+    Graph/ControlFlow.cpp
+    Graph/Operations.cpp
+    Graph/Execute.cpp
+    Graph/Report.cpp
     GraphIR.cpp
     GraphIR/Write.cpp
     GraphIR/Read.cpp

@@ -11,7 +11,7 @@ condition lambda receives the (0-based) iteration index, and confirms
 ``max_iterations`` acts as a safety cap when the condition never returns
 False.
 
-Loop semantics from Graph.cpp::
+Loop semantics from Graph/Execute.cpp::
 
     for (size_t iter = 0; iter < max_iterations; iter++) {
         body->execute();

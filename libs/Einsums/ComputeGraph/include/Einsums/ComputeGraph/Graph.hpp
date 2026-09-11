@@ -4821,8 +4821,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// for every RAW/WAW/WAR hazard edge, keyed by owner TensorId (alias-resolved)
     /// and subtree-aware (effective I/O). The single source of truth for the
     /// data-dependency scan shared by topological_sort (Kahn adjacency) and
-    /// rebuild_deps (successor/predecessor lists); defined in Graph.cpp because
-    /// both instantiations live there.
+    /// rebuild_deps (successor/predecessor lists); defined in Graph/Schedule.cpp
+    /// because both instantiations live there.
     template <typename F>
     void           for_each_hazard_edge(EffectiveIoCache &cache, F &&emit);
     bool           _executed{false}; ///< True after first successful execute (caching)
