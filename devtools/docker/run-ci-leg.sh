@@ -63,9 +63,10 @@
 #   - build dir  : /work/build-${LEG}    (persisted via the cached source mount)
 #   - ccache dir : /work/ccache-${LEG}   (persisted, BLAS-independent)
 #
-# Source tree is bind-mounted read-only at /src; we copy it once to /work/src
-# at first use (so writable for cmake's generated files) and rsync mtime on
-# every re-run so ccache/ninja see edits without invalidating untouched files.
+# Source tree is bind-mounted read-only at /src and rsync'd to /work/src (so
+# it is writable for cmake's generated files). rsync preserves mtime on
+# untouched files so ccache/ninja see edits without invalidating the rest, and
+# skips the developer's own build directories, which the legs never read.
 
 set -euo pipefail
 
@@ -462,14 +463,23 @@ run_leg() {
 set -e
 source /opt/conda/etc/profile.d/conda.sh
 
-# 1. Snapshot the source on first use; rsync for re-runs so untouched
-#    files keep their mtime (ccache/ninja friendly).
-if [[ ! -d '${SRC_DIR}' ]]; then
-    echo '⤷ snapshotting /src → ${SRC_DIR}'
-    cp -r /src '${SRC_DIR}'
-else
-    rsync -a --delete --exclude=build --exclude=.git/ /src/ '${SRC_DIR}/'
-fi
+# 1. Mirror the source. rsync creates the destination, so the first run and
+#    every re-run take the same path and honor the same excludes; untouched
+#    files keep their mtime, which is what ccache and ninja key on.
+#
+#    The excludes carry their weight: /src is a developer's working tree, so
+#    it holds their own build directories and agent worktrees. The first run
+#    used to be a plain cp -r that copied all of it, and the re-run excluded
+#    only 'build', so everything else was faithfully re-synced forever. That
+#    was 33 GB of the work volume that no leg ever opened.
+#
+#    .git is synced rather than excluded: it costs 0.2s per run and it is what
+#    Einsums_GitCommit.cmake reads, so the leg now reports the commit it is
+#    actually building instead of whatever HEAD was when the container was
+#    created.
+rsync -a --delete \
+    --exclude=/build --exclude='/build-*' --exclude=/.claude/worktrees/ \
+    /src/ '${SRC_DIR}/'
 
 # 2. Create the per-leg conda env on first use; reuse otherwise.
 if ! conda env list | awk '{print \$1}' | grep -qx '${ENV_NAME}'; then
