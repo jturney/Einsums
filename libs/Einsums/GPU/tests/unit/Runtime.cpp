@@ -220,6 +220,93 @@ TEMPLATE_TEST_CASE("gpu::solver::gesv mock correctness", "[gpu][solver]", float,
     device_free(dB);
 }
 
+TEMPLATE_TEST_CASE("gpu::solver::getrf + getri round trip", "[gpu][solver]", float, double) {
+    // A = [4 7; 2 6] column-major, inverse = [0.6 -0.7; -0.2 0.4].
+    // Factor then invert, which covers both entry points and checks the pivots
+    // survive the round trip through the caller's host int64_t buffer.
+    constexpr int64_t N   = 2;
+    TestType          A[] = {TestType(4), TestType(2), TestType(7), TestType(6)};
+    int64_t           ipiv[N];
+
+    void *dA = test_malloc(N * N * sizeof(TestType));
+    memcpy_host_to_device(dA, A, N * N * sizeof(TestType));
+
+    int const factor_info = einsums::gpu::solver::getrf<TestType>(N, N, static_cast<TestType *>(dA), N, ipiv);
+    REQUIRE(factor_info == 0);
+    for (int64_t i = 0; i < N; ++i) {
+        INFO("pivot " << i << " = " << ipiv[i]);
+        CHECK(ipiv[i] >= 1);
+        CHECK(ipiv[i] <= N);
+    }
+
+    int const invert_info = einsums::gpu::solver::getri<TestType>(N, static_cast<TestType *>(dA), N, ipiv);
+    REQUIRE(invert_info == 0);
+
+    TestType inv[N * N];
+    memcpy_device_to_host(inv, dA, N * N * sizeof(TestType));
+
+    TestType const expected[] = {TestType(0.6), TestType(-0.2), TestType(-0.7), TestType(0.4)};
+    for (int i = 0; i < N * N; ++i) {
+        CHECK(inv[i] == Catch::Approx(expected[i]).margin(1e-4));
+    }
+
+    device_free(dA);
+}
+
+TEMPLATE_TEST_CASE("gpu::solver::heev correctness", "[gpu][solver]", float, double) {
+    // Hermitian [2, 1-i; 1+i, 3]: trace 5, det 6 - |1-i|^2 = 4, so the
+    // eigenvalues are exactly 1 and 4.
+    constexpr int64_t    N   = 2;
+    std::complex<TestType> A[] = {{TestType(2), TestType(0)},
+                                  {TestType(1), TestType(1)}, // A(1,0) = 1+i
+                                  {TestType(1), TestType(-1)},
+                                  {TestType(3), TestType(0)}};
+    TestType             W[N];
+
+    void *dA = test_malloc(N * N * sizeof(std::complex<TestType>));
+    void *dW = test_malloc(N * sizeof(TestType));
+    memcpy_host_to_device(dA, A, N * N * sizeof(std::complex<TestType>));
+
+    int const info =
+        einsums::gpu::solver::heev<TestType>('V', 'U', N, static_cast<std::complex<TestType> *>(dA), N, static_cast<TestType *>(dW));
+    REQUIRE(info == 0);
+
+    memcpy_device_to_host(W, dW, N * sizeof(TestType));
+    CHECK(W[0] == Catch::Approx(TestType(1)).margin(1e-4));
+    CHECK(W[1] == Catch::Approx(TestType(4)).margin(1e-4));
+
+    device_free(dA);
+    device_free(dW);
+}
+
+TEMPLATE_TEST_CASE("gpu::solver::gesvd correctness", "[gpu][solver]", float, double) {
+    // diag(3, 2): singular values are 3 and 2, descending as LAPACK returns them.
+    // Square, so the cuSOLVER m >= n restriction is satisfied.
+    constexpr int64_t M = 2, N = 2;
+    TestType          A[] = {TestType(3), TestType(0), TestType(0), TestType(2)};
+    TestType          S[N];
+
+    void *dA  = test_malloc(M * N * sizeof(TestType));
+    void *dS  = test_malloc(N * sizeof(TestType));
+    void *dU  = test_malloc(M * M * sizeof(TestType));
+    void *dVT = test_malloc(N * N * sizeof(TestType));
+    memcpy_host_to_device(dA, A, M * N * sizeof(TestType));
+
+    int const info =
+        einsums::gpu::solver::gesvd<TestType>('A', 'A', M, N, static_cast<TestType *>(dA), M, static_cast<TestType *>(dS),
+                                              static_cast<TestType *>(dU), M, static_cast<TestType *>(dVT), N);
+    REQUIRE(info == 0);
+
+    memcpy_device_to_host(S, dS, N * sizeof(TestType));
+    CHECK(S[0] == Catch::Approx(TestType(3)).margin(1e-4));
+    CHECK(S[1] == Catch::Approx(TestType(2)).margin(1e-4));
+
+    device_free(dA);
+    device_free(dS);
+    device_free(dU);
+    device_free(dVT);
+}
+
 // ===========================================================================
 // GPUTensor tests: GeneralTensor with DeviceAllocator
 // ===========================================================================
