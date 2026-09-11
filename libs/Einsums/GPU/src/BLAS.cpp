@@ -363,8 +363,7 @@ template <>
 EINSUMS_EXPORT void axpy<float>(int64_t n, float alpha, float const *x, int64_t incx, float *y, int64_t incy) {
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
-    gpu_blas_catch(
-        cublasSaxpy_v2(get_blas_handle(), static_cast<int>(n), &alpha, x, static_cast<int>(incx), y, static_cast<int>(incy)));
+    gpu_blas_catch(cublasSaxpy_v2(get_blas_handle(), static_cast<int>(n), &alpha, x, static_cast<int>(incx), y, static_cast<int>(incy)));
 #elif defined(EINSUMS_HAVE_HIP)
     gpu_blas_catch(hipblasSaxpy(get_blas_handle(), static_cast<int>(n), &alpha, x, static_cast<int>(incx), y, static_cast<int>(incy)));
 #else
@@ -376,8 +375,7 @@ template <>
 EINSUMS_EXPORT void axpy<double>(int64_t n, double alpha, double const *x, int64_t incx, double *y, int64_t incy) {
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
-    gpu_blas_catch(
-        cublasDaxpy_v2(get_blas_handle(), static_cast<int>(n), &alpha, x, static_cast<int>(incx), y, static_cast<int>(incy)));
+    gpu_blas_catch(cublasDaxpy_v2(get_blas_handle(), static_cast<int>(n), &alpha, x, static_cast<int>(incx), y, static_cast<int>(incy)));
 #elif defined(EINSUMS_HAVE_HIP)
     gpu_blas_catch(hipblasDaxpy(get_blas_handle(), static_cast<int>(n), &alpha, x, static_cast<int>(incx), y, static_cast<int>(incy)));
 #else
@@ -409,8 +407,7 @@ EINSUMS_EXPORT float dot<float>(int64_t n, float const *x, int64_t incx, float c
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
     float result = 0.0F;
-    gpu_blas_catch(
-        cublasSdot_v2(get_blas_handle(), static_cast<int>(n), x, static_cast<int>(incx), y, static_cast<int>(incy), &result));
+    gpu_blas_catch(cublasSdot_v2(get_blas_handle(), static_cast<int>(n), x, static_cast<int>(incx), y, static_cast<int>(incy), &result));
     return result;
 #elif defined(EINSUMS_HAVE_HIP)
     float result = 0.0F;
@@ -426,8 +423,7 @@ EINSUMS_EXPORT double dot<double>(int64_t n, double const *x, int64_t incx, doub
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
     double result = 0.0;
-    gpu_blas_catch(
-        cublasDdot_v2(get_blas_handle(), static_cast<int>(n), x, static_cast<int>(incx), y, static_cast<int>(incy), &result));
+    gpu_blas_catch(cublasDdot_v2(get_blas_handle(), static_cast<int>(n), x, static_cast<int>(incx), y, static_cast<int>(incy), &result));
     return result;
 #elif defined(EINSUMS_HAVE_HIP)
     double result = 0.0;

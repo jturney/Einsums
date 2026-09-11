@@ -78,7 +78,6 @@ APIARY_EXPOSE APIARY_MODULE("gpu") EINSUMS_EXPORT void set_mock_device_memory_li
 /// Mock: returns ""
 APIARY_EXPOSE APIARY_MODULE("gpu") [[nodiscard]] EINSUMS_EXPORT std::string device_name();
 
-
 // ===========================================================================
 // mock-discrete: the device-kernel boundary
 // ===========================================================================

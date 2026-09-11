@@ -92,7 +92,7 @@ void mock_set_payload_prot(void *payload, int prot) {
 /// Live mock allocations, so MockDeviceKernelScope can unprotect all of them.
 /// A device kernel may touch any device buffer, and the mock has no way to know
 /// which, so the scope is all-or-nothing.
-std::mutex               &mock_registry_mutex() {
+std::mutex &mock_registry_mutex() {
     static std::mutex m;
     return m;
 }

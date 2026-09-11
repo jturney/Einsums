@@ -269,55 +269,55 @@ void Graph::execute() {
                     check_ready(tid);
 
                 if (!operands_ready) {
-                    EINSUMS_LOG_DEBUG("Graph::execute: node {} ({}) kept on the host, an operand has no host storage to transfer",
-                                      node.id, node.label);
+                    EINSUMS_LOG_DEBUG("Graph::execute: node {} ({}) kept on the host, an operand has no host storage to transfer", node.id,
+                                      node.label);
                 }
             }
 
             if constexpr (!gpu::has_unified_memory) {
                 if (operands_ready) {
-                // Discrete GPU: swap tensor data pointers to device shadows.
-                std::unordered_set<TensorId> swapped;
-                auto                         swap_to_shadow = [&](TensorId tid) {
-                    if (swapped.count(tid))
-                        return;
-                    auto &handle = _tensors[tid];
-                    void *shadow = _device_shadows.ensure(tid, handle.total_bytes());
-                    if (!shadow)
-                        return;
+                    // Discrete GPU: swap tensor data pointers to device shadows.
+                    std::unordered_set<TensorId> swapped;
+                    auto                         swap_to_shadow = [&](TensorId tid) {
+                        if (swapped.count(tid))
+                            return;
+                        auto &handle = _tensors[tid];
+                        void *shadow = _device_shadows.ensure(tid, handle.total_bytes());
+                        if (!shadow)
+                            return;
 
-                    // Populate the shadow when the host copy is still the
-                    // authoritative one. TransferInsertion normally emits an
-                    // explicit HostToDevice node and marks the tensor
-                    // Residency::Device, in which case this is skipped.
-                    //
-                    // Doing it here as well is what keeps the executor correct
-                    // independently of which passes ran. Previously this branch
-                    // called ensure() and swapped the pointer but never copied,
-                    // so a GPU node reached without a preceding H2D - a graph
-                    // with Target::GPU set by hand, or one where
-                    // TransferElimination dropped an H2D it judged redundant -
-                    // computed on uninitialized device memory. Under unified
-                    // memory the swap is a no-op, so the bug was invisible.
-                    if (!device_valid.count(tid)) {
-                        // Non-null by construction: checked above before any
-                        // operand of this node was placed.
-                        gpu::memcpy_host_to_device(shadow, live_host_ptr(handle), handle.total_bytes());
-                    }
-                    device_valid.insert(tid);
+                        // Populate the shadow when the host copy is still the
+                        // authoritative one. TransferInsertion normally emits an
+                        // explicit HostToDevice node and marks the tensor
+                        // Residency::Device, in which case this is skipped.
+                        //
+                        // Doing it here as well is what keeps the executor correct
+                        // independently of which passes ran. Previously this branch
+                        // called ensure() and swapped the pointer but never copied,
+                        // so a GPU node reached without a preceding H2D - a graph
+                        // with Target::GPU set by hand, or one where
+                        // TransferElimination dropped an H2D it judged redundant -
+                        // computed on uninitialized device memory. Under unified
+                        // memory the swap is a no-op, so the bug was invisible.
+                        if (!device_valid.count(tid)) {
+                            // Non-null by construction: checked above before any
+                            // operand of this node was placed.
+                            gpu::memcpy_host_to_device(shadow, live_host_ptr(handle), handle.total_bytes());
+                        }
+                        device_valid.insert(tid);
 
-                    if (handle.swap_data) {
-                        void *old_ptr = handle.swap_data(shadow);
-                        saved_ptrs.emplace_back(tid, old_ptr);
-                        swapped.insert(tid);
-                    }
-                };
-                // Outputs are copied up too: an accumulating op (nonzero C
-                // prefactor) reads its output operand before writing it.
-                for (auto tid : node.inputs)
-                    swap_to_shadow(tid);
-                for (auto tid : node.outputs)
-                    swap_to_shadow(tid);
+                        if (handle.swap_data) {
+                            void *old_ptr = handle.swap_data(shadow);
+                            saved_ptrs.emplace_back(tid, old_ptr);
+                            swapped.insert(tid);
+                        }
+                    };
+                    // Outputs are copied up too: an accumulating op (nonzero C
+                    // prefactor) reads its output operand before writing it.
+                    for (auto tid : node.inputs)
+                        swap_to_shadow(tid);
+                    for (auto tid : node.outputs)
+                        swap_to_shadow(tid);
                 }
             }
             // Unified memory: no swap needed, GPU reads tensor.data() directly.

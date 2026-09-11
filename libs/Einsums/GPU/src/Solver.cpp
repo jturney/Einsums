@@ -109,7 +109,7 @@ void pivots_to_host(DeviceScratch const &dev_ipiv, int64_t *ipiv, int64_t count)
 
 /// Upload a host int64_t pivot array as the int array cuSOLVER expects.
 DeviceScratch pivots_to_device(int64_t const *ipiv, int64_t count) {
-    DeviceScratch dev(static_cast<std::size_t>(count) * sizeof(int));
+    DeviceScratch    dev(static_cast<std::size_t>(count) * sizeof(int));
     std::vector<int> host32(static_cast<std::size_t>(count));
     for (int64_t i = 0; i < count; ++i) {
         host32[static_cast<std::size_t>(i)] = static_cast<int>(ipiv[i]);
@@ -121,7 +121,6 @@ DeviceScratch pivots_to_device(int64_t const *ipiv, int64_t count) {
 } // namespace
 #endif // EINSUMS_HAVE_CUDA
 
-
 // ===========================================================================
 // syev: Symmetric eigenvalue decomposition
 // ===========================================================================
@@ -130,15 +129,15 @@ template <>
 EINSUMS_EXPORT int syev<float>(char jobz, char uplo, int64_t n, float *A, int64_t lda, float *W) {
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
-    auto      handle = get_solver_handle();
-    auto const mode  = to_eig_mode(jobz);
-    auto const fill  = to_fill_mode(uplo);
-    int        lwork = 0;
+    auto       handle = get_solver_handle();
+    auto const mode   = to_eig_mode(jobz);
+    auto const fill   = to_fill_mode(uplo);
+    int        lwork  = 0;
     gpu_solver_catch(cusolverDnSsyevd_bufferSize(handle, mode, fill, static_cast<int>(n), A, static_cast<int>(lda), W, &lwork));
     DeviceScratch const work(static_cast<std::size_t>(lwork) * sizeof(float));
     DeviceScratch const info(sizeof(int));
-    gpu_solver_catch(cusolverDnSsyevd(handle, mode, fill, static_cast<int>(n), A, static_cast<int>(lda), W, work.as<float>(), lwork,
-                                        info.as<int>()));
+    gpu_solver_catch(
+        cusolverDnSsyevd(handle, mode, fill, static_cast<int>(n), A, static_cast<int>(lda), W, work.as<float>(), lwork, info.as<int>()));
     return read_dev_info(info);
 #elif defined(EINSUMS_HAVE_HIP)
     not_implemented("gpu::solver::syev<float>");
@@ -151,15 +150,15 @@ template <>
 EINSUMS_EXPORT int syev<double>(char jobz, char uplo, int64_t n, double *A, int64_t lda, double *W) {
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
-    auto      handle = get_solver_handle();
-    auto const mode  = to_eig_mode(jobz);
-    auto const fill  = to_fill_mode(uplo);
-    int        lwork = 0;
+    auto       handle = get_solver_handle();
+    auto const mode   = to_eig_mode(jobz);
+    auto const fill   = to_fill_mode(uplo);
+    int        lwork  = 0;
     gpu_solver_catch(cusolverDnDsyevd_bufferSize(handle, mode, fill, static_cast<int>(n), A, static_cast<int>(lda), W, &lwork));
     DeviceScratch const work(static_cast<std::size_t>(lwork) * sizeof(double));
     DeviceScratch const info(sizeof(int));
-    gpu_solver_catch(cusolverDnDsyevd(handle, mode, fill, static_cast<int>(n), A, static_cast<int>(lda), W, work.as<double>(), lwork,
-                                        info.as<int>()));
+    gpu_solver_catch(
+        cusolverDnDsyevd(handle, mode, fill, static_cast<int>(n), A, static_cast<int>(lda), W, work.as<double>(), lwork, info.as<int>()));
     return read_dev_info(info);
 #elif defined(EINSUMS_HAVE_HIP)
     not_implemented("gpu::solver::syev<double>");
@@ -176,16 +175,16 @@ template <>
 EINSUMS_EXPORT int heev<float>(char jobz, char uplo, int64_t n, std::complex<float> *A, int64_t lda, float *W) {
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
-    auto      handle = get_solver_handle();
-    auto const mode  = to_eig_mode(jobz);
-    auto const fill  = to_fill_mode(uplo);
-    auto      *a_dev = reinterpret_cast<cuComplex *>(A);
-    int        lwork = 0;
+    auto       handle = get_solver_handle();
+    auto const mode   = to_eig_mode(jobz);
+    auto const fill   = to_fill_mode(uplo);
+    auto      *a_dev  = reinterpret_cast<cuComplex *>(A);
+    int        lwork  = 0;
     gpu_solver_catch(cusolverDnCheevd_bufferSize(handle, mode, fill, static_cast<int>(n), a_dev, static_cast<int>(lda), W, &lwork));
     DeviceScratch const work(static_cast<std::size_t>(lwork) * sizeof(cuComplex));
     DeviceScratch const info(sizeof(int));
     gpu_solver_catch(cusolverDnCheevd(handle, mode, fill, static_cast<int>(n), a_dev, static_cast<int>(lda), W, work.as<cuComplex>(), lwork,
-                                        info.as<int>()));
+                                      info.as<int>()));
     return read_dev_info(info);
 #elif defined(EINSUMS_HAVE_HIP)
     not_implemented("gpu::solver::heev<float>");
@@ -204,16 +203,16 @@ template <>
 EINSUMS_EXPORT int heev<double>(char jobz, char uplo, int64_t n, std::complex<double> *A, int64_t lda, double *W) {
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
-    auto      handle = get_solver_handle();
-    auto const mode  = to_eig_mode(jobz);
-    auto const fill  = to_fill_mode(uplo);
-    auto      *a_dev = reinterpret_cast<cuDoubleComplex *>(A);
-    int        lwork = 0;
+    auto       handle = get_solver_handle();
+    auto const mode   = to_eig_mode(jobz);
+    auto const fill   = to_fill_mode(uplo);
+    auto      *a_dev  = reinterpret_cast<cuDoubleComplex *>(A);
+    int        lwork  = 0;
     gpu_solver_catch(cusolverDnZheevd_bufferSize(handle, mode, fill, static_cast<int>(n), a_dev, static_cast<int>(lda), W, &lwork));
     DeviceScratch const work(static_cast<std::size_t>(lwork) * sizeof(cuDoubleComplex));
     DeviceScratch const info(sizeof(int));
-    gpu_solver_catch(cusolverDnZheevd(handle, mode, fill, static_cast<int>(n), a_dev, static_cast<int>(lda), W, work.as<cuDoubleComplex>(), lwork,
-                                        info.as<int>()));
+    gpu_solver_catch(cusolverDnZheevd(handle, mode, fill, static_cast<int>(n), a_dev, static_cast<int>(lda), W, work.as<cuDoubleComplex>(),
+                                      lwork, info.as<int>()));
     return read_dev_info(info);
 #elif defined(EINSUMS_HAVE_HIP)
     not_implemented("gpu::solver::heev<double>");
@@ -239,15 +238,15 @@ EINSUMS_EXPORT int gesv<float>(int64_t n, int64_t nrhs, float *A, int64_t lda, i
     // cuSOLVER has no single gesv for this shape; factor then solve. The pivots
     // stay on the device between the two calls and are handed back to the
     // caller's host buffer at the end.
-    auto      handle = get_solver_handle();
-    int        lwork = 0;
+    auto handle = get_solver_handle();
+    int  lwork  = 0;
     gpu_solver_catch(cusolverDnSgetrf_bufferSize(handle, static_cast<int>(n), static_cast<int>(n), A, static_cast<int>(lda), &lwork));
     DeviceScratch const work(static_cast<std::size_t>(lwork) * sizeof(float));
     DeviceScratch const dev_ipiv(static_cast<std::size_t>(n) * sizeof(int));
     DeviceScratch const info(sizeof(int));
 
     gpu_solver_catch(cusolverDnSgetrf(handle, static_cast<int>(n), static_cast<int>(n), A, static_cast<int>(lda), work.as<float>(),
-                                        dev_ipiv.as<int>(), info.as<int>()));
+                                      dev_ipiv.as<int>(), info.as<int>()));
     int const factor_info = read_dev_info(info);
     if (factor_info != 0) {
         pivots_to_host(dev_ipiv, ipiv, n);
@@ -255,7 +254,7 @@ EINSUMS_EXPORT int gesv<float>(int64_t n, int64_t nrhs, float *A, int64_t lda, i
     }
 
     gpu_solver_catch(cusolverDnSgetrs(handle, CUBLAS_OP_N, static_cast<int>(n), static_cast<int>(nrhs), A, static_cast<int>(lda),
-                                        dev_ipiv.as<int>(), B, static_cast<int>(ldb), info.as<int>()));
+                                      dev_ipiv.as<int>(), B, static_cast<int>(ldb), info.as<int>()));
     pivots_to_host(dev_ipiv, ipiv, n);
     return read_dev_info(info);
 #elif defined(EINSUMS_HAVE_HIP)
@@ -278,15 +277,15 @@ EINSUMS_EXPORT int gesv<double>(int64_t n, int64_t nrhs, double *A, int64_t lda,
     // cuSOLVER has no single gesv for this shape; factor then solve. The pivots
     // stay on the device between the two calls and are handed back to the
     // caller's host buffer at the end.
-    auto      handle = get_solver_handle();
-    int        lwork = 0;
+    auto handle = get_solver_handle();
+    int  lwork  = 0;
     gpu_solver_catch(cusolverDnDgetrf_bufferSize(handle, static_cast<int>(n), static_cast<int>(n), A, static_cast<int>(lda), &lwork));
     DeviceScratch const work(static_cast<std::size_t>(lwork) * sizeof(double));
     DeviceScratch const dev_ipiv(static_cast<std::size_t>(n) * sizeof(int));
     DeviceScratch const info(sizeof(int));
 
     gpu_solver_catch(cusolverDnDgetrf(handle, static_cast<int>(n), static_cast<int>(n), A, static_cast<int>(lda), work.as<double>(),
-                                        dev_ipiv.as<int>(), info.as<int>()));
+                                      dev_ipiv.as<int>(), info.as<int>()));
     int const factor_info = read_dev_info(info);
     if (factor_info != 0) {
         pivots_to_host(dev_ipiv, ipiv, n);
@@ -294,7 +293,7 @@ EINSUMS_EXPORT int gesv<double>(int64_t n, int64_t nrhs, double *A, int64_t lda,
     }
 
     gpu_solver_catch(cusolverDnDgetrs(handle, CUBLAS_OP_N, static_cast<int>(n), static_cast<int>(nrhs), A, static_cast<int>(lda),
-                                        dev_ipiv.as<int>(), B, static_cast<int>(ldb), info.as<int>()));
+                                      dev_ipiv.as<int>(), B, static_cast<int>(ldb), info.as<int>()));
     pivots_to_host(dev_ipiv, ipiv, n);
     return read_dev_info(info);
 #elif defined(EINSUMS_HAVE_HIP)
@@ -317,15 +316,15 @@ template <>
 EINSUMS_EXPORT int getrf<float>(int64_t m, int64_t n, float *A, int64_t lda, int64_t *ipiv) {
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
-    auto      handle = get_solver_handle();
-    int        lwork = 0;
+    auto handle = get_solver_handle();
+    int  lwork  = 0;
     gpu_solver_catch(cusolverDnSgetrf_bufferSize(handle, static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), &lwork));
     DeviceScratch const work(static_cast<std::size_t>(lwork) * sizeof(float));
     int64_t const       npiv = std::min(m, n);
     DeviceScratch const dev_ipiv(static_cast<std::size_t>(npiv) * sizeof(int));
     DeviceScratch const info(sizeof(int));
     gpu_solver_catch(cusolverDnSgetrf(handle, static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), work.as<float>(),
-                                        dev_ipiv.as<int>(), info.as<int>()));
+                                      dev_ipiv.as<int>(), info.as<int>()));
     pivots_to_host(dev_ipiv, ipiv, npiv);
     return read_dev_info(info);
 #elif defined(EINSUMS_HAVE_HIP)
@@ -343,15 +342,15 @@ template <>
 EINSUMS_EXPORT int getrf<double>(int64_t m, int64_t n, double *A, int64_t lda, int64_t *ipiv) {
     EINSUMS_GPU_MOCK_KERNEL_SCOPE;
 #if defined(EINSUMS_HAVE_CUDA)
-    auto      handle = get_solver_handle();
-    int        lwork = 0;
+    auto handle = get_solver_handle();
+    int  lwork  = 0;
     gpu_solver_catch(cusolverDnDgetrf_bufferSize(handle, static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), &lwork));
     DeviceScratch const work(static_cast<std::size_t>(lwork) * sizeof(double));
     int64_t const       npiv = std::min(m, n);
     DeviceScratch const dev_ipiv(static_cast<std::size_t>(npiv) * sizeof(int));
     DeviceScratch const info(sizeof(int));
     gpu_solver_catch(cusolverDnDgetrf(handle, static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), work.as<double>(),
-                                        dev_ipiv.as<int>(), info.as<int>()));
+                                      dev_ipiv.as<int>(), info.as<int>()));
     pivots_to_host(dev_ipiv, ipiv, npiv);
     return read_dev_info(info);
 #elif defined(EINSUMS_HAVE_HIP)
@@ -375,20 +374,20 @@ EINSUMS_EXPORT int getri<float>(int64_t n, float *A, int64_t lda, int64_t const 
 #if defined(EINSUMS_HAVE_CUDA)
     // cuSOLVER has no getri. The inverse is the solution of A X = I against the
     // LU factors the caller already computed, which is exactly what getrs does.
-    auto                handle = get_solver_handle();
+    auto                handle   = get_solver_handle();
     DeviceScratch const dev_ipiv = pivots_to_device(ipiv, n);
     DeviceScratch const info(sizeof(int));
 
     auto const          nn = static_cast<std::size_t>(n);
     DeviceScratch const rhs(nn * nn * sizeof(float));
-    std::vector<float>    identity(nn * nn, float(0));
+    std::vector<float>  identity(nn * nn, float(0));
     for (std::size_t i = 0; i < nn; ++i) {
         identity[i + i * nn] = float(1);
     }
     gpu::memcpy_host_to_device(rhs.ptr, identity.data(), nn * nn * sizeof(float));
 
     gpu_solver_catch(cusolverDnSgetrs(handle, CUBLAS_OP_N, static_cast<int>(n), static_cast<int>(n), A, static_cast<int>(lda),
-                                        dev_ipiv.as<int>(), rhs.as<float>(), static_cast<int>(n), info.as<int>()));
+                                      dev_ipiv.as<int>(), rhs.as<float>(), static_cast<int>(n), info.as<int>()));
     int const solve_info = read_dev_info(info);
     if (solve_info != 0) {
         return solve_info;
@@ -417,20 +416,20 @@ EINSUMS_EXPORT int getri<double>(int64_t n, double *A, int64_t lda, int64_t cons
 #if defined(EINSUMS_HAVE_CUDA)
     // cuSOLVER has no getri. The inverse is the solution of A X = I against the
     // LU factors the caller already computed, which is exactly what getrs does.
-    auto                handle = get_solver_handle();
+    auto                handle   = get_solver_handle();
     DeviceScratch const dev_ipiv = pivots_to_device(ipiv, n);
     DeviceScratch const info(sizeof(int));
 
     auto const          nn = static_cast<std::size_t>(n);
     DeviceScratch const rhs(nn * nn * sizeof(double));
-    std::vector<double>    identity(nn * nn, double(0));
+    std::vector<double> identity(nn * nn, double(0));
     for (std::size_t i = 0; i < nn; ++i) {
         identity[i + i * nn] = double(1);
     }
     gpu::memcpy_host_to_device(rhs.ptr, identity.data(), nn * nn * sizeof(double));
 
     gpu_solver_catch(cusolverDnDgetrs(handle, CUBLAS_OP_N, static_cast<int>(n), static_cast<int>(n), A, static_cast<int>(lda),
-                                        dev_ipiv.as<int>(), rhs.as<double>(), static_cast<int>(n), info.as<int>()));
+                                      dev_ipiv.as<int>(), rhs.as<double>(), static_cast<int>(n), info.as<int>()));
     int const solve_info = read_dev_info(info);
     if (solve_info != 0) {
         return solve_info;
@@ -467,14 +466,13 @@ EINSUMS_EXPORT int gesvd<float>(char jobu, char jobvt, int64_t m, int64_t n, flo
     if (m < n) {
         not_implemented("gpu::solver::gesvd<float> with m < n (cuSOLVER requires m >= n)");
     }
-    auto      handle = get_solver_handle();
-    int        lwork = 0;
+    auto handle = get_solver_handle();
+    int  lwork  = 0;
     gpu_solver_catch(cusolverDnSgesvd_bufferSize(handle, static_cast<int>(m), static_cast<int>(n), &lwork));
     DeviceScratch const work(static_cast<std::size_t>(lwork) * sizeof(float));
     DeviceScratch const info(sizeof(int));
     gpu_solver_catch(cusolverDnSgesvd(handle, jobu, jobvt, static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), S, U,
-                                        static_cast<int>(ldu), VT, static_cast<int>(ldvt), work.as<float>(), lwork, nullptr,
-                                        info.as<int>()));
+                                      static_cast<int>(ldu), VT, static_cast<int>(ldvt), work.as<float>(), lwork, nullptr, info.as<int>()));
     return read_dev_info(info);
 #elif defined(EINSUMS_HAVE_HIP)
     not_implemented("gpu::solver::gesvd<float>");
@@ -496,14 +494,14 @@ EINSUMS_EXPORT int gesvd<double>(char jobu, char jobvt, int64_t m, int64_t n, do
     if (m < n) {
         not_implemented("gpu::solver::gesvd<double> with m < n (cuSOLVER requires m >= n)");
     }
-    auto      handle = get_solver_handle();
-    int        lwork = 0;
+    auto handle = get_solver_handle();
+    int  lwork  = 0;
     gpu_solver_catch(cusolverDnDgesvd_bufferSize(handle, static_cast<int>(m), static_cast<int>(n), &lwork));
     DeviceScratch const work(static_cast<std::size_t>(lwork) * sizeof(double));
     DeviceScratch const info(sizeof(int));
     gpu_solver_catch(cusolverDnDgesvd(handle, jobu, jobvt, static_cast<int>(m), static_cast<int>(n), A, static_cast<int>(lda), S, U,
-                                        static_cast<int>(ldu), VT, static_cast<int>(ldvt), work.as<double>(), lwork, nullptr,
-                                        info.as<int>()));
+                                      static_cast<int>(ldu), VT, static_cast<int>(ldvt), work.as<double>(), lwork, nullptr,
+                                      info.as<int>()));
     return read_dev_info(info);
 #elif defined(EINSUMS_HAVE_HIP)
     not_implemented("gpu::solver::gesvd<double>");

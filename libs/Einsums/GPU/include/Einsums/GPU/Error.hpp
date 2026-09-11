@@ -43,8 +43,7 @@ EINSUMS_NAMESPACE_BEGIN(gpu)
  *
  * @param what Name of the entry point, e.g. "gpu::solver::syev<float>".
  */
-[[noreturn]] inline void not_implemented(char const                *what,
-                                         std::source_location const loc = std::source_location::current()) {
+[[noreturn]] inline void not_implemented(char const *what, std::source_location const loc = std::source_location::current()) {
     EINSUMS_THROW_EXCEPTION(std::runtime_error, "{} is not implemented for this GPU backend (at {}:{})", what, loc.file_name(), loc.line());
     // EINSUMS_THROW_EXCEPTION always throws; this satisfies [[noreturn]] for
     // compilers that cannot see through the macro.

@@ -289,12 +289,12 @@ TEMPLATE_TEST_CASE("gpu::solver::heev correctness", "[gpu][solver]", float, doub
     EINSUMS_SKIP_WITHOUT_GPU();
     // Hermitian [2, 1-i; 1+i, 3]: trace 5, det 6 - |1-i|^2 = 4, so the
     // eigenvalues are exactly 1 and 4.
-    constexpr int64_t    N   = 2;
+    constexpr int64_t      N   = 2;
     std::complex<TestType> A[] = {{TestType(2), TestType(0)},
                                   {TestType(1), TestType(1)}, // A(1,0) = 1+i
                                   {TestType(1), TestType(-1)},
                                   {TestType(3), TestType(0)}};
-    TestType             W[N];
+    TestType               W[N];
 
     void *dA = test_malloc(N * N * sizeof(std::complex<TestType>));
     void *dW = test_malloc(N * sizeof(TestType));
@@ -326,9 +326,8 @@ TEMPLATE_TEST_CASE("gpu::solver::gesvd correctness", "[gpu][solver]", float, dou
     void *dVT = test_malloc(N * N * sizeof(TestType));
     memcpy_host_to_device(dA, A, M * N * sizeof(TestType));
 
-    int const info =
-        einsums::gpu::solver::gesvd<TestType>('A', 'A', M, N, static_cast<TestType *>(dA), M, static_cast<TestType *>(dS),
-                                              static_cast<TestType *>(dU), M, static_cast<TestType *>(dVT), N);
+    int const info = einsums::gpu::solver::gesvd<TestType>('A', 'A', M, N, static_cast<TestType *>(dA), M, static_cast<TestType *>(dS),
+                                                           static_cast<TestType *>(dU), M, static_cast<TestType *>(dVT), N);
     REQUIRE(info == 0);
 
     memcpy_device_to_host(S, dS, N * sizeof(TestType));

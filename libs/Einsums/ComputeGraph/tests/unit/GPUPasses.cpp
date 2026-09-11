@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
@@ -12,8 +13,6 @@
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
-
-#include <Einsums/GPU/Platform.hpp>
 
 #include <Einsums/Testing.hpp>
 

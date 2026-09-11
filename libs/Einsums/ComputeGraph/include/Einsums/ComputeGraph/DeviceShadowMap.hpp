@@ -47,7 +47,7 @@ class DeviceShadowMap {
             // since a too-small device buffer is a heap corruption on the device.
             if (bytes > it->second.bytes) {
                 gpu::device_free(it->second.ptr);
-                auto grown      = gpu::device_malloc(bytes);
+                auto grown       = gpu::device_malloc(bytes);
                 it->second.ptr   = grown ? grown.value() : nullptr;
                 it->second.bytes = bytes;
             }
