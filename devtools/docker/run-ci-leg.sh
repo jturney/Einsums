@@ -22,6 +22,7 @@
 #     ./devtools/docker/run-ci-leg.sh free-threaded        # free-threaded CPython (cp314t), BUILD_PYTHON=ON
 #     ./devtools/docker/run-ci-leg.sh mock-discrete       # mock GPU as a DISCRETE device (no unified memory, poisoned device pointers)
 #     ./devtools/docker/run-ci-leg.sh mock-discrete-nopy  # same without Python, if the pybind TUs exhaust memory
+#     ./devtools/docker/run-ci-leg.sh asan-mock-discrete  # sanitizers over the discrete-device paths (Debug, memory hungry)
 #     ./devtools/docker/run-ci-leg.sh valgrind             # memcheck under valgrind (Debug, BUILD_PYTHON=OFF)
 #
 #     # Valgrind runs each test 20-50x slower, so the whole suite is an
@@ -225,6 +226,33 @@ leg_settings() {
             BLAS=openblas
             BUILD_TYPE=Debug
             EXTRA=("-DEINSUMS_WITH_SANITIZERS=address,leak,undefined" "-DEINSUMS_BUILD_PYTHON=OFF")
+            ;;
+        asan-mock-discrete)
+            # Sanitizers over the DISCRETE-device code paths. The ordinary asan
+            # leg cannot reach them: with the unified-memory mock,
+            # gpu::has_unified_memory is true and the shadow allocation,
+            # transfers and tensor pointer swapping are all compiled out.
+            #
+            # What this actually instruments is the guard-paged mmap allocator,
+            # DeviceShadowMap's grow-on-resize path, the device_valid ownership
+            # tracking in the executor, and MockDeviceKernelScope's refcount -
+            # all new, all raw pointer and page-protection work.
+            #
+            # Note ASan intercepts malloc, not mmap, so it adds no redzones
+            # around the mock's device buffers; the guard pages do that job. What
+            # it catches here is host-side trouble: leaks in the shadow map,
+            # use-after-free across a grow, and UB in the pointer arithmetic.
+            #
+            # Python is OFF and the parallelism wants lowering. Debug plus
+            # instrumentation makes the large ComputeGraph TUs individually
+            # enormous; -j 6 was killed by the OOM reaper on a 62GB machine, so
+            # pass `-- -j 2`-style narrowing or expect to wait.
+            COMPILER=default
+            BLAS=openblas
+            BUILD_TYPE=Debug
+            EXTRA=("-DEINSUMS_WITH_GPU_MOCK_DISCRETE=ON"
+                   "-DEINSUMS_WITH_SANITIZERS=address,leak,undefined"
+                   "-DEINSUMS_BUILD_PYTHON=OFF")
             ;;
         mock-discrete|mock-discrete-nopy)
             # The mock GPU backend pretending to be a discrete card: no unified
