@@ -4,7 +4,6 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
-#include <iostream>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
@@ -36,7 +35,7 @@ namespace {
 
 /// Can the executor actually dispatch this node to the GPU?
 ///
-/// try_gpu_blas_dispatch in Graph.cpp keys on the DESCRIPTOR carried by the
+/// try_gpu_blas_dispatch in GpuDispatch.cpp keys on the DESCRIPTOR carried by the
 /// node, not on its OpKind, so this predicate does too. OpKind::Gemm for
 /// instance carries a GemmDescriptor, which no dispatcher looks at - placing it
 /// only bought a host-to-device round trip around work that then ran on the
@@ -51,7 +50,7 @@ bool node_is_dispatchable(Node const &node, Graph const &graph);
 /// Can the executor actually dispatch THIS einsum to the GPU?
 ///
 /// OpKind::Einsum covers every contraction the library can express, but
-/// try_gpu_blas_dispatch in Graph.cpp only recognizes two shapes: a plain
+/// try_gpu_blas_dispatch in GpuDispatch.cpp only recognizes two shapes: a plain
 /// matrix GEMM (two target indices, one link index, all operands rank 2) and a
 /// GEMV (one target index, one link index, rank-2 matrix into a rank-1 vector).
 /// A rank-4 tensor contraction matches neither and falls straight back to the

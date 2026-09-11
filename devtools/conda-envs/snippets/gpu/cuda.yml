@@ -33,6 +33,6 @@ dependencies:
   # NVTX ranges for the Profile module's GPU timelines.
   - cuda-nvtx-dev
   # compute-sanitizer. The GPU path swaps host tensor pointers to device
-  # shadows (see ComputeGraph Graph.cpp), which is exactly the class of bug
+  # shadows (see ComputeGraph Graph/Execute.cpp), which is exactly the class of bug
   # memcheck catches and a plain test run does not.
   - cuda-sanitizer-api
