@@ -116,6 +116,9 @@ set(ComputeGraphSources
     ABILayout.cpp
     Graph.cpp
     GraphIR.cpp
+    GraphIR/Write.cpp
+    GraphIR/Read.cpp
+    GraphIR/Build.cpp
     InterfaceManifest.cpp
     Json.cpp
     SymbolicExtents.cpp
