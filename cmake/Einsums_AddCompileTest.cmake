@@ -135,7 +135,23 @@ function(einsums_add_compile_test category name)
     WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
   )
 
-  set_tests_properties("${category}.${name}" PROPERTIES LABELS "COMPILE_ONLY")
+  # The test above is a build of the shared tree, so two of them are two ninja
+  # processes writing one build directory. Ninja's `.ninja_deps` cannot survive
+  # that: path records carry a checksum derived from a sequential record id, so
+  # interleaved appends skew the numbering, the loader discards everything past
+  # the first mismatch, and nothing ever truncates the bad region. Fresh records
+  # land beyond the poisoned offset where no later load can see them, which
+  # turns EVERY subsequent build of that directory into a full rebuild. It
+  # announces itself only as "ninja: warning: premature end of file; recovering"
+  # and is permanent until the file is deleted by hand.
+  #
+  # A shared RESOURCE_LOCK is what keeps ctest from doing this to itself: these
+  # tests are serialized against each other while still overlapping every other
+  # test, and they are cheap enough as a group (~40 s, against ~560 s for the
+  # rest of the suite) that they are nowhere near the critical path.
+  set_tests_properties(
+    "${category}.${name}" PROPERTIES LABELS "COMPILE_ONLY" RESOURCE_LOCK "einsums_build_tree"
+  )
 
   if(${name}_FAILURE_EXPECTED)
     set_tests_properties("${category}.${name}" PROPERTIES WILL_FAIL TRUE)
