@@ -133,6 +133,36 @@ fat binary while a developer machine builds only what it can run.
    the reduced-precision kernels, and all of ``gpu::solver`` - are not yet
    implemented and raise an error rather than returning a wrong answer.
 
+Testing the discrete-device paths without a GPU
+-----------------------------------------------
+
+``-DEINSUMS_WITH_GPU_MOCK_DISCRETE=ON`` makes the mock backend behave like a
+discrete card rather than a unified-memory one. It requires no GPU and no CUDA
+toolkit.
+
+This exists because the ordinary mock cannot fail in the ways that matter. It
+services every ``gpu::blas`` call with CPU BLAS over ``malloc``'d memory, so it
+is numerically correct however broken the real CUDA path is, and
+``gpu::has_unified_memory`` being true compiles out the whole host-to-device
+transfer path in the ComputeGraph executor. Under mock-discrete:
+
+* ``has_unified_memory`` is false, so shadow allocation, uploads, copy-backs and
+  tensor pointer swapping all execute;
+* each device allocation is a guard-paged ``mmap`` held at ``PROT_NONE``, so a
+  host dereference of a device pointer faults at the offending instruction
+  instead of quietly succeeding;
+* the entry points that raise on CUDA raise here too, so the mock is a contract
+  test for the vendor backends rather than a passthrough that always agrees.
+
+The backend's own kernels still reach device memory - cuBLAS reads it as a
+matter of course - through ``gpu::MockDeviceKernelScope``. Code outside such a
+scope does not, which is what catches a host kernel running on operands that
+are still swapped to device shadows.
+
+It is POSIX-only (``mmap``/``mprotect``) and mutually exclusive with a real
+backend. CI runs it as the ``mock-discrete`` variant; locally,
+``./devtools/docker/run-ci-leg.sh mock-discrete``.
+
 Building for HIP
 ----------------
 
