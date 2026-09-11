@@ -17,6 +17,7 @@
 #include <Einsums/Runtime/Options.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -114,8 +115,6 @@ char const *signal_name(int signum) {
         return "SIGFPE (floating point exception)";
     case SIGILL:
         return "SIGILL (illegal instruction)";
-    case SIGPIPE:
-        return "SIGPIPE (bad pipe)";
     case SIGSEGV:
         return "SIGSEGV (segmentation fault)";
     case SIGSYS:
@@ -125,9 +124,41 @@ char const *signal_name(int signum) {
     }
 }
 
+/// Leave, with a note, when symbolization does not come back.
+///
+/// @ref util::backtrace resolves through cpptrace, which allocates and takes
+/// locks. Either can already be held by the frame this handler interrupted, and
+/// cpptrace's symbol cache is shared between threads, so the walk can block
+/// rather than fail. Waiting on a lock is not an exception, so the catch around
+/// the call never fires: the process then hangs carrying no diagnostic at all,
+/// which is worse than the crash it was trying to explain. An alarm is what
+/// makes "allowed to fail" true.
+void backtrace_timeout_handler(int) {
+    static char const     message[] = "\nbacktrace: symbolizer blocked, leaving without one\n";
+    [[maybe_unused]] auto ignored   = write(STDERR_FILENO, message, sizeof(message) - 1);
+    _exit(EXIT_FAILURE);
+}
+
+/// How long a backtrace may take before the handler gives up on it. Generous,
+/// because symbolizing a large binary cold is slow and the only cost of a high
+/// bound is how long a genuinely wedged crash takes to fall over.
+constexpr unsigned int backtrace_timeout_seconds = 10;
+
 } // namespace
 
 [[noreturn]] EINSUMS_EXPORT void termination_handler(int signum) {
+    // One reporter at a time. Two threads taking a fatal signal together both
+    // walk into the symbolizer, whose caches are not reentrant, and meet inside
+    // them. A late arrival parks rather than racing: it has nothing to add to a
+    // report already in flight, and the reporter ends the process for both. If
+    // the reporter is the one that wedges, the alarm below gets everybody out.
+    static std::atomic_flag reporting;
+    if (reporting.test_and_set()) {
+        while (true) {
+            pause();
+        }
+    }
+
     bool attach      = true;
     bool diagnostics = true;
 
@@ -145,12 +176,21 @@ char const *signal_name(int signum) {
     if (diagnostics) {
         // write(2) rather than the iostreams: this runs in a signal handler, where the
         // stream objects may be mid-teardown or the lock behind them already held by
-        // the thread we interrupted. The backtrace below allocates and so carries the
-        // opposite risk, which is why it is attempted second and allowed to fail.
+        // the thread we interrupted. The backtrace below allocates and takes locks and
+        // so carries the opposite risk, which is why it is attempted second, bounded
+        // by an alarm, and allowed to fail. The catch alone was not enough: a
+        // symbolizer that blocks never throws.
         auto emit = [](char const *text) { [[maybe_unused]] auto ignored = write(STDERR_FILENO, text, std::strlen(text)); };
         emit("\n=== einsums: fatal signal ===\n");
         emit(signal_name(signum));
         emit("\n");
+
+        struct sigaction alarm_action;
+        alarm_action.sa_handler = backtrace_timeout_handler;
+        sigemptyset(&alarm_action.sa_mask);
+        alarm_action.sa_flags = 0;
+        sigaction(SIGALRM, &alarm_action, nullptr);
+        alarm(backtrace_timeout_seconds);
 
         try {
             std::string const trace = util::backtrace();
@@ -162,6 +202,10 @@ char const *signal_name(int signum) {
         } catch (...) { // NOLINT
             emit("\nbacktrace: unavailable\n");
         }
+
+        // Cancel it before attach_debugger(), which spins on purpose and would
+        // otherwise be shot by our own alarm.
+        alarm(0);
         emit("=== end einsums fatal signal ===\n");
     }
 
@@ -181,7 +225,12 @@ void on_exit() noexcept {
 
 void on_abort(int) noexcept {
     exit_called = true;
-    std::exit(-1);
+    // _Exit, not exit: this runs from a SIGABRT handler, where exit() would run
+    // the static destructors. On a process already on its way down that reaches
+    // ~Profiler with other threads still live, and a destructor that throws
+    // there turns the abort into a std::terminate inside fwrite, waiting on a
+    // stdio lock. Leave without unwinding anything.
+    std::_Exit(-1);
 }
 
 void set_signal_handlers() {
@@ -197,9 +246,27 @@ void set_signal_handlers() {
     sigaction(SIGBUS, &new_action, nullptr);  // Bus error
     sigaction(SIGFPE, &new_action, nullptr);  // Floating point exception
     sigaction(SIGILL, &new_action, nullptr);  // Illegal instruction
-    sigaction(SIGPIPE, &new_action, nullptr); // Bad pipe
     sigaction(SIGSEGV, &new_action, nullptr); // Segmentation fault
     sigaction(SIGSYS, &new_action, nullptr);  // Bad syscall
+#endif
+}
+
+void ignore_broken_pipe() {
+#if !defined(EINSUMS_WINDOWS)
+    // SIGPIPE is not a crash. A consumer that stops reading early is ordinary
+    // use - `prog | head`, `prog | grep -q` - and it reaches the writer as a
+    // signal whose default disposition is death mid-write. Ignoring it makes
+    // the write fail with EPIPE instead, which a caller can see and act on.
+    //
+    // It must never share the fatal handler. That handler symbolizes, and the
+    // write that raised SIGPIPE was inside stdio holding the very lock the
+    // symbolizer then waited for, so piping any Einsums program into `head`
+    // hung it forever instead of ending it.
+    struct sigaction ignore_action;
+    ignore_action.sa_handler = SIG_IGN;
+    sigemptyset(&ignore_action.sa_mask);
+    ignore_action.sa_flags = 0;
+    sigaction(SIGPIPE, &ignore_action, nullptr);
 #endif
 }
 

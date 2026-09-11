@@ -12,7 +12,7 @@
 # set(Example1_cpp_FLAGS DEPENDENCIES SomeOtherGreatLibrary) set(Example2_hip_PARAMETERS THREADS 1)
 
 # Name of test file. Include .cpp, .hip, etc. extension.
-set(RuntimeTests # InitializeFinalize.cpp
+set(RuntimeTests SignalHandlers.cpp # InitializeFinalize.cpp
 )
 
 foreach(test ${RuntimeTests})

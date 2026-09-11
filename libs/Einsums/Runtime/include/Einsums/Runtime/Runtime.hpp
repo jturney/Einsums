@@ -165,6 +165,15 @@ struct EINSUMS_EXPORT Runtime : public design_pats::Lockable<std::recursive_mute
 EINSUMS_EXPORT void on_exit() noexcept;
 EINSUMS_EXPORT void on_abort(int signal) noexcept;
 EINSUMS_EXPORT void set_signal_handlers();
+
+/// Make a write to a pipe nobody is reading fail rather than kill the process.
+///
+/// Deliberately not part of @ref set_signal_handlers: that installs crash
+/// reporting, and a caller who turns crash reporting off has not thereby asked
+/// to be killed mid-write by `head`. The whole test suite runs with
+/// `--einsums:debug:no-install-signal-handlers`, which is precisely where the
+/// two concerns come apart.
+EINSUMS_EXPORT void ignore_broken_pipe();
 } // namespace detail
 
 /**

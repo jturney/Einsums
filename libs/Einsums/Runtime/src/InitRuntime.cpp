@@ -130,6 +130,11 @@ int run(std::function<int()> const &f, std::vector<std::string> const &argv, Ini
         EINSUMS_LOG_INFO("\"{}\": {}", key, value);
     }
 
+    // Unconditional, and ahead of the gate below: a closed pipe is ordinary use
+    // rather than a crash, so which way install-signal-handlers is set should not
+    // decide whether `prog | head` ends or dies mid-write.
+    ignore_broken_pipe();
+
     if (einsums::config::get(option::InstallSignalHandlers)) {
         EINSUMS_LOG_TRACE("Installing signal handlers...");
         set_signal_handlers();
