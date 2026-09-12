@@ -1005,11 +1005,17 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // stayed hidden while the L2 was being under-detected; correcting the L2
         // made blk.KC bigger and the small shapes paid for it.
         int64_t const KC_blk = std::min<int64_t>((kc_hint > 0) ? std::max<int64_t>(kc_hint, blk.KC) : blk.KC, K);
-        int64_t       MC_blk = blk.MC;
-        if (KC_blk > blk.KC) {
-            int64_t const mc_cap = (int64_t{4} << 20) / (KC_blk * static_cast<int64_t>(sizeof(ValueType)));
-            MC_blk               = std::clamp((mc_cap / MR) * MR, static_cast<int64_t>(MR), blk.MC);
-        }
+        // Bound the A panel at ~4 MiB, which is what the paragraph above promises.
+        //
+        // This used to be gated on KC_blk > blk.KC, a comparison between two K values
+        // that has nothing to do with the panel's size, and the gate failed both ways.
+        // It let the panel through at 512 * 4096 * 4 bytes, 8 MiB, whenever KC_blk and
+        // blk.KC coincided, which is every large-K single-precision contraction on a
+        // rung with a kc hint. And it silently switched off if blk.KC grew, so
+        // correcting a detected cache size turned the cap off and cost 0.62x on the
+        // large-K cases. A constraint on the panel belongs on the panel.
+        int64_t const mc_cap = (int64_t{4} << 20) / (KC_blk * static_cast<int64_t>(sizeof(ValueType)));
+        int64_t const MC_blk = std::clamp((mc_cap / MR) * MR, static_cast<int64_t>(MR), blk.MC);
 
         // For multi-M/N: we need a temporary contiguous C tile buffer because
         // the multi-dim C elements are non-contiguous in memory.
