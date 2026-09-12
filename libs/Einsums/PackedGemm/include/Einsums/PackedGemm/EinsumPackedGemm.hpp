@@ -1063,6 +1063,46 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // when the loop is actually going to run in parallel: otherwise it buys
         // extra re-packing for nothing.
         int64_t NC_blk = blk.NC;
+
+        // Bound the MC by NC C temp that the block-GEMM scatter strategy allocates.
+        //
+        // Nothing else constrains it. compute_blocking derives MC from an A-panel
+        // budget and NC from a B-panel budget, so their product lands wherever those
+        // two leave it, and it scales with the element size while neither budget
+        // does. On abcdef-gfbc-dega that gives 504 KB for float and 1008 KB for
+        // double, and the double figure costs 1.30x: measured on an M4 with the block
+        // path forced, bounding it takes the case from 24.0 to 31.3 GF/s.
+        //
+        // The cost is not only the scatter's own locality. The vendor GEMM that
+        // writes this temp keeps its own packed buffers, and an oversized output
+        // buffer evicts them: the GEMM's own time falls from 96.7 ms to 71.7 ms when
+        // the temp is halved, which is most of what the case gains. That is also why
+        // the smallest temp is not the best. Below roughly 400 KB the bound shrinks
+        // NC far enough to re-pack A many more times for no further cache benefit,
+        // and at a 32 KB bound pack_A goes from 2.4 ms to 39 ms.
+        //
+        // Four times L1 is where the M4 optimum sits, 432 to 504 KB against a 128 KB
+        // L1, and it is a no-op for float there while halving double to exactly that
+        // optimum. The multiplier wants confirming on a machine with a much smaller
+        // per-core L2; EINSUMS_EXPERIMENT_C_TEMP_KB overrides the bound in KB so it
+        // can be swept in one build, and should become a real option or be removed
+        // once the value is settled.
+        //
+        // This lives here rather than in compute_blocking because only this strategy
+        // allocates the temp: the tile and direct-BLAS paths would pay the smaller NC
+        // and get nothing back.
+        if (needs_c_scatter && shape.block_gemm) {
+            int64_t budget = 4 * cpu_config().l1_cache_size;
+            if (char const *e = std::getenv("EINSUMS_EXPERIMENT_C_TEMP_KB")) {
+                if (int64_t const kb = std::atoll(e); kb > 0) {
+                    budget = kb * 1024;
+                }
+            }
+            int64_t const max_nc = ((budget / (MC_blk * static_cast<int64_t>(sizeof(ValueType)))) / NR) * NR;
+            if (max_nc >= NR && max_nc < NC_blk) {
+                NC_blk = max_nc;
+            }
+        }
 #ifdef _OPENMP
         if (parallel_nc) {
             int const nthreads = omp_get_max_threads();
