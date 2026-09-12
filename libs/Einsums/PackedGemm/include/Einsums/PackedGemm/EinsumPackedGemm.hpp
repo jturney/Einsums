@@ -1027,6 +1027,24 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // NaN * 0 is NaN rather than 0 and an uninitialized C would leak through.
         bool const overwrite_c = (beta == ValueType{0});
 
+        // Which side the C scatter walks innermost. Both scatters below were
+        // hardwired to n outer, m inner, so only the M group's fastest dimension
+        // could make the inner loop contiguous. When C's smallest stride sits in
+        // the N group instead, which happens whenever C's unit-stride index came
+        // from B rather than A, no ordering of either group can help and the inner
+        // loop spends a cache line per element. On the Tensor Contraction
+        // Benchmark's rank-6 ccsd_t contractions that splits the eighteen mirror
+        // pairs cleanly in two: the nine whose unit index reaches C through A run
+        // at 76% to 98% of an equally sized GEMM, and the nine whose unit index
+        // arrives through B run at 42% to 66%, with no overlap.
+        //
+        // A synthesized unit dim keeps a stride of 0 for life (see Packing.cpp), and
+        // a group of extent 1 carries no locality to compare, so it never argues for
+        // itself and never argues against the other side.
+        int64_t const c_m_fastest     = plan.c_m_dims.back().tensor_stride;
+        int64_t const c_n_fastest     = plan.c_n_dims.back().tensor_stride;
+        bool const    scatter_n_inner = c_n_fastest != 0 && (c_m_fastest == 0 || c_n_fastest < c_m_fastest);
+
         // The NC loop is the parallel loop, but only when there is enough work to
         // pay for the region. Entering and leaving one costs a fork/join barrier
         // -- measured at init into cpu_config().min_parallel_flops -- and for a
@@ -1275,10 +1293,22 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
                             {
                                 LabeledSectionInternal("block GEMM (vendor)");
-                                einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(mc_len), static_cast<blas_int>(nc_len),
-                                                               static_cast<blas_int>(kc_len), alpha, tls_Af.data(),
-                                                               static_cast<blas_int>(mc_len), tls_Bf.data(), static_cast<blas_int>(nc_len),
-                                                               ValueType{0}, tls_Cb.data(), static_cast<blas_int>(mc_len));
+                                // Swapping the operands computes Bf * Af^T, whose (j, i) is the
+                                // (i, j) of Af * Bf^T, so the block temp comes out transposed and
+                                // the n-inner scatter reads it contiguously. Striding the temp
+                                // instead is not an option here: it is MC by NC, far too large to
+                                // sweep once per m index, unlike the tile path's MR by NR buffer.
+                                if (scatter_n_inner) {
+                                    einsums::blas::gemm<ValueType>(
+                                        'N', 'T', static_cast<blas_int>(nc_len), static_cast<blas_int>(mc_len),
+                                        static_cast<blas_int>(kc_len), alpha, tls_Bf.data(), static_cast<blas_int>(nc_len), tls_Af.data(),
+                                        static_cast<blas_int>(mc_len), ValueType{0}, tls_Cb.data(), static_cast<blas_int>(nc_len));
+                                } else {
+                                    einsums::blas::gemm<ValueType>(
+                                        'N', 'T', static_cast<blas_int>(mc_len), static_cast<blas_int>(nc_len),
+                                        static_cast<blas_int>(kc_len), alpha, tls_Af.data(), static_cast<blas_int>(mc_len), tls_Bf.data(),
+                                        static_cast<blas_int>(nc_len), ValueType{0}, tls_Cb.data(), static_cast<blas_int>(mc_len));
+                                }
                             }
 
                             // Scatter-accumulate the contiguous block into C. When C's
@@ -1286,6 +1316,43 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             // destination decomposes into contiguous runs and the
                             // accumulation vectorizes.
                             LabeledSectionInternal("C block scatter");
+                            if (scatter_n_inner) {
+                                // Mirror of the loop below with the roles of m and n exchanged.
+                                // tls_Cb is nc_len x mc_len here (see the swapped GEMM above).
+                                bool const    c_n_unit = plan.c_n_dims.back().tensor_stride == 1;
+                                int64_t const c_n_fast = plan.c_n_dims.back().size;
+                                for (int64_t i2 = 0; i2 < mc_len; ++i2) {
+                                    int64_t const    m_off = c_m_offsets[static_cast<size_t>(i2)];
+                                    ValueType const *src   = tls_Cb.data() + i2 * nc_len;
+                                    if (c_n_unit) {
+                                        int64_t pos = 0;
+                                        while (pos < nc_len) {
+                                            int64_t const    run = std::min(c_n_fast - ((nc + pos) % c_n_fast), nc_len - pos);
+                                            ValueType       *dst = C_data + m_off + c_n_offsets[static_cast<size_t>(pos)];
+                                            ValueType const *s   = src + pos;
+                                            if (store_c) {
+                                                std::copy(s, s + run, dst);
+                                            } else {
+                                                for (int64_t r = 0; r < run; ++r) {
+                                                    dst[r] += s[r];
+                                                }
+                                            }
+                                            pos += run;
+                                        }
+                                        continue;
+                                    }
+                                    if (store_c) {
+                                        for (int64_t j = 0; j < nc_len; ++j) {
+                                            C_data[m_off + c_n_offsets[static_cast<size_t>(j)]] = src[j];
+                                        }
+                                        continue;
+                                    }
+                                    for (int64_t j = 0; j < nc_len; ++j) {
+                                        C_data[m_off + c_n_offsets[static_cast<size_t>(j)]] += src[j];
+                                    }
+                                }
+                                continue; // next mc block
+                            }
                             bool const    c_m_unit = plan.c_m_dims.back().tensor_stride == 1;
                             int64_t const c_m_fast = plan.c_m_dims.back().size;
                             for (int64_t j = 0; j < nc_len; ++j) {
@@ -1408,17 +1475,35 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, mr_actual,
                                                nr_actual, Ct, 1, MR);
 
-                                    // Scatter Ct back to C using the precomputed offset tables
-                                    for (int64_t jj = 0; jj < nr_actual; ++jj) {
-                                        int64_t const n_off = c_n_offsets[static_cast<size_t>(jr * NR + jj)];
-                                        if (store_c) {
-                                            for (int64_t ii = 0; ii < mr_actual; ++ii) {
-                                                C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] = Ct[jj * MR + ii];
-                                            }
-                                            continue;
-                                        }
+                                    // Scatter Ct back to C using the precomputed offset tables,
+                                    // innermost along whichever of C's index groups is closer
+                                    // packed. Ct is MR by NR and cache resident either way, so
+                                    // reading it with a stride costs nothing.
+                                    if (scatter_n_inner) {
                                         for (int64_t ii = 0; ii < mr_actual; ++ii) {
-                                            C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] += Ct[jj * MR + ii];
+                                            int64_t const m_off = c_m_offsets[static_cast<size_t>(ir * MR + ii)];
+                                            if (store_c) {
+                                                for (int64_t jj = 0; jj < nr_actual; ++jj) {
+                                                    C_data[m_off + c_n_offsets[static_cast<size_t>(jr * NR + jj)]] = Ct[jj * MR + ii];
+                                                }
+                                                continue;
+                                            }
+                                            for (int64_t jj = 0; jj < nr_actual; ++jj) {
+                                                C_data[m_off + c_n_offsets[static_cast<size_t>(jr * NR + jj)]] += Ct[jj * MR + ii];
+                                            }
+                                        }
+                                    } else {
+                                        for (int64_t jj = 0; jj < nr_actual; ++jj) {
+                                            int64_t const n_off = c_n_offsets[static_cast<size_t>(jr * NR + jj)];
+                                            if (store_c) {
+                                                for (int64_t ii = 0; ii < mr_actual; ++ii) {
+                                                    C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] = Ct[jj * MR + ii];
+                                                }
+                                                continue;
+                                            }
+                                            for (int64_t ii = 0; ii < mr_actual; ++ii) {
+                                                C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] += Ct[jj * MR + ii];
+                                            }
                                         }
                                     }
                                 }
