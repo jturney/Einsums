@@ -1015,6 +1015,18 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // the multi-dim C elements are non-contiguous in memory.
         bool const needs_c_scatter = scatter_c;
 
+        // beta == 0 says C's prior contents are irrelevant, so the first K block
+        // STORES its result and later blocks accumulate onto it. The direct-BLAS
+        // paths above already do this through beta_k; the scatter paths below did
+        // not, and instead made a separate read-modify-write pass over C to
+        // multiply it by zero. On a scatter shape that pass is the dominant cost:
+        // C's m and n index groups interleave in memory, so it touches one element
+        // per cache line, and it is pure waste when the result is about to be
+        // overwritten. Folding it into the scatter also makes beta == 0 mean what
+        // BLAS says it means - C is never read - which `*= 0` does not, since
+        // NaN * 0 is NaN rather than 0 and an uninitialized C would leak through.
+        bool const overwrite_c = (beta == ValueType{0});
+
         // The NC loop is the parallel loop, but only when there is enough work to
         // pay for the region. Entering and leaving one costs a fork/join barrier
         // -- measured at init into cpu_config().min_parallel_flops -- and for a
@@ -1115,7 +1127,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 precompute_offsets(mh / 2, mh_len / 2, plan.c_m_dims, c_m_offsets);
 
                                 // Beta prescale once per (mh, nc) block on the first kh slice.
-                                if (kh == 0 && beta != ValueType{1}) {
+                                // Skipped entirely when the scatter below stores.
+                                bool const store_c = overwrite_c && kh == 0;
+                                if (kh == 0 && beta != ValueType{1} && !overwrite_c) {
                                     for (int64_t mi = 0; mi < mh_len / 2; ++mi) {
                                         int64_t const m_off = c_m_offsets[static_cast<size_t>(mi)];
                                         for (int64_t ni = 0; ni < nc_len; ++ni) {
@@ -1143,6 +1157,13 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 for (int64_t j = 0; j < nc_len; ++j) {
                                     int64_t const n_off = c_n_offsets[static_cast<size_t>(j)];
                                     RealT const  *src   = tls_Cb1.data() + j * mh_len;
+                                    if (store_c) {
+                                        for (int64_t ii = 0; ii < mh_len; ii += 2) {
+                                            C_data[c_m_offsets[static_cast<size_t>(ii / 2)] + n_off] =
+                                                alpha * ValueType{src[ii], src[ii + 1]};
+                                        }
+                                        continue;
+                                    }
                                     for (int64_t ii = 0; ii < mh_len; ii += 2) {
                                         C_data[c_m_offsets[static_cast<size_t>(ii / 2)] + n_off] += alpha * ValueType{src[ii], src[ii + 1]};
                                     }
@@ -1202,7 +1223,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);
 
                             // Beta prescale once per (mc, nc) block on the first kc slice.
-                            if (kc == 0 && beta != ValueType{1}) {
+                            // Skipped entirely when the scatters below store.
+                            bool const store_c = overwrite_c && kc == 0;
+                            if (kc == 0 && beta != ValueType{1} && !overwrite_c) {
                                 LabeledSectionInternal("C beta prescale");
                                 for (int64_t mi = 0; mi < mc_len; ++mi) {
                                     int64_t const m_off = c_m_offsets[static_cast<size_t>(mi)];
@@ -1236,7 +1259,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                             size_t const idx = static_cast<size_t>(j * mc_len + i2);
                                             Real3m const re  = t1[idx] - t2[idx];
                                             Real3m const im  = t3[idx] - t1[idx] - t2[idx];
-                                            C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] += alpha * ValueType{re, im};
+                                            ValueType   *dst = C_data + c_m_offsets[static_cast<size_t>(i2)] + n_off;
+                                            if (store_c) {
+                                                *dst = alpha * ValueType{re, im};
+                                            } else {
+                                                *dst += alpha * ValueType{re, im};
+                                            }
                                         }
                                     }
                                     continue; // next mc block
@@ -1269,10 +1297,20 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                         int64_t const    run = std::min(c_m_fast - ((mc + pos) % c_m_fast), mc_len - pos);
                                         ValueType       *dst = C_data + c_m_offsets[static_cast<size_t>(pos)] + n_off;
                                         ValueType const *s   = src + pos;
-                                        for (int64_t r = 0; r < run; ++r) {
-                                            dst[r] += s[r];
+                                        if (store_c) {
+                                            std::copy(s, s + run, dst);
+                                        } else {
+                                            for (int64_t r = 0; r < run; ++r) {
+                                                dst[r] += s[r];
+                                            }
                                         }
                                         pos += run;
+                                    }
+                                    continue;
+                                }
+                                if (store_c) {
+                                    for (int64_t i2 = 0; i2 < mc_len; ++i2) {
+                                        C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] = src[i2];
                                     }
                                     continue;
                                 }
@@ -1298,7 +1336,13 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         }
 
                         // Beta prescale: apply once per (mc, nc) block on first kc tile.
-                        if (kc == 0 && beta != ValueType{1}) {
+                        // The scatter branch stores on the first K block when beta == 0
+                        // (see overwrite_c) and so needs no prescale at all. The
+                        // direct-C branches still need one, because the micro-kernel
+                        // only ever accumulates into C - but clearing C is a write
+                        // where `*= 0` was a read-modify-write over the whole block.
+                        bool const store_c = overwrite_c && kc == 0 && needs_c_scatter;
+                        if (kc == 0 && beta != ValueType{1} && !store_c) {
                             LabeledSectionInternal("C beta prescale");
                             if (needs_c_scatter) {
                                 // Multi-M/N: element-by-element prescale via the offset tables
@@ -1311,6 +1355,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             } else if (C_col_major) {
                                 for (int64_t ni = nc; ni < nc + nc_len; ++ni) {
                                     ValueType *col = C_data + mc + ni * C_n_stride;
+                                    if (overwrite_c) {
+                                        std::fill(col, col + mc_len, ValueType{0});
+                                        continue;
+                                    }
                                     for (int64_t i = 0; i < mc_len; ++i) {
                                         col[i] *= beta;
                                     }
@@ -1318,6 +1366,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             } else {
                                 for (int64_t mi = mc; mi < mc + mc_len; ++mi) {
                                     ValueType *row = C_data + mi * C_m_stride + nc;
+                                    if (overwrite_c) {
+                                        std::fill(row, row + nc_len, ValueType{0});
+                                        continue;
+                                    }
                                     for (int64_t j = 0; j < nc_len; ++j) {
                                         row[j] *= beta;
                                     }
@@ -1359,6 +1411,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     // Scatter Ct back to C using the precomputed offset tables
                                     for (int64_t jj = 0; jj < nr_actual; ++jj) {
                                         int64_t const n_off = c_n_offsets[static_cast<size_t>(jr * NR + jj)];
+                                        if (store_c) {
+                                            for (int64_t ii = 0; ii < mr_actual; ++ii) {
+                                                C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] = Ct[jj * MR + ii];
+                                            }
+                                            continue;
+                                        }
                                         for (int64_t ii = 0; ii < mr_actual; ++ii) {
                                             C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] += Ct[jj * MR + ii];
                                         }
