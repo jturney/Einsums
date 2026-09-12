@@ -728,7 +728,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
         ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__),           \
                                                                                           [&] { return fmt::format("{}", name_expr); })
 #    define LabeledSection0() LabeledSection(__func__)
-#    if defined(EINSUMS_WITH_PROFILER_INTERNAL)
+#    if defined(EINSUMS_HAVE_PROFILER_INTERNAL)
 #        define LabeledSectionInternal(name_format, ...)                                                                                   \
             static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};    \
             ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(                                             \

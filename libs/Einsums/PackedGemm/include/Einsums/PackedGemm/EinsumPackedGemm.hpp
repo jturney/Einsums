@@ -1203,6 +1203,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
                             // Beta prescale once per (mc, nc) block on the first kc slice.
                             if (kc == 0 && beta != ValueType{1}) {
+                                LabeledSectionInternal("C beta prescale");
                                 for (int64_t mi = 0; mi < mc_len; ++mi) {
                                     int64_t const m_off = c_m_offsets[static_cast<size_t>(mi)];
                                     for (int64_t ni = 0; ni < nc_len; ++ni) {
@@ -1244,15 +1245,19 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
                             pack_A_flat(tls_Af.data(), A_data, plan, mc, mc_len, kc, kc_len, conj_a);
 
-                            einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(mc_len), static_cast<blas_int>(nc_len),
-                                                           static_cast<blas_int>(kc_len), alpha, tls_Af.data(),
-                                                           static_cast<blas_int>(mc_len), tls_Bf.data(), static_cast<blas_int>(nc_len),
-                                                           ValueType{0}, tls_Cb.data(), static_cast<blas_int>(mc_len));
+                            {
+                                LabeledSectionInternal("block GEMM (vendor)");
+                                einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(mc_len), static_cast<blas_int>(nc_len),
+                                                               static_cast<blas_int>(kc_len), alpha, tls_Af.data(),
+                                                               static_cast<blas_int>(mc_len), tls_Bf.data(), static_cast<blas_int>(nc_len),
+                                                               ValueType{0}, tls_Cb.data(), static_cast<blas_int>(mc_len));
+                            }
 
                             // Scatter-accumulate the contiguous block into C. When C's
                             // stride along the fastest flat m coordinate is 1, the
                             // destination decomposes into contiguous runs and the
                             // accumulation vectorizes.
+                            LabeledSectionInternal("C block scatter");
                             bool const    c_m_unit = plan.c_m_dims.back().tensor_stride == 1;
                             int64_t const c_m_fast = plan.c_m_dims.back().size;
                             for (int64_t j = 0; j < nc_len; ++j) {
@@ -1294,6 +1299,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
                         // Beta prescale: apply once per (mc, nc) block on first kc tile.
                         if (kc == 0 && beta != ValueType{1}) {
+                            LabeledSectionInternal("C beta prescale");
                             if (needs_c_scatter) {
                                 // Multi-M/N: element-by-element prescale via the offset tables
                                 for (int64_t mi = 0; mi < mc_len; ++mi) {
@@ -1330,6 +1336,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         int64_t const num_ir = (mc_len + MR - 1) / MR;
 
                         if (needs_c_scatter) {
+                            LabeledSectionInternal("micro-kernel loop, tile scatter");
                             // Multi-M/N: GEMM into a contiguous temp tile, then scatter to C.
                             for (int64_t jr = 0; jr < num_jr; ++jr) {
                                 int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nc_len - jr * NR);
@@ -1359,6 +1366,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 }
                             }
                         } else {
+                            LabeledSectionInternal("micro-kernel loop, direct C");
                             // Single-M, single-N: direct GEMM into C (original fast path).
                             for (int64_t jr = 0; jr < num_jr; ++jr) {
                                 int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nc_len - jr * NR);
