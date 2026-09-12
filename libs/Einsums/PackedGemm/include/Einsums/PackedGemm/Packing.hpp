@@ -273,17 +273,20 @@ inline void sort_k_dims_for_packing(PackingPlan &plan) {
 /// Must be called after fill_strides() (and after sort_k_dims_for_packing(),
 /// which it may re-permute). Sets plan.coalesced when any merge happened.
 inline void coalesce_plan(PackingPlan &plan) {
-    auto coalesce_group = [&plan](std::vector<DimSpec> &prim, std::vector<DimSpec> &mirr) {
+    // @p sort_by_mirror picks which of the two vectors' strides orders the flat
+    // coordinate. See the cost comparison below for why that is a real choice.
+    auto coalesce_group = [&plan](std::vector<DimSpec> &prim, std::vector<DimSpec> &mirr, bool sort_by_mirror) {
         size_t const n = prim.size();
         if (n <= 1) {
             return;
         }
 
-        // Order both vectors by descending primary stride so the last entry is
-        // the fastest-varying flat coordinate (the flat_to_offset convention).
-        std::vector<size_t> perm(n);
+        // Order both vectors together so the last entry is the fastest-varying
+        // flat coordinate (the flat_to_offset convention).
+        std::vector<DimSpec> const &key = sort_by_mirror ? mirr : prim;
+        std::vector<size_t>         perm(n);
         std::iota(perm.begin(), perm.end(), size_t{0});
-        std::stable_sort(perm.begin(), perm.end(), [&](size_t x, size_t y) { return prim[x].tensor_stride > prim[y].tensor_stride; });
+        std::stable_sort(perm.begin(), perm.end(), [&](size_t x, size_t y) { return key[x].tensor_stride > key[y].tensor_stride; });
 
         std::vector<DimSpec> ps(n), ms(n);
         for (size_t d = 0; d < n; ++d) {
@@ -312,9 +315,77 @@ inline void coalesce_plan(PackingPlan &plan) {
         mirr = std::move(mout);
     };
 
-    coalesce_group(plan.m_dims, plan.c_m_dims);
-    coalesce_group(plan.n_dims, plan.c_n_dims);
-    coalesce_group(plan.k_dims_in_a, plan.k_dims_in_b);
+    // Which side orders the flat coordinate is a real choice, and both answers are
+    // sometimes right.
+    //
+    // The fastest-varying flat dimension is the one with the smallest stride in
+    // whichever side is sorted on, so sorting on C gives the C scatter a contiguous
+    // walk and leaves the packing operand a gather, and sorting on the packing
+    // operand does the reverse. The two conflict whenever they share no unit-stride
+    // dimension, which is the common case for the rank-6 ccsd_t contractions. In
+    // abcde-efcad-bf they do not share one, and once the order suits either side
+    // the other's contiguous dimension has a flat stride larger than the whole MC
+    // block, so no loop order inside pack_A can win it back.
+    //
+    // So price both orderings from the strides and extents already in the plan. A
+    // side whose fastest dimension has unit stride uses a whole cache line, so it
+    // pays 1/kElemsPerLine lines per element; any other stride pays a line each. On
+    // top of that a stride that leaves the page every element thrashes the TLB,
+    // which is what separates abc-dca-bd's two candidates: both spend a line per
+    // element, but one strides 312 elements and the other 92352. Weight both terms
+    // by the elements each side moves, which is M*N for C, M*K for A and N*K for B.
+    //
+    // Both constants are deliberately the conservative figure for the widest
+    // element type and the smallest common page. The comparison is a ratio, and no
+    // decision on the Tensor Contraction Benchmark changes if either is doubled.
+    //
+    // The K group has no C side; both of its vectors are packing operands, so it
+    // keeps the primary's order.
+    constexpr double  kElemsPerLine = 8.0;
+    constexpr int64_t kPageElems    = 512;
+
+    auto const extent = [](std::vector<DimSpec> const &dims) {
+        int64_t total = 1;
+        for (auto const &d : dims) {
+            total *= d.size;
+        }
+        return total;
+    };
+    int64_t const m_total = extent(plan.m_dims);
+    int64_t const n_total = extent(plan.n_dims);
+    int64_t const k_total = extent(plan.k_dims_in_a);
+    double const  c_trips = static_cast<double>(m_total) * static_cast<double>(n_total);
+
+    auto order_by_c = [&](std::vector<DimSpec> const &pack_dims, std::vector<DimSpec> const &c_dims, double pack_trips) {
+        if (pack_dims.size() <= 1) {
+            return false; // nothing to order
+        }
+        auto const smallest = [](std::vector<DimSpec> const &dims) {
+            size_t best = 0;
+            for (size_t i = 1; i < dims.size(); ++i) {
+                if (dims[i].tensor_stride < dims[best].tensor_stride) {
+                    best = i;
+                }
+            }
+            return best;
+        };
+        auto const cost = [](int64_t stride) { return (stride == 1 ? 1.0 / kElemsPerLine : 1.0) + (stride >= kPageElems ? 1.0 : 0.0); };
+
+        size_t const by_c    = smallest(c_dims);
+        size_t const by_pack = smallest(pack_dims);
+        double const cost_c  = c_trips * cost(c_dims[by_c].tensor_stride) + pack_trips * cost(pack_dims[by_c].tensor_stride);
+        double const cost_p  = c_trips * cost(c_dims[by_pack].tensor_stride) + pack_trips * cost(pack_dims[by_pack].tensor_stride);
+        if (cost_c != cost_p) {
+            return cost_c < cost_p;
+        }
+        return c_dims[by_c].tensor_stride < c_dims[by_pack].tensor_stride;
+    };
+
+    coalesce_group(plan.m_dims, plan.c_m_dims,
+                   order_by_c(plan.m_dims, plan.c_m_dims, static_cast<double>(m_total) * static_cast<double>(k_total)));
+    coalesce_group(plan.n_dims, plan.c_n_dims,
+                   order_by_c(plan.n_dims, plan.c_n_dims, static_cast<double>(n_total) * static_cast<double>(k_total)));
+    coalesce_group(plan.k_dims_in_a, plan.k_dims_in_b, /*sort_by_mirror=*/false);
 }
 
 // ---------------------------------------------------------------------------
