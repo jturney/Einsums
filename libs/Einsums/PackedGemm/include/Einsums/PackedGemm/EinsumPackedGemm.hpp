@@ -787,29 +787,30 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     hptt_transpose(perm_b.data(), static_cast<int>(sizes_b.size()), B_data, sizes_b.data(), B_flat, num_threads, conj_b);
                 }
 
-                // A_flat is now col-major M*K; B_flat is row-major K*N.
-                // KC-tiled GEMM over the flat buffers.
+                // A_flat is now col-major M*K; B_flat is row-major K*N - and a
+                // zero-copy side is, by the test above, already exactly that.
+                // So BOTH operands span the whole K here, and the contraction is
+                // one GEMM.
+                //
+                // It is deliberately NOT tiled over K. The gather branch below
+                // tiles because its flat buffer holds one KC slice at a time and
+                // has to be refilled; nothing here needs refilling, so a KC chain
+                // would only re-read and re-write the whole of C once per slice
+                // (K/KC times) and pay a vendor call for each - 282 calls and
+                // ~326 MB of avoidable C traffic on ccsd's ab-cad-dcb at
+                // K=144384, KC=512. Blocking K is the vendor's job once both
+                // operands are flat.
                 ValueType const *A_base = a_zero_copy ? A_data : A_flat;
                 ValueType const *B_base = b_zero_copy ? B_data : B_flat;
-                int64_t const    KC     = std::min(K, blk.KC);
-                for (int64_t kc = 0; kc < K; kc += KC) {
-                    int64_t const   kc_len = std::min(KC, K - kc);
-                    ValueType const beta_k = (kc == 0) ? beta : ValueType{1};
 
-                    // A_base is M*K col-major: column kc starts at A_base + kc*M
-                    // B_base is K*N row-major: row kc starts at B_base + kc*N
-                    ValueType const *A_ptr = A_base + kc * M;
-                    ValueType const *B_ptr = B_base + kc * N;
-
-                    if (C_col_major) {
-                        einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(M), static_cast<blas_int>(N),
-                                                       static_cast<blas_int>(kc_len), alpha, A_ptr, static_cast<blas_int>(M), B_ptr,
-                                                       static_cast<blas_int>(N), beta_k, C_data, static_cast<blas_int>(ldc_col));
-                    } else {
-                        einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(N), static_cast<blas_int>(M),
-                                                       static_cast<blas_int>(kc_len), alpha, B_ptr, static_cast<blas_int>(N), A_ptr,
-                                                       static_cast<blas_int>(M), beta_k, C_data, static_cast<blas_int>(ldc_row));
-                    }
+                if (C_col_major) {
+                    einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(M), static_cast<blas_int>(N), static_cast<blas_int>(K),
+                                                   alpha, A_base, static_cast<blas_int>(M), B_base, static_cast<blas_int>(N), beta, C_data,
+                                                   static_cast<blas_int>(ldc_col));
+                } else {
+                    einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(N), static_cast<blas_int>(M), static_cast<blas_int>(K),
+                                                   alpha, B_base, static_cast<blas_int>(N), A_base, static_cast<blas_int>(M), beta, C_data,
+                                                   static_cast<blas_int>(ldc_row));
                 }
             } else {
                 // Scalar gather fallback (non-contiguous tensors).
