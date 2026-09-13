@@ -19,8 +19,24 @@
 // (undefined) at the end of this header.
 
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/SIMD/Operations.hpp>
+#include <Einsums/SIMD/Platform.hpp>
+#include <Einsums/SIMD/Vec.hpp>
 
 #include <cstdint>
+#include <type_traits>
+
+// Loop-unrolling pragma for the fixed-trip register loops below. GCC ignores
+// clang's bare `#pragma unroll` and spells its own; MSVC has neither, and its
+// optimizer unrolls short constant-trip loops on its own.
+#if defined(__clang__)
+#    define EINSUMS_PACKED_GEMM_UNROLL(n) _Pragma("unroll")
+#elif defined(__GNUC__)
+#    define EINSUMS_PACKED_GEMM_UNROLL_STR(x) #x
+#    define EINSUMS_PACKED_GEMM_UNROLL(n)     _Pragma(EINSUMS_PACKED_GEMM_UNROLL_STR(GCC unroll n))
+#else
+#    define EINSUMS_PACKED_GEMM_UNROLL(n)
+#endif
 
 #if !defined(EINSUMS_PACKED_GEMM_KERNEL_NS)
 #    error "Define EINSUMS_PACKED_GEMM_KERNEL_NS before including MicroKernelBody.hpp"
@@ -76,6 +92,100 @@ void micro_kernel(int64_t kc, T alpha, T const *__restrict Ap, T const *__restri
     }
 }
 
+// ---------------------------------------------------------------------------
+// Rung-width vector kernel
+// ---------------------------------------------------------------------------
+//
+// The portable body above leaves vectorization to the compiler, and what the
+// compiler makes of `acc[MR][NR]` depends on MR matching the register it
+// has. That match used to come from cpu_config()'s VL, which is the width of
+// the ISA the LIBRARY was compiled for (SSE2 on a distribution build), not the
+// width of the rung this TU is compiled at: on an AVX2 machine the v3 rung
+// was asked for a 4x6 tile and produced SSE-width code, and measured 15 GF/s
+// for float where a 16x6 tile of the same rung reaches 61 GF/s on the same
+// packed block (Zen+, single core; OpenBLAS' full sgemm runs 57 GF/s there).
+//
+// So the tile is stated in the rung's own vectors: MR is two of them along
+// m, NR is six broadcast columns, twelve accumulators, which fits the sixteen
+// registers of SSE/AVX/NEON and the thirty-two of AVX-512 alike. The shape is
+// a compile-time fact of this TU (@ref vector_kernel_mr), and
+// micro_kernel_block() reports it so the packers cut panels to match.
+//
+// Only float and double have it; the complex bodies stay on the portable
+// kernel (the rungs that care route complex through 1m or 3m anyway).
+
+/// True when this rung has a vector register to build the tile from.
+template <typename T>
+inline constexpr bool has_vector_kernel = (std::is_same_v<T, float> || std::is_same_v<T, double>) && einsums::simd::native_bits > 0;
+
+/// M register-block of the vector kernel: two of this rung's vectors.
+template <typename T>
+inline constexpr int vector_kernel_mr = 2 * einsums::simd::native_lanes<T>;
+
+/// N register-block of the vector kernel: six broadcast columns.
+inline constexpr int vector_kernel_nr = 6;
+
+/// @brief One (2 * lanes) x 6 tile through this rung's vector registers.
+///
+/// Same contract as @ref micro_kernel: Ap is a column-major MR*kc panel, Bp a
+/// row-major kc*NR panel, both zero-padded by the packers, and only the C
+/// update is masked to mr_eff x nr_eff. A full tile into a unit-row-stride
+/// C (rs_c == 1, the column-major case every scatter temp and every
+/// column-major C presents) loads, scales and stores whole vectors; anything
+/// else goes through a small stack tile so the accumulation loop never
+/// branches on the C layout.
+template <typename T>
+void micro_kernel_vector(int64_t kc, T alpha, T const *__restrict Ap, T const *__restrict Bp, int64_t mr_eff, int64_t nr_eff, T *C,
+                         int64_t rs_c, int64_t cs_c) {
+    namespace simd   = einsums::simd;
+    constexpr int L  = simd::native_lanes<T>;
+    constexpr int MR = vector_kernel_mr<T>;
+    constexpr int NR = vector_kernel_nr;
+
+    simd::Vec<T> acc0[NR];
+    simd::Vec<T> acc1[NR];
+    EINSUMS_PACKED_GEMM_UNROLL(6)
+    for (int j = 0; j < NR; ++j) {
+        acc0[j] = simd::broadcast(T{0});
+        acc1[j] = simd::broadcast(T{0});
+    }
+
+    for (int64_t k = 0; k < kc; ++k) {
+        simd::Vec<T> const a0 = simd::loadu(Ap + k * MR);
+        simd::Vec<T> const a1 = simd::loadu(Ap + k * MR + L);
+        T const *__restrict b = Bp + k * NR;
+        EINSUMS_PACKED_GEMM_UNROLL(6)
+        for (int j = 0; j < NR; ++j) {
+            simd::Vec<T> const bj = simd::broadcast(b[j]);
+            acc0[j]               = simd::fmadd(a0, bj, acc0[j]);
+            acc1[j]               = simd::fmadd(a1, bj, acc1[j]);
+        }
+    }
+
+    simd::Vec<T> const va = simd::broadcast(alpha);
+    if (rs_c == 1 && mr_eff == MR && nr_eff == NR) {
+        EINSUMS_PACKED_GEMM_UNROLL(6)
+        for (int j = 0; j < NR; ++j) {
+            T *c = C + j * cs_c;
+            simd::storeu(c, simd::fmadd(va, acc0[j], simd::loadu(c)));
+            simd::storeu(c + L, simd::fmadd(va, acc1[j], simd::loadu(c + L)));
+        }
+        return;
+    }
+
+    alignas(64) T tile[MR * NR];
+    EINSUMS_PACKED_GEMM_UNROLL(6)
+    for (int j = 0; j < NR; ++j) {
+        simd::storeu(tile + j * MR, acc0[j]);
+        simd::storeu(tile + j * MR + L, acc1[j]);
+    }
+    for (int64_t j = 0; j < nr_eff; ++j) {
+        for (int64_t i = 0; i < mr_eff; ++i) {
+            C[i * rs_c + j * cs_c] += alpha * tile[j * MR + i];
+        }
+    }
+}
+
 /// @brief Variable-block fallback for (MR, NR) shapes without a static instantiation.
 template <typename T>
 void micro_kernel_generic(int64_t kc, T alpha, T const *Ap, T const *Bp, int mr_block, int nr_block, int64_t mr_eff, int64_t nr_eff, T *C,
@@ -91,13 +201,21 @@ void micro_kernel_generic(int64_t kc, T alpha, T const *Ap, T const *Bp, int mr_
     }
 }
 
-/// @brief Dispatch to the static instantiation matching the runtime block sizes.
+/// @brief Dispatch to the kernel matching the runtime block sizes.
 ///
-/// cpu_config() produces MR in {4, 8, 16} (2*VL for SSE/NEON, AVX, AVX-512)
-/// and NR fixed at 6; anything else falls back to the generic kernel.
+/// The rung's own tile (@ref vector_kernel_mr x 6) takes the vector kernel.
+/// The portable bodies cover MR in {4, 8, 16} with NR 6, the shapes
+/// cpu_config() produces (2*VL for SSE/NEON, AVX, AVX-512); anything else
+/// falls back to the generic kernel.
 template <typename T>
 void micro_kernel_run(int mr_block, int nr_block, int64_t kc, T alpha, T const *Ap, T const *Bp, int64_t mr_eff, int64_t nr_eff, T *C,
                       int64_t rs_c, int64_t cs_c) {
+    if constexpr (has_vector_kernel<T>) {
+        if (mr_block == vector_kernel_mr<T> && nr_block == vector_kernel_nr) {
+            micro_kernel_vector<T>(kc, alpha, Ap, Bp, mr_eff, nr_eff, C, rs_c, cs_c);
+            return;
+        }
+    }
     if (nr_block == 6) {
         switch (mr_block) {
         case 4:
@@ -119,4 +237,6 @@ void micro_kernel_run(int mr_block, int nr_block, int64_t kc, T alpha, T const *
 } // namespace EINSUMS_PACKED_GEMM_KERNEL_NS
 EINSUMS_NAMESPACE_END(packed_gemm)
 
+#undef EINSUMS_PACKED_GEMM_UNROLL
+#undef EINSUMS_PACKED_GEMM_UNROLL_STR
 #undef EINSUMS_PACKED_GEMM_KERNEL_NS

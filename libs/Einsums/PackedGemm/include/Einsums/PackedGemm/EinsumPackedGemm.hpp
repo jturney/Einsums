@@ -20,6 +20,7 @@
 #include <Einsums/Profile/Profile.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -376,8 +377,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
     // fact it is a fact about the NODE, and it lives on that node's
     // ContractionSite (@ref KernelRoute), which is what the caller read.
 
-    // Cache-aware blocking: tile sizes adapt to sizeof(ValueType) and CPU cache hierarchy.
-    auto const blk = compute_blocking(static_cast<int64_t>(sizeof(ValueType)));
+    // Cache-aware blocking: tile sizes adapt to sizeof(ValueType) and CPU cache
+    // hierarchy, derived from the tile the resolved kernel actually computes.
+    auto const blk = compute_blocking(static_cast<int64_t>(sizeof(ValueType)), MR, NR);
 
     int64_t const M          = plan.M_total;
     int64_t const N          = plan.N_total;
@@ -1015,11 +1017,77 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // correcting a detected cache size turned the cap off and cost 0.62x on the
         // large-K cases. A constraint on the panel belongs on the panel.
         int64_t const mc_cap = (int64_t{4} << 20) / (KC_blk * static_cast<int64_t>(sizeof(ValueType)));
-        int64_t const MC_blk = std::clamp((mc_cap / MR) * MR, static_cast<int64_t>(MR), blk.MC);
 
         // For multi-M/N: we need a temporary contiguous C tile buffer because
         // the multi-dim C elements are non-contiguous in memory.
         bool const needs_c_scatter = scatter_c;
+        bool const block_strategy  = needs_c_scatter && shape.block_gemm;
+
+        // Budget for the block-GEMM strategy's MC by NC C temp; the bound on NC
+        // below applies it, and the block strategy's M block is sized from it
+        // here. Four times L1 is where the M4 optimum sat, 432 to 504 KB against
+        // a 128 KB L1. On a Zen+ with a 32 KB L1 the same multiplier gives 128 KB,
+        // which measured WORST of every value swept on the rank-6 ccsd_t shape
+        // (MC=2048: 15.7 GF/s, against 24.5 at 512 KB and 25.7 at 2 MB), so the
+        // budget is floored at 512 KiB, which leaves the M4 value where it was
+        // measured. EINSUMS_EXPERIMENT_C_TEMP_KB overrides it in KB for sweeps.
+        int64_t c_temp_budget = std::max<int64_t>(4 * cpu_config().l1_cache_size, int64_t{512} << 10);
+        if (char const *e = std::getenv("EINSUMS_EXPERIMENT_C_TEMP_KB")) {
+            if (int64_t const kb = std::atoll(e); kb > 0) {
+                c_temp_budget = kb * 1024;
+            }
+        }
+
+        // The tile loops keep the A panel L2-resident, so blk.MC bounds their MC.
+        // The block strategy has no such stake: its A block is consumed by a vendor
+        // GEMM that re-packs it internally, and what that GEMM pays for is a SMALL
+        // M - it also re-packs the whole KC x NC B block on every call, so M/MC
+        // calls multiply that traffic. Sized from the cache-derived MC this was 32
+        // rows on a Zen+, 93 thousand GEMMs of 32 x 24 x 36 on the intensli shape
+        // abcde-efcad-bf, and lifting the clamp measured 1.74x there (5.8 to 10.0
+        // GF/s, flat from 512 rows up, in both sweep orders). So the block
+        // strategy's MC comes from the A-panel cap and the C temp: enough rows to
+        // use the whole budget at the N the shape actually has, or a square
+        // temp, whichever is larger.
+        int64_t MC_blk = std::clamp((mc_cap / MR) * MR, static_cast<int64_t>(MR), blk.MC);
+
+        // pack_A gathers along A's own contiguous axis when the flat M coordinate
+        // was ordered for C (its unit-stride M axis sits second-fastest, see
+        // coalesce_plan): rows i, i + X, i + 2X ... are adjacent in A. That reads
+        // each cache line whole only if the block holds a line's worth of those
+        // rows per value of the fastest coordinate, so the block is raised to
+        // (line / elem) * X rows, within the A-panel cap. The panel may then
+        // outgrow the L2 the tile kernel likes it in; on the shapes that take
+        // this path (abcde-efcad-bf: 768 rows of 36) the kernel's A traffic is
+        // trivial next to the gather it replaces.
+        auto const line_rows = [&](std::vector<DimSpec> const &dims) -> int64_t {
+            if (dims.size() < 2 || dims.back().tensor_stride == 1 || dims[dims.size() - 2].tensor_stride != 1) {
+                return 0;
+            }
+            return (int64_t{64} / static_cast<int64_t>(sizeof(ValueType))) * dims.back().size;
+        };
+        if (!block_strategy) {
+            // (line / elem) * X is a multiple of MR for the vector tile (MR is
+            // itself 2 * lanes), and pack_A's fast strip needs the block whole in
+            // X, so it is taken exactly when the panel cap allows it.
+            // Only when the pack is a real share of the work: A carries M*K
+            // elements against C's M*N, and a taller block costs the kernel its
+            // L1-resident A panel (the rank-6 ccsd_t shapes, K=24 against
+            // N=8000, lost 10% to the raise while packing 300x less than they
+            // scatter).
+            int64_t const want = line_rows(plan.m_dims);
+            if (want > MC_blk && want % MR == 0 && want <= (mc_cap / MR) * MR && 4 * K >= N) {
+                MC_blk = want;
+            }
+        }
+        if (block_strategy) {
+            int64_t const elem     = static_cast<int64_t>(sizeof(ValueType));
+            int64_t const nc_seen  = std::max<int64_t>(std::min<int64_t>(blk.NC, N), 1);
+            int64_t const by_temp  = c_temp_budget / (nc_seen * elem);
+            int64_t const balanced = static_cast<int64_t>(std::sqrt(static_cast<double>(c_temp_budget / elem)));
+            int64_t const want     = std::min(mc_cap, std::max(by_temp, balanced));
+            MC_blk                 = std::max<int64_t>((want / MR) * MR, MR);
+        }
 
         // beta == 0 says C's prior contents are irrelevant, so the first K block
         // STORES its result and later blocks accumulate onto it. The direct-BLAS
@@ -1069,6 +1137,14 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // when the loop is actually going to run in parallel: otherwise it buys
         // extra re-packing for nothing.
         int64_t NC_blk = blk.NC;
+        if (!block_strategy) {
+            // Mirror of the MC raise above for pack_B.
+            int64_t const want = line_rows(plan.n_dims);
+            if (want > NC_blk && 4 * K >= M) {
+                int64_t const nc_cap = (int64_t{4} << 20) / (KC_blk * static_cast<int64_t>(sizeof(ValueType)));
+                NC_blk               = std::clamp(((want + NR - 1) / NR) * NR, NC_blk, std::max<int64_t>((nc_cap / NR) * NR, NC_blk));
+            }
+        }
 
         // Bound the MC by NC C temp that the block-GEMM scatter strategy allocates.
         //
@@ -1087,24 +1163,13 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // NC far enough to re-pack A many more times for no further cache benefit,
         // and at a 32 KB bound pack_A goes from 2.4 ms to 39 ms.
         //
-        // Four times L1 is where the M4 optimum sits, 432 to 504 KB against a 128 KB
-        // L1, and it is a no-op for float there while halving double to exactly that
-        // optimum. The multiplier wants confirming on a machine with a much smaller
-        // per-core L2; EINSUMS_EXPERIMENT_C_TEMP_KB overrides the bound in KB so it
-        // can be swept in one build, and should become a real option or be removed
-        // once the value is settled.
+        // The budget itself, and where its floor came from, is c_temp_budget above.
         //
         // This lives here rather than in compute_blocking because only this strategy
         // allocates the temp: the tile and direct-BLAS paths would pay the smaller NC
         // and get nothing back.
-        if (needs_c_scatter && shape.block_gemm) {
-            int64_t budget = 4 * cpu_config().l1_cache_size;
-            if (char const *e = std::getenv("EINSUMS_EXPERIMENT_C_TEMP_KB")) {
-                if (int64_t const kb = std::atoll(e); kb > 0) {
-                    budget = kb * 1024;
-                }
-            }
-            int64_t const max_nc = ((budget / (MC_blk * static_cast<int64_t>(sizeof(ValueType)))) / NR) * NR;
+        if (block_strategy) {
+            int64_t const max_nc = ((c_temp_budget / (MC_blk * static_cast<int64_t>(sizeof(ValueType)))) / NR) * NR;
             if (max_nc >= NR && max_nc < NC_blk) {
                 NC_blk = max_nc;
             }
@@ -1503,6 +1568,21 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         if (needs_c_scatter) {
                             LabeledSectionInternal("micro-kernel loop, tile scatter");
                             // Multi-M/N: GEMM into a contiguous temp tile, then scatter to C.
+                            //
+                            // The scatter walks C's inner group in RUNS where that group's
+                            // fastest index has unit stride: a run is the stretch of
+                            // consecutive flat coordinates that stays inside one extent of
+                            // that index, so within it C is contiguous and the update is a
+                            // straight vector copy or add. The block strategy's scatter has
+                            // done this all along; the tile scatter used to look every
+                            // element up in the offset table, which at K=24 (the rank-6
+                            // ccsd_t shapes) cost more than the 288 FMAs the tile computes
+                            // and held the path to 15 GF/s where the same kernel reaches 60.
+                            bool const    tile_m_unit = plan.c_m_dims.back().tensor_stride == 1;
+                            int64_t const tile_m_fast = plan.c_m_dims.back().size;
+                            bool const    tile_n_unit = plan.c_n_dims.back().tensor_stride == 1;
+                            int64_t const tile_n_fast = plan.c_n_dims.back().size;
+                            tls_Ct.resize(static_cast<size_t>(MR) * NR);
                             for (int64_t jr = 0; jr < num_jr; ++jr) {
                                 int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nc_len - jr * NR);
 
@@ -1510,7 +1590,6 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
 
                                     // Use a contiguous MR*NR temp buffer for the GEMM output.
-                                    tls_Ct.resize(static_cast<size_t>(MR) * NR);
                                     std::fill(tls_Ct.begin(), tls_Ct.end(), ValueType{0});
                                     ValueType *Ct = tls_Ct.data();
 
@@ -1528,6 +1607,26 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     if (scatter_n_inner) {
                                         for (int64_t ii = 0; ii < mr_actual; ++ii) {
                                             int64_t const m_off = c_m_offsets[static_cast<size_t>(ir * MR + ii)];
+                                            if (tile_n_unit) {
+                                                int64_t pos = 0;
+                                                while (pos < nr_actual) {
+                                                    int64_t const n_global = nc + jr * NR + pos;
+                                                    int64_t const run = std::min(tile_n_fast - (n_global % tile_n_fast), nr_actual - pos);
+                                                    ValueType    *dst = C_data + m_off + c_n_offsets[static_cast<size_t>(jr * NR + pos)];
+                                                    ValueType const *src = Ct + pos * MR + ii;
+                                                    if (store_c) {
+                                                        for (int64_t r = 0; r < run; ++r) {
+                                                            dst[r] = src[r * MR];
+                                                        }
+                                                    } else {
+                                                        for (int64_t r = 0; r < run; ++r) {
+                                                            dst[r] += src[r * MR];
+                                                        }
+                                                    }
+                                                    pos += run;
+                                                }
+                                                continue;
+                                            }
                                             if (store_c) {
                                                 for (int64_t jj = 0; jj < nr_actual; ++jj) {
                                                     C_data[m_off + c_n_offsets[static_cast<size_t>(jr * NR + jj)]] = Ct[jj * MR + ii];
@@ -1540,15 +1639,34 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                         }
                                     } else {
                                         for (int64_t jj = 0; jj < nr_actual; ++jj) {
-                                            int64_t const n_off = c_n_offsets[static_cast<size_t>(jr * NR + jj)];
+                                            int64_t const    n_off = c_n_offsets[static_cast<size_t>(jr * NR + jj)];
+                                            ValueType const *col   = Ct + jj * MR;
+                                            if (tile_m_unit) {
+                                                int64_t pos = 0;
+                                                while (pos < mr_actual) {
+                                                    int64_t const m_global = mc + ir * MR + pos;
+                                                    int64_t const run = std::min(tile_m_fast - (m_global % tile_m_fast), mr_actual - pos);
+                                                    ValueType    *dst = C_data + c_m_offsets[static_cast<size_t>(ir * MR + pos)] + n_off;
+                                                    ValueType const *src = col + pos;
+                                                    if (store_c) {
+                                                        std::copy(src, src + run, dst);
+                                                    } else {
+                                                        for (int64_t r = 0; r < run; ++r) {
+                                                            dst[r] += src[r];
+                                                        }
+                                                    }
+                                                    pos += run;
+                                                }
+                                                continue;
+                                            }
                                             if (store_c) {
                                                 for (int64_t ii = 0; ii < mr_actual; ++ii) {
-                                                    C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] = Ct[jj * MR + ii];
+                                                    C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] = col[ii];
                                                 }
                                                 continue;
                                             }
                                             for (int64_t ii = 0; ii < mr_actual; ++ii) {
-                                                C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] += Ct[jj * MR + ii];
+                                                C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] += col[ii];
                                             }
                                         }
                                     }
@@ -2025,7 +2143,7 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         if (computed.valid) {
             fill_strides(computed, A, B, *C);
             sort_k_dims_for_packing(computed);
-            coalesce_plan(computed);
+            coalesce_plan(computed, static_cast<int64_t>(sizeof(ValueType)));
             PackingPlanCache::instance().insert(key, computed);
             // Re-look-up so `cached` names the CACHE's copy, not this frame's.
             // A site remembers the pointer, and only the cache's entries live

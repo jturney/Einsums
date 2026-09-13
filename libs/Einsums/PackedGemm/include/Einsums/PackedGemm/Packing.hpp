@@ -144,6 +144,15 @@ struct BlockingParams {
 /// This automatically handles complex types (16 bytes) vs real (8 bytes).
 EINSUMS_EXPORT BlockingParams compute_blocking(int64_t elem_size);
 
+/// @brief Cache blocking for a kernel whose register tile is MR x NR.
+///
+/// The tile belongs to the resolved kernel rung, not to cpu_config(): the
+/// AVX2 rung's tile is twice as tall as the one the library's own compile
+/// flags imply, and KC/MC/NC follow from the tile (one packed A column of
+/// MR * KC in L1, and so on), so blis_contraction passes the shape it
+/// resolved.
+EINSUMS_EXPORT BlockingParams compute_blocking(int64_t elem_size, int MR, int NR);
+
 // Convenience: default blocking for 8-byte elements (double / complex<float>).
 inline constexpr int64_t BLIS_NR = 6; ///< N register-block (fully unrolled by LLVM)
 
@@ -272,7 +281,7 @@ inline void sort_k_dims_for_packing(PackingPlan &plan) {
 ///
 /// Must be called after fill_strides() (and after sort_k_dims_for_packing(),
 /// which it may re-permute). Sets plan.coalesced when any merge happened.
-inline void coalesce_plan(PackingPlan &plan) {
+inline void coalesce_plan(PackingPlan &plan, int64_t elem_size = 8) {
     // @p sort_by_mirror picks which of the two vectors' strides orders the flat
     // coordinate. See the cost comparison below for why that is a real choice.
     auto coalesce_group = [&plan](std::vector<DimSpec> &prim, std::vector<DimSpec> &mirr, bool sort_by_mirror) {
@@ -283,10 +292,31 @@ inline void coalesce_plan(PackingPlan &plan) {
 
         // Order both vectors together so the last entry is the fastest-varying
         // flat coordinate (the flat_to_offset convention).
-        std::vector<DimSpec> const &key = sort_by_mirror ? mirr : prim;
+        std::vector<DimSpec> const &key   = sort_by_mirror ? mirr : prim;
+        std::vector<DimSpec> const &other = sort_by_mirror ? prim : mirr;
         std::vector<size_t>         perm(n);
         std::iota(perm.begin(), perm.end(), size_t{0});
         std::stable_sort(perm.begin(), perm.end(), [&](size_t x, size_t y) { return key[x].tensor_stride > key[y].tensor_stride; });
+
+        // The side that did not order the coordinate gets its unit-stride
+        // dimension second-fastest. Its walk is a gather either way, but with
+        // its own contiguous dimension right behind the fastest one, the lines
+        // it touches for one value of the fastest coordinate are the lines it
+        // needs again for the next, so a block of a few hundred rows works out
+        // of L2 instead of fetching a line per element. On abcde-efcad-bf that
+        // is what lets C order the M coordinate (48-element runs for the
+        // scatter) without pack_A paying a cache line and a page for each of
+        // the 107 million elements it gathers.
+        if (n >= 2) {
+            for (size_t d = 0; d + 1 < n; ++d) {
+                size_t const idx = perm[d];
+                if (other[idx].tensor_stride == 1 && other[idx].size > 1) {
+                    perm.erase(perm.begin() + static_cast<std::ptrdiff_t>(d));
+                    perm.insert(perm.begin() + static_cast<std::ptrdiff_t>(n - 2), idx);
+                    break;
+                }
+            }
+        }
 
         std::vector<DimSpec> ps(n), ms(n);
         for (size_t d = 0; d < n; ++d) {
@@ -356,7 +386,19 @@ inline void coalesce_plan(PackingPlan &plan) {
     int64_t const k_total = extent(plan.k_dims_in_a);
     double const  c_trips = static_cast<double>(m_total) * static_cast<double>(n_total);
 
-    auto order_by_c = [&](std::vector<DimSpec> const &pack_dims, std::vector<DimSpec> const &c_dims, double pack_trips) {
+    auto const has_unit_stride = [](std::vector<DimSpec> const &dims) {
+        for (auto const &d : dims) {
+            if (d.tensor_stride == 1 && d.size > 1) {
+                return true;
+            }
+        }
+        return false;
+    };
+    bool const a_unit_is_k = has_unit_stride(plan.k_dims_in_a);
+    bool const b_unit_is_k = has_unit_stride(plan.k_dims_in_b);
+
+    auto order_by_c = [&](std::vector<DimSpec> const &pack_dims, std::vector<DimSpec> const &c_dims, double pack_trips,
+                          bool pack_unit_is_k) {
         if (pack_dims.size() <= 1) {
             return false; // nothing to order
         }
@@ -370,11 +412,69 @@ inline void coalesce_plan(PackingPlan &plan) {
             return best;
         };
         auto const cost = [](int64_t stride) { return (stride == 1 ? 1.0 / kElemsPerLine : 1.0) + (stride >= kPageElems ? 1.0 : 0.0); };
+        // The side that lost the ordering walks a gather (packing operand) or a
+        // scatter (C). Its own unit-stride dimension is hoisted second-fastest (see
+        // coalesce_group), and pack_A / pack_B walk that direction innermost, so the
+        // gather reads each cache line whole provided the block spans a line's
+        // worth of rows per value of the fastest coordinate: (line / elem) * X rows
+        // of KC each, which blis_contraction grants up to the A-panel cap. A packing
+        // operand whose unit-stride axis is a K index reads whole rows instead, at
+        // any extent. Either way the gather costs about a quarter of a line fetch
+        // per element; outside those two cases it costs a line, and a page when the
+        // stride crosses one. Measured on a Zen+ (32 KB L1, 512 KB L2), float,
+        // single core, tile path, GF/s for C order against pack order, before the
+        // line-friendly gather existed:
+        //
+        //   abcde-efcad-bf   13.0 vs 11.8   A's unit dim e in M, 48 x 36 lines
+        //   abcd-ebad-ce     25.1 vs 20.1   A's unit dim e is K
+        //   abcdef-dega-gfbc 27.6 vs 11.6   pack side moves 300x fewer elements
+        //   abc-bda-dc        4.8 vs 27.3   16 x 384 x 384 rows exceed the panel
+        //
+        // A scatter with its unit dimension hoisted is priced at half a line: the
+        // stores still land one element at a time and a tile's columns stride
+        // across lines, which is what the ccsd_t rows show (11.6 with the hoist
+        // against 3.5 without).
+        constexpr double  kGatherReuseCost  = 0.25;
+        constexpr double  kScatterReuseCost = 0.5;
+        constexpr int64_t kLineBytes        = 64;
+        constexpr int64_t kKcForReuse       = 512;              // the tile path's K block for float and double
+        constexpr int64_t kPanelCapBytes    = int64_t{4} << 20; // blis_contraction's A-panel bound
+
+        auto const unit_dim = [](std::vector<DimSpec> const &dims) -> DimSpec const * {
+            for (auto const &d : dims) {
+                if (d.tensor_stride == 1 && d.size > 1) {
+                    return &d;
+                }
+            }
+            return nullptr;
+        };
+        auto const pack_loser_cost = [&](std::vector<DimSpec> const &dims, size_t fastest, bool unit_is_k) {
+            if (dims[fastest].tensor_stride == 1) {
+                return cost(1);
+            }
+            if (unit_is_k) {
+                return kGatherReuseCost;
+            }
+            if (unit_dim(dims) != nullptr) {
+                int64_t const rows  = (kLineBytes / elem_size) * dims[fastest].size;
+                int64_t const panel = rows * std::min<int64_t>(k_total, kKcForReuse) * elem_size;
+                if (panel <= kPanelCapBytes) {
+                    return kGatherReuseCost;
+                }
+            }
+            return cost(dims[fastest].tensor_stride);
+        };
+        auto const c_loser_cost = [&](std::vector<DimSpec> const &dims, size_t fastest) {
+            if (dims[fastest].tensor_stride == 1) {
+                return cost(1);
+            }
+            return unit_dim(dims) != nullptr ? kScatterReuseCost : cost(dims[fastest].tensor_stride);
+        };
 
         size_t const by_c    = smallest(c_dims);
         size_t const by_pack = smallest(pack_dims);
-        double const cost_c  = c_trips * cost(c_dims[by_c].tensor_stride) + pack_trips * cost(pack_dims[by_c].tensor_stride);
-        double const cost_p  = c_trips * cost(c_dims[by_pack].tensor_stride) + pack_trips * cost(pack_dims[by_pack].tensor_stride);
+        double const cost_c  = c_trips * cost(c_dims[by_c].tensor_stride) + pack_trips * pack_loser_cost(pack_dims, by_c, pack_unit_is_k);
+        double const cost_p  = c_trips * c_loser_cost(c_dims, by_pack) + pack_trips * cost(pack_dims[by_pack].tensor_stride);
         if (cost_c != cost_p) {
             return cost_c < cost_p;
         }
@@ -382,9 +482,9 @@ inline void coalesce_plan(PackingPlan &plan) {
     };
 
     coalesce_group(plan.m_dims, plan.c_m_dims,
-                   order_by_c(plan.m_dims, plan.c_m_dims, static_cast<double>(m_total) * static_cast<double>(k_total)));
+                   order_by_c(plan.m_dims, plan.c_m_dims, static_cast<double>(m_total) * static_cast<double>(k_total), a_unit_is_k));
     coalesce_group(plan.n_dims, plan.c_n_dims,
-                   order_by_c(plan.n_dims, plan.c_n_dims, static_cast<double>(n_total) * static_cast<double>(k_total)));
+                   order_by_c(plan.n_dims, plan.c_n_dims, static_cast<double>(n_total) * static_cast<double>(k_total), b_unit_is_k));
     coalesce_group(plan.k_dims_in_a, plan.k_dims_in_b, /*sort_by_mirror=*/false);
 }
 
@@ -567,6 +667,100 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
     bool const    m_fast_unit = !conj && m_dims.back().tensor_stride == 1;
     int64_t const m_fast_size = m_dims.back().size;
 
+    // --- Gather along A's own contiguous direction ---
+    // When the fastest flat coordinate is not A's unit-stride axis (the plan
+    // ordered it for C's scatter), a k-outer, row-inner gather touches one
+    // cache line per element and relies on the line surviving until the
+    // element beside it is wanted - which it does not when the row stride is a
+    // whole number of pages and every row of the block lands in the same set
+    // (abcde-ecbfa-fd, abc-dca-bd: 3x slower than the other ordering). So walk
+    // A's contiguous axis innermost instead, and consume each line whole:
+    //
+    //  * K contiguous in A: each row's kc_len elements are one run. Copy the run
+    //    into the panel column-by-column (strided stores into an L1-resident
+    //    panel are cheap; strided loads from A are not).
+    //  * A's unit-stride M axis hoisted second-fastest (see coalesce_plan): rows
+    //    i and i + X, X the fastest axis's extent, are adjacent in A. For each
+    //    k and each i0 < X, the rows i0, i0 + X, i0 + 2X, ... read consecutive
+    //    addresses. blis_contraction sizes the block so that walk covers a whole
+    //    line per i0.
+    if (!m_fast_unit && !conj) {
+        bool k_contig = kc_len > 0;
+        for (int64_t k_local = 1; k_contig && k_local < kc_len; ++k_local) {
+            k_contig = k_offsets[static_cast<size_t>(k_local)] == k_offsets[static_cast<size_t>(k_local - 1)] + 1;
+        }
+        if (k_contig) {
+            int64_t const k0 = k_offsets[0];
+            for (int64_t p = 0; p < num_panels; ++p) {
+                int64_t const panel_len = (p < full_panels) ? MR : tail;
+                T            *panel     = Ap + p * MR * kc_len;
+                for (int64_t i = 0; i < panel_len; ++i) {
+                    T const *src = A_data + m_offsets[static_cast<size_t>(p * MR + i)] + k0;
+                    T       *dst = panel + i;
+                    for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+                        dst[k_local * MR] = src[k_local];
+                    }
+                }
+            }
+            return;
+        }
+        if (m_dims.size() >= 2 && m_dims[m_dims.size() - 2].tensor_stride == 1 && m_fast_size > 1) {
+            // Panel-relative destination of each row, once per block rather
+            // than once per element.
+            static thread_local std::vector<int64_t> row_dst;
+            row_dst.resize(static_cast<size_t>(mc_len));
+            for (int64_t i = 0; i < mc_len; ++i) {
+                row_dst[static_cast<size_t>(i)] = (i / MR) * MR * kc_len + (i % MR);
+            }
+            // Rows i = x + X*u. Walking u innermost reads A sequentially but
+            // scatters the stores over the whole panel block, which does not fit
+            // L1 once the block is a line's worth of u deep, so the stores miss
+            // instead of the loads. Hence the nest below: a strip of kW values
+            // of x innermost (their panel slots are consecutive), u next (the kW
+            // source lines are reused for every u while they are certainly still
+            // resident), strips outermost.
+            constexpr int64_t kW     = 8;
+            int64_t const     X      = m_fast_size;
+            int64_t const     u_rows = (mc_len + X - 1) / X;
+            // When the block is whole in x (starts and ends on a multiple of X)
+            // and X is a multiple of the strip, every strip's sources are an
+            // arithmetic progression in A and its destinations are consecutive
+            // panel slots, so the inner loop is a constant-stride gather into a
+            // contiguous store with no table lookups. blis_contraction sizes the
+            // block as a multiple of X exactly so that this holds.
+            bool const    whole  = (mc_start % X == 0) && (mc_len % X == 0) && (X % kW == 0) && (MR % kW == 0);
+            int64_t const x_step = m_dims.back().tensor_stride;
+            for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+                int64_t const k_offset = k_offsets[static_cast<size_t>(k_local)];
+                T            *Apk      = Ap + k_local * MR;
+                for (int64_t x0 = 0; x0 < std::min(X, mc_len); x0 += kW) {
+                    int64_t const x1 = std::min(x0 + kW, X);
+                    if (whole) {
+                        for (int64_t u = 0; u < u_rows; ++u) {
+                            int64_t const i0  = X * u + x0;
+                            T const      *src = A_data + m_offsets[static_cast<size_t>(i0)] + k_offset;
+                            T            *dst = Apk + row_dst[static_cast<size_t>(i0)];
+                            for (int64_t x = 0; x < kW; ++x) {
+                                dst[x] = src[x * x_step];
+                            }
+                        }
+                        continue;
+                    }
+                    for (int64_t u = 0; u < u_rows; ++u) {
+                        int64_t const base = X * u;
+                        for (int64_t x = x0; x < x1; ++x) {
+                            int64_t const i = base + x;
+                            if (i < mc_len) {
+                                Apk[row_dst[static_cast<size_t>(i)]] = A_data[m_offsets[static_cast<size_t>(i)] + k_offset];
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+    }
+
     // --- Pack with precomputed offsets ---
     for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
         int64_t const k_offset = k_offsets[static_cast<size_t>(k_local)];
@@ -680,6 +874,58 @@ void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, i
     // --- Contiguous-run detection (see pack_A) ---
     bool const    n_fast_unit = !conj && n_dims.back().tensor_stride == 1;
     int64_t const n_fast_size = n_dims.back().size;
+
+    // --- Gather along B's own contiguous direction (mirror of pack_A) ---
+    if (!n_fast_unit && !conj) {
+        bool k_contig = kc_len > 0;
+        for (int64_t k_local = 1; k_contig && k_local < kc_len; ++k_local) {
+            k_contig = k_offsets[static_cast<size_t>(k_local)] == k_offsets[static_cast<size_t>(k_local - 1)] + 1;
+        }
+        if (k_contig) {
+            int64_t const k0 = k_offsets[0];
+            for (int64_t p = 0; p < num_panels; ++p) {
+                int64_t const panel_len = (p < full_panels) ? static_cast<int64_t>(NR) : tail;
+                T            *panel     = Bp + p * kc_len * NR;
+                for (int64_t j = 0; j < panel_len; ++j) {
+                    T const *src = B_data + k0 + n_offsets[static_cast<size_t>(p * NR + j)];
+                    T       *dst = panel + j;
+                    for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+                        dst[k_local * NR] = src[k_local];
+                    }
+                }
+            }
+            return;
+        }
+        if (n_dims.size() >= 2 && n_dims[n_dims.size() - 2].tensor_stride == 1 && n_fast_size > 1) {
+            static thread_local std::vector<int64_t> col_dst;
+            col_dst.resize(static_cast<size_t>(nc_len));
+            for (int64_t j = 0; j < nc_len; ++j) {
+                col_dst[static_cast<size_t>(j)] = (j / NR) * kc_len * NR + (j % NR);
+            }
+            constexpr int64_t kW     = 8;
+            int64_t const     Y      = n_fast_size;
+            int64_t const     v_cols = (nc_len + Y - 1) / Y;
+            // NR is 6, so a strip of kW never sits in one panel: B keeps the
+            // table-driven nest (B is the small operand on every shape measured).
+            for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+                int64_t const k_offset = k_offsets[static_cast<size_t>(k_local)];
+                T            *Bpk      = Bp + k_local * NR;
+                for (int64_t y0 = 0; y0 < std::min(Y, nc_len); y0 += kW) {
+                    int64_t const y1 = std::min(y0 + kW, Y);
+                    for (int64_t v = 0; v < v_cols; ++v) {
+                        int64_t const base = Y * v;
+                        for (int64_t y = y0; y < y1; ++y) {
+                            int64_t const j = base + y;
+                            if (j < nc_len) {
+                                Bpk[col_dst[static_cast<size_t>(j)]] = B_data[k_offset + n_offsets[static_cast<size_t>(j)]];
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+    }
 
     // --- Pack with precomputed offsets ---
     for (int64_t k_local = 0; k_local < kc_len; ++k_local) {

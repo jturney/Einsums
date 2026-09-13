@@ -222,6 +222,27 @@ MicroKernelShape micro_kernel_block() {
 #endif
     auto const      &cfg = cpu_config();
     MicroKernelShape shape{cfg.MR, cfg.NR};
+    // Real types take this rung's vector tile (see MicroKernelBody.hpp): two
+    // of the rung's registers along m by six columns. cfg.MR is derived from
+    // the width the library was compiled for, which on a distribution build
+    // is SSE2 whatever the machine runs, and a tile stated in that width
+    // leaves an AVX2 rung executing SSE-width code.
+    if constexpr (has_vector_kernel<T>) {
+        shape.mr = vector_kernel_mr<T>;
+        shape.nr = vector_kernel_nr;
+    }
+#if defined(__x86_64__) || defined(_M_X64)
+    // With the tile stated in the rung's own vectors the kernel runs at or
+    // above the vendor's full-problem rate on one packed block (Zen+, single
+    // core: 61 vs 57 GF/s float, 30 vs 28 double), while a vendor GEMM called
+    // per cache block re-packs that block internally on every call and
+    // measured 28 GF/s float on the same panels. So on x86 the scatter shapes
+    // run the rung's own tile loops rather than block GEMMs. Complex keeps the
+    // block strategy: it has no vector tile here.
+    if constexpr (has_vector_kernel<T>) {
+        shape.block_gemm = false;
+    }
+#endif
 #if defined(__APPLE__) && defined(__aarch64__)
     // Accelerate's GEMM reaches the AMX/SME matrix unit that the portable
     // tile kernel cannot, so the block-GEMM scatter strategy beats Sort+GEMM

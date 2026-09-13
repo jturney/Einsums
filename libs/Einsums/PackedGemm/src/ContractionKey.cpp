@@ -92,8 +92,11 @@ CpuConfig const &cpu_config() {
 
 BlockingParams compute_blocking(int64_t elem_size) {
     auto const &cfg = cpu_config();
-    int const   MR  = cfg.MR;
-    int const   NR  = cfg.NR;
+    return compute_blocking(elem_size, cfg.MR, cfg.NR);
+}
+
+BlockingParams compute_blocking(int64_t elem_size, int const MR, int const NR) {
+    auto const &cfg = cpu_config();
 
     // Use half the L2 for the A panel (MC * KC * elem_size ≤ L2/2).
     // Use half the L3 for the B panel (KC * NC * elem_size ≤ L3/2).

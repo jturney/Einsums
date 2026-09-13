@@ -184,9 +184,14 @@ V2, V3, V4, SME) down from :code:`simd::selected_arch()`. The result is
 cached per element type. :code:`micro_kernel_entry<T>()` and
 :code:`micro_kernel_shape<T>()` resolve through the *same* ladder, which is
 what keeps the packing geometry matched to the kernel that will consume
-it: the NEON and AVX rungs pack to :code:`cpu_config()`'s vector blocking,
-while the SME rung packs to ZA-tile blocking and raises ``KC`` so its
-accumulators hold the ``C`` block across the whole ``K`` loop.
+it: the SSE, AVX, AVX-512 and NEON rungs pack to a tile of two of the
+rung's own vectors along ``M`` by six columns (an AVX2 rung is 16 by 6 for
+float and 8 by 6 for double), and the cache blocks are derived from that
+tile; the SME rung packs to ZA-tile blocking and raises ``KC`` so its
+accumulators hold the ``C`` block across the whole ``K`` loop. The tile is
+a compile-time fact of each rung's translation unit, not of the flags the
+library as a whole was built with, which is what lets a distribution build
+compiled for SSE2 run full-width kernels on the machine it lands on.
 
 Complex types reuse the real kernels rather than needing their own. On the
 tile path that is Van Zee's 1m method, where ``A`` packs in expanded ``1e``

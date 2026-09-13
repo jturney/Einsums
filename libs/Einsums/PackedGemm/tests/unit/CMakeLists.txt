@@ -5,6 +5,7 @@
 
 set(PackedGemmTests
     BatchedMultiK.cpp
+    MicroKernelTile.cpp
     PackingPlan.cpp
 )
 
@@ -43,3 +44,4 @@ einsums_add_unit_test("Modules.PackedGemm" DirectBlasPaths)
 # once per rung (no-op on single-TU builds).
 include(Einsums_AddSIMDDispatch)
 einsums_add_simd_rung_tests("Modules.PackedGemm" MultiMN)
+einsums_add_simd_rung_tests("Modules.PackedGemm" MicroKernelTile)
