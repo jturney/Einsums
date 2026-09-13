@@ -384,13 +384,15 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
     // fact it is a fact about the NODE, and it lives on that node's
     // ContractionSite (@ref KernelRoute), which is what the caller read.
 
-    // Cache-aware blocking: tile sizes adapt to sizeof(ValueType) and CPU cache
-    // hierarchy, derived from the tile the resolved kernel actually computes.
-    auto const blk = compute_blocking(static_cast<int64_t>(sizeof(ValueType)), MR, NR);
+    int64_t const M = plan.M_total;
+    int64_t const N = plan.N_total;
+    int64_t const K = plan.K_total;
 
-    int64_t const M          = plan.M_total;
-    int64_t const N          = plan.N_total;
-    int64_t const K          = plan.K_total;
+    // Cache-aware blocking: tile sizes adapt to sizeof(ValueType) and CPU cache
+    // hierarchy, derived from the tile the resolved kernel actually computes,
+    // and from this contraction's own extents - whether C survives a sweep
+    // decides how large KC wants to be, and only M and N say that.
+    auto const    blk        = compute_blocking(static_cast<int64_t>(sizeof(ValueType)), MR, NR, M, N, K);
     bool const    multi_m    = (plan.c_m_dims.size() > 1);
     bool const    multi_n    = (plan.c_n_dims.size() > 1);
     int64_t const C_m_stride = plan.c_m_dims[0].tensor_stride;

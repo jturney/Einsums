@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <random>
+#include <tuple>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -136,5 +137,73 @@ TEMPLATE_TEST_CASE("MicroKernel - tile and blocking follow the selected rung", "
     REQUIRE(blk.KC * blk.NC * static_cast<int64_t>(sizeof(T)) <= hw.cache.l3 / 2 + blk.KC * static_cast<int64_t>(sizeof(T)) * shape.nr);
     if (blk.KC > 64) {
         REQUIRE(shape.mr * blk.KC * static_cast<int64_t>(sizeof(T)) <= hw.cache.l1);
+    }
+}
+
+// The shape-aware overload: KC is a function of the contraction as well as the
+// machine, because whether C survives being swept once per K block is a
+// property of M and N and nothing else knows it.
+//
+// The machine-only answer keeps the A panel in L2, which is right while C is
+// cache-resident. When C spills the last-level cache each of the ceil(K / KC)
+// sweeps is paid in demand misses on lines a row apart, so KC grows toward K
+// and the panel is allowed out of L2 to buy that back.
+TEMPLATE_TEST_CASE("MicroKernel - blocking follows the contraction shape", "[PackedGemm][MicroKernel]", float, double) {
+    using T             = TestType;
+    auto const    shape = micro_kernel_shape<T>();
+    int64_t const elem  = static_cast<int64_t>(sizeof(T));
+    auto const   &hw    = hardware::cpu_info();
+    auto const    base  = compute_blocking(elem, shape.mr, shape.nr);
+
+    auto blocking_for = [&](int64_t M, int64_t N, int64_t K) { return compute_blocking(elem, shape.mr, shape.nr, M, N, K); };
+
+    // An extent of zero means there is no contraction to specialise for.
+    for (auto [M, N, K] : {std::tuple{int64_t{0}, int64_t{8}, int64_t{8}}, std::tuple{int64_t{8}, int64_t{0}, int64_t{8}},
+                           std::tuple{int64_t{8}, int64_t{8}, int64_t{0}}}) {
+        auto const blk = blocking_for(M, N, K);
+        REQUIRE(blk.KC == base.KC);
+        REQUIRE(blk.MC == base.MC);
+        REQUIRE(blk.NC == base.NC);
+    }
+
+    // C inside the last-level cache: the machine-only answer, unchanged, however
+    // long K is. A single column of C keeps M * N * elem small at any K.
+    {
+        auto const blk = blocking_for(base.MC, 1, 1000000);
+        REQUIRE(blk.KC == base.KC);
+        REQUIRE(blk.MC == base.MC);
+        REQUIRE(blk.NC == base.NC);
+    }
+
+    // C well past the last-level cache, with K long enough to use the growth.
+    // KC rises; MC and NC do not move, because A's DRAM traffic scales with
+    // 1/NC and B's with 1/MC and neither depends on KC.
+    {
+        int64_t const big = 4 * hw.cache.l3 / elem; // M = N = sqrt(big) would do; this is blunter
+        int64_t const K   = base.KC * BLIS_KC_SPILL_GROWTH * 4;
+        auto const    blk = blocking_for(big, big, K);
+        REQUIRE(blk.KC > base.KC);
+        REQUIRE(blk.KC <= base.KC * BLIS_KC_SPILL_GROWTH);
+        REQUIRE(blk.KC % 8 == 0);
+        REQUIRE(blk.MC == base.MC);
+        REQUIRE(blk.NC == base.NC);
+    }
+
+    // Growth never runs past K itself: a spilling C with a short K keeps the
+    // machine-only KC rather than allocating a packed block it cannot fill.
+    {
+        int64_t const big = 4 * hw.cache.l3 / elem;
+        auto const    blk = blocking_for(big, big, base.KC / 2);
+        REQUIRE(blk.KC == base.KC);
+    }
+
+    // The growth is monotone in K and saturates at the cap.
+    {
+        int64_t const big  = 4 * hw.cache.l3 / elem;
+        auto const    near = blocking_for(big, big, base.KC * 2);
+        auto const    far  = blocking_for(big, big, base.KC * BLIS_KC_SPILL_GROWTH * 100);
+        REQUIRE(near.KC >= base.KC);
+        REQUIRE(far.KC >= near.KC);
+        REQUIRE(far.KC == base.KC * BLIS_KC_SPILL_GROWTH);
     }
 }

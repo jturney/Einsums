@@ -153,6 +153,43 @@ EINSUMS_EXPORT BlockingParams compute_blocking(int64_t elem_size);
 /// resolved.
 EINSUMS_EXPORT BlockingParams compute_blocking(int64_t elem_size, int MR, int NR);
 
+/// @brief Cache blocking for a kernel tile MR x NR against a KNOWN contraction
+///        shape.
+///
+/// The machine-only overloads size KC from L1 - one packed column of A, MR * KC
+/// - which is the right answer while C is cache-resident and much too small when
+/// it is not. The tile loops sweep C once per K block, and every micro-kernel
+/// call in such a sweep reads and writes an MR x NR piece of C whose lines are a
+/// row apart, too far for any prefetcher and, on a large C, in distinct pages.
+/// The cost therefore scales with the NUMBER of K blocks, not their size: on
+/// ccsd's rank-4 shapes (M = N = 8064, K = 7056, C = 260 MB) the L1-derived
+/// KC = 512 buys 14 sweeps and about 9.3 million such calls, and raising KC is
+/// worth 4% of the whole contraction - the difference between 96% and 101% of
+/// the vendor's own GEMM on that shape.
+///
+/// So when C spills the last-level cache, KC grows toward K. Nothing else moves:
+/// A's DRAM traffic scales with 1/NC and B's with 1/MC, and both are independent
+/// of KC, so MC and NC keep the values the machine model gave them even though
+/// the A panel then outgrows L2 - the measurement is unambiguous that the C
+/// sweeps are worth more than the panel's cache level. What pays is the packed
+/// B block, KC * NC, which is why the growth is capped.
+///
+/// M, N and K are the contraction's flat extents (plan.M_total and friends). A
+/// non-positive extent means there is nothing to block for and the machine-only
+/// answer is returned unchanged.
+EINSUMS_EXPORT BlockingParams compute_blocking(int64_t elem_size, int MR, int NR, int64_t M, int64_t N, int64_t K);
+
+/// @brief How far @ref compute_blocking may grow KC past its machine-derived
+///        value when C spills the last-level cache.
+///
+/// A memory guard, NOT a tuning knob: the measured curve is flat from roughly
+/// 4x the base KC up to KC = K (on ccsd rank-4 single, 58.5 GF/s at 4 sweeps
+/// against 59.3 at 2 and 59.2 at 1), so the exact multiple does not matter for
+/// performance. It exists so that a contraction with a pathologically large K
+/// cannot ask for an unbounded packed B block: the block grows with KC, to at
+/// most this multiple of the L3 budget NC was originally sized against.
+inline constexpr int64_t BLIS_KC_SPILL_GROWTH = 8;
+
 // Convenience: default blocking for 8-byte elements (double / complex<float>).
 inline constexpr int64_t BLIS_NR = 6; ///< N register-block (fully unrolled by LLVM)
 

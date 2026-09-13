@@ -137,6 +137,44 @@ BlockingParams compute_blocking(int64_t elem_size, int const MR, int const NR) {
     return {.KC = KC, .MC = MC, .NC = NC, .NR = NR};
 }
 
+BlockingParams compute_blocking(int64_t elem_size, int const MR, int const NR, int64_t const M, int64_t const N, int64_t const K) {
+    BlockingParams blk = compute_blocking(elem_size, MR, NR);
+
+    // A degenerate or unknown extent: nothing to specialise for.
+    if (M <= 0 || N <= 0 || K <= 0) {
+        return blk;
+    }
+
+    // Does C survive being swept once per K block? If it fits the last-level
+    // cache the revisit is an L3 hit, the per-call C update costs nothing, and
+    // the L1-derived KC - which keeps the A panel inside L2 - stands.
+    auto const &cfg = cpu_config();
+    if (M * N * elem_size <= cfg.l3_cache_size) {
+        return blk;
+    }
+
+    // C spills, so each of the ceil(K / KC) sweeps is paid in demand misses.
+    // Grow KC toward K to buy those sweeps back, capped so the packed B block
+    // (KC * NC) cannot grow without bound. MC and NC are deliberately left
+    // alone; see the header.
+    int64_t const kc_max = blk.KC * BLIS_KC_SPILL_GROWTH;
+
+    // Split K into EQUAL blocks rather than taking kc_max and leaving a short
+    // remainder. Both give the same sweep count, but a runt last block packs an
+    // under-filled A panel and B block and then runs the kernel over it at the
+    // same per-call C cost: on ccsd's rank-4 double (K = 5184, cap 4096) the
+    // 4096 + 1088 split measured 28.7 GF/s against 29.2 for 2592 + 2592.
+    int64_t const sweeps = (K + kc_max - 1) / kc_max;
+    int64_t       KC     = (K + sweeps - 1) / sweeps;
+
+    // Round up to the multiple of 8 the machine-only path promises; rounding up
+    // cannot add a sweep, and is clamped to K for the single-sweep case.
+    KC = std::min(K, ((KC + 7) / 8) * 8);
+
+    blk.KC = std::max(blk.KC, KC);
+    return blk;
+}
+
 // ---------------------------------------------------------------------------
 // PackingPlanCache implementation
 // ---------------------------------------------------------------------------
