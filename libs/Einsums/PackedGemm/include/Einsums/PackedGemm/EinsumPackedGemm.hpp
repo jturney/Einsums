@@ -290,9 +290,16 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 // ---------------------------------------------------------------------------
 
 /// Name of the kernel route the most recent @ref blis_contraction call on this
-/// thread took: "gemm_batch", "flatten_gemm", "single_k_gemm" or "packed",
-/// the first three being the fast paths that hand the whole contraction to the
-/// vendor and the last the engine's own packed loops.
+/// thread took: "gemm_batch", "flatten_gemm", "flatten_gemm_hptt",
+/// "flatten_gemm_gather", "single_k_gemm" or "packed", all but the last being
+/// the fast paths that hand the whole contraction to the vendor, and the last
+/// the engine's own packed loops.
+///
+/// The three flatten spellings name the same route by how it fed the vendor:
+/// plain when both operands were already flat (no copy), @c _hptt when HPTT
+/// transposed them into the flat buffers, @c _gather when the scalar gather
+/// did. They are distinguished because the difference is worth a measurable
+/// factor and nothing else observes which one ran.
 ///
 /// Test introspection ONLY, mirroring @c dispatch::last_dispatch_route one
 /// level down - that one names which BACKEND took the contraction, and this one
@@ -641,8 +648,79 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             int const rank_a_rt = rank_of(A);
             int const rank_b_rt = rank_of(B);
 
-            // Check contiguity for HPTT (only for sides that need copying).
+            // Describe a dense operand to HPTT.
             //
+            // HPTT takes no stride vector: sizes[0] is the FASTEST-varying axis
+            // and every axis after it follows as a dense product chain. That is
+            // column-major by argument convention, not an assumption about the
+            // caller's layout - any dense tensor (row-major, column-major, or any
+            // other axis order) fits the model once its axes are RELABELLED into
+            // ascending-stride order. So sort the axes by stride, describe the
+            // operand in that order, and renumber the transpose permutation
+            // through the same relabelling. This is what lets row-major operands
+            // - what the runtime-tensor and string-einsum paths hand us - take
+            // the HPTT route instead of falling to the scalar gather below.
+            //
+            // Extent-1 axes carry no layout information (their stride is
+            // arbitrary and never indexed), so they are dropped from both the
+            // source description and the permutation; the destination is dense,
+            // so dropping them does not change its element order.
+            //
+            // Returns false - leaving the caller on the scalar gather - when the
+            // operand is dense in no axis order at all: a padded, strided or
+            // broadcast view. HPTT could express a padded one through outerSizeA,
+            // which hptt_transpose does not plumb through today.
+            auto describe_for_hptt = [](auto const &tensor, int rank, std::vector<int> const &out_order, std::vector<size_t> &sizes,
+                                        std::vector<int> &perm) -> bool {
+                auto extent = [&](int i) { return static_cast<int64_t>(tensor.dim(static_cast<size_t>(i))); };
+                auto stride = [&](int i) { return static_cast<int64_t>(tensor.stride(static_cast<size_t>(i))); };
+
+                // Axes that carry layout, in ascending-stride order.
+                std::vector<int> ord;
+                ord.reserve(static_cast<size_t>(rank));
+                for (int i = 0; i < rank; ++i) {
+                    if (extent(i) > 1) {
+                        ord.push_back(i);
+                    }
+                }
+                std::sort(ord.begin(), ord.end(), [&](int a, int b) { return stride(a) < stride(b); });
+                if (ord.empty()) {
+                    return false; // a single element: not worth a plan
+                }
+
+                // Dense product chain in that order, or HPTT cannot say it.
+                int64_t expected = 1;
+                for (int const p : ord) {
+                    if (stride(p) != expected) {
+                        return false;
+                    }
+                    expected *= extent(p);
+                }
+
+                std::vector<int> hptt_pos(static_cast<size_t>(rank), -1);
+                sizes.resize(ord.size());
+                for (size_t p = 0; p < ord.size(); ++p) {
+                    hptt_pos[static_cast<size_t>(ord[p])] = static_cast<int>(p);
+                    sizes[p]                              = static_cast<size_t>(extent(ord[p]));
+                }
+
+                // perm[j] = the source axis, in HPTT's numbering, that becomes
+                // destination axis j.
+                perm.clear();
+                perm.reserve(ord.size());
+                for (int const pos : out_order) {
+                    if (pos < 0 || pos >= rank) {
+                        return false;
+                    }
+                    if (int const h = hptt_pos[static_cast<size_t>(pos)]; h >= 0) {
+                        perm.push_back(h);
+                    }
+                }
+                // Anything other than a permutation of the layout-carrying axes
+                // means the plan's dims do not account for this operand.
+                return perm.size() == ord.size();
+            };
+
             // Batched contractions (nb > 0) must not use the HPTT flatten path:
             // it builds the transpose plan from the operand's full rank and
             // sizes (including the batch dims) while A_flat/B_flat are sized for a
@@ -666,58 +744,47 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // its cache bandwidth. The BatchedMultiK tests pin the layouts that
             // experiment covered.
             bool use_hptt = (nb == 0) && !plan.coalesced;
-            if (!a_zero_copy) {
-                int64_t expected = 1;
-                for (int i = 0; i < rank_a_rt; ++i) {
-                    if (static_cast<int64_t>(A.stride(i)) != expected) {
-                        use_hptt = false;
-                        break;
-                    }
-                    expected *= static_cast<int64_t>(A.dim(i));
+
+            std::vector<int>    perm_a, perm_b;
+            std::vector<size_t> sizes_a, sizes_b;
+
+            // Destination axis order: A_flat is col-major M x K (M fastest) and
+            // B_flat is row-major K x N, i.e. col-major N x K (N fastest). In
+            // both, the K axes run in reverse plan order so that the flat K index
+            // matches k_cum.
+            if (use_hptt && !a_zero_copy) {
+                std::vector<int> out_a;
+                out_a.reserve(nk + 1);
+                out_a.push_back(static_cast<int>(plan.m_dims[0].tensor_pos));
+                for (size_t i = 0; i < nk; ++i) {
+                    out_a.push_back(static_cast<int>(k_dims_a[nk - 1 - i].tensor_pos));
                 }
+                use_hptt = describe_for_hptt(A, rank_a_rt, out_a, sizes_a, perm_a);
             }
             if (use_hptt && !b_zero_copy) {
-                int64_t expected = 1;
-                for (int i = 0; i < rank_b_rt; ++i) {
-                    if (static_cast<int64_t>(B.stride(i)) != expected) {
-                        use_hptt = false;
-                        break;
-                    }
-                    expected *= static_cast<int64_t>(B.dim(i));
+                std::vector<int> out_b;
+                out_b.reserve(nk + 1);
+                out_b.push_back(static_cast<int>(plan.n_dims[0].tensor_pos));
+                for (size_t i = 0; i < nk; ++i) {
+                    out_b.push_back(static_cast<int>(k_dims_b[nk - 1 - i].tensor_pos));
                 }
+                use_hptt = describe_for_hptt(B, rank_b_rt, out_b, sizes_b, perm_b);
             }
 
             if (use_hptt) {
                 // HPTT-transpose the full tensor(s) into flat M*K / K*N layout once,
                 // then do KC-tiled GEMM over the contiguous flat buffers.
-                int num_threads = 1;
+                last_contraction_route() = "flatten_gemm_hptt";
+                int num_threads          = 1;
 #ifdef _OPENMP
                 num_threads = omp_get_max_threads();
 #endif
 
                 if (!a_zero_copy) {
-                    std::vector<int>    perm_a(rank_a_rt);
-                    std::vector<size_t> sizes_a(rank_a_rt);
-                    for (int i = 0; i < rank_a_rt; ++i) {
-                        sizes_a[i] = A.dim(static_cast<size_t>(i));
-                    }
-                    perm_a[0] = static_cast<int>(plan.m_dims[0].tensor_pos);
-                    for (size_t i = 0; i < nk; ++i) {
-                        perm_a[nk - i] = static_cast<int>(k_dims_a[i].tensor_pos);
-                    }
-                    hptt_transpose(perm_a.data(), rank_a_rt, A_data, sizes_a.data(), A_flat, num_threads, conj_a);
+                    hptt_transpose(perm_a.data(), static_cast<int>(sizes_a.size()), A_data, sizes_a.data(), A_flat, num_threads, conj_a);
                 }
                 if (!b_zero_copy) {
-                    std::vector<int>    perm_b(rank_b_rt);
-                    std::vector<size_t> sizes_b(rank_b_rt);
-                    for (int i = 0; i < rank_b_rt; ++i) {
-                        sizes_b[i] = B.dim(static_cast<size_t>(i));
-                    }
-                    perm_b[0] = static_cast<int>(plan.n_dims[0].tensor_pos);
-                    for (size_t i = 0; i < nk; ++i) {
-                        perm_b[nk - i] = static_cast<int>(k_dims_b[i].tensor_pos);
-                    }
-                    hptt_transpose(perm_b.data(), rank_b_rt, B_data, sizes_b.data(), B_flat, num_threads, conj_b);
+                    hptt_transpose(perm_b.data(), static_cast<int>(sizes_b.size()), B_data, sizes_b.data(), B_flat, num_threads, conj_b);
                 }
 
                 // A_flat is now col-major M*K; B_flat is row-major K*N.
@@ -746,7 +813,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 }
             } else {
                 // Scalar gather fallback (non-contiguous tensors).
-                int64_t const KC = std::min(K, blk.KC);
+                last_contraction_route() = "flatten_gemm_gather";
+                int64_t const KC         = std::min(K, blk.KC);
                 for (int64_t kc = 0; kc < K; kc += KC) {
                     int64_t const   kc_len = std::min(KC, K - kc);
                     ValueType const beta_k = (kc == 0) ? beta : ValueType{1};

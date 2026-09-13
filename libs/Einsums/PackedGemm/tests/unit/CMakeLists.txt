@@ -5,6 +5,7 @@
 
 set(PackedGemmTests
     BatchedMultiK.cpp
+    FlattenLayouts.cpp
     MicroKernelTile.cpp
     PackingPlan.cpp
 )
