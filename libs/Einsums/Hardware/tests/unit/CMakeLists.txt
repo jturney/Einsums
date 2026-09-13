@@ -33,6 +33,7 @@ function(_einsums_snake_to_camel out_var snake)
 endfunction()
 
 set(HardwareTests
+    SimdWidth.cpp
     test_cpu_info_python.py
     test_thread_control_python.py
 )
@@ -79,3 +80,8 @@ foreach(test ${HardwareTests})
     "Modules.Einsums.Hardware" ${TestName} ${${TestName}_${TestExtension}_PARAMETERS}
   )
 endforeach()
+
+# The width has to follow a pinned rung, so the check runs once per rung the
+# host can execute (ctest reports the rest as Skipped).
+include(Einsums_AddSIMDDispatch)
+einsums_add_simd_rung_tests("Modules.Einsums.Hardware" SimdWidth)

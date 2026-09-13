@@ -18,7 +18,6 @@ set(_Einsums_modules
   Options
   Concepts
   Config
-  Hardware
   CXX23
   Debugging
   Errors
@@ -26,6 +25,7 @@ set(_Einsums_modules
   GPU
   Comm
   SIMD
+  Hardware
   HPTT
   Iterator
   LinearAlgebra

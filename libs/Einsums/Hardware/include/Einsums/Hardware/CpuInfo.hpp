@@ -40,8 +40,25 @@ struct CacheSizes {
  * these numbers, and they stay with the algorithm.
  */
 struct CpuInfo {
-    /// SIMD vector length in doubles: SSE/NEON = 2, AVX = 4, AVX-512 = 8.
+    /// SIMD vector length in doubles of the instruction-set rung the RUNNING
+    /// process dispatches to: SSE/NEON = 2, AVX = 4, AVX-512 = 8.
+    ///
+    /// Runtime, from `simd::selected_arch()` (CPUID, OS vector state, and the
+    /// `EINSUMS_SIMD_ARCH` override), not from the flags the library was
+    /// compiled with. It used to be the latter, and on a distribution build
+    /// compiled for the x86-64 baseline it reported 2 on every AVX2 machine;
+    /// PackedGemm sized its register tile from it and ran SSE-width kernels on
+    /// AVX2 hardware, at a quarter of the rate. Anything that sizes work for the
+    /// kernels that will actually run wants this field; the width the library's
+    /// own translation units were vectorized at is `compiled_simd_width_f64`.
     int simd_width_f64{2};
+
+    /// SIMD vector length in floats of the selected rung: twice `simd_width_f64`.
+    int simd_width_f32{4};
+
+    /// SIMD vector length in doubles implied by the compile flags of the library
+    /// itself (the width of `simd::Vec<double>` in a non-rung translation unit).
+    int compiled_simd_width_f64{2};
 
     CacheSizes cache;
 

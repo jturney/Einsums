@@ -40,7 +40,11 @@ CpuInfo
 
     auto const &hw = einsums::hardware::cpu_info();
 
-    hw.simd_width_f64;      // 2 (SSE2/NEON), 4 (AVX/AVX2), 8 (AVX-512)
+    hw.simd_width_f64;      // 2 (SSE2/NEON), 4 (AVX/AVX2), 8 (AVX-512): the rung the
+                            // process dispatches to (simd::selected_arch()), so it
+                            // follows the CPU and the EINSUMS_SIMD_ARCH override
+    hw.simd_width_f32;      // twice simd_width_f64
+    hw.compiled_simd_width_f64; // what the library's own flags were vectorized at
     hw.cache.l1;            // bytes
     hw.cache.l2;            // bytes
     hw.cache.l3;            // bytes

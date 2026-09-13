@@ -5,6 +5,7 @@
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/SIMD/RuntimeFeatures.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -360,8 +361,9 @@ ResolvedRegionCost resolve_omp_region_cost_ns() {
     return {measure_omp_region_cost_ns(), false};
 }
 
-/// Native SIMD width in doubles, from the compile-time ISA.
-int detect_simd_width_f64() {
+/// SIMD width in doubles implied by the compile-time ISA of this translation
+/// unit - the width the library's own (non-rung) code was vectorized at.
+int compiled_simd_width_f64() {
 #if defined(__AVX512F__)
     return 8;
 #elif defined(__AVX__) || defined(__AVX2__)
@@ -372,17 +374,26 @@ int detect_simd_width_f64() {
 #endif
 }
 
+/// SIMD width in doubles of the rung the process will dispatch to. Reads the
+/// same answer the kernel ladders read, so a pinned `EINSUMS_SIMD_ARCH` lowers
+/// this too and the blocking built from it stays consistent with the kernel.
+int runtime_simd_width_f64() {
+    return einsums::simd::vector_bits(einsums::simd::selected_arch()) / 64;
+}
+
 } // namespace
 
 CpuInfo const &cpu_info() {
     static CpuInfo const info = []() {
         CpuInfo i;
-        i.simd_width_f64     = detect_simd_width_f64();
-        auto const cs        = detect_cache_sizes();
-        i.cache.l1           = cs.l1;
-        i.cache.l2           = cs.l2;
-        i.cache.l3           = cs.l3;
-        i.omp_region_cost_ns = resolve_omp_region_cost_ns().value;
+        i.simd_width_f64          = runtime_simd_width_f64();
+        i.simd_width_f32          = 2 * i.simd_width_f64;
+        i.compiled_simd_width_f64 = compiled_simd_width_f64();
+        auto const cs             = detect_cache_sizes();
+        i.cache.l1                = cs.l1;
+        i.cache.l2                = cs.l2;
+        i.cache.l3                = cs.l3;
+        i.omp_region_cost_ns      = resolve_omp_region_cost_ns().value;
         return i;
     }();
     return info;

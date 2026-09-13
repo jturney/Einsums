@@ -225,6 +225,20 @@ CpuFeatures const &cpu_features() {
     return features;
 }
 
+int vector_bits(InstructionSet set) {
+    switch (set) {
+    case InstructionSet::V3:
+        return 256;
+    case InstructionSet::V4:
+        return 512;
+    case InstructionSet::Baseline:
+    case InstructionSet::V2:
+    case InstructionSet::Sme:
+        return 128;
+    }
+    return 128;
+}
+
 char const *to_string(InstructionSet set) {
     switch (set) {
     case InstructionSet::Baseline:

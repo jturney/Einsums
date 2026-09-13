@@ -147,6 +147,26 @@ enum class InstructionSet : std::uint8_t {
 EINSUMS_EXPORT char const *to_string(InstructionSet set);
 
 /**
+ * @brief Width in bits of the vector register a rung's kernels are written for.
+ *
+ * Baseline and V2 are SSE2/SSE4.2 (128), V3 is AVX2 (256), V4 is AVX-512 (512).
+ * The aarch64 rungs report NEON's 128: the SME rung's ZA tiles are a matrix
+ * unit with its own geometry (see PackedGemm's SME kernel), not a wider
+ * vector, and its NEON-side code is still 128-bit.
+ *
+ * This is the one place the rung-to-width mapping lives; hardware::cpu_info()
+ * derives `simd_width_f64` from it so that blocking built from that field
+ * agrees with the kernel ladder's choice.
+ *
+ * @param[in] set The rung.
+ *
+ * @return 128, 256 or 512.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT int vector_bits(InstructionSet set);
+
+/**
  * @brief Parse a rung name, as accepted by the `EINSUMS_SIMD_ARCH`
  *        environment variable.
  *

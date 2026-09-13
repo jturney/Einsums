@@ -17,6 +17,7 @@
 // the same ladder so packing geometry always matches the kernel.
 
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Logging.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
@@ -105,7 +106,12 @@ namespace {
     EINSUMS_EXPORT MicroKernelShape micro_kernel_shape<T>() {                                                                              \
         using ShapeFn                       = MicroKernelShape (*)();                                                                      \
         static ShapeFn const          fn    = einsums::simd::select<ShapeFn>(EINSUMS_PACKED_GEMM_LADDER(micro_kernel_block<T>));           \
-        static MicroKernelShape const shape = fn();                                                                                        \
+        static MicroKernelShape const shape = [] {                                                                                         \
+            MicroKernelShape const s = fn();                                                                                               \
+            EINSUMS_LOG_INFO("packed_gemm kernel<{}>: rung={}, tile MR={} x NR={}, kc_hint={}, block_gemm={}, fast_scatter={}", #T,        \
+                             einsums::simd::to_string(einsums::simd::selected_arch()), s.mr, s.nr, s.kc, s.block_gemm, s.fast_scatter);    \
+            return s;                                                                                                                      \
+        }();                                                                                                                               \
         return shape;                                                                                                                      \
     }
 

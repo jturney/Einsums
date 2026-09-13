@@ -12,7 +12,10 @@
 // holds. Every rung's kernel is registered here through the SIMD rung tests,
 // so a tile that is right at one width and wrong at another shows up by rung.
 
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
+#include <Einsums/PackedGemm/Packing.hpp>
+#include <Einsums/SIMD/RuntimeFeatures.hpp>
 
 #include <cstdint>
 #include <limits>
@@ -38,13 +41,13 @@ std::vector<T> random_panel(size_t n, std::mt19937 &rng) {
 
 template <typename T>
 void check_tile(int64_t kc, int64_t mr_eff, int64_t nr_eff, int64_t rs_c, int64_t cs_c, T alpha) {
-    auto const       kernel = micro_kernel_entry<T>();
-    auto const       shape  = micro_kernel_shape<T>();
-    int const        MR     = shape.mr;
-    int const        NR     = shape.nr;
-    std::mt19937     rng(static_cast<unsigned>(kc * 131 + mr_eff * 17 + nr_eff * 3 + rs_c + cs_c));
-    auto const       Ap = random_panel<T>(static_cast<size_t>(MR) * static_cast<size_t>(kc), rng);
-    auto const       Bp = random_panel<T>(static_cast<size_t>(NR) * static_cast<size_t>(kc), rng);
+    auto const   kernel = micro_kernel_entry<T>();
+    auto const   shape  = micro_kernel_shape<T>();
+    int const    MR     = shape.mr;
+    int const    NR     = shape.nr;
+    std::mt19937 rng(static_cast<unsigned>(kc * 131 + mr_eff * 17 + nr_eff * 3 + rs_c + cs_c));
+    auto const   Ap = random_panel<T>(static_cast<size_t>(MR) * static_cast<size_t>(kc), rng);
+    auto const   Bp = random_panel<T>(static_cast<size_t>(NR) * static_cast<size_t>(kc), rng);
     // C is a strided window with slack on both sides so an out-of-tile write shows.
     size_t const c_len = static_cast<size_t>((MR + 1) * rs_c + (NR + 1) * cs_c) + 8;
     auto         C     = random_panel<T>(c_len, rng);
@@ -102,3 +105,36 @@ TEMPLATE_TEST_CASE("MicroKernel - row-major and strided C", "[PackedGemm][MicroK
     }
 }
 
+// The tile the packers cut and the blocking the loops use are both derived from
+// the resolved kernel's shape, and that shape is stated in the SELECTED rung's
+// vectors: two of them along M by six columns. This pins the derivation to the
+// rung ladder so a width read from the wrong place (the library's compile
+// flags, which is where it came from once) fails here on the first AVX2 machine.
+TEMPLATE_TEST_CASE("MicroKernel - tile and blocking follow the selected rung", "[PackedGemm][MicroKernel]", float, double) {
+    using T           = TestType;
+    auto const  shape = micro_kernel_shape<T>();
+    auto const  rung  = simd::selected_arch();
+    int const   lanes = simd::vector_bits(rung) / (8 * static_cast<int>(sizeof(T)));
+    auto const &hw    = hardware::cpu_info();
+
+#if defined(__x86_64__) || defined(_M_X64)
+    REQUIRE(shape.mr == 2 * lanes);
+    REQUIRE(shape.nr == 6);
+    REQUIRE_FALSE(shape.block_gemm); // real types run the rung's own tile on x86
+#endif
+    REQUIRE(hw.simd_width_f64 == simd::vector_bits(rung) / 64);
+
+    // Blocking from that tile: one packed A column (MR * KC) within L1, the A
+    // panel (MC * KC) within half the L2, the B panel (KC * NC) within half the
+    // L3, every block a multiple of its register block.
+    auto const blk = compute_blocking(static_cast<int64_t>(sizeof(T)), shape.mr, shape.nr);
+    REQUIRE(blk.KC % 8 == 0);
+    REQUIRE(blk.KC >= 64);
+    REQUIRE(blk.MC % shape.mr == 0);
+    REQUIRE(blk.NC % shape.nr == 0);
+    REQUIRE(blk.MC * blk.KC * static_cast<int64_t>(sizeof(T)) <= hw.cache.l2 / 2 + blk.KC * static_cast<int64_t>(sizeof(T)) * shape.mr);
+    REQUIRE(blk.KC * blk.NC * static_cast<int64_t>(sizeof(T)) <= hw.cache.l3 / 2 + blk.KC * static_cast<int64_t>(sizeof(T)) * shape.nr);
+    if (blk.KC > 64) {
+        REQUIRE(shape.mr * blk.KC * static_cast<int64_t>(sizeof(T)) <= hw.cache.l1);
+    }
+}

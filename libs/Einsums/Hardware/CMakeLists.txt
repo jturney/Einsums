@@ -19,7 +19,7 @@ einsums_add_module(
   SOURCES ${HardwareSources}
   HEADERS ${HardwareHeaders}
   DEPENDENCIES 
-  MODULE_DEPENDENCIES Einsums_Config
+  MODULE_DEPENDENCIES Einsums_Config Einsums_SIMD
   CMAKE_SUBDIRS examples tests
   BASE_LIBNAME Einsums
 )

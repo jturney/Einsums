@@ -13,6 +13,7 @@
 
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
+#include <Einsums/SIMD/RuntimeFeatures.hpp>
 
 #include <algorithm>
 #include <cerrno>
@@ -82,9 +83,16 @@ CpuConfig const &cpu_config() {
         // Same derivation everyone else uses, from the one detector.
         c.min_parallel_flops = einsums::hardware::omp_min_parallel_flops();
 
-        EINSUMS_LOG_INFO("cpu_config: VL={}, MR={}, NR={}, L1={}K, L2={}K, L3={}K, omp_region={:.2f}us, min_parallel_flops={}", c.VL, c.MR,
-                         c.NR, c.l1_cache_size / 1024, c.l2_cache_size / 1024, c.l3_cache_size / 1024, c.omp_region_cost_ns / 1000.0,
-                         c.min_parallel_flops);
+        // Every constant the blocking is built from, printed rather than left to
+        // be inferred from observed block sizes: the rung the kernels dispatch to,
+        // the vector width that rung has, and the width the library itself was
+        // compiled for (which is what VL used to be taken from).
+        EINSUMS_LOG_INFO(
+            "cpu_config: rung={}, VL={} doubles (compiled width {}), MR={}, NR={}, L1={}K, L2={}K, L3={}K, omp_region={:.2f}us, "
+            "min_parallel_flops={}",
+            einsums::simd::to_string(einsums::simd::selected_arch()), c.VL, einsums::hardware::cpu_info().compiled_simd_width_f64, c.MR,
+            c.NR, c.l1_cache_size / 1024, c.l2_cache_size / 1024, c.l3_cache_size / 1024, c.omp_region_cost_ns / 1000.0,
+            c.min_parallel_flops);
         return c;
     }();
     return cfg;
