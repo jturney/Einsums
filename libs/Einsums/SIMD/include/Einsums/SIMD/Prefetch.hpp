@@ -10,6 +10,7 @@
 #include <Einsums/SIMD/Operations.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
+#include <atomic>
 #include <cstddef>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
@@ -172,5 +173,29 @@ EINSUMS_FORCEINLINE void stream_store(double *p, Vec<double> v) {
     *p = v.reg;
 }
 #endif
+
+// ===========================================================================
+// Streaming-store fence
+// ===========================================================================
+
+/// @brief Make this thread's streaming stores visible to everything else.
+///
+/// Non-temporal stores are weakly ordered: on x86 they leave through the
+/// write-combining buffers and are NOT ordered against ordinary stores, so a
+/// reader - the caller, or another thread past a barrier - can observe the old
+/// contents of a line this thread has already streamed. One of these after the
+/// last @ref stream_store of a region closes that.
+///
+/// aarch64's STNP is ordered by the architecture's ordinary rules, so the
+/// release fence here is the same one any handover would need and costs
+/// nothing extra. Everywhere else the streaming store was a plain store and
+/// this is a compiler barrier.
+EINSUMS_FORCEINLINE void stream_fence() {
+#if defined(__SSE2__) || defined(__AVX__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+    _mm_sfence();
+#else
+    std::atomic_thread_fence(std::memory_order_release);
+#endif
+}
 
 EINSUMS_NAMESPACE_END(simd)
