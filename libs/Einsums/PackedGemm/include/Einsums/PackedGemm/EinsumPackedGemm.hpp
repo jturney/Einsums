@@ -18,11 +18,13 @@
 #include <Einsums/PackedGemm/MicroKernel.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/Profile/Profile.hpp>
+#include <Einsums/SIMD/Prefetch.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -350,6 +352,109 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
     }
 }
 
+/// @brief Whether this contraction should be packed with the roles of A and B
+///        exchanged, i.e. as C^T = B^T A^T.
+///
+/// The tile kernel is not symmetric in m and n. It holds a tile as MR-tall
+/// vectors, so a destination whose consecutive m coordinates are adjacent in
+/// memory takes a vector store, and any other destination takes MR*NR scalar
+/// stores through a stack tile. The C scatter wants that same direction, for
+/// the same reason: it is the one whose consecutive flat coordinates are
+/// contiguous in C.
+///
+/// When C's unit stride reaches C through B, both wants point at the N group,
+/// and no ordering inside the M group can supply it. Reading the tile back with
+/// a stride - what the scatter used to do - costs MR*NR strided loads and MR*NR
+/// scalar stores per tile against the (MR*NR/lanes) * kc vector FMAs that
+/// produced it, which at the rank-6 ccsd_t shapes' K of 24 is more than the
+/// arithmetic itself. On the Tensor Contraction Benchmark that split the
+/// eighteen ccsd_t mirror pairs cleanly in two, at 20 GF/s against 27 for the
+/// same kernel on the mirrored shape.
+///
+/// So exchange the roles instead: C^T = B^T A^T is the same contraction, B
+/// packs into the MR panels, A into the NR panels, and the kernel's m direction
+/// IS C's unit-stride one. Measured +25% to +35% on the nine ccsd_t rows whose
+/// unit index arrives through B, and level with their mirrors afterwards.
+///
+/// The test is for a UNIT stride in the N group and none in the M group, not
+/// simply the smaller of the two. When neither group is contiguous in C both
+/// orders spend a cache line per element, `scatter_n_inner` inside
+/// @ref blis_contraction already picks the shorter stride for the inner loop,
+/// and there is nothing left for an exchange to win - while it still costs the
+/// register tile, which is cut MR deep along whichever group takes the M role.
+/// intensli's abcd-dbea-ec has an N group of 24 against an MR of 16, so
+/// exchanging computes a third of its FMAs into masked-off lanes; measured
+/// 0.70x. Hence
+/// also the floor: a group that cannot fill a couple of tiles is the wrong one
+/// to cut into them.
+///
+/// Only the tile-scatter path benefits. The direct-C branches already choose a
+/// transposed BLAS call from the same fact, the block-GEMM strategy already
+/// swaps its vendor operands, and the 1m complex path packs in a geometry of
+/// its own.
+inline bool mn_roles_should_swap(PackingPlan const &plan, MicroKernelShape const &shape, bool is_complex) {
+    if (plan.c_m_dims.empty() || plan.c_n_dims.empty()) {
+        return false;
+    }
+    bool const scatter = plan.c_m_dims.size() > 1 || plan.c_n_dims.size() > 1 ||
+                         (plan.c_m_dims[0].tensor_stride != 1 && plan.c_n_dims[0].tensor_stride != 1);
+    return scatter && !shape.block_gemm && !(is_complex && shape.use_1m) && plan.c_n_dims.back().tensor_stride == 1 &&
+           plan.c_m_dims.back().tensor_stride != 1 && plan.N_total >= 2 * static_cast<int64_t>(shape.mr);
+}
+
+/// @brief Copy @p n elements to @p dst without first fetching its cache lines.
+///
+/// An ordinary store to a line the core does not already own makes the cache
+/// read that line from memory before the write can land - a read-for-ownership
+/// - even when every byte of it is about to be overwritten. On a contraction
+/// whose C is written once and never read (beta == 0), that is an extra pass
+/// over the whole of C: the rank-6 ccsd_t shapes write 369 MB and fetch 369 MB
+/// they have no use for, against an arithmetic floor of 71 ms out of 131.
+///
+/// Streaming stores leave through the write-combining buffers instead, and a
+/// line assembled there whole is written with no prior read. That is why the
+/// caller must hand this a run that is CONTIGUOUS and reasonably long: a
+/// buffer flushed half-full pays a partial write and keeps the read.
+///
+/// @p dst must be vector-aligned and @p n a whole number of lanes - @ref
+/// stream_run_ok is the caller's test for both. Handling a misaligned head
+/// in here was tried and is a trap: the head and tail are ordinary stores, so
+/// their lines keep the fetch, and paying a staging copy to line the run up
+/// costs an entire extra pass of C through L1 - measured -4% on the intensli
+/// rows, where the fetch it saves is a small share of the run anyway.
+///
+/// @warning Streaming stores are weakly ordered. The caller must
+/// @ref einsums::simd::stream_fence() before anything reads @p dst.
+template <typename T>
+void stream_copy(T *dst, T const *src, int64_t n) {
+    // Only the types with a vector register on this ISA; complex has none, and
+    // @ref stream_run_ok already refuses it at run time, but the template is
+    // instantiated for it regardless.
+    if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+        constexpr int64_t L = einsums::simd::Vec<T>::lanes;
+        for (int64_t i = 0; i < n; i += L) {
+            einsums::simd::stream_store<T>(dst + i, einsums::simd::loadu(src + i));
+        }
+    } else {
+        std::copy(src, src + n, dst);
+    }
+}
+
+/// @brief Whether a run of @p n elements at @p dst can be streamed whole.
+///
+/// Both conditions are about the write-combining buffer: a partial line at
+/// either end is an ordinary store, which fetches the line and undoes the
+/// point of streaming it.
+template <typename T>
+bool stream_run_ok(T const *dst, int64_t n) {
+    if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+        constexpr int64_t L = einsums::simd::Vec<T>::lanes;
+        return (n % L) == 0 && (reinterpret_cast<uintptr_t>(dst) % static_cast<uintptr_t>(L * sizeof(T))) == 0;
+    } else {
+        return false;
+    }
+}
+
 /// @brief Execute a tensor contraction via Pack-A / Pack-B + BLAS GEMM tiles (BLIS-style).
 ///
 /// For multi-K contractions (rank-3+), flattens A and B into contiguous M*K / K*N buffers
@@ -440,7 +545,15 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
     // so it consumes the width instead of losing it to the wrapper fence (which
     // the batch wrappers deliberately do not carry).
     // -------------------------------------------------------------------------
-    if (plan.batch_total > 1 && plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic) {
+    //
+    // The `!plan.swap_ab` term is a guard, not a policy: this is the one path
+    // that reads A and B directly rather than through the role-resolved pointers
+    // below, so an exchanged plan would pair B's batch strides with A's data. A
+    // swap always implies multi-M or multi-N (see @ref mn_roles_should_swap: it
+    // needs a scatter, and the only scatter reason left once the N group holds
+    // C's unit stride is a multi-dim group), so the term never fires today - it
+    // is here so that widening the swap cannot silently break this path.
+    if (plan.batch_total > 1 && plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic && !plan.swap_ab) {
         // NOLINTNEXTLINE(readability-identifier-naming)
         using blas_int = einsums::blas::int_t;
 
@@ -549,9 +662,14 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             }
         }
 
+        // `plan.swap_ab` says this plan describes the contraction as C^T = B^T
+        // A^T, so the tensor the packers must read for the plan's A role is B
+        // and vice versa. The batch strides were mirrored with the rest of the
+        // plan, so the offsets already belong to the tensors named here. The
+        // caller swapped the conjugation flags to match.
         ValueType       *C_data = C.data() + c_batch_off;
-        ValueType const *A_data = A.data() + a_batch_off;
-        ValueType const *B_data = B.data() + b_batch_off;
+        ValueType const *A_data = (plan.swap_ab ? static_cast<ValueType const *>(B.data()) : A.data()) + a_batch_off;
+        ValueType const *B_data = (plan.swap_ab ? static_cast<ValueType const *>(A.data()) : B.data()) + b_batch_off;
 
         // -------------------------------------------------------------------------
         // Multi-K fast path: flatten A and B into contiguous M*K / K*N buffers,
@@ -1160,6 +1278,46 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             MC_blk                 = std::max<int64_t>((want / MR) * MR, MR);
         }
 
+        // Keep the M block a whole number of C's fastest segment when the C block
+        // flush below can compose its destination into contiguous spans.
+        //
+        // A block that ends mid-segment sends its tail down the fallback walk,
+        // which reads the block transposed AND scatters - the worst of both
+        // orders. The tail is a fixed number of ROWS, so what it costs is set by
+        // how many rows the block has: 16 of a 64-row double block is a quarter
+        // of the work, against 8 of a 128-row single block. Measured on ccsd_t
+        // before this alignment existed, the span flush was worth +5 to +10% on
+        // the single rows and -3 to -4% on the double ones, which is that split
+        // and nothing else.
+        //
+        // The step is lcm(segment, MR) so the block stays whole in the register
+        // tile too; a segment that cannot reach a whole step inside the block is
+        // left alone rather than shrunk to one.
+        if (needs_c_scatter && !block_strategy && plan.c_m_dims.back().tensor_stride == 1) {
+            int64_t const fm = plan.c_m_dims.back().size;
+            if (fm > 1 && plan.c_n_dims.back().tensor_stride == fm) {
+                int64_t const step = std::lcm<int64_t, int64_t>(fm, MR);
+                if (step <= MC_blk) {
+                    MC_blk = (MC_blk / step) * step;
+                } else if (step <= (mc_cap / MR) * MR && step <= M) {
+                    // The block is SMALLER than one C segment, so every m run it
+                    // cuts is partial and the span never forms at all - the
+                    // write-back falls back to the column walk for the whole
+                    // contraction and the streaming store is never reached. Raise
+                    // the block to one whole segment.
+                    //
+                    // This is the case on twelve of the eighteen ccsd_t shapes,
+                    // whose C segment is 384 or 480 elements against a cache-derived
+                    // MC of 64 or 128, and on ao2mo's `abcd-ec-abed`, whose segment
+                    // is 8064. It is affordable precisely because these are the
+                    // small-K shapes: the A panel is MC * KC, so at K = 24 a
+                    // 480-row block is 46 KB. The A-panel cap is still the bound,
+                    // and a segment that cannot fit under it is left alone.
+                    MC_blk = step;
+                }
+            }
+        }
+
         // beta == 0 says C's prior contents are irrelevant, so the first K block
         // STORES its result and later blocks accumulate onto it. The direct-BLAS
         // paths above already do this through beta_k; the scatter paths below did
@@ -1171,6 +1329,18 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // BLAS says it means - C is never read - which `*= 0` does not, since
         // NaN * 0 is NaN rather than 0 and an uninitialized C would leak through.
         bool const overwrite_c = (beta == ValueType{0});
+
+        // Whether the C block write-back may stream past the cache.
+        //
+        // Three things have to hold. C must be written and never read, which is
+        // what overwrite_c says. K must fit one block, or a later K block would
+        // accumulate onto lines this one just pushed out to memory and have to
+        // fetch every one of them back. And the element type must have a vector
+        // register to store from.
+        //
+        // Whether the run is long enough is decided per span at the write-back,
+        // since that is where the length is known.
+        bool const may_stream_c = overwrite_c && K <= KC_blk && !is_complex;
 
         // Which side the C scatter walks innermost. Both scatters below were
         // hardwired to n outer, m inner, so only the M group's fastest dimension
@@ -1189,6 +1359,27 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         int64_t const c_m_fastest     = plan.c_m_dims.back().tensor_stride;
         int64_t const c_n_fastest     = plan.c_n_dims.back().tensor_stride;
         bool const    scatter_n_inner = c_n_fastest != 0 && (c_m_fastest == 0 || c_n_fastest < c_m_fastest);
+
+        // Does C's destination COMPOSE into whole contiguous spans?
+        //
+        // The scatter is written as if C's two index groups were independent, and
+        // for a general contraction they are. But when C's fastest m index has unit
+        // stride and its fastest n index steps by exactly that index's extent, the
+        // two are adjacent halves of one dense run: element (i, j) of the rectangle
+        // sits at base + j * Fm + i, so a whole m segment by a whole n segment is
+        // Fm * Fn consecutive elements of C.
+        //
+        // It is the common case, not a curiosity - it holds whenever the two groups
+        // happen to hold neighbouring indices of a dense C, which is what the rank-6
+        // ccsd_t and the intensli shapes both do (24 x 20 = 480 floats and
+        // 48 x 24 = 1152). The C block write-back walks those spans, which turns a
+        // scatter of Fm-element pieces revisiting each cache line Fn times from Fn
+        // different places into one sequential sweep - and is what lets the
+        // write-back stream past the cache at all (@ref stream_copy).
+        int64_t const blk_m_fast = plan.c_m_dims.back().size;
+        int64_t const blk_n_fast = plan.c_n_dims.back().size;
+        bool const    blk_compose =
+            plan.c_m_dims.back().tensor_stride == 1 && blk_m_fast > 1 && plan.c_n_dims.back().tensor_stride == blk_m_fast;
 
         // The NC loop is the parallel loop, but only when there is enough work to
         // pay for the region. Entering and leaving one costs a fork/join barrier
@@ -1277,6 +1468,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 #endif
             for (int64_t nc = 0; nc < N; nc += NC_blk) {
                 static thread_local std::vector<ValueType> tls_Ap, tls_Bp, tls_Ct;
+                bool                                       streamed_c = false;
                 tls_Ap.resize(ap_buf_elems);
                 tls_Bp.resize(bp_buf_elems);
                 ValueType    *Ap     = tls_Ap.data();
@@ -1636,7 +1828,214 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         int64_t const num_jr = (nc_len + NR - 1) / NR;
                         int64_t const num_ir = (mc_len + MR - 1) / MR;
 
-                        if (needs_c_scatter) {
+                        if (needs_c_scatter && !scatter_n_inner && blk_compose) {
+                            LabeledSectionInternal("micro-kernel loop, C block");
+                            // ---- Cache-resident C block ----
+                            //
+                            // The tiles accumulate into one contiguous mc_len x
+                            // nc_len block and the block is written back to C
+                            // once, instead of every tile making its own trip to
+                            // a destination that may be hundreds of megabytes
+                            // wide. Two things come of it.
+                            //
+                            // The kernel's C operand is the block, so its row
+                            // stride is 1 whatever C's layout is, which is the
+                            // whole-vector store path rather than the stack tile
+                            // and MR*NR scalar stores.
+                            //
+                            // And the write-back's runs are as long as C's own
+                            // fastest index allows - up to that index's whole
+                            // extent - where the per-tile scatter could never
+                            // carry a run past MR, and paid an offset-table
+                            // lookup and a run computation for each of them.
+                            //
+                            // Only for the m-inner scatter. The n-inner variant
+                            // reads the block along its long stride, which undoes
+                            // the point; @ref mn_roles_should_swap has already
+                            // turned every n-inner case that HAS a contiguous
+                            // direction into an m-inner one, so what is left
+                            // there spends a cache line per element either way.
+                            // The accumulator is bounded by CHUNKING the N block,
+                            // not by shrinking it.
+                            //
+                            // Bounding NC instead is the obvious move and it is
+                            // wrong: A's DRAM traffic scales with 1/NC, so paying
+                            // for a cache-sized C block out of NC charges it to the
+                            // largest memory term in the contraction. Measured on
+                            // ccsd's rank-4 single, where the budget halved NC from
+                            // 2046 and A is 228 MB: every one of the twelve rows lost
+                            // 0.8 to 1.7 points of %GEMM, while the twelve double
+                            // rows - whose NC the budget did not reach - gained 0.5
+                            // to 3.0. The packed B block already covers the whole N
+                            // block, so a chunk costs no extra packing.
+                            // Half the L2, NOT the block strategy's c_temp_budget.
+                            //
+                            // That budget sizes a vendor GEMM's output buffer, where
+                            // the GEMM re-packs its own operands and the temp is the
+                            // only thing competing for L2. This accumulator competes
+                            // with the A panel and the B block, which are live across
+                            // the same loops, so a budget equal to the whole L2
+                            // leaves them nothing and the outcome falls to which
+                            // sets the block happens to land in. Measured on the full
+                            // ccsd_t group: at 512 KB one row of thirty-six
+                            // (`abcdef-gfab-degc` d, and only when run after thirty
+                            // other cases had fragmented the heap) collapsed to
+                            // 11.3 GF/s against its five identical-shape siblings'
+                            // 21.7; at 256 KB it is 21.3 and the group's double
+                            // median rises from 1.30x to 1.32x of TBLIS with every
+                            // row winning. 128 KB is too small - the double median
+                            // falls to 1.11x.
+                            int64_t const cb_budget = std::max<int64_t>(cpu_config().l2_cache_size / 2, int64_t{64} << 10);
+                            int64_t       nb_len    = cb_budget / (mc_len * static_cast<int64_t>(sizeof(ValueType)));
+                            nb_len                  = std::max<int64_t>((nb_len / NR) * NR, NR);
+                            nb_len                  = std::min(nb_len, nc_len);
+
+                            for (int64_t nb = 0; nb < nc_len; nb += nb_len) {
+                                int64_t const nb_cur  = std::min(nb_len, nc_len - nb);
+                                int64_t const jr_base = nb / NR;
+                                tls_Ct.assign(static_cast<size_t>(mc_len) * static_cast<size_t>(nb_cur), ValueType{0});
+                                ValueType *Cb = tls_Ct.data();
+
+                                // Which of the two packed blocks the tile loops keep
+                                // resident.
+                                //
+                                // The standard order streams the A panel and reuses one
+                                // NR x KC column of B, which is right while B's block is
+                                // the larger of the two - the shape this blocking was
+                                // built for, where NC comes from an L3 budget and MC
+                                // from an L2 one. It is exactly wrong for the intensli
+                                // shapes, whose whole N is 24: there the B block is a
+                                // few kilobytes and the A panel is the one that has just
+                                // been gathered at a cache line per sixteen elements, so
+                                // reading it back once per N tile pushes it through L2
+                                // num_jr times over. Run those with the A panel
+                                // innermost instead, so the pack's output is consumed
+                                // while it is still in L1.
+                                //
+                                // The test is on the B block, not on a ratio: it earns
+                                // its keep only while the whole thing stays resident
+                                // alongside one A panel, and half the L1 is the budget
+                                // that leaves room for the panel and the C block rows.
+                                int64_t const num_jr_b = (nb_cur + NR - 1) / NR;
+                                bool const    b_block_resident =
+                                    nb_cur * kc_len * static_cast<int64_t>(sizeof(ValueType)) * 2 <= cpu_config().l1_cache_size;
+                                if (b_block_resident) {
+                                    for (int64_t ir = 0; ir < num_ir; ++ir) {
+                                        int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
+                                        for (int64_t jr = 0; jr < num_jr_b; ++jr) {
+                                            int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nb_cur - jr * NR);
+                                            micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
+                                                       Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
+                                                       Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
+                                        }
+                                    }
+                                } else {
+                                    for (int64_t jr = 0; jr < num_jr_b; ++jr) {
+                                        int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nb_cur - jr * NR);
+                                        for (int64_t ir = 0; ir < num_ir; ++ir) {
+                                            int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
+                                            micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
+                                                       Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
+                                                       Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
+                                        }
+                                    }
+                                }
+
+                                LabeledSectionInternal("C block scatter");
+
+                                if (blk_compose) {
+                                    int64_t pos = 0;
+                                    while (pos < mc_len) {
+                                        int64_t const run_m = std::min(blk_m_fast - ((mc + pos) % blk_m_fast), mc_len - pos);
+                                        // A partial m segment breaks the span - its rows
+                                        // stop short of the next n step - so those fall
+                                        // back to the column walk below.
+                                        if (run_m == blk_m_fast) {
+                                            int64_t jj = 0;
+                                            while (jj < nb_cur) {
+                                                int64_t const run_n = std::min(blk_n_fast - ((nc + nb + jj) % blk_n_fast), nb_cur - jj);
+                                                ValueType    *dst   = C_data + c_m_offsets[static_cast<size_t>(pos)] +
+                                                                      c_n_offsets[static_cast<size_t>(nb + jj)];
+                                                int64_t const span  = run_n * blk_m_fast;
+                                                // The span's columns are already adjacent in C, so
+                                                // each one streams in place - no staging. A span
+                                                // shorter than a few lines cannot fill a
+                                                // write-combining buffer, so streaming it would pay
+                                                // a partial write and keep the fetch.
+                                                if (may_stream_c && store_c && span * static_cast<int64_t>(sizeof(ValueType)) >= 4 * 64 &&
+                                                    stream_run_ok(dst, run_m)) {
+                                                    for (int64_t q = 0; q < run_n; ++q) {
+                                                        stream_copy(dst + q * blk_m_fast, Cb + (jj + q) * mc_len + pos, run_m);
+                                                    }
+                                                    streamed_c = true;
+                                                    jj += run_n;
+                                                    continue;
+                                                }
+                                                for (int64_t q = 0; q < run_n; ++q) {
+                                                    ValueType const *s = Cb + (jj + q) * mc_len + pos;
+                                                    ValueType       *d = dst + q * blk_m_fast;
+                                                    if (store_c) {
+                                                        std::copy(s, s + run_m, d);
+                                                    } else {
+                                                        for (int64_t r = 0; r < run_m; ++r) {
+                                                            d[r] += s[r];
+                                                        }
+                                                    }
+                                                }
+                                                jj += run_n;
+                                            }
+                                            pos += run_m;
+                                            continue;
+                                        }
+                                        for (int64_t j = 0; j < nb_cur; ++j) {
+                                            ValueType *dst =
+                                                C_data + c_m_offsets[static_cast<size_t>(pos)] + c_n_offsets[static_cast<size_t>(nb + j)];
+                                            ValueType const *s = Cb + j * mc_len + pos;
+                                            if (store_c) {
+                                                std::copy(s, s + run_m, dst);
+                                            } else {
+                                                for (int64_t r = 0; r < run_m; ++r) {
+                                                    dst[r] += s[r];
+                                                }
+                                            }
+                                        }
+                                        pos += run_m;
+                                    }
+                                    continue; // next C block chunk
+                                }
+
+                                for (int64_t j = 0; j < nb_cur; ++j) {
+                                    int64_t const    n_off = c_n_offsets[static_cast<size_t>(nb + j)];
+                                    ValueType const *src   = Cb + j * mc_len;
+                                    if (plan.c_m_dims.back().tensor_stride == 1) {
+                                        int64_t pos = 0;
+                                        while (pos < mc_len) {
+                                            int64_t const    run = std::min(blk_m_fast - ((mc + pos) % blk_m_fast), mc_len - pos);
+                                            ValueType       *dst = C_data + c_m_offsets[static_cast<size_t>(pos)] + n_off;
+                                            ValueType const *s   = src + pos;
+                                            if (store_c) {
+                                                std::copy(s, s + run, dst);
+                                            } else {
+                                                for (int64_t r = 0; r < run; ++r) {
+                                                    dst[r] += s[r];
+                                                }
+                                            }
+                                            pos += run;
+                                        }
+                                        continue;
+                                    }
+                                    if (store_c) {
+                                        for (int64_t i2 = 0; i2 < mc_len; ++i2) {
+                                            C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] = src[i2];
+                                        }
+                                        continue;
+                                    }
+                                    for (int64_t i2 = 0; i2 < mc_len; ++i2) {
+                                        C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] += src[i2];
+                                    }
+                                }
+                            } // next C block chunk
+                        } else if (needs_c_scatter) {
                             LabeledSectionInternal("micro-kernel loop, tile scatter");
                             // Multi-M/N: GEMM into a contiguous temp tile, then scatter to C.
                             //
@@ -1773,6 +2172,14 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         v.shrink_to_fit();
                     }
                 };
+                // Streaming stores are weakly ordered against everything else, so
+                // this thread's share of C is not reliably visible until they have
+                // drained. Once per N block, which is as rare as it can be while
+                // still being inside the loop that did the writing.
+                if (streamed_c) {
+                    einsums::simd::stream_fence();
+                }
+
                 shrink_tls(tls_Ap);
                 shrink_tls(tls_Bp);
                 if (needs_c_scatter)
@@ -1861,7 +2268,8 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         }
         ProfileAnnotate("packed_gemm_plan", "site");
         blis_contraction<ValueType>(*site->plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor),
-                                    spec_in.conj_a, spec_in.conj_b, prefer_packed);
+                                    site->plan->swap_ab ? spec_in.conj_b : spec_in.conj_a,
+                                    site->plan->swap_ab ? spec_in.conj_a : spec_in.conj_b, prefer_packed);
         return true;
     }
 
@@ -2215,6 +2623,15 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             fill_strides(computed, A, B, *C);
             sort_k_dims_for_packing(computed);
             coalesce_plan(computed, static_cast<int64_t>(sizeof(ValueType)));
+            // Which operand takes the kernel's M role is a property of the
+            // contraction and the resolved kernel, so it is settled once, here,
+            // and cached with the plan. Doing it per call would rebuild the
+            // plan's six stride vectors on every replay of a tiled node.
+            if (mn_roles_should_swap(computed, micro_kernel_shape<ValueType>(),
+                                     get_scalar_type<ValueType>() == ScalarType::Complex64 ||
+                                         get_scalar_type<ValueType>() == ScalarType::Complex128)) {
+                computed = transposed_plan(computed);
+            }
             PackingPlanCache::instance().insert(key, computed);
             // Re-look-up so `cached` names the CACHE's copy, not this frame's.
             // A site remembers the pointer, and only the cache's entries live
@@ -2277,8 +2694,8 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         if (cached != nullptr) {
             remember(key, cached);
         }
-        blis_contraction<ValueType>(plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor), spec.conj_a,
-                                    spec.conj_b, prefer_packed);
+        blis_contraction<ValueType>(plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor),
+                                    plan.swap_ab ? spec.conj_b : spec.conj_a, plan.swap_ab ? spec.conj_a : spec.conj_b, prefer_packed);
         return true;
     } else {
         ProfileAnnotate("packed_gemm_skip", "invalid_topology");

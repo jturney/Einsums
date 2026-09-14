@@ -91,7 +91,52 @@ struct PackingPlan {
     /// be skipped: a synthetic stride of 0 maps to invalid leading
     /// dimensions there. The tiled/block scatter paths handle it naturally.
     bool synthetic{false};
+
+    /// True when this plan describes the contraction with the roles of A and B
+    /// exchanged - its M group is B's target group and its K dims are mirrored
+    /// to match (see @ref transposed_plan).
+    ///
+    /// The consumer's only obligation is to feed the packers B where the plan
+    /// says A, and to swap the conjugation flags with them. Everything else the
+    /// plan says is already stated in the exchanged roles.
+    bool swap_ab{false};
 };
+
+/// @brief The same contraction with the roles of M and N exchanged.
+///
+/// C[m, n] = Sum_k A[m, k] B[k, n] and C[n, m] = Sum_k B[n, k] A[k, m] are one
+/// contraction written two ways, so a caller that swaps the operands along with
+/// the plan computes exactly the same C. Everything a packing kernel reads is
+/// mirrored: the M group becomes the N group in both the packing operand and in
+/// C, and each side's link dims follow the operand they belong to.
+///
+/// This exists because the tile kernel is not symmetric in m and n. It holds
+/// its accumulators as MR-tall vectors, so a C whose consecutive m coordinates
+/// are adjacent in memory is a vector store while any other C is MR*NR scalar
+/// stores; the scatter wants the same direction for the same reason. A
+/// contraction whose unit-stride C index reaches C through B has that direction
+/// in the N group, where no loop order can use it - unless the two roles are
+/// exchanged, which is what this returns.
+///
+/// The batch dims are mirrored too, so the returned plan stands on its own; the
+/// caller that swaps mid-contraction has already applied the batch offsets.
+inline PackingPlan transposed_plan(PackingPlan const &plan) {
+    PackingPlan t = plan;
+    t.m_dims      = plan.n_dims;
+    t.n_dims      = plan.m_dims;
+    t.c_m_dims    = plan.c_n_dims;
+    t.c_n_dims    = plan.c_m_dims;
+    t.k_dims_in_a = plan.k_dims_in_b;
+    t.k_dims_in_b = plan.k_dims_in_a;
+    t.M_total     = plan.N_total;
+    t.N_total     = plan.M_total;
+    t.swap_ab     = !plan.swap_ab;
+    for (auto &bds : t.batch_dims) {
+        std::swap(bds.a_pos, bds.b_pos);
+        std::swap(bds.a_stride, bds.b_stride);
+    }
+    return t;
+}
 
 // ---------------------------------------------------------------------------
 // CPU vector configuration
@@ -767,10 +812,11 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
             // block as a multiple of X exactly so that this holds.
             bool const    whole  = (mc_start % X == 0) && (mc_len % X == 0) && (X % kW == 0) && (MR % kW == 0);
             int64_t const x_step = m_dims.back().tensor_stride;
+            int64_t const x_end  = std::min(X, mc_len);
             for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
                 int64_t const k_offset = k_offsets[static_cast<size_t>(k_local)];
                 T            *Apk      = Ap + k_local * MR;
-                for (int64_t x0 = 0; x0 < std::min(X, mc_len); x0 += kW) {
+                for (int64_t x0 = 0; x0 < x_end; x0 += kW) {
                     int64_t const x1 = std::min(x0 + kW, X);
                     if (whole) {
                         for (int64_t u = 0; u < u_rows; ++u) {
