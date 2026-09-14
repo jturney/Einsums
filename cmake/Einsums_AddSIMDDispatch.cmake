@@ -205,6 +205,13 @@ function(einsums_add_simd_dispatch_sources out_var)
       set_source_files_properties("${_wrapper}" PROPERTIES COMPILE_OPTIONS "${_flags}")
     endif()
 
+    # A rung TU is compiled at its own -march, so it can never share the
+    # project's baseline precompiled header: GCC rejects it with
+    #   warning: ... .gch: created and used with differing settings of '-march='
+    # and the TU re-parses the headers anyway. Opting out makes that explicit
+    # and silences a warning that is inherent rather than fixable.
+    set_source_files_properties("${_wrapper}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+
     list(APPEND _sources "${_wrapper}")
     string(TOUPPER "${_rung}" _rung_upper)
     list(APPEND _definitions "EINSUMS_SIMD_HAS_RUNG_${_rung_upper}=1")

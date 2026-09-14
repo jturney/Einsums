@@ -290,59 +290,6 @@ einsums_option(
   "Enabled precompiled headers for certain build targets (experimental) (default: OFF)" OFF ADVANCED
   CATEGORY "Build Targets"
 )
-if(EINSUMS_WITH_PRECOMPILED_HEADERS)
-  set(EINSUMS_WITH_PRECOMPILED_HEADERS_INTERNAL ON)
-
-  # PCH target for library modules (OBJECT library)
-  add_library(einsums_precompiled_headers OBJECT libs/src/dummy.cpp)
-  target_link_libraries(
-    einsums_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags
-  )
-  target_precompile_headers(
-    einsums_precompiled_headers
-    PRIVATE
-    # Standard library headers used across most modules
-    <algorithm>
-    <complex>
-    <cstddef>
-    <cstdint>
-    <functional>
-    <memory>
-    <string>
-    <string_view>
-    <tuple>
-    <type_traits>
-    <utility>
-    <vector>
-    # fmt (used via spdlog/logging throughout)
-    <fmt/format.h>
-  )
-  set_target_properties(einsums_precompiled_headers PROPERTIES FOLDER "Core")
-
-  # PCH target for test/example executables
-  add_executable(einsums_exe_precompiled_headers libs/src/dummy_main.cpp)
-  target_link_libraries(
-    einsums_exe_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags
-  )
-  target_precompile_headers(
-    einsums_exe_precompiled_headers
-    PRIVATE
-    <algorithm>
-    <complex>
-    <cstddef>
-    <cstdint>
-    <functional>
-    <memory>
-    <string>
-    <string_view>
-    <tuple>
-    <type_traits>
-    <utility>
-    <vector>
-    <fmt/format.h>
-  )
-  set_target_properties(einsums_exe_precompiled_headers PROPERTIES FOLDER "Core")
-endif()
 
 # ##################################################################################################
 einsums_option(
@@ -928,6 +875,78 @@ set(EINSUMS_WITH_TARGET_ARCHITECTURE
 include(Einsums_SetupFmt)
 include(Einsums_SetupCatch)
 include(Einsums_SetupHDF5)
+
+# Precompiled headers are defined HERE, after every setup module, not near the
+# top of this file. A PCH is only used by a translation unit whose compile
+# settings match it exactly, and the settings are not final until the setup
+# modules have run: Einsums_SetupFmt turns CMAKE_POSITION_INDEPENDENT_CODE on
+# (so executables get -fPIE) and Einsums_SetupHDF5 brings _FILE_OFFSET_BITS=64
+# and friends in through tgt::hdf5. Defined before them, the PCH targets missed
+# both, and GCC discarded the result in 413 of 454 consumers with
+#   warning: ... .gch: not used because '_FILE_OFFSET_BITS' is defined
+#   warning: ... .gch: created and used with different settings of '-fpie'
+# - the PCH cost its own build and returned nothing.
+if(EINSUMS_WITH_PRECOMPILED_HEADERS)
+  set(EINSUMS_WITH_PRECOMPILED_HEADERS_INTERNAL ON)
+
+  # PCH target for library modules (OBJECT library)
+  add_library(einsums_precompiled_headers OBJECT libs/src/dummy.cpp)
+  target_link_libraries(
+    einsums_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags
+  )
+  if(TARGET tgt::hdf5)
+    target_link_libraries(einsums_precompiled_headers PRIVATE tgt::hdf5)
+  endif()
+  target_precompile_headers(
+    einsums_precompiled_headers
+    PRIVATE
+    # Standard library headers used across most modules
+    <algorithm>
+    <complex>
+    <cstddef>
+    <cstdint>
+    <functional>
+    <memory>
+    <string>
+    <string_view>
+    <tuple>
+    <type_traits>
+    <utility>
+    <vector>
+    # fmt (used via spdlog/logging throughout)
+    <fmt/format.h>
+  )
+  set_target_properties(einsums_precompiled_headers PROPERTIES FOLDER "Core")
+
+  # PCH target for test/example executables
+  add_executable(einsums_exe_precompiled_headers libs/src/dummy_main.cpp)
+  target_link_libraries(
+    einsums_exe_precompiled_headers PRIVATE einsums_base_libraries einsums_private_flags
+  )
+  if(TARGET tgt::hdf5)
+    target_link_libraries(einsums_exe_precompiled_headers PRIVATE tgt::hdf5)
+  endif()
+  target_precompile_headers(
+    einsums_exe_precompiled_headers
+    PRIVATE
+    <algorithm>
+    <complex>
+    <cstddef>
+    <cstdint>
+    <functional>
+    <memory>
+    <string>
+    <string_view>
+    <tuple>
+    <type_traits>
+    <utility>
+    <vector>
+    <fmt/format.h>
+  )
+  set_target_properties(einsums_exe_precompiled_headers PROPERTIES FOLDER "Core")
+endif()
+
+
 include(Einsums_SetupSpdlog)
 include(Einsums_SetupAllocator)
 
