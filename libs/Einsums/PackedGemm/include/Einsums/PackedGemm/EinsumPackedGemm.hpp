@@ -352,6 +352,17 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
     }
 }
 
+/// Bytes a C run must cover before the write-back streams it.
+///
+/// Two cache lines. Swept over 1, 2, 4, 8 and 16 lines on intensli and ccsd_t:
+/// ccsd_t is flat throughout, and intensli single is 0.978x / 0.984x / 0.945x /
+/// 0.942x / 0.954x of TBLIS, so 2 is the peak and 16 is clearly bad (it also
+/// costs intensli double, 1.110x -> 1.039x). The first cut of this shipped 4 on
+/// the reasoning that a 192-byte run wastes too much of itself on the partial
+/// lines at its ends; the measurement says otherwise, and those rows do want
+/// streaming.
+inline constexpr int64_t kStreamRunBytes = 2 * 64;
+
 /// @brief Whether this contraction should be packed with the roles of A and B
 ///        exchanged, i.e. as C^T = B^T A^T.
 ///
@@ -1302,7 +1313,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // `abcd-ebad-ce` has Fm = 72 against MC = 64 and measured -9.4%,
             // while the same change is worth +13% to +15% on the rows whose MC
             // already spans the segment.
-            if (fm > 1 && (plan.c_n_dims.back().tensor_stride == fm || fm * static_cast<int64_t>(sizeof(ValueType)) >= 4 * 64)) {
+            if (fm > 1 && (plan.c_n_dims.back().tensor_stride == fm || fm * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes)) {
                 int64_t const step = std::lcm<int64_t, int64_t>(fm, MR);
                 if (step <= MC_blk) {
                     MC_blk = (MC_blk / step) * step;
@@ -1399,7 +1410,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // ends of each run are partial and keep their fetch, which is why a run
         // of one or two lines is not worth the block's L2 round trip.
         bool const blk_runs_stream =
-            plan.c_m_dims.back().tensor_stride == 1 && blk_m_fast * static_cast<int64_t>(sizeof(ValueType)) >= 4 * 64;
+            plan.c_m_dims.back().tensor_stride == 1 && blk_m_fast * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes;
 
         // The NC loop is the parallel loop, but only when there is enough work to
         // pay for the region. Entering and leaving one costs a fork/join barrier
@@ -1913,7 +1924,19 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             for (int64_t nb = 0; nb < nc_len; nb += nb_len) {
                                 int64_t const nb_cur  = std::min(nb_len, nc_len - nb);
                                 int64_t const jr_base = nb / NR;
-                                tls_Ct.assign(static_cast<size_t>(mc_len) * static_cast<size_t>(nb_cur), ValueType{0});
+                                // Pad the block's leading dimension off a cache-set
+                                // boundary. Columns sit cb_ld apart, so a cb_ld that
+                                // is a large power-of-two multiple maps them all onto
+                                // a fraction of the sets: at MC = 384 doubles the
+                                // stride is 3072 bytes = 48 lines, and against L1's
+                                // 64 sets that is gcd(48, 64) = 16, a quarter of the
+                                // cache. Two of the six ccsd_t rows whose MC is
+                                // raised to 384 collapsed to half speed because of
+                                // it, and WHICH two moved with the heap layout.
+                                int64_t const cb_ld = mc_len + ((mc_len * static_cast<int64_t>(sizeof(ValueType))) % 512 == 0
+                                                                    ? 64 / static_cast<int64_t>(sizeof(ValueType))
+                                                                    : 0);
+                                tls_Ct.assign(static_cast<size_t>(cb_ld) * static_cast<size_t>(nb_cur), ValueType{0});
                                 ValueType *Cb = tls_Ct.data();
 
                                 // Which of the two packed blocks the tile loops keep
@@ -1946,7 +1969,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                             int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nb_cur - jr * NR);
                                             micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
                                                        Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
-                                                       Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
+                                                       Cb + ir * MR + jr * NR * cb_ld, 1, cb_ld);
                                         }
                                     }
                                 } else {
@@ -1956,7 +1979,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                             int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
                                             micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
                                                        Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
-                                                       Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
+                                                       Cb + ir * MR + jr * NR * cb_ld, 1, cb_ld);
                                         }
                                     }
                                 }
@@ -1982,17 +2005,18 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                                 // shorter than a few lines cannot fill a
                                                 // write-combining buffer, so streaming it would pay
                                                 // a partial write and keep the fetch.
-                                                if (may_stream_c && store_c && span * static_cast<int64_t>(sizeof(ValueType)) >= 4 * 64 &&
+                                                if (may_stream_c && store_c &&
+                                                    span * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes &&
                                                     stream_run_ok(dst, run_m)) {
                                                     for (int64_t q = 0; q < run_n; ++q) {
-                                                        stream_copy(dst + q * blk_m_fast, Cb + (jj + q) * mc_len + pos, run_m);
+                                                        stream_copy(dst + q * blk_m_fast, Cb + (jj + q) * cb_ld + pos, run_m);
                                                     }
                                                     streamed_c = true;
                                                     jj += run_n;
                                                     continue;
                                                 }
                                                 for (int64_t q = 0; q < run_n; ++q) {
-                                                    ValueType const *s = Cb + (jj + q) * mc_len + pos;
+                                                    ValueType const *s = Cb + (jj + q) * cb_ld + pos;
                                                     ValueType       *d = dst + q * blk_m_fast;
                                                     if (store_c) {
                                                         std::copy(s, s + run_m, d);
@@ -2010,7 +2034,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                         for (int64_t j = 0; j < nb_cur; ++j) {
                                             ValueType *dst =
                                                 C_data + c_m_offsets[static_cast<size_t>(pos)] + c_n_offsets[static_cast<size_t>(nb + j)];
-                                            ValueType const *s = Cb + j * mc_len + pos;
+                                            ValueType const *s = Cb + j * cb_ld + pos;
                                             if (store_c) {
                                                 std::copy(s, s + run_m, dst);
                                             } else {
@@ -2026,14 +2050,15 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
                                 for (int64_t j = 0; j < nb_cur; ++j) {
                                     int64_t const    n_off = c_n_offsets[static_cast<size_t>(nb + j)];
-                                    ValueType const *src   = Cb + j * mc_len;
+                                    ValueType const *src   = Cb + j * cb_ld;
                                     if (plan.c_m_dims.back().tensor_stride == 1) {
                                         int64_t pos = 0;
                                         while (pos < mc_len) {
                                             int64_t const    run = std::min(blk_m_fast - ((mc + pos) % blk_m_fast), mc_len - pos);
                                             ValueType       *dst = C_data + c_m_offsets[static_cast<size_t>(pos)] + n_off;
                                             ValueType const *s   = src + pos;
-                                            if (may_stream_c && store_c && run * static_cast<int64_t>(sizeof(ValueType)) >= 4 * 64 &&
+                                            if (may_stream_c && store_c &&
+                                                run * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes &&
                                                 stream_run_ok(dst, run)) {
                                                 stream_copy(dst, s, run);
                                                 streamed_c = true;
