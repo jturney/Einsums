@@ -876,6 +876,33 @@ include(Einsums_SetupFmt)
 include(Einsums_SetupCatch)
 include(Einsums_SetupHDF5)
 
+# HDF5's imported target carries these, and it reaches most - but not all -
+# modules transitively. That split is worth closing for two reasons.
+#
+# _FILE_OFFSET_BITS=64 and _LARGEFILE_SOURCE change the width of off_t and the
+# ABI of everything that takes one. Applying them to 486 translation units and
+# not to the other 53, all linked into ONE shared library, is an inconsistency
+# that happens to be harmless on 64-bit Linux (off_t is already 64-bit) and
+# would not be elsewhere. Uniform is simply correct.
+#
+# It also lets every module share one precompiled header. A PCH is discarded by
+# any TU whose macros differ from it, and before this the low-level modules that
+# do not use HDF5 - Assertion, Config, Logging, Print, Version, HPTT, Profile -
+# were the ones left out.
+#
+# Directory scope, NOT einsums_base_libraries: that target is exported
+# (see install(TARGETS einsums_base_libraries ...) below), so definitions placed
+# on it would be inherited by every downstream consumer of the installed
+# package. This is a property of how einsums is built, not of its interface.
+#
+# The list mirrors tgt::hdf5's INTERFACE_COMPILE_DEFINITIONS. It is duplicated
+# rather than queried, but it is self-checking: the PCH targets below link
+# tgt::hdf5 directly, so if HDF5 ever adds a macro this list misses, the PCH
+# stops matching and GCC says so on the next build.
+add_compile_definitions(
+  H5_BUILT_AS_DYNAMIC_LIB _POSIX_C_SOURCE=200809L _LARGEFILE_SOURCE _FILE_OFFSET_BITS=64
+)
+
 # Precompiled headers are defined HERE, after every setup module, not near the
 # top of this file. A PCH is only used by a translation unit whose compile
 # settings match it exactly, and the settings are not final until the setup
