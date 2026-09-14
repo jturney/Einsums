@@ -1924,19 +1924,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             for (int64_t nb = 0; nb < nc_len; nb += nb_len) {
                                 int64_t const nb_cur  = std::min(nb_len, nc_len - nb);
                                 int64_t const jr_base = nb / NR;
-                                // Pad the block's leading dimension off a cache-set
-                                // boundary. Columns sit cb_ld apart, so a cb_ld that
-                                // is a large power-of-two multiple maps them all onto
-                                // a fraction of the sets: at MC = 384 doubles the
-                                // stride is 3072 bytes = 48 lines, and against L1's
-                                // 64 sets that is gcd(48, 64) = 16, a quarter of the
-                                // cache. Two of the six ccsd_t rows whose MC is
-                                // raised to 384 collapsed to half speed because of
-                                // it, and WHICH two moved with the heap layout.
-                                int64_t const cb_ld = mc_len + ((mc_len * static_cast<int64_t>(sizeof(ValueType))) % 512 == 0
-                                                                    ? 64 / static_cast<int64_t>(sizeof(ValueType))
-                                                                    : 0);
-                                tls_Ct.assign(static_cast<size_t>(cb_ld) * static_cast<size_t>(nb_cur), ValueType{0});
+                                tls_Ct.assign(static_cast<size_t>(mc_len) * static_cast<size_t>(nb_cur), ValueType{0});
                                 ValueType *Cb = tls_Ct.data();
 
                                 // Which of the two packed blocks the tile loops keep
@@ -1969,7 +1957,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                             int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nb_cur - jr * NR);
                                             micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
                                                        Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
-                                                       Cb + ir * MR + jr * NR * cb_ld, 1, cb_ld);
+                                                       Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
                                         }
                                     }
                                 } else {
@@ -1979,7 +1967,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                             int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
                                             micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
                                                        Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
-                                                       Cb + ir * MR + jr * NR * cb_ld, 1, cb_ld);
+                                                       Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
                                         }
                                     }
                                 }
@@ -2009,14 +1997,14 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                                     span * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes &&
                                                     stream_run_ok(dst, run_m)) {
                                                     for (int64_t q = 0; q < run_n; ++q) {
-                                                        stream_copy(dst + q * blk_m_fast, Cb + (jj + q) * cb_ld + pos, run_m);
+                                                        stream_copy(dst + q * blk_m_fast, Cb + (jj + q) * mc_len + pos, run_m);
                                                     }
                                                     streamed_c = true;
                                                     jj += run_n;
                                                     continue;
                                                 }
                                                 for (int64_t q = 0; q < run_n; ++q) {
-                                                    ValueType const *s = Cb + (jj + q) * cb_ld + pos;
+                                                    ValueType const *s = Cb + (jj + q) * mc_len + pos;
                                                     ValueType       *d = dst + q * blk_m_fast;
                                                     if (store_c) {
                                                         std::copy(s, s + run_m, d);
@@ -2034,7 +2022,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                         for (int64_t j = 0; j < nb_cur; ++j) {
                                             ValueType *dst =
                                                 C_data + c_m_offsets[static_cast<size_t>(pos)] + c_n_offsets[static_cast<size_t>(nb + j)];
-                                            ValueType const *s = Cb + j * cb_ld + pos;
+                                            ValueType const *s = Cb + j * mc_len + pos;
                                             if (store_c) {
                                                 std::copy(s, s + run_m, dst);
                                             } else {
@@ -2050,7 +2038,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
                                 for (int64_t j = 0; j < nb_cur; ++j) {
                                     int64_t const    n_off = c_n_offsets[static_cast<size_t>(nb + j)];
-                                    ValueType const *src   = Cb + j * cb_ld;
+                                    ValueType const *src   = Cb + j * mc_len;
                                     if (plan.c_m_dims.back().tensor_stride == 1) {
                                         int64_t pos = 0;
                                         while (pos < mc_len) {
