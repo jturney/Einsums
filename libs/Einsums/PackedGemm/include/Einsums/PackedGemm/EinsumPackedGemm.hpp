@@ -1295,7 +1295,14 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // left alone rather than shrunk to one.
         if (needs_c_scatter && !block_strategy && plan.c_m_dims.back().tensor_stride == 1) {
             int64_t const fm = plan.c_m_dims.back().size;
-            if (fm > 1 && plan.c_n_dims.back().tensor_stride == fm) {
+            // Whole segments are wanted whenever the write-back intends to
+            // stream, which is composition OR a run long enough on its own. A
+            // block shorter than the segment cuts every run partial and
+            // misaligned, nothing streams, and the accumulator is pure overhead:
+            // `abcd-ebad-ce` has Fm = 72 against MC = 64 and measured -9.4%,
+            // while the same change is worth +13% to +15% on the rows whose MC
+            // already spans the segment.
+            if (fm > 1 && (plan.c_n_dims.back().tensor_stride == fm || fm * static_cast<int64_t>(sizeof(ValueType)) >= 4 * 64)) {
                 int64_t const step = std::lcm<int64_t, int64_t>(fm, MR);
                 if (step <= MC_blk) {
                     MC_blk = (MC_blk / step) * step;
@@ -1380,6 +1387,19 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         int64_t const blk_n_fast = plan.c_n_dims.back().size;
         bool const    blk_compose =
             plan.c_m_dims.back().tensor_stride == 1 && blk_m_fast > 1 && plan.c_n_dims.back().tensor_stride == blk_m_fast;
+
+        // A contraction that does NOT compose can still be worth the block, if
+        // its m runs alone are long enough to stream.
+        //
+        // Composition is what makes a whole RECTANGLE of C contiguous; it is not
+        // what the write-combining buffers need. They need a run that covers
+        // whole cache lines, and C's own fastest index supplies one whenever its
+        // extent is a few lines: 39 lines on abc-bda-dc double, 9 on
+        // abcd-dbea-ec double, 3 on abcde-ecbfa-fd single. The lines at the two
+        // ends of each run are partial and keep their fetch, which is why a run
+        // of one or two lines is not worth the block's L2 round trip.
+        bool const blk_runs_stream =
+            plan.c_m_dims.back().tensor_stride == 1 && blk_m_fast * static_cast<int64_t>(sizeof(ValueType)) >= 4 * 64;
 
         // The NC loop is the parallel loop, but only when there is enough work to
         // pay for the region. Entering and leaving one costs a fork/join barrier
@@ -1828,7 +1848,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         int64_t const num_jr = (nc_len + NR - 1) / NR;
                         int64_t const num_ir = (mc_len + MR - 1) / MR;
 
-                        if (needs_c_scatter && !scatter_n_inner && blk_compose) {
+                        if (needs_c_scatter && !scatter_n_inner && (blk_compose || blk_runs_stream)) {
                             LabeledSectionInternal("micro-kernel loop, C block");
                             // ---- Cache-resident C block ----
                             //
@@ -2013,6 +2033,13 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                             int64_t const    run = std::min(blk_m_fast - ((mc + pos) % blk_m_fast), mc_len - pos);
                                             ValueType       *dst = C_data + c_m_offsets[static_cast<size_t>(pos)] + n_off;
                                             ValueType const *s   = src + pos;
+                                            if (may_stream_c && store_c && run * static_cast<int64_t>(sizeof(ValueType)) >= 4 * 64 &&
+                                                stream_run_ok(dst, run)) {
+                                                stream_copy(dst, s, run);
+                                                streamed_c = true;
+                                                pos += run;
+                                                continue;
+                                            }
                                             if (store_c) {
                                                 std::copy(s, s + run, dst);
                                             } else {
