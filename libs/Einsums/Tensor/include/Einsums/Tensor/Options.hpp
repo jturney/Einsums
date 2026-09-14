@@ -64,6 +64,22 @@ inline constinit cl::ConfigOption<std::string> Hdf5FileName = cl::config_opt_com
 inline constinit cl::ConfigOption<bool> DeleteHdf5Files =
     cl::config_flag("einsums:delete-hdf5-files", "Clean up the HDF5 scratch file on exit.", "Tensor Options", true);
 
+/// Back large tensor buffers with transparent huge pages.
+///
+/// A tensor's storage is advised to the kernel (`madvise(MADV_HUGEPAGE)` on
+/// Linux) before its first touch, so the zero-fill that follows faults 2 MB
+/// pages instead of 4 KB ones. Off by default, because the effect is
+/// shape-dependent in both directions: on the TCB intensli shapes it was worth
+/// +10 to +23 percent where a contraction's inner walk spans many pages, and
+/// cost 16 to 31 percent where an operand's strides are multiples of 32 KB or
+/// more, since huge pages fix the low 21 address bits and such strides then
+/// alias on the same DRAM channel and L2 sets that 4 KB page placement used to
+/// scatter. Only buffers of a few huge pages or more are advised. No effect off
+/// Linux or when THP is disabled.
+inline constinit cl::ConfigOption<bool> TensorHugePages =
+    cl::config_flag("einsums:tensor:huge-pages", "Back large tensor buffers with transparent huge pages where the OS offers them.",
+                    "Tensor Options", false);
+
 EINSUMS_NAMESPACE_END(option)
 
 EINSUMS_NAMESPACE_BEGIN()

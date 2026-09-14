@@ -14,6 +14,7 @@ set(TensorTests
     TiledTensor.cpp
     TiledRuntimeTensorAlias.cpp
     Tensor.cpp
+    HugePages.cpp
     Disk.cpp)
 
 foreach(test ${TensorTests})

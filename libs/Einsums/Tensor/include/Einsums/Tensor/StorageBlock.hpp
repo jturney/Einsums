@@ -13,9 +13,33 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(detail)
+
+/**
+ * @brief Ask the kernel to back @p bytes at @p begin with transparent huge pages.
+ *
+ * Linux only; a no-op elsewhere, below @ref huge_page_advice_threshold, or
+ * unless `--einsums:tensor:huge-pages` is set. It must run BEFORE the buffer is
+ * first touched: THP is decided at fault time, and memory already faulted in
+ * 4 KB pages only becomes huge if khugepaged gets round to collapsing it.
+ * Failures are ignored, because the advice changes only how the buffer is
+ * paged, never whether it works.
+ */
+EINSUMS_EXPORT void advise_huge_pages(void *begin, size_t bytes) noexcept;
+
+/// The smallest buffer @ref advise_huge_pages advises, in bytes.
+EINSUMS_EXPORT size_t huge_page_advice_threshold() noexcept;
+
+/// True for @c std::vector with any allocator: the one owning container whose
+/// @c reserve hands back untouched memory that the advice can still shape.
+template <typename V>
+struct IsStdVector : std::false_type {};
+template <typename U, typename A>
+struct IsStdVector<std::vector<U, A>> : std::true_type {};
 
 /**
  * @brief Type-erased handle to a tensor's current backing buffer.
@@ -85,11 +109,28 @@ struct StorageBlock final : StorageBase {
         ++generation;
     }
 
+    /// Take the capacity @p elems needs and, while nothing has touched the new
+    /// buffer, advise it for huge pages. Host vectors only: a device vector's
+    /// memory is not the kernel's to page. When the vector already holds
+    /// elements, reserve copies them across before the advice and those pages
+    /// stay small; every tensor constructor calls this on an empty vector.
+    void reserve_owned(size_t elems) {
+        if constexpr (IsStdVector<Vector>::value) {
+            if (elems > owned.capacity()) {
+                owned.reserve(elems);
+                advise_huge_pages(static_cast<void *>(owned.data()), owned.capacity() * sizeof(T));
+            }
+        } else {
+            (void)elems;
+        }
+    }
+
     /// Grow or shrink self-allocated storage. Detaches nothing: calling this
     /// while @ref external is set would leave two live storage modes, which the
     /// tensor types prevent by releasing first.
     void resize_owned(size_t elems) {
         ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
+        reserve_owned(elems);
         owned.resize(elems);
         ProfileMemAlloc(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
         refresh();
@@ -99,7 +140,15 @@ struct StorageBlock final : StorageBase {
     /// deep-copying tensor copy constructor, which gets a block of its own.
     void copy_owned_from(Vector const &src) {
         ProfileMemFree(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));
-        owned    = src;
+        if constexpr (IsStdVector<Vector>::value) {
+            // Land the copy in advised memory: assign() reuses the capacity
+            // reserve_owned just shaped, where `owned = src` may allocate anew.
+            owned.clear();
+            reserve_owned(src.size());
+            owned.assign(src.begin(), src.end());
+        } else {
+            owned = src;
+        }
         external = nullptr;
         external_owner.reset();
         ProfileMemAlloc(static_cast<int64_t>(owned.size()) * static_cast<int64_t>(sizeof(T)));

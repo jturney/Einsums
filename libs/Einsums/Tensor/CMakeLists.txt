@@ -15,6 +15,7 @@ set(TensorHeaders
     Einsums/Tensor/PendingInit.hpp
     Einsums/Tensor/PooledTensor.hpp
     Einsums/Tensor/RuntimeTensor.hpp
+    Einsums/Tensor/StorageBlock.hpp
     Einsums/Tensor/SymmetryOps.hpp
     Einsums/Tensor/TiledTensor.hpp
     Einsums/Tensor/TiledRuntimeTensor.hpp
@@ -22,7 +23,7 @@ set(TensorHeaders
     Einsums/Tensor/ModuleVars.hpp
 )
 
-set(TensorSources TensorDefs.cpp Requirements.cpp InitModule.cpp ModuleVars.cpp)
+set(TensorSources TensorDefs.cpp Requirements.cpp InitModule.cpp ModuleVars.cpp StorageBlock.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(

@@ -69,6 +69,7 @@ EINSUMS_EXPORT int register_Einsums_Tensor_options() {
     cl::register_option(option::ScratchDir);
     cl::register_option(option::Hdf5FileName);
     cl::register_option(option::DeleteHdf5Files);
+    cl::register_option(option::TensorHugePages);
     return 0;
 }
 

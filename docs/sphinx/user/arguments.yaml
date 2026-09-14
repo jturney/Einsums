@@ -534,6 +534,18 @@
     Clean up the HDF5 scratch file on exit. On by default; keep the file for inspection with
     ``--einsums:no-delete-hdf5-files``.
 
+"einsums:tensor:huge-pages":
+  added: "2.0.0"
+  body: |
+    Back large tensor buffers with transparent huge pages. Off by default. When set, on Linux, a
+    tensor's storage is advised with ``madvise(MADV_HUGEPAGE)`` before it is first touched, so buffers
+    of a few megabytes or more fault in 2 MB pages instead of 4 KB ones; the option does nothing
+    elsewhere, or when the kernel's THP policy is ``never``. It helps contractions whose inner walk
+    through an operand spans many pages, which otherwise take a TLB miss on every step. It hurts
+    operands whose strides are multiples of 32 KB or more: huge pages fix the low 21 address bits,
+    so those strides alias on the same DRAM channel and cache sets that 4 KB page placement used to
+    scatter. Measure before turning it on for a workload.
+
 "einsums:debug:install-signal-handlers":
   added: "1.0.0"
   changed:
