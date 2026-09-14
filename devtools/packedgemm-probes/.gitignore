@@ -1,0 +1,11 @@
+# Built probes: each is compiled from the .cpp beside it, see README.md. They
+# are 1.3 MB apiece and go stale the moment the library's ABI moves, so they
+# are never committed.
+*
+!.gitignore
+!*.cpp
+!*.sh
+!*.py
+!*.md
+!compile_flags.txt
+!link_libs.txt
