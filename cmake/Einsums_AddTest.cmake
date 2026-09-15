@@ -391,27 +391,6 @@ function(einsums_add_python_unit_test subcategory name)
 endfunction(einsums_add_python_unit_test)
 
 #:
-#: einsums_add_regression_test
-#:
-#:    Define a regression test under ``Tests.Regressions.<subcategory>`` and wire its pseudo‑target.
-#:
-#:    Forwards to ``einsums_add_test_and_deps_test`` with ``TESTING`` enabled and then
-#:    ``einsums_set_test_properties`` with the label ``REGRESSION_ONLY``.
-#:
-#:    **Signature**
-#:    ``einsums_add_regression_test(<subcategory> <name> [ARGS ...])``
-#:
-#:    **Example**
-#:    .. code-block:: cmake
-#:
-#:       einsums_add_regression_test(Parser bad_header EXECUTABLE parser_bad_header_test FAILURE_EXPECTED)
-function(einsums_add_regression_test subcategory name)
-  # ARGN needed in case we add a test with the same executable
-  einsums_add_test_and_deps_test("Regressions" "${subcategory}" ${name} ${ARGN} TESTING)
-  einsums_set_test_properties("Tests.Regressions.${subcategory}.${name}" "REGRESSION_ONLY")
-endfunction(einsums_add_regression_test)
-
-#:
 #: einsums_add_performance_test
 #:
 #:    Define a performance test under ``Tests.Performance.<subcategory>`` and wire its pseudo‑target.

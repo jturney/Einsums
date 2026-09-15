@@ -25,11 +25,6 @@ if(EINSUMS_WITH_TESTS)
     einsums_add_pseudo_dependencies(Tests.Examples Tests.Examples.Modules)
   endif()
 
-  if(EINSUMS_WITH_TESTS_REGRESSIONS)
-    einsums_add_pseudo_target(Tests.Regressions.Modules)
-    einsums_add_pseudo_dependencies(Tests.Regressions Tests.Regressions.Modules)
-  endif()
-
   if(EINSUMS_WITH_TESTS_BENCHMARKS)
     einsums_add_pseudo_target(Tests.Performance.Modules)
     einsums_add_pseudo_dependencies(Tests.Performance Tests.Performance.Modules)

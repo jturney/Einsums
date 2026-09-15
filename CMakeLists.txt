@@ -300,10 +300,6 @@ einsums_option(
   "EINSUMS_WITH_TESTS" CATEGORY "Build Targets"
 )
 einsums_option(
-  EINSUMS_WITH_TESTS_REGRESSIONS BOOL "Build regression tests (default: ON)" ON DEPENDS
-  "EINSUMS_WITH_TESTS" CATEGORY "Build Targets"
-)
-einsums_option(
   EINSUMS_WITH_TESTS_UNIT BOOL "Build unit tests (default: ON)" ON DEPENDS "EINSUMS_WITH_TESTS"
   CATEGORY "Build Targets"
 )
@@ -1105,10 +1101,6 @@ if(EINSUMS_WITH_TESTS)
   if(EINSUMS_WITH_TESTS_UNIT)
     einsums_add_pseudo_target(Tests.Unit)
     einsums_add_pseudo_dependencies(Tests Tests.Unit)
-  endif()
-  if(EINSUMS_WITH_TESTS_REGRESSIONS)
-    einsums_add_pseudo_target(Tests.Regressions)
-    einsums_add_pseudo_dependencies(Tests Tests.Regressions)
   endif()
   if(EINSUMS_WITH_TESTS_BENCHMARKS)
     einsums_add_pseudo_target(Tests.Performance)

@@ -12,14 +12,6 @@ if(EINSUMS_WITH_TESTS)
     add_subdirectory(unit)
   endif()
 
-  if(EINSUMS_WITH_TESTS_REGRESSIONS)
-    einsums_add_pseudo_target(Tests.Regressions.Modules.Einsums.BufferAllocator)
-    einsums_add_pseudo_dependencies(
-      Tests.Regressions.Modules Tests.Regressions.Modules.Einsums.BufferAllocator
-    )
-    add_subdirectory(regressions)
-  endif()
-
   if(EINSUMS_WITH_TESTS_BENCHMARKS)
     einsums_add_pseudo_target(Tests.Performance.Modules.Einsums.BufferAllocator)
     einsums_add_pseudo_dependencies(
