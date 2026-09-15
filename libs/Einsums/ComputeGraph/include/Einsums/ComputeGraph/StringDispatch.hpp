@@ -122,8 +122,14 @@ void string_gemv_mat_vec(ParsedEinsumSpec const & /*parsed*/, T c_pf, OutType *o
  * strides rather than rebuilding an offset per element. Recomputing offsets
  * inside the loop cost this routine roughly 25 ns an element -- on a
  * ``ijab <- ia ; jb`` outer product over a 26-orbital CCSD residual, 0.63 ms for
- * 51 kflop. The iteration order is unchanged, last index fastest, so the
- * summation order and therefore the result are bit-for-bit what they were.
+ * 51 kflop.
+ *
+ * The TARGET axes are then ordered by their step through C and merged where
+ * they compose, so the fastest-moving loop walks C's narrowest stride instead
+ * of whichever index the caller happened to spell last. The link axes keep the
+ * caller's order: the sum accumulates exactly as it did, so the result is
+ * bit-for-bit what it was even though the order C's elements are visited in is
+ * now decided by the strides rather than by the spec.
  */
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
     requires requires {
@@ -303,7 +309,47 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
         }
         return axes;
     };
-    std::vector<Axis> const target_axes = axes_of(target_infos);
+    // Order the TARGET axes for the layout, then merge the ones that compose.
+    //
+    // The odometer below runs its LAST axis fastest, and the axes arrive in the
+    // order the caller spelled C's indices, so the fastest-moving loop walked
+    // C's last axis. Every tensor einsums builds is first-index-fastest - a
+    // 200^3 double has strides 1, 200, 40000 - which makes that the WIDEST
+    // stride in the tensor. A step per element wider than a page is a step the
+    // hardware prefetcher cannot follow, so each element was a demand miss even
+    // when the whole contraction fit in cache.
+    //
+    // Sorting by C's step fixes it, and is layout agnostic rather than a second
+    // hardcoded guess: a row-major operand sorts back to the order this code
+    // always used. C decides it because C is written, and a scattered store
+    // pays read-for-ownership on top of the miss that a scattered load does not.
+    //
+    // Merging then folds any adjacent pair whose steps compose in A, B and C
+    // alike. An elementwise contraction collapses to a single axis, which also
+    // takes `advance` and its carry chain out of the per-element path.
+    //
+    // Only the TARGET axes move. The link axes keep the caller's order, so the
+    // sum still accumulates in the sequence it always did and the result is
+    // bit-for-bit what it was - the iteration order over C changes, but each
+    // element is still visited exactly once and computed from its own fresh sum.
+    auto order_for_layout = [](std::vector<Axis> axes) {
+        std::stable_sort(axes.begin(), axes.end(), [](Axis const &l, Axis const &r) { return l.c_step > r.c_step; });
+
+        while (axes.size() >= 2) {
+            Axis const inner = axes.back();
+            Axis const outer = axes[axes.size() - 2];
+            if (outer.a_step != inner.a_step * inner.extent || outer.b_step != inner.b_step * inner.extent ||
+                outer.c_step != inner.c_step * inner.extent) {
+                break;
+            }
+            axes.pop_back();
+            axes.back() =
+                Axis{.extent = inner.extent * outer.extent, .a_step = inner.a_step, .b_step = inner.b_step, .c_step = inner.c_step};
+        }
+        return axes;
+    };
+
+    std::vector<Axis> const target_axes = order_for_layout(axes_of(target_infos));
     std::vector<Axis> const link_axes   = axes_of(link_infos);
 
     // Step an odometer whose LAST axis runs fastest, keeping the running offsets
