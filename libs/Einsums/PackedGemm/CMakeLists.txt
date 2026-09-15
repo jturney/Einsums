@@ -13,7 +13,6 @@ set(PackedGemmHeaders
 )
 
 set(PackedGemmSources
-    BlisContraction.cpp
     ContractionKey.cpp
     InitModule.cpp
     MicroKernelDispatch.cpp

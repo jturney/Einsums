@@ -163,8 +163,7 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
 
     auto const batched = [&] {
         for (size_t n = 0; n < NT; ++n) {
-            pg::blis_contraction<double>(plan, Cs2[n].data(), pg::make_operand_view<double>(As[n]), pg::make_operand_view<double>(Bs[n]),
-                                         1.0, 1.0);
+            pg::blis_contraction<double>(plan, Cs2[n], As[n], Bs[n], 1.0, 1.0);
         }
     };
 
@@ -219,8 +218,7 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
             pg::fill_strides(p, As[n], Bs[n], Cs4[n]);
             pg::sort_k_dims_for_packing(p);
             pg::coalesce_plan(p);
-            pg::blis_contraction<double>(p, Cs4[n].data(), pg::make_operand_view<double>(As[n]), pg::make_operand_view<double>(Bs[n]), 1.0,
-                                         1.0);
+            pg::blis_contraction<double>(p, Cs4[n], As[n], Bs[n], 1.0, 1.0);
         }
     };
 
@@ -229,8 +227,7 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
             pg::ContractionKey const k   = build_key(n, Cs3[n]);
             pg::PackingPlan const   *hit = pg::PackingPlanCache::instance().lookup(k);
             pg::PackingPlan const   &p   = (hit != nullptr) ? *hit : plan; // new: used in place, no copy
-            pg::blis_contraction<double>(p, Cs3[n].data(), pg::make_operand_view<double>(As[n]), pg::make_operand_view<double>(Bs[n]), 1.0,
-                                         1.0);
+            pg::blis_contraction<double>(p, Cs3[n], As[n], Bs[n], 1.0, 1.0);
         }
     };
 
