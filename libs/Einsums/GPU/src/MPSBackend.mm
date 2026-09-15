@@ -21,6 +21,11 @@
 #include <mutex>
 #include <unordered_map>
 
+// sysconf(). getpagesize() used to arrive transitively through Foundation, but
+// POSIX.1-2008 removed it and _POSIX_C_SOURCE=200809L makes the macOS 27 SDK
+// honour that, so the page size comes from sysconf instead.
+#include <unistd.h>
+
 EINSUMS_NAMESPACE_BEGIN(gpu::mps)
 
 // ===========================================================================
@@ -159,7 +164,7 @@ id<MTLBuffer> wrap_or_copy(void const *ptr, size_t bytes, bool /*is_const*/) {
         return buf;
 
     // Try zero-copy wrapping (requires page-aligned pointer and page-aligned length).
-    NSUInteger pageSize = getpagesize();
+    NSUInteger pageSize = static_cast<NSUInteger>(::sysconf(_SC_PAGESIZE));
     bool aligned = (reinterpret_cast<uintptr_t>(ptr) % pageSize) == 0;
     // Round up length to page boundary for newBufferWithBytesNoCopy.
     NSUInteger alignedLen = ((bytes + pageSize - 1) / pageSize) * pageSize;

@@ -903,6 +903,17 @@ add_compile_definitions(
   H5_BUILT_AS_DYNAMIC_LIB _POSIX_C_SOURCE=200809L _LARGEFILE_SOURCE _FILE_OFFSET_BITS=64
 )
 
+# _POSIX_C_SOURCE tells Darwin's headers to expose the POSIX surface and hide
+# everything else, which costs us the BSD extensions the library actually uses:
+# Dl_info, MAP_ANONYMOUS, and the u_short and u_int that sys/sysctl.h itself is
+# written in. The macOS 26 SDK and earlier left them visible anyway; the 27 SDK
+# enforces it, and the build stops in Config, BufferAllocator and Comm.
+# _DARWIN_C_SOURCE is the documented way to ask for both, and it widens what the
+# headers declare without changing what anything compiles to.
+if(APPLE)
+  add_compile_definitions(_DARWIN_C_SOURCE)
+endif()
+
 # Precompiled headers are defined HERE, after every setup module, not near the
 # top of this file. A PCH is only used by a translation unit whose compile
 # settings match it exactly, and the settings are not final until the setup
