@@ -120,9 +120,11 @@ void bench_one(std::vector<std::string> const &a_idx, std::vector<std::string> c
 }
 
 // (occupied, virtual) pairs spanning the CCSD toy model up to a production-sized
-// one: 16 output elements through 14.7M, spanning the crossover in both directions.
-constexpr std::array<std::pair<size_t, size_t>, 9> kSizes{
-    {{2, 2}, {4, 4}, {6, 8}, {8, 12}, {10, 16}, {20, 24}, {30, 32}, {40, 48}, {60, 64}}};
+// one: 16 output elements through 14.7M, spanning the crossover in both
+// directions. The cluster at 576/625/784/1296 brackets the threshold itself -
+// the original grid jumped 256 -> 2304 and stepped straight over it.
+constexpr std::array<std::pair<size_t, size_t>, 13> kSizes{
+    {{2, 2}, {4, 4}, {4, 6}, {5, 5}, {4, 7}, {6, 6}, {6, 8}, {8, 12}, {10, 16}, {20, 24}, {30, 32}, {40, 48}, {60, 64}}};
 
 } // namespace
 

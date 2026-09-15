@@ -37,6 +37,10 @@
 
 EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
+/// Output elements below which an outer product is left to the generic loop.
+/// Measured, not chosen; see the decline site for the data and its caveats.
+inline constexpr int64_t kOuterProductFloor = 768;
+
 // ---------------------------------------------------------------------------
 // Compile-time helpers
 // ---------------------------------------------------------------------------
@@ -2699,8 +2703,25 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // Note for anyone re-deriving this: what the loser is matters. Below
         // rank-3 output an outer product never reaches here - StringDispatch's
         // GER path takes it first - so the alternative being measured against is
-        // always the generic loop, which runs at a flat ~2.2 ns an element.
-        if (outer_shaped && plan.M_total * plan.N_total < (int64_t{1} << 12)) {
+        // always the generic loop. That is why this number is not a constant of
+        // the engine: it moves whenever the generic loop does.
+        //
+        // Re-derived 2026-09-15 on the Zen+ box, after the generic loops were
+        // ordered for the layout. An outer product has no link index, so all of
+        // its target axes coalesce into one flat sweep - the single biggest case
+        // that change helps - and the crossover moved by a factor of five:
+        //
+        //   elements     256    576    625    784    900    1296   2304
+        //   speedup     0.40x  0.96x  0.94x  1.18x  1.22x  1.18x  1.28x
+        //
+        // (three runs, both shapes, membind + pinned). Generic wins at or below
+        // 625; packed wins from 784 up. 768 sits in the gap. The old 4096 was
+        // declining shapes the packed path wins by about 1.2x.
+        //
+        // The two measurements are from different machines, and the crossover
+        // depends on the ratio of two implementations rather than on either one,
+        // so it is genuinely per-target. 4096 may still be right on the M4.
+        if (outer_shaped && plan.M_total * plan.N_total < kOuterProductFloor) {
             ProfileAnnotate("packed_gemm_skip", "defer_small_outer_to_generic");
             remember(key, nullptr);
             return false;
