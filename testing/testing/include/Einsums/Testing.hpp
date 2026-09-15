@@ -15,8 +15,10 @@
 #if defined(EINSUMS_WINDOWS)
 #    define CATCH_CONFIG_WINDOWS_SEH
 #endif
+#include <algorithm>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers_templated.hpp>
+#include <cmath>
 #include <type_traits>
 
 #include <catch2/catch_all.hpp>
@@ -140,12 +142,19 @@ template <typename TestType>
 class WithinRelMatcher : public Catch::Matchers::MatcherGenericBase {
   public:
     WithinRelMatcher(TestType value, double eps) : _target{value}, _eps{eps} {}
+
+    // The tolerance is relative to the target, with a floor of one. A pure
+    // relative test is meaningless once the target approaches zero: the
+    // rounding in a sum scales with the terms that went into it, not with the
+    // result, so a contraction that cancels to 1e-6 still carries the absolute
+    // error of its operands and fails a relative check it has no way to meet.
+    // The floor is what the zero target has always been compared against, so
+    // this is the same rule either side of zero rather than a strict relative
+    // test that becomes an absolute one the instant the target lands exactly on
+    // it.
     bool match(TestType value) const {
-        if (_target == RemoveComplexT<std::remove_cvref_t<TestType>>{0.0}) {
-            return std::abs(value) <= _eps;
-        } else {
-            return std::abs((value - _target) / _target) <= _eps;
-        }
+        auto const scale = std::max(static_cast<double>(std::abs(_target)), 1.0);
+        return static_cast<double>(std::abs(value - _target)) <= _eps * scale;
     }
 
   protected:
@@ -175,6 +184,46 @@ template <typename TestType>
 // NOLINTNEXTLINE
 WithinRelMatcher<std::remove_cvref_t<TestType>> CheckWithinRel(TestType reference, double tolerance = ::einsums::tolerance<TestType>()) {
     return WithinRelMatcher(reference, tolerance);
+}
+
+// Compares against a caller-supplied magnitude rather than against the result.
+// A sum carries the rounding of the terms that went into it, so a contraction
+// whose terms are order one is accurate to the tolerance times one no matter
+// how completely those terms cancel. Tests that compute a reference sum can
+// accumulate the magnitude of the terms alongside it and hand that in, which
+// keeps the check as strict as the arithmetic allows without turning a
+// cancellation into a failure.
+template <typename TestType>
+class WithinMagnitudeMatcher : public Catch::Matchers::MatcherGenericBase {
+  public:
+    WithinMagnitudeMatcher(TestType value, double magnitude, double eps) : _target{value}, _magnitude{magnitude}, _eps{eps} {}
+
+    bool match(TestType value) const { return static_cast<double>(std::abs(value - _target)) <= _eps * std::max(_magnitude, 1.0); }
+
+  protected:
+    std::string describe() const override {
+        if constexpr (IsComplexV<std::remove_cvref_t<TestType>>) {
+            return "and " + Catch::StringMaker<RemoveComplexT<std::remove_cvref_t<TestType>>>::convert(_target.real()) +
+                   ((_target.imag() < 0) ? "-" : "+") +
+                   Catch::StringMaker<RemoveComplexT<std::remove_cvref_t<TestType>>>::convert(std::abs(_target.imag())) +
+                   "i differ by at most " + Catch::StringMaker<double>::convert(_eps * std::max(_magnitude, 1.0));
+        } else {
+            return "and " + Catch::StringMaker<std::remove_cvref_t<TestType>>::convert(_target) + " differ by at most " +
+                   Catch::StringMaker<double>::convert(_eps * std::max(_magnitude, 1.0));
+        }
+    }
+
+  private:
+    TestType _target;
+    double   _magnitude;
+    double   _eps;
+};
+
+template <typename TestType>
+// NOLINTNEXTLINE
+WithinMagnitudeMatcher<std::remove_cvref_t<TestType>> CheckWithinMagnitude(TestType reference, double magnitude,
+                                                                           double tolerance = ::einsums::tolerance<TestType>()) {
+    return WithinMagnitudeMatcher<std::remove_cvref_t<TestType>>(reference, magnitude, tolerance);
 }
 
 EINSUMS_NAMESPACE_END()
