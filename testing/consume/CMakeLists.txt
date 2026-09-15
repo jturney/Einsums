@@ -6,7 +6,11 @@
 cmake_minimum_required(VERSION 3.24)
 project(sample)
 
-find_package(Einsums 1 REQUIRED)
+# The major version this tree produces. The package is generated with
+# COMPATIBILITY AnyNewerVersion, so asking for an older major still
+# resolves and the test would pass against an install this tree did not
+# build, which is the one thing it exists to catch.
+find_package(Einsums 2 REQUIRED)
 
 include(CMakePrintHelpers)
 cmake_print_properties(
