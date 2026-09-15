@@ -318,16 +318,6 @@ einsums_option(
   CATEGORY "Build Targets"
 )
 einsums_option(
-  EINSUMS_WITH_TESTS_EXTERNAL_BUILD
-  BOOL
-  "Build external CMake build tests (default: ON)"
-  ON
-  ADVANCED
-  DEPENDS
-  "EINSUMS_WITH_TESTS"
-  CATEGORY "Build Targets"
-)
-einsums_option(
   EINSUMS_WITH_TESTS_EXAMPLES
   BOOL
   "Add examples as tests (default: ON)"
@@ -335,16 +325,6 @@ einsums_option(
   DEPENDS
   "EINSUMS_WITH_TESTS;EINSUMS_WITH_EXAMPLES"
   ADVANCED
-  CATEGORY "Build Targets"
-)
-einsums_option(
-  EINSUMS_WITH_COMPILE_ONLY_TESTS BOOL
-  "Create build system support for compile time only tests (default: ON)" ON DEPENDS
-  "EINSUMS_WITH_TESTS" CATEGORY "Build Targets"
-)
-einsums_option(
-  EINSUMS_WITH_FAIL_COMPILE_TESTS BOOL
-  "Create build system support for fail compile tests (default: ON)" ON DEPENDS "EINSUMS_WITH_TESTS"
   CATEGORY "Build Targets"
 )
 
