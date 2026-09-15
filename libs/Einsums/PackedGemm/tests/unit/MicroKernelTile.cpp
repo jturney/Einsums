@@ -199,11 +199,13 @@ TEMPLATE_TEST_CASE("MicroKernel - blocking follows the contraction shape", "[Pac
 
     // The growth is monotone in K and saturates at the cap.
     {
-        int64_t const big  = 4 * hw.cache.l3 / elem;
-        auto const    near = blocking_for(big, big, base.KC * 2);
-        auto const    far  = blocking_for(big, big, base.KC * BLIS_KC_SPILL_GROWTH * 100);
-        REQUIRE(near.KC >= base.KC);
-        REQUIRE(far.KC >= near.KC);
-        REQUIRE(far.KC == base.KC * BLIS_KC_SPILL_GROWTH);
+        // near and far are macros in the Windows headers, so the K values the
+        // blockings come from name them instead.
+        int64_t const big     = 4 * hw.cache.l3 / elem;
+        auto const    short_k = blocking_for(big, big, base.KC * 2);
+        auto const    long_k  = blocking_for(big, big, base.KC * BLIS_KC_SPILL_GROWTH * 100);
+        REQUIRE(short_k.KC >= base.KC);
+        REQUIRE(long_k.KC >= short_k.KC);
+        REQUIRE(long_k.KC == base.KC * BLIS_KC_SPILL_GROWTH);
     }
 }
