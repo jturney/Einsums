@@ -28,10 +28,12 @@
 /// ``EINSUMS_VERSION_FULL & 0x0000FF == EINSUMS_VERSION_PATCH``
 #define EINSUMS_VERSION_FULL ((EINSUMS_VERSION_MAJOR << 16) | (EINSUMS_VERSION_MINOR << 8) | EINSUMS_VERSION_PATCH)
 
-// clang-format off
-/// Evaluates to the release date of this einsums version in the format YYYYMMDD.
-#define EINSUMS_VERSION_DATE @EINSUMS_VERSION_DATE@
-// clang-format on
+// EINSUMS_VERSION_DATE was defined here from the CMake configure clock. It is
+// gone for the reason given below: it changed this header's content the first
+// time anyone reconfigured on a new UTC day, and this header reaches every
+// translation unit through Config.hpp, so a date rollover recompiled the tree.
+// It described itself as the release date, which the configure clock does not
+// measure; two builds of one commit reported different dates. Nothing read it.
 
 /// Evaluates to the version tag (empty for releases, ``-trunk`` on the
 /// development branch, ``-rcX`` on a release candidate.
