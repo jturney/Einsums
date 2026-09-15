@@ -573,3 +573,58 @@ TEST_CASE("generic_prefactors", "[dispatch][generic]") {
         REQUIRE_THAT(C(i0), Catch::Matchers::WithinRel(C_ref(i0), 0.0001));
     }
 }
+
+// ============================================================================
+// Broadcast output indices must reach the generic algorithm
+// ============================================================================
+
+TEST_CASE("broadcast_output_index_reaches_generic", "[dispatch][generic][broadcast]") {
+    tensor_algebra::detail::AlgorithmChoice alg_choice;
+
+    // Defect: an output index carried by neither operand is a broadcast, and
+    // only the generic algorithm implements one. "ikl <- ij ; jk" nonetheless
+    // satisfied einsum_is_matrix_product, which never inspects l, so the GEMM
+    // route filled C's first slice and left the rest at whatever the prefactor
+    // had scaled them to. The answer was wrong and nothing said so.
+    //
+    // Deterministic operands: the failure was in which route claimed the spec,
+    // not in the arithmetic, so a fixed A and B pin it without a random draw.
+    size_t const di = 2, dj = 3, dk = 4, dl = 3;
+
+    auto A = Tensor<double, 2>("A", di, dj);
+    auto B = Tensor<double, 2>("B", dj, dk);
+    for (size_t i0 = 0; i0 < di; i0++) {
+        for (size_t j0 = 0; j0 < dj; j0++) {
+            A(i0, j0) = 1.0 + static_cast<double>(i0 * dj + j0);
+        }
+    }
+    for (size_t j0 = 0; j0 < dj; j0++) {
+        for (size_t k0 = 0; k0 < dk; k0++) {
+            B(j0, k0) = 1.0 + static_cast<double>(j0 * dk + k0);
+        }
+    }
+
+    // Seeded with a value the contraction never writes, so a slice the engine
+    // skips stays visible instead of being mistaken for a correct zero.
+    auto C = Tensor<double, 3>("C", di, dk, dl);
+    C.set_all(-7.0);
+
+    REQUIRE_NOTHROW(einsum(Indices{i, k, l}, &C, Indices{i, j}, A, Indices{j, k}, B, &alg_choice));
+
+    // No BLAS fast path can carry the broadcast index; the generic loops must
+    // take it.
+    REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+
+    // Every slice along l receives the same matrix product.
+    for (size_t i0 = 0; i0 < di; i0++) {
+        for (size_t k0 = 0; k0 < dk; k0++) {
+            double ref = 0.0;
+            for (size_t j0 = 0; j0 < dj; j0++) {
+                ref += A(i0, j0) * B(j0, k0);
+            }
+            for (size_t l0 = 0; l0 < dl; l0++) {
+                REQUIRE_THAT(C(i0, k0, l0), Catch::Matchers::WithinRel(ref, 1.0e-12));
+            }
+        }
+    }
+}

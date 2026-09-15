@@ -206,6 +206,27 @@ constexpr bool einsum_is_all_hadamard_found(std::tuple<CIndices...> const &, std
 }
 
 /**
+ * @brief Check whether an output index appears in neither input.
+ *
+ * Such an index is a broadcast: every slice along it receives the same
+ * contraction result. The templated path supports that - Einsum3's
+ * "3, l <- 3x4x5 * 4x3x5" pins the semantics - but ONLY the generic algorithm
+ * implements it. Every BLAS fast path computes the slice its own indices
+ * describe and has nowhere to put the broadcast index, so each one has to stand
+ * aside. PackedGemm already refuses these itself (see compute_packing_topology).
+ *
+ * The string path rejects the same spec outright, which is a separate and
+ * deliberate divergence; see test_einsum_rejection_python.py.
+ */
+template <typename... CIndices, typename... AIndices, typename... BIndices>
+constexpr bool einsum_has_broadcast_target(std::tuple<CIndices...> const &, std::tuple<AIndices...> const &,
+                                           std::tuple<BIndices...> const &) {
+    using CminusA  = DifferenceT<std::tuple<CIndices...>, std::tuple<AIndices...>>;
+    using CminusAB = DifferenceT<CminusA, std::tuple<BIndices...>>;
+    return std::tuple_size_v<CminusAB> != 0;
+}
+
+/**
  * @brief Checks to see if the indices passed can be turned into a dot product.
  */
 template <typename... CIndices, typename... AIndices, typename... BIndices>
@@ -1308,10 +1329,18 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
 
     if constexpr (OnlyUseGenericAlgorithm) {
         // Skip to the generic algorithm.
-    } else if constexpr (einsum_is_all_hadamard_found(C_indices, A_indices, B_indices) || !std::is_same_v<CDataType, ADataType> ||
+    } else if constexpr (einsum_is_all_hadamard_found(C_indices, A_indices, B_indices) ||
+                         einsum_has_broadcast_target(C_indices, A_indices, B_indices) || !std::is_same_v<CDataType, ADataType> ||
                          !std::is_same_v<CDataType, BDataType> ||
                          (!IsAlgebraTensorV<AType> || !IsAlgebraTensorV<BType> || (!IsAlgebraTensorV<CType> && !IsScalarV<CType>))) {
         // Mixed datatypes and poorly behaved tensor types go directly to the generic algorithm.
+        //
+        // Broadcast outputs join them, and they are the reason this branch has
+        // teeth: "ikl <- ij ; jk" satisfied einsum_is_matrix_product, which
+        // never inspects l, so the GEMM wrote the first slice of C and left
+        // every other slice at whatever the prefactor had scaled it to - a
+        // wrong answer with no diagnostic. Only the generic algorithm carries
+        // a broadcast index, as a target loop with a zero stride into A and B.
     } else if constexpr (einsum_is_dot_product(C_indices, A_indices, B_indices)) {
         if constexpr (!DryRun) {
             if constexpr (ConjA == ConjB || (!IsComplexV<ADataType> && !IsComplex<BDataType>)) {
