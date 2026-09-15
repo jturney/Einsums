@@ -102,6 +102,67 @@ struct PackingPlan {
     bool swap_ab{false};
 };
 
+/// @brief A tensor operand reduced to what the packed engine actually reads.
+///
+/// The engine needs a data pointer, a rank, and the dims and strides - every
+/// one of which the PackingPlan's flat-index arithmetic already treats as a
+/// runtime value. Taking them as DATA rather than as a tensor TYPE is what lets
+/// @ref blis_contraction be instantiated once per element type instead of once
+/// per (element type, rank, tensor template) combination at every call site.
+///
+/// That is not a small saving. One 189-line test translation unit held 724
+/// instantiations of the engine, 207 KB of generated code, and gcc re-derived
+/// and re-optimized all of them: measured at -O3, 82% of that file's 34.9 s
+/// compile was the optimizer expanding this, against 9% for template
+/// instantiation. Four instantiations now live in libEinsums instead.
+template <typename T>
+struct OperandView {
+    T const             *data{nullptr};
+    int                  rank{0};
+    std::vector<int64_t> dims;
+    std::vector<int64_t> strides;
+
+    [[nodiscard]] int64_t dim(size_t i) const { return dims[i]; }
+    [[nodiscard]] int64_t stride(size_t i) const { return strides[i]; }
+};
+
+/// @brief The operand's rank, whether it is carried in the type or at run time.
+///
+/// TT::Rank exists for BOTH compile-time tensors (Rank = K >= 0) and
+/// runtime-rank tensors (Rank = dynamic_rank = -1, a sentinel). Only trust it
+/// when it is a real rank; otherwise read the live rank.
+template <typename TensorType>
+[[nodiscard]] int operand_rank(TensorType const &t) {
+    using TT = std::remove_cvref_t<TensorType>;
+    if constexpr (requires { TT::Rank; }) {
+        if constexpr (TT::Rank >= 0) {
+            return static_cast<int>(TT::Rank);
+        } else {
+            return static_cast<int>(t.rank());
+        }
+    } else {
+        return static_cast<int>(t.rank());
+    }
+}
+
+/// @brief Snapshot a tensor's geometry into an @ref OperandView.
+///
+/// Instantiated per tensor type, but it is a dims-and-strides copy rather than
+/// an engine, so the per-type cost is a loop instead of 8.7 KB of kernel.
+template <typename T, typename TensorType>
+[[nodiscard]] OperandView<T> make_operand_view(TensorType const &t) {
+    OperandView<T> view;
+    view.data = static_cast<T const *>(t.data());
+    view.rank = operand_rank(t);
+    view.dims.resize(static_cast<size_t>(view.rank));
+    view.strides.resize(static_cast<size_t>(view.rank));
+    for (int i = 0; i < view.rank; ++i) {
+        view.dims[static_cast<size_t>(i)]    = static_cast<int64_t>(t.dim(static_cast<size_t>(i)));
+        view.strides[static_cast<size_t>(i)] = static_cast<int64_t>(t.stride(static_cast<size_t>(i)));
+    }
+    return view;
+}
+
 /// @brief The same contraction with the roles of M and N exchanged.
 ///
 /// C[m, n] = Sum_k A[m, k] B[k, n] and C[n, m] = Sum_k B[n, k] A[k, m] are one

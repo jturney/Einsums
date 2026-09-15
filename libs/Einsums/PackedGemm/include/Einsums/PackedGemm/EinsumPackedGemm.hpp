@@ -471,9 +471,15 @@ bool stream_run_ok(T const *dst, int64_t n) {
 /// For multi-K contractions (rank-3+), flattens A and B into contiguous M*K / K*N buffers
 /// and calls BLAS GEMM directly.  For single-K, uses BLIS-style tiled packing with BLAS
 /// GEMM per tile.
-template <typename ValueType, einsums::BasicTensorConcept CType, einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType>
-void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType const &B, ValueType alpha, ValueType beta,
-                      bool conj_a = false, bool conj_b = false, bool prefer_packed = false) {
+/// The operands arrive as @ref OperandView rather than as tensor types on
+/// purpose: everything this function reads from them - the data pointer, the
+/// rank, the dims and strides - is a runtime value the PackingPlan already
+/// works in. Keying the template on ValueType alone is what keeps the engine
+/// from being re-instantiated and re-optimized per (rank, tensor template) at
+/// every call site; see OperandView for the measurement that motivated it.
+template <typename ValueType>
+void blis_contraction(PackingPlan const &plan, ValueType *C_base, OperandView<ValueType> const &A, OperandView<ValueType> const &B,
+                      ValueType alpha, ValueType beta, bool conj_a = false, bool conj_b = false, bool prefer_packed = false) {
     LabeledSection0();
 
     // Resolve the SIMD-dispatch rung's tile kernel and its register-block
@@ -627,9 +633,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     b_off += bi * batch_dims[static_cast<size_t>(d)].b_stride;
                     c_off += bi * batch_dims[static_cast<size_t>(d)].c_stride;
                 }
-                a_ptrs[static_cast<size_t>(batch)] = A.data() + a_off;
-                b_ptrs[static_cast<size_t>(batch)] = B.data() + b_off;
-                c_ptrs[static_cast<size_t>(batch)] = C.data() + c_off;
+                a_ptrs[static_cast<size_t>(batch)] = A.data + a_off;
+                b_ptrs[static_cast<size_t>(batch)] = B.data + b_off;
+                c_ptrs[static_cast<size_t>(batch)] = C_base + c_off;
             }
 
             // BLAS validates the leading dimensions against the stored-operand
@@ -678,9 +684,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // and vice versa. The batch strides were mirrored with the rest of the
         // plan, so the offsets already belong to the tensors named here. The
         // caller swapped the conjugation flags to match.
-        ValueType       *C_data = C.data() + c_batch_off;
-        ValueType const *A_data = (plan.swap_ab ? static_cast<ValueType const *>(B.data()) : A.data()) + a_batch_off;
-        ValueType const *B_data = (plan.swap_ab ? static_cast<ValueType const *>(A.data()) : B.data()) + b_batch_off;
+        ValueType       *C_data = C_base + c_batch_off;
+        ValueType const *A_data = (plan.swap_ab ? B.data : A.data) + a_batch_off;
+        ValueType const *B_data = (plan.swap_ab ? A.data : B.data) + b_batch_off;
 
         // -------------------------------------------------------------------------
         // Multi-K fast path: flatten A and B into contiguous M*K / K*N buffers,
@@ -761,23 +767,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
             // Read ranks at runtime so the path works for both compile-time-rank
             // (Tensor<T, K>) and runtime-rank (RuntimeTensor<T, Alloc>) operands.
-            auto rank_of = [](auto const &t) -> int {
-                using TT = std::remove_cvref_t<decltype(t)>;
-                // TT::Rank exists for BOTH compile-time tensors (Rank = K >= 0) and
-                // runtime-rank tensors (Rank = dynamic_rank = -1, a sentinel). Only
-                // trust it when it is a real rank; otherwise read the live rank.
-                if constexpr (requires { TT::Rank; }) {
-                    if constexpr (TT::Rank >= 0) {
-                        return static_cast<int>(TT::Rank);
-                    } else {
-                        return static_cast<int>(t.rank());
-                    }
-                } else {
-                    return static_cast<int>(t.rank());
-                }
-            };
-            int const rank_a_rt = rank_of(A);
-            int const rank_b_rt = rank_of(B);
+            int const rank_a_rt = A.rank;
+            int const rank_b_rt = B.rank;
 
             // Describe a dense operand to HPTT.
             //
@@ -2307,7 +2298,8 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             return false;
         }
         ProfileAnnotate("packed_gemm_plan", "site");
-        blis_contraction<ValueType>(*site->plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor),
+        blis_contraction<ValueType>(*site->plan, C->data(), make_operand_view<ValueType>(A), make_operand_view<ValueType>(B),
+                                    static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor),
                                     site->plan->swap_ab ? spec_in.conj_b : spec_in.conj_a,
                                     site->plan->swap_ab ? spec_in.conj_a : spec_in.conj_b, prefer_packed);
         return true;
@@ -2734,7 +2726,8 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         if (cached != nullptr) {
             remember(key, cached);
         }
-        blis_contraction<ValueType>(plan, *C, A, B, static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor),
+        blis_contraction<ValueType>(plan, C->data(), make_operand_view<ValueType>(A), make_operand_view<ValueType>(B),
+                                    static_cast<ValueType>(AB_prefactor), static_cast<ValueType>(C_prefactor),
                                     plan.swap_ab ? spec.conj_b : spec.conj_a, plan.swap_ab ? spec.conj_a : spec.conj_b, prefer_packed);
         return true;
     } else {
@@ -2786,5 +2779,27 @@ bool try_packed_gemm(einsums::ValueTypeT<CType> C_prefactor, std::tuple<CIndices
         return try_packed_gemm<AType, BType, CType>(spec, C_prefactor, C, AB_prefactor, A, B, allow_scatter);
     }
 }
+
+// The engine is compiled ONCE per element type, in BlisContraction.cpp, and
+// every consumer links to it instead of generating its own copy. Without these
+// declarations a single test translation unit instantiated it 724 times - the
+// optimizer expanded 207 KB of kernel per file, which was 70% of that file's
+// compile time. The four types below are every type the packed path accepts.
+//
+// These must stay in step with the explicit instantiations in
+// BlisContraction.cpp; a type declared here and not defined there is a link
+// error, which is the failure mode you want.
+extern template void blis_contraction<float>(PackingPlan const &, float *, OperandView<float> const &, OperandView<float> const &, float,
+                                             float, bool, bool, bool);
+extern template void blis_contraction<double>(PackingPlan const &, double *, OperandView<double> const &, OperandView<double> const &,
+                                              double, double, bool, bool, bool);
+extern template void blis_contraction<std::complex<float>>(PackingPlan const &, std::complex<float> *,
+                                                           OperandView<std::complex<float>> const &,
+                                                           OperandView<std::complex<float>> const &, std::complex<float>,
+                                                           std::complex<float>, bool, bool, bool);
+extern template void blis_contraction<std::complex<double>>(PackingPlan const &, std::complex<double> *,
+                                                            OperandView<std::complex<double>> const &,
+                                                            OperandView<std::complex<double>> const &, std::complex<double>,
+                                                            std::complex<double>, bool, bool, bool);
 
 EINSUMS_NAMESPACE_END(packed_gemm)
