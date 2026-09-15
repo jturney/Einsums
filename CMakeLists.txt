@@ -821,10 +821,6 @@ else()
     target_link_libraries(einsums_base_libraries INTERFACE psapi WS2_32 mswsock)
   endif()
 
-  if("${EINSUMS_PLATFORM_UC}" STREQUAL "BLUEGENEQ")
-    einsums_add_compile_flag_if_available(-Wno-deprecated-register)
-  endif()
-
   if(EINSUMS_WITH_HIDDEN_VISIBILITY)
     einsums_add_compile_flag_if_available(-fvisibility=hidden)
     einsums_add_link_flag_if_available(-fvisibility=hidden)
