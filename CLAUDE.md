@@ -146,10 +146,14 @@ einsums_add_python_unit_test("Modules.<M>" Name SCRIPT test_name_python.py)
 ```
 
 - `einsums_add_executable` already links libEinsums; do NOT add `target_link_libraries` for Einsums modules in test CMakeLists (duplicate symbols).
-- Python tests live per-module under `libs/Einsums/<Module>/tests/unit/test_*_python.py`, never in the top-level `tests/`; run manually with `PYTHONPATH=build/lib python -m pytest <file>` (bare `pytest libs` collects nothing).
+- Python tests live per-module under `libs/Einsums/<Module>/tests/unit/test_*_python.py`; run manually with `PYTHONPATH=build/lib python -m pytest <file>`.
+  `pytest.ini` points `testpaths` at `libs`, so a bare `PYTHONPATH=build/lib python -m pytest` collects the whole per-module suite.
 - Hypothesis differential fuzzers (`test_hyp_*_python.py`) compare graph/eager results against numpy oracles; when adding an einsum feature or spec class, extend the GENERATOR draws (repeated letters, traces, zero extents, aliasing, dtypes, complex prefactors are already drawn) rather than only adding fixed cases.
 - Known-bug convention: tag failing cases `[!shouldfail]` with a comment naming the bug; when the fix lands the tag turns the run red as a reminder to drop it.
   Capabilities that do not exist yet get placeholder tests that assert the current rejection and describe the replacement test.
+- A bug fix gets a pinning test in the unit file for the component that broke.
+  There is no `tests/regressions/` tier and adding one back would be a mistake: a guard that sits beside the component's other invariants is read by the next person about to violate it, and a guard filed by why it was written is not.
+  Name the defect in a comment so the case says what it defends, and prefer a deterministic construction over the input that happened to expose it, since a guard that reproduces one run in nine hundred is not a guard.
 - `einsums.testing` provides `ALL_DTYPES`/`REAL_DTYPES`/`COMPLEX_DTYPES`, `tolerance_for`, `assert_close`; prefer parametrizing over `ALL_DTYPES` (float64-only graph tests have hidden real bugs).
 - Zero-extent inputs are valid: empty BLAS/LAPACK calls are quick-return no-ops (never let `lwork`-style workspace formulas hit zero) and empty contractions still scale C by its prefactor.
 
