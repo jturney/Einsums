@@ -66,7 +66,7 @@ libs/Einsums/<Name>/
   tests/performance/          # benchmarks
 ```
 
-The dependency-ordered module list lives in `libs/Einsums/CMakeLists.txt`; new modules are created via `libs/create_module_skeleton.py`.
+The dependency-ordered module list lives in `libs/Einsums/CMakeLists.txt`; new modules are created via `libs/create_module_skeleton/`.
 Build helpers shared by more than one module belong in the top-level `cmake/`, which is on `CMAKE_MODULE_PATH` from the root scope and so imposes no ordering constraint.
 Putting one under `libs/Einsums/<Module>/cmake/` instead requires exporting the directory-scoped append with `set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" PARENT_SCOPE)`, and then every consumer must be configured after that module - avoid it.
 

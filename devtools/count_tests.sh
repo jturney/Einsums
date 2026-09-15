@@ -65,9 +65,9 @@ if [ -d "${BUILD_DIR}/libs" ]; then
 fi
 
 # --------------------------------------------------------------------------
-# Actual Python cases: pytest collection count. The repo's pytest.ini sets
-# `norecursedirs = tests`, which hides every libs/**/tests/ dir, so we
-# override it (and restrict to the test_*_python.py convention).
+# Actual Python cases: pytest collection count. The ini settings are pinned
+# here rather than inherited so the count does not move when pytest.ini does,
+# and so the test_*_python.py convention is what gets counted.
 # --------------------------------------------------------------------------
 py_actual="n/a"
 
