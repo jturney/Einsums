@@ -29,6 +29,7 @@ set(ComputeGraphTests
     AntisymmetryInference.cpp
     AntisymmetrizerExpansion.cpp
     AntisymmetrizerFolding.cpp
+    AntisymmetrizerLinearity.cpp
     AxisTiling.cpp
     BisectDriver.cpp
     Blueprints.cpp
