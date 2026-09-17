@@ -7,16 +7,67 @@
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TypeSupport/Arguments.hpp>
 #include <Einsums/TypeSupport/TypeName.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <tuple>
+
+#ifdef _OPENMP
+#    include <omp.h>
+#endif
 
 EINSUMS_NAMESPACE_BEGIN(tensor_algebra)
 
 namespace detail {
+
+/**
+ * @brief Product of a tuple of loop extents.
+ *
+ * The generic algorithms carry their target and link extents as tuples, so the
+ * trip count a parallel region would divide is only available as a fold.
+ */
+template <typename... Dims>
+constexpr std::size_t extent_product(std::tuple<Dims...> const &dims) {
+    return std::apply([](auto const &...d) { return (std::size_t{1} * ... * static_cast<std::size_t>(d)); }, dims);
+}
+
+/**
+ * @brief Whether a contraction of this size is worth a parallel region.
+ *
+ * Forking a team costs tens of microseconds when the workers are parked, and the
+ * generic walk's region is entered once per einsum call regardless of how small
+ * the contraction is. Measured on an M4 Pro with ten threads, an ungated walk
+ * spent 20-38 us on every shape from 4 to 2304 output elements: flat across a
+ * 576x range in problem size, because the fork, not the arithmetic, was the whole
+ * measurement. Threading was a 8-16x loss there and only paid from roughly 500
+ * KFLOP upward.
+ *
+ * @c omp_min_parallel_flops is the same break-even PackedGemm gates on, derived
+ * from the measured region cost, so the two backends decline a region at the same
+ * size instead of disagreeing about it.
+ *
+ * @param target_elements Number of output elements the region would divide.
+ * @param link_elements   Contracted extent walked per output element.
+ */
+inline bool generic_walk_wants_threads([[maybe_unused]] std::size_t target_elements, [[maybe_unused]] std::size_t link_elements) {
+#ifdef _OPENMP
+    // Nothing to divide, and a region nested inside another is inactive anyway.
+    if (omp_get_max_threads() <= 1 || omp_in_parallel() != 0) {
+        return false;
+    }
+    // One multiply and one add per link step, per output element.
+    auto const flops = static_cast<std::int64_t>(2 * target_elements * link_elements);
+    return flops >= ::einsums::hardware::omp_min_parallel_flops();
+#else
+    return false;
+#endif
+}
+
 /**
  * @enum AlgorithmChoice
  *

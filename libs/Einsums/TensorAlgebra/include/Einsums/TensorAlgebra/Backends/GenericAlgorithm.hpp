@@ -113,7 +113,9 @@ void einsums_generic_target_loop(std::tuple<TargetDims...> const &target_dims, s
 
         // Only parallelize the outermost target dimension to avoid nested OMP overhead and stack overflow.
         if constexpr (__I == 0) {
-            EINSUMS_OMP_PARALLEL_FOR
+            // The region divides curr_dim, but the work under it is the whole
+            // contraction, so the gate weighs every target and link extent.
+            EINSUMS_OMP_PARALLEL_FOR_IF(generic_walk_wants_threads(extent_product(target_dims), extent_product(link_dims)))
             for (size_t i = 0; i < curr_dim; i++) {
                 auto C_indices_local = C_indices;
                 auto A_indices_local = A_indices;

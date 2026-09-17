@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(TensorAlgebraPerfTests BenchmarkEinsum.cpp BenchmarkPermute.cpp)
+set(TensorAlgebraPerfTests BenchmarkEinsum.cpp BenchmarkPermute.cpp BenchmarkGenericSmall.cpp)
 
 foreach(test ${TensorAlgebraPerfTests})
   get_filename_component(TestName ${test} NAME_WE)

@@ -161,10 +161,12 @@ void einsums_generic_target_walk(GenericLoopPlan<N> const &plan, std::tuple<Link
     size_t const n      = plan.inner_extent;
     size_t const cS = plan.inner_c, aS = plan.inner_a, bS = plan.inner_b;
 
+    size_t const link_total = extent_product(link_dims);
+
     if (plan.outer_count == 0) {
         // Everything merged into one sweep, so the innermost loop is the only
         // place left to take the parallelism from.
-        EINSUMS_OMP_PARALLEL_FOR
+        EINSUMS_OMP_PARALLEL_FOR_IF(generic_walk_wants_threads(n, link_total))
         for (size_t i = 0; i < n; i++) {
             C_data[i * cS] += AB_prefactor * einsums_generic_link_loop<0, T, ConjA, ConjB>(link_dims, A_link_strides, B_link_strides,
                                                                                            i * aS, i * bS, A_data, B_data);
@@ -177,7 +179,7 @@ void einsums_generic_target_walk(GenericLoopPlan<N> const &plan, std::tuple<Link
         outer_total *= plan.extent[k];
     }
 
-    EINSUMS_OMP_PARALLEL_FOR
+    EINSUMS_OMP_PARALLEL_FOR_IF(generic_walk_wants_threads(outer_total * n, link_total))
     for (size_t o = 0; o < outer_total; o++) {
         size_t rem = o, offC = 0, offA = 0, offB = 0;
         // Low-order digit is the loop nearest the inner one, so consecutive o
