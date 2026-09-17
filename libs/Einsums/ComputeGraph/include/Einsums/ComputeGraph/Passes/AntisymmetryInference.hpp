@@ -81,10 +81,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// recursing into one safe.
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
-    /// Operator-bearing nodes examined.
+    /// WRITES a rule examined, across every kind the rules cover. A plain
+    /// contraction counts: R3 asks of every einsum whether its operands carry an
+    /// antisymmetry it could pass on, and asking is what makes it a candidate.
     APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] std::size_t num_candidates() const { return _num_candidates; }
 
-    /// Outputs tagged antisymmetric.
+    /// TENSORS tagged antisymmetric. A tensor rather than a write, because a
+    /// tensor built by accumulation is settled by all of its writes together.
     APIARY_EXPOSE APIARY_GETTER("num_tagged") [[nodiscard]] std::size_t num_tagged() const { return _num_tagged; }
 
   private:

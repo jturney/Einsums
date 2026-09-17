@@ -293,3 +293,89 @@ TEST_CASE("AntisymmetrizerFolding - a rebind past a detected fold is refused", "
     graph.rebind(wsrc, junk);
     REQUIRE_THROWS_AS(graph.execute(), std::runtime_error);
 }
+
+// The toy's (T) chain in miniature, rooted where a residual's antisymmetry
+// actually comes from: the AMPLITUDES, reached through a contraction.
+//
+//   detection : t2 is antisymmetric in the slots carrying (j,k)
+//   R3        : so Xc = t2 . g is antisymmetric in the output's (j,k)
+//   R1 (cond) : so W = P(i/jk)(Xc) is fully antisymmetric
+//   R2        : so Wd = W / D keeps it
+//   fold      : so dot(Wd, P(i/jk)(Xd)) collapses to 3 * dot(Wd, Xd)
+//
+// Every link rests on one fact read out of one tensor. Nothing is declared and
+// nothing is structural.
+TEST_CASE("AntisymmetrizerFolding - a chain rooted at the amplitudes", "[ComputeGraph][AntisymmetrizerFolding]") {
+    size_t const n = 4;
+
+    // t2(j,k,m) antisymmetric in (j,k), built by projecting random data so the
+    // operator does not annihilate it the way a closed form would.
+    auto const            r = create_random_tensor<double>("r", n, n, n);
+    RuntimeTensor<double> t2("t2", {n, n, n});
+    for (size_t j = 0; j < n; ++j) {
+        for (size_t k = 0; k < n; ++k) {
+            for (size_t m = 0; m < n; ++m) {
+                t2(std::vector<size_t>{j, k, m}) = r(j, k, m) - r(k, j, m);
+            }
+        }
+    }
+    REQUIRE(check_symmetry(t2, SymmetryDescriptor::antisymmetric_pair(0, 1)));
+
+    auto const            g_typed = create_random_tensor<double>("g", n, n);
+    RuntimeTensor<double> g(g_typed); // g(m,i): carries neither j nor k
+    auto const            x_typed = create_random_tensor<double>("x", n, n, n);
+    RuntimeTensor<double> xd(x_typed);
+
+    RuntimeTensor<double> den("den", {n, n, n});
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            for (size_t k = 0; k < n; ++k) {
+                den(std::vector<size_t>{i, j, k}) = 2.0 + static_cast<double>(i) + static_cast<double>(j) + static_cast<double>(k);
+            }
+        }
+    }
+
+    auto const capture_chain = [&](cg::Graph &graph, RuntimeTensor<double> &result) {
+        auto                  &Xc = graph.create_zero_runtime_tensor<double>("Xc", {n, n, n}, true);
+        auto                  &W  = graph.create_zero_runtime_tensor<double>("W", {n, n, n}, true);
+        auto                  &Wd = graph.create_zero_runtime_tensor<double>("Wd", {n, n, n}, true);
+        auto                  &V  = graph.create_zero_runtime_tensor<double>("V", {n, n, n}, true);
+        cg::CaptureGuard const capture(graph);
+        // Xc(i,j,k) = sum_m t2(j,k,m) g(m,i). The carrier holds j and k; the
+        // other operand holds neither, which is what R3 requires.
+        cg::einsum("i,j,k <- j,k,m ; m,i", 0.0, &Xc, 1.0, t2, g);
+        cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &W, 1.0, Xc);
+        cg::direct_division(1.0, W, den, 0.0, &Wd);
+        cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &V, 1.0, xd);
+        cg::dot_python(&result, Wd, V);
+    };
+
+    RuntimeTensor<double> plain_result("plain", {1});
+    cg::Graph             plain("amplitude_chain_unfolded");
+    capture_chain(plain, plain_result);
+    plain.execute();
+    double const unfolded = plain_result(std::vector<size_t>{0});
+
+    RuntimeTensor<double> folded_result("folded", {1});
+    cg::Graph             folded("amplitude_chain_folded");
+    capture_chain(folded, folded_result);
+
+    auto            detection = std::make_shared<cg::passes::AntisymmetryDetection>();
+    auto            inference = std::make_shared<cg::passes::AntisymmetryInference>();
+    auto            fold      = std::make_shared<cg::passes::AntisymmetrizerFolding>();
+    cg::PassManager manager;
+    manager.add(detection);
+    manager.add(inference);
+    manager.add(fold);
+    folded.apply(manager);
+
+    INFO("detected " << detection->num_found() << ", tagged " << inference->num_tagged() << ", folded " << fold->num_folded());
+    CHECK(detection->num_found() > 0);
+    REQUIRE(fold->num_folded() == 1);
+
+    folded.execute();
+    double const value = folded_result(std::vector<size_t>{0});
+    INFO("unfolded=" << unfolded << " folded=" << value);
+    REQUIRE(std::abs(unfolded) > 1e-6);
+    REQUIRE_THAT(value, Catch::Matchers::WithinRel(unfolded, 1e-12));
+}

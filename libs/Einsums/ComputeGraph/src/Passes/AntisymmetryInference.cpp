@@ -16,7 +16,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -162,6 +164,21 @@ bool contains_all(SymmetryDescriptor const &have, SymmetryDescriptor const &need
     return std::ranges::all_of(need.ops, [&](SymmetryOp const &op) { return std::ranges::find(have.ops, op) != have.ops.end(); });
 }
 
+/// Where a letter sits in a list, when it sits there exactly once.
+///
+/// "Exactly once" is not fussiness. A letter appearing twice in an operand is a
+/// DIAGONAL access, and swapping two output axes then does not correspond to
+/// swapping two of that operand's slots, so the rule below would be reasoning
+/// about a permutation the contraction does not perform.
+std::optional<int> sole_position(std::vector<std::string> const &list, std::string const &letter) {
+    if (std::count(list.begin(), list.end(), letter) != 1) {
+        return std::nullopt;
+    }
+    auto const first = std::ranges::find(list, letter);
+    auto const at    = static_cast<int>(first - list.begin());
+    return at < kMaxSymmetryRank ? std::optional<int>{at} : std::nullopt;
+}
+
 /// The same permutation as @p op, asserted as an INVARIANCE rather than whatever
 /// @p op asserts. R2 asks of a divisor exactly what the numerator's generator
 /// permutes, with the opposite kind of claim.
@@ -173,11 +190,28 @@ SymmetryOp as_invariance(SymmetryOp op) {
 
 } // namespace
 
+namespace {
+
+/// What ONE write contributes to its destination.
+///
+/// A tensor's antisymmetry is a property of its final contents, and a tensor
+/// built by accumulation has no single node that settles them. So the rules
+/// answer a smaller question - what does THIS write add - and the caller
+/// combines the answers across every write the tensor receives.
+struct Contribution {
+    SymmetryDescriptor generators;        ///< what this write's addend is antisymmetric under
+    bool               overwrites{false}; ///< it replaces the destination rather than adding to it
+    bool               understood{false}; ///< a rule applied; an unknown write poisons the conclusion
+};
+
+} // namespace
+
 std::vector<std::string> AntisymmetryInference::explain() const {
     if (_num_tagged == 0) {
         return {};
     }
-    return {fmt::format("AntisymmetryInference: tagged {} of {} operator output(s) antisymmetric", _num_tagged, _num_candidates)};
+    return {
+        fmt::format("AntisymmetryInference: tagged {} tensor(s) antisymmetric, from {} candidate write(s)", _num_tagged, _num_candidates)};
 }
 
 void AntisymmetryInference::reset_stats() {
@@ -186,121 +220,236 @@ void AntisymmetryInference::reset_stats() {
 }
 
 bool AntisymmetryInference::run(Graph &graph) {
-    // Topological order so a fact established on one node's output is available
-    // to the node that consumes it. The rules chain: a detected leaf fact reaches
-    // a foldable premise only by being carried forward.
+    // Topological order so a fact settled on one tensor is available to the node
+    // that consumes it. The rules chain: a detected leaf fact reaches a foldable
+    // premise only by being carried forward.
     graph.topological_sort();
 
-    // The soundness guard SymmetryPropagation uses, shared rather than counted a
-    // second time: exactly one value-writer in this graph, and no descendant
-    // sub-graph touching the buffer. Without it a later overwrite could destroy
-    // the structure this pass just promised.
-    auto const guard = EscapeAnalysis::over(graph);
-
-    auto const tag = [&](Node const &node, TensorId raw, SymmetryDescriptor const &desc) {
-        TensorId const out    = graph.resolve_alias(raw);
-        auto          *handle = graph.find_tensor(out);
-        if (handle == nullptr || !handle->is_intermediate) {
-            note_skip("the destination is not a graph-owned intermediate", fmt::format("node #{}", node.id));
-            return;
-        }
-        if (!guard.stable(out)) {
-            note_skip("the destination is written more than once, or by a child sub-graph", fmt::format("node #{}", node.id));
-            return;
-        }
-        if (handle->symmetry_hint != nullptr && contains_all(*handle->symmetry_hint, desc)) {
-            return; // already known, and re-running must not count it twice
-        }
-        SymmetryDescriptor merged = handle->symmetry_hint != nullptr ? *handle->symmetry_hint : SymmetryDescriptor{};
-        for (auto const &op : desc.ops) {
-            if (std::ranges::find(merged.ops, op) == merged.ops.end()) {
-                merged.add(op);
-            }
-        }
-        handle->symmetry_hint = std::make_shared<SymmetryDescriptor>(std::move(merged));
-        ++_num_tagged;
-    };
+    auto const guard      = EscapeAnalysis::over(graph);
+    auto const nodes_view = std::span<Node const>{graph.nodes()};
 
     auto const hint_of = [&](TensorId id) -> SymmetryDescriptor const * {
         auto const *handle = graph.find_tensor(graph.resolve_alias(id));
         return handle != nullptr ? handle->symmetry_hint.get() : nullptr;
     };
 
-    for (auto const &node : graph.nodes()) {
-        // ── R1: the output of a permutation operator ────────────────────────
-        if (auto const site = read_operator_site(node); site.has_value() && node.outputs.size() == 1) {
-            ++_num_candidates;
+    // Every non-lifecycle write each tensor receives, in program order. A
+    // tensor's contents are settled by ALL of them, not by the last one, which
+    // is what the single-writer guard could not express: an accumulated
+    // intermediate is exactly the shape a residual builds and it has no single
+    // settling node.
+    std::map<TensorId, std::vector<std::size_t>> writers;
+    for (std::size_t i = 0; i < nodes_view.size(); ++i) {
+        if (is_lifecycle(nodes_view[i].kind)) {
+            continue;
+        }
+        for (auto const out : nodes_view[i].outputs) {
+            writers[graph.resolve_alias(out)].push_back(i);
+        }
+    }
 
-            if (!site->overwrites) {
-                note_skip("the node accumulates, so its output is the previous contents plus an antisymmetric part",
-                          fmt::format("node #{}", node.id));
-            } else if (auto const desc = antisymmetry_of(*site); !desc.has_value()) {
-                note_skip("the operator's letters do not each name exactly one addressable output axis", fmt::format("node #{}", node.id));
-            } else {
-                auto const requirement = within_group_requirement(*site);
-                if (!requirement.has_value()) {
-                    note_skip("the operator's groups do not map onto addressable axes", fmt::format("node #{}", node.id));
-                } else if (requirement->empty()) {
+    std::map<std::size_t, Contribution>                   per_node;
+    std::map<TensorId, std::vector<Contribution const *>> collected;
+
+    for (std::size_t i = 0; i < nodes_view.size(); ++i) {
+        Node const &node = nodes_view[i];
+        if (is_lifecycle(node.kind) || node.outputs.size() != 1) {
+            continue;
+        }
+
+        Contribution contribution;
+
+        // ── R1: the output of a permutation operator ────────────────────────
+        if (auto const site = read_operator_site(node); site.has_value()) {
+            ++_num_candidates;
+            contribution.overwrites = site->overwrites;
+            auto const desc         = antisymmetry_of(*site);
+            auto const requirement  = within_group_requirement(*site);
+            if (desc.has_value() && requirement.has_value()) {
+                if (requirement->empty()) {
                     // Unconditional arm: every group is a singleton, so the
                     // expansion is the full signed sum over a symmetric group and
-                    // the output is antisymmetric whatever the operand was.
-                    tag(node, node.outputs[0], *desc);
-                } else if (!site->has_operand) {
+                    // the addend is antisymmetric whatever the operand was.
+                    contribution.generators = *desc;
+                    contribution.understood = true;
+                } else if (site->has_operand) {
+                    // Conditional arm: a coset sum carries no antisymmetry of its
+                    // own, but over an operand already antisymmetric within each
+                    // group the result is fully antisymmetric on the operator's
+                    // letters.
+                    auto const *operand = hint_of(site->operand);
+                    if (operand != nullptr && contains_all(*operand, *requirement)) {
+                        contribution.generators = *desc;
+                        contribution.understood = true;
+                    } else {
+                        note_skip("a coset operator whose operand is not known antisymmetric within each group",
+                                  fmt::format("node #{}", node.id));
+                    }
+                } else {
                     note_skip("a coset operator over a contraction, whose operand is not a tensor this pass can ask about",
                               fmt::format("node #{}", node.id));
-                } else if (auto const *operand = hint_of(site->operand); operand == nullptr || !contains_all(*operand, *requirement)) {
-                    note_skip("a coset operator whose operand is not known antisymmetric within each group",
-                              fmt::format("node #{}", node.id));
-                } else {
-                    // Conditional arm. A coset sum carries no antisymmetry of its
-                    // own, but over an operand that already has it within each
-                    // group the output is fully antisymmetric on the operator's
-                    // letters, which is the precondition its well-definedness
-                    // rests on. Pinned against real data in
-                    // AntisymmetryDetection.cpp.
-                    tag(node, node.outputs[0], *desc);
                 }
             }
         }
+        // ── R3: antisymmetry through a contraction ──────────────────────────
+        else if (node.kind == OpKind::Einsum && node.inputs.size() >= 2) {
+            auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+            if (desc != nullptr) {
+                ++_num_candidates;
+                bool const  live        = desc->indices != nullptr;
+                auto const &a_idx       = live ? desc->indices->spec.a_indices : desc->spec.a_indices;
+                auto const &b_idx       = live ? desc->indices->spec.b_indices : desc->spec.b_indices;
+                auto const &c_idx       = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
+                contribution.overwrites = is_zero(live_c_prefactor(*desc));
 
+                // C(..p..q..) = sum_links ab * A(..p..q..) * B(...). When ONE
+                // operand carries both letters, in slots it is antisymmetric in,
+                // and the other carries neither, swapping p and q in the output
+                // swaps exactly those two slots: the carrier negates and the
+                // other operand is untouched, so the addend negates.
+                for (std::size_t x = 0; x + 1 < c_idx.size(); ++x) {
+                    for (std::size_t y = x + 1; y < c_idx.size(); ++y) {
+                        auto const out_p = sole_position(c_idx, c_idx[x]);
+                        auto const out_q = sole_position(c_idx, c_idx[y]);
+                        if (!out_p.has_value() || !out_q.has_value()) {
+                            continue;
+                        }
+                        for (int which = 0; which < 2; ++which) {
+                            auto const &carrier = which == 0 ? a_idx : b_idx;
+                            auto const &other   = which == 0 ? b_idx : a_idx;
+                            auto const  at_p    = sole_position(carrier, c_idx[x]);
+                            auto const  at_q    = sole_position(carrier, c_idx[y]);
+                            if (!at_p.has_value() || !at_q.has_value()) {
+                                continue;
+                            }
+                            if (std::ranges::find(other, c_idx[x]) != other.end() || std::ranges::find(other, c_idx[y]) != other.end()) {
+                                continue;
+                            }
+                            auto const *hint = hint_of(node.inputs[static_cast<std::size_t>(which)]);
+                            if (hint != nullptr && std::ranges::find(hint->ops, SymmetryOp::swap(*at_p, *at_q, -1)) != hint->ops.end()) {
+                                contribution.generators.add(SymmetryOp::swap(*out_p, *out_q, -1));
+                                break;
+                            }
+                        }
+                    }
+                }
+                contribution.understood = !contribution.generators.empty();
+            }
+        }
         // ── R2: division by an invariant ────────────────────────────────────
-        if (node.kind != OpKind::DirectDivision || node.inputs.size() < 2 || node.outputs.size() != 1) {
-            continue;
+        else if (node.kind == OpKind::DirectDivision && node.inputs.size() >= 2) {
+            auto const *edesc = std::get_if<ElementwiseBinaryDescriptor>(&node.op_data);
+            if (edesc != nullptr) {
+                ++_num_candidates;
+                contribution.overwrites = is_zero(live_beta(*edesc));
+                auto const *numerator   = hint_of(node.inputs[0]);
+                auto const *divisor     = hint_of(node.inputs[1]);
+                if (numerator != nullptr && divisor != nullptr) {
+                    // A quotient keeps exactly those of the numerator's
+                    // antisymmetries whose permutation leaves the divisor alone.
+                    for (auto const &op : numerator->ops) {
+                        if (op.sign < 0 && std::ranges::find(divisor->ops, as_invariance(op)) != divisor->ops.end()) {
+                            contribution.generators.add(op);
+                        }
+                    }
+                }
+                contribution.understood = !contribution.generators.empty();
+            }
         }
-        auto const *edesc = std::get_if<ElementwiseBinaryDescriptor>(&node.op_data);
-        if (edesc == nullptr) {
-            continue;
+        // ── R4: a linear combination ────────────────────────────────────────
+        else if (node.kind == OpKind::Axpby && node.inputs.size() >= 1) {
+            auto const *adesc = std::get_if<AxpbyDescriptor>(&node.op_data);
+            if (adesc != nullptr) {
+                ++_num_candidates;
+                contribution.overwrites = is_zero(live_beta(*adesc));
+                // Scaling preserves antisymmetry, so what this write ADDS carries
+                // whatever its source carries. The destination's own prior
+                // contents are a separate contribution, already recorded.
+                if (auto const *source = hint_of(node.inputs[0]); source != nullptr) {
+                    for (auto const &op : source->ops) {
+                        if (op.sign < 0) {
+                            contribution.generators.add(op);
+                        }
+                    }
+                }
+                contribution.understood = !contribution.generators.empty();
+            }
         }
-        ++_num_candidates;
-        if (!is_zero(live_beta(*edesc))) {
-            note_skip("the division accumulates, so its output is the previous contents plus a quotient", fmt::format("node #{}", node.id));
+
+        per_node[i] = std::move(contribution);
+        collected[graph.resolve_alias(node.outputs[0])].push_back(&per_node[i]);
+
+        // Settle the tensor once its LAST write has been seen. Waiting until the
+        // end of the loop would keep the fact from the nodes that consume it.
+        TensorId const out  = graph.resolve_alias(node.outputs[0]);
+        auto const    &list = writers[out];
+        if (list.empty() || list.back() != i) {
             continue;
         }
 
-        auto const *numerator = hint_of(node.inputs[0]);
-        auto const *divisor   = hint_of(node.inputs[1]);
-        if (numerator == nullptr || divisor == nullptr) {
-            note_skip("the numerator's antisymmetry or the divisor's invariance is not established", fmt::format("node #{}", node.id));
+        auto *handle = graph.find_tensor(out);
+        if (handle == nullptr || !handle->is_intermediate) {
+            note_skip("the destination is not a graph-owned intermediate", fmt::format("tensor #{}", out));
+            continue;
+        }
+        if (guard.touched_by_subtree(out)) {
+            note_skip("a child sub-graph writes the destination, so this graph does not settle it", fmt::format("tensor #{}", out));
             continue;
         }
 
-        // A quotient keeps exactly those of the numerator's antisymmetries whose
-        // permutation leaves the divisor alone. Scaling by alpha preserves them;
-        // dividing by something that MOVES under the permutation does not.
-        SymmetryDescriptor kept;
-        for (auto const &op : numerator->ops) {
-            if (op.sign >= 0) {
-                continue; // only antisymmetry is carried through
-            }
-            if (std::ranges::find(divisor->ops, as_invariance(op)) != divisor->ops.end()) {
-                kept.add(op);
-            }
+        auto const &contributions = collected[out];
+        if (contributions.size() != list.size()) {
+            continue; // a write this pass did not visit; cannot conclude
         }
-        if (kept.empty()) {
-            note_skip("the divisor is not invariant under any of the numerator's antisymmetries", fmt::format("node #{}", node.id));
+        if (!contributions.front()->overwrites) {
+            note_skip("the first write accumulates, so the destination's prior contents are unaccounted for",
+                      fmt::format("tensor #{}", out));
             continue;
         }
-        tag(node, node.outputs[0], kept);
+        if (std::ranges::any_of(contributions, [](Contribution const *c) { return !c->understood; })) {
+            note_skip("a write contributes something this pass cannot characterize", fmt::format("tensor #{}", out));
+            continue;
+        }
+
+        // The INTERSECTION. A sum is antisymmetric under exactly the permutations
+        // every addend is antisymmetric under; one indifferent addend is enough
+        // to destroy the property for the whole.
+        SymmetryDescriptor settled = contributions.front()->generators;
+        for (std::size_t c = 1; c < contributions.size(); ++c) {
+            SymmetryDescriptor both;
+            for (auto const &op : settled.ops) {
+                if (std::ranges::find(contributions[c]->generators.ops, op) != contributions[c]->generators.ops.end()) {
+                    both.add(op);
+                }
+            }
+            settled = std::move(both);
+        }
+        if (settled.empty()) {
+            // Distinguished from "cannot characterize" above, because it means
+            // something different and points somewhere else. Every write was
+            // understood; they simply do not agree on which axes their addends
+            // are antisymmetric in, so the sum is antisymmetric in none. That is
+            // usually a fact about the DATA rather than a gap in the rules, and
+            // reading it as a missing capability sends the reader hunting for a
+            // rule that would not help.
+            if (contributions.size() > 1) {
+                note_skip("the writes are each antisymmetric, but in different axes, so their sum is antisymmetric in none",
+                          fmt::format("tensor #{}", out));
+            }
+            continue;
+        }
+        if (handle->symmetry_hint != nullptr && contains_all(*handle->symmetry_hint, settled)) {
+            continue;
+        }
+
+        SymmetryDescriptor merged = handle->symmetry_hint != nullptr ? *handle->symmetry_hint : SymmetryDescriptor{};
+        for (auto const &op : settled.ops) {
+            if (std::ranges::find(merged.ops, op) == merged.ops.end()) {
+                merged.add(op);
+            }
+        }
+        handle->symmetry_hint = std::make_shared<SymmetryDescriptor>(std::move(merged));
+        ++_num_tagged;
     }
 
     // Annotation only; the node list is untouched.

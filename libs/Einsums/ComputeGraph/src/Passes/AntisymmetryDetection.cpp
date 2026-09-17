@@ -133,6 +133,56 @@ void AntisymmetryDetection::reset_stats() {
     _num_tensors = 0;
 }
 
+namespace {
+
+/// One operator's letter groups, as the graph writes them.
+struct OperatorGroups {
+    std::vector<std::vector<std::string>> groups;
+};
+
+/// Read the operators and output index list a node carries.
+bool read_operators(Node const &node, std::vector<PermutationOperator> &ops, std::vector<std::string> &c_indices) {
+    if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data); desc != nullptr && node.kind == OpKind::Einsum) {
+        bool const live = desc->indices != nullptr;
+        ops             = live ? desc->indices->spec.operators : desc->operators;
+        c_indices       = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
+    } else if (auto const *pdesc = std::get_if<PermuteDescriptor>(&node.op_data); pdesc != nullptr && node.kind == OpKind::Permute) {
+        ops       = pdesc->operators;
+        c_indices = pdesc->c_indices;
+    } else {
+        return false;
+    }
+    return !ops.empty();
+}
+
+/// The index lists of an einsum node, live where it has them.
+bool read_einsum_indices(Node const &node, std::vector<std::string> &a, std::vector<std::string> &b, std::vector<std::string> &c) {
+    if (node.kind != OpKind::Einsum) {
+        return false;
+    }
+    auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+    if (desc == nullptr) {
+        return false;
+    }
+    bool const live = desc->indices != nullptr;
+    a               = live ? desc->indices->spec.a_indices : desc->spec.a_indices;
+    b               = live ? desc->indices->spec.b_indices : desc->spec.b_indices;
+    c               = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
+    return true;
+}
+
+/// Where a letter sits in a list, when it sits there exactly once.
+std::optional<int> sole_position(std::vector<std::string> const &list, std::string const &letter) {
+    if (std::count(list.begin(), list.end(), letter) != 1) {
+        return std::nullopt;
+    }
+    auto const first = std::ranges::find(list, letter);
+    auto const at    = static_cast<int>(first - list.begin());
+    return at < kMaxSymmetryRank ? std::optional<int>{at} : std::nullopt;
+}
+
+} // namespace
+
 bool AntisymmetryDetection::run(Graph &graph) {
     // A tensor written by any node holds, right now, whatever it was initialized
     // to. Graph scratch is typically zero, and a zero tensor satisfies every
@@ -150,21 +200,32 @@ bool AntisymmetryDetection::run(Graph &graph) {
         }
     }
 
-    // Every operator the graph names, reduced to the generators worth testing
-    // and the extents a tensor has to match for the permutation to address it.
-    std::vector<Candidate> candidates;
+    // Candidate generators, per tensor. Two sources feed this, and keeping them
+    // in one map is what lets the probe loop below stay single and the dedup be
+    // automatic.
+    std::map<TensorId, std::vector<SymmetryOp>> wanted;
+    auto const                                  want = [&](TensorId id, SymmetryOp const &op) {
+        TensorId const resolved = graph.resolve_alias(id);
+        if (written.contains(resolved)) {
+            return;
+        }
+        auto &ops = wanted[resolved];
+        if (std::ranges::find(ops, op) == ops.end()) {
+            ops.push_back(op);
+        }
+    };
+
+    // The operator groups the graph names, which is what makes every probe below
+    // a question the graph actually asked rather than a search.
+    std::vector<OperatorGroups> operator_groups;
+
+    // SOURCE ONE: a tensor of the operator's own output shape. That is the
+    // operator's operand, which the conditional arm asks about, and a divisor of
+    // the same shape, which R2 asks about.
     for (auto const &node : graph.nodes()) {
         std::vector<PermutationOperator> ops;
         std::vector<std::string>         c_indices;
-        if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data); desc != nullptr && node.kind == OpKind::Einsum) {
-            bool const live = desc->indices != nullptr;
-            ops             = live ? desc->indices->spec.operators : desc->operators;
-            c_indices       = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
-        } else if (auto const *pdesc = std::get_if<PermuteDescriptor>(&node.op_data); pdesc != nullptr && node.kind == OpKind::Permute) {
-            ops       = pdesc->operators;
-            c_indices = pdesc->c_indices;
-        }
-        if (ops.empty() || node.outputs.empty()) {
+        if (!read_operators(node, ops, c_indices) || node.outputs.empty()) {
             continue;
         }
         auto const *out_handle = graph.find_tensor(graph.resolve_alias(node.outputs[0]));
@@ -176,42 +237,90 @@ bool AntisymmetryDetection::run(Graph &graph) {
             if (!groups.has_value()) {
                 continue;
             }
-            candidates.push_back(Candidate{
-                .within = within_group_antisymmetry(*groups), .invariance = operator_invariance(*groups), .dims = out_handle->dims});
+            operator_groups.push_back(OperatorGroups{.groups = op.groups});
+
+            SymmetryDescriptor const within     = within_group_antisymmetry(*groups);
+            SymmetryDescriptor const invariance = operator_invariance(*groups);
+            for (auto &[tid, handle] : graph.tensors_map()) {
+                if (handle.dims != out_handle->dims) {
+                    continue; // the operator's permutation does not address it
+                }
+                for (auto const &generator : within.ops) {
+                    want(tid, generator);
+                }
+                for (auto const &generator : invariance.ops) {
+                    want(tid, generator);
+                }
+            }
         }
     }
 
-    if (candidates.empty()) {
+    // SOURCE TWO: an einsum's OPERAND. The chain a residual needs starts at the
+    // amplitudes, which are a different rank from the operator's output and so
+    // are never addressed by source one. What R3 asks is whether the operand
+    // carrying two of the operator's grouped letters is antisymmetric in the
+    // slots it carries them in, and the einsum's index lists say which slots
+    // those are.
+    for (auto const &node : graph.nodes()) {
+        std::vector<std::string> a_idx;
+        std::vector<std::string> b_idx;
+        std::vector<std::string> c_idx;
+        if (!read_einsum_indices(node, a_idx, b_idx, c_idx) || node.inputs.size() < 2) {
+            continue;
+        }
+        for (auto const &og : operator_groups) {
+            for (auto const &group : og.groups) {
+                for (std::size_t x = 0; x + 1 < group.size(); ++x) {
+                    for (std::size_t y = x + 1; y < group.size(); ++y) {
+                        std::string const &p = group[x];
+                        std::string const &q = group[y];
+                        if (!sole_position(c_idx, p).has_value() || !sole_position(c_idx, q).has_value()) {
+                            continue;
+                        }
+                        // Exactly one operand may carry BOTH, and the other must
+                        // carry neither, or swapping them is not a swap of that
+                        // operand's slots alone.
+                        for (int which = 0; which < 2; ++which) {
+                            auto const &carrier = which == 0 ? a_idx : b_idx;
+                            auto const &other   = which == 0 ? b_idx : a_idx;
+                            auto const  at_p    = sole_position(carrier, p);
+                            auto const  at_q    = sole_position(carrier, q);
+                            if (!at_p.has_value() || !at_q.has_value()) {
+                                continue;
+                            }
+                            if (std::ranges::find(other, p) != other.end() || std::ranges::find(other, q) != other.end()) {
+                                continue;
+                            }
+                            want(node.inputs[static_cast<std::size_t>(which)], SymmetryOp::swap(*at_p, *at_q, -1));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (wanted.empty()) {
         return false;
     }
 
-    for (auto &[tid, handle] : graph.tensors_map()) {
-        if (written.contains(graph.resolve_alias(tid)) || !handle.impl_fn) {
+    for (auto &[tid, generators] : wanted) {
+        auto *handle = graph.find_tensor(tid);
+        if (handle == nullptr || !handle->impl_fn) {
             continue;
         }
 
         SymmetryDescriptor found;
-        for (auto const &candidate : candidates) {
-            if (handle.dims != candidate.dims) {
-                continue; // the operator's permutation does not address this tensor
-            }
+        for (auto const &generator : generators) {
             // Generator by generator, not descriptor by descriptor: a tensor can
             // be invariant under some of an operator's terms and not others, and
             // recording only the all-or-nothing answer would throw away the part
             // a later rule could have used.
-            for (auto const *group : {&candidate.within, &candidate.invariance}) {
-                for (auto const &op : group->ops) {
-                    if (std::ranges::find(found.ops, op) != found.ops.end()) {
-                        continue; // two operators can ask for the same generator
-                    }
-                    ++_num_probed;
-                    SymmetryDescriptor one;
-                    one.add(op);
-                    if (holds_in_data(handle, one)) {
-                        found.add(op);
-                        ++_num_found;
-                    }
-                }
+            ++_num_probed;
+            SymmetryDescriptor one;
+            one.add(generator);
+            if (holds_in_data(*handle, one)) {
+                found.add(generator);
+                ++_num_found;
             }
         }
 
@@ -222,14 +331,14 @@ bool AntisymmetryDetection::run(Graph &graph) {
         // The graph's metadata only. handle.set_symmetry_fn would push this onto
         // the user's own tensor, and a pass that looked at someone's data has no
         // business writing a declaration back onto it.
-        if (handle.symmetry_hint != nullptr) {
-            for (auto const &op : handle.symmetry_hint->ops) {
+        if (handle->symmetry_hint != nullptr) {
+            for (auto const &op : handle->symmetry_hint->ops) {
                 if (std::ranges::find(found.ops, op) == found.ops.end()) {
                     found.add(op);
                 }
             }
         }
-        handle.symmetry_hint = std::make_shared<SymmetryDescriptor>(std::move(found));
+        handle->symmetry_hint = std::make_shared<SymmetryDescriptor>(std::move(found));
         ++_num_tensors;
     }
 

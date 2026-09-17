@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/Passes/AntisymmetryDetection.hpp>
 #include <Einsums/ComputeGraph/Passes/AntisymmetryInference.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/SymmetryOps.hpp>
@@ -159,7 +160,54 @@ TEST_CASE("AntisymmetryInference - a graph with no operator is untouched", "[Com
         cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);
     }
     auto const pass = infer(graph);
-    CHECK(pass->num_candidates() == 0);
+    // The contraction IS examined: R3 asks of every einsum whether its operands
+    // carry an antisymmetry to pass on. What matters is that nothing is
+    // concluded from a graph with no symmetry anywhere in it.
     CHECK(pass->num_tagged() == 0);
     CHECK(pass->explain().empty());
+}
+
+// R3's load-bearing condition. C(..p..q..) = sum A(..p..q..) B(...) negates
+// under swapping p and q only because the OTHER operand does not see them. When
+// it does, it moves under the swap too and nothing cancels, so a rule that
+// skipped this check would tag a tensor with an antisymmetry it does not have.
+TEST_CASE("AntisymmetryInference - R3 declines when the other operand sees the letters", "[ComputeGraph][AntisymmetryInference]") {
+    size_t const n = 4;
+
+    auto const            r = create_random_tensor<double>("r", n, n, n);
+    RuntimeTensor<double> t2("t2", {n, n, n});
+    for (size_t j = 0; j < n; ++j) {
+        for (size_t k = 0; k < n; ++k) {
+            for (size_t m = 0; m < n; ++m) {
+                t2(std::vector<size_t>{j, k, m}) = r(j, k, m) - r(k, j, m);
+            }
+        }
+    }
+    REQUIRE(check_symmetry(t2, SymmetryDescriptor::antisymmetric_pair(0, 1)));
+
+    auto const            b_typed = create_random_tensor<double>("b", n, n, n);
+    RuntimeTensor<double> shared(b_typed); // b(m,j,k): SEES j and k
+
+    cg::Graph graph("other_operand_sees");
+    auto     &Xc = graph.create_zero_runtime_tensor<double>("Xc", {n, n, n}, true);
+    auto     &W  = graph.create_zero_runtime_tensor<double>("W", {n, n, n}, true);
+    {
+        cg::CaptureGuard const capture(graph);
+        // The second operand carries j and k as well, so the swap moves it too.
+        cg::einsum("j,k,m <- j,k,p ; p,j,k", 0.0, &Xc, 1.0, t2, shared);
+        cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &W, 1.0, Xc);
+    }
+
+    auto            detection = std::make_shared<cg::passes::AntisymmetryDetection>();
+    cg::PassManager pre;
+    pre.add(detection);
+    graph.apply(pre);
+
+    auto const pass = infer(graph);
+    CHECK(hint_on(graph, "Xc") == nullptr);
+
+    // And the decline is right rather than merely cautious: the product genuinely
+    // is not antisymmetric in those axes.
+    graph.execute();
+    CHECK_FALSE(check_symmetry(Xc, SymmetryDescriptor::antisymmetric_pair(0, 1)));
 }
