@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
+#include <Einsums/ComputeGraph/Passes/AntisymmetrizerExpansion.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp>
@@ -724,6 +725,15 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // permute→einsum patterns collapse into the same fused node, and
     // before Materialization / GPU placement so those passes don't
     // allocate / place tensors that are about to be removed.
+    //
+    // First of the group: lowering a contraction's permutation operator emits an
+    // ordinary einsum plus a run of permuted accumulations, and everything below
+    // should see THAT rather than one opaque node. It also moves the temporary
+    // the operator needs out of a per-call allocation and into a graph
+    // intermediate, which is only worth anything if MemoryPlanning and the
+    // lifetime passes downstream get to place it. Declines instantly on any
+    // graph whose specs name no operator, which is every graph today.
+    list.push_back(std::make_shared<passes::AntisymmetrizerExpansion>());
     list.push_back(std::make_shared<passes::ConstantFolding>());
     list.push_back(std::make_shared<passes::ScaleAbsorption>());
     list.push_back(std::make_shared<passes::PermuteFusion>());

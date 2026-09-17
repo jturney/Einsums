@@ -14,6 +14,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/NaturalAuxiliaryFactorization.hpp
     Einsums/ComputeGraph/Passes/FactorizationPass.hpp
     Einsums/ComputeGraph/Passes/BasisTruncation.hpp
+    Einsums/ComputeGraph/Passes/AntisymmetrizerExpansion.hpp
     Einsums/ComputeGraph/Passes/AxisTiling.hpp
     Einsums/ComputeGraph/LaplaceQuadrature.hpp
     Einsums/ComputeGraph/Passes/LaplaceTransform.hpp
@@ -146,6 +147,7 @@ set(ComputeGraphSources
     Passes/DeltaElimination.cpp
     Passes/FactorizationPass.cpp
     Passes/BasisTruncation.cpp
+    Passes/AntisymmetrizerExpansion.cpp
     Passes/AxisTiling.cpp
     LaplaceQuadrature.cpp
     Passes/LaplaceTransform.cpp

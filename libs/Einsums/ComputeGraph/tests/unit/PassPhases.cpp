@@ -54,6 +54,7 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         {"GPUDiagnostics", cg::PassPhase::Diagnostic},
 
         // Structural-algebraic: machine-independent, and the only output a save keeps.
+        {"AntisymmetrizerExpansion", cg::PassPhase::StructuralAlgebraic},
         {"DeltaElimination", cg::PassPhase::StructuralAlgebraic},
         {"ConstantFolding", cg::PassPhase::StructuralAlgebraic},
         {"ScaleAbsorption", cg::PassPhase::StructuralAlgebraic},
@@ -155,6 +156,12 @@ std::map<std::string, cg::PassTier> const &expected_tiers() {
     static std::map<std::string, cg::PassTier> const table = {
         // Bitwise-exact: measured at EXACTLY zero on all six legs.
         {"ConstantFolding", cg::PassTier::BitwiseExact},
+        // Same operations in the same order: the node it replaces already
+        // contracted into a temporary and applied the same terms out of it, so
+        // the lowering moves that sequence into nodes without changing any
+        // arithmetic. Pinned by an exact (==, not a tolerance) comparison in
+        // AntisymmetrizerExpansion.cpp.
+        {"AntisymmetrizerExpansion", cg::PassTier::BitwiseExact},
         {"CSE", cg::PassTier::BitwiseExact},
         {"DeadNodeElimination", cg::PassTier::BitwiseExact},
         {"DeltaElimination", cg::PassTier::BitwiseExact},

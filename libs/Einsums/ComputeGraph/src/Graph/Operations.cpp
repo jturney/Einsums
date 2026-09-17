@@ -418,6 +418,56 @@ Node Graph::make_axpby_node(TensorId x, TensorId y, PrefactorScalar alpha, Prefa
     return node;
 }
 
+Node Graph::make_permute_node(TensorId a_id, TensorId c_id, ParsedPermuteSpec const &spec, PrefactorScalar alpha, PrefactorScalar beta,
+                              std::string label) {
+    auto const &a_h = tensor(a_id);
+    auto const &c_h = tensor(c_id);
+
+    // The rank-erased impl gate make_einsum_node states, for the same reason:
+    // only tile-wise sparse tensors lack one, and they have no single buffer to
+    // permute.
+    if (!a_h.impl_fn || !c_h.impl_fn) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "Graph::make_permute_node: both operands need a rank-erased impl (a={} c={}); tile-wise sparse "
+                                "tensors have none",
+                                static_cast<bool>(a_h.impl_fn), static_cast<bool>(c_h.impl_fn));
+    }
+    if (a_h.dtype != c_h.dtype) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph::make_permute_node: operand dtypes disagree; a permute does not convert");
+    }
+    auto const dtype = c_h.dtype;
+
+    // Live scalars shared with the executor, the contract make_axpby_node states:
+    // the descriptor is both what passes read and what the replay uses, so a
+    // later fold into alpha reaches execute() rather than being ignored.
+    auto params   = std::make_shared<ElementwiseParams>();
+    params->alpha = alpha;
+    params->beta  = beta;
+
+    PermuteDescriptor desc;
+    desc.alpha     = as<std::complex<double>>(alpha);
+    desc.beta      = as<std::complex<double>>(beta);
+    desc.c_indices = spec.c_indices;
+    desc.a_indices = spec.a_indices;
+    desc.operators = spec.operators;
+    desc.params    = params;
+
+    Node node;
+    node.id   = reserve_node_id();
+    node.kind = OpKind::Permute;
+    node.label =
+        label.empty() ? fmt::format("permute({} <- {})", fmt::join(spec.c_indices, ","), fmt::join(spec.a_indices, ",")) : std::move(label);
+    // One input even when beta is nonzero. See the note on the declaration: this
+    // matches what capturing a cg::permute produces, and four passes plus
+    // build_executor gate on a permute having exactly one input.
+    node.inputs  = {a_id};
+    node.outputs = {c_id};
+    node.op_data = std::move(desc);
+    node.execute = build_executor(OpKind::Permute, dtype, c_h.rank, node.op_data, *this, std::span<TensorId const>{node.inputs},
+                                  std::span<TensorId const>{node.outputs});
+    return node;
+}
+
 std::function<void()> Graph::make_zero_executor(TensorId tensor_id) {
     return [this, tensor_id]() {
         auto &h = tensor(tensor_id);

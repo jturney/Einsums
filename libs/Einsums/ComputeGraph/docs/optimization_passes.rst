@@ -449,6 +449,40 @@ Control flow, memory, and side-effect nodes are never eliminated.
 
 Reports ``num_eliminated()``.
 
+AntisymmetrizerExpansion
+------------------------
+
+Lowers a permutation operator named in a contraction's spec
+(see :doc:`string_einsum`) into an explicit contraction plus one permuted
+accumulation per term:
+
+.. code-block:: text
+
+   einsum(spec without the operator) -> tmp   // tmp = ab_pf * (A x B)
+   permute(term_0 <- c_indices)      -> C     // C = c_pf * C + sign_0 * tmp
+   permute(term_t <- c_indices)      -> C     // C = C + sign_t * P_t(tmp)
+
+A node carrying an operator already computes the right answer without this pass,
+because the kernel contracts into a temporary and accumulates the terms out of
+it. What it cannot do is OWN that temporary: it is sized from C and allocated on
+every call, which at production dimensions is an allocation far too large to make
+per replay. Lowering makes it an ordinary intermediate, so Materialization,
+MemoryPlanning and the lifetime passes place it once.
+
+The contraction cannot write ``C`` directly, because the permuted accumulations
+would then read what they are writing. ``C``'s own prefactor rides on the first
+term, which is what keeps it applied once rather than once per term, and the
+identity term is always first so the term that may overwrite is the one that
+does.
+
+A ``permute`` carrying an operator is left alone. It needs no temporary, since
+every term reads a source the operation never writes, so lowering it would
+replace one node with N doing the same work in the same order, and the N share
+one source and one destination so there is nothing for CSE or PermuteFusion to
+do with them.
+
+Reports ``num_sites()``, ``num_expanded()`` and ``num_terms()``.
+
 SymmetrizedAccumulation
 -----------------------
 
@@ -1140,19 +1174,20 @@ mock is present:
     1. ProvenancePropagation     : carry tensor tags across the graph
     2. TiledExpansion            : lower tiled ops into per-tile dense nodes
     3. DeltaElimination          : substitute away contractions with a delta
-    4. ConstantFolding           : fold constant subexpressions
-    5. ScaleAbsorption           : absorb scale into the next operation
-    6. PermuteFusion             : fold pure axis reorders into einsum indices
-    7. CSE                       : common subexpression elimination
-    8. DeadNodeElimination       : remove unused intermediates
-    9. SymmetrizedAccumulation   : fold r += s*(t + P(t)) sites
-   10. ElementWiseFusion         : fuse consecutive element-wise ops
-   11. LinearCombinationContractionFolding : fold transpose-paired contractions
-   12. DistributiveFactoring     : factor a shared operand out of a sum
-   13. LoopInvariantHoisting     : move invariants out of loops
-   14. ScratchPrivatization      : rename reused scratch onto clones
-   15. MultiTermFactorization    : contraction orders and shared intermediates (off by default)
-   16. LayoutAssignment          : store intermediates so contractions read flat
+    4. AntisymmetrizerExpansion  : lower a spec's P(...) into explicit terms
+    5. ConstantFolding           : fold constant subexpressions
+    6. ScaleAbsorption           : absorb scale into the next operation
+    7. PermuteFusion             : fold pure axis reorders into einsum indices
+    8. CSE                       : common subexpression elimination
+    9. DeadNodeElimination       : remove unused intermediates
+   10. SymmetrizedAccumulation   : fold r += s*(t + P(t)) sites
+   11. ElementWiseFusion         : fuse consecutive element-wise ops
+   12. LinearCombinationContractionFolding : fold transpose-paired contractions
+   13. DistributiveFactoring     : factor a shared operand out of a sum
+   14. LoopInvariantHoisting     : move invariants out of loops
+   15. ScratchPrivatization      : rename reused scratch onto clones
+   16. MultiTermFactorization    : contraction orders and shared intermediates (off by default)
+   17. LayoutAssignment          : store intermediates so contractions read flat
    17. ContractionPlanning       : multi-objective contraction ordering
    18. GEMMBatching              : collapse groups into blas::gemm_batch
    19. Reorder                   : memory-aware topological sort

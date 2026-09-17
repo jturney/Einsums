@@ -3220,6 +3220,42 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     Node make_axpby_node(TensorId x, TensorId y, PrefactorScalar alpha, PrefactorScalar beta, std::string label);
 
     /**
+     * @brief Build a ready-to-splice ``C = beta*C + alpha*permute(A)`` node.
+     *
+     * The counterpart to @ref make_einsum_node and @ref make_axpby_node for a
+     * pass that emits a transposed accumulation, which is what lowering a
+     * permutation operator produces. Assembling one by hand means reserving the
+     * id, filling a @ref PermuteDescriptor, allocating the shared scalars and
+     * calling @ref build_executor in agreement with all of it, and the failure
+     * mode when they disagree is a replay that computes something the descriptor
+     * does not describe.
+     *
+     * @p spec may itself carry operators, which the executor then expands; a
+     * lowering pass clears them and emits one node per term instead.
+     *
+     * @param[in] a_id  Source operand.
+     * @param[in] c_id  Destination, read when @p beta is nonzero and written always.
+     * @param[in] spec  Output and input index lists, and any operators.
+     * @param[in] alpha Scale applied to the permuted source.
+     * @param[in] beta  Scale applied to the destination before accumulating.
+     * @param[in] label Node label; a default is generated from the spec when empty.
+     * @return A node with a reserved id and its inputs/outputs set.
+     *
+     * @note The destination is NOT listed among the inputs when @p beta is
+     *       nonzero, which differs from @ref make_einsum_node's RMW convention
+     *       and deliberately MATCHES what capturing a ``cg::permute`` produces.
+     *       Four passes (SymmetryPropagation, SpacePropagation,
+     *       ScratchPrivatization, LayoutAssignment) and @ref build_executor all
+     *       gate a permute on having exactly one input before reading
+     *       ``inputs[0]``, so a node spelled the other way is silently declined
+     *       by every one of them. Ordering is safe regardless, because the node
+     *       writes its destination and the hazard edges key on that.
+     * @versionadded{2.1.0}
+     */
+    Node make_permute_node(TensorId a_id, TensorId c_id, ParsedPermuteSpec const &spec, PrefactorScalar alpha, PrefactorScalar beta,
+                           std::string label = {});
+
+    /**
      * @brief Create an executor lambda that zeros a tensor.
      *
      * @param[in] tensor_id TensorId of the tensor to zero.
