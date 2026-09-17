@@ -119,6 +119,22 @@ struct EinsumDescriptor {
     bool                         conj_a{false};           ///< Whether to conjugate A (for complex types)
     bool                         conj_b{false};           ///< Whether to conjugate B (for complex types)
 
+    /// Permutation (antisymmetrizer) operators this contraction is wrapped in,
+    /// as the spec wrote them. Empty for every contraction that names none.
+    ///
+    /// The GROUPS are stored rather than the expanded terms, because what a pass
+    /// wants to ask is "is this the full antisymmetrizer over {i,j,k}", which is
+    /// a one-line check against a partition and a tedious reconstruction from
+    /// six permutation vectors. @ref expand_permutation_operators turns them
+    /// into terms, deterministically, wherever terms are what is needed.
+    ///
+    /// Stored on the SNAPSHOT side, beside @ref spec, and deliberately not in
+    /// the live @ref indices block: no pass rewrites an operator under a running
+    /// executor, and one that wants to should rebuild the node, the same
+    /// argument @ref PermuteDescriptor already makes for its index lists.
+    /// @versionadded{2.1.0}
+    std::vector<PermutationOperator> operators;
+
     /// Live-mutable index state shared with the executor lambda.
     ///
     /// Optimization passes (PermuteFusion, future index rewriters) mutate
@@ -270,6 +286,11 @@ struct PermuteDescriptor {
     std::vector<std::string>           c_indices;       ///< Output index names (e.g., {"j","i"}).
     std::vector<std::string>           a_indices;       ///< Input index names (e.g., {"i","j"}).
     std::shared_ptr<ElementwiseParams> params;          ///< Live scalars the executor reads each call.
+
+    /// Permutation (antisymmetrizer) operators this permute is wrapped in.
+    /// @see EinsumDescriptor::operators
+    /// @versionadded{2.1.0}
+    std::vector<PermutationOperator> operators;
 };
 
 /**
@@ -1181,6 +1202,7 @@ inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, 
     desc.ab_prefactor        = ab_pf;
     desc.conj_a              = conj_a;
     desc.conj_b              = conj_b;
+    desc.operators           = parsed.operators;
     desc.spec.c_indices      = parsed.c_indices;
     desc.spec.a_indices      = parsed.a_indices;
     desc.spec.b_indices      = parsed.b_indices;

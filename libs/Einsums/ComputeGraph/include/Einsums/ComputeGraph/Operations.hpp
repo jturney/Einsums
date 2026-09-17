@@ -488,6 +488,14 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>> || IsTiledTensorV<std::remove_cvref_t<CType>>) {
         static_assert(IsTiledTensorV<std::remove_cvref_t<AType>> && IsTiledTensorV<std::remove_cvref_t<CType>>,
                       "cg::permute with a tiled operand requires both A and C to be TiledRuntimeTensor");
+        // The tiled kernel and TiledPermuteDescriptor carry no operator, so a
+        // spec that names one would be silently DROPPED and the permute would
+        // compute a single unsigned term. Refuse instead: a missing
+        // antisymmetrizer in a residual is a converged, wrong answer.
+        if (!parsed.operators.empty()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::permute: a permutation operator is not supported on tiled operands (spec '{}')", parsed.raw);
+        }
         auto &tctx = CaptureContext::current();
         if (!tctx.is_capturing()) {
             LabeledSection("permute eager");
@@ -540,6 +548,7 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
         }
         desc.c_indices = parsed.c_indices;
         desc.a_indices = parsed.a_indices;
+        desc.operators = parsed.operators;
         // Live scalars in the operands' own type, so a pass that rewrites a
         // prefactor is obeyed on the next replay. The executor used to bake
         // copies of these and ignore the descriptor entirely.
@@ -6878,6 +6887,25 @@ void validate_einsum_dims(ParsedEinsumSpec const &parsed, AType const &A, BType 
     scan(parsed.a_indices, A, 'A');
     scan(parsed.b_indices, B, 'B');
     scan(parsed.c_indices, C, 'C');
+
+    // A permutation operator swaps output axes, so every axis it names has to be
+    // the same length. Checked here, where the letter-to-extent map already
+    // exists, rather than at parse time, which sees no tensors. The parser has
+    // already established that each letter is an output index appearing once.
+    for (auto const &op : parsed.operators) {
+        auto const letters = op.letters();
+        for (std::size_t i = 1; i < letters.size(); ++i) {
+            auto const first = sizes.find(std::string_view{letters[0]});
+            auto const other = sizes.find(std::string_view{letters[i]});
+            if (first == sizes.end() || other == sizes.end() || first->second.first == other->second.first) {
+                continue;
+            }
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "cg::einsum: operator '{}' permutes index '{}' ({} elements) with '{}' ({} elements) - a "
+                                    "permutation operator requires equal extents, for spec '{}'",
+                                    op.render(), letters[0], first->second.first, letters[i], other->second.first, parsed.raw);
+        }
+    }
 }
 
 // build_einsum_descriptor now lives in Node.hpp so Graph::make_einsum_node can
@@ -6988,8 +7016,12 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     // link set that `detail::build_einsum_descriptor` computes from
     // them: avoids recomputing link indices on every execute().
     auto indices = ctx.graph()->create_indices(parsed.a_indices, parsed.b_indices, parsed.c_indices, desc.spec.link_indices);
-    desc.indices = indices;
-    desc.params  = params;
+    // build_einsum hands `indices->spec` straight to string_einsum, so this is
+    // what makes an un-lowered node compute the operator on replay. The
+    // descriptor's own copy is the snapshot the passes read.
+    indices->spec.operators = parsed.operators;
+    desc.indices            = indices;
+    desc.params             = params;
 
     // Index-space binding (design part 1.3). A space is a property of the SLOT
     // an index occupies, not of the letter globally, so the letters of this one
@@ -7364,6 +7396,12 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     if (parsed.conj_a || parsed.conj_b) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "cg::einsum: conjugation (conj(...) in the spec) is not yet supported for tiled operands");
+    }
+    // As in cg::permute: the tiled path carries no operator, so accepting one
+    // would silently drop it and leave a residual short of its other terms.
+    if (!parsed.operators.empty()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: a permutation operator is not supported for tiled operands (spec '{}')",
+                                parsed.raw);
     }
 
     auto &ctx = CaptureContext::current();

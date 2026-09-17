@@ -8,6 +8,9 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <array>
+#include <string>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -648,4 +651,231 @@ TEST_CASE("String einsum - repeated index within one operand must agree", "[Comp
         cg::einsum("i <- kk ; i", &C, A, B);
     });
     REQUIRE(msg.find("'k'") != std::string::npos);
+}
+
+// ─── Permutation operators ──────────────────────────────────────────────────
+
+// The oracle throughout this section is the hand-written expansion: the same
+// contraction run once per term into a scratch tensor and accumulated with the
+// term's sign. That is exactly how examples/toy/ccsd_t_spinorbital_toy.py spells
+// these today, so a disagreement means the operator computes something other
+// than what the working CCSD(T) code computes.
+
+TEST_CASE("String einsum - P(ij) matches the hand-expanded pair", "[ComputeGraph][StringEinsum][Permutation]") {
+    size_t const no = 3, nv = 4;
+    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
+    auto         F  = create_random_tensor<double>("F", no, no);
+
+    // C(i,j,a,b) = P(i/j) sum_m t2(i,m,a,b) F(m,j)
+    auto C = create_zero_tensor<double>("C", no, no, nv, nv);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", 0.0, &C, 1.0, t2, F);
+
+    auto base = create_zero_tensor<double>("base", no, no, nv, nv);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j,a,b <- i,m,a,b ; m,j", 0.0, &base, 1.0, t2, F);
+
+    for (size_t ii = 0; ii < no; ii++) {
+        for (size_t jj = 0; jj < no; jj++) {
+            for (size_t aa = 0; aa < nv; aa++) {
+                for (size_t bb = 0; bb < nv; bb++) {
+                    double const want = base(ii, jj, aa, bb) - base(jj, ii, aa, bb);
+                    REQUIRE_THAT(C(ii, jj, aa, bb), Catch::Matchers::WithinAbs(want, 1e-12));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("String einsum - P(ij)P(ab) is the CCSD ring term", "[ComputeGraph][StringEinsum][Permutation]") {
+    size_t const no = 3, nv = 4;
+    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
+    auto         W  = create_random_tensor<double>("W", no, nv, nv, no);
+
+    // The slide: P(ij)P(ab) sum_{me} t2(i,m,a,e) W(m,b,e,j)
+    auto C = create_zero_tensor<double>("C", no, no, nv, nv);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,e ; m,b,e,j", 0.0, &C, 1.0, t2, W);
+
+    auto base = create_zero_tensor<double>("base", no, no, nv, nv);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j,a,b <- i,m,a,e ; m,b,e,j", 0.0, &base, 1.0, t2, W);
+
+    for (size_t ii = 0; ii < no; ii++) {
+        for (size_t jj = 0; jj < no; jj++) {
+            for (size_t aa = 0; aa < nv; aa++) {
+                for (size_t bb = 0; bb < nv; bb++) {
+                    double const want = base(ii, jj, aa, bb) - base(jj, ii, aa, bb) - base(ii, jj, bb, aa) + base(jj, ii, bb, aa);
+                    REQUIRE_THAT(C(ii, jj, aa, bb), Catch::Matchers::WithinAbs(want, 1e-12));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("String einsum - prefactors apply once, not once per term", "[ComputeGraph][StringEinsum][Permutation]") {
+    size_t const no = 3, nv = 4;
+    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
+    auto         F  = create_random_tensor<double>("F", no, no);
+    auto         C0 = create_random_tensor<double>("C0", no, no, nv, nv);
+
+    double const c_pf = 0.5, ab_pf = -1.5;
+
+    auto C = create_zero_tensor<double>("C", no, no, nv, nv);
+    C      = C0;
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", c_pf, &C, ab_pf, t2, F);
+
+    auto base = create_zero_tensor<double>("base", no, no, nv, nv);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j,a,b <- i,m,a,b ; m,j", 0.0, &base, 1.0, t2, F);
+
+    for (size_t ii = 0; ii < no; ii++) {
+        for (size_t jj = 0; jj < no; jj++) {
+            for (size_t aa = 0; aa < nv; aa++) {
+                for (size_t bb = 0; bb < nv; bb++) {
+                    // c_pf ONCE on the old C; ab_pf ONCE on the antisymmetrized sum.
+                    double const want = c_pf * C0(ii, jj, aa, bb) + ab_pf * (base(ii, jj, aa, bb) - base(jj, ii, aa, bb));
+                    REQUIRE_THAT(C(ii, jj, aa, bb), Catch::Matchers::WithinAbs(want, 1e-12));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("String einsum - the base contraction keeps its fast path", "[ComputeGraph][StringEinsum][Permutation]") {
+    size_t const no = 3, nv = 4;
+    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
+    auto         F  = create_random_tensor<double>("F", no, no);
+    auto         C  = create_zero_tensor<double>("C", no, no, nv, nv);
+
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j,a,b <- i,m,a,b ; m,j", 0.0, &C, 1.0, t2, F);
+    std::string const bare = cg::dispatch::last_dispatch_route();
+
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", 0.0, &C, 1.0, t2, F);
+    std::string const wrapped = cg::dispatch::last_dispatch_route();
+
+    // The route names the operator AND the kernel underneath it, so this asserts
+    // both that the operator fired and that wrapping it did not push the
+    // contraction off whatever fast path it had.
+    INFO("bare route: " << bare << ", wrapped route: " << wrapped);
+    REQUIRE(wrapped == "antisymmetrized:" + bare);
+    // Without this the test would still pass if BOTH spellings fell back to the
+    // generic loop, which is the regression it exists to catch.
+    REQUIRE(bare != "generic_loop");
+    REQUIRE(bare != "generic_loop_repeated_indices");
+}
+
+TEST_CASE("String einsum - a zero-extent operand still scales C exactly once", "[ComputeGraph][StringEinsum][Permutation]") {
+    size_t const no = 3, nv = 4;
+    auto         t2 = create_random_tensor<double>("t2", no, no, nv, 0); // zero-extent link
+    auto         W  = create_random_tensor<double>("W", no, nv, 0, no);
+    auto         C0 = create_random_tensor<double>("C0", no, no, nv, nv);
+
+    auto C = create_zero_tensor<double>("C", no, no, nv, nv);
+    C      = C0;
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,e ; m,b,e,j", 0.5, &C, 1.0, t2, W);
+
+    // Four terms, but c_pf applies once: C = 0.5 * C0, not 0.5^4 * C0.
+    for (size_t ii = 0; ii < no; ii++) {
+        for (size_t jj = 0; jj < no; jj++) {
+            for (size_t aa = 0; aa < nv; aa++) {
+                for (size_t bb = 0; bb < nv; bb++) {
+                    REQUIRE_THAT(C(ii, jj, aa, bb), Catch::Matchers::WithinAbs(0.5 * C0(ii, jj, aa, bb), 1e-12));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("String einsum - unequal extents under an operator are rejected", "[ComputeGraph][StringEinsum][Permutation]") {
+    auto A = create_random_tensor<double>("A", 3, 5);
+    auto B = create_random_tensor<double>("B", 5, 4);
+    auto C = create_zero_tensor<double>("C", 3, 4);
+
+    // i spans 3, j spans 4: P(i/j) cannot swap them.
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    REQUIRE_THROWS_AS(cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &C, 1.0, A, B), std::invalid_argument);
+}
+
+TEST_CASE("String permute - P(i/jk)P(a/bc) matches the toy antisymmetrizer", "[ComputeGraph][StringEinsum][Permutation]") {
+    size_t const n = 3;
+    auto         X = create_random_tensor<double>("X", n, n, n, n, n, n);
+
+    auto C = create_zero_tensor<double>("C", n, n, n, n, n, n);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::permute("i,j,k,a,b,c <- P(i/jk) P(a/bc) i,j,k,a,b,c", 0.0, &C, 1.0, X);
+
+    // examples/toy/ccsd_t_spinorbital_toy.py:134, verbatim: the nine index
+    // permutations of P(i/jk)P(a/bc) with their signs.
+    auto ref = create_zero_tensor<double>("ref", n, n, n, n, n, n);
+    struct Term {
+        int    p[6];
+        double sign;
+    };
+    // Each row maps the OUTPUT slot to the source slot of X.
+    std::array<Term, 9> const terms{{{{0, 1, 2, 3, 4, 5}, +1.0},
+                                     {{1, 0, 2, 3, 4, 5}, -1.0},
+                                     {{2, 1, 0, 3, 4, 5}, -1.0},
+                                     {{0, 1, 2, 4, 3, 5}, -1.0},
+                                     {{0, 1, 2, 5, 4, 3}, -1.0},
+                                     {{1, 0, 2, 4, 3, 5}, +1.0},
+                                     {{1, 0, 2, 5, 4, 3}, +1.0},
+                                     {{2, 1, 0, 4, 3, 5}, +1.0},
+                                     {{2, 1, 0, 5, 4, 3}, +1.0}}};
+
+    std::array<size_t, 6> idx{};
+    for (idx[0] = 0; idx[0] < n; idx[0]++)
+        for (idx[1] = 0; idx[1] < n; idx[1]++)
+            for (idx[2] = 0; idx[2] < n; idx[2]++)
+                for (idx[3] = 0; idx[3] < n; idx[3]++)
+                    for (idx[4] = 0; idx[4] < n; idx[4]++)
+                        for (idx[5] = 0; idx[5] < n; idx[5]++) {
+                            double acc = 0.0;
+                            for (auto const &t : terms) {
+                                acc += t.sign * X(idx[t.p[0]], idx[t.p[1]], idx[t.p[2]], idx[t.p[3]], idx[t.p[4]], idx[t.p[5]]);
+                            }
+                            ref(idx[0], idx[1], idx[2], idx[3], idx[4], idx[5]) = acc;
+                        }
+
+    for (idx[0] = 0; idx[0] < n; idx[0]++)
+        for (idx[1] = 0; idx[1] < n; idx[1]++)
+            for (idx[2] = 0; idx[2] < n; idx[2]++)
+                for (idx[3] = 0; idx[3] < n; idx[3]++)
+                    for (idx[4] = 0; idx[4] < n; idx[4]++)
+                        for (idx[5] = 0; idx[5] < n; idx[5]++) {
+                            REQUIRE_THAT(C(idx[0], idx[1], idx[2], idx[3], idx[4], idx[5]),
+                                         Catch::Matchers::WithinAbs(ref(idx[0], idx[1], idx[2], idx[3], idx[4], idx[5]), 1e-12));
+                        }
+}
+
+TEST_CASE("String einsum - an operator survives capture and replay", "[ComputeGraph][StringEinsum][Permutation]") {
+    size_t const no = 3, nv = 4;
+    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
+    auto         F  = create_random_tensor<double>("F", no, no);
+
+    auto eager = create_zero_tensor<double>("eager", no, no, nv, nv);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", 0.0, &eager, 1.0, t2, F);
+
+    auto      replayed = create_zero_tensor<double>("replayed", no, no, nv, nv);
+    cg::Graph graph("perm-op");
+    {
+        cg::CaptureGuard const capture(graph);
+        cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", 0.0, &replayed, 1.0, t2, F);
+    }
+    graph.execute();
+
+    for (size_t ii = 0; ii < no; ii++) {
+        for (size_t jj = 0; jj < no; jj++) {
+            for (size_t aa = 0; aa < nv; aa++) {
+                for (size_t bb = 0; bb < nv; bb++) {
+                    REQUIRE_THAT(replayed(ii, jj, aa, bb), Catch::Matchers::WithinAbs(eager(ii, jj, aa, bb), 1e-12));
+                }
+            }
+        }
+    }
 }

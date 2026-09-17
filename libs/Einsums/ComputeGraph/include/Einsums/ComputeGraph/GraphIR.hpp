@@ -73,6 +73,23 @@
  * which this format could not hold; a factorization emitting an intermediate over a fitted
  * auxiliary space and an unannotated basis is the case that reached it.
  *
+ * An @ref OpKind::Einsum or @ref OpKind::Permute node's ``operators`` key arrived
+ * at 1.7.0. It holds the node's permutation (antisymmetrizer) operators as an
+ * array of operators, each an array of groups, each an array of index letters,
+ * so ``P(i/jk)`` is ``[[["i"], ["j", "k"]]]``. It is OPTIONAL and written only
+ * where the node has one, which is what keeps every graph without an operator
+ * writing exactly the bytes 1.6.0 wrote.
+ *
+ * Absent means the empty list, and unlike ElementTransform's ``param`` that is
+ * not a default standing in for an unrecorded choice: no file before 1.7.0 could
+ * express an operator, so an absent key states positively that the node names
+ * none. The GROUPS are stored rather than the expanded terms, matching
+ * @ref EinsumDescriptor::operators, because the partition is the thing a pass
+ * reasons about and the expansion is derivable from it. A reader that finds a
+ * malformed operator reports it and drops that operator rather than keeping a
+ * partial one: a contraction missing one of its terms is a converged, wrong
+ * answer, which is the failure this format should never help produce.
+ *
  * @ref OpKind::LaplaceQuadrature arrived at 1.4.0. All three of its keys are
  * REQUIRED rather than defaulted, which is the same reasoning
  * @ref OpKind::Syev's job flag was read under: no file predates the kind, so an
@@ -215,7 +232,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.6.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.7.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

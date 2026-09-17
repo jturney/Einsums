@@ -275,6 +275,13 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
                 graph.create_indices(einsum->spec.a_indices, einsum->spec.b_indices, einsum->spec.c_indices, einsum->spec.link_indices);
             einsum->indices->spec.conj_a = einsum->conj_a;
             einsum->indices->spec.conj_b = einsum->conj_b;
+            // The operators belong on the LIVE block for the same reason the
+            // conj flags do: build_einsum hands `indices->spec` to the kernel,
+            // and it seeds that block from the descriptor only for a node that
+            // has none. This one was just created here, so a loaded node that
+            // named an operator would otherwise run the bare contraction and
+            // silently drop every term but the first.
+            einsum->indices->spec.operators = einsum->operators;
             // Regenerated exactly as build_executor regenerates it for a node
             // with no live block, so a loaded node's diagnostics read the same.
             einsum->indices->spec.raw = einsum->indices->spec.render();

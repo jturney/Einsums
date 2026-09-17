@@ -77,6 +77,95 @@ The string dispatch handles all common patterns:
    cg::einsum("il <- ijk ; jkl", &C, A, B);
    cg::einsum("ijkl <- ijp ; klp", &C, A, B);
 
+Permutation Operators
+=====================
+
+Coupled-cluster residuals are written with permutation operators, as in
+
+.. math::
+
+   P(ij)\,P(ab) \sum_{kc} t_{ik}^{ac}\,\langle kb\|cj\rangle
+
+A spec may name them directly, prefixing the term (the right-hand side under
+either arrow):
+
+.. code-block:: cpp
+
+   cg::einsum("i,j,a,b <- P(ij) P(ab) i,k,a,c ; k,c,j,b", 1.0, &r2, 1.0, t2, W);
+
+``P`` partitions a set of OUTPUT index letters into two or more groups, separated
+by ``/``, and expands to one signed term per coset of the Young subgroup:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 12 68
+
+   * - Spelling
+     - Terms
+     - Expansion
+   * - ``P(i/j)``
+     - 2
+     - ``1 - (ij)``
+   * - ``P(i/jk)``
+     - 3
+     - ``1 - (ij) - (ik)``
+   * - ``P(ij/k)``
+     - 3
+     - ``1 - (ik) - (jk)``
+   * - ``P(i/j/k)``
+     - 6
+     - the full antisymmetrizer over ``ijk``
+   * - ``P(ij/kl)``
+     - 6
+     - ``1 - (ik) - (il) - (jk) - (jl) + (ik)(jl)``
+
+Several operators in one spec multiply, so ``P(i/jk) P(a/bc)`` is the nine-term
+antisymmetrizer of the triples correction. Each term carries the parity of its
+permutation as a sign, and the prefactors apply once to the whole sum rather
+than once per term.
+
+In single-character mode ``P(ij)`` is accepted as shorthand for ``P(i/j)``. It is
+rejected in multi-character mode, where ``P(mu,nu)`` cannot be told from one
+group of two indices, and the groups must be written out as ``P(mu/nu)``.
+
+Applying an operator to a sum
+-----------------------------
+
+An operator on an ``einsum`` wraps that one contraction. When the operator
+applies to a SUM of contractions, accumulate the sum first and put the operator
+on a :cpp:func:`permute`:
+
+.. code-block:: cpp
+
+   // r2 += P(ij) P(ab) [ t2 . Wmbej - (t1 (x) t1) . <mb||ej> ]
+   cg::einsum("i,j,a,b <- i,m,a,e ; m,b,e,j", 0.0, &tmp, 1.0, t2, Wmbej);
+   cg::einsum("i,j,a,b <- i,m,e,a ; m,b,e,j", 1.0, &tmp, -1.0, t1t1, ovvo);
+   cg::permute("i,j,a,b <- P(ij) P(ab) i,j,a,b", 1.0, &r2, 1.0, tmp);
+
+Rules
+-----
+
+- Every letter an operator names must be an output index, appearing once. A
+  contracted index has no output axis to reorder, so naming one is an error
+  rather than a no-op.
+- Groups within an operator are disjoint, and operators in one spec name
+  disjoint letter sets.
+- All axes an operator permutes must have equal extent.
+- Tiled operands do not support operators and say so.
+
+.. warning::
+
+   A permutation operator is well-defined only on a term that is already
+   antisymmetric within each group, which is what makes the notation meaningful
+   in the coupled-cluster equations it comes from. A coset of the Young subgroup
+   contains permutations of BOTH parities, so on a term without that symmetry the
+   result depends on which representative is chosen. Einsums picks the one the
+   literature prints, so ``P(i/jk) f`` is ``f(ijk) - f(jik) - f(kji)``.
+
+The simultaneous pair permutation of the closed-shell equations, often written
+``P(ia,jb)``, is a different operator: its sign is positive and it is not a coset
+expansion. It is not supported, and a spec meaning it must be written out.
+
 Prefactors
 ==========
 

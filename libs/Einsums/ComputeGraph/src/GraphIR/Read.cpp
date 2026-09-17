@@ -215,6 +215,72 @@ std::vector<std::string> read_string_array(Object const &object, std::string_vie
     return out;
 }
 
+/// A permutation operator list: an array of operators, each an array of groups,
+/// each an array of index letters.
+///
+/// OPTIONAL, and absent means the empty list. That is not a defaulted guess the
+/// way ElementTransform's ``param`` is: every file written before 1.7.0 predates
+/// the capability, so an absent key states positively that the node names no
+/// operator. A malformed one is reported and skipped rather than half-read,
+/// because a partial operator is a different contraction wearing the same spec.
+std::vector<PermutationOperator> read_permutation_operators(Object const &object, std::string const &path, Problems &problems) {
+    std::vector<PermutationOperator> out;
+    Value const                     *value = object.take("operators");
+    if (value == nullptr) {
+        return out;
+    }
+
+    std::string const child     = fmt::format("{}.operators", path);
+    Array const      *operators = as_array(*value, child, problems);
+    if (operators == nullptr) {
+        return out;
+    }
+
+    for (std::size_t op_index = 0; op_index < operators->size(); ++op_index) {
+        std::string const op_path = fmt::format("{}[{}]", child, op_index);
+        Array const      *groups  = as_array((*operators)[op_index], op_path, problems);
+        if (groups == nullptr) {
+            continue;
+        }
+
+        PermutationOperator op;
+        bool                well_formed = true;
+        for (std::size_t g = 0; g < groups->size(); ++g) {
+            std::string const group_path = fmt::format("{}[{}]", op_path, g);
+            Array const      *letters    = as_array((*groups)[g], group_path, problems);
+            if (letters == nullptr) {
+                well_formed = false;
+                break;
+            }
+            std::vector<std::string> group;
+            for (std::size_t l = 0; l < letters->size(); ++l) {
+                if (!(*letters)[l].is_string()) {
+                    note(problems, fmt::format("{}[{}]", group_path, l), (*letters)[l].position,
+                         fmt::format("expected an index letter, found {}", (*letters)[l].type_name()));
+                    well_formed = false;
+                    continue;
+                }
+                group.push_back((*letters)[l].as_string());
+            }
+            if (group.empty()) {
+                note(problems, group_path, (*groups)[g].position, "a permutation operator group names no index");
+                well_formed = false;
+            }
+            op.groups.push_back(std::move(group));
+        }
+
+        if (op.groups.size() < 2) {
+            note(problems, op_path, (*operators)[op_index].position,
+                 fmt::format("a permutation operator needs at least two groups, found {}", op.groups.size()));
+            well_formed = false;
+        }
+        if (well_formed) {
+            out.push_back(std::move(op));
+        }
+    }
+    return out;
+}
+
 /// An array of signed integers, for a descriptor whose entries are not extents.
 ///
 /// Separate from @ref read_extent_array rather than a relaxation of it: an extent that came
@@ -563,6 +629,7 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
         desc.beta               = as<std::complex<double>>(beta);
         desc.c_indices          = read_string_array(*object, "c_indices", path, problems, value.position);
         desc.a_indices          = read_string_array(*object, "a_indices", path, problems, value.position);
+        desc.operators          = read_permutation_operators(*object, path, problems);
         desc.params             = make_elementwise_params(alpha, beta);
         node.descriptor         = std::move(desc);
         return;
@@ -597,6 +664,7 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
         desc.conj_b              = read_bool(*object, "conj_b", path, problems, value.position);
         desc.spec.conj_a         = desc.conj_a;
         desc.spec.conj_b         = desc.conj_b;
+        desc.operators           = read_permutation_operators(*object, path, problems);
         desc.spec.scalar_type    = node.dtype;
         desc.c_prefactor         = scalar("c_prefactor", PrefactorScalar{double{0}});
         desc.ab_prefactor        = scalar("ab_prefactor", PrefactorScalar{double{1}});

@@ -30,11 +30,20 @@
  * @endcode
  *
  * **Index parsing rules:**
- * - If ANY index group contains a comma → multi-char mode (commas separate indices)
- * - If NO commas → single-char mode (each character is one index)
+ * - Decided PER OPERAND: an operand containing a comma is comma-split (so
+ *   multi-char index names work), a comma-less operand is char-split, one index
+ *   per character. Deciding it across the whole spec mis-tokenized a comma-less
+ *   operand whenever a sibling used commas.
  * - Whitespace is ignored everywhere
  * - `;` always separates operands
  * - `<-` or `->` separates output from inputs
+ *
+ * **Permutation operators** (@ref PermutationOperator) may prefix the TERM, which
+ * is the right-hand side under either arrow:
+ * @code
+ * "i,a,j,b <- P(i/j) P(a/b) i,k,a,c ; k,c,j,b"
+ * "P(i/j) P(a/b) i,k,a,c ; k,c,j,b -> i,a,j,b"
+ * @endcode
  */
 
 #include <cstddef>
@@ -43,6 +52,90 @@
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
+
+/**
+ * @brief One permutation (antisymmetrizer) operator, as written `P(i/jk)`.
+ *
+ * The operator partitions a set of OUTPUT index letters into two or more
+ * disjoint, non-empty, ordered groups, and expands to one term per coset of the
+ * Young subgroup @f$S(g_0) \times \dots \times S(g_{k-1})@f$ in @f$S(L)@f$,
+ * where @f$L@f$ is the concatenation of the groups. The term count is
+ * @f$n! / \prod_t |g_t|!@f$ and each term carries the parity of its
+ * representative as a sign.
+ *
+ * The expansions, which are the ones the coupled-cluster literature prints:
+ *
+ * - `P(i/j)`, 2 terms: `1 - (ij)`
+ * - `P(i/jk)`, 3 terms: `1 - (ij) - (ik)`
+ * - `P(ij/k)`, 3 terms: `1 - (ik) - (jk)`
+ * - `P(i/j/k)`, 6 terms: the full antisymmetrizer over `ijk`
+ * - `P(ij/kl)`, 6 terms: `1 - (ik) - (il) - (jk) - (jl) + (ik)(jl)`
+ *
+ * @warning A coset contains members of DIFFERENT parity, so which one is chosen
+ * changes the value. The operator is well-defined only on a base term that is
+ * already antisymmetric within each group, which is what makes the notation
+ * legitimate in the coupled-cluster literature and holds wherever it is used
+ * there. @ref expand_permutation_operators documents the representative this
+ * implementation picks and why.
+ *
+ * Comma-vs-character mode is decided across the WHOLE operator, not per group:
+ * `P(mu,nu/rho)` has to read `rho` as one index, which a per-group rule would
+ * char-split into three. `P(ij)` is sugar for `P(i/j)` in character mode only,
+ * since `P(mu,nu)` is otherwise ambiguous between one group of two and two
+ * groups of one.
+ *
+ * @versionadded{2.1.0}
+ */
+struct PermutationOperator {
+    /// The partition, in source order. `P(i/jk)` gives `{{"i"}, {"j","k"}}`.
+    std::vector<std::vector<std::string>> groups;
+
+    /// The canonical `P(i/j,k)` spelling: slash between groups, comma inside one.
+    [[nodiscard]] EINSUMS_EXPORT std::string render() const;
+
+    /// Every letter this operator names, in group-concatenation order.
+    [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> letters() const;
+};
+
+/**
+ * @brief One term of an expanded permutation operator product.
+ *
+ * @ref c_indices is the output index list relabelled by this term's
+ * permutation, which is exactly the output spec of the permuted accumulation
+ * that realizes the term: `permute(term.c_indices <- base.c_indices)` scaled by
+ * @ref sign reads the base result and adds it at the transposed position.
+ *
+ * @versionadded{2.1.0}
+ */
+struct PermutationTerm {
+    std::vector<std::string> c_indices; ///< Output order for this term.
+    double                   sign{1.0}; ///< Parity of the representative, +1 or -1.
+};
+
+/**
+ * @brief Expand a product of permutation operators over an output index list.
+ *
+ * @param[in] c_indices The output index list the operators permute.
+ * @param[in] operators The operators, which must name disjoint letter sets.
+ * @return One @ref PermutationTerm per term, the identity term FIRST.
+ *         An empty @p operators list yields exactly one term, the identity.
+ *
+ * @par Choice of representative
+ * Within each coset the member that displaces the fewest letters is taken, ties
+ * broken by pairing the displaced letters between groups in their original
+ * order. That reproduces the spelling the literature prints, so
+ * `P(i/jk) f = f(ijk) - f(jik) - f(kji)` rather than an equivalent-on-valid-input
+ * set with different parities. It is a CONVENTION chosen to match what a user
+ * checks against by hand, not a correctness property: see the warning on
+ * @ref PermutationOperator.
+ *
+ * With several operators the terms are the Cartesian product of the per-operator
+ * expansions, signs multiplied, with the FIRST operator varying slowest.
+ *
+ * @versionadded{2.1.0}
+ */
+[[nodiscard]] EINSUMS_EXPORT std::vector<PermutationTerm> expand_permutation_operators(std::vector<std::string> const         &c_indices,
+                                                                                       std::vector<PermutationOperator> const &operators);
 
 /**
  * @brief Result of parsing an einsum specification string.
@@ -57,6 +150,13 @@ struct EINSUMS_EXPORT ParsedEinsumSpec {
     std::string              raw;           ///< Original specification string
     bool                     conj_a{false}; ///< A wrapped in conj(...) in the spec
     bool                     conj_b{false}; ///< B wrapped in conj(...) in the spec
+
+    /// Permutation operators prefixing the term, in source order. Empty for
+    /// every spec that does not write one, which is every spec written before
+    /// they existed.
+    /// @see PermutationOperator, expand_permutation_operators
+    /// @versionadded{2.1.0}
+    std::vector<PermutationOperator> operators;
 
     /**
      * @brief The canonical `"c <- a ; b"` spelling of these index lists.
@@ -158,7 +258,35 @@ namespace detail {
 
 constexpr bool is_einsum_char(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ',' || c == ';' || c == '-' || c == '<' ||
-           c == '>' || c == ' ' || c == '\t' || c == '(' || c == ')'; // ( ) for the conj(...) operand wrapper
+           c == '>' || c == ' ' || c == '\t' || c == '(' || c == ')' || // ( ) for conj(...) and P(...)
+           c == '/';                                                    // group separator inside P(...)
+}
+
+/// @brief Strip the leading run of ``P(...)`` operators off a term.
+///
+/// Shared by the @c consteval index counter and the structural validators, both
+/// of which have to see the operand list the way the runtime parser will. The
+/// input is NOT whitespace-stripped, so leading blanks are skipped between
+/// operators the way the runtime parser's pre-stripped input has none.
+///
+/// Returns @p s unchanged when it does not start with an operator, and stops at
+/// the first unterminated one so the validator can reject it separately.
+constexpr std::string_view strip_permutation_operators(std::string_view s) {
+    while (true) {
+        std::size_t begin = 0;
+        while (begin < s.size() && (s[begin] == ' ' || s[begin] == '\t')) {
+            ++begin;
+        }
+        std::string_view const rest = s.substr(begin);
+        if (rest.size() < 2 || rest[0] != 'P' || rest[1] != '(') {
+            return s;
+        }
+        std::size_t const close = rest.find(')');
+        if (close == std::string_view::npos) {
+            return s; // unterminated; validate_* reports it
+        }
+        s = rest.substr(close + 1);
+    }
 }
 
 } // namespace detail
@@ -186,6 +314,12 @@ namespace detail {
 // comma is present, otherwise one index per non-whitespace character.
 // Used by parse_index_counts below.
 constexpr std::size_t count_operand_indices(std::string_view s) {
+    // A ``P(...)`` prefix names OUTPUT letters, not operand slots, so it must go
+    // before anything is counted. Leaving it in counted its letters as operand
+    // indices, which left ``counts.known`` true and made cg::einsum reject a
+    // correctly-ranked operand at compile time, pointing at the wrong thing.
+    s = strip_permutation_operators(s);
+
     while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
         s.remove_prefix(1);
     while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
@@ -194,7 +328,7 @@ constexpr std::size_t count_operand_indices(std::string_view s) {
         return 0;
 
     // A ``conj(...)`` wrapper counts as just the indices it encloses.
-    if (s.size() >= 6 && s.substr(0, 5) == "conj(" && s.back() == ')')
+    if (s.size() >= 6 && s.starts_with("conj(") && s.back() == ')')
         s = s.substr(5, s.size() - 6);
 
     bool has_comma = false;
@@ -284,12 +418,46 @@ constexpr IndexCounts parse_index_counts(std::string_view spec) {
     return r;
 }
 
+namespace detail {
+
+/// @brief Structural check on the ``conj(...)`` and ``P(...)`` wrappers.
+///
+/// Character-level only: parentheses balance, never nest, and never enclose
+/// nothing. Everything that needs the index lists (a letter that is not an
+/// output index, overlapping groups, a group of one) is checked by the runtime
+/// parser, which can name the offender. This one only has a string literal to
+/// throw.
+constexpr bool wrappers_well_formed(std::string_view spec) {
+    int         depth = 0;
+    std::size_t open  = 0;
+    for (std::size_t i = 0; i < spec.size(); ++i) {
+        if (spec[i] == '(') {
+            if (depth != 0) {
+                return false; // conj(P(...)) and friends: no nesting
+            }
+            depth = 1;
+            open  = i;
+        } else if (spec[i] == ')') {
+            if (depth != 1 || i == open + 1) {
+                return false; // unbalanced, or an empty P() / conj()
+            }
+            depth = 0;
+        }
+    }
+    return depth == 0;
+}
+
+} // namespace detail
+
 constexpr bool validate_einsum_spec(std::string_view spec) {
     // Check all characters are valid
     for (char const c : spec) {
         if (!detail::is_einsum_char(c))
             return false;
     }
+
+    if (!detail::wrappers_well_formed(spec))
+        return false;
 
     // Count arrows
     int left_arrows  = 0; // <-
@@ -393,6 +561,11 @@ struct ParsedPermuteSpec {
     std::vector<std::string> a_indices; ///< Input (A) indices
     std::string              raw;       ///< Original specification string
 
+    /// Permutation operators prefixing the term, in source order.
+    /// @see ParsedEinsumSpec::operators
+    /// @versionadded{2.1.0}
+    std::vector<PermutationOperator> operators;
+
     /// The canonical `"c <- a"` spelling of these index lists.
     /// @see ParsedEinsumSpec::render
     /// @versionadded{2.0.0}
@@ -426,6 +599,9 @@ constexpr bool validate_permute_spec(std::string_view spec) {
         if (!detail::is_einsum_char(c))
             return false;
     }
+
+    if (!detail::wrappers_well_formed(spec))
+        return false;
 
     int left_arrows = 0, right_arrows = 0;
     for (size_t i = 0; i + 1 < spec.size(); i++) {

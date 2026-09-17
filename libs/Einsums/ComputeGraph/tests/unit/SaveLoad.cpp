@@ -1027,6 +1027,82 @@ TEST_CASE("SaveLoad - a partial space annotation crosses the file with its hole 
     CHECK(loaded.space_registry().name_of(spaces[1]) == "saveload_partial_aux");
 }
 
+TEST_CASE("SaveLoad - a permutation operator crosses the file intact", "[ComputeGraph][SaveLoad][Permutation]") {
+    // An operator is ALGEBRA: it names terms the contraction does not otherwise
+    // have, so a file that drops it describes a residual short of three of its
+    // four terms and a replay of it converges to the wrong answer. That is why
+    // the key is written for the einsum and the permute alike, and why a
+    // malformed one is dropped loudly rather than half-read.
+    size_t const no = 3, nv = 4;
+    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
+    auto         F  = create_random_tensor<double>("F", no, no);
+    auto         C  = create_zero_tensor<double>("C", no, no, nv, nv);
+
+    cg::Graph graph("permutation_operator");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,b ; m,j", 0.0, &C, 1.0, t2, F);
+    }
+
+    auto const saved = cg::save_graph_string(graph);
+    REQUIRE(saved.has_value());
+    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+        std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_7_0_permutation_operator.eig.json", std::ios::binary);
+        out << *saved;
+    }
+
+    cg::Graph   loaded = must_load(*saved);
+    auto const *desc   = std::get_if<cg::EinsumDescriptor>(&loaded.nodes()[0].op_data);
+    REQUIRE(desc != nullptr);
+    REQUIRE(desc->operators.size() == 2);
+    CHECK(desc->operators[0].groups == std::vector<std::vector<std::string>>{{"i"}, {"j"}});
+    CHECK(desc->operators[1].groups == std::vector<std::vector<std::string>>{{"a"}, {"b"}});
+
+    // The reloaded graph must COMPUTE the operator, not merely carry it.
+    auto eager = create_zero_tensor<double>("eager", no, no, nv, nv);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,b ; m,j", 0.0, &eager, 1.0, t2, F);
+
+    auto replayed = create_zero_tensor<double>("replayed", no, no, nv, nv);
+    loaded.bind("t2", t2);
+    loaded.bind("F", F);
+    loaded.bind("C", replayed);
+    loaded.execute();
+
+    for (size_t ii = 0; ii < no; ii++) {
+        for (size_t jj = 0; jj < no; jj++) {
+            for (size_t aa = 0; aa < nv; aa++) {
+                for (size_t bb = 0; bb < nv; bb++) {
+                    REQUIRE_THAT(replayed(ii, jj, aa, bb), Catch::Matchers::WithinAbs(eager(ii, jj, aa, bb), 1e-12));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("SaveLoad - a graph without operators writes no operators key", "[ComputeGraph][SaveLoad][Permutation]") {
+    // The key is optional on BOTH sides: written only where there is one, so a
+    // graph that names none produces exactly the bytes 1.6.0 produced, and every
+    // golden in the corpus keeps loading without a default to guess.
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 5);
+    auto C = create_zero_tensor<double>("C", 4, 5);
+
+    cg::Graph graph("no_operators");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,k ; k,j -> i,j", &C, A, B);
+    }
+
+    std::string const text = must_save(graph);
+    REQUIRE_THAT(text, !Catch::Matchers::ContainsSubstring(R"("operators":)"));
+
+    cg::Graph const loaded = must_load(text);
+    auto const     *desc   = std::get_if<cg::EinsumDescriptor>(&loaded.nodes()[0].op_data);
+    REQUIRE(desc != nullptr);
+    CHECK(desc->operators.empty());
+}
+
 // ── Tier 4: goldens ────────────────────────────────────────────────────────
 
 TEST_CASE("SaveLoad - every checked-in golden still loads", "[ComputeGraph][SaveLoad]") {

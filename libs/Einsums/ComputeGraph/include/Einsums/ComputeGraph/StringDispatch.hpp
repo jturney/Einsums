@@ -25,6 +25,7 @@
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
 #include <Einsums/Profile.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/TensorAlgebra/Permute.hpp>
 
 #include <fmt/format.h>
@@ -105,6 +106,14 @@ void string_gemv_mat_vec(ParsedEinsumSpec const & /*parsed*/, T c_pf, OutType *o
 /// is every einsum node since @ref build_executor took over the lowering) would
 /// then write a slot no test executable can read.
 [[nodiscard]] EINSUMS_EXPORT char const *&last_dispatch_route();
+
+/// Forward declaration: @ref string_einsum expands a permutation operator into
+/// signed permuted accumulations, and is defined ahead of the permute kernel it
+/// calls to do that.
+/// @see string_permute_impl for the definition and the parameter documentation.
+template <typename T>
+void string_permute_impl(ParsedPermuteSpec const &parsed, T beta, einsums::detail::TensorImpl<T> *C, T alpha,
+                         einsums::detail::TensorImpl<T> const &A);
 
 /**
  * @brief Generic runtime nested-loop contraction for arbitrary rank/pattern.
@@ -412,6 +421,72 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                    AType const &A, BType const &B, bool conj_a = false, bool conj_b = false,
                    std::vector<std::string> const *precomputed_links = nullptr, packed_gemm::ContractionSite *pg_site = nullptr) {
     using T = typename AType::ValueType;
+
+    // A permutation operator contracts ONCE and accumulates the result into C
+    // several times, transposed and signed. The contraction cannot go straight
+    // into C, because the permuted accumulations would then read what they are
+    // writing, so it goes to a temporary shaped like C.
+    //
+    // This is the un-lowered path: the AntisymmetrizerExpansion pass turns a
+    // captured node into an explicit contraction plus permutes, which is what
+    // makes the temporary a graph-managed buffer rather than one allocated per
+    // call. What runs here is the eager path and the replay of a graph nobody
+    // optimized, and both have to be correct on their own.
+    if (!parsed.operators.empty()) {
+        ParsedEinsumSpec base = parsed;
+        base.operators.clear();
+
+        std::size_t total = 1;
+        for (std::size_t d = 0; d < detail::tensor_rank(*C); d++) {
+            total *= C->dim(d);
+        }
+
+        std::vector<T>           scratch(total);
+        std::vector<std::size_t> dims(detail::tensor_rank(*C));
+        for (std::size_t d = 0; d < dims.size(); d++) {
+            dims[d] = C->dim(d);
+        }
+        einsums::detail::TensorImpl<T> temp_impl(scratch.data(), dims, C->impl().is_row_major());
+
+        // The temporary has to be the same KIND of tensor as C. A runtime-rank
+        // view standing in for a typed C reaches fast paths that have no mixed
+        // typed/runtime overload (direct_product is one), and that is a compile
+        // error at the call rather than a fallback to the generic loop.
+        auto temp = [&] {
+            if constexpr (HasCompileTimeRank<CType>) {
+                return TensorView<T, std::remove_cvref_t<CType>::Rank>(temp_impl);
+            } else {
+                return einsums::RuntimeTensorView<T>(temp_impl);
+            }
+        }();
+
+        // c_pf = 0: the base result is the whole content of the temporary, so
+        // the accumulation below is the only place C is touched.
+        string_einsum(base, T{0}, &temp, ab_pf, A, B, conj_a, conj_b, precomputed_links, pg_site);
+
+        // Name the route as the operator wrapped around whatever kernel the base
+        // contraction reached, so a test can assert BOTH that the operator fired
+        // and that the contraction underneath it still took its fast path. A
+        // flat "antisymmetrized" would hide a fast-path regression.
+        static thread_local std::string route;
+        route                  = std::string("antisymmetrized:") + last_dispatch_route();
+        char const *base_route = route.c_str();
+
+        auto const terms = expand_permutation_operators(parsed.c_indices, parsed.operators);
+
+        ParsedPermuteSpec term_spec;
+        term_spec.a_indices = parsed.c_indices; // the temporary carries C's index order
+        term_spec.raw       = parsed.raw;
+        // ab_pf was already applied by the base contraction, so each term carries
+        // only its sign. Applying it here as well would square it.
+        for (std::size_t t = 0; t < terms.size(); ++t) {
+            term_spec.c_indices = terms[t].c_indices;
+            string_permute_impl<T>(term_spec, t == 0 ? c_pf : T{1}, &C->impl(), static_cast<T>(terms[t].sign), temp_impl);
+        }
+
+        last_dispatch_route() = base_route;
+        return;
+    }
 
     LabeledSection("cg::einsum: {} <- {} ; {}", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
                    fmt::join(parsed.b_indices, ","));
@@ -953,6 +1028,26 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 template <typename T>
 void string_permute_impl(ParsedPermuteSpec const &parsed, T beta, einsums::detail::TensorImpl<T> *C, T alpha,
                          einsums::detail::TensorImpl<T> const &A) {
+    // A permutation operator expands into several signed accumulations of the
+    // same source. No temporary is needed here, unlike the einsum case: every
+    // term reads A, which this operation never writes, so the terms accumulate
+    // into C directly. The destination prefactor belongs to the FIRST term only,
+    // which is what keeps `C = beta*C + alpha*P[...](A)` from scaling C once per
+    // term. The identity term is always first, so that term is also the one that
+    // may legitimately overwrite.
+    if (!parsed.operators.empty()) {
+        auto const terms = expand_permutation_operators(parsed.c_indices, parsed.operators);
+
+        ParsedPermuteSpec term_spec;
+        term_spec.a_indices = parsed.a_indices;
+        term_spec.raw       = parsed.raw;
+        for (std::size_t t = 0; t < terms.size(); ++t) {
+            term_spec.c_indices = terms[t].c_indices;
+            string_permute_impl<T>(term_spec, t == 0 ? beta : T{1}, C, static_cast<T>(terms[t].sign) * alpha, A);
+        }
+        return;
+    }
+
     auto const &c_idx = parsed.c_indices;
     auto const &a_idx = parsed.a_indices;
 

@@ -1,0 +1,78 @@
+{
+  "einsums_graph_ir": "1.7.0",
+  "provenance": {"library_version":"2.0.0","config_fingerprint":"0x3163ced3f54d794c","structural_passes":[]},
+  "name": "permutation_operator",
+  "manifest": [
+    {
+      "id": 0,
+      "name": "C",
+      "direction": "output",
+      "dtype": "float64",
+      "rank": 4,
+      "dims": [3,3,4,4],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 1,
+      "name": "F",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [3,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 2,
+      "name": "t2",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 4,
+      "dims": [3,3,4,4],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    }
+  ],
+  "spaces": {"names":[],"symbol_ties":[]},
+  "approximations": [],
+  "params": [],
+  "gate_flags": [],
+  "tensors": [],
+  "slot_redirects": [],
+  "nodes": [
+    {
+      "id": 0,
+      "kind": "Einsum",
+      "label": "einsum: C[i,j,a,b] = A[i,m,a,b] * B[m,j]",
+      "inputs": [2,1],
+      "outputs": [0],
+      "dtype": "float64",
+      "rank": 4,
+      "descriptor": {
+        "c_indices": ["i","j","a","b"],
+        "a_indices": ["i","m","a","b"],
+        "b_indices": ["m","j"],
+        "link_indices": ["m"],
+        "target_indices": ["a","b","i","j"],
+        "all_indices": ["a","b","i","j","m"],
+        "scalar_output": false,
+        "conj_a": false,
+        "conj_b": false,
+        "c_prefactor": {"dtype":"float64","re":0.0},
+        "ab_prefactor": {"dtype":"float64","re":1.0},
+        "operators": [[["i"],["j"]],[["a"],["b"]]],
+        "letter_spaces": []
+      }
+    }
+  ]
+}

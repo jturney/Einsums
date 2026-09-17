@@ -82,6 +82,19 @@ Value to_array(Range const &range) {
     return to_array(range, [](auto const &item) { return Value{item}; });
 }
 
+/// A permutation operator list, as an array of operators, each an array of
+/// groups, each an array of index letters: ``P(i/jk)`` is
+/// ``[[["i"], ["j", "k"]]]``.
+///
+/// The GROUPS are written, not the expanded terms, for the reason
+/// @ref EinsumDescriptor::operators stores them that way: the partition is what
+/// a reader can reason about, and the expansion is derivable from it.
+Value write_permutation_operators(std::vector<PermutationOperator> const &operators) {
+    return to_array(operators, [](PermutationOperator const &op) {
+        return to_array(op.groups, [](std::vector<std::string> const &group) { return to_array(group); });
+    });
+}
+
 /// A typed scalar: a discriminated union by dtype NAME, with the real part
 /// always present and the imaginary part present exactly for the complex arms.
 ///
@@ -265,6 +278,11 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("beta", desc.params != nullptr ? write_prefactor(desc.params->beta) : write_complex(desc.beta));
         out.set("c_indices", to_array(desc.c_indices));
         out.set("a_indices", to_array(desc.a_indices));
+        // Written only when there is one, so every file this build produces for
+        // a graph without operators is byte-identical to what 1.6.0 wrote.
+        if (!desc.operators.empty()) {
+            out.set("operators", write_permutation_operators(desc.operators));
+        }
         return Value{std::move(out)};
     }
     case OpKind::Axpby: {
@@ -302,6 +320,14 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         out.set("conj_b", Value{live_conj_b(desc)});
         out.set("c_prefactor", write_prefactor(live_c_prefactor(desc)));
         out.set("ab_prefactor", write_prefactor(live_ab_prefactor(desc)));
+
+        // The LIVE operators for the same reason the index lists above are live:
+        // ``indices->spec`` is what the executor reads. Written only when there
+        // is one, so a graph without operators still writes 1.6.0's bytes.
+        auto const &operators = live ? desc.indices->spec.operators : desc.operators;
+        if (!operators.empty()) {
+            out.set("operators", write_permutation_operators(operators));
+        }
 
         out.set("letter_spaces", to_array(desc.letter_spaces, [&graph](auto const &pair) {
                     Object entry;
