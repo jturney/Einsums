@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
@@ -11,6 +12,9 @@
 #include <Einsums/ComputeGraph/Passes/AntisymmetrizerFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Errors/ThrowException.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/Tensor/SymmetryOps.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 
 #include <fmt/format.h>
@@ -19,7 +23,9 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -97,6 +103,35 @@ std::optional<SymmetryDescriptor> required_antisymmetry(OperatorProducer const &
         return std::nullopt;
     }
     return desc;
+}
+
+/// The facts DETECTION established: a hint on a tensor nothing in the graph
+/// writes.
+///
+/// Reconstructed by walking the graph rather than threaded through from the
+/// detection pass. The alternative is provenance, recording per fold which leaves
+/// its premise descended from, and the conservative set is both simpler and the
+/// right thing to re-check: if any detected fact stops holding, some rewrite
+/// justified by it may be invalid, and this pass cannot see which.
+std::vector<std::pair<TensorId, SymmetryDescriptor>> detected_leaves(Graph const &graph) {
+    std::unordered_set<TensorId> written;
+    for (auto const &node : graph.nodes()) {
+        if (is_lifecycle(node.kind)) {
+            continue;
+        }
+        for (auto const out : node.outputs) {
+            written.insert(graph.resolve_alias(out));
+        }
+    }
+
+    std::vector<std::pair<TensorId, SymmetryDescriptor>> leaves;
+    for (auto const &[tid, handle] : graph.tensors_map()) {
+        if (written.contains(graph.resolve_alias(tid)) || handle.symmetry_hint == nullptr || !handle.impl_fn) {
+            continue;
+        }
+        leaves.emplace_back(tid, *handle.symmetry_hint);
+    }
+    return leaves;
 }
 
 bool contains_all(SymmetryDescriptor const &have, SymmetryDescriptor const &need) {
@@ -275,6 +310,62 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
 
     std::vector<bool> const remove(original_count, false);
     graph.replace_nodes(remove, std::move(inserts));
+
+    // THE GUARD. Everything above rests on facts read out of the tensors bound
+    // when this pass ran, and rebind() repoints a graph at new ones without
+    // re-running the pipeline. ContractionPlanning states the rule this runs
+    // into: a measurement may found a hint, not a premise. So the premise is
+    // re-checked per bound problem.
+    //
+    // OpKind::Setup is the mechanism, and its contract is exactly the trigger
+    // needed: "A bind clears computed, and the executor then reruns". The body
+    // costs one boolean per replay and a sweep per bind, which is the same cost
+    // as the detection that established the facts.
+    //
+    // At position zero, because a guard behind the work it guards has already
+    // let the wrong answer be computed. add_setup_at exists for this reason.
+    if (auto leaves = detected_leaves(graph); !leaves.empty()) {
+        Graph &body  = graph.add_setup_at("antisymmetry premise guard", 0);
+        Graph *owner = &graph;
+
+        Node check;
+        check.id    = body.reserve_node_id();
+        check.kind  = OpKind::Custom;
+        check.label = fmt::format("verify {} detected symmetry fact(s) still hold", leaves.size());
+        for (auto const &[tid, desc] : leaves) {
+            check.inputs.push_back(tid);
+        }
+        check.execute = [owner, leaves = std::move(leaves)]() {
+            for (auto const &[tid, desc] : leaves) {
+                auto const *handle = owner->find_tensor(owner->resolve_alias(tid));
+                if (handle == nullptr || !handle->impl_fn) {
+                    continue;
+                }
+                bool ok = false;
+                detail::dispatch_scalar_type(handle->dtype, [&]<typename T>(T /*tag*/) {
+                    using Impl       = ::einsums::detail::TensorImpl<T>;
+                    auto const *impl = static_cast<Impl const *>(handle->impl_fn());
+                    if (impl == nullptr || impl->data() == nullptr) {
+                        ok = true; // nothing bound to contradict the fact
+                        return;
+                    }
+                    RuntimeTensorView<T> const view{*impl};
+                    ok = check_symmetry(view, desc);
+                });
+                if (!ok) {
+                    EINSUMS_THROW_EXCEPTION(
+                        std::runtime_error,
+                        "AntisymmetrizerFolding: tensor '{}' no longer has the symmetry this graph's optimization assumed. The "
+                        "antisymmetrizer fold was justified by reading the tensors bound when the pass ran; rebinding to data "
+                        "without that symmetry makes the rewrite wrong. Re-run the pass pipeline on the new binding, or bind "
+                        "data carrying the same symmetry.",
+                        handle->name);
+                }
+            }
+        };
+        body.add_node(std::move(check));
+    }
+
     graph.topological_sort();
     return true;
 }

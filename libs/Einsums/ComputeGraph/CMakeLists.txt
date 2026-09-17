@@ -14,6 +14,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/NaturalAuxiliaryFactorization.hpp
     Einsums/ComputeGraph/Passes/FactorizationPass.hpp
     Einsums/ComputeGraph/Passes/BasisTruncation.hpp
+    Einsums/ComputeGraph/Passes/AntisymmetryDetection.hpp
     Einsums/ComputeGraph/Passes/AntisymmetryInference.hpp
     Einsums/ComputeGraph/Passes/AntisymmetrizerExpansion.hpp
     Einsums/ComputeGraph/Passes/AntisymmetrizerFolding.hpp
@@ -149,6 +150,7 @@ set(ComputeGraphSources
     Passes/DeltaElimination.cpp
     Passes/FactorizationPass.cpp
     Passes/BasisTruncation.cpp
+    Passes/AntisymmetryDetection.cpp
     Passes/AntisymmetryInference.cpp
     Passes/AntisymmetrizerExpansion.cpp
     Passes/AntisymmetrizerFolding.cpp

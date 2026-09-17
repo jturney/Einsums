@@ -188,19 +188,29 @@ template <typename T, size_t Rank, typename Alloc>
 
 // ── Runtime-rank forms ──────────────────────────────────────────────────────
 
-/// A tensor whose rank is known only at run time and that subscripts through an
-/// index container: the @ref GeneralRuntimeTensor family, including its views.
+/// A runtime-rank tensor the walks below can traverse: extents, strides and a
+/// base pointer, which is all an offset odometer needs.
 ///
 /// Stated here as a requires-expression rather than borrowed from Concepts,
 /// which has no runtime-rank concept, and deliberately narrow: it names exactly
-/// the four operations the two walks below use.
+/// what the traversal uses and nothing else. In particular it does NOT require a
+/// declared descriptor, because @ref GeneralRuntimeTensorView has none and a view
+/// over an impl is how a ComputeGraph pass reaches a bound tensor's data. The
+/// caller-supplied-descriptor overload has to accept one.
 template <typename TensorType>
-concept RuntimeRankSymmetryTensor = requires(TensorType const &t, std::vector<size_t> const &idx) {
+concept RuntimeRankWalkable = requires(TensorType const &t) {
     typename std::remove_cvref_t<TensorType>::ValueType;
     { t.rank() } -> std::convertible_to<size_t>;
     { t.dim(0) } -> std::convertible_to<size_t>;
+    { t.stride(0) } -> std::convertible_to<size_t>;
+    { t.data() };
+};
+
+/// A walkable runtime-rank tensor that also CARRIES a descriptor, which the
+/// forms reading a tensor's own declared symmetry need.
+template <typename TensorType>
+concept RuntimeRankSymmetryTensor = RuntimeRankWalkable<TensorType> && requires(TensorType const &t) {
     { t.symmetry() } -> std::convertible_to<SymmetryDescriptor const *>;
-    { t(idx) };
 };
 
 namespace detail {
@@ -305,7 +315,7 @@ inline bool symmetry_op_axes_conform(std::vector<size_t> const &dims, SymmetryOp
 
 /// The extents of a runtime-rank tensor, as the walks want them.
 /// The extents of a runtime-rank tensor, as the walks want them.
-template <RuntimeRankSymmetryTensor TensorType>
+template <RuntimeRankWalkable TensorType>
 std::vector<size_t> symmetry_dims(TensorType const &tensor) {
     std::vector<size_t> dims(tensor.rank());
     for (size_t i = 0; i < dims.size(); ++i) {
@@ -315,7 +325,7 @@ std::vector<size_t> symmetry_dims(TensorType const &tensor) {
 }
 
 /// The strides of a runtime-rank tensor, in elements.
-template <RuntimeRankSymmetryTensor TensorType>
+template <RuntimeRankWalkable TensorType>
 std::vector<size_t> symmetry_strides(TensorType const &tensor) {
     std::vector<size_t> strides(tensor.rank());
     for (size_t i = 0; i < strides.size(); ++i) {
@@ -339,7 +349,7 @@ std::vector<size_t> symmetry_strides(TensorType const &tensor) {
 /// tensor at all: a rank past @ref kMaxSymmetryRank, which a @ref SymmetryOp
 /// cannot describe, or a generator permuting axes of unequal extent. Both mean
 /// the symmetry does not hold here, which is what the caller asked.
-template <RuntimeRankSymmetryTensor TensorType>
+template <RuntimeRankWalkable TensorType>
 [[nodiscard]] bool check_symmetry(TensorType const &tensor, SymmetryDescriptor const &desc, double tolerance = -1.0) {
     using T = typename std::remove_cvref_t<TensorType>::ValueType;
 

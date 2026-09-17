@@ -5,12 +5,15 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/Passes/AntisymmetrizerFolding.hpp>
+#include <Einsums/ComputeGraph/Passes/AntisymmetryDetection.hpp>
 #include <Einsums/ComputeGraph/Passes/AntisymmetryInference.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/Tensor/SymmetryOps.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -153,4 +156,140 @@ TEST_CASE("AntisymmetrizerFolding - a graph with no operator is untouched", "[Co
     CHECK(fold->num_candidates() == 0);
     CHECK(fold->num_folded() == 0);
     CHECK(graph.num_nodes() == before);
+}
+
+// THE chain this whole line of work exists for, in miniature. It is the shape of
+// the toy's (T) energy: an antisymmetrized quantity, divided by an invariant
+// denominator, contracted against another antisymmetrized quantity. Nothing here
+// is structural. Every link rests on a fact read out of the data:
+//
+//   detection : wsrc is antisymmetric within P(i/jk)'s group, D is invariant
+//   R1 (cond) : so W = P(i/jk)(wsrc) is fully antisymmetric
+//   R2        : so Wd = W / D keeps it
+//   fold      : so dot(Wd, P(i/jk)(vsrc)) collapses to 3 * dot(Wd, vsrc)
+TEST_CASE("AntisymmetrizerFolding - the detected chain reaches a fold", "[ComputeGraph][AntisymmetrizerFolding]") {
+    size_t const n = 4;
+
+    // Antisymmetric in axes (1,2), the group P(i/jk) does not permute within.
+    //
+    // Built by antisymmetrizing RANDOM data rather than from a closed form. The
+    // first attempt used (j-k)*(1+i), which is antisymmetric in (j,k) and which
+    // P(i/jk) annihilates exactly: expanding
+    // f(ijk) - f(jik) - f(kji) cancels term by term and W came out identically
+    // zero, so the test compared two zeros and would have passed with the fold
+    // computing anything at all.
+    auto const r_w = create_random_tensor<double>("rw", n, n, n);
+    auto const r_v = create_random_tensor<double>("rv", n, n, n);
+
+    RuntimeTensor<double> wsrc("wsrc", {n, n, n});
+    RuntimeTensor<double> vsrc("vsrc", {n, n, n});
+    RuntimeTensor<double> den("den", {n, n, n});
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            for (size_t k = 0; k < n; ++k) {
+                wsrc(std::vector<size_t>{i, j, k}) = r_w(i, j, k) - r_w(i, k, j);
+                vsrc(std::vector<size_t>{i, j, k}) = r_v(i, j, k) - r_v(i, k, j);
+                // Invariant under every permutation of the three axes, and never
+                // zero, which is what an energy denominator looks like.
+                den(std::vector<size_t>{i, j, k}) = 2.0 + static_cast<double>(i) + static_cast<double>(j) + static_cast<double>(k);
+            }
+        }
+    }
+
+    auto const capture_chain = [&](cg::Graph &graph, RuntimeTensor<double> &result) {
+        auto                  &W  = graph.create_zero_runtime_tensor<double>("W", {n, n, n}, true);
+        auto                  &Wd = graph.create_zero_runtime_tensor<double>("Wd", {n, n, n}, true);
+        auto                  &V  = graph.create_zero_runtime_tensor<double>("V", {n, n, n}, true);
+        cg::CaptureGuard const capture(graph);
+        cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &W, 1.0, wsrc);
+        cg::direct_division(1.0, W, den, 0.0, &Wd);
+        cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &V, 1.0, vsrc);
+        cg::dot_python(&result, Wd, V);
+    };
+
+    RuntimeTensor<double> plain_result("plain", {1});
+    cg::Graph             plain("chain_unfolded");
+    capture_chain(plain, plain_result);
+    plain.execute();
+    double const unfolded = plain_result(std::vector<size_t>{0});
+
+    RuntimeTensor<double> folded_result("folded", {1});
+    cg::Graph             folded("chain_folded");
+    capture_chain(folded, folded_result);
+
+    auto            detection = std::make_shared<cg::passes::AntisymmetryDetection>();
+    auto            inference = std::make_shared<cg::passes::AntisymmetryInference>();
+    auto            fold      = std::make_shared<cg::passes::AntisymmetrizerFolding>();
+    cg::PassManager manager;
+    manager.add(detection);
+    manager.add(inference);
+    manager.add(fold);
+    folded.apply(manager);
+
+    INFO("detected " << detection->num_found() << " generator(s), tagged " << inference->num_tagged() << ", folded " << fold->num_folded());
+    CHECK(detection->num_found() > 0);
+    CHECK(inference->num_tagged() > 0);
+    REQUIRE(fold->num_folded() == 1);
+
+    folded.execute();
+    double const value = folded_result(std::vector<size_t>{0});
+    INFO("unfolded=" << unfolded << " folded=" << value);
+    REQUIRE(std::abs(unfolded) > 1e-6);
+    REQUIRE_THAT(value, Catch::Matchers::WithinRel(unfolded, 1e-12));
+}
+
+// THE guard. A fold justified by reading the bound tensors is only valid for
+// those tensors, and rebind() repoints a graph at new ones without re-running
+// the pipeline. Without this the graph would go on computing the folded form
+// against data that does not satisfy the identity, and the failure would be a
+// converged wrong number rather than an error.
+TEST_CASE("AntisymmetrizerFolding - a rebind past a detected fold is refused", "[ComputeGraph][AntisymmetrizerFolding]") {
+    size_t const n = 4;
+
+    auto const            r = create_random_tensor<double>("r", n, n, n);
+    RuntimeTensor<double> wsrc("wsrc", {n, n, n});
+    RuntimeTensor<double> vsrc("vsrc", {n, n, n});
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            for (size_t k = 0; k < n; ++k) {
+                wsrc(std::vector<size_t>{i, j, k}) = r(i, j, k) - r(i, k, j);
+                vsrc(std::vector<size_t>{i, j, k}) = r(k, j, i) - r(j, k, i);
+            }
+        }
+    }
+
+    RuntimeTensor<double> result("res", {1});
+    cg::Graph             graph("guarded");
+    {
+        auto                  &W = graph.create_zero_runtime_tensor<double>("W", {n, n, n}, true);
+        auto                  &V = graph.create_zero_runtime_tensor<double>("V", {n, n, n}, true);
+        cg::CaptureGuard const capture(graph);
+        cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &W, 1.0, wsrc);
+        cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &V, 1.0, vsrc);
+        cg::dot_python(&result, W, V);
+    }
+
+    auto            detection = std::make_shared<cg::passes::AntisymmetryDetection>();
+    auto            inference = std::make_shared<cg::passes::AntisymmetryInference>();
+    auto            fold      = std::make_shared<cg::passes::AntisymmetrizerFolding>();
+    cg::PassManager manager;
+    manager.add(detection);
+    manager.add(inference);
+    manager.add(fold);
+    graph.apply(manager);
+    REQUIRE(fold->num_folded() == 1);
+
+    // On the data the fold was justified by, everything is fine and the guard
+    // costs one sweep on the first execute and a boolean thereafter.
+    REQUIRE_NOTHROW(graph.execute());
+    REQUIRE_NOTHROW(graph.execute());
+
+    // Rebind the antisymmetric source to data with no symmetry at all. The
+    // rewrite is now invalid, and the graph has to say so rather than compute.
+    auto const            junk_typed = create_random_tensor<double>("junk", n, n, n);
+    RuntimeTensor<double> junk(junk_typed);
+    REQUIRE_FALSE(check_symmetry(junk, SymmetryDescriptor::antisymmetric_pair(1, 2)));
+
+    graph.rebind(wsrc, junk);
+    REQUIRE_THROWS_AS(graph.execute(), std::runtime_error);
 }

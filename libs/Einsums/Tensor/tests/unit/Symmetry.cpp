@@ -369,3 +369,27 @@ TEST_CASE("check_symmetry (runtime) - a failing generator stops at the first vio
     CHECK(ran);
     CHECK(all == 90 + 36);
 }
+
+TEST_CASE("check_symmetry (runtime) - a view over an impl is walkable", "[Tensor][Symmetry][Runtime]") {
+    // A ComputeGraph pass reaches a bound tensor as RuntimeTensorView over the
+    // handle's impl, and that type carries no descriptor of its own. The
+    // caller-supplied-descriptor overload is exactly the one an optimizer wants,
+    // so requiring `.symmetry()` on it shut out its only real consumer.
+    size_t const n     = 4;
+    auto         owner = RuntimeTensor<double>("owner", std::vector<size_t>{n, n});
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            owner(std::vector<size_t>{i, j}) = static_cast<double>(i) * static_cast<double>(j);
+        }
+    }
+    RuntimeTensorView<double> const view{owner.impl()};
+
+    STATIC_REQUIRE(RuntimeRankWalkable<RuntimeTensorView<double>>);
+    STATIC_REQUIRE_FALSE(RuntimeRankSymmetryTensor<RuntimeTensorView<double>>);
+
+    CHECK(check_symmetry(view, SymmetryDescriptor::symmetric_pair(0, 1))); // i*j is symmetric
+    CHECK_FALSE(check_symmetry(view, SymmetryDescriptor::antisymmetric_pair(0, 1)));
+    // And the view agrees with its owner, which does carry a descriptor.
+    CHECK(check_symmetry(view, SymmetryDescriptor::symmetric_pair(0, 1)) ==
+          check_symmetry(owner, SymmetryDescriptor::symmetric_pair(0, 1)));
+}
