@@ -7,6 +7,7 @@
 /// @brief Phase 1 tests for SymmetryDescriptor + Tensor::{set_symmetry,
 /// symmetrize,check_symmetry}. Future work: BLAS dispatch tests.
 
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/SymmetryOps.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
@@ -14,6 +15,8 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
 #include <complex>
+#include <stdexcept>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -223,4 +226,146 @@ TEST_CASE("check_symmetry - ERI 8-fold on a random rank-4 tensor", "[Tensor][Sym
                     REQUIRE(E(m, n, l, s) == Catch::Approx(E(m, n, s, l)).margin(1e-12));
                     REQUIRE(E(m, n, l, s) == Catch::Approx(E(l, s, m, n)).margin(1e-12));
                 }
+}
+
+// ── Runtime-rank forms ──────────────────────────────────────────────────────
+//
+// RuntimeTensor could already CARRY a descriptor through set_symmetry, with a
+// comment beside it pointing at symmetrize / check_symmetry as the part that
+// only covered statically ranked tensors. These cover the runtime-rank twins,
+// which is the path the Python bindings and the ComputeGraph hold.
+
+TEST_CASE("check_symmetry (runtime) - agrees with the statically ranked form", "[Tensor][Symmetry][Runtime]") {
+    // The same data through both walks has to give the same verdict, or one of
+    // them is wrong and there is no way to tell which.
+    auto typed = create_random_tensor<double>("typed", 4, 4);
+    auto rt    = RuntimeTensor<double>("rt", std::vector<size_t>{4, 4});
+    for (size_t i = 0; i < 4; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            rt(std::vector<size_t>{i, j}) = typed(i, j);
+        }
+    }
+
+    auto const sym = SymmetryDescriptor::symmetric_pair(0, 1);
+    typed.set_symmetry(sym);
+    rt.set_symmetry(sym);
+
+    REQUIRE(check_symmetry(typed) == check_symmetry(rt));
+    REQUIRE_FALSE(check_symmetry(rt)); // random data is not symmetric
+
+    symmetrize(typed);
+    symmetrize(rt);
+    REQUIRE(check_symmetry(typed));
+    REQUIRE(check_symmetry(rt));
+
+    for (size_t i = 0; i < 4; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            REQUIRE_THAT(rt(std::vector<size_t>{i, j}), Catch::Matchers::WithinAbs(typed(i, j), 1e-14));
+        }
+    }
+}
+
+TEST_CASE("check_symmetry (runtime) - a supplied descriptor, not the tensor's own", "[Tensor][Symmetry][Runtime]") {
+    // The overload an optimizer needs: it is considering a symmetry and wants to
+    // know whether it holds, which is a different question from whether the
+    // tensor's own declared symmetry holds.
+    auto rt = RuntimeTensor<double>("rt", std::vector<size_t>{3, 3, 3});
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            for (size_t k = 0; k < 3; ++k) {
+                // Antisymmetric in (0,1) by construction, nothing else. The
+                // trailing factor has to MULTIPLY rather than add, or it
+                // survives the swap and breaks the antisymmetry it decorates.
+                double const v = (static_cast<double>(i) - static_cast<double>(j)) * (1.0 + 0.25 * static_cast<double>(k));
+                rt(std::vector<size_t>{i, j, k}) = v;
+            }
+        }
+    }
+    REQUIRE(rt.symmetry() == nullptr);
+    REQUIRE(check_symmetry(rt)); // no declared symmetry is vacuously satisfied
+
+    CHECK(check_symmetry(rt, SymmetryDescriptor::antisymmetric_pair(0, 1)));
+    CHECK_FALSE(check_symmetry(rt, SymmetryDescriptor::symmetric_pair(0, 1)));
+    CHECK_FALSE(check_symmetry(rt, SymmetryDescriptor::antisymmetric_pair(0, 2)));
+}
+
+TEST_CASE("check_symmetry (runtime) - a generator across unequal extents cannot hold", "[Tensor][Symmetry][Runtime]") {
+    // The statically ranked walk never asks, because its callers pass square
+    // tensors. A runtime-rank tensor can be any shape, and permuting axes of
+    // different lengths indexes out of range rather than merely failing.
+    auto rt = RuntimeTensor<double>("rt", std::vector<size_t>{2, 5});
+    rt.zero();
+    CHECK_FALSE(check_symmetry(rt, SymmetryDescriptor::symmetric_pair(0, 1)));
+
+    rt.set_symmetry(SymmetryDescriptor::symmetric_pair(0, 1));
+    CHECK_THROWS_AS(symmetrize(rt), std::invalid_argument);
+}
+
+TEST_CASE("check_symmetry (runtime) - an empty tensor satisfies any descriptor", "[Tensor][Symmetry][Runtime]") {
+    auto rt = RuntimeTensor<double>("rt", std::vector<size_t>{0, 0});
+    CHECK(check_symmetry(rt, SymmetryDescriptor::antisymmetric_pair(0, 1)));
+}
+
+TEST_CASE("symmetrize (runtime) - rank-4 CCSD T2 pattern", "[Tensor][Symmetry][Runtime]") {
+    size_t const n  = 3;
+    auto         rt = RuntimeTensor<double>("t2", std::vector<size_t>{n, n, n, n});
+    double       v  = 0.0;
+    for (size_t a = 0; a < n; ++a) {
+        for (size_t b = 0; b < n; ++b) {
+            for (size_t i = 0; i < n; ++i) {
+                for (size_t j = 0; j < n; ++j) {
+                    rt(std::vector<size_t>{a, b, i, j}) = (v += 1.0);
+                }
+            }
+        }
+    }
+    rt.set_symmetry(SymmetryDescriptor::ccsd_t2());
+    REQUIRE_FALSE(check_symmetry(rt));
+    symmetrize(rt);
+    REQUIRE(check_symmetry(rt));
+
+    // Spot-check the invariant directly rather than trusting the verifier alone.
+    for (size_t a = 0; a < n; ++a) {
+        for (size_t b = 0; b < n; ++b) {
+            for (size_t i = 0; i < n; ++i) {
+                for (size_t j = 0; j < n; ++j) {
+                    REQUIRE_THAT(rt(std::vector<size_t>{a, b, i, j}),
+                                 Catch::Matchers::WithinAbs(-rt(std::vector<size_t>{b, a, i, j}), 1e-12));
+                    REQUIRE_THAT(rt(std::vector<size_t>{a, b, i, j}),
+                                 Catch::Matchers::WithinAbs(-rt(std::vector<size_t>{a, b, j, i}), 1e-12));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("check_symmetry (runtime) - a failing generator stops at the first violation", "[Tensor][Symmetry][Runtime]") {
+    // Not a timing test. The walk used to visit every element of the tensor even
+    // after a violation, because the verdict was carried in a captured flag and
+    // nothing told the iteration to stop; a generator that does not hold cost a
+    // full sweep. Detection probes many candidate generators against tensors that
+    // mostly do not carry them, so "cheap when false" is the property that makes
+    // it affordable, and a counting visitor pins it without depending on a clock.
+    std::vector<size_t> const dims{6, 6, 6};
+    std::vector<size_t> const strides{36, 6, 1};
+
+    std::size_t visited  = 0;
+    bool const  complete = detail::for_each_symmetry_pair(dims, strides, SymmetryOp::swap(0, 1), [&](std::size_t, std::size_t, bool) {
+        ++visited;
+        return visited < 3; // "violation" on the third pair
+    });
+
+    CHECK_FALSE(complete);
+    CHECK(visited == 3);
+
+    // For contrast, a visitor that never stops sees every unordered pair plus
+    // every fixed point: 6*6*6 elements, of which the swap(0,1) partner-equal set
+    // is the 6*6 with idx[0] == idx[1], leaving (216 - 36) / 2 = 90 pairs.
+    std::size_t all = 0;
+    bool const  ran = detail::for_each_symmetry_pair(dims, strides, SymmetryOp::swap(0, 1), [&](std::size_t, std::size_t, bool) {
+        ++all;
+        return true;
+    });
+    CHECK(ran);
+    CHECK(all == 90 + 36);
 }
