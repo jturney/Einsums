@@ -416,3 +416,127 @@ TEST_CASE("grouped_batched_gemm: rejects malformed batches", "[ComputeGraph][Gro
         REQUIRE_THROWS_AS(cg::grouped_batched_gemm(1.0, l.a, bad, 0.0, l.c), std::invalid_argument);
     }
 }
+
+TEST_CASE("batched gemm: an operand BLAS cannot address is refused, not guessed at", "[ComputeGraph][GroupedBatchedGemm][BatchedGemm]") {
+    // Reported against a DF-CCSD(T) triples prototype: the W contractions were
+    // fed `J[i, :, :, :].reshape_view([nv*nv, nv])`, which returned a product
+    // unrelated to the one the ordinary gemm computed for the same operands.
+    //
+    // Under the column-major default axis 0 carries the unit stride, so fixing
+    // it is what leaves a rank-two operand with no unit stride at all. Every
+    // shape check these entry points already made still passed, and `get_lda()`
+    // answered `max(stride(0), stride(1))` for a view it cannot describe, so
+    // interleaved memory reached `gemm_batch` to be read as dense.
+    //
+    // Constructed rather than reduced from the report: a rank-three parent is
+    // the smallest thing that produces the layout.
+    constexpr size_t P = 3, M = 5, K = 4, N = 6;
+
+    auto parent  = create_random_tensor<double>("parent", P, M, K);
+    auto strided = parent(0, All, All);
+    REQUIRE(strided.dim(0) == M);
+    REQUIRE(strided.dim(1) == K);
+    // Neither axis steps by one element. This is the whole defect.
+    REQUIRE(strided.impl().stride(0) != 1);
+    REQUIRE(strided.impl().stride(1) != 1);
+
+    auto b = create_random_tensor<double>("b", K, N);
+    auto c = create_zero_tensor<double>("c", M, N);
+
+    SECTION("uniform form, in every operand position") {
+        auto a_ok = create_random_tensor<double>("a_ok", M, K);
+        auto c_mn = create_zero_tensor<double>("c_mn", M, N);
+
+        std::vector<TensorView<double, 2> const *> const bad_a{&strided};
+        std::vector<Tensor<double, 2> const *> const     good_b{&b};
+        std::vector<Tensor<double, 2> *> const           good_c{&c};
+        REQUIRE_THROWS_AS(cg::batched_gemm(1.0, bad_a, good_b, 0.0, good_c), std::invalid_argument);
+
+        // A destination BLAS cannot address is the same hazard, and worse: it
+        // is written rather than read.
+        auto                                         wide  = create_random_tensor<double>("wide", P, M, N);
+        auto                                         bad_c = wide(0, All, All);
+        std::vector<Tensor<double, 2> const *> const good_a{&a_ok};
+        std::vector<TensorView<double, 2> *> const   bad_c_list{&bad_c};
+        REQUIRE_THROWS_AS(cg::batched_gemm(1.0, good_a, good_b, 0.0, bad_c_list), std::invalid_argument);
+    }
+
+    SECTION("grouped form") {
+        std::vector<TensorView<double, 2> const *> const bad_a{&strided};
+        std::vector<Tensor<double, 2> const *> const     good_b{&b};
+        std::vector<Tensor<double, 2> *> const           good_c{&c};
+        REQUIRE_THROWS_AS(cg::grouped_batched_gemm(1.0, bad_a, good_b, 0.0, good_c), std::invalid_argument);
+    }
+
+    SECTION("the refusal names the operand") {
+        std::vector<TensorView<double, 2> const *> const bad_a{&strided};
+        std::vector<Tensor<double, 2> const *> const     good_b{&b};
+        std::vector<Tensor<double, 2> *> const           good_c{&c};
+        REQUIRE_THROWS_WITH(cg::grouped_batched_gemm(1.0, bad_a, good_b, 0.0, good_c),
+                            Catch::Matchers::ContainsSubstring("member 0 operand A"));
+    }
+}
+
+TEST_CASE("batched gemm: a strided operand BLAS CAN address is still accepted", "[ComputeGraph][GroupedBatchedGemm][BatchedGemm]") {
+    // The guard's other half, and the reason it tests addressability rather
+    // than contiguity. Fixing a MIDDLE axis leaves the unit stride in place and
+    // inflates only the leading dimension, which is exactly what `lda` is for.
+    // Such an operand is not contiguous, and a contiguity test would reject it
+    // and charge a materialising copy for a call that is already correct. A
+    // column block of a larger matrix has the same shape, so this is a common
+    // operand rather than a corner.
+    constexpr size_t P = 3, M = 5, K = 4, N = 6;
+
+    auto parent  = create_random_tensor<double>("parent", M, P, K);
+    auto strided = parent(All, 1, All);
+    REQUIRE(strided.dim(0) == M);
+    REQUIRE(strided.dim(1) == K);
+    REQUIRE(strided.impl().stride(0) == 1);
+    // Not contiguous: the columns step over the fixed middle axis.
+    REQUIRE(strided.impl().stride(1) != M);
+
+    auto b = create_random_tensor<double>("b", K, N);
+
+    Tensor<double, 2> expected = create_zero_tensor<double>("expected", M, N);
+    linear_algebra::gemm('N', 'N', 1.0, strided, b, 0.0, &expected);
+
+    auto                                             c = create_zero_tensor<double>("c", M, N);
+    std::vector<TensorView<double, 2> const *> const a_list{&strided};
+    std::vector<Tensor<double, 2> const *> const     b_list{&b};
+    std::vector<Tensor<double, 2> *> const           c_list{&c};
+    cg::grouped_batched_gemm(1.0, a_list, b_list, 0.0, c_list);
+
+    require_close(c, expected);
+}
+
+TEST_CASE("batched gemm: a single-row operand is addressable whatever its row stride", "[ComputeGraph][GroupedBatchedGemm][BatchedGemm]") {
+    // An axis of extent one is never traversed, so it constrains nothing: for a
+    // 1 x n operand BLAS only ever steps by the leading dimension and the row
+    // stride is dead. A guard that asks "does the minor axis step by one" without
+    // skipping extent-1 axes refuses these, and they are a single row of a larger
+    // matrix, which is ordinary rather than exotic.
+    //
+    // The region-identity differential fuzzer drew exactly this (a 1x3 operand
+    // with strides (1, 8)) against a first cut of the guard. Pinned here with a
+    // fixed construction so it does not depend on a fuzz draw to stay fixed.
+    constexpr size_t Lda = 8, N = 3, K = 3, Cols = 4;
+
+    auto parent  = create_random_tensor<double>("parent", Lda, N);
+    auto one_row = parent(Range{0, 1}, All);
+    REQUIRE(one_row.dim(0) == 1);
+    REQUIRE(one_row.dim(1) == N);
+    REQUIRE(one_row.impl().stride(1) == Lda);
+
+    auto b = create_random_tensor<double>("b", K, Cols);
+
+    Tensor<double, 2> expected = create_zero_tensor<double>("expected", 1, Cols);
+    linear_algebra::gemm('N', 'N', 1.0, one_row, b, 0.0, &expected);
+
+    auto                                             c = create_zero_tensor<double>("c", 1, Cols);
+    std::vector<TensorView<double, 2> const *> const a_list{&one_row};
+    std::vector<Tensor<double, 2> const *> const     b_list{&b};
+    std::vector<Tensor<double, 2> *> const           c_list{&c};
+    cg::grouped_batched_gemm(1.0, a_list, b_list, 0.0, c_list);
+
+    require_close(c, expected);
+}

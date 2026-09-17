@@ -9,6 +9,7 @@
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Detail/BatchedGemm.hpp>
+#include <Einsums/ComputeGraph/Detail/BlasAddressable.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
@@ -3343,6 +3344,41 @@ BatchedGemmDescriptor make_batched_descriptor(bool trans_a, bool trans_b, double
 /// gemm_batch takes ONE lda/ldb/ldc and one m/n/k for the whole batch, so a
 /// member that differs is not expressible. Caught at the call, where the caller
 /// can see which member and why, rather than as corruption at execute time.
+/// Refuse a rank-2 operand that `gemm_batch` cannot address as a matrix.
+///
+/// The batched interface takes one base pointer and one leading dimension per
+/// operand, which describes a matrix only when the OTHER axis steps by a single
+/// element. `get_lda()` is `max(stride(0), stride(1))` and returns a
+/// plausible-looking number for ANY rank-2 view, so reading it without this
+/// check hands BLAS interleaved memory to read as dense and yields a
+/// numerically unrelated product rather than an error.
+///
+/// A rank-reducing view is how a caller gets one. Under the column-major
+/// default axis 0 is the FASTEST, so `parent[i, :, :, :]` fixes the one axis
+/// that was carrying the unit stride and what is left has none: for
+/// `J[no, nv, nv, nv]` the slice steps by `no`, and its `reshape_view` to
+/// `(nv*nv, nv)` is a legitimate strided view that is simply not a BLAS matrix.
+/// @ref derive_gemm_hint declines to build a GEMM for exactly these operands
+/// and the generic algorithm runs instead, which is why the unbatched spelling
+/// of such a contraction has always been right; these entry points take the
+/// tensors directly and so have to make the same judgement themselves.
+///
+/// @param who   The entry point's name, as its other messages spell it.
+/// @param i     Batch-member index, zero-based.
+/// @param role  Which operand of the member, "A", "B" or "C".
+template <typename TensorType>
+void require_blas_addressable(TensorType const &t, char const *who, size_t i, char const *role) {
+    if (!column_major_addressable(t.impl())) {
+        EINSUMS_THROW_EXCEPTION(
+            std::invalid_argument,
+            "{}: member {} operand {} is {}x{} with strides ({}, {}), which the batched BLAS path cannot address; it takes one "
+            "pointer and one leading dimension per operand, so the minor axis must step by one element in the operand's own "
+            "storage order. A view that drops a leading axis (`parent[i, :, :]` over the column-major default) leaves exactly "
+            "this shape. Copy the operand into a contiguous tensor, or use linear_algebra::gemm, which reads strides directly.",
+            who, i, role, t.dim(0), t.dim(1), t.impl().stride(0), t.impl().stride(1));
+    }
+}
+
 inline auto batched_gemm_requirer(char const *who) {
     return [who](bool ok, size_t i, char const *what) {
         if (!ok) {
@@ -3458,6 +3494,11 @@ void batched_gemm(double alpha, std::vector<AType const *> a_list, std::vector<B
             EINSUMS_THROW_EXCEPTION(RankError, "cg::batched_gemm: member {} is not rank 2 (got {}, {}, {})", i,
                                     detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]), detail::tensor_rank(*c_list[i]));
         }
+        // Before any get_lda() is read off these, because that call answers for
+        // a view it cannot describe rather than refusing.
+        detail::require_blas_addressable(*a_list[i], "cg::batched_gemm", i, "A");
+        detail::require_blas_addressable(*b_list[i], "cg::batched_gemm", i, "B");
+        detail::require_blas_addressable(*c_list[i], "cg::batched_gemm", i, "C");
     }
 
     auto const d = detail::make_batched_descriptor<T>(trans_a, trans_b, alpha, beta, count, *a_list[0], *b_list[0],
@@ -3604,6 +3645,8 @@ void batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::
     if (detail::tensor_rank(*c_base) != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::batched_gemm_blocked: c_base is not rank 2 (got {})", detail::tensor_rank(*c_base));
     }
+    // Before ldc_s is read off it below.
+    detail::require_blas_addressable(*c_base, "cg::batched_gemm_blocked", 0, "c_base");
     if (c_rows == 0 || c_cols == 0) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::batched_gemm_blocked: block shape is {}x{}; neither may be zero", c_rows,
                                 c_cols);
@@ -3634,6 +3677,8 @@ void batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::
             EINSUMS_THROW_EXCEPTION(RankError, "cg::batched_gemm_blocked: member {} is not rank 2 (got {}, {})", i,
                                     detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]));
         }
+        detail::require_blas_addressable(*a_list[i], "cg::batched_gemm_blocked", i, "A");
+        detail::require_blas_addressable(*b_list[i], "cg::batched_gemm_blocked", i, "B");
     }
 
     auto const d = detail::make_batched_descriptor<T>(trans_a, trans_b, alpha, beta, count, *a_list[0], *b_list[0],
@@ -3914,6 +3959,10 @@ void grouped_batched_gemm(double alpha, std::vector<AType const *> a_list, std::
             EINSUMS_THROW_EXCEPTION(RankError, "cg::grouped_batched_gemm: member {} is not rank 2 (got {}, {}, {})", i,
                                     detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]), detail::tensor_rank(*c_list[i]));
         }
+        // Before the get_lda() calls that build this member's shape key.
+        detail::require_blas_addressable(*a_list[i], "cg::grouped_batched_gemm", i, "A");
+        detail::require_blas_addressable(*b_list[i], "cg::grouped_batched_gemm", i, "B");
+        detail::require_blas_addressable(*c_list[i], "cg::grouped_batched_gemm", i, "C");
 
         auto const m = static_cast<int>(c_list[i]->dim(0));
         auto const n = static_cast<int>(c_list[i]->dim(1));
@@ -4056,6 +4105,9 @@ void grouped_batched_gemm_blocked(double alpha, std::vector<AType const *> a_lis
             EINSUMS_THROW_EXCEPTION(RankError, "cg::grouped_batched_gemm_blocked: member {} is not rank 2 (got {}, {}, {})", i,
                                     detail::tensor_rank(*a_list[i]), detail::tensor_rank(*b_list[i]), detail::tensor_rank(*c_bases[i]));
         }
+        detail::require_blas_addressable(*a_list[i], "cg::grouped_batched_gemm_blocked", i, "A");
+        detail::require_blas_addressable(*b_list[i], "cg::grouped_batched_gemm_blocked", i, "B");
+        detail::require_blas_addressable(*c_bases[i], "cg::grouped_batched_gemm_blocked", i, "the destination base");
 
         auto const m = static_cast<size_t>(trans_a ? a_list[i]->dim(1) : a_list[i]->dim(0));
         auto const n = static_cast<size_t>(trans_b ? b_list[i]->dim(0) : b_list[i]->dim(1));
