@@ -25,8 +25,8 @@ was written: CCSD correlation to 8e-13 Eh, (T) to 9e-15 Eh.
 WHY THIS FILE EXISTS. It is a controlled comparison of two spellings of the same
 correction, to keep optimization work aimed at the one that matters:
 
-    whole-tensor  build W and V as o^3 v^3 arrays, antisymmetrize with nine
-                  permuted accumulations each, contract once at the end
+    whole-tensor  build W and V as o^3 v^3 arrays, antisymmetrize each with one
+                  P(i/jk) P(a/bc) node, contract once at the end
     blocked       loop over i < j < k, build one v^3 block per triple, add its
                   energy contribution, move on - what production codes do
 
@@ -43,10 +43,12 @@ permutation's sign, the nine terms of V collapse into 9 * (the unpermuted term),
 and 9/36 becomes 1/4.
 
 All eight runs agree with the oracle, and the table is the point. Whole-tensor,
-the antisymmetrizers dominate: the three contractions cost about 6 ms and the
-eighteen permuted accumulations about 30 ms, so folding one of them away is worth
-about 40%. Blocked, the same fold is worth a small fraction of that, on a run
-already 3x faster in a working set of 197 KB instead of 164 MB. The P-operator
+the antisymmetrizers dominate: the three contractions cost a few ms and the two
+antisymmetrizers most of the rest, so folding one of them away is worth about a
+third. Each is one node now and eighteen permuted accumulations still happen
+inside them, so what the spec operator changed is the spelling and the node
+count, not the work. Blocked, the same fold is worth a small fraction of that,
+on a run already 3x faster in a working set of 197 KB instead of 164 MB. The P-operator
 only looks expensive when it is applied to a materialized rank-6 tensor - and
 materializing is not a choice a real calculation has, since at o=50, v=500 that
 tensor is 1.25e16 bytes.
@@ -134,6 +136,11 @@ BLOCKS = {"oovv": g_np[o, o, v, v], "vovv": g_np[v, o, v, v], "ooov": g_np[o, o,
 # The nine (permutation spec, sign) pairs of P(i/jk) P(a/bc). Every one of them is
 # an involution - a swap in the occupied triple times a swap in the virtual triple -
 # so the permute output spec reads the same forwards and backwards.
+#
+# The spec parser expands `P(i/jk) P(a/bc)` to exactly this list. Kept here as the
+# independent statement of what that operator means: `check_antisymmetrizer` below
+# runs both spellings on the same block, so a change to the expansion convention
+# fails against a table written before the operator existed.
 PIJK_PABC = [("i,j,k,a,b,c", +1.0), ("j,i,k,a,b,c", -1.0), ("k,j,i,a,b,c", -1.0),
              ("i,j,k,b,a,c", -1.0), ("i,j,k,c,b,a", -1.0), ("j,i,k,b,a,c", +1.0),
              ("j,i,k,c,b,a", +1.0), ("k,j,i,b,a,c", +1.0), ("k,j,i,c,b,a", +1.0)]
@@ -207,12 +214,38 @@ def ein(spec, out, A, B, pf=1.0, acc=False):
 
 
 def antisymmetrize(dst, src):
-    """dst <- P(i/jk) P(a/bc) src, as one overwrite plus eight permuted accumulations."""
-    for n, (spec, sign) in enumerate(PIJK_PABC):
-        if n == 0:
-            la.axpby(sign, src, 0.0, dst)
-        else:
-            einsums.permute(f"{spec} <- i,j,k,a,b,c", dst, src, c_pf=1.0, a_pf=sign)
+    """dst <- P(i/jk) P(a/bc) src, as one node.
+
+    The nine (spec, sign) pairs are PIJK_PABC below, which this used to walk by
+    hand. They are kept because the oracle checks the operator against them.
+    """
+    einsums.permute("i,j,k,a,b,c <- P(i/jk) P(a/bc) i,j,k,a,b,c", dst, src, c_pf=0.0, a_pf=1.0)
+
+
+def check_antisymmetrizer():
+    """Assert `P(i/jk) P(a/bc)` expands to exactly the PIJK_PABC table.
+
+    The table is the convention as the literature prints it, written here before
+    the spec grammar could express the operator. A coset of the Young subgroup
+    holds members of BOTH parities, so an implementation that picks a different
+    representative is still a valid antisymmetrizer and is not this one; on a
+    summand that happens to be antisymmetric within each group the two agree,
+    which is exactly why the disagreement would not show up in the energies
+    below. So the check is on a block with no symmetry at all.
+    """
+    n = 3
+    block = np.random.default_rng(20260917).random((n, n, n, n, n, n))
+    src = make("asym_check_src", block)
+
+    want = np.zeros_like(block)
+    for spec, sign in PIJK_PABC:
+        axes = [("i", "j", "k", "a", "b", "c").index(letter) for letter in spec.split(",")]
+        want += sign * block.transpose(np.argsort(axes))
+
+    got = einsums.zeros((n,) * 6, dtype="float64")
+    antisymmetrize(got, src)
+    worst = float(np.max(np.abs(np.asarray(got) - want)))
+    assert worst < 1e-12, f"P(i/jk) P(a/bc) disagrees with the printed table by {worst:.2e}"
 
 
 # ── CCSD: capture the SGWB iteration once, replay under DIIS ─────────────────
@@ -233,7 +266,7 @@ def run_ccsd():
          for nm, ax in [
              ("tau", "oovv"), ("taut", "oovv"), ("ot", "oovv"), ("Fae", "vv"), ("Fmi", "oo"),
              ("Fme", "ov"), ("Wmnij", "oooo"), ("Wabef", "vvvv"), ("Wmbej", "ovvo"), ("jnfb", "oovv"),
-             ("wt4o", "oooo"), ("wt4v", "vvvv"), ("be", "vv"), ("mj", "oo"), ("imea", "oovv"),
+             ("be", "vv"), ("mj", "oo"), ("imea", "oovv"),
              ("r1", "ov"), ("r2", "oovv"), ("tmp", "oovv"), ("Xe", "ov")]}
 
     e_prev = [1e9]
@@ -252,8 +285,7 @@ def run_ccsd():
         ein("i,j,a,b <- i,a ; j,b", S["ot"], t1, t1)
         for dst, w in (("tau", 1.0), ("taut", 0.5)):
             la.axpby(1.0, t2, 0.0, S[dst])
-            la.axpby(w, S["ot"], 1.0, S[dst])
-            einsums.permute("i,j,b,a <- i,j,a,b", S[dst], S["ot"], c_pf=1.0, a_pf=-w)
+            einsums.permute("i,j,a,b <- P(ab) i,j,a,b", S[dst], S["ot"], c_pf=1.0, a_pf=w)
 
         ein("a,e <- m,f ; a,m,e,f", S["Fae"], t1, G["vovv"])
         ein("a,e <- m,n,a,f ; m,n,e,f", S["Fae"], S["taut"], G["oovv"], -0.5, True)
@@ -262,17 +294,13 @@ def run_ccsd():
         ein("m,e <- n,f ; m,n,e,f", S["Fme"], t1, G["oovv"])
 
         # Wmnij: P(ij) acts on axes (2,3) of Wmnij[m,n,i,j]
-        ein("m,n,i,j <- j,e ; m,n,i,e", S["wt4o"], t1, G["ooov"])
         la.axpby(1.0, G["oooo"], 0.0, S["Wmnij"])
-        la.axpby(1.0, S["wt4o"], 1.0, S["Wmnij"])
-        einsums.permute("m,n,j,i <- m,n,i,j", S["Wmnij"], S["wt4o"], c_pf=1.0, a_pf=-1.0)
+        einsums.einsum("m,n,i,j <- P(ij) j,e ; m,n,i,e", S["Wmnij"], t1, G["ooov"], c_pf=1.0, ab_pf=1.0)
         ein("m,n,i,j <- i,j,e,f ; m,n,e,f", S["Wmnij"], S["tau"], G["oovv"], 0.25, True)
 
         # Wabef: P(ab) acts on axes (0,1) of Wabef[a,b,e,f]
-        ein("a,b,e,f <- m,b ; a,m,e,f", S["wt4v"], t1, G["vovv"])
         la.axpby(1.0, G["vvvv"], 0.0, S["Wabef"])
-        la.axpby(-1.0, S["wt4v"], 1.0, S["Wabef"])
-        einsums.permute("b,a,e,f <- a,b,e,f", S["Wabef"], S["wt4v"], c_pf=1.0, a_pf=1.0)
+        einsums.einsum("a,b,e,f <- P(ab) m,b ; a,m,e,f", S["Wabef"], t1, G["vovv"], c_pf=1.0, ab_pf=-1.0)
         ein("a,b,e,f <- m,n,a,b ; m,n,e,f", S["Wabef"], S["tau"], G["oovv"], 0.25, True)
 
         ein("j,n,f,b <- j,f ; n,b", S["jnfb"], t1, t1)
@@ -294,30 +322,19 @@ def run_ccsd():
         la.axpby(1.0, G["oovv"], 0.0, S["r2"])
         ein("b,e <- m,b ; m,e", S["be"], t1, S["Fme"])
         la.axpby(-0.5, S["be"], 1.0, S["Fae"])           # Fae - 1/2 t1.Fme, consumed only below
-        ein("i,j,a,b <- i,j,a,e ; b,e", S["tmp"], t2, S["Fae"])
-        la.axpby(1.0, S["tmp"], 1.0, S["r2"])
-        einsums.permute("i,j,b,a <- i,j,a,b", S["r2"], S["tmp"], c_pf=1.0, a_pf=-1.0)
+        einsums.einsum("i,j,a,b <- P(ab) i,j,a,e ; b,e", S["r2"], t2, S["Fae"], c_pf=1.0, ab_pf=1.0)
         ein("m,j <- j,e ; m,e", S["mj"], t1, S["Fme"])
         la.axpby(0.5, S["mj"], 1.0, S["Fmi"])            # Fmi + 1/2 t1.Fme
-        ein("i,j,a,b <- i,m,a,b ; m,j", S["tmp"], t2, S["Fmi"])
-        la.axpby(-1.0, S["tmp"], 1.0, S["r2"])
-        einsums.permute("j,i,a,b <- i,j,a,b", S["r2"], S["tmp"], c_pf=1.0, a_pf=1.0)
+        einsums.einsum("i,j,a,b <- P(ij) i,m,a,b ; m,j", S["r2"], t2, S["Fmi"], c_pf=1.0, ab_pf=-1.0)
         ein("i,j,a,b <- m,n,a,b ; m,n,i,j", S["r2"], S["tau"], S["Wmnij"], 0.5, True)
         ein("i,j,a,b <- i,j,e,f ; a,b,e,f", S["r2"], S["tau"], S["Wabef"], 0.5, True)
         # ring: P(ij)P(ab)[ t2.Wmbej - (t1(x)t1).<mb||ej> ]
         ein("i,j,a,b <- i,m,a,e ; m,b,e,j", S["tmp"], t2, S["Wmbej"])
         ein("i,m,e,a <- i,e ; m,a", S["imea"], t1, t1)
         ein("i,j,a,b <- i,m,e,a ; m,b,e,j", S["tmp"], S["imea"], G["ovvo"], -1.0, True)
-        la.axpby(1.0, S["tmp"], 1.0, S["r2"])
-        einsums.permute("j,i,a,b <- i,j,a,b", S["r2"], S["tmp"], c_pf=1.0, a_pf=-1.0)
-        einsums.permute("i,j,b,a <- i,j,a,b", S["r2"], S["tmp"], c_pf=1.0, a_pf=-1.0)
-        einsums.permute("j,i,b,a <- i,j,a,b", S["r2"], S["tmp"], c_pf=1.0, a_pf=1.0)
-        ein("i,j,a,b <- i,e ; a,b,e,j", S["tmp"], t1, G["vvvo"])
-        la.axpby(1.0, S["tmp"], 1.0, S["r2"])
-        einsums.permute("j,i,a,b <- i,j,a,b", S["r2"], S["tmp"], c_pf=1.0, a_pf=-1.0)
-        ein("i,j,a,b <- m,a ; m,b,i,j", S["tmp"], t1, G["ovoo"])
-        la.axpby(-1.0, S["tmp"], 1.0, S["r2"])
-        einsums.permute("i,j,b,a <- i,j,a,b", S["r2"], S["tmp"], c_pf=1.0, a_pf=1.0)
+        einsums.permute("i,j,a,b <- P(ij) P(ab) i,j,a,b", S["r2"], S["tmp"], c_pf=1.0, a_pf=1.0)
+        einsums.einsum("i,j,a,b <- P(ij) i,e ; a,b,e,j", S["r2"], t1, G["vvvo"], c_pf=1.0, ab_pf=1.0)
+        einsums.einsum("i,j,a,b <- P(ab) m,a ; m,b,i,j", S["r2"], t1, G["ovoo"], c_pf=1.0, ab_pf=-1.0)
 
         # updates: s = new_t - t (the DIIS step), then t += s
         la.direct_division(1.0, S["r1"], Dia, 0.0, s1)
@@ -510,6 +527,7 @@ def run_triples_blocked(t1, t2, folded, optimize, replays=3):
 # ── run ──────────────────────────────────────────────────────────────────────
 e_ccsd_ref, t1_ref, t2_ref, it_ref = ccsd_oracle()
 e_t_ref, e_t_folded_ref = triples_oracle(t1_ref, t2_ref)
+check_antisymmetrizer()
 print(f"numpy oracle    : E(CCSD) = {e_ccsd_ref:.12f}   ({it_ref} plain iterations)")
 print(f"                  E(T)    = {e_t_ref:.12f}   folded form agrees to {abs(e_t_folded_ref - e_t_ref):.1e}")
 
