@@ -25,7 +25,9 @@ endfunction()
 
 set(ComputeGraphTests
     Approximation.cpp
+    AntisymmetryInference.cpp
     AntisymmetrizerExpansion.cpp
+    AntisymmetrizerFolding.cpp
     AxisTiling.cpp
     BisectDriver.cpp
     Blueprints.cpp
