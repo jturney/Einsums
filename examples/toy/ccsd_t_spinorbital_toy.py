@@ -433,7 +433,8 @@ def run_triples(t1, t2, folded, optimize, replays=3):
 # over: 120 triples instead of 1000, with 1/36 becoming 1/6. And the occupied
 # antisymmetrizer disappears into the loop, since the three terms of P(i/jk) are
 # just three different (i,j,k) orderings feeding the same v^3 accumulator. Only
-# P(a/bc) survives as an actual permutation, on a 32 KB block.
+# P(a/bc) survives as an actual permutation, on a 32 KB block, and it is written
+# as the operator rather than as three hand-signed accumulations.
 def run_triples_blocked(t1, t2, folded, optimize, replays=3):
     G = {nm: make(nm, BLOCKS[nm]) for nm in ("oovv", "vovv", "ovoo")}
     Dv = make("Dv", -(ev[:, None, None] + ev[None, :, None] + ev[None, None, :]))
@@ -483,9 +484,7 @@ def run_triples_blocked(t1, t2, folded, optimize, replays=3):
                             sl(("goovv", jj, kk), lambda: G["oovv"][jj, kk, :, :]), s, n > 0)
 
                     # W = P(a/bc) Xtot, the only permutation left, on a v^3 block
-                    la.axpby(1.0, S["Xtot"], 0.0, S["W"])
-                    einsums.permute("b,a,c <- a,b,c", S["W"], S["Xtot"], c_pf=1.0, a_pf=-1.0)
-                    einsums.permute("c,b,a <- a,b,c", S["W"], S["Xtot"], c_pf=1.0, a_pf=-1.0)
+                    einsums.permute("a,b,c <- P(a/bc) a,b,c", S["W"], S["Xtot"], c_pf=0.0, a_pf=1.0)
                     la.direct_division(1.0, S["W"], S["D"], 0.0, S["Wd"])
 
                     if folded:
@@ -493,9 +492,7 @@ def run_triples_blocked(t1, t2, folded, optimize, replays=3):
                         la.dot(e_trip, S["Wd"], S["Xtot"])
                         la.axpby(0.5, e_trip, 1.0, E)                       # 1/6 * 3 (folded)
                     else:
-                        la.axpby(1.0, S["Vtot"], 0.0, S["V"])
-                        einsums.permute("b,a,c <- a,b,c", S["V"], S["Vtot"], c_pf=1.0, a_pf=-1.0)
-                        einsums.permute("c,b,a <- a,b,c", S["V"], S["Vtot"], c_pf=1.0, a_pf=-1.0)
+                        einsums.permute("a,b,c <- P(a/bc) a,b,c", S["V"], S["Vtot"], c_pf=0.0, a_pf=1.0)
                         la.axpby(1.0, S["W"], 1.0, S["V"])                  # V := W + V
                         la.dot(e_trip, S["Wd"], S["V"])
                         la.axpby(1.0 / 6.0, e_trip, 1.0, E)
