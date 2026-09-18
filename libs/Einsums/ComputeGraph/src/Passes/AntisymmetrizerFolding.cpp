@@ -358,7 +358,8 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
                         "AntisymmetrizerFolding: tensor '{}' no longer has the symmetry this graph's optimization assumed. The "
                         "antisymmetrizer fold was justified by reading the tensors bound when the pass ran; rebinding to data "
                         "without that symmetry makes the rewrite wrong. Re-run the pass pipeline on the new binding, or bind "
-                        "data carrying the same symmetry.",
+                        "data carrying the same symmetry. Note that this check runs once per BIND: a caller who overwrites a "
+                        "validated tensor in place should call Graph::invalidate_setup to have it run again.",
                         handle->name);
                 }
             }

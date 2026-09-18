@@ -379,3 +379,58 @@ TEST_CASE("AntisymmetrizerFolding - a chain rooted at the amplitudes", "[Compute
     REQUIRE(std::abs(unfolded) > 1e-6);
     REQUIRE_THAT(value, Catch::Matchers::WithinRel(unfolded, 1e-12));
 }
+
+// The guard's BOUNDARY, pinned in both directions so it is a documented
+// limitation rather than a surprise. A bind clears the Setup body's computed
+// flag; an in-place overwrite of a validated input does not, and the graph cannot
+// see one - the tensor belongs to the caller, no node writes it, and its address
+// is unchanged. invalidate_setup is the way across.
+TEST_CASE("AntisymmetrizerFolding - the guard runs per bind, and invalidate_setup forces it", "[ComputeGraph][AntisymmetrizerFolding]") {
+    size_t const n = 4;
+    auto const   r = create_random_tensor<double>("r", n, n, n);
+
+    RuntimeTensor<double> wsrc("wsrc", {n, n, n});
+    RuntimeTensor<double> vsrc("vsrc", {n, n, n});
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            for (size_t k = 0; k < n; ++k) {
+                wsrc(std::vector<size_t>{i, j, k}) = r(i, j, k) - r(i, k, j);
+                vsrc(std::vector<size_t>{i, j, k}) = r(k, j, i) - r(j, k, i);
+            }
+        }
+    }
+
+    RuntimeTensor<double> result("res", {1});
+    cg::Graph             graph("boundary");
+    {
+        auto                  &W = graph.create_zero_runtime_tensor<double>("W", {n, n, n}, true);
+        auto                  &V = graph.create_zero_runtime_tensor<double>("V", {n, n, n}, true);
+        cg::CaptureGuard const capture(graph);
+        cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &W, 1.0, wsrc);
+        cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &V, 1.0, vsrc);
+        cg::dot_python(&result, W, V);
+    }
+
+    auto            detection = std::make_shared<cg::passes::AntisymmetryDetection>();
+    auto            inference = std::make_shared<cg::passes::AntisymmetryInference>();
+    auto            fold      = std::make_shared<cg::passes::AntisymmetrizerFolding>();
+    cg::PassManager manager;
+    manager.add(detection);
+    manager.add(inference);
+    manager.add(fold);
+    graph.apply(manager);
+    REQUIRE(fold->num_folded() == 1);
+    REQUIRE_NOTHROW(graph.execute());
+
+    // Destroy the symmetry the fold rests on, IN PLACE, without rebinding.
+    wsrc(std::vector<size_t>{0, 1, 2}) += 17.0;
+    REQUIRE_FALSE(check_symmetry(wsrc, SymmetryDescriptor::antisymmetric_pair(1, 2)));
+
+    // The graph cannot see that, and says so by continuing. This is the
+    // documented boundary, asserted so a change to it is deliberate.
+    REQUIRE_NOTHROW(graph.execute());
+
+    // The caller's way across: put the guard back to work.
+    graph.invalidate_setup();
+    REQUIRE_THROWS_AS(graph.execute(), std::runtime_error);
+}

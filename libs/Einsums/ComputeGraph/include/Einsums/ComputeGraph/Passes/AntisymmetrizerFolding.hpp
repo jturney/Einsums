@@ -49,11 +49,31 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * what the hand-written folded spelling does.
  *
  * @par Where the premise comes from
- * @ref AntisymmetryInference, which must run first. Today that pass proves the
- * unconditional case only: an operator whose groups are all singletons. The
- * coset forms the triples correction uses need a fact about the operand that
- * nothing yet establishes, so this pass does not fire on them. See
+ * @ref AntisymmetryInference, which must run first, and behind it
+ * @ref AntisymmetryDetection for any premise that is not structural. Together
+ * they reach both arms: an operator whose groups are all singletons carries its
+ * antisymmetry unconditionally, and a coset form carries it once its operand is
+ * known antisymmetric within each group. See
  * `DESIGN-permutation-operator-folding.md`.
+ *
+ * @par What the guard covers, and what it does not
+ * The rewrite is justified by the tensors bound when the pass ran, so it emits an
+ * @ref OpKind::Setup body that re-checks those facts and throws naming the
+ * tensor. A BIND clears that body's @c computed flag, so the check runs once per
+ * bound problem.
+ *
+ * An IN-PLACE mutation of a checked input is not a bind, and the graph cannot see
+ * it: the tensor belongs to the caller, no node of this graph writes it, and its
+ * address does not change. So a caller who overwrites the contents of a tensor
+ * this pass validated, and then replays without rebinding, gets the folded
+ * arithmetic against data nothing re-checked. That is the boundary, stated rather
+ * than papered over, and @ref Graph::invalidate_setup is the way across it: it
+ * puts the guard back to work on the next execute.
+ *
+ * The shape this arises in is narrower than it sounds. A quantity the graph
+ * itself updates is written by some node, and @ref AntisymmetryDetection only
+ * ever looks at tensors NOTHING writes, so an amplitude a captured iteration
+ * updates was never a premise in the first place.
  *
  * @par Ordering
  * Before @ref AntisymmetrizerExpansion, which strips the operator and so removes
