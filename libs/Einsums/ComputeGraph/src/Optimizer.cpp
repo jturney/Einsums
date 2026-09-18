@@ -9,6 +9,10 @@
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AntisymmetrizerExpansion.hpp>
+#include <Einsums/ComputeGraph/Passes/AntisymmetrizerFolding.hpp>
+#include <Einsums/ComputeGraph/Passes/AntisymmetrizerLinearity.hpp>
+#include <Einsums/ComputeGraph/Passes/AntisymmetryDetection.hpp>
+#include <Einsums/ComputeGraph/Passes/AntisymmetryInference.hpp>
 #include <Einsums/ComputeGraph/Passes/CSE.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp>
@@ -733,6 +737,27 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // intermediate, which is only worth anything if MemoryPlanning and the
     // lifetime passes downstream get to place it. Declines instantly on any
     // graph whose specs name no operator, which is every graph today.
+    // The antisymmetrizer cluster, ahead of the expansion that strips the
+    // operator and so removes what all four of them match on.
+    //
+    // The order within it is forced. Detection establishes leaf facts by reading
+    // the bound inputs; linearity pulls `V := W + P(X)` into one operator so the
+    // fold can see the operator standing behind a linear combination; inference
+    // carries the leaf facts to the premise the fold needs; the fold collapses
+    // the contraction and emits its own per-bind guard.
+    //
+    // Each declines on a graph that names no operator, which is every graph
+    // written before they existed, at the cost of one walk over the node list.
+    // Detection reads DATA, so that gate is what keeps it from touching a byte of
+    // anyone's tensors unless an operator asked a question about them.
+    //
+    // Measured on the naive whole-tensor (T) of examples/toy: 1.4x, with
+    // detection costing about 70 ms once against roughly 9 ms saved per
+    // evaluation.
+    list.push_back(std::make_shared<passes::AntisymmetryDetection>());
+    list.push_back(std::make_shared<passes::AntisymmetrizerLinearity>());
+    list.push_back(std::make_shared<passes::AntisymmetryInference>());
+    list.push_back(std::make_shared<passes::AntisymmetrizerFolding>());
     list.push_back(std::make_shared<passes::AntisymmetrizerExpansion>());
     list.push_back(std::make_shared<passes::ConstantFolding>());
     list.push_back(std::make_shared<passes::ScaleAbsorption>());

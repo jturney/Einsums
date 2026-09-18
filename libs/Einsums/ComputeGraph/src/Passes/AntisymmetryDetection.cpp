@@ -219,6 +219,16 @@ bool AntisymmetryDetection::run(Graph &graph) {
     // a question the graph actually asked rather than a search.
     std::vector<OperatorGroups> operator_groups;
 
+    /// One operator's generators and the shape they address.
+    struct Shape {
+        SymmetryDescriptor       within;
+        SymmetryDescriptor       invariance;
+        std::vector<std::size_t> dims;
+        Shape(SymmetryDescriptor w, SymmetryDescriptor i, std::vector<std::size_t> d)
+            : within(std::move(w)), invariance(std::move(i)), dims(std::move(d)) {}
+    };
+    std::vector<Shape> shapes;
+
     // SOURCE ONE: a tensor of the operator's own output shape. That is the
     // operator's operand, which the conditional arm asks about, and a divisor of
     // the same shape, which R2 asks about.
@@ -239,18 +249,56 @@ bool AntisymmetryDetection::run(Graph &graph) {
             }
             operator_groups.push_back(OperatorGroups{.groups = op.groups});
 
-            SymmetryDescriptor const within     = within_group_antisymmetry(*groups);
-            SymmetryDescriptor const invariance = operator_invariance(*groups);
-            for (auto &[tid, handle] : graph.tensors_map()) {
-                if (handle.dims != out_handle->dims) {
-                    continue; // the operator's permutation does not address it
-                }
-                for (auto const &generator : within.ops) {
-                    want(tid, generator);
-                }
-                for (auto const &generator : invariance.ops) {
-                    want(tid, generator);
-                }
+            // DISTINCT (generators, shape) pairs only. An unrolled loop writes
+            // the same operator once per iteration - the blocked (T) of
+            // examples/toy has a hundred and twenty copies of P(a/bc) - and the
+            // tensor scan below is over every tensor the graph knows, which for
+            // that graph is a couple of thousand cached slices. Walking the
+            // product of the two cost 27 ms of candidate collection before a
+            // single byte of data was read.
+            shapes.emplace_back(within_group_antisymmetry(*groups), operator_invariance(*groups), out_handle->dims);
+        }
+    }
+
+    // Source two walks every einsum against every operator group, so the same
+    // duplication that inflated the shape scan inflates it quadratically: the
+    // blocked (T) has 120 copies of P(a/bc) and 720 contractions, and the pair
+    // loop underneath runs `std::count` over index lists. Deduping the groups is
+    // what actually removed the 27 ms, not deduping the shapes.
+    {
+        std::vector<OperatorGroups> distinct_groups;
+        for (auto const &og : operator_groups) {
+            bool const seen = std::ranges::any_of(distinct_groups, [&](OperatorGroups const &other) { return other.groups == og.groups; });
+            if (!seen) {
+                distinct_groups.push_back(og);
+            }
+        }
+        operator_groups = std::move(distinct_groups);
+    }
+
+    {
+        std::vector<Shape> distinct;
+        for (auto const &shape : shapes) {
+            bool const seen = std::ranges::any_of(distinct, [&](Shape const &other) {
+                return other.dims == shape.dims && other.within == shape.within && other.invariance == shape.invariance;
+            });
+            if (!seen) {
+                distinct.push_back(shape);
+            }
+        }
+        shapes = std::move(distinct);
+    }
+
+    for (auto const &shape : shapes) {
+        for (auto &[tid, handle] : graph.tensors_map()) {
+            if (handle.dims != shape.dims) {
+                continue; // the operator's permutation does not address it
+            }
+            for (auto const &generator : shape.within.ops) {
+                want(tid, generator);
+            }
+            for (auto const &generator : shape.invariance.ops) {
+                want(tid, generator);
             }
         }
     }

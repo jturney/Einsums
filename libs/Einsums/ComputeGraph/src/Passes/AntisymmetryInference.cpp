@@ -225,8 +225,23 @@ bool AntisymmetryInference::run(Graph &graph) {
     // premise only by being carried forward.
     graph.topological_sort();
 
-    auto const guard      = EscapeAnalysis::over(graph);
     auto const nodes_view = std::span<Node const>{graph.nodes()};
+
+    // SELF-GATE. In the default pipeline this runs over every graph, and almost
+    // no graph names a permutation operator. Without a fact to start from there
+    // is nothing for the rules to carry: detection records a hint only where an
+    // operator asked about one, so no operator means no hint means no
+    // conclusion. Leaving early keeps the cost at one walk over the node list
+    // rather than a rule evaluation per contraction.
+    bool anything_to_do = std::ranges::any_of(nodes_view, [](Node const &node) { return read_operator_site(node).has_value(); });
+    if (!anything_to_do) {
+        anything_to_do = std::ranges::any_of(graph.tensors_map(), [](auto const &entry) { return entry.second.symmetry_hint != nullptr; });
+    }
+    if (!anything_to_do) {
+        return false;
+    }
+
+    auto const guard = EscapeAnalysis::over(graph);
 
     auto const hint_of = [&](TensorId id) -> SymmetryDescriptor const * {
         auto const *handle = graph.find_tensor(graph.resolve_alias(id));

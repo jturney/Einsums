@@ -54,7 +54,11 @@ std::map<std::string, cg::PassPhase> const &expected_phases() {
         {"GPUDiagnostics", cg::PassPhase::Diagnostic},
 
         // Structural-algebraic: machine-independent, and the only output a save keeps.
+        {"AntisymmetryDetection", cg::PassPhase::Analysis},
+        {"AntisymmetryInference", cg::PassPhase::Analysis},
         {"AntisymmetrizerExpansion", cg::PassPhase::StructuralAlgebraic},
+        {"AntisymmetrizerFolding", cg::PassPhase::StructuralAlgebraic},
+        {"AntisymmetrizerLinearity", cg::PassPhase::StructuralAlgebraic},
         {"DeltaElimination", cg::PassPhase::StructuralAlgebraic},
         {"ConstantFolding", cg::PassPhase::StructuralAlgebraic},
         {"ScaleAbsorption", cg::PassPhase::StructuralAlgebraic},
@@ -162,6 +166,8 @@ std::map<std::string, cg::PassTier> const &expected_tiers() {
         // arithmetic. Pinned by an exact (==, not a tolerance) comparison in
         // AntisymmetrizerExpansion.cpp.
         {"AntisymmetrizerExpansion", cg::PassTier::BitwiseExact},
+        {"AntisymmetryDetection", cg::PassTier::BitwiseExact},
+        {"AntisymmetryInference", cg::PassTier::BitwiseExact},
         {"CSE", cg::PassTier::BitwiseExact},
         {"DeadNodeElimination", cg::PassTier::BitwiseExact},
         {"DeltaElimination", cg::PassTier::BitwiseExact},
@@ -180,6 +186,13 @@ std::map<std::string, cg::PassTier> const &expected_tiers() {
         {"PermuteFusion", cg::PassTier::ReAssociating},                       // 4.6e-17, Accelerate only
         {"LayoutAssignment", cg::PassTier::ReAssociating},                    // legs pending; see below
         {"MultiTermFactorization", cg::PassTier::ReAssociating},              // legs pending; see below
+        // Larger than the rest of this group, and expected to be: the fold keeps
+        // ONE of the operator's N terms and multiplies, so the summation it
+        // performs is genuinely a different one rather than the same additions
+        // reordered. 1.4e-14 on a (T) energy summed over 20.5 million elements is
+        // roughly 65 eps, which is the tier behaving as described.
+        {"AntisymmetrizerFolding", cg::PassTier::ReAssociating},   // 1.4e-14
+        {"AntisymmetrizerLinearity", cg::PassTier::ReAssociating}, // legs pending; element-wise agreement to 1e-12
 
         // Lossy: trades accuracy under a recorded tolerance, never in a default manager.
         {"FactorizationPass", cg::PassTier::Lossy},
