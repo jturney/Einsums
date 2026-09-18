@@ -32,6 +32,18 @@ repos:
         pass_filenames: false
         always_run: true
 
+      # A version tag is rendered verbatim and compared against EINSUMS_VERSION by
+      # nothing, so one naming a release that does not exist is not a build error:
+      # the warnings-are-errors docs build stays green and publishes the bad note.
+      # Three surfaces carry a version and all three reach the docs unvalidated,
+      # so this scans tracked files rather than a header glob.
+      - id: einsums-version-tags
+        name: Ensure version tags do not name an unreleased version
+        entry: devtools/check_version_tags.py
+        language: python
+        pass_filenames: false
+        always_run: true
+
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v22.1.8
     hooks:
