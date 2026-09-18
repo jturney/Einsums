@@ -32,8 +32,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * (Tensor::materialize_into - no allocation) and their Free nodes detach without freeing, so
  * non-overlapping intermediates share storage and replays touch the same hot pages with zero allocator
  * traffic. Tensors with views, aliases, GPU placement, or unbounded lifetimes are left on their own
- * allocations, as is any graph with control flow at its level (bodies are planned at their own
- * recursion level).
+ * allocations, as is any graph with a Loop or Conditional at its level (bodies are planned at their
+ * own recursion level). A Setup at this level does NOT suppress the plan: only the tensors its body
+ * touches are left out, since those are the ones whose lifetime the interval test cannot see.
  *
  * This pass is in the default pipeline as the LAST pass (with apply_arena defaulting to true, so it
  * both reports statistics and applies the arena). It runs after Materialization / FreeInsertion so the
@@ -67,8 +68,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @endcode
  *
  * @par Limitations
- * - Arena planning is HOST-only and skips any graph that has control flow at its level (Loop /
- *   Conditional) or any GPU / host<->device transfer node; those graphs get statistics only.
+ * - Arena planning is HOST-only and skips any graph that has a Loop or Conditional at its level, or
+ *   any GPU / host<->device transfer node; those graphs get statistics only. A Setup node costs only
+ *   the tensors its body reaches (@ref EscapeAnalysis::touched_by_subtree), plus any tensor with no
+ *   attached pointer, which that query cannot answer for.
  * - Only graph-owned is_intermediate tensors bracketed by exactly one Materialize and one Free node,
  *   not viewed or aliased, with materialize_into_fn + release_fn and nonzero bytes, are arena-placed.
  * - The interval test uses body-LOCAL node positions and is blind to cross-iteration (loop-carried)

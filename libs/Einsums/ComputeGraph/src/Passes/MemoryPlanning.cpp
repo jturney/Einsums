@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/BufferAllocator/MemoryPool.hpp>
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/MemoryPlanning.hpp>
@@ -13,8 +14,10 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <new>
+#include <optional>
 #include <ostream>
 #include <ranges>
 #include <unordered_map>
@@ -177,13 +180,18 @@ struct ArenaPlan {
     size_t                     arena_bytes{0};
 };
 
+/// Records a declined candidate. A callback rather than the pass itself because
+/// ``OptimizerPass::note_skip`` is protected, which is the right default: only a
+/// pass says why IT declined.
+using NoteSkip = std::function<void(std::string_view, std::string_view)>;
+
 /// Plan storage for one flat host-only graph: every graph-owned intermediate
 /// whose lifetime is bracketed by exactly one Materialize and one Free node
 /// (placed by the Materialization / FreeInsertion passes that run earlier)
 /// gets a first-fit-decreasing offset in a shared arena. Intervals are the
 /// [materialize, free] node positions - anything outside that window cannot
 /// touch the buffer.
-ArenaPlan plan_arena(Graph &graph) {
+ArenaPlan plan_arena(Graph &graph, NoteSkip const &note) {
     ArenaPlan plan;
     graph.topological_sort();
 
@@ -211,11 +219,33 @@ ArenaPlan plan_arena(Graph &graph) {
     // that changes, treat any iteration-crossing tensor as always-live here (or
     // refuse to plan inside Loop bodies outright - cross-iteration liveness is
     // not derivable from the body graph alone).
+    //
+    // A Setup node is deliberately NOT in that bail, though is_control_flow
+    // counts it: that predicate answers "does this node own a sub-graph", which
+    // is the right question for whoever walks or expands one and the wrong one
+    // here. What this bail protects against is a lifetime the interval test
+    // cannot see, and a Setup body's version of that reaches exactly the
+    // tensors it touches. Its outputs live ACROSS replays, so they must not
+    // share a slot with a neighbour whose window merely looks disjoint at this
+    // level; every other intermediate here is written and consumed inside one
+    // replay and was never at risk. Declining the whole level instead costs the
+    // arena on every graph a Setup appears in, which is every fitting graph and
+    // every graph an antisymmetrizer fold has guarded.
+    bool has_setup = false;
     for (auto const &node : nodes) {
-        if (is_control_flow(node.kind) || node.target == Target::GPU || node.kind == OpKind::HostToDevice ||
-            node.kind == OpKind::DeviceToHost) {
+        if (node.kind == OpKind::Loop || node.kind == OpKind::Conditional || node.target == Target::GPU ||
+            node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
+            note("graph holds control flow or device work at this level", graph.name());
             return plan;
         }
+        has_setup = has_setup || node.kind == OpKind::Setup;
+    }
+
+    // Built only when a Setup is present, since it walks the whole sub-graph
+    // tree to collect the pointers its bodies reference.
+    std::optional<EscapeAnalysis> escapes;
+    if (has_setup) {
+        escapes = EscapeAnalysis::over(graph);
     }
 
     // Locate each tensor's Materialize/Free bracket.
@@ -255,6 +285,17 @@ ArenaPlan plan_arena(Graph &graph) {
         auto const &handle = it->second;
         if (!handle.is_intermediate || handle.aliases != 0 || view_targets.contains(tid) || !handle.materialize_into_fn ||
             !handle.release_fn || handle.total_bytes() == 0) {
+            continue;
+        }
+        // A Setup body may hold this buffer across replays. touched_by_subtree
+        // compares POINTERS, so it can only answer for a tensor that has one;
+        // a deferred shell is unattached at optimize time and would come back
+        // "untouched" from a comparison against an empty set. That answer is
+        // safe where a wrong one costs a missed rewrite and not here, where it
+        // would alias two live buffers, so an unattached tensor is skipped
+        // rather than trusted.
+        if (has_setup && (handle.tensor_ptr == nullptr || escapes->touched_by_subtree(tid))) {
+            note("a setup body may hold the buffer across replays", handle.name);
             continue;
         }
         plan.tensors.push_back({.tid = tid, .bytes = handle.total_bytes(), .offset = 0, .mat_node = mat, .free_node = fre});
@@ -359,8 +400,8 @@ void apply_arena_plan(Graph &graph, ArenaPlan const &plan) {
                      }());
 }
 
-void plan_tree(Graph &graph, bool apply, size_t &arena_bytes, size_t &num_planned, size_t &tensor_bytes) {
-    ArenaPlan const plan = plan_arena(graph);
+void plan_tree(Graph &graph, NoteSkip const &note, bool apply, size_t &arena_bytes, size_t &num_planned, size_t &tensor_bytes) {
+    ArenaPlan const plan = plan_arena(graph, note);
     arena_bytes += plan.arena_bytes;
     num_planned += plan.tensors.size();
     for (auto const &t : plan.tensors) {
@@ -369,7 +410,7 @@ void plan_tree(Graph &graph, bool apply, size_t &arena_bytes, size_t &num_planne
     if (apply) {
         apply_arena_plan(graph, plan);
     }
-    graph.for_each_subgraph([&](Graph &sub) { plan_tree(sub, apply, arena_bytes, num_planned, tensor_bytes); });
+    graph.for_each_subgraph([&](Graph &sub) { plan_tree(sub, note, apply, arena_bytes, num_planned, tensor_bytes); });
 }
 
 } // namespace
@@ -394,7 +435,9 @@ bool MemoryPlanning::run(Graph &graph) {
     _device_total_memory = acc.device_total;
     _device_peak_memory  = acc.device_peak;
 
-    plan_tree(graph, _apply_arena, _planned_arena_bytes, _num_planned, _planned_tensor_bytes);
+    plan_tree(
+        graph, [this](std::string_view reason, std::string_view detail) { note_skip(reason, detail); }, _apply_arena, _planned_arena_bytes,
+        _num_planned, _planned_tensor_bytes);
 
     report(1, fmt::format("peak host memory {} bytes (of {} total allocated){}", _peak_memory, _total_memory,
                           _device_peak_memory > 0 ? fmt::format(", device peak {} bytes", _device_peak_memory) : std::string{}));

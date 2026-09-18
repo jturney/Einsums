@@ -497,6 +497,165 @@ TEST_CASE("MemoryPlanning - in-body arena bracket is unreachable (wraparound can
 
 // ── Control flow at the graph level suppresses a flat-prefix arena ───────
 
+TEST_CASE("MemoryPlanning - a setup at graph level leaves the arena on", "[ComputeGraph][Passes][Arena][Setup]") {
+    // The companion to the Loop case below, and deliberately the opposite
+    // answer. A Setup node owns a sub-graph exactly as a Loop does, so
+    // is_control_flow counts it, but what the arena's bail protects against is
+    // a lifetime its interval test cannot see. A Loop body's tensors cross
+    // iterations; a Setup body's cross replays; neither hazard reaches an
+    // intermediate the body never touches. So the level still plans, and the
+    // exclusion is per tensor.
+    //
+    // Here S is written by the setup body and read after it, which makes it
+    // live across every replay. X and Y are ordinary disjoint-lifetime
+    // intermediates of the replay itself. The arena must take X and Y and
+    // refuse S.
+    constexpr size_t N    = 400;
+    auto             A    = create_random_tensor<double>("A", N, N);
+    auto             B    = create_random_tensor<double>("B", N, N);
+    auto             out1 = create_zero_tensor<double>("out1", N, N);
+    auto             out2 = create_zero_tensor<double>("out2", N, N);
+
+    // Reference: S = A*B once, then the chain each replay reads it.
+    auto S_ref = create_zero_tensor<double>("Sref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &S_ref, Indices{i, k}, A, Indices{k, j}, B);
+    auto X_ref = create_zero_tensor<double>("Xref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, S_ref);
+    auto OUT1_ref = create_zero_tensor<double>("OUT1ref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT1_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    auto Y_ref = create_zero_tensor<double>("Yref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, OUT1_ref, Indices{k, j}, S_ref);
+    auto OUT2_ref = create_zero_tensor<double>("OUT2ref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT2_ref, Indices{i, k}, Y_ref, Indices{k, j}, B);
+
+    cg::Graph graph("mp_arena_setup");
+    auto     &S = graph.create_tensor<double, 2>("S", N, N);
+    auto     &X = graph.create_tensor<double, 2>("X", N, N);
+    auto     &Y = graph.create_tensor<double, 2>("Y", N, N);
+    {
+        auto                  &setup = graph.add_setup("fit");
+        cg::CaptureGuard const guard(setup);
+        cg::einsum("ik;kj->ij", &S, A, B);
+    }
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &X, A, S);
+        cg::einsum("ik;kj->ij", &out1, X, B); // X dies here
+        cg::einsum("ik;kj->ij", &Y, out1, S); // Y born after X's death
+        cg::einsum("ik;kj->ij", &out2, Y, B);
+    }
+
+    {
+        auto [fi_mod, fi] = graph.apply<cg::passes::FreeInsertion>();
+        REQUIRE(fi_mod);
+        CHECK(fi.num_freed() == 2); // S is a setup output: FreeInsertion already refuses it
+    }
+    auto [mp_mod, mp] = graph.apply<cg::passes::MemoryPlanning>();
+    REQUIRE(mp_mod); // the Setup does NOT suppress the level
+    constexpr size_t kBuf = N * N * sizeof(double);
+    // X and Y are planned, S is not: it is the one the setup body touches.
+    CHECK(mp.num_planned() == 2);
+    CHECK(mp.planned_tensor_bytes() == 2 * kBuf);
+
+    graph.execute();
+    auto check = [&]() {
+        for (size_t ii = 0; ii < N; ii += 41) {
+            for (size_t jj = 0; jj < N; jj += 37) {
+                REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
+            }
+        }
+    };
+    check();
+
+    // The replay is where an S placed in the arena would show: the setup body
+    // is skipped as already computed, so S must still hold what it computed.
+    out1.zero();
+    out2.zero();
+    graph.execute();
+    check();
+}
+
+TEST_CASE("MemoryPlanning - an intermediate a setup body reads is kept out of the arena", "[ComputeGraph][Passes][Arena][Setup]") {
+    // The case the per-tensor exclusion exists for, and the reason the arena
+    // cannot simply trust the parent's node list once a Setup is present. R is
+    // written at this level and read ONLY inside the setup body. A Setup node
+    // does not list its body's reads, so from the flat node list R looks like it
+    // dies at its own writer, and its collapsed interval would let the arena
+    // hand its bytes to a neighbour. A rebind re-runs the body, which reads R,
+    // which by then holds someone else's data.
+    //
+    // touched_by_subtree is what sees the read. X and Y, which no body touches,
+    // still get placed.
+    constexpr size_t N    = 400;
+    auto             A    = create_random_tensor<double>("A", N, N);
+    auto             B    = create_random_tensor<double>("B", N, N);
+    auto             out1 = create_zero_tensor<double>("out1", N, N);
+    auto             out2 = create_zero_tensor<double>("out2", N, N);
+
+    auto R_ref = create_zero_tensor<double>("Rref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &R_ref, Indices{i, k}, A, Indices{k, j}, B);
+    auto S_ref = create_zero_tensor<double>("Sref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &S_ref, Indices{i, k}, R_ref, Indices{k, j}, B);
+    auto X_ref = create_zero_tensor<double>("Xref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, S_ref);
+    auto OUT1_ref = create_zero_tensor<double>("OUT1ref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT1_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    auto Y_ref = create_zero_tensor<double>("Yref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, OUT1_ref, Indices{k, j}, S_ref);
+    auto OUT2_ref = create_zero_tensor<double>("OUT2ref", N, N);
+    tensor_algebra::einsum(Indices{i, j}, &OUT2_ref, Indices{i, k}, Y_ref, Indices{k, j}, B);
+
+    cg::Graph graph("mp_arena_setup_reads");
+    auto     &R = graph.create_tensor<double, 2>("R", N, N);
+    auto     &S = graph.create_tensor<double, 2>("S", N, N);
+    auto     &X = graph.create_tensor<double, 2>("X", N, N);
+    auto     &Y = graph.create_tensor<double, 2>("Y", N, N);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &R, A, B); // R written here, read only in the body
+    }
+    {
+        auto                  &setup = graph.add_setup("fit");
+        cg::CaptureGuard const guard(setup);
+        cg::einsum("ik;kj->ij", &S, R, B);
+    }
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &X, A, S);
+        cg::einsum("ik;kj->ij", &out1, X, B); // X dies here
+        cg::einsum("ik;kj->ij", &Y, out1, S); // Y born after X's death
+        cg::einsum("ik;kj->ij", &out2, Y, B);
+    }
+
+    {
+        auto [fi_mod, fi] = graph.apply<cg::passes::FreeInsertion>();
+        REQUIRE(fi_mod);
+    }
+    auto [mp_mod, mp] = graph.apply<cg::passes::MemoryPlanning>();
+    REQUIRE(mp_mod);
+    // Whatever FreeInsertion bracketed, R must not be among the placed.
+    constexpr size_t kBuf = N * N * sizeof(double);
+    CHECK(mp.planned_tensor_bytes() == mp.num_planned() * kBuf);
+    CHECK(mp.num_planned() <= 2); // X and Y at most; never R, never S
+
+    graph.execute();
+    auto check = [&]() {
+        for (size_t ii = 0; ii < N; ii += 41) {
+            for (size_t jj = 0; jj < N; jj += 37) {
+                REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
+            }
+        }
+    };
+    check();
+
+    // A rebind puts the setup body back to work, and it reads R again.
+    graph.invalidate_setup();
+    out1.zero();
+    out2.zero();
+    graph.execute();
+    check();
+}
+
 TEST_CASE("MemoryPlanning - a loop at graph level suppresses the flat-prefix arena", "[ComputeGraph][Passes][Arena][Loop]") {
     // Known conservatism: X and Y are flat, disjoint-lifetime intermediates
     // BEFORE a loop - on their own they would share one arena slot. But
