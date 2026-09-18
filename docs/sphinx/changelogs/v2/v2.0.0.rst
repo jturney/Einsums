@@ -12,11 +12,12 @@ v2.0.0 Release
 
 What's New
 ----------
-* Tensor storage order can now be selected by users. The default is still row-major, but this can be changed when you
-  configure Einsums or can be passed as a command line option.
+* Tensor storage order can now be selected per tensor at construction. Tensors are column-major by default, so the
+  first index varies fastest.
 
-    * As of 2.0.0, we recommend sticking to row major, as the generic tensor contraction routine has not been optimized
-      for column major.
+    * Pass the order ahead of the name to build one row-major tensor, as in
+      ``Tensor<double, 2> A(/*row_major=*/true, "A", 3, 3);``. The order belongs to the tensor, so views and copies
+      taken from it keep it.
 * Tensors are now based on a common implementation class to reduce the amount of code that needs to be maintained.
 * The QR decomposition routine now outputs the Q and R matrices, rather than the intermediates needed to compute these.
 * General eigendecomposition can now accept nullpointers for the eigenvectors you don't want to calculate.

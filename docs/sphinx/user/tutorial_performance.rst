@@ -147,15 +147,16 @@ Views avoid memory allocation and data copying:
 3. Mind index ordering for cache efficiency
 --------------------------------------------
 
-Einsums tensors are row-major by default (last index varies fastest).
-When the contraction pattern aligns with memory layout, PackedGemm can avoid
-expensive packing:
+Einsums tensors are column-major, so the first index varies fastest and a run
+along it is contiguous in memory. A contraction is cheapest when the indices
+it walks innermost are the contiguous ones, because PackedGemm can then fill
+its blocks from stride-1 runs instead of gathering element by element:
 
 .. code-block:: cpp
 
     // C_il = A_ijk * B_jkl
-    // k is the innermost index of A → good cache locality for A
-    // l is the innermost index of B → good cache locality for B
+    // i varies fastest in A, so runs over i are contiguous
+    // j varies fastest in B, so runs over j are contiguous
 
 4. Use ComputeGraph for iterative code
 ---------------------------------------
