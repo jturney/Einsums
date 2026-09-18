@@ -46,6 +46,12 @@ TEMPLATE_TEST_CASE("transpose_inplace correctness", "[simd]", float, double) {
     }
 }
 
+// A weak guard on its own, kept only as a cheap cross-check of the strong one
+// above. A transpose that permutes both indices by the same involution passes
+// this and the identity case below while scrambling every real matrix, which is
+// exactly how the AVX-512 Vec<double> kernel stayed wrong: its permutation
+// p = {0,1,4,5,2,3,6,7} satisfies p(p(i)) == i. Only the element-by-element
+// comparison in "transpose_inplace correctness" can catch that class of bug.
 TEMPLATE_TEST_CASE("transpose_inplace is its own inverse", "[simd]", float, double) {
     constexpr int N = Vec<TestType>::lanes;
 

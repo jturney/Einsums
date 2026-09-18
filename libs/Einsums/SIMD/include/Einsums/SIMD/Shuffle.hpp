@@ -39,38 +39,45 @@ EINSUMS_NAMESPACE_BEGIN(simd)
 #if defined(__AVX512F__) && defined(__AVX512VL__)
 
 // 8×8 double transpose (AVX-512)
+//
+// Three-phase algorithm operating on 8 __m512d registers, structurally the
+// same as the 16×16 float kernel below:
+//   Phase 1: unpacklo/hi transposes the 2×2 block inside each 128-bit lane,
+//            so t[2g] and t[2g+1] carry the even and odd columns of rows
+//            2g and 2g+1, one column pair per lane.
+//   Phase 2: shuffle_f64x2 pairs those registers at distance TWO, gathering
+//            the lanes of four consecutive rows.
+//   Phase 3: shuffle_f64x2 merges the two 4-row groups into whole columns.
+//
+// The pairing distance is what makes this correct. Pairing at distance four
+// in phase 2 also produces eight plausible-looking registers, but they carry
+// src[p[j]][p[i]] with p = {0,1,4,5,2,3,6,7}: the middle two 128-bit lanes
+// end up swapped in both the element order and the row assignment. That
+// permutation is its own inverse and fixes the identity matrix, so a
+// round-trip or identity test cannot see it; only an element-by-element
+// comparison against the transpose can.
 EINSUMS_FORCEINLINE void transpose_inplace(Vec<double> *rows) {
-    // Phase 1: 2×2 transposes within 128-bit lanes
+    // Phase 1: 2×2 transposes within 128-bit lanes.
+    Vec<double> t[8]; // NOLINT
     for (int i = 0; i < 8; i += 2) {
-        auto lo     = _mm512_unpacklo_pd(rows[i], rows[i + 1]);
-        auto hi     = _mm512_unpackhi_pd(rows[i], rows[i + 1]);
-        rows[i]     = lo;
-        rows[i + 1] = hi;
+        t[i]     = _mm512_unpacklo_pd(rows[i], rows[i + 1]);
+        t[i + 1] = _mm512_unpackhi_pd(rows[i], rows[i + 1]);
     }
-    // Phase 2: 4×4 permute across 256-bit lanes
-    for (int i = 0; i < 4; i++) {
-        auto a      = _mm512_shuffle_f64x2(rows[i], rows[i + 4], 0x88);
-        auto b      = _mm512_shuffle_f64x2(rows[i], rows[i + 4], 0xdd);
-        rows[i]     = a;
-        rows[i + 4] = b;
+
+    // Phases 2+3: k = 0 assembles the even columns, k = 1 the odd ones.
+    for (int k = 0; k < 2; k++) {
+        // Phase 2: merge row-groups A(0-1)+B(2-3) and C(4-5)+D(6-7).
+        auto uAB_lo = _mm512_shuffle_f64x2(t[k], t[k + 2], 0x88);
+        auto uAB_hi = _mm512_shuffle_f64x2(t[k], t[k + 2], 0xdd);
+        auto uCD_lo = _mm512_shuffle_f64x2(t[k + 4], t[k + 6], 0x88);
+        auto uCD_hi = _mm512_shuffle_f64x2(t[k + 4], t[k + 6], 0xdd);
+
+        // Phase 3: merge AB+CD into complete columns.
+        rows[k]     = _mm512_shuffle_f64x2(uAB_lo, uCD_lo, 0x88); // column k
+        rows[k + 2] = _mm512_shuffle_f64x2(uAB_hi, uCD_hi, 0x88); // column k+2
+        rows[k + 4] = _mm512_shuffle_f64x2(uAB_lo, uCD_lo, 0xdd); // column k+4
+        rows[k + 6] = _mm512_shuffle_f64x2(uAB_hi, uCD_hi, 0xdd); // column k+6
     }
-    // Phase 3: final 128-bit lane swap
-    auto t0 = rows[0];
-    auto t1 = rows[1];
-    auto t2 = rows[2];
-    auto t3 = rows[3];
-    auto t4 = rows[4];
-    auto t5 = rows[5];
-    auto t6 = rows[6];
-    auto t7 = rows[7];
-    rows[0] = _mm512_shuffle_f64x2(t0, t2, 0x88);
-    rows[1] = _mm512_shuffle_f64x2(t1, t3, 0x88);
-    rows[2] = _mm512_shuffle_f64x2(t0, t2, 0xdd);
-    rows[3] = _mm512_shuffle_f64x2(t1, t3, 0xdd);
-    rows[4] = _mm512_shuffle_f64x2(t4, t6, 0x88);
-    rows[5] = _mm512_shuffle_f64x2(t5, t7, 0x88);
-    rows[6] = _mm512_shuffle_f64x2(t4, t6, 0xdd);
-    rows[7] = _mm512_shuffle_f64x2(t5, t7, 0xdd);
 }
 
 // 16×16 float transpose (AVX-512)
