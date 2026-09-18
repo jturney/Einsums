@@ -133,7 +133,7 @@ Applying an operator to a sum
 
 An operator on an ``einsum`` wraps that one contraction. When the operator
 applies to a SUM of contractions, accumulate the sum first and put the operator
-on a :cpp:func:`permute`:
+on a :cpp:func:`cg::permute <einsums::compute_graph::permute>`:
 
 .. code-block:: cpp
 

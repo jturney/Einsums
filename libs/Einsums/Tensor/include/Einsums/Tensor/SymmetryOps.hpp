@@ -524,8 +524,8 @@ template <RuntimeRankSymmetryTensor TensorType>
 }
 
 /// Enforce a runtime-rank tensor's declared symmetry in place, by averaging the
-/// elements each generator relates. The runtime-rank twin of
-/// @ref symmetrize(GeneralTensor<T, Rank, Alloc> &).
+/// elements each generator relates. The runtime-rank twin of the
+/// @ref symmetrize overload taking a compile-time-rank tensor.
 ///
 /// Throws rather than silently declining when the descriptor cannot apply: an
 /// enforcement that quietly did nothing would leave the caller believing an
