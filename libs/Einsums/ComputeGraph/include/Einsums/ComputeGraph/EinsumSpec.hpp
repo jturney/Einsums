@@ -84,7 +84,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * since `P(mu,nu)` is otherwise ambiguous between one group of two and two
  * groups of one.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 struct PermutationOperator {
     /// The partition, in source order. `P(i/jk)` gives `{{"i"}, {"j","k"}}`.
@@ -105,7 +105,7 @@ struct PermutationOperator {
  * that realizes the term: `permute(term.c_indices <- base.c_indices)` scaled by
  * @ref sign reads the base result and adds it at the transposed position.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 struct PermutationTerm {
     std::vector<std::string> c_indices; ///< Output order for this term.
@@ -132,7 +132,7 @@ struct PermutationTerm {
  * With several operators the terms are the Cartesian product of the per-operator
  * expansions, signs multiplied, with the FIRST operator varying slowest.
  *
- * @versionadded{2.1.0}
+ * @versionadded{2.0.0}
  */
 [[nodiscard]] EINSUMS_EXPORT std::vector<PermutationTerm> expand_permutation_operators(std::vector<std::string> const         &c_indices,
                                                                                        std::vector<PermutationOperator> const &operators);
@@ -155,7 +155,7 @@ struct EINSUMS_EXPORT ParsedEinsumSpec {
     /// every spec that does not write one, which is every spec written before
     /// they existed.
     /// @see PermutationOperator, expand_permutation_operators
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     std::vector<PermutationOperator> operators;
 
     /**
@@ -563,7 +563,7 @@ struct ParsedPermuteSpec {
 
     /// Permutation operators prefixing the term, in source order.
     /// @see ParsedEinsumSpec::operators
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     std::vector<PermutationOperator> operators;
 
     /// The canonical `"c <- a"` spelling of these index lists.

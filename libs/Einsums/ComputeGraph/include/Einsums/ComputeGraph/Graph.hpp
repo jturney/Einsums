@@ -3250,7 +3250,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *       ``inputs[0]``, so a node spelled the other way is silently declined
      *       by every one of them. Ordering is safe regardless, because the node
      *       writes its destination and the hazard edges key on that.
-     * @versionadded{2.1.0}
+     * @versionadded{2.0.0}
      */
     Node make_permute_node(TensorId a_id, TensorId c_id, ParsedPermuteSpec const &spec, PrefactorScalar alpha, PrefactorScalar beta,
                            std::string label = {});

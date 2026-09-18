@@ -132,7 +132,7 @@ struct EinsumDescriptor {
     /// the live @ref indices block: no pass rewrites an operator under a running
     /// executor, and one that wants to should rebuild the node, the same
     /// argument @ref PermuteDescriptor already makes for its index lists.
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     std::vector<PermutationOperator> operators;
 
     /// Live-mutable index state shared with the executor lambda.
@@ -289,7 +289,7 @@ struct PermuteDescriptor {
 
     /// Permutation (antisymmetrizer) operators this permute is wrapped in.
     /// @see EinsumDescriptor::operators
-    /// @versionadded{2.1.0}
+    /// @versionadded{2.0.0}
     std::vector<PermutationOperator> operators;
 };
 
