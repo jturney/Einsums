@@ -115,8 +115,42 @@ This becomes the following code.
 Runtime Comparisons
 ===================
 
-Einsums is an easy to use library that is also quite fast. To show this, we benchmarked the code for the following equation used in quantum chemistry against several
-different methods.
+Einsums aims to run a contraction as fast as code written by hand for that one contraction, which is a claim that has to be measured rather than asserted.
+Two comparisons are given here: against the other libraries that solve the same problem, and against hand-written code on a workload from quantum chemistry.
+To find out which path your own code is taking and how long it spends there, see :doc:`tutorial_performance`.
+
+Against other tensor libraries
+------------------------------
+
+The figure below reports all 48 contractions of version 0.1 of the Tensor Contraction Benchmark, single precision above and double below.
+Forty of the forty-eight come from quantum chemistry, covering the AO-to-MO transformation, CCSD, and CCSD(T).
+Einsums is measured against TBLIS, which like Einsums packs cache-sized blocks directly out of the operands, and against TCL, which permutes both operands into canonical order, calls one matrix multiplication, and permutes the result back.
+All three are timed in one process on one core of an AMD Ryzen Threadripper 2970WX, with allocations bound to a memory-attached NUMA node, against the same OpenBLAS, keeping the fastest of three repetitions.
+Every case is checked against a reference contraction at reduced extents before it is timed.
+
+.. image:: ../_static/index-images/head_to_head.png
+    :alt: Einsums, TBLIS, and TCL on all 48 contractions of the Tensor Contraction Benchmark.
+
+The rule drawn over each contraction is the rate an equally-sized matrix multiplication reached on the same machine in the same harness, which is the normalization both prior reports use.
+Contractions are ordered by that rate, so bandwidth-bound shapes are at the left of the figure and compute-bound shapes at the right.
+Measured against it, the medians are 101% and 100% for Einsums in single and double precision, 98% and 95% for TBLIS, and 67% and 68% for TCL.
+Einsums is first on 65 of the 96 measurements and second on the other 31.
+
+The eighteen CCSD(T) contractions at the left are worth reading on their own.
+At a given precision they share a flop count and an output volume exactly and differ only in how the six output indices are permuted across the two operands, so they measure sensitivity to index order and nothing else.
+Across that sweep Einsums varies by 1.05x in single precision and 1.03x in double, against 1.93x and 1.50x for TBLIS and 1.19x and 1.29x for TCL.
+Writing the output is 99% of the compulsory traffic on these shapes, and Einsums enumerates the output along whichever direction is contiguous in it and retires the resulting runs with non-temporal stores, which is why the group clears the equally-sized matrix multiplication that still reads its output before overwriting it.
+
+Twelve of the ninety-six measurements trail the better of the other two libraries by more than 5%, by at most 1.57x, and none of them trails both at once.
+Ten of those twelve share a shape in which the second operand supplies a single index of extent 24, so packing a large first operand is amortized over very little work.
+No native route recovers the matrix multiplication on that group: the Einsums median there is 66% of an equally-sized GEMM and the TBLIS median is 67%.
+
+This figure belongs to the Einsums paper, in preparation, rather than to the repository; its harness builds all three libraries from source and pins them to one core.
+
+Against hand-written code
+-------------------------
+
+The second comparison is the two-electron contribution to the Fock matrix, which is bandwidth-bound and is where a self-consistent field calculation spends most of its time.
 
 .. math::
 
@@ -130,59 +164,18 @@ different methods.
 
     G_{\mu\nu} = 2J_{\mu\nu} - K_{\mu\nu}
 
-The code for the benchmarks can be found in `devtools/profiling` along with a spreadsheet containing the raw timings to update these images as we improve our algorithms.
-The benchmark was performed on a system with the following specifications.
+The gray family in the figure is hand-written C++: the straightforward unfused loops that form :math:`J` in one pass over the integrals and :math:`K` in a second, the same loops fused into a single cache-ordered nest, and that fused nest parallelized with OpenMP.
+The serial pair shows that fusion alone buys almost nothing on one core, because a single core cannot saturate memory bandwidth and so halving the traffic does not help.
+The fused OpenMP nest, which is what a careful programmer writes by hand, is the baseline to beat.
 
-+-------------------------+------------------+-----------------------------+
-| CPU                     | Model            | Intel Core i7-13700 K       |
-|                         +------------------+-----------------------------+
-|                         | Clock            | 3.4 GHz                     |
-|                         +------------------+-----------------------------+
-|                         | Cache            | 30 MB                       |
-|                         +------------------+-----------------------------+
-|                         | Cores/Threads    | 16/24                       |
-+-------------------------+------------------+-----------------------------+
-| GPU                     | Model            | AMD Radeon RX 7900 XTX      |
-|                         +------------------+-----------------------------+
-|                         | Memory           | 24 GB                       |
-+-------------------------+------------------+-----------------------------+
-| System                  | Memory           | 32 GB + 62 GB swap          |
-|                         +------------------+-----------------------------+
-|                         | Storage          | 2 TB NVME SSD storage       |
-|                         +------------------+-----------------------------+
-|                         | Operating System | Debian Bookworm             |
-|                         +------------------+-----------------------------+
-|                         | Einsums Version  | 2.0.0-beta                  |
-|                         +------------------+-----------------------------+
-|                         | C++ Compiler     | GCC 15.1.0                  |
-|                         +------------------+-----------------------------+
-|                         | Fortran Compiler | GCC Fortran 12.2.0          |
-|                         +------------------+-----------------------------+
-|                         | BLAS Vendor      | OpenBLAS 0.3.29 with OpenMP |
-+-------------------------+------------------+-----------------------------+
+Writing the same two contractions as :cpp:func:`~einsums::tensor_algebra::einsum` calls trades that hand fusion for notation.
+Each contraction still runs on the best engine available for it, but the integrals are streamed twice, so eager einsum lands near serial hand code on this workload.
+Capturing the same two calls into a :doc:`ComputeGraph <tutorial_compute_graph>` recovers the difference: the ``StreamContractionFusion`` pass sees that both contractions read the same tensor and fuses them into one storage-order pass that feeds both accumulators, matching the hand-fused loops at small sizes and beating them at large ones, with no fusion written by the programmer.
 
-The tensor contraction was performed in several different ways: for loops in C; for loops in C with OpenMP SIMD vectorization and parallelization;
-CONCURRENT DO loops in FORTRAN; BLAS gemv call for the J matrix and an explicit loop in C++ for the K matrix; BLAS gemv call for the J matrix, then
-permuting the two-electron integrals to allow for a gemv call to be used for the K matrix; Einsums without permuting the two-electron integrals for
-the K matrix; and Einsums with permutation of the two-electron integrals for the K matrix. This first image shows the breakdown of the timing for
-building the individual matrices. The build time for the G matrix is not included as its contribution is too small to see.
+.. image:: ../_static/index-images/why_einsums.png
+    :alt: A Fock build through five execution strategies, from unfused loops to a stream-fused graph.
 
-.. image:: ../_static/index-images/Performance.png
-    :alt: Breakdown of timings between various methods for contracting tensors.
-
-As we can see, Einsums is a bit slower than raw BLAS, but still has comparable performance to a bare loop in C. 
-
-.. image:: ../_static/index-images/Performance_comp.png
-    :alt: Comparison of timings based on tensor size.
-
-In the above image, we can see how Einsums compares to the alternatives for various sizes of the input tensors. It seems to grow in a similar fashion
-to the alternatives.
-
-.. image:: ../_static/index-images/norm_performance.png
-    :alt: Rescaled comparisons of timings based on tensor size.
-
-Since the previous graph is difficult to read for small sizes of the tensors, this provides a comparison that is normalized to the BLAS timings.
-Error bars are provided to show that the lower end is dominated by noise, and so the ordering might not be trustworthy.
+This figure was measured on an Apple-silicon Mac and is regenerated by ``devtools/profiling/plot_why_einsums.py``, which drives the ``profile_strategies`` benchmark in the same directory and prints the timings as it draws.
 
 
 ============================
