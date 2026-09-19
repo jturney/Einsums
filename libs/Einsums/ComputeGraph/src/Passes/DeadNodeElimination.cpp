@@ -9,6 +9,10 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
+#include <fmt/format.h>
+
+#include <algorithm>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -46,6 +50,8 @@ void collect_own_node_ptrs(Graph const &g, std::unordered_set<void const *> &out
 
 void DeadNodeElimination::reset_stats() {
     _num_eliminated = 0;
+    _pruned_tensors.clear();
+    _pruned_unreported = 0;
 }
 
 bool DeadNodeElimination::run(Graph &graph) {
@@ -147,8 +153,34 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
             if (all_outputs_dead) {
                 dead[idx] = true;
                 eliminated_here++;
+
+                // Name what is being dropped, not just how much. A node removed here wrote a
+                // tensor nothing in the graph reads, which is both the intended case and what a
+                // caller sees who created a result with the scratch-defaulted creator: the
+                // answer disappears and the buffer keeps whatever it held. Recording the names
+                // is what lets explain() say which tensor went, instead of leaving a node count
+                // to be bisected.
+                //
+                // Only the names that will be shown are kept; the rest are counted. A graph that
+                // drops ten thousand intermediates then costs a counter rather than ten thousand
+                // strings and a quadratic dedup scan over them.
+                for (auto raw_tid : node.outputs) {
+                    auto const *handle = graph.find_tensor(graph.resolve_alias(raw_tid));
+                    if (handle == nullptr || handle->name.empty()) {
+                        continue;
+                    }
+                    if (std::ranges::find(_pruned_tensors, handle->name) != _pruned_tensors.end()) {
+                        continue;
+                    }
+                    if (_pruned_tensors.size() < max_reported_tensors) {
+                        _pruned_tensors.push_back(handle->name);
+                    } else {
+                        _pruned_unreported++;
+                    }
+                }
+
                 EINSUMS_LOG_INFO("DeadNodeElimination: removing dead node {} ({})", node.id, node.label);
-                report(2, fmt::format("remove dead node {} ({}) — outputs never consumed", node.id, node.label));
+                report(2, fmt::format("remove dead node {} ({}), outputs never consumed", node.id, node.label));
             }
         }
 
@@ -202,7 +234,34 @@ std::vector<std::string> DeadNodeElimination::explain() const {
     if (num_eliminated() == 0) {
         return {};
     }
-    return {fmt::format("DeadNodeElimination: removed {} dead node(s)", num_eliminated())};
+
+    std::vector<std::string> lines{fmt::format("DeadNodeElimination: removed {} dead node(s)", num_eliminated())};
+
+    if (_pruned_tensors.empty()) {
+        return lines;
+    }
+
+    // Naming the tensors is the whole point: a caller who meant one of them as a result reads
+    // zeros otherwise, with a node count as the only clue. Saying what to do about it here is
+    // what turns that from a bisect into a fix, and it costs a line in a report nobody reads
+    // when the pruning was the intended kind.
+    std::string names;
+    for (size_t i = 0; i < _pruned_tensors.size(); i++) {
+        if (i != 0) {
+            names += ", ";
+        }
+        names += fmt::format("'{}'", _pruned_tensors[i]);
+    }
+    if (_pruned_unreported > 0) {
+        names += fmt::format(" and {} more", _pruned_unreported);
+    }
+
+    lines.emplace_back(
+        fmt::format("DeadNodeElimination: dropped the only writer of graph-owned {}, which nothing in the graph reads", names));
+    lines.emplace_back("DeadNodeElimination: if you read one of those after execute(), it is a result rather than scratch; create it "
+                       "with declare_tensor/declare_runtime_tensor, or with intermediate=false");
+
+    return lines;
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

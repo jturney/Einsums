@@ -26,9 +26,11 @@
  * auto A = create_random_tensor<double>("A", N, N);
  * auto B = create_random_tensor<double>("B", N, N);
  *
- * // Graph with owned intermediate
+ * // Graph with an owned RESULT. declare_, not create_: C is read after execute(), so it is
+ * // not scratch. create_zero_tensor marks it an intermediate, and a graph whose result is an
+ * // intermediate has that result optimized away as soon as nothing inside the graph reads it.
  * cg::Graph graph("example");
- * auto &C = graph.create_zero_tensor<double, 2>("C", N, N);
+ * auto &C = graph.declare_zero_tensor<double, 2>("C", N, N);
  *
  * // Capture
  * {

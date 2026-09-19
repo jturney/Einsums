@@ -74,6 +74,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     [[nodiscard]] std::string name() const override { return "DeadNodeElimination"; }
 
+    /// @brief The graph-owned tensors whose only writer this pass removed.
+    /// @return The names, in elimination order, deduplicated.
+    ///
+    /// Every entry is a tensor nothing in the graph reads, which is exactly the case the pass
+    /// exists to remove. It is ALSO exactly what a caller sees who created a result with the
+    /// scratch-defaulted creator and reads it after ``execute()``: the answer is pruned and the
+    /// buffer keeps whatever it held. The two are indistinguishable from inside the graph, so
+    /// rather than guess, the pass names what it dropped and @ref explain says what to do about
+    /// it. Without this the case reports only as a node count, which is what made it a bisect.
+    APIARY_EXPOSE APIARY_GETTER("pruned_tensors") [[nodiscard]] std::vector<std::string> const &pruned_tensors() const {
+        return _pruned_tensors;
+    }
+
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
 
@@ -102,6 +115,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// node's output tensor is kept alive if its buffer pointer appears in
     /// @p external_refs (referenced by an enclosing or sibling graph).
     bool run_one(Graph &g, std::unordered_set<void const *> const &external_refs);
+
+    /// Names of the pruned tensors, capped so a graph that drops thousands of intermediates
+    /// reports a readable line rather than a wall of text. @ref num_eliminated stays exact
+    /// either way.
+    static constexpr size_t max_reported_tensors = 8;
+
+    std::vector<std::string> _pruned_tensors;
+
+    /// Distinct pruned tensors beyond @ref max_reported_tensors, summarized as a count.
+    size_t _pruned_unreported{0};
 
     size_t _num_eliminated{0};
 };

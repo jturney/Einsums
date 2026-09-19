@@ -11,6 +11,9 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <algorithm>
+#include <string>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -304,4 +307,65 @@ TEST_CASE("DeadNodeElimination - keeps a then-branch intermediate consumed by th
             CHECK(std::abs(out(i, j) - ref(i, j)) < 1e-10);
         }
     }
+}
+
+TEST_CASE("DeadNodeElimination - names the tensors it pruned", "[ComputeGraph][Passes]") {
+    // The pruning here is the intended kind, but it is indistinguishable from the case that
+    // cost a bisect to find: a caller creates a result with the scratch-defaulted creator,
+    // optimizes, and reads zeros because the only node writing it was removed. The pass cannot
+    // tell those apart, so it names what it dropped and says what to do about it. A report that
+    // carried only a node count is what made that failure silent.
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto B = create_random_tensor<double>("B", 3, 3);
+
+    cg::Graph graph("dne_names_pruned");
+    auto     &T = graph.create_zero_tensor<double, 2>("T", 3, 3);
+
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &T, A, B);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DeadNodeElimination>();
+
+    REQUIRE(modified);
+    REQUIRE(pass.num_eliminated() >= 1);
+
+    // The dropped tensor is named, not merely counted.
+    auto const &pruned = pass.pruned_tensors();
+    REQUIRE_FALSE(pruned.empty());
+    CHECK(std::ranges::find(pruned, std::string{"T"}) != pruned.end());
+
+    // And the explanation carries the name plus the remedy, so a reader who expected 'T' to
+    // survive learns why it did not without reading the pass source.
+    auto const  lines = pass.explain();
+    std::string joined;
+    for (auto const &line : lines) {
+        joined += line + "\n";
+    }
+    CHECK(joined.find("'T'") != std::string::npos);
+    CHECK(joined.find("intermediate=false") != std::string::npos);
+}
+
+TEST_CASE("DeadNodeElimination - a declared result survives the pass", "[ComputeGraph][Passes]") {
+    // The other half of the contract above: declare_tensor marks a graph-owned tensor as a
+    // result rather than scratch, and the pass must leave its producer alone even though
+    // nothing inside the graph reads it. This is the spelling the explain() text recommends,
+    // so it has to actually work.
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto B = create_random_tensor<double>("B", 3, 3);
+
+    cg::Graph graph("dne_declared_result");
+    auto     &C = graph.declare_zero_tensor<double, 2>("C", 3, 3);
+
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DeadNodeElimination>();
+
+    CHECK_FALSE(modified);
+    CHECK(pass.num_eliminated() == 0);
+    CHECK(pass.pruned_tensors().empty());
 }

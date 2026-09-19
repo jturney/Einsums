@@ -179,12 +179,18 @@ struct ParsedEinsumSpec;
  * auto B = create_random_tensor<double>("B", 5, 8);
  *
  * cg::Graph graph("my_graph");
- * auto &C = graph.create_zero_tensor<double, 2>("C", 10, 8);
+ *
+ * // declare_, not create_: C is a RESULT this code reads after execute(), so it must not be
+ * // marked scratch. create_zero_tensor would make it an intermediate, and DeadNodeElimination
+ * // removes the einsum below the moment the graph is optimized, leaving C as it was.
+ * auto &C = graph.declare_zero_tensor<double, 2>("C", 10, 8);
  *
  * {
  *     cg::CaptureGuard guard(graph);
  *     cg::einsum("ik;kj->ij", &C, A, B);
  * }
+ *
+ * graph.optimize();  // also materializes C, whose allocation declare_ deferred
  *
  * graph.execute();   // C = A * B
  *
@@ -2431,6 +2437,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Pair with free_tensor() to mark the lifetime end. The MemoryPlanning pass
      * uses these markers to identify buffer reuse opportunities.
      *
+     * Marked as is_intermediate = TRUE, meaning SCRATCH: a tensor nothing in the graph
+     * reads is a computation nobody needs, so @ref passes::DeadNodeElimination removes
+     * the node that writes it. If a caller reads this tensor after ``execute()`` it is a
+     * result rather than scratch, and creating it here means the answer is optimized away
+     * and the buffer keeps whatever it held. Use @ref declare_tensor for that, or the
+     * runtime-rank @ref create_runtime_tensor with ``intermediate = false``.
+     *
      * @tparam T Element type (e.g., double, float, std::complex<double>).
      * @tparam Rank Number of dimensions.
      * @tparam Dims Dimension size types (must be integral).
@@ -2901,7 +2914,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * Creates a shell tensor (valid metadata, no data) owned by the graph.
      * Data is allocated by the MaterializationPass during apply().
-     * Marked as is_intermediate = true.
+     *
+     * Marked as is_intermediate = FALSE, which is what separates this from
+     * @ref create_tensor: a declared tensor is part of the graph's interface, so
+     * @ref passes::DeadNodeElimination keeps its producer even when nothing inside the
+     * graph reads it. That is what you want for a result a caller reads after
+     * ``execute()``; use @ref create_tensor for scratch that dies inside the graph.
+     *
+     * The cost of being deferred is that it must be materialized before the graph runs.
+     * ``execute()`` on an unmaterialized declared tensor throws and names it, so the
+     * mistake is loud; @ref optimize (or any PassManager including Materialization)
+     * satisfies it.
      *
      * @tparam T     Element type.
      * @tparam Rank  Number of dimensions.
