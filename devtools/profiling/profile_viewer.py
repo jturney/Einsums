@@ -57,6 +57,7 @@ from rich.text import Text
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.message import Message as TextualMessage
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
@@ -2177,6 +2178,11 @@ class ThreadTreeView(Widget):
     def on_mount(self) -> None:
         table = self.query_one(ProfileDataTable)
         table.cursor_type = "row"
+        # Render anything that arrived while this view was still composing. Without this the
+        # first snapshot of a live session is dropped rather than drawn, and the view stays
+        # empty until the next one happens to land.
+        if self._data:
+            self._refresh_table()
 
     def update_data(self, nodes: list[ProfileNode], name_filter: str = "") -> None:
         self._data = nodes
@@ -2292,7 +2298,17 @@ class ThreadTreeView(Widget):
         self._initialized = True
 
     def _refresh_table(self, force_rebuild: bool = False) -> None:
-        table = self.query_one(ProfileDataTable)
+        # A snapshot can reach a freshly created view before Textual has mounted the table this
+        # view composes, and the profiler makes that likely rather than rare: a program started
+        # with --einsums:profile:wait-for-viewer unblocks the instant a viewer attaches and
+        # streams a full snapshot immediately, in the same tick the view is created. Querying
+        # then raises NoMatches and kills the update worker, taking the whole live view down.
+        # The data is already stored on self, so returning here loses nothing: on_mount calls
+        # back once the table exists.
+        try:
+            table = self.query_one(ProfileDataTable)
+        except NoMatches:
+            return
         self._ensure_columns()
 
         self._total_ms = sum_exclusive(self._data)
