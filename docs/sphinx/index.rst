@@ -15,6 +15,7 @@ Einsums's Documentation
    :hidden:
 
    User Guide <user/index>
+   How-To Guides <howto/index>
    Installation <building/index>
    API Reference <api/index>
    Developer Guide <contributors/index>
@@ -29,7 +30,8 @@ Einsums's Documentation
 :doc:`License <license>`
 
 
-Einsums is a C++23 tensor algebra library for scientific computing. It provides:
+Einsums is a C++20 tensor algebra library for scientific computing. A few components use
+C++23 features through the CXX23 compatibility module, which supplies C++20 fallbacks. It provides:
 
 * A multidimensional :code:`Tensor` type with the usual algebraic operations,
   block-sparse and tiled variants, and a disk-backed tensor for out-of-core
