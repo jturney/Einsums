@@ -541,6 +541,39 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     }
 
     /**
+     * @brief Re-seat this wrapper's cached data pointer on the storage block's current buffer.
+     *
+     * @ref detail::TensorImpl caches the address it reads and writes through, and a wrapper
+     * that SHARES a storage block (``shallow_alias()``, and the stand-in graph capture adopts)
+     * holds its own copy of that cache. Every relocation - @ref release, @ref materialize,
+     * @ref materialize_into, a resize - republishes the live address as
+     * @ref detail::StorageBase::base and counts itself in
+     * @ref detail::StorageBase::generation, but only on the wrapper that made the call. The
+     * others keep pointing at whatever the block held when they were built, which after a
+     * release is memory the block has already freed.
+     *
+     * Calling this before reading through a shared wrapper is what closes that: it costs one
+     * comparison when nothing has moved, and it is how the generation counter is meant to be
+     * consumed. Dims and strides are untouched; a relocation moves the buffer, not the shape.
+     *
+     * A block nobody has relocated is still at generation zero, so a wrapper built over
+     * storage it does not own is left exactly as its constructor set it.
+     */
+    void resync_storage() noexcept {
+        if (!_storage || _seen_generation == _storage->generation) {
+            return;
+        }
+        _seen_generation = _storage->generation;
+        if (_storage->base != nullptr) {
+            _impl.set_data(static_cast<T *>(_storage->base));
+        } else if (_impl.data() != nullptr) {
+            // Unallocated: the same sentinel release() leaves, so a wrapper that
+            // missed the release still reports "deferred" rather than null.
+            _impl.set_data(reinterpret_cast<T *>(0x1));
+        }
+    }
+
+    /**
      * @brief Change the dimensions of a deferred tensor before allocation.
      *
      * Used by DistributionPlanning/Materialization to shrink a globally-declared
@@ -1525,6 +1558,11 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     std::shared_ptr<detail::StorageBlock<T, Vector>> _storage{detail::make_storage_block<T, Vector>()};
 
     detail::TensorImpl<T> _impl{};
+
+    /// The @ref detail::StorageBase::generation this wrapper's @ref _impl was last
+    /// seeded from. Zero until @ref resync_storage runs, which is correct for a
+    /// block no relocation has touched. @see resync_storage
+    size_t _seen_generation{0};
 
     Dim<Rank>    _dim_array;
     Stride<Rank> _stride_array;

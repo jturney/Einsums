@@ -288,6 +288,27 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_EXPOSE void link_alias_storage();
 
     /**
+     * @brief Re-seat every slot's cached data pointer on its tensor's current buffer.
+     *
+     * ``Graph::adopt_operand`` gives a graph a STAND-IN for an operand it does not own: a
+     * wrapper that shares the caller's storage block so the caller's own wrapper may die
+     * between capture and replay. The stand-in shares the block, not the cached address
+     * inside it - ``TensorImpl`` holds its own copy of that - and a Free followed by the next
+     * replay's Materialize relocates the block under it. From that replay on the stand-in
+     * names memory the block has already freed, which is a read of freed storage for a
+     * sub-graph body and, where the allocator has not reused the bytes, a silently correct
+     * one.
+     *
+     * This is where @ref einsums::detail::StorageBase::generation is consumed. ``execute()``
+     * runs it before the first node, and a sub-graph body runs it at its own ``execute()``,
+     * which is after the parent's Materialize has placed the buffer the body is about to
+     * read. A slot whose tensor has not moved costs one comparison.
+     *
+     * @see TensorSlot::resync_of
+     */
+    void resync_slot_storage();
+
+    /**
      * @brief Derive the alias relation from ``View`` nodes and manifest
      *        declarations, with no address consulted anywhere.
      *
@@ -3347,6 +3368,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         // different type's layout.
         from_slot->ptr        = to_slot->ptr;
         from_slot->impl_of    = to_slot->impl_of;
+        from_slot->resync_of  = to_slot->resync_of;
         _slot_redirects[from] = to;
         _slots_validated      = false;
         // Anything already redirected to `from` now follows the same terminal.
@@ -3354,8 +3376,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
             if (t == from) {
                 t = to;
                 if (auto *fs = find_slot(f)) {
-                    fs->ptr     = to_slot->ptr;
-                    fs->impl_of = to_slot->impl_of;
+                    fs->ptr       = to_slot->ptr;
+                    fs->impl_of   = to_slot->impl_of;
+                    fs->resync_of = to_slot->resync_of;
                 }
             }
         }
@@ -3510,6 +3533,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         auto slot          = std::make_unique<TensorSlot>();
         slot->ptr          = const_cast<void *>(static_cast<void const *>(&tensor));
         slot->impl_of      = slot_impl_accessor<TensorType>();
+        slot->resync_of    = slot_resync_accessor<TensorType>();
         slot->tensor_id    = tensor_id;
         slot->name         = tensor.name();
         slot->rank         = detail::tensor_rank(tensor);
@@ -4187,10 +4211,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
             }
         }
 
-        slot->ptr     = const_cast<void *>(static_cast<void const *>(&new_tensor));
-        slot->impl_of = slot_impl_accessor<TensorType>();
-        slot->name    = new_tensor.name();
-        slot->dims    = new_dims;
+        slot->ptr       = const_cast<void *>(static_cast<void const *>(&new_tensor));
+        slot->impl_of   = slot_impl_accessor<TensorType>();
+        slot->resync_of = slot_resync_accessor<TensorType>();
+        slot->name      = new_tensor.name();
+        slot->dims      = new_dims;
 
         // Tensor names feed the cached profiler annotations.
         _profile_strings_valid = false;
@@ -4206,8 +4231,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         for (auto const &[f, t] : _slot_redirects) {
             if (t == id) {
                 if (auto *fs = find_slot(f)) {
-                    fs->ptr     = slot->ptr;
-                    fs->impl_of = slot->impl_of;
+                    fs->ptr       = slot->ptr;
+                    fs->impl_of   = slot->impl_of;
+                    fs->resync_of = slot->resync_of;
                 }
             }
         }

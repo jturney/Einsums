@@ -63,7 +63,31 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 using namespace gpu_dispatch;
 
+void Graph::resync_slot_storage() {
+    // Slots carrying an adopted stand-in, and only those. A slot without one
+    // addresses the CALLER's wrapper, or a tensor this graph created, and that
+    // is the object Materialize and Free act through - it re-seats itself and
+    // was never the stale one. Two reasons not to touch it anyway: the write
+    // below would land on an object eager code may be using from another
+    // thread, and a slot that did not adopt keeps the older "must outlive the
+    // graph" contract, so its pointer is only as good as the node that reads it
+    // needs it to be.
+    //
+    // A slot a redirect points at a stand-in is reached through the stand-in's
+    // OWN slot, which is where the adoption is recorded; the object is one
+    // object, so fixing it once fixes every slot naming it.
+    for (auto const &[id, slot] : _slot_map) {
+        if (slot && slot->owner && slot->ptr != nullptr && slot->resync_of != nullptr) {
+            slot->resync_of(slot->ptr);
+        }
+    }
+}
+
 void Graph::execute() {
+    // An operand a Free released and a later Materialize replaced has moved,
+    // and any stand-in this graph adopted for it still names the old buffer.
+    // Before the alias derivation, which reads those addresses.
+    resync_slot_storage();
     // Storage-level aliasing must be resolved before anything reasons about
     // which buffer a node touches; cheap and idempotent after the first call.
     link_alias_storage();
@@ -488,6 +512,9 @@ void Graph::execute() {
 
 void Graph::execute(Executor &executor) {
     auto const replay_t0 = std::chrono::steady_clock::now();
+    // As the argument-less overload: a caller reaching a parallel backend
+    // directly gets the same guarantee about its operands' current buffers.
+    resync_slot_storage();
     // Rebuild when the order is unknown OR a pass vouched for the order via
     // mark_sorted() but left the position-keyed _deps stale (_deps_valid
     // false). Concurrent executors read _deps directly, so stale lists here

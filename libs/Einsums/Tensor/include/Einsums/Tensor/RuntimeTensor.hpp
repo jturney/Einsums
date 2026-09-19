@@ -1271,6 +1271,25 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         _impl.set_data(reinterpret_cast<T *>(0x1)); // sentinel; dims/strides preserved
     }
 
+    /// Re-seat this wrapper's cached data pointer on the storage block's current buffer.
+    ///
+    /// The runtime-rank counterpart of @ref GeneralTensor::resync_storage, and it exists for
+    /// the same reason: a wrapper that SHARES a block (``shallow_alias()``, and the stand-in
+    /// graph capture adopts) holds its own cached address, and a relocation - release,
+    /// materialize, materialize_into, a resize - only re-seats the wrapper that made the call.
+    /// Dims and strides are untouched; a relocation moves the buffer, not the shape.
+    void resync_storage() noexcept {
+        if (!_storage || _seen_generation == _storage->generation) {
+            return;
+        }
+        _seen_generation = _storage->generation;
+        if (_storage->base != nullptr) {
+            _impl.set_data(static_cast<T *>(_storage->base));
+        } else if (_impl.data() != nullptr) {
+            _impl.set_data(reinterpret_cast<T *>(0x1));
+        }
+    }
+
     /// Re-point this tensor at an external buffer it does not own, a zero-copy
     /// alias, with the given layout.
     ///
@@ -1397,6 +1416,10 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     std::string _name{"(unnamed)"};
 
     detail::TensorImpl<T> _impl{};
+
+    /// The @ref detail::StorageBase::generation this wrapper's @ref _impl was last
+    /// seeded from. @see resync_storage
+    size_t _seen_generation{0};
 
     /// True when _impl points at memory this tensor does NOT own (see
     /// @ref alias_to). Such a tensor is permanently "materialized" and

@@ -56,6 +56,17 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 using SlotImplAccessor = void *(*)(void *);
 
 /**
+ * @brief Re-seats the cached data pointer of whatever @ref TensorSlot::ptr addresses.
+ *
+ * The counterpart of @ref SlotImplAccessor for the write side of the same
+ * problem: the accessor hands back a ``TensorImpl``, and this is what makes
+ * sure the one it hands back is reading the storage block's CURRENT buffer.
+ *
+ * @versionadded{2.0.0}
+ */
+using SlotResyncAccessor = void (*)(void *);
+
+/**
  * @brief A rebindable tensor reference.
  *
  * Holds a void pointer to the current tensor object. The pointer can be
@@ -93,6 +104,20 @@ struct TensorSlot {
     /// slots created before the accessor existed. Gate on it.
     SlotImplAccessor impl_of{nullptr};
 
+    /// @brief Re-seats @ref ptr's cached data pointer on its storage block's
+    ///        current buffer, or null for a type that caches nothing.
+    ///
+    /// A slot whose @ref owner is a stand-in adopted by ``Graph::adopt_operand``
+    /// SHARES the caller's storage block but holds its own cached address, and
+    /// a Free or Materialize relocates the block under it. ``Graph::execute``
+    /// runs this over its slots before the first node, which is what keeps a
+    /// sub-graph body reading the buffer its operand has NOW rather than the
+    /// one it had when the body was captured.
+    ///
+    /// A plain function pointer for the same reason @ref impl_of is one: it is
+    /// stateless, so it costs the slot one word and a replay one indirect call.
+    SlotResyncAccessor resync_of{nullptr};
+
     /// Keeps whatever @ref ptr addresses alive for as long as the slot exists.
     ///
     /// Set to the graph's stand-in for a captured operand (see
@@ -119,6 +144,26 @@ template <typename TensorType>
     using Clean = std::remove_cvref_t<TensorType>;
     if constexpr (requires(Clean &t) { t.impl(); }) {
         return [](void *object) -> void * { return static_cast<void *>(&static_cast<Clean *>(object)->impl()); };
+    } else {
+        return nullptr;
+    }
+}
+
+/**
+ * @brief The @ref TensorSlot::resync_of accessor for one static tensor type.
+ * @tparam TensorType The type the slot's @ref TensorSlot::ptr addresses.
+ * @return A stateless function pointer, or null for a type that holds no
+ *         storage block of its own (views, tile-wise sparse tensors).
+ *
+ * Beside @ref slot_impl_accessor, and derived the same way, so the two fields
+ * of a slot are filled from one place rather than each caller open-coding the
+ * ``if constexpr``.
+ */
+template <typename TensorType>
+[[nodiscard]] constexpr auto slot_resync_accessor() -> SlotResyncAccessor {
+    using Clean = std::remove_cvref_t<TensorType>;
+    if constexpr (requires(Clean &t) { t.resync_storage(); }) {
+        return [](void *object) { static_cast<Clean *>(object)->resync_storage(); };
     } else {
         return nullptr;
     }
