@@ -1119,6 +1119,10 @@ if(EINSUMS_WITH_TESTS)
   include(CTest)
 
   add_subdirectory(testing)
+
+  # Doc tests live here rather than under EINSUMS_WITH_DOCUMENTATION (default OFF) so that an
+  # ordinary build catches documentation drift. They need no Sphinx and no rendered manual.
+  add_subdirectory(docs/doctests)
 endif()
 
 if(EINSUMS_WITH_EXAMPLES)

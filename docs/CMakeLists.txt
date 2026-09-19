@@ -436,3 +436,22 @@ else()
 endif()
 add_dependencies(docs-html docs-html-file)
 add_dependencies(docs docs-html)
+
+# The claim checker again, this time with apiary's generated C++ reference, which only the
+# documentation build produces. The ctest copy runs the cheap checks on every build; this copy
+# adds the one that needs the index, so a name written in a C++ example and documented nowhere
+# fails the documentation job.
+if(EINSUMS_BUILD_PYTHON)
+  add_custom_target(
+    docs-check-claims
+    COMMAND
+      ${Python_EXECUTABLE} "${PROJECT_SOURCE_DIR}/docs/tools/check_doc_claims.py"
+      --docs-dir "${PROJECT_SOURCE_DIR}/docs/sphinx"
+      --repo-root "${PROJECT_SOURCE_DIR}"
+      --cxx-standard "${EINSUMS_WITH_CXX_STANDARD}"
+      --cpp-index "${EINSUMS_CPP_DOCS_DIR}/rst"
+    COMMENT "Checking documentation claims against the code"
+    VERBATIM
+  )
+  add_dependencies(docs-html docs-check-claims)
+endif()
