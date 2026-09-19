@@ -69,14 +69,22 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 using namespace alias_geometry;
 
-void Graph::collect_subtree_referenced_ptrs(std::unordered_set<void const *> &out) const {
+void Graph::collect_subtree_referenced_ptrs(std::unordered_set<void const *> &out, bool *saw_unresolved) const {
     // Insert the tensor pointers referenced (read or written) by one graph's
     // own nodes. Resolves each TensorId through that graph's own map.
-    auto collect_own = [](Graph const &g, std::unordered_set<void const *> &acc) {
+    auto collect_own = [saw_unresolved](Graph const &g, std::unordered_set<void const *> &acc) {
         auto add = [&](TensorId tid) {
             auto it = g._tensors.find(tid);
             if (it != g._tensors.end() && it->second.tensor_ptr != nullptr) {
                 acc.insert(it->second.tensor_ptr);
+                return;
+            }
+            // Either this graph's map has no entry for the id or the handle is an
+            // unattached shell. The reference is real either way; what is missing is
+            // the pointer that would let a caller recognise it, so say so rather than
+            // let the omission read as "nothing here".
+            if (saw_unresolved != nullptr) {
+                *saw_unresolved = true;
             }
         };
         for (auto const &node : g._nodes) {
@@ -90,8 +98,8 @@ void Graph::collect_subtree_referenced_ptrs(std::unordered_set<void const *> &ou
     };
 
     for_each_subgraph([&](Graph const &sub) {
-        collect_own(sub, out);                    // sub's own references
-        sub.collect_subtree_referenced_ptrs(out); // and sub's descendants
+        collect_own(sub, out);                                    // sub's own references
+        sub.collect_subtree_referenced_ptrs(out, saw_unresolved); // and sub's descendants
     });
 }
 

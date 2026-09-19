@@ -246,6 +246,17 @@ ArenaPlan plan_arena(Graph &graph, NoteSkip const &note) {
     std::optional<EscapeAnalysis> escapes;
     if (has_setup) {
         escapes = EscapeAnalysis::over(graph);
+        // The per-tensor exclusion below is only as good as the pointer set it
+        // reads. A body reference the sub-graph's map cannot resolve, or one
+        // held by an unattached shell, adds no pointer and so reports its
+        // tensor "untouched" - the one wrong answer this caller cannot absorb,
+        // because it ends in two live buffers sharing a slot. Where the subtree
+        // cannot be read exactly, decline the level as this pass did for every
+        // Setup before the exclusion existed.
+        if (escapes->subtree_refs_unresolved()) {
+            note("a setup subtree holds references that cannot be resolved to buffers", graph.name());
+            return plan;
+        }
     }
 
     // Locate each tensor's Materialize/Free bracket.

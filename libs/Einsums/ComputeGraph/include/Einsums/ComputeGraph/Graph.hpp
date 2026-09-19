@@ -1547,7 +1547,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * otherwise eliminate the producer of a tensor that only a nested loop
      * reads (a Loop node does not list its body's tensor reads as inputs).
      */
-    void collect_subtree_referenced_ptrs(std::unordered_set<void const *> &out) const;
+    /**
+     * @param[out] saw_unresolved Set to true (never cleared) when some reference in the
+     * subtree could not be resolved to a pointer, because the sub-graph's map has no entry
+     * for that id or the handle is an unattached shell. Such a reference contributes
+     * nothing to @p out, so a caller reading @p out alone cannot tell "not referenced"
+     * from "could not tell". That distinction is harmless where a missed entry costs a
+     * missed rewrite, and unsafe where it would let two live buffers share storage, so a
+     * caller in the second group passes this and declines when it comes back true.
+     */
+    void collect_subtree_referenced_ptrs(std::unordered_set<void const *> &out, bool *saw_unresolved = nullptr) const;
 
     /**
      * @brief Effective (scheduling) inputs/outputs of a node.

@@ -11,7 +11,9 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <ranges>
 #include <sstream>
+#include <string>
 
 #include <Einsums/Testing.hpp>
 
@@ -636,7 +638,14 @@ TEST_CASE("MemoryPlanning - an intermediate a setup body reads is kept out of th
     // Whatever FreeInsertion bracketed, R must not be among the placed.
     constexpr size_t kBuf = N * N * sizeof(double);
     CHECK(mp.planned_tensor_bytes() == mp.num_planned() * kBuf);
-    CHECK(mp.num_planned() <= 2); // X and Y at most; never R, never S
+    // Exactly X and Y, and R declined for the stated reason. "<= 2" passed just as
+    // happily with R placed and X left out, which is how a real miscount reached CI
+    // looking green here and segfaulting on another allocator: say which two.
+    CHECK(mp.num_planned() == 2);
+    auto const reasons    = mp.skip_reasons();
+    auto const setup_skip = std::ranges::find_if(reasons, [](auto const &r) { return r.first.find("setup body") != std::string::npos; });
+    REQUIRE(setup_skip != reasons.end());
+    CHECK(setup_skip->second == 1); // R, and only R
 
     graph.execute();
     auto check = [&]() {

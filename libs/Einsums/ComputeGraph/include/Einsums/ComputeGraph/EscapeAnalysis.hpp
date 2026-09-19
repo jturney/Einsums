@@ -178,6 +178,20 @@ class EINSUMS_EXPORT EscapeAnalysis {
     [[nodiscard]] bool touched_by_subtree(TensorId id) const;
 
     /**
+     * @brief Whether some sub-graph reference could not be resolved to a pointer.
+     *
+     * @ref touched_by_subtree answers from a set of pointers collected out of the
+     * sub-graphs. A reference the sub-graph's own map cannot resolve, or one whose
+     * handle is an unattached shell, contributes no pointer, so it comes back
+     * "untouched" and is indistinguishable from a tensor no body mentions.
+     *
+     * A caller that only loses a rewrite by believing "untouched" can ignore this.
+     * A caller that would let two live buffers share storage must not: it should
+     * treat a true here as "cannot prove anything about this subtree" and decline.
+     */
+    [[nodiscard]] bool subtree_refs_unresolved() const { return _subtree_refs_unresolved; }
+
+    /**
      * @brief Exactly one value-writer here, and no descendant touches it.
      *
      * The soundness guard `SymmetryPropagation` needs, in one call: an inferred
@@ -250,6 +264,7 @@ class EINSUMS_EXPORT EscapeAnalysis {
 
     /// Pointers any descendant sub-graph mentions.
     std::unordered_set<void const *> _subtree_ptrs;
+    bool                             _subtree_refs_unresolved{false};
 };
 
 /**

@@ -100,7 +100,7 @@ EscapeAnalysis EscapeAnalysis::over(Graph const &graph) {
     }
 
     count_subtree_writers(graph, out._subtree_writers);
-    graph.collect_subtree_referenced_ptrs(out._subtree_ptrs);
+    graph.collect_subtree_referenced_ptrs(out._subtree_ptrs, &out._subtree_refs_unresolved);
     return out;
 }
 
