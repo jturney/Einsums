@@ -12,7 +12,9 @@ DF-v4 production version (df_ccsd_*) builds on the machinery proven here.
 
 Tensor algebra is numpy-style: contractions via einsums.einsum ("OUT <- A ; B"),
 combination via the +/-/* operators, amplitude denominators via the '/' operator
-(direct_division), and the P(ij)/P(ab) antisymmetrizers via permute + subtract.
+(direct_division), and the P(ij)/P(ab) antisymmetrizers written where the
+equations write them: in the subscript string itself, on einsum and on permute
+alike, so no term needs a hand-written permute-and-subtract.
 
 Validated: cc-pVDZ water, conventional SCF/CCSD. Matches psi4 to ~1e-11:
     spin-orbital einsums CCSD corr = -0.2134804971
@@ -104,8 +106,15 @@ def perm(spec, x, shape, name="p"):
     einsums.permute(spec, out, x)
     return out
 
-def Pij(x, sh): return x - perm("j,i,a,b <- i,j,a,b", x, sh, "Pij")   # axes (0,1)
-def Pab(x, sh): return x - perm("i,j,b,a <- i,j,a,b", x, sh, "Pab")   # axes (2,3)
+# Both specs accept a P(...) prefix on the term, so an antisymmetrizer is part
+# of the subscript string rather than a helper. P(ij) names the LETTERS it
+# permutes, which is why the same operator reads correctly on T2[i,j,a,b] and on
+# Wmnij[m,n,i,j] without anyone working out which axes it lands on.
+#
+# On einsum it contracts once into a temporary and accumulates one signed
+# permuted copy per term; on permute there is no temporary at all, since every
+# term reads a source it never writes. Captured, the expansion is
+# AntisymmetrizerExpansion's job and the temporary belongs to the graph.
 
 def energy(t1, t2):
     e = 0.25 * float(la.dot(g_oovv, t2))
@@ -119,8 +128,7 @@ e_old = energy(t1, t2)
 print(f"MP2 (spin-orbital einsums) = {e_old:.10f}")
 for it in range(100):
     # tau, tau~ (antisymmetrized t1 outer products)
-    tt = E("i,j,a,b <- i,a ; j,b", t1, t1, SH2, "tt")            # t1_ia t1_jb
-    tt = tt - perm("i,j,b,a <- i,j,a,b", tt, SH2, "ttp")          # - t1_ib t1_ja
+    tt = E("i,j,a,b <- P(ab) i,a ; j,b", t1, t1, SH2, "tt")      # t1_ia t1_jb - t1_ib t1_ja
     tau = t2 + tt
     taut = t2 + 0.5 * tt
 
@@ -130,11 +138,14 @@ for it in range(100):
         + E("mi <- inef ; mnef", taut, g_oovv, (no, no), "Fmi2", pf=0.5)
     Fme = E("me <- nf ; mnef", t1, g_oovv, (no, nv), "Fme")
 
-    wt = E("mnij <- je ; mnie", t1, g_ooov, OOOO, "wt")
-    Wmnij = g_oooo + (wt - perm("m,n,j,i <- m,n,i,j", wt, OOOO, "wtp")) \
+    # P(ij) here is axes (2,3) of Wmnij[m,n,i,j] and P(ab) is axes (0,1) of
+    # Wabef[a,b,e,f]. Naming letters rather than axes is what keeps that from
+    # being a bug waiting to happen.
+    wt = E("m,n,i,j <- P(ij) j,e ; m,n,i,e", t1, g_ooov, OOOO, "wt")
+    Wmnij = g_oooo + wt \
         + E("mnij <- ijef ; mnef", tau, g_oovv, OOOO, "Wmnij2", pf=0.25)
-    wt = E("abef <- mb ; amef", t1, g_vovv, VVVV, "wt2")
-    Wabef = g_vvvv - (wt - perm("b,a,e,f <- a,b,e,f", wt, VVVV, "wtp2")) \
+    wt = E("a,b,e,f <- P(ab) m,b ; a,m,e,f", t1, g_vovv, VVVV, "wt2")
+    Wabef = g_vvvv - wt \
         + E("abef <- mnab ; mnef", tau, g_oovv, VVVV, "Wabef2", pf=0.25)
     Wmbej = g_ovvo + E("mbej <- jf ; mbef", t1, g_ovvv, OVVO, "Wmbej1") \
         - E("mbej <- nb ; mnej", t1, g_oovo, OVVO, "Wmbej2")
@@ -153,17 +164,19 @@ for it in range(100):
     # T2
     t2n = g_oovv * 1.0          # fresh copy of <ij||ab>
     be = Fae - E("be <- mb ; me", t1, Fme, (nv, nv), "be05", pf=0.5)
-    t2n = t2n + Pab(E("ijab <- ijae ; be", t2, be, SH2, "t2ab"), SH2)
+    t2n = t2n + E("i,j,a,b <- P(ab) i,j,a,e ; b,e", t2, be, SH2, "t2ab")
     mj = Fmi + E("mj <- je ; me", t1, Fme, (no, no), "mj05", pf=0.5)
-    t2n = t2n - Pij(E("ijab <- imab ; mj", t2, mj, SH2, "t2ij"), SH2)
+    t2n = t2n - E("i,j,a,b <- P(ij) i,m,a,b ; m,j", t2, mj, SH2, "t2ij")
     t2n = t2n + E("ijab <- mnab ; mnij", tau, Wmnij, SH2, "t2mn", pf=0.5)
     t2n = t2n + E("ijab <- ijef ; abef", tau, Wabef, SH2, "t2ef", pf=0.5)
     ring = E("ijab <- imae ; mbej", t2, Wmbej, SH2, "ring1")
     tmp = E("abej <- ma ; mbej", t1, g_ovvo, (nv, nv, nv, no), "tmpabej")
     ring = ring - E("ijab <- ie ; abej", t1, tmp, SH2, "ring2")
-    t2n = t2n + Pij(Pab(ring, SH2), SH2)
-    t2n = t2n + Pij(E("ijab <- ie ; abej", t1, g_vvvo, SH2, "t2ie"), SH2)
-    t2n = t2n - Pab(E("ijab <- ma ; mbij", t1, g_ovoo, SH2, "t2ma"), SH2)
+    # The ring is a SUM of two contractions, so its antisymmetrizer is a permute
+    # rather than a spec prefix on either one.
+    t2n = t2n + perm("i,j,a,b <- P(ij) P(ab) i,j,a,b", ring, SH2, "ringP")
+    t2n = t2n + E("i,j,a,b <- P(ij) i,e ; a,b,e,j", t1, g_vvvo, SH2, "t2ie")
+    t2n = t2n - E("i,j,a,b <- P(ab) m,a ; m,b,i,j", t1, g_ovoo, SH2, "t2ma")
     t2n = t2n / Dijab
 
     t1, t2 = t1n, t2n
