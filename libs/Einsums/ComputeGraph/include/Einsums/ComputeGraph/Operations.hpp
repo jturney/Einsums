@@ -7819,7 +7819,7 @@ void custom(std::string label, std::function<void()> executor, TensorType *targe
  *
  * @code
  * cg::read("load integrals", "integrals.h5", "/eri", &ERI, [&]() {
- *     einsums::read(ERI, "integrals.h5", "/eri");
+ *     h5file.read("/eri", ERI);
  * });
  * @endcode
  */
@@ -7852,7 +7852,7 @@ void read(std::string label, std::string file_path, std::string dataset, TensorT
  *
  * @code
  * cg::write("checkpoint F", "checkpoint.h5", "/fock", &F, [&]() {
- *     einsums::write(F, "checkpoint.h5", "/fock");
+ *     h5file.write("/fock", F);
  * });
  * @endcode
  */

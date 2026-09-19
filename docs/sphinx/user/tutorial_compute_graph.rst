@@ -599,7 +599,7 @@ user-defined computations like integral evaluation, and ``cg::read()`` /
 
         // Load integrals from disk
         cg::read("load ERI", "integrals.h5", "/eri", &ERI, [&]() {
-            einsums::read(ERI, h5file);
+            h5file.read("/eri", ERI);
         });
 
         // Custom computation: build Fock matrix
@@ -614,7 +614,7 @@ user-defined computations like integral evaluation, and ``cg::read()`` /
 
         // Checkpoint to disk
         cg::write("save F_mo", "checkpoint.h5", "/fock_mo", &F_mo, [&]() {
-            einsums::write(F_mo, h5file);
+            h5file.write("/fock_mo", F_mo);
         });
     }
 
@@ -642,9 +642,9 @@ to overlap disk I/O with independent computation. These accept three lambdas:
         // Async read: start kicks off background I/O
         cg::read_async("load ERI", "integrals.h5", "/eri", &ERI,
             /*start*/  [&]() { io_future = std::async(std::launch::async,
-                           [&]{ einsums::read(ERI, h5file); }); },
+                           [&]{ h5file.read("/eri", ERI); }); },
             /*finish*/ [&]() { io_future.get(); },
-            /*sync*/   [&]() { einsums::read(ERI, h5file); }
+            /*sync*/   [&]() { h5file.read("/eri", ERI); }
         );
 
         // Independent computation, runs concurrently with the read

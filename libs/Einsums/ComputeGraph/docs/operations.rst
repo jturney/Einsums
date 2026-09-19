@@ -274,11 +274,11 @@ read / write (synchronous)
 .. code-block:: cpp
 
    cg::read("load integrals", "integrals.h5", "/eri", &ERI, [&]() {
-       einsums::read(ERI, "integrals.h5", "/eri");
+       h5file.read("/eri", ERI);
    });
 
    cg::write("checkpoint F", "checkpoint.h5", "/fock", &F, [&]() {
-       einsums::write(F, "checkpoint.h5", "/fock");
+       h5file.write("/fock", F);
    });
 
 The graph tracks input/output dependencies so that downstream operations

@@ -194,12 +194,15 @@ As of right now, Einsums is capable of the following:
   tensor contractions with multi-M, multi-N, multi-K, and batch dimensions,
   automatically dispatched from ``einsum``.
 * Computation graphs, much like CUDA Graphs, that capture, optimize, and replay
-  sequences of tensor operations. They include 11 optimization passes, parallel
+  sequences of tensor operations. They include several dozen optimization passes, parallel
   execution, control flow, and profiler integration with an interactive node viewer.
+  :doc:`optimizer` documents the pipeline and how to drive it.
 * A built-in profiler that runs a real-time TCP server with an imgui-based viewer
   showing flame graphs, timelines, hotspots, and compute graph DAG visualization.
 * Limited interaction with Python.
-    * A form of the ``einsum`` call works in Python. All Einsums functions exposed to Python can also consume NumPy arrays.
+    * A form of the ``einsum`` call works in Python. NumPy arrays cross the boundary through
+      ``einsums.asarray``, which copies them into a tensor; the operations themselves take
+      Einsums tensors rather than raw NumPy arrays.
 * GPU acceleration for all of the above using HIP. Uses hipBLAS and hipSolver for the GPU linear algebra operations.
 * Simple arithmetic between tensors. The tensors all need to have the same dimensions, though, and this does not yet work on GPU.
 * Tensors representing functions of their indices.
