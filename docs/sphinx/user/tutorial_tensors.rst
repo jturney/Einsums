@@ -13,18 +13,34 @@ Tutorial: Tensors 101
 This tutorial introduces the data structure the rest of Einsums is built on, and how to create,
 inspect and manipulate one.
 
+Every example is given in both languages. Pick a tab and the rest of the page, and the other
+tutorials, stay in that language.
+
 Prerequisites
 =============
 
-.. code-block:: cpp
+.. tab-set::
 
-    #include <Einsums/Tensor/RuntimeTensor.hpp>
-    #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
-    #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
-    #include <Einsums/TensorUtilities/CreateIdentity.hpp>
-    #include <Einsums/Print.hpp>
+    .. tab-item:: C++
+        :sync: cpp
 
-    using namespace einsums;
+        .. code-block:: cpp
+
+            #include <Einsums/Tensor/RuntimeTensor.hpp>
+            #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+            #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+            #include <Einsums/TensorUtilities/CreateIdentity.hpp>
+            #include <Einsums/Print.hpp>
+
+            using namespace einsums;
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            import numpy as np
+            import einsums
 
 Creating Tensors
 ================
@@ -34,39 +50,75 @@ argument is a name, which is not decoration: it is how the tensor is identified 
 output and in the reports the graph optimizer prints, so a meaningful one pays for itself the
 first time you read either.
 
-.. code-block:: cpp
+.. tab-set::
 
-    // A 10x10 matrix of doubles
-    RuntimeTensor<double> A("A", {10, 10});
+    .. tab-item:: C++
+        :sync: cpp
 
-    // A rank-3 tensor of floats
-    RuntimeTensor<float> B("B", {5, 6, 7});
+        .. code-block:: cpp
 
-    // A vector of complex doubles
-    RuntimeTensor<std::complex<double>> v("v", {100});
+            // A 10x10 matrix of doubles
+            RuntimeTensor<double> A("A", {10, 10});
+
+            // A rank-3 tensor of floats
+            RuntimeTensor<float> B("B", {5, 6, 7});
+
+            // A vector of complex doubles
+            RuntimeTensor<std::complex<double>> v("v", {100});
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            # A 10x10 matrix of doubles
+            A = einsums.zeros([10, 10], name="A")
+
+            # A rank-3 tensor of floats
+            B = einsums.zeros([5, 6, 7], dtype="float32", name="B")
+
+            # A vector of complex doubles
+            v = einsums.zeros([100], dtype="complex128", name="v")
 
 The rank is the length of the dimension list, and it is carried by the object rather than by its
 type. That is what lets one function handle tensors of several ranks, and it is the type the
-Python bindings and the :doc:`ComputeGraph <tutorial_compute_graph>` are built around.
+Python bindings and the :doc:`ComputeGraph <tutorial_compute_graph>` are built around. In C++ the
+element type is a template argument; in Python it is the ``dtype`` string.
 
-Convenience creators avoid repetitive initialization. Each takes the dimensions as a list and
-returns a ``RuntimeTensor``:
+Convenience creators avoid repetitive initialization. Each takes the dimensions as a list:
 
-.. code-block:: cpp
+.. tab-set::
 
-    // All zeros
-    auto Z = create_zero_tensor<double>("Z", {4, 4});
+    .. tab-item:: C++
+        :sync: cpp
 
-    // Random values in [-1, 1]
-    auto R = create_random_tensor<double>("R", {4, 4});
+        .. code-block:: cpp
 
-    // Ones on the diagonal
-    auto I = create_identity_tensor<double>("I", {4, 4});
+            auto Z = create_zero_tensor<double>("Z", {4, 4});      // all zeros
+            auto R = create_random_tensor<double>("R", {4, 4});    // random in [-1, 1]
+            auto I = create_identity_tensor<double>("I", {4, 4});  // ones on the diagonal
 
-Each also has a form taking the extents as separate arguments, which returns a statically ranked
-:cpp:type:`einsums::Tensor` instead. ``create_zero_tensor<double>("Z", 4, 4)`` and
-``create_zero_tensor<double>("Z", {4, 4})`` are therefore different types, so write the list when
-you want the type this page is about.
+        Each also has a form taking the extents as separate arguments, which returns a statically
+        ranked :cpp:type:`einsums::Tensor` instead. ``create_zero_tensor<double>("Z", 4, 4)`` and
+        ``create_zero_tensor<double>("Z", {4, 4})`` are therefore different types, so write the
+        list when you want the type this page is about.
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            Z = einsums.create_zero_tensor("Z", [4, 4])      # all zeros
+            R = einsums.create_random_tensor("R", [4, 4])    # random in [-1, 1]
+            I = einsums.create_identity_tensor("I", [4, 4])  # ones on the diagonal
+
+            # The numpy-shaped spellings are there too
+            Z2 = einsums.zeros([4, 4])
+            O  = einsums.ones([4, 4])
+            I2 = einsums.eye(4)
+
+        Python has only the runtime-rank form, so the C++ distinction between a list and separate
+        extents does not arise.
 
 An identity does not have to be square. Ones sit where every index agrees, so the diagonal is as
 long as the shortest axis and ``{6, 3}`` puts ones at ``(0,0)``, ``(1,1)`` and ``(2,2)``.
@@ -74,93 +126,189 @@ long as the shortest axis and ``{6, 3}`` puts ones at ``(0,0)``, ``(1,1)`` and `
 Element Access
 ==============
 
-Use ``operator()`` with one index per dimension:
+.. tab-set::
 
-.. code-block:: cpp
+    .. tab-item:: C++
+        :sync: cpp
 
-    RuntimeTensor<double> A("A", {3, 3});
-    A(0, 0) = 1.0;
-    A(1, 2) = 3.14;
+        .. code-block:: cpp
 
-    double val = A(1, 2);  // 3.14
+            RuntimeTensor<double> A("A", {3, 3});
+            A(0, 0) = 1.0;
+            A(1, 2) = 3.14;
 
-For a rank-1 tensor:
+            double val = A(1, 2);  // 3.14
 
-.. code-block:: cpp
+            RuntimeTensor<double> v("v", {5});
+            v(0) = 10.0;
+            v(4) = 20.0;
 
-    RuntimeTensor<double> v("v", {5});
-    v(0) = 10.0;
-    v(4) = 20.0;
+    .. tab-item:: Python
+        :sync: python
 
-Element access is convenient and is not how you should move bulk data. A loop over
-``operator()`` pays an index computation per element; the operations in
-:doc:`tutorial_einsum` hand whole tensors to BLAS instead.
+        .. code-block:: python
+
+            A = einsums.zeros([3, 3], name="A")
+            A[0, 0] = 1.0
+            A[1, 2] = 3.14
+
+            val = A[1, 2]   # 3.14
+
+            v = einsums.zeros([5], name="v")
+            v[0] = 10.0
+            v[4] = 20.0
+
+            # Negative indices wrap, as elsewhere in Python
+            assert A[-1, -1] == A[2, 2]
+
+Element access is convenient and is not how you should move bulk data. A loop over single
+elements pays an index computation each time; the operations in :doc:`tutorial_einsum` hand whole
+tensors to BLAS instead.
 
 Querying Shape
 ==============
 
-.. code-block:: cpp
+.. tab-set::
 
-    RuntimeTensor<double> A("A", {3, 4, 5});
+    .. tab-item:: C++
+        :sync: cpp
 
-    size_t rank = A.rank();     // 3
-    size_t d0   = A.dim(0);     // 3
-    size_t d1   = A.dim(1);     // 4
-    size_t d2   = A.dim(2);     // 5
-    size_t n    = A.size();     // 60 (= 3 * 4 * 5)
+        .. code-block:: cpp
 
-    std::string name = A.name(); // "A"
+            RuntimeTensor<double> A("A", {3, 4, 5});
+
+            size_t rank = A.rank();     // 3
+            size_t d0   = A.dim(0);     // 3
+            size_t d1   = A.dim(1);     // 4
+            size_t d2   = A.dim(2);     // 5
+            size_t n    = A.size();     // 60 (= 3 * 4 * 5)
+
+            std::string name = A.name(); // "A"
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.zeros([3, 4, 5], name="A")
+
+            rank = A.rank()      # 3, a method
+            d0   = A.dim(0)      # 3, a method
+            n    = A.size        # 60, a property
+            name = A.name        # "A", a property
+
+            shape = np.asarray(A).shape   # (3, 4, 5)
+
+The two languages differ here in a way worth knowing. C++ spells all of these as calls; Python
+makes ``size`` and ``name`` properties while ``rank()``, ``dim()`` and ``stride()`` stay methods.
+There is no ``dims`` or ``strides`` on the Python side, so reach for ``np.asarray(t).shape`` when
+you want the whole shape at once.
 
 ``rank()`` is a call rather than a compile-time constant, which is the one visible cost of the
-rank travelling with the value. In exchange, a function taking ``RuntimeTensor<double> const &``
-accepts a matrix and a rank-4 tensor without being a template.
+rank travelling with the value. In exchange, a function taking a tensor accepts a matrix and a
+rank-4 tensor without being a template.
 
 Raw Data Pointer
 ================
 
-For interoperability with C libraries or BLAS:
+For interoperability with C libraries or BLAS, C++ exposes the underlying storage directly:
 
 .. code-block:: cpp
 
     double *ptr = A.data();  // Pointer to the first element
 
-Tensors are column-major at construction, so the first index varies fastest. Code that walks
-this pointer itself has to respect that; code that stays inside the tensor API does not.
+Tensors are column-major at construction, so the first index varies fastest. Code that walks this
+pointer itself has to respect that; code that stays inside the tensor API does not. From Python
+the equivalent is ``np.asarray(t)``, which hands back a zero-copy view rather than a raw pointer;
+:ref:`howto-from-numpy` covers that boundary.
 
 Filling and Zeroing
 ====================
 
-.. code-block:: cpp
+.. tab-set::
 
-    A.zero();          // Set all elements to 0
-    A.set_all(3.14);   // Set all elements to 3.14
+    .. tab-item:: C++
+        :sync: cpp
+
+        .. code-block:: cpp
+
+            A.zero();          // Set all elements to 0
+            A.set_all(3.14);   // Set all elements to 3.14
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A.zero()           # Set all elements to 0
+            A.set_all(3.14)    # Set all elements to 3.14
 
 Printing
 ========
 
-.. code-block:: cpp
+.. tab-set::
 
-    auto A = create_random_tensor<double>("A", {3, 3});
-    println(A);
-    // Prints:
-    // Name: A
-    //   Dims: 3x3
-    //   [data...]
+    .. tab-item:: C++
+        :sync: cpp
 
-You can print to a ``std::FILE *`` or a stream using ``fprintln``. To print to a string, use
-``fprintln`` with a ``std::ostringstream``.
+        .. code-block:: cpp
+
+            auto A = create_random_tensor<double>("A", {3, 3});
+            println(A);
+            // Name: A
+            //   Dims: 3x3
+            //   [data...]
+
+        You can print to a ``std::FILE *`` or a stream using ``fprintln``. To print to a string,
+        use ``fprintln`` with a ``std::ostringstream``.
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.create_random_tensor("A", [3, 3])
+            print(A)
+            # RuntimeTensorD(name='A', shape=(3, 3), dtype=float64)
+
+            # For the values themselves, go through numpy
+            print(np.asarray(A))
+
+        ``print`` gives the summary rather than the elements, which is what you want when a
+        tensor is large. ``np.asarray`` is a zero-copy view, so printing it costs nothing extra.
 
 Copying
 =======
 
-Tensors copy deeply:
+This is the one place where the two languages behave differently enough to catch you out.
 
-.. code-block:: cpp
+.. tab-set::
 
-    auto A = create_random_tensor<double>("A", {4, 4});
-    auto B = A;        // deep copy
+    .. tab-item:: C++
+        :sync: cpp
 
-    B(0, 0) = 999.0;   // A(0, 0) is unchanged
+        .. code-block:: cpp
+
+            auto A = create_random_tensor<double>("A", {4, 4});
+            auto B = A;        // DEEP COPY
+
+            B(0, 0) = 999.0;   // A(0, 0) is unchanged
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.create_random_tensor("A", [4, 4])
+
+            B = A              # NOT a copy: another name for the same tensor
+            B[0, 0] = 999.0    # A[0, 0] is now 999.0 as well
+
+            C = einsums.array(A)   # this copies
+            C[1, 1] = 111.0        # A[1, 1] is unchanged
+
+        Assignment binds a name, as everywhere in Python. ``einsums.array`` is the copy, matching
+        ``numpy.array``. ``copy.deepcopy`` is not supported and raises ``TypeError``.
 
 A deep copy of a large tensor is a large allocation and a full traversal. When you want a
 sub-block rather than a duplicate, take a view instead, which copies nothing: see
@@ -173,9 +321,13 @@ Supported Types
 - ``std::complex<float>``, ``std::complex<double>``
 - Integer types for certain operations
 
-``double`` is the common choice for scientific computing. Where a routine is written once for
-several of these, prefer to test it over all of them rather than over ``double`` alone; a
-float64-only test has hidden real bugs before.
+``double`` is the common choice for scientific computing, and is what both languages default to.
+In Python these are the ``dtype`` strings ``"float32"``, ``"float64"``, ``"complex64"`` and
+``"complex128"``.
+
+Where a routine is written once for several of these, prefer to test it over all of them rather
+than over ``double`` alone; a float64-only test has hidden real bugs before. ``einsums.testing``
+provides ``ALL_DTYPES`` for exactly that.
 
 .. _tutorial-tensors-graph:
 
@@ -189,33 +341,57 @@ planning and batching come from. None of that is available to an eager call.
 The tensors are the same objects. What changes is that the graph owns the ones it creates for
 you, and it has to be told which of those you will read afterwards:
 
-.. code-block:: cpp
+.. tab-set::
 
-    #include <Einsums/ComputeGraph/Graph.hpp>
-    #include <Einsums/ComputeGraph/Operations.hpp>
+    .. tab-item:: C++
+        :sync: cpp
 
-    namespace cg = einsums::compute_graph;
+        .. code-block:: cpp
 
-    auto A = create_random_tensor<double>("A", {4, 4});
-    auto B = create_random_tensor<double>("B", {4, 4});
+            #include <Einsums/ComputeGraph/Graph.hpp>
+            #include <Einsums/ComputeGraph/Operations.hpp>
 
-    cg::Graph graph("example");
+            namespace cg = einsums::compute_graph;
 
-    // intermediate = false: a result this code reads after execute(), not scratch.
-    auto &C = graph.create_runtime_tensor<double>("C", {4, 4}, /*intermediate=*/false);
+            auto A = create_random_tensor<double>("A", {4, 4});
+            auto B = create_random_tensor<double>("B", {4, 4});
 
-    {
-        cg::CaptureGuard guard(graph);
-        cg::einsum("ik;kj->ij", &C, A, B);
-    }
+            cg::Graph graph("example");
 
-    graph.optimize();
-    graph.execute();       // replay as often as you like
+            // intermediate = false: a result this code reads after execute(), not scratch.
+            auto &C = graph.create_runtime_tensor<double>("C", {4, 4}, /*intermediate=*/false);
 
-    println(C);
+            {
+                cg::CaptureGuard guard(graph);
+                cg::einsum("ik;kj->ij", &C, A, B);
+            }
+
+            graph.optimize();
+            graph.execute();       // replay as often as you like
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            import einsums.graph as cg
+
+            A = einsums.create_random_tensor("A", [4, 4])
+            B = einsums.create_random_tensor("B", [4, 4])
+
+            graph = cg.Graph("example")
+
+            # intermediate=False: a result this code reads after execute(), not scratch.
+            C = graph.create_tensor("C", [4, 4], intermediate=False)
+
+            with cg.capture(graph):
+                einsums.einsum("ik;kj->ij", C, A, B)
+
+            graph.optimize()
+            graph.execute()        # replay as often as you like
 
 ``A`` and ``B`` are ordinary tensors you own, and the graph reads them. ``C`` is owned by the
-graph, and the ``intermediate=false`` is what says it is an answer rather than working space.
+graph, and the ``intermediate`` flag is what says it is an answer rather than working space.
 Leave it off and the optimizer will remove the contraction that fills it, because from inside the
 graph nothing reads it.
 

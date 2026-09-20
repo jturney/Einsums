@@ -16,15 +16,28 @@ it, by naming the indices, and Einsums picks the kernel.
 Setup
 =====
 
-.. code-block:: cpp
+.. tab-set::
 
-    #include <Einsums/ComputeGraph/Operations.hpp>
-    #include <Einsums/Tensor/RuntimeTensor.hpp>
-    #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
-    #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+    .. tab-item:: C++
+        :sync: cpp
 
-    namespace cg = einsums::compute_graph;
-    using namespace einsums;
+        .. code-block:: cpp
+
+            #include <Einsums/ComputeGraph/Operations.hpp>
+            #include <Einsums/Tensor/RuntimeTensor.hpp>
+            #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+            #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+
+            namespace cg = einsums::compute_graph;
+            using namespace einsums;
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            import numpy as np
+            import einsums
 
 Index Notation
 ==============
@@ -49,13 +62,29 @@ Matrix Multiplication
 
 :math:`C_{ij} = \sum_k A_{ik} B_{kj}`
 
-.. code-block:: cpp
+.. tab-set::
 
-    auto A = create_random_tensor<double>("A", {7, 7});
-    auto B = create_random_tensor<double>("B", {7, 7});
-    auto C = create_zero_tensor<double>("C", {7, 7});
+    .. tab-item:: C++
+        :sync: cpp
 
-    cg::einsum("ik;kj->ij", &C, A, B);
+        .. code-block:: cpp
+
+            auto A = create_random_tensor<double>("A", {7, 7});
+            auto B = create_random_tensor<double>("B", {7, 7});
+            auto C = create_zero_tensor<double>("C", {7, 7});
+
+            cg::einsum("ik;kj->ij", &C, A, B);
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.create_random_tensor("A", [7, 7])
+            B = einsums.create_random_tensor("B", [7, 7])
+            C = einsums.zeros([7, 7], name="C")
+
+            einsums.einsum("ik;kj->ij", C, A, B)
 
 That call reaches a single vendor ``dgemm``. Nothing is copied and nothing is packed.
 
@@ -69,26 +98,55 @@ Dot Product
 A spec cannot produce a scalar: the string form needs an output of rank one or higher. For a
 single number, use the dot product, which writes through a pointer:
 
-.. code-block:: cpp
+.. tab-set::
 
-    auto u = create_random_tensor<double>("u", {100});
-    auto v = create_random_tensor<double>("v", {100});
+    .. tab-item:: C++
+        :sync: cpp
 
-    double result = 0.0;
-    cg::dot(&result, u, v);
+        .. code-block:: cpp
 
-The pointer-writing form is also the one to use inside a capture, where an operation has no value
-to return until the graph runs.
+            auto u = create_random_tensor<double>("u", {100});
+            auto v = create_random_tensor<double>("v", {100});
+
+            double result = 0.0;
+            cg::dot(&result, u, v);
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            u = einsums.create_random_tensor("u", [100])
+            v = einsums.create_random_tensor("v", [100])
+
+            result = einsums.linalg.dot(u, v)
+
+In C++ that pointer-writing form is also the one to use inside a capture, where an operation has
+no value to return until the graph runs. Python's ``linalg.dot`` returns, so inside a capture
+reach for the recorded spellings instead.
 
 Outer Product
 =============
 
 :math:`C_{ij} = u_i v_j`
 
-.. code-block:: cpp
+.. tab-set::
 
-    auto C = create_zero_tensor<double>("C", {100, 100});
-    cg::einsum("i;j->ij", &C, u, v);
+    .. tab-item:: C++
+        :sync: cpp
+
+        .. code-block:: cpp
+
+            auto C = create_zero_tensor<double>("C", {100, 100});
+            cg::einsum("i;j->ij", &C, u, v);
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            C = einsums.zeros([100, 100], name="C")
+            einsums.einsum("i;j->ij", C, u, v)
 
 No index is shared, so nothing is summed and the result is a rank-1 update.
 
@@ -97,12 +155,27 @@ Transpose
 
 A generalized transpose is ``permute`` rather than an einsum:
 
-.. code-block:: cpp
+.. tab-set::
 
-    auto A  = create_random_tensor<double>("A", {5, 8});
-    auto At = create_zero_tensor<double>("At", {8, 5});
+    .. tab-item:: C++
+        :sync: cpp
 
-    cg::permute("ij->ji", &At, A);
+        .. code-block:: cpp
+
+            auto A  = create_random_tensor<double>("A", {5, 8});
+            auto At = create_zero_tensor<double>("At", {8, 5});
+
+            cg::permute("ij->ji", &At, A);
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A  = einsums.create_random_tensor("A", [5, 8])
+            At = einsums.zeros([8, 5], name="At")
+
+            einsums.permute("ij->ji", At, A)
 
 Einsums will not permute operands to force a contraction onto a faster kernel. It uses the
 transposition flags a BLAS call already offers, so ``"ki;jk->ij"`` still reaches one ``GEMM``,
@@ -115,11 +188,25 @@ Scaling with Prefactors
 The six-argument form takes a prefactor for the output and one for the product, computing
 :math:`C = \alpha C + \beta A B`:
 
-.. code-block:: cpp
+.. tab-set::
 
-    cg::einsum("ik;kj->ij", &C, A, B);              // C = AB
-    cg::einsum("ik;kj->ij", 1.0, &C, 1.0, A, B);    // C = C + AB
-    cg::einsum("ik;kj->ij", 0.0, &C, 0.5, A, B);    // C = 0.5 AB
+    .. tab-item:: C++
+        :sync: cpp
+
+        .. code-block:: cpp
+
+            cg::einsum("ik;kj->ij", &C, A, B);              // C = AB
+            cg::einsum("ik;kj->ij", 1.0, &C, 1.0, A, B);    // C = C + AB
+            cg::einsum("ik;kj->ij", 0.0, &C, 0.5, A, B);    // C = 0.5 AB
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            einsums.einsum("ik;kj->ij", C, A, B)                        # C = AB
+            einsums.einsum("ik;kj->ij", C, A, B, c_pf=1.0, ab_pf=1.0)   # C = C + AB
+            einsums.einsum("ik;kj->ij", C, A, B, c_pf=0.0, ab_pf=0.5)   # C = 0.5 AB
 
 Accumulating is how you build a quantity from several contractions without a temporary for each
 one, which is most of what a correlated method does.
@@ -129,13 +216,29 @@ Higher-Rank Contractions
 
 Rank is not special. :math:`C_{ijmn} = \sum_{kl} A_{ijkl} B_{klmn}`:
 
-.. code-block:: cpp
+.. tab-set::
 
-    auto T = create_random_tensor<double>("T", {4, 4, 4, 4});
-    auto U = create_random_tensor<double>("U", {4, 4, 4, 4});
-    auto W = create_zero_tensor<double>("W", {4, 4, 4, 4});
+    .. tab-item:: C++
+        :sync: cpp
 
-    cg::einsum("ijkl;klmn->ijmn", &W, T, U);
+        .. code-block:: cpp
+
+            auto T = create_random_tensor<double>("T", {4, 4, 4, 4});
+            auto U = create_random_tensor<double>("U", {4, 4, 4, 4});
+            auto W = create_zero_tensor<double>("W", {4, 4, 4, 4});
+
+            cg::einsum("ijkl;klmn->ijmn", &W, T, U);
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            T = einsums.create_random_tensor("T", [4, 4, 4, 4])
+            U = einsums.create_random_tensor("U", [4, 4, 4, 4])
+            W = einsums.zeros([4, 4, 4, 4], name="W")
+
+            einsums.einsum("ijkl;klmn->ijmn", W, T, U)
 
 This one does not map onto a plain ``GEMM``, so it runs on the packed contraction backend, which
 blocks and packs the operands for cache reuse rather than falling back to loops. You write the
@@ -153,30 +256,57 @@ The Same Contractions, Captured
 Every call above ran immediately. The same ``cg::einsum`` inside a capture is recorded instead,
 and the recording is what the optimizer works on:
 
-.. code-block:: cpp
+.. tab-set::
 
-    #include <Einsums/ComputeGraph/Graph.hpp>
+    .. tab-item:: C++
+        :sync: cpp
 
-    cg::Graph graph("two steps");
+        .. code-block:: cpp
 
-    auto &tmp = graph.create_runtime_tensor<double>("tmp", {7, 7});      // scratch
-    auto &out = graph.create_runtime_tensor<double>("out", {7, 7},
-                                                    /*intermediate=*/false);  // a result
+            #include <Einsums/ComputeGraph/Graph.hpp>
 
-    {
-        cg::CaptureGuard guard(graph);
-        cg::einsum("ik;kj->ij", &tmp, A, B);
-        cg::einsum("ik;kj->ij", &out, tmp, A);
-    }
+            cg::Graph graph("two steps");
 
-    graph.optimize();
+            auto &tmp = graph.create_runtime_tensor<double>("tmp", {7, 7});      // scratch
+            auto &out = graph.create_runtime_tensor<double>("out", {7, 7},
+                                                            /*intermediate=*/false);  // a result
 
-    for (int iter = 0; iter < 100; ++iter) {
-        graph.execute();      // no re-dispatch, no re-analysis
-    }
+            {
+                cg::CaptureGuard guard(graph);
+                cg::einsum("ik;kj->ij", &tmp, A, B);
+                cg::einsum("ik;kj->ij", &out, tmp, A);
+            }
 
-Two things to notice. The function is the same one, so nothing about how you write a contraction
-changes; capture is a property of where the call happens, not of which call it is. And ``tmp``
+            graph.optimize();
+
+            for (int iter = 0; iter < 100; ++iter) {
+                graph.execute();      // no re-dispatch, no re-analysis
+            }
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            import einsums.graph as cg
+
+            graph = cg.Graph("two steps")
+
+            tmp = graph.create_tensor("tmp", [7, 7])                       # scratch
+            out = graph.create_tensor("out", [7, 7], intermediate=False)   # a result
+
+            with cg.capture(graph):
+                einsums.einsum("ik;kj->ij", tmp, A, B)
+                einsums.einsum("ik;kj->ij", out, tmp, A)
+
+            graph.optimize()
+
+            for _ in range(100):
+                graph.execute()       # no re-dispatch, no re-analysis
+
+Two things to notice. The function is the same one in both languages, so nothing about how you
+write a contraction changes; capture is a property of where the call happens, not of which call
+it is. And ``tmp``
 is scratch while ``out`` is a result, which the graph cannot work out for itself: a graph-owned
 tensor you read after ``execute()`` needs ``intermediate=false``, or the optimizer removes the
 contraction that fills it.

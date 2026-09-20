@@ -92,31 +92,50 @@ if types or pasted into your code.
 Setting up a program
 ====================
 
-To create a program using Einsums, you must initialize the library before you do anything with Einsums,
-and finalize it after you finish using Einsums.
+In C++ the library has to be brought up before you use it and shut down afterwards. From Python
+importing does that for you.
 
-.. code-block:: cpp
+.. tab-set::
 
-    #include <Einsums/Runtime.hpp>
+    .. tab-item:: C++
+        :sync: cpp
 
-    namespace einsums {
-    int main() {
-        // Your code here.
+        .. code-block:: cpp
 
-        finalize();
-        return EXIT_SUCCESS;
-    }
-    } // end namespace einsums
+            #include <Einsums/Runtime.hpp>
 
-    int main(int argc, char **argv) {
-        // This call takes responsibility of initializing Einsums and then calling
-        // your passed main function.
-        return einsums::start(einsums::main, argc, argv);
-    }
+            namespace einsums {
+            int main() {
+                // Your code here.
 
-Alternatively, you can do things manually. Make sure you wrap your code in OpenMP directives,
-otherwise the threading environment won't be set up properly and you will notice a significant
-slow down as each call will need to set it up again.:
+                finalize();
+                return EXIT_SUCCESS;
+            }
+            } // end namespace einsums
+
+            int main(int argc, char **argv) {
+                // This call takes responsibility of initializing Einsums and then calling
+                // your passed main function.
+                return einsums::start(einsums::main, argc, argv);
+            }
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            import einsums
+
+            # That is the whole of it. The runtime comes up on first use and shuts
+            # down with the interpreter.
+
+        Nothing else is required, and there is no finalize to call. Note that the
+        profiler's session export is written during shutdown, so a program that ends by
+        other means may not produce one; see :doc:`tutorial_performance`.
+
+In C++ you can alternatively do this by hand. Wrap your code in OpenMP directives when you do,
+otherwise the threading environment is not set up properly and every call pays to establish it
+again:
 
 .. code:: C++
 
@@ -142,9 +161,21 @@ How to create a Tensor
 The tensor type to reach for is :cpp:type:`einsums::RuntimeTensor`. Pass a name and the size of
 each dimension:
 
-.. code:: C++
+.. tab-set::
 
-    einsums::RuntimeTensor<double> A{"A", {2, 2}};
+    .. tab-item:: C++
+        :sync: cpp
+
+        .. code-block:: cpp
+
+            einsums::RuntimeTensor<double> A{"A", {2, 2}};
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.zeros([2, 2], name="A")
 
 The name is not decoration. It is how this tensor is identified in profiler output and in the
 reports the optimizer prints, so a meaningful one pays for itself the first time you read either.
@@ -159,17 +190,43 @@ Specifying your data type
 
 The element type is the template argument, and there is no default: write it out.
 
-.. code:: C++
+.. tab-set::
 
-    einsums::RuntimeTensor<double> A{"A", {2, 2}};
-    einsums::RuntimeTensor<float>  B{"B", {2, 2}};
+    .. tab-item:: C++
+        :sync: cpp
+
+        .. code-block:: cpp
+
+            einsums::RuntimeTensor<double> A{"A", {2, 2}};
+            einsums::RuntimeTensor<float>  B{"B", {2, 2}};
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.zeros([2, 2], name="A")                     # float64 by default
+            B = einsums.zeros([2, 2], dtype="float32", name="B")
 
 Einsums also supports complex numbers.
 
-.. code:: C++
+.. tab-set::
 
-    einsums::RuntimeTensor<std::complex<float>>  C{"C", {2, 2}};
-    einsums::RuntimeTensor<std::complex<double>> D{"D", {2, 2}};
+    .. tab-item:: C++
+        :sync: cpp
+
+        .. code-block:: cpp
+
+            einsums::RuntimeTensor<std::complex<float>>  C{"C", {2, 2}};
+            einsums::RuntimeTensor<std::complex<double>> D{"D", {2, 2}};
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            C = einsums.zeros([2, 2], dtype="complex64",  name="C")
+            D = einsums.zeros([2, 2], dtype="complex128", name="D")
 
 The supported types are floating point and complex floating point. Integers work for some
 operations; arbitrary objects are not supported.
@@ -203,31 +260,67 @@ Basic Tensor operations
 
 There are several basic things we can do with tensors. We can fill tensors with values, perform in-place arithmetic operations, and more.
 
-.. code:: C++
+.. tab-set::
 
-    einsums::RuntimeTensor<double> A{"A", {10, 10}};
-    auto B = einsums::create_random_tensor<double>("B", {10, 10});
+    .. tab-item:: C++
+        :sync: cpp
 
-    // Filling values
-    A = B;           // Copy the values from B.
-    A.zero();        // Every element becomes 0.
-    A.set_all(0.3);  // Every element becomes 0.3.
-    A = 0.3;         // Same as above.
+        .. code-block:: cpp
 
-    // In-place arithmetic with a scalar, element-wise
-    A += 2;
-    A -= 2;
-    A *= 2;
-    A /= 2;
+            einsums::RuntimeTensor<double> A{"A", {10, 10}};
+            auto B = einsums::create_random_tensor<double>("B", {10, 10});
+
+            // Filling values
+            A = B;           // Copy the values from B.
+            A.zero();        // Every element becomes 0.
+            A.set_all(0.3);  // Every element becomes 0.3.
+            A = 0.3;         // Same as above.
+
+            // In-place arithmetic with a scalar, element-wise
+            A += 2;
+            A -= 2;
+            A *= 2;
+            A /= 2;
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.zeros([10, 10], name="A")
+            B = einsums.create_random_tensor("B", [10, 10])
+
+            # Filling values
+            A = einsums.array(B)   # copy the values from B (plain `A = B` would rebind)
+            A.zero()               # every element becomes 0
+            A.set_all(0.3)         # every element becomes 0.3
+
+            # In-place arithmetic with a scalar, element-wise
+            A += 2
+            A -= 2
+            A *= 2
+            A /= 2
 
 Element-wise arithmetic between two tensors is written as a contraction rather than as an
 operator:
 
-.. code:: C++
+.. tab-set::
 
-    namespace cg = einsums::compute_graph;
+    .. tab-item:: C++
+        :sync: cpp
 
-    cg::einsum("ij;ij->ij", &A, A, B);   // A = A * B, element by element
+        .. code-block:: cpp
+
+            namespace cg = einsums::compute_graph;
+
+            cg::einsum("ij;ij->ij", &A, A, B);   // A = A * B, element by element
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            einsums.einsum("ij;ij->ij", A, A, B)   # A = A * B, element by element
 
 That is not a detour. A contraction spec says which indices line up, and once tensors have more
 than two dimensions that is the question an operator cannot answer. :ref:`tutorial-einsum` is
@@ -238,21 +331,43 @@ Indexing and slicing
 
 Index a tensor with the function call syntax, one argument per dimension:
 
-.. code:: C++
+.. tab-set::
 
-    auto A = einsums::create_random_tensor<double>("A", {3, 3});
+    .. tab-item:: C++
+        :sync: cpp
 
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
-            printf("%lf ", A(i, j));
-        }
-    }
+        .. code-block:: cpp
 
-    // Negative indices wrap around, as in Python.
-    assert(A(-1, -1) == A(2, 2));
+            auto A = einsums::create_random_tensor<double>("A", {3, 3});
 
-    // The same syntax assigns.
-    A(2, 2) = 10;
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < 3; j++) {
+                    printf("%lf ", A(i, j));
+                }
+            }
+
+            // Negative indices wrap around, as in Python.
+            assert(A(-1, -1) == A(2, 2));
+
+            // The same syntax assigns.
+            A(2, 2) = 10;
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.create_random_tensor("A", [3, 3])
+
+            for i in range(3):
+                for j in range(3):
+                    print(A[i, j], end=" ")
+
+            # Negative indices wrap around
+            assert A[-1, -1] == A[2, 2]
+
+            # The same syntax assigns
+            A[2, 2] = 10
 
 Element access is for inspecting and for setting up small things. A loop over ``operator()``
 pays an index computation per element, so it is not how bulk work gets done: that is what the
@@ -262,14 +377,31 @@ Slicing uses the same call syntax. Fewer arguments than the rank are allowed, an
 :cpp:struct:`einsums::Range` selects part of a dimension. A range is half-open, so
 ``Range{0, 2}`` is two entries:
 
-.. code:: C++
+.. tab-set::
 
-    auto A = einsums::create_random_tensor<double>("A", {3, 3});
+    .. tab-item:: C++
+        :sync: cpp
 
-    auto View1 = A(Range{0, 2}, All);          // first two rows
-    auto View2 = A(2, All);                    // row 2, as a rank-1 view
-    auto View3 = A(All, 2);                    // column 2, as a rank-1 view
-    auto View4 = A(Range{1, 3}, Range{0, 2});  // a 2x2 block
+        .. code-block:: cpp
+
+            auto A = einsums::create_random_tensor<double>("A", {3, 3});
+
+            auto View1 = A(Range{0, 2}, All);          // first two rows
+            auto View2 = A(2, All);                    // row 2, as a rank-1 view
+            auto View3 = A(All, 2);                    // column 2, as a rank-1 view
+            auto View4 = A(Range{1, 3}, Range{0, 2});  // a 2x2 block
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.create_random_tensor("A", [3, 3])
+
+            View1 = A[0:2, :]     # first two rows
+            View2 = A[2, :]       # row 2, as a rank-1 view
+            View3 = A[:, 2]       # column 2, as a rank-1 view
+            View4 = A[1:3, 0:2]   # a 2x2 block
 
 None of these copy. A view writes through to the tensor it came from, and it is only valid while
 that tensor is. :ref:`tutorial-views` goes into both.
@@ -280,20 +412,29 @@ Shape and size of a Tensor
 The dimensions of a tensor can be accessed using the :code:`dim` and :code:`dims` methods. The first lets you specify the axis, while
 the second gives all dimensions in a container. To get the size of a tensor, use the :code:`size` method.
 
-.. code:: C++
+.. tab-set::
 
-    einsums::RuntimeTensor<double> A{"A", {3, 4, 5}};
+    .. tab-item:: C++
+        :sync: cpp
 
-    assert(A.size() == 3 * 4 * 5);
-    assert(A.dim(0) == 3);
-    assert(A.dim(1) == 4);
-    assert(A.dim(2) == 5);
+        .. code-block:: cpp
 
-    auto dims = A.dims();
+            einsums::RuntimeTensor<double> A{"A", {3, 4, 5}};
 
-    assert(dims[0] == 3);
-    assert(dims[1] == 4);
-    assert(dims[2] == 5);
+            assert(A.size() == 3 * 4 * 5);
+            assert(A.dim(0) == 3);
+            assert(A.rank() == 3);
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.zeros([3, 4, 5], name="A")
+
+            assert A.size == 3 * 4 * 5   # a property in Python
+            assert A.dim(0) == 3         # a method
+            assert A.rank() == 3         # a method
 
 Reshaping a Tensor
 ------------------
@@ -342,54 +483,101 @@ Permuting elements
 To permute the axes of a tensor, you can use the :cpp:func:`~einsums::tensor_algebra::permute` function. This takes an input tensor and an output tensor,
 and it permutes the input tensor, scales it, scales the output tensor, then adds them together.
 
-.. code:: C++
+.. tab-set::
 
-    using namespace einsums;
+    .. tab-item:: C++
+        :sync: cpp
 
-    namespace cg = einsums::compute_graph;
+        .. code-block:: cpp
 
-    auto A = einsums::create_random_tensor<double>("A", {3, 4, 5});
-    auto B = einsums::create_random_tensor<double>("B", {5, 4, 3});
-    einsums::RuntimeTensor<double> C{"C", {5, 4, 3}};
+            using namespace einsums;
+            namespace cg = einsums::compute_graph;
 
-    C = B;   // so there is something to add to
+            auto A = create_random_tensor<double>("A", {3, 4, 5});
+            auto B = create_random_tensor<double>("B", {5, 4, 3});
+            RuntimeTensor<double> C{"C", {5, 4, 3}};
 
-    // C = 1 * C + 0.5 * A permuted from (k, j, i) to (i, j, k)
-    cg::permute("ijk <- kji", 1.0, &C, 0.5, A);
+            C = B;   // so there is something to add to
 
-    for (size_t i = 0; i < 5; i++) {
-        for (size_t j = 0; j < 4; j++) {
-            for (size_t k = 0; k < 3; k++) {
-                assert(C(i, j, k) == B(i, j, k) + 0.5 * A(k, j, i));
+            // C = 1 * C + 0.5 * A permuted from (k, j, i) to (i, j, k)
+            cg::permute("ijk <- kji", 1.0, &C, 0.5, A);
+
+            for (size_t i = 0; i < 5; i++) {
+                for (size_t j = 0; j < 4; j++) {
+                    for (size_t k = 0; k < 3; k++) {
+                        assert(C(i, j, k) == B(i, j, k) + 0.5 * A(k, j, i));
+                    }
+                }
             }
-        }
-    }
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.create_random_tensor("A", [3, 4, 5])
+            B = einsums.create_random_tensor("B", [5, 4, 3])
+            C = einsums.array(B)   # so there is something to add to
+
+            # C = 1 * C + 0.5 * A permuted from (k, j, i) to (i, j, k)
+            einsums.permute("ijk <- kji", C, A, c_pf=1.0, a_pf=0.5)
+
+            expect = np.asarray(B) + 0.5 * np.asarray(A).transpose(2, 1, 0)
+            assert np.allclose(np.asarray(C), expect)
 
 Linear Algebra
 --------------
 
 Most procedures provided by LAPACK and BLAS are available to use with tensors. Here are some common examples.
 
-.. code:: C++
+.. tab-set::
 
-    using namespace einsums;
-    using cd = std::complex<double>;
+    .. tab-item:: C++
+        :sync: cpp
 
-    auto A = create_random_tensor<double>("A", {10, 10});
-    auto B = create_random_tensor<double>("B", {10, 10});
-    auto C = create_random_tensor<double>("C", {10, 10});
+        .. code-block:: cpp
 
-    auto u = create_random_tensor<double>("u", {10});
-    auto v = create_random_tensor<double>("v", {10});
+            using namespace einsums;
 
-    // gemm computes C = alpha * op(A) * op(B) + beta * C. Whether each input is
-    // transposed is a template parameter; the prefactors are arguments.
-    linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C);
+            auto A = create_random_tensor<double>("A", {10, 10});
+            auto B = create_random_tensor<double>("B", {10, 10});
+            auto C = create_random_tensor<double>("C", {10, 10});
 
-    // Dot products. This one does not conjugate the first argument.
-    auto val = linear_algebra::dot(u, v);
-    // This one does. Since u and v are real here, the two agree.
-    auto val2 = linear_algebra::true_dot(u, v);
+            auto u = create_random_tensor<double>("u", {10});
+            auto v = create_random_tensor<double>("v", {10});
+
+            // gemm computes C = alpha * op(A) * op(B) + beta * C. Whether each input is
+            // transposed is a template parameter; the prefactors are arguments.
+            linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C);
+
+            // Dot products. This one does not conjugate the first argument.
+            auto val = linear_algebra::dot(u, v);
+            // This one does. Since u and v are real here, the two agree.
+            auto val2 = linear_algebra::true_dot(u, v);
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            from einsums import linalg
+
+            A = einsums.create_random_tensor("A", [10, 10])
+            B = einsums.create_random_tensor("B", [10, 10])
+            C = einsums.create_random_tensor("C", [10, 10])
+
+            u = einsums.create_random_tensor("u", [10])
+            v = einsums.create_random_tensor("v", [10])
+
+            # gemm computes C = alpha * op(A) * op(B) + beta * C. Transposition is a
+            # keyword argument here rather than a template parameter.
+            linalg.gemm(1.0, A, B, 0.0, C)
+
+            # Dot product, which returns rather than writing through a pointer.
+            val = linalg.dot(u, v)
+
+        ``true_dot``, the conjugating form, has no Python binding; for complex data use
+        ``linalg.dotc``.
 
 A few routines want a statically ranked :cpp:type:`einsums::Tensor` rather than a
 ``RuntimeTensor``, because they are written against a compile-time rank of two. General
@@ -418,33 +606,64 @@ Tensor Contractions
 This is what Einsums was made for! We can do any operation that looks like :math:`C_{ijk\cdots} = \alpha C_{ijk\cdots} + \beta A_{abc\cdots} B_{def\cdots}`.
 Here's an example for something like :math:`C_{ijk} = A_{ik}B_{kj}`.
 
-.. code:: C++
+.. tab-set::
 
-    using namespace einsums;
+    .. tab-item:: C++
+        :sync: cpp
 
-    namespace cg = einsums::compute_graph;
+        .. code-block:: cpp
 
-    auto A = einsums::create_random_tensor<double>("A", {10, 10});
-    auto B = einsums::create_random_tensor<double>("B", {10, 10});
-    auto C = einsums::create_zero_tensor<double>("C", {10, 10, 10});
+            using namespace einsums;
+            namespace cg = einsums::compute_graph;
 
-    cg::einsum("ik;kj->ijk", &C, A, B);
+            auto A = create_random_tensor<double>("A", {10, 10});
+            auto B = create_random_tensor<double>("B", {10, 10});
+            auto C = create_zero_tensor<double>("C", {10, 10, 10});
+
+            cg::einsum("ik;kj->ijk", &C, A, B);
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.create_random_tensor("A", [10, 10])
+            B = einsums.create_random_tensor("B", [10, 10])
+            C = einsums.zeros([10, 10, 10], name="C")
+
+            einsums.einsum("ik;kj->ijk", C, A, B)
 
 If we do something that can become a BLAS call, then it will normally become a BLAS call. Currently, index permutations are not
 performed, so calls can only be optimized when the indices exactly match the pattern for a BLAS call. This will change in the future,
 as permuting indices can seriously improve performance.
 
-.. code:: C++
+.. tab-set::
 
-    namespace cg = einsums::compute_graph;
+    .. tab-item:: C++
+        :sync: cpp
 
-    auto A = einsums::create_random_tensor<double>("A", {10, 10});
-    auto B = einsums::create_random_tensor<double>("B", {10, 10});
+        .. code-block:: cpp
 
-    // A single number comes out through dot, which writes through a pointer.
-    // This one reaches a BLAS dot product.
-    double val = 0.0;
-    cg::dot(&val, A, B);
+            namespace cg = einsums::compute_graph;
+
+            auto A = einsums::create_random_tensor<double>("A", {10, 10});
+            auto B = einsums::create_random_tensor<double>("B", {10, 10});
+
+            // A single number comes out through dot, which writes through a pointer.
+            // This one reaches a BLAS dot product.
+            double val = 0.0;
+            cg::dot(&val, A, B);
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            A = einsums.create_random_tensor("A", [10, 10])
+            B = einsums.create_random_tensor("B", [10, 10])
+
+            # A single number comes out through dot, which returns in Python.
+            val = einsums.linalg.dot(A, B)
 
 The second of those two used to be written with B's indices reversed, which is a different
 quantity and lands on the generic loop, because reaching a BLAS call would need a physical
@@ -459,34 +678,56 @@ Putting it together, then capturing it
 Here is a whole program using what this page covered. It builds two matrices, contracts them,
 scales the result and prints a number:
 
-.. code:: C++
+.. tab-set::
 
-    #include <Einsums/ComputeGraph/Operations.hpp>
-    #include <Einsums/Print.hpp>
-    #include <Einsums/Runtime.hpp>
-    #include <Einsums/Tensor/RuntimeTensor.hpp>
-    #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
-    #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+    .. tab-item:: C++
+        :sync: cpp
 
-    namespace cg = einsums::compute_graph;
+        .. code-block:: cpp
 
-    namespace einsums {
-    int main() {
-        auto A = create_random_tensor<double>("A", {64, 64});
-        auto B = create_random_tensor<double>("B", {64, 64});
-        auto C = create_zero_tensor<double>("C", {64, 64});
+            #include <Einsums/ComputeGraph/Operations.hpp>
+            #include <Einsums/Print.hpp>
+            #include <Einsums/Runtime.hpp>
+            #include <Einsums/Tensor/RuntimeTensor.hpp>
+            #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+            #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
-        cg::einsum("ik;kj->ij", &C, A, B);
-        cg::scale(0.5, &C);
+            namespace cg = einsums::compute_graph;
 
-        println("C(0, 0) = {}", C(0, 0));
-        return EXIT_SUCCESS;
-    }
-    } // namespace einsums
+            namespace einsums {
+            int main() {
+                auto A = create_random_tensor<double>("A", {64, 64});
+                auto B = create_random_tensor<double>("B", {64, 64});
+                auto C = create_zero_tensor<double>("C", {64, 64});
 
-    int main(int argc, char **argv) {
-        return einsums::start(einsums::main, argc, argv);
-    }
+                cg::einsum("ik;kj->ij", &C, A, B);
+                cg::scale(0.5, &C);
+
+                println("C(0, 0) = {}", C(0, 0));
+                return EXIT_SUCCESS;
+            }
+            } // namespace einsums
+
+            int main(int argc, char **argv) {
+                return einsums::start(einsums::main, argc, argv);
+            }
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            import einsums
+            from einsums import linalg
+
+            A = einsums.create_random_tensor("A", [64, 64])
+            B = einsums.create_random_tensor("B", [64, 64])
+            C = einsums.zeros([64, 64], name="C")
+
+            einsums.einsum("ik;kj->ij", C, A, B)
+            linalg.scale(0.5, C)
+
+            print(f"C(0, 0) = {C[0, 0]}")
 
 Every call there runs the moment it is reached. That is the right thing for a program that does
 the work once, and it is the wrong thing for one that repeats it, because each call is analysed
@@ -494,36 +735,70 @@ and dispatched again every time and nothing can be optimized across the pair.
 
 The same work, recorded once and replayed, looks like this:
 
-.. code:: C++
+.. tab-set::
 
-    #include <Einsums/ComputeGraph/Graph.hpp>
+    .. tab-item:: C++
+        :sync: cpp
 
-    namespace einsums {
-    int main() {
-        auto A = create_random_tensor<double>("A", {64, 64});
-        auto B = create_random_tensor<double>("B", {64, 64});
+        .. code-block:: cpp
 
-        cg::Graph graph("scaled product");
+            #include <Einsums/ComputeGraph/Graph.hpp>
 
-        // intermediate = false: a result this code reads, not working space.
-        auto &C = graph.create_runtime_tensor<double>("C", {64, 64}, /*intermediate=*/false);
+            namespace einsums {
+            int main() {
+                auto A = create_random_tensor<double>("A", {64, 64});
+                auto B = create_random_tensor<double>("B", {64, 64});
 
-        {
-            cg::CaptureGuard guard(graph);
-            cg::einsum("ik;kj->ij", &C, A, B);
-            cg::scale(0.5, &C);
-        }
+                cg::Graph graph("scaled product");
 
-        graph.optimize();
+                // intermediate = false: a result this code reads, not working space.
+                auto &C = graph.create_runtime_tensor<double>("C", {64, 64},
+                                                              /*intermediate=*/false);
 
-        for (int iter = 0; iter < 100; ++iter) {
-            graph.execute();
-        }
+                {
+                    cg::CaptureGuard guard(graph);
+                    cg::einsum("ik;kj->ij", &C, A, B);
+                    cg::scale(0.5, &C);
+                }
 
-        println("C(0, 0) = {}", C(0, 0));
-        return EXIT_SUCCESS;
-    }
-    } // namespace einsums
+                graph.optimize();
+
+                for (int iter = 0; iter < 100; ++iter) {
+                    graph.execute();
+                }
+
+                println("C(0, 0) = {}", C(0, 0));
+                return EXIT_SUCCESS;
+            }
+            } // namespace einsums
+
+    .. tab-item:: Python
+        :sync: python
+
+        .. code-block:: python
+
+            import einsums
+            import einsums.graph as cg
+            from einsums import linalg
+
+            A = einsums.create_random_tensor("A", [64, 64])
+            B = einsums.create_random_tensor("B", [64, 64])
+
+            graph = cg.Graph("scaled product")
+
+            # intermediate=False: a result this code reads, not working space.
+            C = graph.create_tensor("C", [64, 64], intermediate=False)
+
+            with cg.capture(graph):
+                einsums.einsum("ik;kj->ij", C, A, B)
+                linalg.scale(0.5, C)
+
+            graph.optimize()
+
+            for _ in range(100):
+                graph.execute()
+
+            print(f"C(0, 0) = {C[0, 0]}")
 
 Three things changed and nothing else did. The operations are inside a ``CaptureGuard``, so they
 are recorded rather than run. ``optimize()`` rewrites the recording. And ``execute()`` replays it,
