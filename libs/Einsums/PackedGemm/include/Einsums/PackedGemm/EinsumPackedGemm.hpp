@@ -20,8 +20,11 @@
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/SIMD/Prefetch.hpp>
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <numeric>
@@ -468,6 +471,29 @@ bool stream_run_ok(T const *dst, int64_t n) {
     } else {
         return false;
     }
+}
+
+/// @brief Print the resolved plan and blocking for one contraction.
+///
+/// Behind EINSUMS_DUMP_PACKED_PLAN, and out of line so that @ref
+/// blis_contraction carries only the flag test. See the call site for why it
+/// earns its keep.
+inline void dump_packed_plan(PackingPlan const &plan, int64_t M, int64_t N, int64_t K, int MR, int NR, int64_t MC, int64_t NC, int64_t KC,
+                             bool a_order, AOrderFlush const &af, bool n_inner, bool compose, bool runs_stream) {
+    auto const dims = [](std::vector<DimSpec> const &d) {
+        std::string s;
+        for (auto const &x : d) {
+            s += fmt::format("{}{}/{}", s.empty() ? "" : ",", x.size, x.tensor_stride);
+        }
+        return s.empty() ? std::string{"-"} : s;
+    };
+    fmt::print(stderr,
+               "[packed plan] M={} N={} K={} MR={} NR={} MC={} NC={} KC={}"
+               " m_dims(A)=[{}] c_m_dims(C)=[{}] n_dims(B)=[{}] c_n_dims(C)=[{}]"
+               " a_order={} xa={} xc={} n_inner={} compose={} runs_stream={} swap_ab={}\n",
+               M, N, K, MR, NR, MC, NC, KC, dims(plan.m_dims), dims(plan.c_m_dims), dims(plan.n_dims), dims(plan.c_n_dims), a_order, af.xa,
+               af.xc, n_inner, compose, runs_stream, plan.swap_ab);
+    std::fflush(stderr);
 }
 
 /// @brief Write an A-order C block back to C, transposing its runs out.
@@ -1639,6 +1665,23 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         int64_t const nc_panels_max = (std::min(NC_blk, N) + NR - 1) / NR;
         auto const    ap_buf_elems  = static_cast<size_t>(mc_panels_max * MR * KC_blk);
         auto const    bp_buf_elems  = static_cast<size_t>(nc_panels_max * NR * KC_blk);
+
+        // What the plan and the blocking actually came out as, on request.
+        //
+        // Two sessions of wrong guesses about this path collapsed in one build
+        // once the plan was dumped instead of re-derived from its construction
+        // rules, and both diagnoses were the opposite of the assumption. The
+        // strides are what settle which order won; the blocks are what settle
+        // whether the write-back's runs form at all.
+        //
+        // Read once, and printed from out of line: this function is enormous and
+        // hot, and a getenv plus a formatting lambda in its body is not free even
+        // when the environment variable is unset.
+        static bool const dump_plan = std::getenv("EINSUMS_DUMP_PACKED_PLAN") != nullptr;
+        if (dump_plan) {
+            dump_packed_plan(plan, M, N, K, MR, NR, MC_blk, NC_blk, KC_blk, use_a_order, blk_aorder, scatter_n_inner, blk_compose,
+                             blk_runs_stream);
+        }
 
         {
             LabeledSection("C++ packing and kernel");
