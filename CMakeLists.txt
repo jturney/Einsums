@@ -1183,11 +1183,51 @@ endif()
 # Every extension module has been created by now, so the count is final.
 einsums_assert_python_extensions_can_share_a_library()
 
+# Whether THIS configuration builds examples/dlpno's compiled stage module.
+# Mirrors the conditions the externalproject_add sits behind: the root switch
+# here, the two test switches in examples/CMakeLists.txt, and Python plus a
+# native build in examples/dlpno/CMakeLists.txt.
+if(EINSUMS_WITH_EXAMPLES
+   AND EINSUMS_WITH_TESTS
+   AND EINSUMS_WITH_TESTS_EXAMPLES
+   AND EINSUMS_BUILD_PYTHON
+   AND NOT CMAKE_CROSSCOMPILING
+)
+  set(EINSUMS_BUILDS_DLPNO_STAGE_MODULE TRUE)
+else()
+  set(EINSUMS_BUILDS_DLPNO_STAGE_MODULE FALSE)
+endif()
+
 if(EINSUMS_WITH_EXAMPLES)
   # The top-level examples build almost nothing, but the psi4-free tests some
   # of them ship are worth having ctest run, and the dlpno example's compiled
   # stage module needs the Einsums target; see examples/CMakeLists.txt.
   add_subdirectory(examples)
+endif()
+
+# A compiled stage module must not outlive the target that maintains it.
+#
+# dlpno_stages is installed into ${CMAKE_BINARY_DIR}/lib so that anything with
+# build/lib on its PYTHONPATH imports it automatically - which dlpno.stages
+# then does, and by design refuses to run against a module that fails the
+# sealed-world handshake rather than silently falling back to Python. Turning
+# the examples off does not remove the module it built, so the next change to a
+# type in the layout fingerprint strands a stale binary that nothing in this
+# build graph can rebuild, and every test that imports dlpno.stages starts
+# failing with a WorldMismatch pointing at a module the build no longer knows
+# about. Tests.Unit.Modules.Python.PromotePython is registered whatever the
+# examples switch says, so that is not hypothetical.
+#
+# Delete it at configure time instead, where the switch is being decided.
+if(NOT EINSUMS_BUILDS_DLPNO_STAGE_MODULE)
+  file(GLOB _einsums_orphaned_stage_modules "${CMAKE_BINARY_DIR}/lib/dlpno_stages*")
+  if(_einsums_orphaned_stage_modules)
+    message(
+      STATUS "Removing a dlpno_stages module this configuration cannot rebuild: ${_einsums_orphaned_stage_modules}"
+    )
+    file(REMOVE ${_einsums_orphaned_stage_modules})
+  endif()
+  unset(_einsums_orphaned_stage_modules)
 endif()
 # Top-level einsums/ Python package was removed in favor of the apiary codegen output. The
 # codegen-driven extension is registered via einsums_finalize_pybind() above.
