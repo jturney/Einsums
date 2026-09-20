@@ -880,6 +880,41 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
         }
     }
 
+    // --- A's own M axis IS the fastest flat coordinate: straight copies ---
+    //
+    // Every panel row is then MR contiguous elements of A, so the whole block is
+    // num_panels * kc_len memcpys with nothing gathered at all. Which loop is
+    // outermost still decides what that costs. Walking the PANEL outermost
+    // writes its kc_len rows as one contiguous piece of the buffer - 2304 bytes
+    // on abcde-efcad-bf - out of kc_len lines of one compact block of A. The
+    // k-outer general loop below instead touches every panel in the block once
+    // per k, sweeping a 331 KB destination that is ten times the L1, and it
+    // measured 112 ms against this loop's 98 for exactly the same copies.
+    //
+    // The alignment conditions are the ones the general loop tests per panel: a
+    // block that starts on a segment of the fastest dim, and a segment holding a
+    // whole number of panels, is one where no panel straddles.
+    if (m_fast_unit && m_fast_size % MR == 0 && (mc_start % m_fast_size) == 0) {
+        for (int64_t p = 0; p < num_panels; ++p) {
+            int64_t const panel_len = (p < full_panels) ? MR : tail;
+            T            *panel     = Ap + p * MR * kc_len;
+            T const      *src       = A_data + m_offsets[static_cast<size_t>(p * MR)];
+            // An element loop, not memcpy. The length is MR, which is a runtime
+            // value here, so memcpy is a libc CALL - and at MR = 16 floats this
+            // loop runs once per 64 bytes, so the call is most of what it costs:
+            // 6.7 million of them on abcde-efcad-bf, measured 98 ms against this
+            // loop's 92 for the same bytes. The copy itself is two vector moves.
+            for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+                T const *s = src + k_offsets[static_cast<size_t>(k_local)];
+                T       *d = panel + k_local * MR;
+                for (int64_t i = 0; i < panel_len; ++i) {
+                    d[i] = s[i];
+                }
+            }
+        }
+        return;
+    }
+
     // --- Pack with precomputed offsets ---
     for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
         int64_t const k_offset = k_offsets[static_cast<size_t>(k_local)];
