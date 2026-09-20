@@ -350,6 +350,60 @@ inline void sort_k_dims_for_packing(PackingPlan &plan) {
     plan.k_dims_in_b = std::move(new_kb);
 }
 
+/// @brief Bytes a C run must cover before the write-back streams it.
+///
+/// Mirrors @ref einsums::packed_gemm::kStreamRunBytes, which is the consumer of
+/// this figure; it is restated here because the A-order write-back has to be
+/// priced (in @ref coalesce_plan) before the header that defines it is reached.
+inline constexpr int64_t kFlushRunBytes = 2 * 64;
+
+/// @brief The M group ordered for A, with C's contiguity still reachable.
+///
+/// The flat M coordinate can be ordered for the packing operand or for C, and
+/// the loser walks the other's layout. The asymmetry the ordering cost model
+/// used to assume - that C's loser is stuck at a cache line per element - only
+/// holds while C's run has to come from the FASTEST M coordinate.
+///
+/// It does not. When the fastest coordinate is A's unit-stride index (so pack_A
+/// is a memcpy) and C's unit-stride index sits second-fastest, the block still
+/// holds whole runs of C's index; they are just strided by @ref xa inside the
+/// C block rather than contiguous in it. The write-back reads them back with a
+/// blocked transpose, which costs an L1 pass over a block that is already in
+/// L2 and leaves C's DRAM traffic sequential. It buys the pack: on
+/// abcde-efcad-bf pack_A falls from a 4.1 cycle-per-element gather to a copy,
+/// and the transpose costs about half of what that saves.
+///
+/// Interleaved A/B against the same tree without it, best of two, core 8 /
+/// node 2: abcde-efcad-bf +67% single / +36% double, abcde-efbad-cf +73/+36,
+/// abcde-ecbfa-fd +88/+59, abcd-dbea-ec +83/+24, abcd-deca-be +26/+9. Every
+/// row that keeps the C order is inside +/-2%.
+///
+/// @p m_dims and @p c_m_dims must be in final (coalesced) order, and are
+/// parallel, so index n-2 names the same logical index in both.
+struct AOrderFlush {
+    bool    valid{false};
+    int64_t xa{0}; ///< Extent of the fastest flat M coordinate (unit stride in A)
+    int64_t xc{0}; ///< Extent of the M coordinate that is unit stride in C
+};
+
+inline AOrderFlush a_order_flush(std::vector<DimSpec> const &m_dims, std::vector<DimSpec> const &c_m_dims) {
+    AOrderFlush  r;
+    size_t const n = m_dims.size();
+    if (n < 2 || c_m_dims.size() != n) {
+        return r;
+    }
+    if (m_dims.back().tensor_stride != 1 || m_dims.back().size <= 1) {
+        return r;
+    }
+    if (c_m_dims[n - 2].tensor_stride != 1 || c_m_dims[n - 2].size <= 1) {
+        return r;
+    }
+    r.valid = true;
+    r.xa    = m_dims.back().size;
+    r.xc    = c_m_dims[n - 2].size;
+    return r;
+}
+
 /// @brief Coalesce adjacent dims within each group when they tile contiguously
 ///        in every tensor that sees them.
 ///
@@ -547,6 +601,43 @@ inline void coalesce_plan(PackingPlan &plan, int64_t elem_size = 8) {
             }
             return cost(dims[fastest].tensor_stride);
         };
+        // A C loser whose own unit-stride dimension is hoisted second-fastest is
+        // NOT stuck at a line per element, provided the side that won the order
+        // is itself contiguous - i.e. the pack is a memcpy rather than a gather.
+        // Then the block holds whole runs of C's index at a stride of the fastest
+        // coordinate's extent, and the write-back transposes them back out (see
+        // @ref AOrderFlush). Priced at a quarter line: the run reaches DRAM
+        // sequentially like any other, and what it adds is one L1-blocked pass
+        // over a C block that is already resident.
+        //
+        // The quarter, against the composed run's eighth, is also what keeps this
+        // from being taken everywhere. Substituting both into the comparison
+        // below, the A order wins exactly when N < K - when the contraction moves
+        // more of A than of C, which is the only regime where the pack is worth
+        // reordering for. intensli sits there (N = 24 against K = 32..384); the
+        // ccsd_t and ao2mo groups, whose N runs to thousands against a K of 24,
+        // do not, and keep the C order they already win on.
+        constexpr double kScatterTransposeCost = 0.25;
+
+        // ...but only while the M block it needs is affordable. The block has to
+        // be whole in the fastest coordinate and hold a streamable run of C's,
+        // so its A panel is xa * (run) * KC elements; a group whose fastest
+        // extent is already large blows the panel cap on its own. abc-bda-dc has
+        // xa = 384 against a K of 384, which is 18.9 MB - it keeps the C order it
+        // wins 3.29x with.
+        auto const a_order_affordable = [&](std::vector<DimSpec> const &pack, std::vector<DimSpec> const &cd, size_t fastest) {
+            if (pack[fastest].tensor_stride != 1 || pack[fastest].size <= 1) {
+                return false;
+            }
+            DimSpec const *cu = unit_dim(cd);
+            if (cu == nullptr || cu == &cd[fastest]) {
+                return false;
+            }
+            int64_t const run   = std::max<int64_t>(kFlushRunBytes / elem_size, 1);
+            int64_t const panel = pack[fastest].size * run * std::min<int64_t>(k_total, kKcForReuse) * elem_size;
+            return panel <= kPanelCapBytes;
+        };
+
         auto const c_loser_cost = [&](std::vector<DimSpec> const &dims, size_t fastest) {
             if (dims[fastest].tensor_stride == 1) {
                 return cost(1);
@@ -557,7 +648,8 @@ inline void coalesce_plan(PackingPlan &plan, int64_t elem_size = 8) {
         size_t const by_c    = smallest(c_dims);
         size_t const by_pack = smallest(pack_dims);
         double const cost_c  = c_trips * cost(c_dims[by_c].tensor_stride) + pack_trips * pack_loser_cost(pack_dims, by_c, pack_unit_is_k);
-        double const cost_p  = c_trips * c_loser_cost(c_dims, by_pack) + pack_trips * cost(pack_dims[by_pack].tensor_stride);
+        double const c_loser = a_order_affordable(pack_dims, c_dims, by_pack) ? kScatterTransposeCost : c_loser_cost(c_dims, by_pack);
+        double const cost_p  = c_trips * c_loser + pack_trips * cost(pack_dims[by_pack].tensor_stride);
         if (cost_c != cost_p) {
             return cost_c < cost_p;
         }

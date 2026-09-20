@@ -470,6 +470,92 @@ bool stream_run_ok(T const *dst, int64_t n) {
     }
 }
 
+/// @brief Write an A-order C block back to C, transposing its runs out.
+///
+/// The flat M coordinate was ordered for the packing operand, so pack_A was a
+/// memcpy and C's contiguous index sits one coordinate in: block row i holds
+/// coordinate i % @p xa of the fastest index and i / @p xa of C's. A run of C
+/// is therefore a COLUMN of the block at a stride of @p xa, not a contiguous
+/// piece of it, and the composed write-back cannot see it.
+///
+/// Read it back a strip at a time. Each strip is one cache line wide in the
+/// fastest coordinate, so the block lines it touches are consumed whole, and
+/// the staged transpose is a few KB that stays in L1. What reaches DRAM is the
+/// same sequential run of C the composed write-back sends, streamed the same
+/// way.
+///
+/// Out of line deliberately. @ref blis_contraction is enormous and this sits in
+/// its hottest loop nest; inline, it cost the rank-6 ccsd_t rows 2 to 4.5 per
+/// cent even though their `use_a_order` is false and not one of these
+/// instructions ran. A separate function leaves that path's code layout alone.
+///
+/// @p Cb is the mc_len x nb_cur block in column-major order, @p c_m_offsets is
+/// indexed by block-local flat M and @p c_n_offsets by N block position.
+template <typename T>
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+void flush_c_block_transposed(T *C_data, T const *Cb, int64_t mc, int64_t mc_len, int64_t nb, int64_t nb_cur,
+                              std::vector<int64_t> const &c_m_offsets, std::vector<int64_t> const &c_n_offsets, int64_t xa, int64_t xc,
+                              bool store_c, bool may_stream_c, bool &streamed_c) {
+    int64_t const rows = mc_len / xa;
+    int64_t const c0   = (mc / xa) % xc;
+
+    // One cache line of the fastest coordinate, and as many rows as keep the
+    // staged strip and the block lines it reads both inside L1.
+    int64_t const lanes = std::max<int64_t>(int64_t{64} / static_cast<int64_t>(sizeof(T)), 1);
+    int64_t const aw    = std::min(xa, lanes);
+    int64_t const rt    = std::clamp<int64_t>(int64_t{2048} / aw, 1, rows);
+
+    static thread_local std::vector<T> tls_flush;
+    tls_flush.resize(static_cast<size_t>(aw) * static_cast<size_t>(rt));
+    T *buf = tls_flush.data();
+
+    for (int64_t j = 0; j < nb_cur; ++j) {
+        T const      *src_j = Cb + j * mc_len;
+        int64_t const n_off = c_n_offsets[static_cast<size_t>(nb + j)];
+        for (int64_t r0 = 0; r0 < rows; r0 += rt) {
+            int64_t const rt_cur = std::min(rt, rows - r0);
+            for (int64_t a0 = 0; a0 < xa; a0 += aw) {
+                int64_t const aw_cur = std::min(aw, xa - a0);
+                // Read the block ALONG the strip, not down it. Both orders touch
+                // each line once and use all of it, but only this one's loads are
+                // contiguous, so they vectorise; the transposing stores land in
+                // the staging strip, which is in L1. The other way round measured
+                // no better than the C order it replaces.
+                for (int64_t r = 0; r < rt_cur; ++r) {
+                    T const *s = src_j + (r0 + r) * xa + a0;
+                    for (int64_t a = 0; a < aw_cur; ++a) {
+                        buf[a * rt_cur + r] = s[a];
+                    }
+                }
+                for (int64_t a = 0; a < aw_cur; ++a) {
+                    T const *s = buf + a * rt_cur;
+                    int64_t  r = 0;
+                    while (r < rt_cur) {
+                        // C's index wraps at xc, where the next row belongs to a
+                        // different outer coordinate and the run ends.
+                        int64_t const run = std::min(xc - ((c0 + r0 + r) % xc), rt_cur - r);
+                        T            *dst = C_data + c_m_offsets[static_cast<size_t>((r0 + r) * xa + a0 + a)] + n_off;
+                        if (may_stream_c && store_c && run * static_cast<int64_t>(sizeof(T)) >= kStreamRunBytes &&
+                            stream_run_ok(dst, run)) {
+                            stream_copy(dst, s + r, run);
+                            streamed_c = true;
+                        } else if (store_c) {
+                            std::copy(s + r, s + r + run, dst);
+                        } else {
+                            for (int64_t q = 0; q < run; ++q) {
+                                dst[q] += s[r + q];
+                            }
+                        }
+                        r += run;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// @brief Execute a tensor contraction via Pack-A / Pack-B + BLAS GEMM tiles (BLIS-style).
 ///
 /// For multi-K contractions (rank-3+), flattens A and B into contiguous M*K / K*N buffers
@@ -1227,6 +1313,18 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         bool const needs_c_scatter = scatter_c;
         bool const block_strategy  = needs_c_scatter && shape.block_gemm;
 
+        // Is this an M group ordered for A, with C's contiguity one coordinate
+        // in? See @ref AOrderFlush. When it is, pack_A is a memcpy and the C
+        // block's write-back transposes C's runs out instead of composing them,
+        // which changes what the M block has to be a whole number of (xa rows,
+        // not C's fastest segment) and which write-back branch runs.
+        // Not const: the M block sizing below has the last word. It is what
+        // learns how long the write-back's runs can actually be, and a block
+        // that cannot reach a streamable run is better off on the ordinary
+        // scatter than paying a transpose for nothing.
+        AOrderFlush const blk_aorder  = a_order_flush(plan.m_dims, plan.c_m_dims);
+        bool              use_a_order = blk_aorder.valid && needs_c_scatter && !block_strategy && !(is_complex && shape.use_1m);
+
         // Budget for the block-GEMM strategy's MC by NC C temp; the bound on NC
         // below applies it, and the block strategy's M block is sized from it
         // here. Four times L1 is where the M4 optimum sat, 432 to 504 KB against
@@ -1282,6 +1380,49 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             int64_t const want = line_rows(plan.m_dims);
             if (want > MC_blk && want % MR == 0 && want <= (mc_cap / MR) * MR && 4 * K >= N) {
                 MC_blk = want;
+            }
+        }
+
+        // The A-order block is xa rows of C's contiguous index at a time.
+        //
+        // It has to be a WHOLE number of xa so that every flat row the block
+        // holds carries the same set of C coordinates - that is what makes the
+        // write-back's gather a constant stride - and it wants as many of C's
+        // index as it can afford, because that index's run IS the write-back's
+        // contiguous span. A whole segment (run == xc) is the best case and the
+        // one the intensli shapes land in; when xc is too large to hold, a
+        // divisor of it keeps every span the same length instead of leaving a
+        // short straddling remainder that cannot stream.
+        //
+        // Two caps: the A panel (mc_cap, as everywhere else) and the C block,
+        // which must still fit its budget at the narrowest N chunk the loop
+        // below will take.
+        if (use_a_order) {
+            int64_t const elem      = static_cast<int64_t>(sizeof(ValueType));
+            int64_t const cb_budget = std::max<int64_t>(cpu_config().l2_cache_size / 2, int64_t{64} << 10);
+            int64_t const cap_panel = std::max<int64_t>(mc_cap / blk_aorder.xa, 1);
+            int64_t const cap_ctemp = std::max<int64_t>(cb_budget / (NR * elem * blk_aorder.xa), 1);
+            int64_t const cap_run   = std::max<int64_t>(std::min(cap_panel, cap_ctemp), 1);
+
+            int64_t run = std::min(blk_aorder.xc, cap_run);
+            while (run > 1 && blk_aorder.xc % run != 0) {
+                --run;
+            }
+            // A span that cannot cover a couple of cache lines is worth less than
+            // an even division of the segment, so take the length instead.
+            if (run * elem < kStreamRunBytes) {
+                run = std::min(blk_aorder.xc, cap_run);
+            }
+            int64_t const want = blk_aorder.xa * run;
+            if (run * elem >= kStreamRunBytes && want >= MR && want <= M) {
+                MC_blk = want;
+            } else {
+                // The caps left no run worth transposing for - a group whose
+                // fastest extent is large enough to swallow the whole panel
+                // budget on its own. The ordering cost model refuses these on
+                // the same grounds, so this is a backstop rather than a path
+                // anything is expected to take; keep the ordinary scatter.
+                use_a_order = false;
             }
         }
         if (block_strategy) {
@@ -1378,9 +1519,15 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // A synthesized unit dim keeps a stride of 0 for life (see Packing.cpp), and
         // a group of extent 1 carries no locality to compare, so it never argues for
         // itself and never argues against the other side.
+        // An A-order M group is the exception. Its fastest C stride is large by
+        // construction - that coordinate was chosen for A, not for C - so this
+        // test reads it as having no locality in the M group and hands the inner
+        // loop to N. The locality is there, one coordinate in, and the
+        // transposing write-back reaches it; comparing only the fastest strides
+        // would throw it away and take the N side's cache line per element.
         int64_t const c_m_fastest     = plan.c_m_dims.back().tensor_stride;
         int64_t const c_n_fastest     = plan.c_n_dims.back().tensor_stride;
-        bool const    scatter_n_inner = c_n_fastest != 0 && (c_m_fastest == 0 || c_n_fastest < c_m_fastest);
+        bool const    scatter_n_inner = !use_a_order && c_n_fastest != 0 && (c_m_fastest == 0 || c_n_fastest < c_m_fastest);
 
         // Does C's destination COMPOSE into whole contiguous spans?
         //
@@ -1863,7 +2010,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         int64_t const num_jr = (nc_len + NR - 1) / NR;
                         int64_t const num_ir = (mc_len + MR - 1) / MR;
 
-                        if (needs_c_scatter && !scatter_n_inner && (blk_compose || blk_runs_stream)) {
+                        if (needs_c_scatter && !scatter_n_inner && (blk_compose || blk_runs_stream || use_a_order)) {
                             LabeledSectionInternal("micro-kernel loop, C block");
                             // ---- Cache-resident C block ----
                             //
@@ -1977,6 +2124,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 }
 
                                 LabeledSectionInternal("C block scatter");
+
+                                if (use_a_order && (mc % blk_aorder.xa) == 0 && (mc_len % blk_aorder.xa) == 0) {
+                                    flush_c_block_transposed<ValueType>(C_data, Cb, mc, mc_len, nb, nb_cur, c_m_offsets, c_n_offsets,
+                                                                        blk_aorder.xa, blk_aorder.xc, store_c, may_stream_c, streamed_c);
+                                    continue; // next C block chunk
+                                }
 
                                 if (blk_compose) {
                                     int64_t pos = 0;
