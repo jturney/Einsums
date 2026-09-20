@@ -6,9 +6,9 @@
 
 .. _modules_Einsums_GPU:
 
-***
+===
 GPU
-***
+===
 
 The ``GPU`` module provides a portable abstraction layer for GPU-accelerated
 linear algebra. It supports four backends:

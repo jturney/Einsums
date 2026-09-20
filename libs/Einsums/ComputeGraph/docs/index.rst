@@ -3,9 +3,9 @@
 
 .. _modules_Einsums_ComputeGraph:
 
-===================
-ComputeGraph Module
-===================
+============
+ComputeGraph
+============
 
 The ComputeGraph module provides a deferred-execution computation graph for Einsums,
 inspired by CUDA Graphs and PyTorch FX. It captures, optimizes, and replays

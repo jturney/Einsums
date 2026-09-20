@@ -5,9 +5,9 @@
 
 .. _modules_Einsums_HPTT:
 
-****
+====
 HPTT
-****
+====
 
 High-Performance Tensor Transpose library, originally by Paul Springer.
 Forked and refactored to use the Einsums SIMD module instead of raw compiler

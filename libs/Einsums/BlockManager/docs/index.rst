@@ -4,9 +4,9 @@
 
 .. _modules_Einsums_BlockManager:
 
-====================
-Einsums BlockManager
-====================
+============
+BlockManager
+============
 
 .. todo::
     

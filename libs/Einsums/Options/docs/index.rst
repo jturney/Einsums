@@ -4,9 +4,9 @@
 
 .. _modules_Einsums_Options:
 
-===============
-Einsums Options
-===============
+=======
+Options
+=======
 
 Einsums' option system: one declaration per setting, feeding one typed value that the rest of the
 library reads. It is also a general C++20 command-line parser in the spirit of LLVM's ``cl::``

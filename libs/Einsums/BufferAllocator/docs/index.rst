@@ -4,9 +4,9 @@
 
 .. _modules_Einsums_BufferAllocator:
 
-=======================
+===============
 BufferAllocator
-=======================
+===============
 
 This module contains an allocator that keeps track of how much memory has been allocated for buffers.
 The allocator is controlled by global configuration options.

@@ -4,9 +4,9 @@
 
 .. _modules_Einsums_Logging:
 
-===============
-Einsums Logging
-===============
+=======
+Logging
+=======
 
 This module contains several macros for setting up logs, as well as providing log levels. It is considered
 an internal module. No symbols would be considered useful to users.

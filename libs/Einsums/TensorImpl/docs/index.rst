@@ -4,9 +4,9 @@
 
 .. _modules_Einsums_TensorImpl:
 
-==================
-Einsums TensorImpl
-==================
+==========
+TensorImpl
+==========
 
 .. todo::
     

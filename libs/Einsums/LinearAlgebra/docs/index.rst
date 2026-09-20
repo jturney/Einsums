@@ -4,6 +4,7 @@
 
 .. _modules_Einsums_LinearAlgebra:
 
+==============
 Linear Algebra
 ==============
 

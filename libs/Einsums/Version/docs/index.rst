@@ -4,9 +4,9 @@
 
 .. _modules_Einsums_Version:
 
-===============
-Einsums Version
-===============
+=======
+Version
+=======
 
 Gives version information, such as macros for versioning and version strings.
 
