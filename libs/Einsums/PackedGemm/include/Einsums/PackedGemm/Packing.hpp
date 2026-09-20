@@ -13,6 +13,7 @@
 #include <Einsums/Profile/Profile.hpp>
 
 #include <algorithm>
+#include <array>
 #include <complex>
 #include <cstdint>
 #include <cstring>
@@ -648,7 +649,42 @@ inline void precompute_offsets(int64_t start, int64_t len, std::vector<DimSpec> 
         return;
     }
 
-    // Generic fallback for 4+ dimensions
+    // Generic odometer for 4+ dimensions.
+    //
+    // The two specializations above exist because flat_to_offset divides once
+    // per DIMENSION per element, and these tables are rebuilt for every cache
+    // block: abcde-efcad-bf has four M dims and builds a 2304-entry table 1296
+    // times per call, then does it again for C - six million divide chains on a
+    // contraction whose arithmetic floor is 83 ms. Carrying an odometer costs an
+    // add and a predictable branch instead, and it does not need a new
+    // specialization every time a rank shows up that nobody wrote one for.
+    constexpr size_t kMaxOdometer = 16;
+    size_t const     nd           = dims.size();
+    if (nd <= kMaxOdometer) {
+        std::array<int64_t, kMaxOdometer> coord{};
+        int64_t                           rem = start;
+        for (size_t d = nd; d-- > 0;) {
+            coord[d] = rem % dims[d].size;
+            rem /= dims[d].size;
+        }
+        int64_t off = 0;
+        for (size_t d = 0; d < nd; ++d) {
+            off += coord[d] * dims[d].tensor_stride;
+        }
+        for (int64_t i = 0; i < len; ++i) {
+            out[static_cast<size_t>(i)] = off;
+            for (size_t d = nd; d-- > 0;) {
+                off += dims[d].tensor_stride;
+                if (++coord[d] < dims[d].size) {
+                    break;
+                }
+                coord[d] = 0;
+                off -= dims[d].size * dims[d].tensor_stride;
+            }
+        }
+        return;
+    }
+
     for (int64_t i = 0; i < len; ++i) {
         out[static_cast<size_t>(i)] = flat_to_offset(start + i, dims);
     }
