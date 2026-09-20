@@ -185,8 +185,7 @@ The options that shape it:
       - Report every zone with its counters, rather than the summary.
     * - :option:`--einsums:profile:save`
       - Also write the session as JSON, for the viewer to load later. Requires
-        ``--einsums:profile:server``, and captures the whole run only from the
-        ``einsums::start(einsums::main, ...)`` entry point; see the note below.
+        ``--einsums:profile:server``, and says so if it is missing.
     * - :option:`--einsums:profile:server`
       - Serve live data over TCP so a viewer can attach.
     * - :option:`--einsums:profile:port`
@@ -343,14 +342,13 @@ run before and after a change:
 A program run with :option:`--einsums:profile:save` writes a session file directly, which
 ``--load`` opens; ``--load`` accepts several files at once for comparison.
 
-Two constraints on that option are worth knowing, because neither announces itself. It writes
-nothing at all unless :option:`--einsums:profile:server` is also given, since the export runs
-through the server object. And the export happens where the runtime hands control back, which for
-a program using ``einsums::start(einsums::main, ...)`` is after your work has run, but for one
-driving ``initialize()`` and ``finalize()`` by hand is straight after start-up. In the second case
-the file is written and contains only the runtime's own start-up zones. The text report is
-unaffected either way, so a session that looks far emptier than ``profile.txt`` for the same run
-is this and not a lost measurement.
+One constraint on that option: it writes nothing unless :option:`--einsums:profile:server` is
+also given, because the export goes through the server object. Asking for a session without one
+is reported rather than ignored, so the run says so instead of leaving you to notice a missing
+file.
+
+The session is exported during teardown, whichever way a program ends, so it holds the same run
+the text report does.
 
 Finding Out Which Kernel Ran
 ----------------------------

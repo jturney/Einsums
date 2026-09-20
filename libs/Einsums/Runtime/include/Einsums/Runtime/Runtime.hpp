@@ -174,6 +174,19 @@ EINSUMS_EXPORT void set_signal_handlers();
 /// `--einsums:debug:no-install-signal-handlers`, which is precisely where the
 /// two concerns come apart.
 EINSUMS_EXPORT void ignore_broken_pipe();
+
+/// Export the profiler session, stop the profiler, and write its report.
+///
+/// Both teardown paths call this: @ref einsums::finalize when a caller finalizes explicitly, and
+/// `~Runtime` when nobody does. They ran identical copies of this sequence, which is how the
+/// session export came to exist on only one of them.
+///
+/// Order is the contract. The session export needs a live server, so it runs before
+/// `Profiler::shutdown`; the text report reads the aggregated tree, which outlives shutdown, so
+/// it keeps running after as it always has.
+///
+/// A no-op when the profiler is compiled out. Never throws: teardown is not a place to fail.
+EINSUMS_EXPORT void shutdown_profiler_and_report() noexcept;
 } // namespace detail
 
 /**

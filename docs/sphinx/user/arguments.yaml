@@ -78,8 +78,9 @@
         This option no longer sets the HIP log level. Use the :code:`AMD_LOG_LEVEL` environment variable.
         This option's name has also been changed.
   body: |
-    Set the level to see in the logger. Lower values provide more information. By default, it is set to
-    3 for the release build and 2 for the debug build.
+    Set the level to see in the logger. Lower values provide more information: 0 is trace, 1 debug,
+    2 info, 3 warning, 4 error. A release build defaults to 4, so it reports only errors, and a
+    debug build to 1.
 
     * 0: Tracing messages. Very verbose.
     * 1: Debugging messages.

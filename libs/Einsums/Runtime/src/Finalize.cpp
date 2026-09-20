@@ -49,18 +49,7 @@ int finalize() {
     rt->call_shutdown_functions(false);
     EINSUMS_LOG_INFO("ran shutdown functions");
 
-#if defined(EINSUMS_HAVE_PROFILER)
-    profile::Profiler::instance().shutdown();
-
-    try {
-        if (config::get(option::ProfileReport)) {
-            std::ofstream out(config::get(option::ProfileFilename), config::get(option::ProfileAppend) ? std::ios::ate : std::ios::trunc);
-            profile::Profiler::instance().print(config::get(option::ProfileDetailed), out);
-        }
-    } catch (...) {
-        EINSUMS_LOG_INFO("Exception thrown by the profiler during shutdown. Ignoring.");
-    }
-#endif
+    detail::shutdown_profiler_and_report();
 
     rt->deinit_global_data();
 

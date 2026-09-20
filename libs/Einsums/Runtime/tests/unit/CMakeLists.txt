@@ -43,3 +43,9 @@ foreach(test ${RuntimeTests})
 
   einsums_add_unit_test("Modules.Einsums.Runtime" ${TestName})
 endforeach()
+
+# Where the profiler session is exported has to be asked from outside the process, so this one
+# drives the HelloWorld2 example rather than linking against the runtime it is testing.
+einsums_add_python_unit_test(
+  "Modules.Einsums.Runtime" ProfileSessionExport SCRIPT test_profile_session_export_python.py
+)

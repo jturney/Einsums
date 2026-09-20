@@ -91,22 +91,12 @@ int run(std::function<int()> const &f, Runtime &rt, InitParams const &params) {
         result = rt.run();
     }
 
-    // Auto-save profiler session if configured.
-    // This runs before full finalize() to capture profiling data while the runtime is still alive.
-#if defined(EINSUMS_HAVE_PROFILER)
-    try {
-        auto const save_path = einsums::config::get(option::ProfileSave);
-        if (!save_path.empty()) {
-            profile::Profiler::instance().flush();
-            auto *server = profile::Profiler::instance().server();
-            if (server) {
-                server->export_session(save_path);
-            }
-        }
-    } catch (...) {
-        // profiler-save not configured or unavailable; skip
-    }
-#endif
+    // The profiler session is exported during teardown, in
+    // detail::shutdown_profiler_and_report, which both finalize() and ~Runtime call. Exporting
+    // here instead meant the session was written where the runtime handed control back: after
+    // user code for a caller using einsums::start, but directly after start-up for one driving
+    // initialize() and finalize() itself, which wrote a file holding nothing but the runtime's
+    // own start-up zones.
 
     return result;
 }

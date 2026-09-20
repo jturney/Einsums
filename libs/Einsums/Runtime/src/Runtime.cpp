@@ -13,6 +13,7 @@
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
+#include <Einsums/Profile/Server.hpp>
 #include <Einsums/Runtime/InitRuntime.hpp>
 #include <Einsums/Runtime/Options.hpp>
 #include <Einsums/Runtime/Runtime.hpp>
@@ -270,6 +271,48 @@ void ignore_broken_pipe() {
 #endif
 }
 
+void shutdown_profiler_and_report() noexcept {
+#if defined(EINSUMS_HAVE_PROFILER)
+    // The session export first, because it goes through the server and Profiler::shutdown stops
+    // it. Nothing else here depends on ordering: the text report below reads the aggregated
+    // tree, which survives shutdown.
+    try {
+        auto const save_path = config::get(option::ProfileSave);
+        if (!save_path.empty()) {
+            auto &profiler = profile::Profiler::instance();
+            profiler.flush();
+            if (auto *server = profiler.server(); server != nullptr) {
+                server->export_session(save_path);
+            } else {
+                // The export is a Server method, so asking for a session without a server can
+                // only be refused. Say so: silently writing nothing is what sent someone
+                // looking for a lost measurement.
+                //
+                // At error level rather than warning, because a release build logs from level 4
+                // and a warning would be suppressed in exactly the builds people profile. The
+                // caller asked for a file and is not getting one, which is their error to see.
+                EINSUMS_LOG_ERROR("--einsums:profile:save was given without --einsums:profile:server, so no session "
+                                  "file was written. The text report is unaffected.");
+            }
+        }
+    } catch (...) {
+        EINSUMS_LOG_INFO("Exception thrown while exporting the profiler session. Ignoring.");
+    }
+
+    // Drain all events, stop the consumer thread, stop the server.
+    profile::Profiler::instance().shutdown();
+
+    try {
+        if (config::get(option::ProfileReport)) {
+            std::ofstream out(config::get(option::ProfileFilename), config::get(option::ProfileAppend) ? std::ios::ate : std::ios::trunc);
+            profile::Profiler::instance().print(config::get(option::ProfileDetailed), out);
+        }
+    } catch (...) {
+        EINSUMS_LOG_INFO("Exception thrown by the profiler during shutdown. Ignoring.");
+    }
+#endif
+}
+
 Runtime::Runtime(RuntimeConfiguration &&rtcfg, bool initialize) : _rtcfg(std::move(rtcfg)) {
     LabeledSectionInternal("Runtime constructor");
     init_global_data();
@@ -339,18 +382,7 @@ Runtime::~Runtime() {
     call_shutdown_functions(false); // shutdown
     EINSUMS_LOG_INFO("ran shutdown functions");
 
-#if defined(EINSUMS_HAVE_PROFILER)
-    // Shutdown profiler: drain all events, stop consumer thread, stop server.
-    profile::Profiler::instance().shutdown();
-
-    try {
-        if (config::get(option::ProfileReport)) {
-            std::ofstream out(config::get(option::ProfileFilename), config::get(option::ProfileAppend) ? std::ios::ate : std::ios::trunc);
-            profile::Profiler::instance().print(config::get(option::ProfileDetailed), out);
-        }
-    } catch (...) {
-    }
-#endif
+    detail::shutdown_profiler_and_report();
 
     // Clear the global runtime pointer.
     deinit_global_data();
