@@ -143,9 +143,9 @@ TEST_CASE("docs - contractions: a zero extent still applies the C prefactor once
 
 TEST_CASE("docs - contractions: conjugation is a flag, not spec syntax", "[Docs][Snippets]") {
     using cd = std::complex<double>;
-    RuntimeTensor<cd> Z("Z", std::vector<size_t>{2, 2});
-    RuntimeTensor<cd> I("I", std::vector<size_t>{2, 2});
-    RuntimeTensor<cd> C("C", std::vector<size_t>{2, 2});
+    RuntimeTensor<cd> Z("Z", {2, 2});
+    RuntimeTensor<cd> I("I", {2, 2});
+    RuntimeTensor<cd> C("C", {2, 2});
     Z.data()[0] = cd(1, 2);
     Z.data()[3] = cd(1, -1);
     I.data()[0] = cd(1, 0);

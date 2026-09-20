@@ -28,6 +28,14 @@ einsums_add_executable(
 
 einsums_add_unit_test("Docs" DocSnippets)
 
+einsums_add_executable(
+  TutorialSnippets_test INTERNAL_FLAGS
+  SOURCES TutorialSnippets.cpp
+  NOINSTALL
+)
+
+einsums_add_unit_test("Docs" TutorialSnippets)
+
 # ── The documented Python examples, and the claims a machine can settle ─────
 
 if(EINSUMS_BUILD_PYTHON)
