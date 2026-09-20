@@ -40,6 +40,7 @@ einsums_add_unit_test("Docs" TutorialSnippets)
 
 if(EINSUMS_BUILD_PYTHON)
   einsums_add_python_unit_test("Docs" Snippets SCRIPT test_doc_snippets_python.py)
+  einsums_add_python_unit_test("Docs" TutorialSnippetsPython SCRIPT test_tutorial_snippets_python.py)
 
   # check_doc_claims.py is an ordinary script rather than a pytest module, so it is registered
   # directly. EINSUMS_WITH_CXX_STANDARD is passed in because the claim being checked is about
