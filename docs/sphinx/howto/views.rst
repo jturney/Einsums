@@ -66,7 +66,7 @@ Given a matrix over all molecular orbitals, the occupied-virtual block is one vi
 
             using einsums::Range;
 
-            RuntimeTensor<double> F("F", std::vector<size_t>{nmo, nmo});
+            RuntimeTensor<double> F("F", {nmo, nmo});
             // ... fill F ...
 
             auto Foo = F(Range{0, nocc},    Range{0, nocc});

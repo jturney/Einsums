@@ -20,12 +20,18 @@ Setup
 .. code-block:: cpp
 
     #include <Einsums/LinearAlgebra.hpp>
+    #include <Einsums/Tensor/RuntimeTensor.hpp>
     #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
     #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
     #include <Einsums/TensorUtilities/CreateIdentity.hpp>
 
     using namespace einsums;
     using namespace einsums::linear_algebra;
+
+Most of these routines take :cpp:type:`einsums::RuntimeTensor`, whose rank travels with the
+value. Three do not: ``det``, ``svd`` and ``qr`` are constrained to ``MatrixConcept``, which is
+compile-time rank 2, so they want a statically ranked :cpp:type:`einsums::Tensor` and are
+written that way below.
 
 Scaling: ``scale``
 ==================
@@ -34,7 +40,7 @@ Multiply every element by a scalar:
 
 .. code-block:: cpp
 
-    auto A = create_random_tensor<double>("A", 4, 4);
+    auto A = create_random_tensor<double>("A", {4, 4});
     scale(2.0, &A);  // A *= 2.0
 
 AXPY: ``axpy``
@@ -44,8 +50,8 @@ AXPY: ``axpy``
 
 .. code-block:: cpp
 
-    auto X = create_random_tensor<double>("X", 100);
-    auto Y = create_zero_tensor<double>("Y", 100);
+    auto X = create_random_tensor<double>("X", {100});
+    auto Y = create_zero_tensor<double>("Y", {100});
 
     axpy(1.0, X, &Y);   // Y += X
     axpy(-0.5, X, &Y);  // Y -= 0.5 * X
@@ -57,9 +63,9 @@ Matrix Multiply: ``gemm``
 
 .. code-block:: cpp
 
-    auto A = create_random_tensor<double>("A", 10, 5);
-    auto B = create_random_tensor<double>("B", 5, 8);
-    auto C = create_zero_tensor<double>("C", 10, 8);
+    auto A = create_random_tensor<double>("A", {10, 5});
+    auto B = create_random_tensor<double>("B", {5, 8});
+    auto C = create_zero_tensor<double>("C", {10, 8});
 
     gemm<false, false>(1.0, A, B, 0.0, &C);  // C = A * B
 
@@ -77,7 +83,7 @@ Diagonalize a symmetric matrix :math:`\mathbf{AU} = \mathbf{U\Lambda}`, where :m
 
 .. code-block:: cpp
 
-    auto A = create_random_tensor<double>("A", 5, 5);
+    auto A = create_random_tensor<double>("A", {5, 5});
     // Make symmetric: A = 0.5 * (A + A^T)
     // ... (see tutorial_einsum for permute)
 
@@ -97,11 +103,13 @@ Perform singular value decomposition :math:`\mathbf{A} = \mathbf{U \Sigma V}^T`:
 
 .. code-block:: cpp
 
+    // svd is constrained to MatrixConcept, which is compile-time rank 2, so this one
+    // takes a statically ranked Tensor rather than a RuntimeTensor.
     auto A = create_random_tensor<double>("A", 6, 4);
     auto [U, sigma, Vt] = svd(A);
-    // U: 6x6 unitary matrix
+    // U: optional 6x6 unitary matrix
     // sigma: 4-element vector of singular values
-    // Vt: 4x4 unitary matrix (V transposed)
+    // Vt: optional 4x4 unitary matrix (V transposed)
 
 Linear Solve: ``gesv``
 ======================
@@ -139,7 +147,7 @@ Compute the matrix inverse. That is, find a matrix :math:`\mathbf{A}^{-1}` such 
 
 .. code-block:: cpp
 
-    auto A = create_random_tensor<double>("A", 4, 4);
+    auto A = create_random_tensor<double>("A", {4, 4});
     auto A_inv = invert(A);
     // A_inv * A ≈ I
 
@@ -150,6 +158,8 @@ Compute the determinant of a matrix. This is done using the LU factorization met
 
 .. code-block:: cpp
 
+    // det carries the same MatrixConcept constraint as svd, so it takes a statically
+    // ranked Tensor.
     auto A = create_random_tensor<double>("A", 3, 3);
     double d = det(A);
     println("det(A) = {}", d);
@@ -161,8 +171,11 @@ Compute an induced matrix norm.
 
 .. code-block:: cpp
 
-    auto A = create_random_tensor<double>("A", 5, 5);
-    double n = norm(A);  // Frobenius norm
+    auto A = create_random_tensor<double>("A", {5, 5});
+    double n = norm(Norm::FROBENIUS, A);
+
+The norm is named rather than defaulted. ``Norm::MAXABS``, ``Norm::ONE``, ``Norm::INFTY``,
+``Norm::FROBENIUS`` and ``Norm::TWO`` are the choices.
 
 Dot Product: ``dot``
 ====================
@@ -173,8 +186,8 @@ the two definitions are the same. For complex numbers, the two definitions will 
 
 .. code-block:: cpp
 
-    auto x = create_random_tensor<double>("x", 100);
-    auto y = create_random_tensor<double>("y", 100);
+    auto x = create_random_tensor<double>("x", {100});
+    auto y = create_random_tensor<double>("y", {100});
     double d = dot(x, y);  // x . y
 
 Rank-1 Update: ``ger``
@@ -184,9 +197,9 @@ Rank-1 Update: ``ger``
 
 .. code-block:: cpp
 
-    auto x = create_random_tensor<double>("x", 4);
-    auto y = create_random_tensor<double>("y", 5);
-    auto A = create_zero_tensor<double>("A", 4, 5);
+    auto x = create_random_tensor<double>("x", {4});
+    auto y = create_random_tensor<double>("y", {5});
+    auto A = create_zero_tensor<double>("A", {4, 5});
 
     ger(1.0, x, y, &A);  // A = x * y^T
 
@@ -200,10 +213,53 @@ where :math:`\mathbf{Q}` is a unitary matrix and :math:`\mathbf{R}` is an upper-
 
 .. code-block:: cpp
 
+    // qr carries the same MatrixConcept constraint as det and svd.
     auto A = create_random_tensor<double>("A", 6, 4);
     auto [Q, R] = qr(A);
     // Q: 6x4 orthogonal
     // R: 4x4 upper triangular
+
+.. _tutorial-linalg-graph:
+
+The Same Operations, Captured
+=============================
+
+Everything above runs immediately. A sequence of them can be recorded into a graph instead,
+optimized once and replayed, which is what an iterative method wants:
+
+.. code-block:: cpp
+
+    #include <Einsums/ComputeGraph/Graph.hpp>
+    #include <Einsums/ComputeGraph/Operations.hpp>
+
+    namespace cg = einsums::compute_graph;
+
+    auto A = create_random_tensor<double>("A", {64, 64});
+    auto B = create_random_tensor<double>("B", {64, 64});
+
+    cg::Graph graph("update");
+    auto     &C = graph.create_runtime_tensor<double>("C", {64, 64}, /*intermediate=*/false);
+
+    {
+        cg::CaptureGuard guard(graph);
+        cg::gemm<false, false>(1.0, A, B, 0.0, &C);
+        cg::scale(0.5, &C);
+    }
+
+    graph.optimize();
+
+    for (int iter = 0; iter < 100; ++iter) {
+        graph.execute();
+    }
+
+The ``cg::`` spellings are the graph-aware wrappers: inside a capture they record, and outside
+one they run eagerly, so the same call serves both.
+
+Two rules carry over from the rest of the library. A graph-owned tensor you read after
+``execute()`` needs ``intermediate=false``, or the optimizer removes the operation that fills it.
+And the returning forms throw during capture, because a recorded operation has no value to hand
+back until the graph runs: use ``cg::dot(&result, u, v)`` rather than ``dot(u, v)``, and the
+output-argument spellings of the decompositions.
 
 What's Next
 ===========

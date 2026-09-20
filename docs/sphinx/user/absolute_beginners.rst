@@ -139,48 +139,47 @@ slow down as each call will need to set it up again.:
 How to create a Tensor
 ======================
 
-To create an Einsums Tensor, you can use the constructors for the tensor class
-:cpp:any:`~einsums::Tensor`.
-
-All you need to do to create a basic tensor is pass a name for the tensor and the
-dimensionality of each index.
+The tensor type to reach for is :cpp:type:`einsums::RuntimeTensor`. Pass a name and the size of
+each dimension:
 
 .. code:: C++
 
-    auto A = einsums::Tensor{"A", 2, 2};  // --> einsums::Tensor<2, double>
+    einsums::RuntimeTensor<double> A{"A", {2, 2}};
 
-In this example, we are using the C++ ``auto`` to simplify the type signature. We can
-write the data type explicitly if we want to.
+The name is not decoration. It is how this tensor is identified in profiler output and in the
+reports the optimizer prints, so a meaningful one pays for itself the first time you read either.
 
-.. code:: C++
-
-    // Full explicit data type
-    einsums::Tensor<2, double> A = einsums::Tensor{"A", 2, 2};
-
-    // The default underlying type of a tensor is `double`
-    einsums::Tensor<2> B = einsums::Tensor{"B", 2, 2};
-
-    // Allow the compiler to determine things.
-    auto C = einsums::Tensor{"C", 2, 2};
-
+The number of dimensions is the length of that list, and it is carried by the value rather than
+by the type. One function can therefore take a matrix and a rank-4 tensor without being a
+template, which is why this is the type the Python bindings and the
+:doc:`ComputeGraph <tutorial_compute_graph>` are built around.
 
 Specifying your data type
 -------------------------
 
-While the default data type is double-precision floating point (``double``), you
-can explicitly specify which data type you want use.
+The element type is the template argument, and there is no default: write it out.
 
 .. code:: C++
 
-    auto B = einsums::Tensor<float>{"B", 2, 2};
+    einsums::RuntimeTensor<double> A{"A", {2, 2}};
+    einsums::RuntimeTensor<float>  B{"B", {2, 2}};
 
-Einsums also supports the use of complex numbers.
+Einsums also supports complex numbers.
 
 .. code:: C++
 
-    auto D = einsums::Tensor<std::complex<float>>{"D", 2, 2};
+    einsums::RuntimeTensor<std::complex<float>>  C{"C", {2, 2}};
+    einsums::RuntimeTensor<std::complex<double>> D{"D", {2, 2}};
 
-The only supported data types are floating point and complex floating point. Integers and arbitrary objects are not supported.
+The supported types are floating point and complex floating point. Integers work for some
+operations; arbitrary objects are not supported.
+
+.. note::
+
+   Einsums also has :cpp:type:`einsums::Tensor`, whose rank is part of its type, spelled
+   ``Tensor<double, 2>``. It is the right choice for eager code whose ranks are fixed when you
+   write it, and a few routines take only that form. Everything in these tutorials works with
+   ``RuntimeTensor``, and the two interoperate.
 
 Different Tensor Layouts
 ------------------------
@@ -206,86 +205,74 @@ There are several basic things we can do with tensors. We can fill tensors with 
 
 .. code:: C++
 
-    Tensor<double, 2> A{"A", 10, 10};
-    auto B = create_random_tensor("B", 10, 10);
+    einsums::RuntimeTensor<double> A{"A", {10, 10}};
+    auto B = einsums::create_random_tensor<double>("B", {10, 10});
 
     // Filling values
-    A = B; // Fill A with the values from B.
-    A.zero(); // Fills with zero.
-    A.set_all(0.3); // Sets every value to 0.3.
-    A = 0.3; // Same as above.
+    A = B;           // Copy the values from B.
+    A.zero();        // Every element becomes 0.
+    A.set_all(0.3);  // Every element becomes 0.3.
+    A = 0.3;         // Same as above.
 
-    // In-place arithmetic
-    // We can use tensors. These will be done element-wise.
-    A += B;
-    A -= B;
-    A *= B;
-    A /= B;
-
-    // We can also use scalars. These will be done element-wise.
+    // In-place arithmetic with a scalar, element-wise
     A += 2;
     A -= 2;
     A *= 2;
     A /= 2;
 
-    // For some kinds of tensors, we can also do some
-    // arbitrary element-wise arithmetic.
-    A = 1 / (2 * B + 1) * (B + B * B);
+Element-wise arithmetic between two tensors is written as a contraction rather than as an
+operator:
+
+.. code:: C++
+
+    namespace cg = einsums::compute_graph;
+
+    cg::einsum("ij;ij->ij", &A, A, B);   // A = A * B, element by element
+
+That is not a detour. A contraction spec says which indices line up, and once tensors have more
+than two dimensions that is the question an operator cannot answer. :ref:`tutorial-einsum` is
+where this goes next, and it is the heart of the library.
 
 Indexing and slicing
 --------------------
 
-There are two ways to index into a tensor. The first is the function call syntax. This must be provided by a tensor class for a tensor to
-be interpreted as a tensor. The other way is using the :code:`subscript` method, which is only provided by some tensor classes.
-The function call operator will handle things such as negative indices, and may do some bounds checking. The :code:`subscript` method,
-if provided, does none of this, and will simply treat the arguments as correct. This means that the :code:`subscript` method is much faster
-than the function call syntax, but it is much more limited in its capabilities.
+Index a tensor with the function call syntax, one argument per dimension:
 
 .. code:: C++
 
-    auto A = create_random_tensor("A", 3, 3);
+    auto A = einsums::create_random_tensor<double>("A", {3, 3});
 
-    // Function call syntax. Can be slow for large tensors.
-    for(int i = 0; i < 3; i++) {
-        for(int j = 0; j < 3; j++) {
-            printf("%lf", A(i, j));
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            printf("%lf ", A(i, j));
         }
     }
 
-    // Equivalent to the one before, but with the subscript method. Much faster.
-    for(int i = 0; i < 3; i++) {
-        for(int j = 0; j < 3; j++) {
-            printf("%lf", A.subscript(i, j));
-        }
-    }
-
-    // Negative indices will wrap around like in Python.
+    // Negative indices wrap around, as in Python.
     assert(A(-1, -1) == A(2, 2));
 
-    // Passing negative indices to the subscript method produces undefined behavior.
-    assert(A.subscript(-1, -1) != A.subscript(2, 2))
-
-    // You can also use these to assign elements.
+    // The same syntax assigns.
     A(2, 2) = 10;
-    A.subscript(2, 2) = 10;
 
-Tensors can also be sliced. This is done using the function call syntax. The number of arguments passed is allowed to be less than the rank,
-and ranges can also be passed for slicing.
+Element access is for inspecting and for setting up small things. A loop over ``operator()``
+pays an index computation per element, so it is not how bulk work gets done: that is what the
+contractions in :ref:`tutorial-einsum` are for, and they reach BLAS.
+
+Slicing uses the same call syntax. Fewer arguments than the rank are allowed, and a
+:cpp:struct:`einsums::Range` selects part of a dimension. A range is half-open, so
+``Range{0, 2}`` is two entries:
 
 .. code:: C++
 
-    auto A = create_random_tensor("A", 3, 3);
+    auto A = einsums::create_random_tensor<double>("A", {3, 3});
 
-    // Get the first two rows of the tensor.
-    TensorView View1 = A(Range{0, 1}, All);    // TensorView<double, 2>
+    auto View1 = A(Range{0, 2}, All);          // first two rows
+    auto View2 = A(2, All);                    // row 2, as a rank-1 view
+    auto View3 = A(All, 2);                    // column 2, as a rank-1 view
+    auto View4 = A(Range{1, 3}, Range{0, 2});  // a 2x2 block
 
-    // Get the last row of the tensor.
-    TensorView View2 = A(2);    // TensorView<double, 1>
-    // Get the last column of the tensor.
-    TensorView View3 = A(All, 2);    // TensorView<double, 1>
-
-    // Get a 2x2 block from the tensor.
-    TensorView View4 = A(Range{1, 2}, Range{0, 1});    // TensorView<double, 2>
+None of these copy. A view writes through to the tensor it came from, and it is only valid while
+that tensor is. :ref:`tutorial-views` goes into both.
 
 Shape and size of a Tensor
 --------------------------
@@ -295,7 +282,7 @@ the second gives all dimensions in a container. To get the size of a tensor, use
 
 .. code:: C++
 
-    TensorA{"A", 3, 4, 5};
+    einsums::RuntimeTensor<double> A{"A", {3, 4, 5}};
 
     assert(A.size() == 3 * 4 * 5);
     assert(A.dim(0) == 3);
@@ -311,35 +298,36 @@ the second gives all dimensions in a container. To get the size of a tensor, use
 Reshaping a Tensor
 ------------------
 
-A tensor constructor is provided for reshaping a tensor. Note that the tensor passed in will be invalidated at the end of the call,
-so further operations can cause undefined behavior. The underlying data is not modified, simple reinterpreted or moved.
+A statically ranked :cpp:type:`einsums::Tensor` has a constructor that reinterprets an existing
+tensor's data under new dimensions. It takes the source by rvalue and a name for the result, and
+the source is left empty, so pass it with ``std::move`` and do not use it afterwards. The data is
+reinterpreted rather than rearranged.
 
 .. code:: C++
 
-    Tensor A{"A", 3, 4, 5};
-    Tensor B{A, 2, 3, 10}; // Reshape A to have new dimensions.
-                           // A is no longer valid after this call.
+    einsums::Tensor<double, 3> A{"A", 3, 4, 5};
+    einsums::Tensor<double, 3> B{std::move(A), "B", 2, 3, 10};
+    // B is 2x3x10; A is no longer usable.
 
-    Tensor C{B, 10, -1};   // Reshape B to have a new rank and
-                           // new dimensions. The -1 will be replaced with a
-                           // number - 6 in this case - so that the size
-                           // of the input and output are the same.
+A negative extent is a wildcard, and the constructor works out what it has to be for the sizes to
+match:
 
-A negative index will be treated as a wildcard, and the constructor will figure out what it should be instead to make the
-sizes correct.
+.. code:: C++
+
+    einsums::Tensor<double, 3> C{"C", 3, 4, 5};
+    einsums::Tensor<double, 2> D{std::move(C), "D", 10, -1};
+    // D is 10x6
 
 Converting a 1D Tensor into a 2D Tensor
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-This can be used to convert a 1D tensor into a 2D tensor.
+The same constructor changes the rank:
 
 .. code:: C++
 
-    Tensor A{"A", 30};
-    Tensor B{A, -1, 10}; // Make A into a 2D tensor.
-                         // The -1 will be replaced with a
-                         // number - 3 in this case - so that
-                         // the size of the output matches the input.
+    einsums::Tensor<double, 1> A{"A", 30};
+    einsums::Tensor<double, 2> B{std::move(A), "B", -1, 10};
+    // B is 3x10
 
 
 More advanced Tensor operations
@@ -358,20 +346,21 @@ and it permutes the input tensor, scales it, scales the output tensor, then adds
 
     using namespace einsums;
 
-    auto A = create_random_tensor("A", 3, 4, 5);
-    auto B = create_random_tensor("B", 5, 4, 3);
-    Tensor C{"C", 5, 4, 3};
+    namespace cg = einsums::compute_graph;
 
-    // Copy B into C for testing.
-    C = B;
+    auto A = einsums::create_random_tensor<double>("A", {3, 4, 5});
+    auto B = einsums::create_random_tensor<double>("B", {5, 4, 3});
+    einsums::RuntimeTensor<double> C{"C", {5, 4, 3}};
 
-    tensor_algebra::permute(1, Indices{index::i, index::j, index::k}, &C,
-                          0.5, Indices{index::k, index::j, index::i}, A);
+    C = B;   // so there is something to add to
 
-    for(size_t i = 0; i <5; i++) {
-        for(size_t j = 0; j < 4; j++) {
-            for(size_t k = 0; k < 3; k++) {
-                assert(C(i, j, k) = B(i, j, k) + 0.5 * A(k, j, i));
+    // C = 1 * C + 0.5 * A permuted from (k, j, i) to (i, j, k)
+    cg::permute("ijk <- kji", 1.0, &C, 0.5, A);
+
+    for (size_t i = 0; i < 5; i++) {
+        for (size_t j = 0; j < 4; j++) {
+            for (size_t k = 0; k < 3; k++) {
+                assert(C(i, j, k) == B(i, j, k) + 0.5 * A(k, j, i));
             }
         }
     }
@@ -384,30 +373,44 @@ Most procedures provided by LAPACK and BLAS are available to use with tensors. H
 .. code:: C++
 
     using namespace einsums;
+    using cd = std::complex<double>;
 
-    Tensor A = create_random_tensor("A", 10, 10);
-    Tensor B = create_random_tensor("B", 10, 10);
-    Tensor C = create_random_tensor("C", 10, 10);
+    auto A = create_random_tensor<double>("A", {10, 10});
+    auto B = create_random_tensor<double>("B", {10, 10});
+    auto C = create_random_tensor<double>("C", {10, 10});
 
-    Tensor u = create_random_tensor("u", 10);
-    Tensor v = create_random_tensor("v", 10);
-    Tensor<std::complex<double>> evals{"evals", 10};
+    auto u = create_random_tensor<double>("u", {10});
+    auto v = create_random_tensor<double>("v", {10});
 
-    // gemm is available. Whether to transpose the inputs is
-    // passed as template parameters.
-    linear_algebra::gemm<false, false>(A, B, &C);
+    // gemm computes C = alpha * op(A) * op(B) + beta * C. Whether each input is
+    // transposed is a template parameter; the prefactors are arguments.
+    linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C);
 
-    // We can also do eigendecomposition. The following computes
-    // both the left and right eigenvectors.
-    linear_algebra::geev(&A, &evals, &B, &C);
-
-    // Whereas this only computes the right eigenvectors.
-    linear_algebra::geev(&A, &evals, nullptr, &C);
-
-    // And dot products. This one does not conjugate the first argument.
+    // Dot products. This one does not conjugate the first argument.
     auto val = linear_algebra::dot(u, v);
-    // This one does. Since u and v are real, these are actually the same.
+    // This one does. Since u and v are real here, the two agree.
     auto val2 = linear_algebra::true_dot(u, v);
+
+A few routines want a statically ranked :cpp:type:`einsums::Tensor` rather than a
+``RuntimeTensor``, because they are written against a compile-time rank of two. General
+eigendecomposition is one, and its eigenvalues and eigenvectors are complex even when the input
+is real:
+
+.. code:: C++
+
+    auto          M = create_random_tensor<double>("M", 10, 10);
+    Tensor<cd, 1> evals{"evals", 10};
+    Tensor<cd, 2> rvecs{"rvecs", 10, 10};
+    Tensor<cd, 2> lvecs{"lvecs", 10, 10};
+
+    // Both sets of eigenvectors.
+    linear_algebra::geev(&M, &evals, &lvecs, &rvecs);
+
+    // Pass a null pointer for a set you do not want computed.
+    auto M2 = create_random_tensor<double>("M2", 10, 10);
+    linear_algebra::geev(&M2, &evals, nullptr, &rvecs);
+
+``geev`` overwrites the matrix it is given, which is why each call above gets its own copy.
 
 Tensor Contractions
 -------------------
@@ -419,13 +422,13 @@ Here's an example for something like :math:`C_{ijk} = A_{ik}B_{kj}`.
 
     using namespace einsums;
 
-    auto A = create_random_tensor("A", 10, 10);
-    auto B = create_random_tensor("B", 10, 10);
-    auto C = create_random_tensor("C", 10, 10, 10);
+    namespace cg = einsums::compute_graph;
 
-    tensor_algebra::einsum(Indices{index::i, index::j, index::k}, &C, 
-                           Indices{index::i, index::k}, A,
-                           Indices{index::k, index::j}, B);
+    auto A = einsums::create_random_tensor<double>("A", {10, 10});
+    auto B = einsums::create_random_tensor<double>("B", {10, 10});
+    auto C = einsums::create_zero_tensor<double>("C", {10, 10, 10});
+
+    cg::einsum("ik;kj->ijk", &C, A, B);
 
 If we do something that can become a BLAS call, then it will normally become a BLAS call. Currently, index permutations are not
 performed, so calls can only be optimized when the indices exactly match the pattern for a BLAS call. This will change in the future,
@@ -433,21 +436,113 @@ as permuting indices can seriously improve performance.
 
 .. code:: C++
 
-    using namespace einsums;
+    namespace cg = einsums::compute_graph;
 
-    auto A = create_random_tensor("A", 10, 10);
-    auto B = create_random_tensor("B", 10, 10);
-    double val;
+    auto A = einsums::create_random_tensor<double>("A", {10, 10});
+    auto B = einsums::create_random_tensor<double>("B", {10, 10});
 
-    // This will optimize to a dot product BLAS call. When the output should be
-    // a zero-rank tensor, a scalar may be used in its place.
-    // That way, you don't have to deal with a zero-rank tensor.
-    tensor_algebra::einsum(Indices{}, &val, 
-        Indices{index::i, index::j}, A,
-        Indices{index::i, index::j}, B);
+    // A single number comes out through dot, which writes through a pointer.
+    // This one reaches a BLAS dot product.
+    double val = 0.0;
+    cg::dot(&val, A, B);
 
-    // This will not optimize to a BLAS call,
-    // since Einsums can't currently permute indices.
-    tensor_algebra::einsum(Indices{}, &val, 
-        Indices{index::i, index::j}, A,
-        Indices{index::j, index::i}, B);
+The second of those two used to be written with B's indices reversed, which is a different
+quantity and lands on the generic loop, because reaching a BLAS call would need a physical
+permutation that Einsums does not insert on your behalf. If you want it, write the permutation
+and contract the result. :ref:`tutorial-performance` tabulates which shapes take which kernel,
+measured rather than predicted.
+.. _absolute-beginners-graph:
+
+Putting it together, then capturing it
+======================================
+
+Here is a whole program using what this page covered. It builds two matrices, contracts them,
+scales the result and prints a number:
+
+.. code:: C++
+
+    #include <Einsums/ComputeGraph/Operations.hpp>
+    #include <Einsums/Print.hpp>
+    #include <Einsums/Runtime.hpp>
+    #include <Einsums/Tensor/RuntimeTensor.hpp>
+    #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+    #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+
+    namespace cg = einsums::compute_graph;
+
+    namespace einsums {
+    int main() {
+        auto A = create_random_tensor<double>("A", {64, 64});
+        auto B = create_random_tensor<double>("B", {64, 64});
+        auto C = create_zero_tensor<double>("C", {64, 64});
+
+        cg::einsum("ik;kj->ij", &C, A, B);
+        cg::scale(0.5, &C);
+
+        println("C(0, 0) = {}", C(0, 0));
+        return EXIT_SUCCESS;
+    }
+    } // namespace einsums
+
+    int main(int argc, char **argv) {
+        return einsums::start(einsums::main, argc, argv);
+    }
+
+Every call there runs the moment it is reached. That is the right thing for a program that does
+the work once, and it is the wrong thing for one that repeats it, because each call is analysed
+and dispatched again every time and nothing can be optimized across the pair.
+
+The same work, recorded once and replayed, looks like this:
+
+.. code:: C++
+
+    #include <Einsums/ComputeGraph/Graph.hpp>
+
+    namespace einsums {
+    int main() {
+        auto A = create_random_tensor<double>("A", {64, 64});
+        auto B = create_random_tensor<double>("B", {64, 64});
+
+        cg::Graph graph("scaled product");
+
+        // intermediate = false: a result this code reads, not working space.
+        auto &C = graph.create_runtime_tensor<double>("C", {64, 64}, /*intermediate=*/false);
+
+        {
+            cg::CaptureGuard guard(graph);
+            cg::einsum("ik;kj->ij", &C, A, B);
+            cg::scale(0.5, &C);
+        }
+
+        graph.optimize();
+
+        for (int iter = 0; iter < 100; ++iter) {
+            graph.execute();
+        }
+
+        println("C(0, 0) = {}", C(0, 0));
+        return EXIT_SUCCESS;
+    }
+    } // namespace einsums
+
+Three things changed and nothing else did. The operations are inside a ``CaptureGuard``, so they
+are recorded rather than run. ``optimize()`` rewrites the recording. And ``execute()`` replays it,
+as many times as you like, paying the analysis once.
+
+The tensors the graph creates for you need one piece of information you have to supply:
+``intermediate=false`` says ``C`` is an answer rather than scratch. Without it the optimizer will
+notice that nothing inside the graph reads ``C``, remove the contraction that fills it, and leave
+you reading whatever the buffer held. It is the one mistake on this page that produces no error
+message, which is why it is worth meeting now.
+
+Capture when the work repeats. A single contraction gains nothing from being recorded, and an
+iteration gains most of what the library has to offer.
+
+Where to go next
+================
+
+- :ref:`tutorial-tensors` for the tensor type in more detail
+- :ref:`tutorial-einsum` for contractions, which is the heart of the library
+- :ref:`tutorial-views` for working on part of a tensor without copying it
+- :ref:`tutorial-compute-graph` for what capture makes possible across a whole calculation
+- :ref:`howto` when you know what you want and need the specific way to do it

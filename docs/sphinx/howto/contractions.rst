@@ -36,9 +36,9 @@ The two operands are separated by a semicolon, which is the one piece of syntax 
             namespace cg = einsums::compute_graph;
             using einsums::RuntimeTensor;
 
-            RuntimeTensor<double> A("A", std::vector<size_t>{m, k});
-            RuntimeTensor<double> B("B", std::vector<size_t>{k, n});
-            RuntimeTensor<double> C("C", std::vector<size_t>{m, n});
+            RuntimeTensor<double> A("A", {m, k});
+            RuntimeTensor<double> B("B", {k, n});
+            RuntimeTensor<double> C("C", {m, n});
 
             cg::einsum("ik;kj->ij", &C, A, B);
 

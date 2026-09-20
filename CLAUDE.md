@@ -81,7 +81,8 @@ The outer-product fast path requires each operand's indices to be contiguous wit
 
 ComputeGraph is the PREFERRED mechanism for new computational code: capture once, optimize with passes, replay many times.
 The optimization passes, automatic GPU offload, and distributed execution all operate on captured graphs; eager execution gets none of them.
-Eager remains the reference semantics: it is the oracle the differential tests compare against, and simple numpy-style examples stay eager with no passes.
+Eager remains the reference semantics and is the oracle the differential tests compare against.
+The user-guide tutorials use `RuntimeTensor` and teach an operation eagerly before showing the same thing captured, so a reader meets the graph once they know what it is capturing; a documented example that repeats work should end up captured.
 
 `cg::einsum`/`cg::gemm`/... capture into a `Graph` under a `CaptureGuard`, then `graph.execute()` replays; outside capture the same calls run eagerly.
 String-spec einsums lower through `StringDispatch.hpp::string_einsum`, whose fast-path cascade assumes each index letter appears once per operand; repeated-letter (diagonal) specs route to the repeat-aware generic loop.
