@@ -29,6 +29,12 @@ import pytest
 # Recorded when finalize() runs the shutdown hooks, so it exists only during teardown.
 TEARDOWN_ZONE = "shutdown"
 
+# ...and recorded through LabeledSectionInternal, like every zone the runtime places around
+# start-up and teardown. With EINSUMS_WITH_PROFILER_INTERNAL off the preprocessor removes all
+# of them, so HelloWorld2 records no zones at all and there is nothing for the export to be
+# checked against. The build says which one this is; see the test CMakeLists.
+INTERNAL_ZONES = os.environ.get("EINSUMS_TEST_PROFILER_INTERNAL") == "1"
+
 
 def _binary() -> str:
     """The HelloWorld2 example, found through the build directory the harness points at.
@@ -69,6 +75,11 @@ def _run(tmp_path, *extra: str) -> subprocess.CompletedProcess:
     )
 
 
+@pytest.mark.skipif(
+    not INTERNAL_ZONES,
+    reason="the runtime's teardown zones are LabeledSectionInternal; "
+    "configure with -DEINSUMS_WITH_PROFILER_INTERNAL=ON to check where the export runs",
+)
 def test_session_export_covers_teardown(tmp_path):
     """The export runs during teardown, so the session reaches the shutdown zones."""
     out = tmp_path / "session.json"
