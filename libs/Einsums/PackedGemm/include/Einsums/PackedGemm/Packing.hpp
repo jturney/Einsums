@@ -986,7 +986,16 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
     // The alignment conditions are the ones the general loop tests per panel: a
     // block that starts on a segment of the fastest dim, and a segment holding a
     // whole number of panels, is one where no panel straddles.
-    if (m_fast_unit && m_fast_size % MR == 0 && (mc_start % m_fast_size) == 0) {
+    //
+    // And only when the block spans MORE THAN ONE segment. Inside a single
+    // segment the source rows of consecutive panels are adjacent in A, so the
+    // k-outer loop below reads the block as one sequential run and its scattered
+    // stores land in a panel buffer small enough not to care - ao2mo's
+    // abcd-eb-aecd has mc_len == m_fast_size == 72 and a 41 KB buffer, and
+    // taking this loop there cost it 6%. It is when the block spans many
+    // segments that the source jumps whatever the order, and the destination is
+    // the side worth keeping compact.
+    if (m_fast_unit && m_fast_size % MR == 0 && (mc_start % m_fast_size) == 0 && mc_len > m_fast_size) {
         for (int64_t p = 0; p < num_panels; ++p) {
             int64_t const panel_len = (p < full_panels) ? MR : tail;
             T            *panel     = Ap + p * MR * kc_len;
