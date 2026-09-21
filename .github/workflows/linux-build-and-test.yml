@@ -286,11 +286,14 @@ jobs:
           # "parallel = 1", and the log says "chunkSize: 1, nchunks:565"), so
           # the capture ran single-threaded for about twelve minutes.
           #
-          # --memory is a TOTAL budget across the forked workers, and lcov
-          # declines to fork at all when its estimate exceeds it, so a tight
-          # number here would quietly undo the line above. 8GB of the runner's
-          # 16 leaves room for the workers without being a throttle; the cap is
-          # here only so a pathological estimate cannot swap the box.
+          # No --memory, deliberately. It reads as a safety cap and is not one
+          # here: lcovutil.pm requires the optional Memory::Process module as
+          # soon as parallelism is on AND a memory limit is defined, that module
+          # is not in the conda env, and the capture dies with exit 255 before
+          # reading a single data file. Both limits default to undef, so leaving
+          # the flag off is what keeps the branch unreached. Do not "fix" it by
+          # passing memory_percentage=0 either: Perl's defined(0) is true, so a
+          # zero would arm the same requirement.
           #
           # Test code is excluded here rather than only in .github/codecov.yml,
           # which filters the report after lcov has already done the work. Two
@@ -298,7 +301,7 @@ jobs:
           # to say how much of the library the tests reach, not how much of
           # itself a test reaches.
           lcov --gcov-tool "$GCOV" --ignore-errors inconsistent --capture --directory . --output-file coverage.info \
-            --parallel "$(nproc)" --memory 8192 \
+            --parallel "$(nproc)" \
             --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\* \
             --exclude \*/tests/\* --exclude \*/doctests/\*
 
