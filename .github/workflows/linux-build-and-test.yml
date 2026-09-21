@@ -286,22 +286,44 @@ jobs:
           # "parallel = 1", and the log says "chunkSize: 1, nchunks:565"), so
           # the capture ran single-threaded for about twelve minutes.
           #
-          # No --memory, deliberately. It reads as a safety cap and is not one
-          # here: lcovutil.pm requires the optional Memory::Process module as
-          # soon as parallelism is on AND a memory limit is defined, that module
-          # is not in the conda env, and the capture dies with exit 255 before
-          # reading a single data file. Both limits default to undef, so leaving
-          # the flag off is what keeps the branch unreached. Do not "fix" it by
-          # passing memory_percentage=0 either: Perl's defined(0) is true, so a
-          # zero would arm the same requirement.
+          # The worker count is PINNED rather than read from nproc, and that is
+          # the memory guard. Bounding concurrency bounds the peak directly,
+          # where --memory only bounds an estimate: lcovutil.pm requires the
+          # optional Memory::Process module as soon as parallelism is on AND a
+          # memory limit is defined, that module is not in the conda env, and
+          # the capture died with exit 255 before reading a data file. Do not
+          # reach for memory_percentage=0 instead; Perl's defined(0) is true, so
+          # a zero arms the same requirement.
           #
-          # Test code is excluded here rather than only in .github/codecov.yml,
-          # which filters the report after lcov has already done the work. Two
-          # thirds of the instrumented objects are tests, and coverage is meant
-          # to say how much of the library the tests reach, not how much of
-          # itself a test reaches.
+          # Four is the hosted runner's core count, confirmed from the geninfo
+          # command line a run echoes back. Deriving it from nproc would let a
+          # larger runner class silently multiply the workers, which is the
+          # unbounded case the pin exists to prevent. The step has the box to
+          # itself, since the build and the tests are done by the time it runs.
+          #
+          # Measured, so the next person knows what to expect before spending an
+          # hour on it: 11m49s sequential to 9m31s at four workers, about 19%.
+          # Not the 4x the core count suggests. Parallel mode gzips its
+          # intermediates, which adds per-file work the sequential path does not
+          # do, and 559 files split into 6 chunks across 4 workers leaves the
+          # second round half idle. Per-file cost is what dominates now, and
+          # lcov names the reason itself on every run: it falls back to the pure
+          # Perl JSON::PP because neither JSON::XS nor Cpanel::JSON::XS is
+          # packaged on conda-forge. That is the ceiling until one of them is.
+          #
+          # Excluding the tests is a REPORTING change, not a speed one, and the
+          # measurement said so: the data-file count moved 565 to 559, because
+          # geninfo reads every .gcda and filters afterwards. It is here anyway
+          # so the two platforms measure one set, and because coverage is meant
+          # to say how much of the library the tests reach rather than how much
+          # of itself a test reaches. It moved the number 90.0% to 82.7% of a
+          # line count that halved, which is the honest library-only figure.
+          #
+          # Cutting the FILES would mean not instrumenting the test targets at
+          # all: einsums_setup_target applies the coverage flags to every target
+          # it touches. That is a CMake change, not a workflow one.
           lcov --gcov-tool "$GCOV" --ignore-errors inconsistent --capture --directory . --output-file coverage.info \
-            --parallel "$(nproc)" \
+            --parallel 4 \
             --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\* \
             --exclude \*/tests/\* --exclude \*/doctests/\*
 
