@@ -35,6 +35,13 @@ TEARDOWN_ZONE = "shutdown"
 # checked against. The build says which one this is; see the test CMakeLists.
 INTERNAL_ZONES = os.environ.get("EINSUMS_TEST_PROFILER_INTERNAL") == "1"
 
+# With EINSUMS_WITH_PROFILER off, shutdown_profiler_and_report() is compiled out down to the
+# refusal, so a session request is declined by a different arm and names the build option
+# rather than the server one. The test CMakeLists sets this to 1 or 0 in BOTH configurations,
+# so an unset value means the file is being run by hand rather than through ctest; there is
+# then nothing to say which build this is, and either diagnostic is accepted.
+PROFILER = os.environ.get("EINSUMS_TEST_PROFILER")
+
 
 def _binary() -> str:
     """The HelloWorld2 example, found through the build directory the harness points at.
@@ -108,15 +115,32 @@ def test_session_export_covers_teardown(tmp_path):
 
 
 def test_session_export_without_a_server_is_reported(tmp_path):
-    """Asking for a session without a server cannot be served, and must not be silent."""
+    """A session that cannot be served must be refused out loud, naming what would fix it.
+
+    There are two ways it cannot be served and they want different diagnostics. With the
+    profiler compiled in, the export is a Server method and the server was not started, so the
+    message names ``--einsums:profile:server``. With EINSUMS_WITH_PROFILER off there is no
+    profiler to start and naming that option would be a false lead, so the message names the
+    build option instead. Either way the one thing being tested is that it is not silent.
+    """
     out = tmp_path / "session.json"
     proc = _run(tmp_path, f"--einsums:profile:save={out}")
 
     assert proc.returncode == 0, proc.stderr
     assert not out.exists(), "a session was written without a server"
 
+    if PROFILER == "1":
+        wanted = ("profile:server",)
+        named = "the missing server option"
+    elif PROFILER == "0":
+        wanted = ("einsums_with_profiler",)
+        named = "the build option that leaves out the profiler"
+    else:
+        wanted = ("profile:server", "einsums_with_profiler")
+        named = "either the missing server option or the build option that leaves out the profiler"
+
     combined = (proc.stdout + proc.stderr).lower()
-    assert "profile:server" in combined, (
-        "no diagnostic named the missing option; the request was refused silently. "
+    assert any(text in combined for text in wanted), (
+        f"no diagnostic named {named}; the request was refused silently. "
         f"stdout/stderr was: {combined[:400]!r}"
     )

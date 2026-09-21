@@ -65,3 +65,22 @@ if(EINSUMS_BUILD_PYTHON AND EINSUMS_WITH_PROFILER_INTERNAL)
     PROPERTY ENVIRONMENT "EINSUMS_TEST_PROFILER_INTERNAL=1"
   )
 endif()
+
+# And which arm refuses a session request. With the profiler off the export is compiled
+# out down to the refusal, which then names the build option rather than the server one.
+# Set in BOTH configurations rather than only when on, so that an unset value means the
+# test was run by hand instead of through ctest and can accept either diagnostic; guessing
+# from silence would fail the one build the guess got wrong.
+if(EINSUMS_BUILD_PYTHON)
+  if(EINSUMS_WITH_PROFILER)
+    set(_einsums_test_profiler 1)
+  else()
+    set(_einsums_test_profiler 0)
+  endif()
+  set_property(
+    TEST "Tests.Unit.Modules.Einsums.Runtime.ProfileSessionExport"
+    APPEND
+    PROPERTY ENVIRONMENT "EINSUMS_TEST_PROFILER=${_einsums_test_profiler}"
+  )
+  unset(_einsums_test_profiler)
+endif()

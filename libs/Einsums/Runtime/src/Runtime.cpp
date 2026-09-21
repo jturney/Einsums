@@ -310,6 +310,23 @@ void shutdown_profiler_and_report() noexcept {
     } catch (...) {
         EINSUMS_LOG_INFO("Exception thrown by the profiler during shutdown. Ignoring.");
     }
+#else
+    // The profile options are registered whatever EINSUMS_WITH_PROFILER says: Options.hpp
+    // carries no conditional and the registration is unguarded. So a caller can ask a build
+    // with no profiler in it for a session file and, without this, get no file and no reason.
+    // That is the same lost-measurement failure the refusal above exists to prevent, reached
+    // from the other side: there the server is missing, here the whole profiler is.
+    //
+    // Naming the build option rather than --einsums:profile:server, which would be a false
+    // lead. Starting a server this build does not contain cannot produce a session.
+    try {
+        if (!config::get(option::ProfileSave).empty()) {
+            EINSUMS_LOG_ERROR("--einsums:profile:save was given, but this build was configured with "
+                              "EINSUMS_WITH_PROFILER=OFF, so nothing was recorded and no session file was written.");
+        }
+    } catch (...) {
+        EINSUMS_LOG_INFO("Exception thrown while reporting an unavailable profiler session. Ignoring.");
+    }
 #endif
 }
 
