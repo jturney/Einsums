@@ -109,7 +109,7 @@ jobs:
 
       - name: Upload hung-test stack dumps
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # build_type is what this workflow's matrix varies, and
           # upload-artifact rejects a duplicate name within a run.
@@ -120,7 +120,7 @@ jobs:
 
       - name: Upload tier measurement
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-tier-report-${{ matrix.build_type }}
           path: "${{ github.workspace }}/tier-reports"

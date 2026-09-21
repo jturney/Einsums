@@ -187,7 +187,7 @@ jobs:
       # if-no-files-found: ignore keeps a green run quiet.
       - name: Upload hung-test stack dumps
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # Every matrix leg of this workflow uploads, and upload-artifact
           # rejects a duplicate name within a run, so the leg's own coordinates
@@ -202,7 +202,7 @@ jobs:
       # than a gate, so it never fails a run.
       - name: Upload tier measurement
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-tier-report-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}
           path: "${{ github.workspace }}/tier-reports"

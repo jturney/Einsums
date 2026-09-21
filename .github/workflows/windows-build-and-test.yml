@@ -298,7 +298,7 @@ jobs:
       # failed. if-no-files-found: ignore keeps a clean run quiet.
       - name: Upload crash dumps
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-crash-dumps-${{ matrix.build_type }}
           path: ${{ github.workspace }}/dumps
@@ -307,7 +307,7 @@ jobs:
 
       - name: Upload tier measurement
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-tier-report-${{ matrix.build_type }}
           path: ${{ github.workspace }}/tier-reports
