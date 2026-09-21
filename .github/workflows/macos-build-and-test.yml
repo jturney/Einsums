@@ -160,7 +160,7 @@ jobs:
             OBJECTS+=(-object "${_obj}")
           done
           echo "objects:"; printf '  %s\n' "${OBJECTS[@]}"
-          llvm-cov export -format=lcov -ignore-filename-regex="_deps|einsums-env" -instr-profile=default.profdata "${OBJECTS[@]}" > coverage.info
+          llvm-cov export -format=lcov -ignore-filename-regex="_deps|einsums-env|/tests/|/doctests/" -instr-profile=default.profdata "${OBJECTS[@]}" > coverage.info
 
       - name: Upload C++ coverage to Codecov
         uses: codecov/codecov-action@v7

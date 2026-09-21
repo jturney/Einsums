@@ -264,15 +264,11 @@ jobs:
           fi
           echo "Using gcov: $GCOV"
 
-          export NOTES=$(find . -name "*.gcno")
-          export SOURCES=$(for i in ${NOTES//.gcno/}; do echo "../src/$i"; done)
-          echo "NOTES=$NOTES"
-          echo "SOURCES=$SOURCES"
-          # Use the conda gcov here too. The runner's system gcov 13.3
-          # would produce .gcov files in the wrong format ("B33*") for our
-          # gcc-15-built .gcda files ("B52*") even though the || swallows
-          # the exit code.
-          "$GCOV" -r $SOURCES || echo "returned $?"
+          # A standalone gcov pass used to run here over every .gcno. It exited
+          # 1, wrote no .gcov files, and nothing consumed one: the Codecov step
+          # uploads coverage.info with disable_search, and lcov --capture runs
+          # gcov itself. It only echoed several thousand paths into the log.
+          #
           # Force lcov to use the conda env's gcov: the build is gcc 15 (.gcda
           # format "B52*"), but lcov can pick up the runner's system gcov 13.3
           # ("B33*") by default and bail with "geninfo: ERROR: GCOV failed ...
@@ -286,7 +282,25 @@ jobs:
           # not in the code under test, and it would fail the whole leg over a
           # line range in a test registrar. Demoted to a warning so a real
           # capture failure still stops us.
-          lcov --gcov-tool "$GCOV" --ignore-errors inconsistent --capture --directory . --output-file coverage.info --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\*
+          # --parallel: geninfo defaults to one worker (lcovrc documents
+          # "parallel = 1", and the log says "chunkSize: 1, nchunks:565"), so
+          # the capture ran single-threaded for about twelve minutes.
+          #
+          # --memory is a TOTAL budget across the forked workers, and lcov
+          # declines to fork at all when its estimate exceeds it, so a tight
+          # number here would quietly undo the line above. 8GB of the runner's
+          # 16 leaves room for the workers without being a throttle; the cap is
+          # here only so a pathological estimate cannot swap the box.
+          #
+          # Test code is excluded here rather than only in .github/codecov.yml,
+          # which filters the report after lcov has already done the work. Two
+          # thirds of the instrumented objects are tests, and coverage is meant
+          # to say how much of the library the tests reach, not how much of
+          # itself a test reaches.
+          lcov --gcov-tool "$GCOV" --ignore-errors inconsistent --capture --directory . --output-file coverage.info \
+            --parallel "$(nproc)" --memory 8192 \
+            --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\* \
+            --exclude \*/tests/\* --exclude \*/doctests/\*
 
       - name: Upload C++ coverage to Codecov
         if: ${{ matrix.compiler == 'default' && matrix.blas == 'openblas' && matrix.variant == 'default' }}

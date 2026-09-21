@@ -7,4 +7,9 @@ coverage:
       default:
         threshold: 100%
   ignore:
-    - "tests/"
+    # Anchored at the repo root, so a bare "tests/" matched nothing: every test
+    # lives at libs/Einsums/<Module>/tests/, and the doctests at docs/doctests/.
+    # lcov now excludes both at capture time as well, which is what makes the
+    # capture cheaper; this stays as the declaration that outlives the workflow.
+    - "**/tests/**"
+    - "**/doctests/**"
