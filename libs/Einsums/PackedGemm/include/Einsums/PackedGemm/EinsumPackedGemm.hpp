@@ -496,6 +496,136 @@ inline void dump_packed_plan(PackingPlan const &plan, int64_t M, int64_t N, int6
     std::fflush(stderr);
 }
 
+/// @brief Map one strided M x N x K slice onto a single BLAS gemm.
+///
+/// Returns false and calls nothing when the strides admit no gemm form, which
+/// is what lets a caller probe a candidate slicing without computing anything.
+///
+/// BLAS gemm(transA, transB, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc)
+/// expects column-major storage: for transA='N', A is lda x K with lda >= M.
+/// The operands here are
+///   A[m,k]: m * m_stride + k * ksa
+///   B[k,n]: k * ksb     + n * n_stride
+///   C[m,n]: m * (c_col_major ? 1 : ...) + n * c_n_stride
+/// For complex types with conjugation BLAS uses 'C' rather than 'T', and it has
+/// no way to conjugate WITHOUT transposing, so those combinations report false
+/// and leave the caller to conjugate during packing.
+template <typename T>
+bool gemm_from_strides(T *c_data, T const *a_data, T const *b_data, T alpha, T beta, int64_t M, int64_t N, int64_t k_len, int64_t m_stride,
+                       int64_t n_stride, int64_t ksa, int64_t ksb, bool c_col_major, int64_t c_n_stride, int64_t ldc_col, int64_t ldc_row,
+                       bool conj_a, bool conj_b) {
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    using blas_int            = einsums::blas::int_t;
+    constexpr bool is_complex = (get_scalar_type<T>() == ScalarType::Complex64 || get_scalar_type<T>() == ScalarType::Complex128);
+
+    // Clamp a stride-derived leading dimension up to the BLAS minimum (the row
+    // count of the stored operand for that call). A degenerate (size-1) axis can
+    // collapse the natural stride below the minimum; the clamp is a no-op
+    // otherwise and is safe because the stride is unused when its axis is size 1.
+    auto ld = [](int64_t stride, int64_t min_rows) { return static_cast<blas_int>(std::max<int64_t>(stride, min_rows)); };
+
+    bool dispatched = false;
+
+    // Helper: upgrade 'T' to 'C' when conjugation is requested for complex types.
+    auto trans_flag = [](char base, bool conj) -> char {
+        if constexpr (is_complex) {
+            if (conj && base == 'T')
+                return 'C';
+        }
+        return base;
+    };
+    // Check: BLAS cannot apply conjugation without transpose ('N' + conj).
+    auto can_dispatch_n = [](bool conj) -> bool {
+        if constexpr (is_complex) {
+            return !conj;
+        }
+        return true;
+    };
+
+    if (c_col_major) {
+        // C is column-major (m_stride_c = 1, ldc = n_stride_c)
+        if (m_stride == 1) {
+            // A col-major in M → transA='N'
+            if (!can_dispatch_n(conj_a)) {
+                // conj(A) without transpose: can't dispatch
+            } else if (ksb == 1) {
+                // B col-major in K → transB='N'
+                if (can_dispatch_n(conj_b)) {
+                    einsums::blas::gemm<T>(trans_flag('N', conj_a), trans_flag('N', conj_b), static_cast<blas_int>(M),
+                                           static_cast<blas_int>(N), static_cast<blas_int>(k_len), alpha, a_data, ld(ksa, M), b_data,
+                                           ld(n_stride, k_len), beta, c_data, static_cast<blas_int>(ldc_col));
+                    dispatched = true;
+                }
+            } else if (n_stride == 1) {
+                // B col-major in N → transB='T'
+                einsums::blas::gemm<T>(trans_flag('N', conj_a), trans_flag('T', conj_b), static_cast<blas_int>(M), static_cast<blas_int>(N),
+                                       static_cast<blas_int>(k_len), alpha, a_data, ld(ksa, M), b_data, ld(ksb, N), beta, c_data,
+                                       static_cast<blas_int>(ldc_col));
+                dispatched = true;
+            }
+        } else if (ksa == 1) {
+            // A col-major in K → transA='T'
+            if (ksb == 1) {
+                // B col-major in K → transB='N'
+                if (can_dispatch_n(conj_b)) {
+                    einsums::blas::gemm<T>(trans_flag('T', conj_a), trans_flag('N', conj_b), static_cast<blas_int>(M),
+                                           static_cast<blas_int>(N), static_cast<blas_int>(k_len), alpha, a_data, ld(m_stride, k_len),
+                                           b_data, ld(n_stride, k_len), beta, c_data, static_cast<blas_int>(ldc_col));
+                    dispatched = true;
+                }
+            } else if (n_stride == 1) {
+                einsums::blas::gemm<T>(trans_flag('T', conj_a), trans_flag('T', conj_b), static_cast<blas_int>(M), static_cast<blas_int>(N),
+                                       static_cast<blas_int>(k_len), alpha, a_data, ld(m_stride, k_len), b_data, ld(ksb, N), beta, c_data,
+                                       static_cast<blas_int>(ldc_col));
+                dispatched = true;
+            }
+        }
+    } else if (c_n_stride == 1) {
+        // C is row-major (n_stride_c = 1, ldc = m_stride_c)
+        // Use identity: C^T = (alpha*A*B + beta*C)^T = alpha*B^T*A^T + beta*C^T
+        // Note: A and B are swapped in the BLAS call, so conj flags swap too.
+        if (n_stride == 1) {
+            // B is the BLAS "A" arg → transA_blas='N', conj_b applies
+            if (!can_dispatch_n(conj_b)) {
+                // conj(B) without transpose: can't dispatch
+            } else if (m_stride == 1) {
+                // A is the BLAS "B" arg → transB_blas='T', conj_a applies
+                einsums::blas::gemm<T>(trans_flag('N', conj_b), trans_flag('T', conj_a), static_cast<blas_int>(N), static_cast<blas_int>(M),
+                                       static_cast<blas_int>(k_len), alpha, b_data, ld(ksb, N), a_data, ld(ksa, M), beta, c_data,
+                                       static_cast<blas_int>(ldc_row));
+                dispatched = true;
+            } else if (ksa == 1) {
+                // A is the BLAS "B" arg → transB_blas='N', conj_a applies
+                if (can_dispatch_n(conj_a)) {
+                    einsums::blas::gemm<T>(trans_flag('N', conj_b), trans_flag('N', conj_a), static_cast<blas_int>(N),
+                                           static_cast<blas_int>(M), static_cast<blas_int>(k_len), alpha, b_data, ld(ksb, N), a_data,
+                                           ld(m_stride, k_len), beta, c_data, static_cast<blas_int>(ldc_row));
+                    dispatched = true;
+                }
+            }
+        } else if (ksb == 1) {
+            // B is the BLAS "A" arg → transA_blas='T', conj_b applies
+            if (m_stride == 1) {
+                // A is the BLAS "B" arg → transB_blas='T', conj_a applies
+                einsums::blas::gemm<T>(trans_flag('T', conj_b), trans_flag('T', conj_a), static_cast<blas_int>(N), static_cast<blas_int>(M),
+                                       static_cast<blas_int>(k_len), alpha, b_data, ld(n_stride, k_len), a_data, ld(ksa, M), beta, c_data,
+                                       static_cast<blas_int>(ldc_row));
+                dispatched = true;
+            } else if (ksa == 1) {
+                // A is the BLAS "B" arg → transB_blas='N', conj_a applies
+                if (can_dispatch_n(conj_a)) {
+                    einsums::blas::gemm<T>(trans_flag('T', conj_b), trans_flag('N', conj_a), static_cast<blas_int>(N),
+                                           static_cast<blas_int>(M), static_cast<blas_int>(k_len), alpha, b_data, ld(n_stride, k_len),
+                                           a_data, ld(m_stride, k_len), beta, c_data, static_cast<blas_int>(ldc_row));
+                    dispatched = true;
+                }
+            }
+        }
+    }
+
+    return dispatched;
+}
+
 /// @brief Write an A-order C block back to C, transposing its runs out.
 ///
 /// The flat M coordinate was ordered for the packing operand, so pack_A was a
@@ -855,6 +985,93 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 continue; // next batch slice
             }
 
+            // ---- Peel the outer K dims into a loop of ordinary GEMMs ----
+            //
+            // A multi-K contraction needs a copy only because the flat K index
+            // has to be one axis of each operand at once. It does not have to
+            // be. Hold every K dim but one fixed and what is left is an
+            // ordinary strided GEMM, so the contraction is a loop over the
+            // others accumulating into the same C - with no buffer at all.
+            //
+            // ab-acd-dbc is the shape that wants it. Its B has the N index at
+            // stride 376 and a K index at stride 1, so the flatten route
+            // HPTT-transposes all 217 MB of B into a K x N buffer and then runs
+            // one GEMM. The GEMM is already at the vendor's own rate on this
+            // shape, so that transpose is the whole of the deficit: 755 ms of
+            // gemm against 152 ms of flatten, 88.8% of an equally sized GEMM.
+            // Sliced on c instead, A[.,c,.] is 384 x 384 with lda 144384 and
+            // B[.,.,c] is 384 x 376 with ldb 384, both already in memory.
+            // Measured 103% of GEMM single and 104% double - above the
+            // reference because C is 577 KB and stays resident across the
+            // slices while its traffic amortises over all of them.
+            //
+            // Only when a copy would otherwise happen: the both-zero-copy case
+            // above is one big GEMM and nothing here improves on it.
+            {
+                // Candidates, largest extent first, so the GEMM is as big as
+                // the shape allows and the per-call overhead as thin.
+                std::vector<size_t> order(nk);
+                std::iota(order.begin(), order.end(), size_t{0});
+                std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) { return k_dims_a[x].size > k_dims_a[y].size; });
+
+                bool sliced = false;
+                for (size_t ki : order) {
+                    int64_t const k_len = k_dims_a[ki].size;
+                    int64_t const ksa   = k_dims_a[ki].tensor_stride;
+                    int64_t const ksb   = k_dims_b[ki].tensor_stride;
+                    int64_t       outer = 1;
+                    for (size_t d = 0; d < nk; ++d) {
+                        if (d != ki) {
+                            outer *= k_dims_a[d].size;
+                        }
+                    }
+                    // A slice has to carry enough arithmetic to be worth a
+                    // vendor call and its internal re-packing of the operands.
+                    if (k_len < 2 || outer < 2 || M * N * k_len < (int64_t{1} << 20)) {
+                        continue;
+                    }
+
+                    // The first slice both tests the strides and does its share
+                    // of the work: gemm_from_strides calls nothing when it
+                    // cannot map them, so a candidate that fails leaves C
+                    // untouched and the next one is free to try.
+                    if (!gemm_from_strides<ValueType>(C_data, A_data, B_data, alpha, beta, M, N, k_len, m_stride, n_stride, ksa, ksb,
+                                                      C_col_major, C_n_stride, ldc_col, ldc_row, conj_a, conj_b)) {
+                        continue;
+                    }
+
+                    // The rest accumulate. Strides do not change between
+                    // slices, so no later call can fail to map.
+                    std::vector<int64_t> coord(nk, 0);
+                    for (int64_t t = 1; t < outer; ++t) {
+                        int64_t off_a = 0, off_b = 0;
+                        for (size_t d = nk; d-- > 0;) {
+                            if (d == ki) {
+                                continue;
+                            }
+                            if (++coord[d] < k_dims_a[d].size) {
+                                break;
+                            }
+                            coord[d] = 0;
+                        }
+                        for (size_t d = 0; d < nk; ++d) {
+                            if (d != ki) {
+                                off_a += coord[d] * k_dims_a[d].tensor_stride;
+                                off_b += coord[d] * k_dims_b[d].tensor_stride;
+                            }
+                        }
+                        gemm_from_strides<ValueType>(C_data, A_data + off_a, B_data + off_b, alpha, ValueType{1}, M, N, k_len, m_stride,
+                                                     n_stride, ksa, ksb, C_col_major, C_n_stride, ldc_col, ldc_row, conj_a, conj_b);
+                    }
+                    last_contraction_route() = "gemm_k_loop";
+                    sliced                   = true;
+                    break;
+                }
+                if (sliced) {
+                    continue; // next batch slice
+                }
+            }
+
             // At least one side needs copying.
             //
             // Strategy: HPTT-transpose the full tensor into a flat M*K / K*N buffer
@@ -1167,130 +1384,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             int64_t const k_stride_a = plan.k_dims_in_a[0].tensor_stride;
             int64_t const k_stride_b = plan.k_dims_in_b[0].tensor_stride;
 
-            // Clamp a stride-derived leading dimension up to the BLAS minimum (the
-            // row count of the stored operand for that call). A degenerate
-            // (size-1) axis can collapse the natural stride below the minimum
-            // (e.g. "snm <- mkn ; ksm"-style specs); the clamp is a no-op
-            // otherwise and is safe because the stride is unused when its axis is
-            // size 1. Each call below passes the BLAS m-dimension the leading dim
-            // must cover.
-            auto ld = [](int64_t stride, int64_t min_rows) { return static_cast<blas_int>(std::max<int64_t>(stride, min_rows)); };
-
-            // Try to map the strides to a BLAS gemm call.
-            // BLAS gemm(transA, transB, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc)
-            // expects column-major storage: for transA='N', A is lda×K with lda≥M.
-            //
-            // Our tensor layout:
-            //   A[m,k]: element at m*m_stride + k*k_stride_a
-            //   B[k,n]: element at k*k_stride_b + n*n_stride
-            //   C[m,n]: element at m*C_m_stride + n*C_n_stride
-            //
-            // For complex types with conjugation, BLAS uses 'C' (conjugate transpose)
-            // instead of 'T'.  When 'N' (no transpose) with conjugation is needed,
-            // BLAS has no flag, so fall through to the BLIS tiled path which conjugates
-            // during packing.
-            bool dispatched = false;
-
-            // Helper: upgrade 'T' to 'C' when conjugation is requested for complex types.
-            auto trans_flag = [](char base, bool conj) -> char {
-                if constexpr (is_complex) {
-                    if (conj && base == 'T')
-                        return 'C';
-                }
-                return base;
-            };
-            // Check: BLAS cannot apply conjugation without transpose ('N' + conj).
-            auto can_dispatch_n = [](bool conj) -> bool {
-                if constexpr (is_complex) {
-                    return !conj;
-                }
-                return true;
-            };
-
-            if (C_col_major) {
-                // C is column-major (m_stride_c = 1, ldc = n_stride_c)
-                if (m_stride == 1) {
-                    // A col-major in M → transA='N'
-                    if (!can_dispatch_n(conj_a)) {
-                        // conj(A) without transpose: can't dispatch
-                    } else if (k_stride_b == 1) {
-                        // B col-major in K → transB='N'
-                        if (can_dispatch_n(conj_b)) {
-                            einsums::blas::gemm<ValueType>(trans_flag('N', conj_a), trans_flag('N', conj_b), static_cast<blas_int>(M),
-                                                           static_cast<blas_int>(N), static_cast<blas_int>(K), alpha, A_data,
-                                                           ld(k_stride_a, M), B_data, ld(n_stride, K), beta, C_data,
-                                                           static_cast<blas_int>(ldc_col));
-                            dispatched = true;
-                        }
-                    } else if (n_stride == 1) {
-                        // B col-major in N → transB='T'
-                        einsums::blas::gemm<ValueType>(trans_flag('N', conj_a), trans_flag('T', conj_b), static_cast<blas_int>(M),
-                                                       static_cast<blas_int>(N), static_cast<blas_int>(K), alpha, A_data, ld(k_stride_a, M),
-                                                       B_data, ld(k_stride_b, N), beta, C_data, static_cast<blas_int>(ldc_col));
-                        dispatched = true;
-                    }
-                } else if (k_stride_a == 1) {
-                    // A col-major in K → transA='T'
-                    if (k_stride_b == 1) {
-                        // B col-major in K → transB='N'
-                        if (can_dispatch_n(conj_b)) {
-                            einsums::blas::gemm<ValueType>(trans_flag('T', conj_a), trans_flag('N', conj_b), static_cast<blas_int>(M),
-                                                           static_cast<blas_int>(N), static_cast<blas_int>(K), alpha, A_data,
-                                                           ld(m_stride, K), B_data, ld(n_stride, K), beta, C_data,
-                                                           static_cast<blas_int>(ldc_col));
-                            dispatched = true;
-                        }
-                    } else if (n_stride == 1) {
-                        einsums::blas::gemm<ValueType>(trans_flag('T', conj_a), trans_flag('T', conj_b), static_cast<blas_int>(M),
-                                                       static_cast<blas_int>(N), static_cast<blas_int>(K), alpha, A_data, ld(m_stride, K),
-                                                       B_data, ld(k_stride_b, N), beta, C_data, static_cast<blas_int>(ldc_col));
-                        dispatched = true;
-                    }
-                }
-            } else if (C_n_stride == 1) {
-                // C is row-major (n_stride_c = 1, ldc = m_stride_c)
-                // Use identity: C^T = (alpha*A*B + beta*C)^T = alpha*B^T*A^T + beta*C^T
-                // Note: A and B are swapped in the BLAS call, so conj flags swap too.
-                if (n_stride == 1) {
-                    // B is the BLAS "A" arg → transA_blas='N', conj_b applies
-                    if (!can_dispatch_n(conj_b)) {
-                        // conj(B) without transpose: can't dispatch
-                    } else if (m_stride == 1) {
-                        // A is the BLAS "B" arg → transB_blas='T', conj_a applies
-                        einsums::blas::gemm<ValueType>(trans_flag('N', conj_b), trans_flag('T', conj_a), static_cast<blas_int>(N),
-                                                       static_cast<blas_int>(M), static_cast<blas_int>(K), alpha, B_data, ld(k_stride_b, N),
-                                                       A_data, ld(k_stride_a, M), beta, C_data, static_cast<blas_int>(ldc_row));
-                        dispatched = true;
-                    } else if (k_stride_a == 1) {
-                        // A is the BLAS "B" arg → transB_blas='N', conj_a applies
-                        if (can_dispatch_n(conj_a)) {
-                            einsums::blas::gemm<ValueType>(trans_flag('N', conj_b), trans_flag('N', conj_a), static_cast<blas_int>(N),
-                                                           static_cast<blas_int>(M), static_cast<blas_int>(K), alpha, B_data,
-                                                           ld(k_stride_b, N), A_data, ld(m_stride, K), beta, C_data,
-                                                           static_cast<blas_int>(ldc_row));
-                            dispatched = true;
-                        }
-                    }
-                } else if (k_stride_b == 1) {
-                    // B is the BLAS "A" arg → transA_blas='T', conj_b applies
-                    if (m_stride == 1) {
-                        // A is the BLAS "B" arg → transB_blas='T', conj_a applies
-                        einsums::blas::gemm<ValueType>(trans_flag('T', conj_b), trans_flag('T', conj_a), static_cast<blas_int>(N),
-                                                       static_cast<blas_int>(M), static_cast<blas_int>(K), alpha, B_data, ld(n_stride, K),
-                                                       A_data, ld(k_stride_a, M), beta, C_data, static_cast<blas_int>(ldc_row));
-                        dispatched = true;
-                    } else if (k_stride_a == 1) {
-                        // A is the BLAS "B" arg → transB_blas='N', conj_a applies
-                        if (can_dispatch_n(conj_a)) {
-                            einsums::blas::gemm<ValueType>(trans_flag('T', conj_b), trans_flag('N', conj_a), static_cast<blas_int>(N),
-                                                           static_cast<blas_int>(M), static_cast<blas_int>(K), alpha, B_data,
-                                                           ld(n_stride, K), A_data, ld(m_stride, K), beta, C_data,
-                                                           static_cast<blas_int>(ldc_row));
-                            dispatched = true;
-                        }
-                    }
-                }
-            }
+            bool const dispatched =
+                gemm_from_strides<ValueType>(C_data, A_data, B_data, alpha, beta, M, N, K, m_stride, n_stride, k_stride_a, k_stride_b,
+                                             C_col_major, C_n_stride, ldc_col, ldc_row, conj_a, conj_b);
 
             if (dispatched) {
                 last_contraction_route() = "single_k_gemm";
