@@ -131,9 +131,9 @@ static void run(std::string const &c_idx, std::string const &a_idx, std::string 
     double         t_pa = 0, t_pb = 0, t_g = 0, t_pc = 0;
     double         t_ttgt = best_of(reps, [&] {
         double t0 = now();
-        einsums::packed_gemm::hptt_transpose(pa.data(), (int)ad.size(), a.data(), ad.data(), As.data(), 1, false);
+        einsums::packed_gemm::hptt_transpose(pa.data(), (int)ad.size(), a.data(), ad.data(), nullptr, As.data(), 1, false);
         double t1 = now();
-        einsums::packed_gemm::hptt_transpose(pb.data(), (int)bd.size(), b.data(), bd.data(), Bs.data(), 1, false);
+        einsums::packed_gemm::hptt_transpose(pb.data(), (int)bd.size(), b.data(), bd.data(), nullptr, Bs.data(), 1, false);
         double t2   = now();
         T     *cptr = c_canonical ? Cout.data() : Cs.data();
         einsums::blas::gemm<T>('N', 'T', (int_t)m, (int_t)n, (int_t)k, T{1}, As.data(), (int_t)m, Bs.data(), (int_t)n, T{0}, cptr,
@@ -141,7 +141,7 @@ static void run(std::string const &c_idx, std::string const &a_idx, std::string 
         double t3 = now();
         if (!c_canonical) {
             auto csd = dims_of(c_s, ext);
-            einsums::packed_gemm::hptt_transpose(pc.data(), (int)cd.size(), Cs.data(), csd.data(), Cout.data(), 1, false);
+            einsums::packed_gemm::hptt_transpose(pc.data(), (int)cd.size(), Cs.data(), csd.data(), nullptr, Cout.data(), 1, false);
         }
         double t4 = now();
         t_pa      = t1 - t0;

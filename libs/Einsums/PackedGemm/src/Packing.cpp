@@ -6,6 +6,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/PackedGemm/Options.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/Profile/Profile.hpp>
 // HPTT includes <complex> which on some platforms defines I as a macro.
@@ -229,6 +230,10 @@ PackingPlan compute_packing_topology(ContractionKey const &key) {
     return plan;
 }
 
+int64_t flatten_budget_bytes() {
+    return config::get(option::PackedGemmFlattenBudget) << 20;
+}
+
 // ---------------------------------------------------------------------------
 // HPTT transpose wrappers with plan caching
 // ---------------------------------------------------------------------------
@@ -238,9 +243,12 @@ namespace {
 struct HpttPlanKey {
     std::vector<int>    perm;
     std::vector<size_t> sizes;
+    std::vector<size_t> outer; ///< Empty when the source is the whole dense tensor.
     int                 num_threads;
 
-    bool operator==(HpttPlanKey const &o) const { return perm == o.perm && sizes == o.sizes && num_threads == o.num_threads; }
+    bool operator==(HpttPlanKey const &o) const {
+        return perm == o.perm && sizes == o.sizes && outer == o.outer && num_threads == o.num_threads;
+    }
 };
 
 template <typename T>
@@ -250,10 +258,14 @@ struct HpttPlanCache {
     std::array<std::shared_ptr<hptt::Transpose<T>>, kSlots> plans{};
     int                                                     lru{0};
 
-    std::shared_ptr<hptt::Transpose<T>> const &get(int const *perm, int rank, T const *src, size_t const *sizes, T *dst, int num_threads) {
+    std::shared_ptr<hptt::Transpose<T>> const &get(int const *perm, int rank, T const *src, size_t const *sizes, size_t const *outer_sizes,
+                                                   T *dst, int num_threads) {
         HpttPlanKey candidate;
         candidate.perm.assign(perm, perm + rank);
         candidate.sizes.assign(sizes, sizes + rank);
+        if (outer_sizes != nullptr) {
+            candidate.outer.assign(outer_sizes, outer_sizes + rank);
+        }
         candidate.num_threads = num_threads;
 
         for (int s = 0; s < kSlots; ++s) {
@@ -267,7 +279,7 @@ struct HpttPlanCache {
 
         int const evict = lru;
         plans[evict] =
-            hptt::create_plan(perm, rank, T{1}, src, sizes, nullptr, T{0}, dst, nullptr, hptt::ESTIMATE, num_threads, nullptr, false);
+            hptt::create_plan(perm, rank, T{1}, src, sizes, outer_sizes, T{0}, dst, nullptr, hptt::ESTIMATE, num_threads, nullptr, false);
         keys[evict] = std::move(candidate);
         lru         = 1 - evict;
         return plans[evict];
@@ -276,28 +288,30 @@ struct HpttPlanCache {
 
 } // anonymous namespace
 
-void hptt_transpose(int const *perm, int rank, float const *src, size_t const *sizes, float *dst, int num_threads, bool /*conj*/) {
+void hptt_transpose(int const *perm, int rank, float const *src, size_t const *sizes, size_t const *outer_sizes, float *dst,
+                    int num_threads, bool /*conj*/) {
     static thread_local HpttPlanCache<float> cache;
-    cache.get(perm, rank, src, sizes, dst, num_threads)->execute();
+    cache.get(perm, rank, src, sizes, outer_sizes, dst, num_threads)->execute();
 }
 
-void hptt_transpose(int const *perm, int rank, double const *src, size_t const *sizes, double *dst, int num_threads, bool /*conj*/) {
+void hptt_transpose(int const *perm, int rank, double const *src, size_t const *sizes, size_t const *outer_sizes, double *dst,
+                    int num_threads, bool /*conj*/) {
     static thread_local HpttPlanCache<double> cache;
-    cache.get(perm, rank, src, sizes, dst, num_threads)->execute();
+    cache.get(perm, rank, src, sizes, outer_sizes, dst, num_threads)->execute();
 }
 
-void hptt_transpose(int const *perm, int rank, std::complex<float> const *src, size_t const *sizes, std::complex<float> *dst,
-                    int num_threads, bool conj) {
+void hptt_transpose(int const *perm, int rank, std::complex<float> const *src, size_t const *sizes, size_t const *outer_sizes,
+                    std::complex<float> *dst, int num_threads, bool conj) {
     static thread_local HpttPlanCache<std::complex<float>> cache;
-    auto const                                            &p = cache.get(perm, rank, src, sizes, dst, num_threads);
+    auto const                                            &p = cache.get(perm, rank, src, sizes, outer_sizes, dst, num_threads);
     p->set_conj_a(conj);
     p->execute();
 }
 
-void hptt_transpose(int const *perm, int rank, std::complex<double> const *src, size_t const *sizes, std::complex<double> *dst,
-                    int num_threads, bool conj) {
+void hptt_transpose(int const *perm, int rank, std::complex<double> const *src, size_t const *sizes, size_t const *outer_sizes,
+                    std::complex<double> *dst, int num_threads, bool conj) {
     static thread_local HpttPlanCache<std::complex<double>> cache;
-    auto const                                             &p = cache.get(perm, rank, src, sizes, dst, num_threads);
+    auto const                                             &p = cache.get(perm, rank, src, sizes, outer_sizes, dst, num_threads);
     p->set_conj_a(conj);
     p->execute();
 }

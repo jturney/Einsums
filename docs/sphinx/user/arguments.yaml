@@ -172,6 +172,29 @@
     :option:`--einsums:profile:wait-for-viewer` to hold a short run open until a viewer has
     attached.
 
+"einsums:packed-gemm:flatten-budget":
+  added: "2.0.0"
+  body: |
+    Cap the temporary buffers the multi-K flatten route allocates, in MiB. Zero, the default, means
+    no cap.
+
+    A contraction that sums over several indices has to make one index of each operand contiguous
+    before a single GEMM can span them, and the flatten route does that by transposing whole
+    operands. On the largest case in the head-to-head suite that is 448 MiB, both sides, held in
+    thread-local buffers that only ever grow. With a cap it transposes a chunk of the summed index
+    at a time instead, and the contraction becomes a short chain of large GEMMs over buffers that
+    fit the budget.
+
+    Chunking is not free, which is why it is off unless asked for. It slices one summed index, and
+    what that costs depends on where that index sits in each operand: the one whose slowest axis it
+    is reads its chunk contiguously, while the one whose fastest axis it is reads a fraction of
+    every cache line it touches. Both happen at once on the contraction above, where the cost
+    against the uncapped route is about 4% in single precision and 2% in double at a 64 MiB budget,
+    rising as the budget falls.
+
+    Only contractions that reach this route are affected, which is a small minority: most take the
+    packed loops instead, and those block their own buffers against the cache.
+
 "einsums:profile:port":
   added: "2.0.0"
   body: |

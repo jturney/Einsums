@@ -1488,17 +1488,41 @@ void pack_B_1m_panels(RealT *Bp, std::complex<RealT> const *B_data, PackingPlan 
     }
 }
 
+/// @brief The flatten route's temporary-buffer cap in bytes, or 0 for no cap.
+///
+/// Defined in the library rather than read from the descriptor here, and that
+/// is not a style choice. A ConfigOption caches the address of its registry
+/// entry inside itself, filled in when the owning module registers it. These
+/// headers are compiled by consumers outside the library - the head-to-head
+/// harness and the probes both instantiate blis_contraction themselves - and
+/// such a translation unit gets its OWN copy of the descriptor, whose entry is
+/// never filled, so a read there quietly returns the default however the option
+/// was set. Going through an exported function reads the copy that was actually
+/// registered.
+EINSUMS_EXPORT int64_t flatten_budget_bytes();
+
 // ---------------------------------------------------------------------------
 // HPTT-accelerated transpose (cache-blocked, SIMD-optimized)
 // ---------------------------------------------------------------------------
 
-EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, float const *src, size_t const *sizes, float *dst, int num_threads,
-                                   bool conj = false);
-EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, double const *src, size_t const *sizes, double *dst, int num_threads,
-                                   bool conj = false);
-EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, std::complex<float> const *src, size_t const *sizes, std::complex<float> *dst,
+/// @brief Transpose @p src into a dense @p dst, optionally reading a SUB-BLOCK.
+///
+/// @p sizes gives the extents to read, fastest-varying first, and @p
+/// outer_sizes the extents of the array they sit inside - so a sub-block is
+/// described by passing the block's extents in @p sizes, the whole tensor's in
+/// @p outer_sizes, and a @p src already offset to the block's first element.
+/// Pass nullptr for @p outer_sizes when the source IS the whole dense tensor.
+///
+/// This is what lets the flatten route hold a K chunk at a time rather than a
+/// whole operand: a chunk is a sub-block along one axis, and an axis that is
+/// not the slowest leaves gaps that only an outer size can express.
+EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, float const *src, size_t const *sizes, size_t const *outer_sizes, float *dst,
                                    int num_threads, bool conj = false);
+EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, double const *src, size_t const *sizes, size_t const *outer_sizes,
+                                   double *dst, int num_threads, bool conj = false);
+EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, std::complex<float> const *src, size_t const *sizes,
+                                   size_t const *outer_sizes, std::complex<float> *dst, int num_threads, bool conj = false);
 EINSUMS_EXPORT void hptt_transpose(int const *perm, int rank, std::complex<double> const *src, size_t const *sizes,
-                                   std::complex<double> *dst, int num_threads, bool conj = false);
+                                   size_t const *outer_sizes, std::complex<double> *dst, int num_threads, bool conj = false);
 
 EINSUMS_NAMESPACE_END(packed_gemm)

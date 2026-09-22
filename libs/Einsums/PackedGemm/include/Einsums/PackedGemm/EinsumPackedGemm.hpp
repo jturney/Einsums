@@ -1079,18 +1079,16 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // already-contiguous flat buffer.  Falls back to scalar gather loops only
             // on Windows (no HPTT) or when the source tensor is non-contiguous.
 
-            // Allocate full-size flat buffers (M*K and K*N) for sides that need copying.
+            // Flat buffers for the sides that need copying. Sized once the route
+            // is known, below: the HPTT branch transposes whole operands and
+            // needs M*K / K*N, but the gather branch refills ONE KC tile at a
+            // time and never reads past M*KC / KC*N. Sizing both for the worst
+            // case held K/KC times more memory than the gather can address -
+            // 226 MB against 0.8 on a K of 144384 - for the whole life of the
+            // thread, since these only ever grow.
             static thread_local std::vector<ValueType> tls_A_flat, tls_B_flat;
             ValueType                                 *A_flat = nullptr;
             ValueType                                 *B_flat = nullptr;
-            if (!a_zero_copy) {
-                tls_A_flat.resize(static_cast<size_t>(M * K));
-                A_flat = tls_A_flat.data();
-            }
-            if (!b_zero_copy) {
-                tls_B_flat.resize(static_cast<size_t>(K * N));
-                B_flat = tls_B_flat.data();
-            }
 
             // Read ranks at runtime so the path works for both compile-time-rank
             // (Tensor<T, K>) and runtime-rank (RuntimeTensor<T, Alloc>) operands.
@@ -1134,8 +1132,11 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // operand is dense in no axis order at all: a padded, strided or
             // broadcast view. HPTT could express a padded one through outerSizeA,
             // which hptt_transpose does not plumb through today.
+            // @p ord comes back as the layout-carrying axes in ascending-stride
+            // order, which is HPTT's own axis numbering - what a caller needs to
+            // say WHICH of those axes it wants to read a sub-block along.
             auto describe_for_hptt = [](auto const &tensor, int rank, std::vector<int> const &out_order, std::vector<size_t> &sizes,
-                                        std::vector<int> &perm) -> bool {
+                                        std::vector<int> &perm, std::vector<int> &ord_out) -> bool {
                 auto extent = [&](int i) { return static_cast<int64_t>(tensor.dim(static_cast<size_t>(i))); };
                 auto stride = [&](int i) { return static_cast<int64_t>(tensor.stride(static_cast<size_t>(i))); };
 
@@ -1182,6 +1183,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 }
                 // Anything other than a permutation of the layout-carrying axes
                 // means the plan's dims do not account for this operand.
+                ord_out = ord;
                 return perm.size() == ord.size();
             };
 
@@ -1209,7 +1211,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // experiment covered.
             bool use_hptt = (nb == 0) && !plan.coalesced;
 
-            std::vector<int>    perm_a, perm_b;
+            std::vector<int>    perm_a, perm_b, ord_a, ord_b;
             std::vector<size_t> sizes_a, sizes_b;
 
             // Destination axis order: A_flat is col-major M x K (M fastest) and
@@ -1223,7 +1225,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 for (size_t i = 0; i < nk; ++i) {
                     out_a.push_back(static_cast<int>(k_dims_a[nk - 1 - i].tensor_pos));
                 }
-                use_hptt = describe_for_hptt(A, rank_a_rt, out_a, sizes_a, perm_a);
+                use_hptt = describe_for_hptt(A, rank_a_rt, out_a, sizes_a, perm_a, ord_a);
             }
             if (use_hptt && !b_zero_copy) {
                 std::vector<int> out_b;
@@ -1232,49 +1234,134 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 for (size_t i = 0; i < nk; ++i) {
                     out_b.push_back(static_cast<int>(k_dims_b[nk - 1 - i].tensor_pos));
                 }
-                use_hptt = describe_for_hptt(B, rank_b_rt, out_b, sizes_b, perm_b);
+                use_hptt = describe_for_hptt(B, rank_b_rt, out_b, sizes_b, perm_b, ord_b);
+            }
+
+            // How much K to hold at once.
+            //
+            // The flatten transposes WHOLE operands so that one GEMM can span
+            // the whole K - 448 MiB on ccsd's ab-cad-dcb, both sides, into
+            // thread-local buffers that only ever grow. It does not have to. A
+            // chunk of K is a sub-block of each operand, and HPTT reads a
+            // sub-block given the block's extents and the enclosing tensor's
+            // (see @ref hptt_transpose), so the buffers can be capped and the
+            // contraction becomes a short chain of large GEMMs. The objection
+            // that a K chain re-reads C once per link is real but was priced at
+            // KC = 512, which is 282 links; a budget-sized chunk is 15 links
+            // over a 578 KB C, about 17 MB.
+            //
+            // Off unless asked for, because it is not free - see @ref
+            // option::PackedGemmFlattenBudget for what it costs and why.
+            //
+            // Chunking is along the OUTERMOST plan K dim, because the flat K
+            // index runs slowest there: a range of that dim is a contiguous
+            // range of flat K, which is what both the destination layout and a
+            // zero-copy operand's own offset assume.
+            int64_t const flat_budget_bytes = flatten_budget_bytes();
+            int64_t const elem_bytes        = static_cast<int64_t>(sizeof(ValueType));
+            int64_t const per_k             = (a_zero_copy ? 0 : M) + (b_zero_copy ? 0 : N);
+            int64_t const k_outer_extent    = k_dims_a[0].size;
+            int64_t const k_inner           = K / k_outer_extent;
+
+            int64_t k_len = K;
+            if (use_hptt && flat_budget_bytes > 0 && per_k > 0 && k_outer_extent > 1) {
+                int64_t const by_budget = flat_budget_bytes / (elem_bytes * per_k * k_inner);
+                k_len                   = std::clamp<int64_t>(by_budget, 1, k_outer_extent) * k_inner;
+            }
+
+            if (!a_zero_copy) {
+                tls_A_flat.resize(static_cast<size_t>(M) * static_cast<size_t>(use_hptt ? k_len : std::min(K, blk.KC)));
+                A_flat = tls_A_flat.data();
+            }
+            if (!b_zero_copy) {
+                tls_B_flat.resize(static_cast<size_t>(use_hptt ? k_len : std::min(K, blk.KC)) * static_cast<size_t>(N));
+                B_flat = tls_B_flat.data();
             }
 
             if (use_hptt) {
-                // HPTT-transpose the full tensor(s) into flat M*K / K*N layout once,
-                // then do KC-tiled GEMM over the contiguous flat buffers.
-                last_contraction_route() = "flatten_gemm_hptt";
+                last_contraction_route() = k_len == K ? "flatten_gemm_hptt" : "flatten_gemm_hptt_chunked";
                 int num_threads          = 1;
 #ifdef _OPENMP
                 num_threads = omp_get_max_threads();
 #endif
-
-                if (!a_zero_copy) {
-                    hptt_transpose(perm_a.data(), static_cast<int>(sizes_a.size()), A_data, sizes_a.data(), A_flat, num_threads, conj_a);
+                // The chunk's extent replaces the outermost K dim's in what HPTT
+                // is told to READ, while the enclosing extents stay whole. A
+                // chunked axis that is not the operand's slowest leaves gaps
+                // between its rows, and the outer sizes are how those are said:
+                // on ab-cad-dcb the chunked dim is A's slowest axis and B's
+                // FASTEST, so B is exactly the case that needs them.
+                std::vector<size_t> chunk_a = sizes_a, chunk_b = sizes_b;
+                int                 axpos_a = -1, axpos_b = -1;
+                int64_t             stride_a = 0, stride_b = 0;
+                if (k_len != K) {
+                    auto locate = [](std::vector<int> const &ord, size_t tensor_pos) {
+                        for (size_t i = 0; i < ord.size(); ++i) {
+                            if (ord[i] == static_cast<int>(tensor_pos)) {
+                                return static_cast<int>(i);
+                            }
+                        }
+                        return -1;
+                    };
+                    if (!a_zero_copy) {
+                        axpos_a  = locate(ord_a, k_dims_a[0].tensor_pos);
+                        stride_a = static_cast<int64_t>(A.stride(k_dims_a[0].tensor_pos));
+                    }
+                    if (!b_zero_copy) {
+                        axpos_b  = locate(ord_b, k_dims_b[0].tensor_pos);
+                        stride_b = static_cast<int64_t>(B.stride(k_dims_b[0].tensor_pos));
+                    }
+                    // An operand that does not carry the chunked axis (extent 1,
+                    // dropped from the description) cannot be read in pieces.
+                    if ((!a_zero_copy && axpos_a < 0) || (!b_zero_copy && axpos_b < 0)) {
+                        k_len = K;
+                        if (!a_zero_copy) {
+                            tls_A_flat.resize(static_cast<size_t>(M) * static_cast<size_t>(K));
+                            A_flat = tls_A_flat.data();
+                        }
+                        if (!b_zero_copy) {
+                            tls_B_flat.resize(static_cast<size_t>(K) * static_cast<size_t>(N));
+                            B_flat = tls_B_flat.data();
+                        }
+                        last_contraction_route() = "flatten_gemm_hptt";
+                    }
                 }
-                if (!b_zero_copy) {
-                    hptt_transpose(perm_b.data(), static_cast<int>(sizes_b.size()), B_data, sizes_b.data(), B_flat, num_threads, conj_b);
-                }
 
-                // A_flat is now col-major M*K; B_flat is row-major K*N - and a
-                // zero-copy side is, by the test above, already exactly that.
-                // So BOTH operands span the whole K here, and the contraction is
-                // one GEMM.
-                //
-                // It is deliberately NOT tiled over K. The gather branch below
-                // tiles because its flat buffer holds one KC slice at a time and
-                // has to be refilled; nothing here needs refilling, so a KC chain
-                // would only re-read and re-write the whole of C once per slice
-                // (K/KC times) and pay a vendor call for each - 282 calls and
-                // ~326 MB of avoidable C traffic on ccsd's ab-cad-dcb at
-                // K=144384, KC=512. Blocking K is the vendor's job once both
-                // operands are flat.
-                ValueType const *A_base = a_zero_copy ? A_data : A_flat;
-                ValueType const *B_base = b_zero_copy ? B_data : B_flat;
+                for (int64_t kc = 0; kc < K; kc += k_len) {
+                    int64_t const   kc_len = std::min(k_len, K - kc);
+                    ValueType const beta_k = (kc == 0) ? beta : ValueType{1};
+                    int64_t const   k_out  = kc / k_inner; // coordinate of the outermost K dim
 
-                if (C_col_major) {
-                    einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(M), static_cast<blas_int>(N), static_cast<blas_int>(K),
-                                                   alpha, A_base, static_cast<blas_int>(M), B_base, static_cast<blas_int>(N), beta, C_data,
-                                                   static_cast<blas_int>(ldc_col));
-                } else {
-                    einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(N), static_cast<blas_int>(M), static_cast<blas_int>(K),
-                                                   alpha, B_base, static_cast<blas_int>(N), A_base, static_cast<blas_int>(M), beta, C_data,
-                                                   static_cast<blas_int>(ldc_row));
+                    if (!a_zero_copy) {
+                        if (axpos_a >= 0) {
+                            chunk_a[static_cast<size_t>(axpos_a)] = static_cast<size_t>(kc_len / k_inner);
+                        }
+                        hptt_transpose(perm_a.data(), static_cast<int>(chunk_a.size()), A_data + k_out * stride_a, chunk_a.data(),
+                                       kc_len == K ? nullptr : sizes_a.data(), A_flat, num_threads, conj_a);
+                    }
+                    if (!b_zero_copy) {
+                        if (axpos_b >= 0) {
+                            chunk_b[static_cast<size_t>(axpos_b)] = static_cast<size_t>(kc_len / k_inner);
+                        }
+                        hptt_transpose(perm_b.data(), static_cast<int>(chunk_b.size()), B_data + k_out * stride_b, chunk_b.data(),
+                                       kc_len == K ? nullptr : sizes_b.data(), B_flat, num_threads, conj_b);
+                    }
+
+                    // A_flat is col-major M x kc_len; B_flat is row-major
+                    // kc_len x N - and a zero-copy side is, by the test above,
+                    // already exactly that over the whole K, so it is indexed
+                    // at the chunk's own offset.
+                    ValueType const *A_base = a_zero_copy ? A_data + kc * M : A_flat;
+                    ValueType const *B_base = b_zero_copy ? B_data + kc * N : B_flat;
+
+                    if (C_col_major) {
+                        einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(M), static_cast<blas_int>(N),
+                                                       static_cast<blas_int>(kc_len), alpha, A_base, static_cast<blas_int>(M), B_base,
+                                                       static_cast<blas_int>(N), beta_k, C_data, static_cast<blas_int>(ldc_col));
+                    } else {
+                        einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(N), static_cast<blas_int>(M),
+                                                       static_cast<blas_int>(kc_len), alpha, B_base, static_cast<blas_int>(N), A_base,
+                                                       static_cast<blas_int>(M), beta_k, C_data, static_cast<blas_int>(ldc_row));
+                    }
                 }
             } else {
                 // Scalar gather fallback (non-contiguous tensors).

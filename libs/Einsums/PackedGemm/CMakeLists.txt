@@ -9,6 +9,7 @@ set(PackedGemmHeaders
     Einsums/PackedGemm/InitModule.hpp
     Einsums/PackedGemm/MicroKernel.hpp
     Einsums/PackedGemm/MicroKernelBody.hpp
+    Einsums/PackedGemm/Options.hpp
     Einsums/PackedGemm/Packing.hpp
 )
 
@@ -16,6 +17,7 @@ set(PackedGemmSources
     ContractionKey.cpp
     InitModule.cpp
     MicroKernelDispatch.cpp
+    Options.cpp
     Packing.cpp
     RouteIntrospection.cpp
 )
@@ -41,6 +43,7 @@ einsums_add_module(
     Einsums_Hardware
     Einsums_Concepts
     Einsums_Logging
+    Einsums_Options
     Einsums_Profile
     Einsums_Runtime
     Einsums_HPTT
