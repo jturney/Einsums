@@ -9,6 +9,20 @@
 
 EINSUMS_NAMESPACE_BEGIN()
 
+hptt::SelectionMethod hptt_plan_selection() {
+    auto const val = config::get(option::HpttSelectionMethod);
+    if (val == "measure") {
+        return hptt::MEASURE;
+    }
+    if (val == "patient") {
+        return hptt::PATIENT;
+    }
+    if (val == "crazy") {
+        return hptt::CRAZY;
+    }
+    return hptt::ESTIMATE;
+}
+
 int register_Einsums_HPTT_options() {
     cl::register_option(option::HpttSelectionMethod);
     return 0;

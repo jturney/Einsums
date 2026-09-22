@@ -235,8 +235,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     template <std::integral... Dims>
         requires(sizeof...(Dims) == Rank)
     GeneralTensor(std::string name, Dims... dims)
-        : _name{std::move(name)},
-          _impl(nullptr, std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...}, config::get(option::RowMajor)) {
+        : _name{std::move(name)}, _impl(nullptr, std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...}, default_row_major()) {
         static_assert(Rank == sizeof...(dims), "Declared Rank does not match provided dims");
 
         // Resize the data structure
@@ -401,7 +400,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      *
      * @param other The tensor view to copy.
      */
-    GeneralTensor(TensorView<T, rank> const &other) : _name{other.name()}, _impl(nullptr, other.dims(), config::get(option::RowMajor)) {
+    GeneralTensor(TensorView<T, rank> const &other) : _name{other.name()}, _impl(nullptr, other.dims(), default_row_major()) {
         // Resize the data structure
         _storage->resize_owned(_impl.size());
 
@@ -462,8 +461,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
           // Use a sentinel non-null pointer so TensorImpl stores dims/strides correctly.
           // The pointer is never dereferenced; it just prevents TensorImpl::dim() from
           // returning 0, which it does when _ptr == nullptr.
-          _impl(reinterpret_cast<T *>(0x1), std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...},
-                config::get(option::RowMajor)) {
+          _impl(reinterpret_cast<T *>(0x1), std::array<size_t, sizeof...(Dims)>{static_cast<size_t>(dims)...}, default_row_major()) {
         static_assert(Rank == sizeof...(dims), "Declared Rank does not match provided dims");
         // Do not allocate; storage is deferred until materialize().
         for (int i = 0; std::cmp_less(i, Rank); i++) {
@@ -1926,7 +1924,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
      * @param dims The dimensions of the view.
      */
     explicit TensorView(T const *data, Dim<Rank> const &dims)
-        : _impl(const_cast<T *>(data), dims, config::get(option::RowMajor)), _parent{const_cast<T *>(data)} {
+        : _impl(const_cast<T *>(data), dims, default_row_major()), _parent{const_cast<T *>(data)} {
         _offsets.fill(0);
         _source_dims = dims;
         for (int i = 0; std::cmp_less(i, Rank); i++) {
@@ -1942,7 +1940,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
      * @param dims The dimensions of the view.
      */
     explicit TensorView(T *data, Dim<Rank> const &dims)
-        : _impl(const_cast<T *>(data), dims, config::get(option::RowMajor)), _parent{const_cast<T *>(data)} {
+        : _impl(const_cast<T *>(data), dims, default_row_major()), _parent{const_cast<T *>(data)} {
         _offsets.fill(0);
         _source_dims = dims;
         for (int i = 0; std::cmp_less(i, Rank); i++) {

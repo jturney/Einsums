@@ -124,9 +124,9 @@ auto create_random_tensor(RowMajor row_major, std::string const &name, Distribut
 template <typename T = double, bool Normalize = false, std::integral... MultiIndex>
 auto create_random_tensor(std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     if constexpr (IsComplexV<T>) {
-        return create_random_tensor<T, Normalize>(config::get(option::RowMajor), name, detail::UnitCircleDistribution<T>(), index...);
+        return create_random_tensor<T, Normalize>(default_row_major(), name, detail::UnitCircleDistribution<T>(), index...);
     } else {
-        return create_random_tensor<T, Normalize>(config::get(option::RowMajor), name, std::uniform_real_distribution<T>(-1, 1), index...);
+        return create_random_tensor<T, Normalize>(default_row_major(), name, std::uniform_real_distribution<T>(-1, 1), index...);
     }
 }
 
@@ -254,9 +254,9 @@ auto create_random_tensor(bool row_major, std::string const &name, Distribution 
 template <typename T = double, bool Normalize = false, Container Indices>
 auto create_random_tensor(std::string const &name, Indices const &index) -> RuntimeTensor<T> {
     if constexpr (IsComplexV<T>) {
-        return create_random_tensor<T, Normalize>(config::get(option::RowMajor), name, detail::UnitCircleDistribution<T>(), index);
+        return create_random_tensor<T, Normalize>(default_row_major(), name, detail::UnitCircleDistribution<T>(), index);
     } else {
-        return create_random_tensor<T, Normalize>(config::get(option::RowMajor), name, std::uniform_real_distribution<T>(-1, 1), index);
+        return create_random_tensor<T, Normalize>(default_row_major(), name, std::uniform_real_distribution<T>(-1, 1), index);
     }
 }
 

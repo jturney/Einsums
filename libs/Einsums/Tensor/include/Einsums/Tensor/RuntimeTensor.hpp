@@ -163,7 +163,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      */
     template <Container Dim>
     GeneralRuntimeTensor(DeferredAlloc, std::string name, Dim const &dims)
-        : _name{std::move(name)}, _impl(reinterpret_cast<T *>(0x1), dims, config::get(option::RowMajor)) {}
+        : _name{std::move(name)}, _impl(reinterpret_cast<T *>(0x1), dims, default_row_major()) {}
 
     GeneralRuntimeTensor(DeferredAlloc, std::string name, std::initializer_list<size_t> dims)
         : GeneralRuntimeTensor(DeferredAlloc{}, std::move(name), std::vector<size_t>(dims)) {}
@@ -267,7 +267,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      */
     template <Container Dim>
     APIARY_EXPOSE APIARY_INSTANTIATE_MEMBER(Dim = std::vector<size_t>) GeneralRuntimeTensor(std::string name, Dim const &dims)
-        : _name{std::move(name)}, _impl(nullptr, dims, config::get(option::RowMajor)) {
+        : _name{std::move(name)}, _impl(nullptr, dims, default_row_major()) {
         _storage->resize_owned(_impl.size());
 
         _impl.set_data(_storage->owned.data());
@@ -279,7 +279,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * @param dims The dimensions of the tensor.
      */
     template <Container Dim>
-    explicit GeneralRuntimeTensor(Dim const &dims) : _impl(nullptr, dims, config::get(option::RowMajor)) {
+    explicit GeneralRuntimeTensor(Dim const &dims) : _impl(nullptr, dims, default_row_major()) {
         _storage->resize_owned(_impl.size());
 
         _impl.set_data(_storage->owned.data());
@@ -292,7 +292,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * @param dims The dimensions of the tensor as an initializer list.
      */
     GeneralRuntimeTensor(std::string name, std::initializer_list<size_t> dims)
-        : GeneralRuntimeTensor(name, std::vector<size_t>(dims), config::get(option::RowMajor)) {}
+        : GeneralRuntimeTensor(name, std::vector<size_t>(dims), default_row_major()) {}
 
     /**
      * @brief Create a new runtime tensor with the given dimensions using an initializer list.
@@ -300,7 +300,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * @param dims The dimensions of the tensor as an initializer list.
      */
     explicit GeneralRuntimeTensor(std::initializer_list<size_t> dims)
-        : GeneralRuntimeTensor(std::vector<size_t>(dims), config::get(option::RowMajor)) {}
+        : GeneralRuntimeTensor(std::vector<size_t>(dims), default_row_major()) {}
 
     /**
      * @brief Copy a tensor into a runtime tensor.

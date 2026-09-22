@@ -51,7 +51,7 @@ template <typename T = double, typename... MultiIndex>
 auto create_zero_tensor(std::string const &name, MultiIndex... index) -> Tensor<T, sizeof...(MultiIndex)> {
     EINSUMS_LOG_TRACE("creating zero tensor {}, {}", name, std::forward_as_tuple(index...));
 
-    Tensor<T, sizeof...(MultiIndex)> A(config::get(option::RowMajor), name, std::forward<MultiIndex>(index)...);
+    Tensor<T, sizeof...(MultiIndex)> A(default_row_major(), name, std::forward<MultiIndex>(index)...);
     return A;
 }
 

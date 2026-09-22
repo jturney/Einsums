@@ -9,6 +9,18 @@
 
 EINSUMS_NAMESPACE_BEGIN()
 
+bool profile_recording_disabled() {
+    return config::get(option::ProfileDisable);
+}
+
+bool profile_server_enabled() {
+    return config::get(option::ProfileServer);
+}
+
+std::int64_t profile_server_port() {
+    return config::get(option::ProfilePort);
+}
+
 int register_Einsums_Profile_options() {
     cl::register_option(option::ProfileDisable);
     cl::register_option(option::ProfileReport);

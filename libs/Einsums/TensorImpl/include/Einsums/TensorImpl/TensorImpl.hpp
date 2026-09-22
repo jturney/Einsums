@@ -185,7 +185,7 @@ struct TensorImpl final {
      */
     template <Container Dims>
     constexpr TensorImpl(pointer ptr, Dims const &dims)
-        : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _row_major{config::get(option::RowMajor)} {
+        : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _row_major{default_row_major()} {
         compute_strides();
     }
 
@@ -226,7 +226,7 @@ struct TensorImpl final {
      * @param dims The dimensions of the tensor.
      */
     constexpr TensorImpl(pointer ptr, std::initializer_list<size_t> const &dims)
-        : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _row_major{config::get(option::RowMajor)} {
+        : _ptr{ptr}, _rank{dims.size()}, _dims(dims.begin(), dims.end()), _row_major{default_row_major()} {
         compute_strides();
     }
 

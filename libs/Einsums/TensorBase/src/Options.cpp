@@ -9,6 +9,10 @@
 
 EINSUMS_NAMESPACE_BEGIN()
 
+bool default_row_major() {
+    return config::get(option::RowMajor);
+}
+
 int register_Einsums_TensorBase_options() {
     cl::register_option(option::RowMajor);
     return 0;

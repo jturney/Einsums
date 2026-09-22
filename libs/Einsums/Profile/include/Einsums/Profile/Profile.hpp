@@ -254,15 +254,15 @@ struct EINSUMS_EXPORT Profiler {
         // Read server port from config (default 19216)
         uint16_t port = 19216;
         try {
-            port = static_cast<uint16_t>(config::get(option::ProfilePort));
+            port = static_cast<uint16_t>(profile_server_port());
             // --einsums:profile:disable. Recording every zone and annotation is not
             // free: on small operations it dominates, so a run that does not want a
             // profile should be able to say so and pay one relaxed load per zone.
-            _enabled.store(!config::get(option::ProfileDisable), std::memory_order_relaxed);
+            _enabled.store(!profile_recording_disabled(), std::memory_order_relaxed);
         } catch (...) { // NOLINT
         }
         // The callback dereferences _server on every consumer tick, so it goes inside the guard.
-        if (config::get(option::ProfileServer)) {
+        if (profile_server_enabled()) {
             _server = std::make_unique<Server>(*_consumer, _strings, "127.0.0.1", port);
             _consumer->set_tick_callback([this] { _server->tick(); });
         }

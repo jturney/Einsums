@@ -155,7 +155,7 @@ APIARY_INSTANTIATE_AS("TiledRuntimeTensorZ", TiledRuntimeTensor<std::complex<dou
     }
 
     APIARY_EXPOSE TiledRuntimeTensor(std::string name, std::vector<std::vector<int>> tile_sizes)
-        : TiledRuntimeTensor(std::move(name), std::move(tile_sizes), config::get(option::RowMajor)) {}
+        : TiledRuntimeTensor(std::move(name), std::move(tile_sizes), default_row_major()) {}
 
     TiledRuntimeTensor(TiledRuntimeTensor const &)            = default;
     TiledRuntimeTensor(TiledRuntimeTensor &&)                 = default;

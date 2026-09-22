@@ -753,7 +753,7 @@ size_t dims_to_strides(std::vector<size_t, Alloc1> const &dims, std::vector<size
 
     out.resize(dims.size());
 
-    if (config::get(option::RowMajor)) {
+    if (default_row_major()) {
         for (int i = dims.size() - 1; i >= 0; i--) {
             out[i] = stride;
             stride *= dims[i];
@@ -781,7 +781,7 @@ template <typename arr_type1, typename arr_type2, size_t Dims>
 constexpr size_t dims_to_strides(std::array<arr_type1, Dims> const &dims, std::array<arr_type2, Dims> &out) {
     size_t stride = 1;
 
-    if (config::get(option::RowMajor)) {
+    if (default_row_major()) {
         for (int i = Dims - 1; i >= 0; i--) {
             out[i] = stride;
             stride *= dims[i];
@@ -863,7 +863,7 @@ template <typename arr_type2, size_t Dims, typename... TupleDims>
     }
 constexpr size_t dims_to_strides(std::tuple<TupleDims...> const &dims, std::array<arr_type2, Dims> &out) {
 
-    if (config::get(option::RowMajor)) {
+    if (default_row_major()) {
         return detail::dims_to_strides<0, true>(dims, out);
     } else {
         return detail::dims_to_strides<Dims - 1, false>(dims, out);

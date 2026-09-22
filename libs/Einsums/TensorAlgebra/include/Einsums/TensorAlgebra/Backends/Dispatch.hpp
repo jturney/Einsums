@@ -928,20 +928,12 @@ constexpr bool einsum_is_sort_gemm_candidate(std::tuple<CIndices...> const &, st
  * @brief Returns the HPTT selection method from the runtime config.
  *
  * Read once on first call and cached; set with
- * `--einsums:hptt:selection-method measure`.
+ * `--einsums:hptt:selection-method measure`. The read itself happens inside the
+ * library - see @ref einsums::hptt_plan_selection for why it cannot happen
+ * here.
  */
 inline hptt::SelectionMethod hptt_selection_method() {
-    static hptt::SelectionMethod method = [] {
-        auto const val = config::get(option::HpttSelectionMethod);
-
-        if (val == "measure")
-            return hptt::MEASURE;
-        if (val == "patient")
-            return hptt::PATIENT;
-        if (val == "crazy")
-            return hptt::CRAZY;
-        return hptt::ESTIMATE;
-    }();
+    static hptt::SelectionMethod const method = hptt_plan_selection();
     return method;
 }
 

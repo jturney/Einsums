@@ -10,6 +10,8 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Options/Get.hpp>
 
+#include <cstdint>
+
 /*
  * The profiler's options, declared where the profiler reads them.
  *
@@ -59,6 +61,28 @@ inline constinit cl::ConfigOption<bool> ProfileWaitForViewer =
     cl::config_flag("einsums:profile:wait-for-viewer", "Wait for the profiler viewer to connect before running", "Profile", false);
 
 EINSUMS_NAMESPACE_END(option)
+
+EINSUMS_NAMESPACE_BEGIN()
+
+/// @brief The three options the Profiler reads when it constructs itself.
+///
+/// Defined in the library rather than read from the descriptors in
+/// Profile.hpp, and that is load-bearing. A ConfigOption caches the address of
+/// its registry entry inside itself, filled in when its module registers it,
+/// and a translation unit that compiles these headers gets its OWN copy of the
+/// descriptor, whose entry is never filled - so an inline read there quietly
+/// returns the default however the option was set. The Profiler is constructed
+/// from a header, so every consumer that compiles it was reading its own
+/// unregistered copies: --einsums:profile:disable did nothing for the
+/// head-to-head harness or the probes, which is exactly the work that wants the
+/// profiler off.
+/// @{
+EINSUMS_EXPORT bool profile_recording_disabled();
+EINSUMS_EXPORT bool profile_server_enabled();
+EINSUMS_EXPORT std::int64_t profile_server_port();
+/// @}
+
+EINSUMS_NAMESPACE_END()
 
 EINSUMS_NAMESPACE_BEGIN()
 
