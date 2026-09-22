@@ -975,41 +975,72 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
     // --- A's own M axis IS the fastest flat coordinate: straight copies ---
     //
     // Every panel row is then MR contiguous elements of A, so the whole block is
-    // num_panels * kc_len memcpys with nothing gathered at all. Which loop is
-    // outermost still decides what that costs. Walking the PANEL outermost
-    // writes its kc_len rows as one contiguous piece of the buffer - 2304 bytes
-    // on abcde-efcad-bf - out of kc_len lines of one compact block of A. The
-    // k-outer general loop below instead touches every panel in the block once
-    // per k, sweeping a 331 KB destination that is ten times the L1, and it
-    // measured 112 ms against this loop's 98 for exactly the same copies.
+    // copies with nothing gathered. What it costs is decided entirely by the
+    // order the three loops are nested in, and neither of the obvious two is
+    // right.
     //
-    // The alignment conditions are the ones the general loop tests per panel: a
-    // block that starts on a segment of the fastest dim, and a segment holding a
-    // whole number of panels, is one where no panel straddles.
+    // A segment of the fastest dim is a contiguous run of A. Walk those
+    // outermost, k next, and the panels of the segment innermost: for a fixed
+    // segment and k the panels read one contiguous run of the source, and
+    // successive k advance it by the k stride, so the whole segment is swept in
+    // order. Panel-outermost instead re-reads the segment once per panel at the
+    // k stride, and k-outermost walks every panel in the block - which leaves
+    // the segment for another segment's, at the M stride, whenever the block
+    // holds more than one.
     //
-    // And only when the block spans MORE THAN ONE segment. Inside a single
-    // segment the source rows of consecutive panels are adjacent in A, so the
-    // k-outer loop below reads the block as one sequential run and its scattered
-    // stores land in a panel buffer small enough not to care - ao2mo's
-    // abcd-eb-aecd has mc_len == m_fast_size == 72 and a 41 KB buffer, and
-    // taking this loop there cost it 6%. It is when the block spans many
-    // segments that the source jumps whatever the order, and the destination is
-    // the side worth keeping compact.
-    if (m_fast_unit && m_fast_size % MR == 0 && (mc_start % m_fast_size) == 0 && mc_len > m_fast_size) {
-        for (int64_t p = 0; p < num_panels; ++p) {
-            int64_t const panel_len = (p < full_panels) ? MR : tail;
-            T            *panel     = Ap + p * MR * kc_len;
-            T const      *src       = A_data + m_offsets[static_cast<size_t>(p * MR)];
-            // An element loop, not memcpy. The length is MR, which is a runtime
-            // value here, so memcpy is a libc CALL - and at MR = 16 floats this
-            // loop runs once per 64 bytes, so the call is most of what it costs:
-            // 6.7 million of them on abcde-efcad-bf, measured 98 ms against this
-            // loop's 92 for the same bytes. The copy itself is two vector moves.
+    // On abcd-deca-be double, whose block is 72 segments of 72: 38.2 ms
+    // panel-outermost and 46.1 with memcpy, against 13.0 here, where a
+    // line-rate read of the same 215 MB is 10.3. An explicitly vectorised inner
+    // copy measured 13.1, so the nest is the whole of it and this stays generic.
+    //
+    // ...but only while the k rows of a segment are NEAR it. Sweeping a segment
+    // is a sweep of memory only when the k stride carries the next row to the
+    // end of the one before, which is the case exactly when that stride equals
+    // the segment's extent - then the segment and k span one contiguous plane
+    // of A and the whole block is read in order. When k strides far instead,
+    // the sweep is a scatter of segment-sized pieces, and keeping ONE panel's
+    // destination hot while it collects its k rows wins instead.
+    //
+    // Measured on the four shapes that reach here with more than one segment,
+    // sweep against panel-outermost: abcd-deca-be +29.7% double and +23.8%
+    // single and abcde-efcad-bf +15.7/+2.3, whose k strides are 72 and 48
+    // against segments of 72 and 48; abcde-ecbfa-fd -19.0% double and
+    // abcd-dbea-ec -26.6%, whose k strides are 62208 and 8064 against segments
+    // of 48 and 96.
+    //
+    // A block whole in the segment is the condition for either, which the M
+    // blocking already arranges: the A-order block is a whole number of them by
+    // construction, and M is a multiple of the extent, so the last block is too.
+    // One segment per block is the k-outer order whichever way this goes, and
+    // that is what a block inside a single segment wants.
+    if (m_fast_unit && m_fast_size % MR == 0 && (mc_start % m_fast_size) == 0 && (mc_len % m_fast_size) == 0) {
+        int64_t const seg_rows  = m_fast_size;
+        int64_t const seg_count = mc_len / seg_rows;
+        int64_t const per_seg   = seg_rows / MR;
+        bool const    sweep     = seg_count == 1 || (k_dims.size() == 1 && k_dims[0].tensor_stride == seg_rows);
+        if (!sweep) {
+            for (int64_t p = 0; p < num_panels; ++p) {
+                T       *panel = Ap + p * MR * kc_len;
+                T const *src   = A_data + m_offsets[static_cast<size_t>(p * MR)];
+                for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
+                    T const *s = src + k_offsets[static_cast<size_t>(k_local)];
+                    T       *d = panel + k_local * MR;
+                    for (int64_t i = 0; i < MR; ++i) {
+                        d[i] = s[i];
+                    }
+                }
+            }
+            return;
+        }
+        for (int64_t seg = 0; seg < seg_count; ++seg) {
+            T const *seg_base = A_data + m_offsets[static_cast<size_t>(seg * seg_rows)];
             for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
-                T const *s = src + k_offsets[static_cast<size_t>(k_local)];
-                T       *d = panel + k_local * MR;
-                for (int64_t i = 0; i < panel_len; ++i) {
-                    d[i] = s[i];
+                T const *s = seg_base + k_offsets[static_cast<size_t>(k_local)];
+                for (int64_t q = 0; q < per_seg; ++q) {
+                    T *d = Ap + (seg * per_seg + q) * MR * kc_len + k_local * MR;
+                    for (int64_t i = 0; i < MR; ++i) {
+                        d[i] = s[q * MR + i];
+                    }
                 }
             }
         }
