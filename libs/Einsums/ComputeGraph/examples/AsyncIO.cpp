@@ -22,7 +22,6 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -46,7 +45,6 @@ void simulate_disk_read(double *dst, size_t n, double fill_value, int delay_ms) 
 
 int einsums_main() {
     using namespace einsums;
-    using namespace einsums::index;
 
     constexpr size_t N        = 64;
     constexpr int    IO_DELAY = 50; // ms

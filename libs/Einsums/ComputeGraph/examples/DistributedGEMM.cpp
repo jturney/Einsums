@@ -30,7 +30,6 @@
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -38,7 +37,6 @@
 #include <span>
 
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 int einsums_main() {
@@ -60,7 +58,7 @@ int einsums_main() {
     // ── Method 1: Direct einsum (serial reference) ──────────────────────
     auto C_ref = create_zero_tensor<double>("C_ref", M, N);
     auto t0    = std::chrono::high_resolution_clock::now();
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    cg::einsum("ij <- ik ; kj", &C_ref, A, B);
     auto   t1     = std::chrono::high_resolution_clock::now();
     double ref_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 

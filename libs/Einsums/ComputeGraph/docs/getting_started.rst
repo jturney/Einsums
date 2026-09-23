@@ -35,11 +35,10 @@ Basic Workflow
 
 .. code-block:: cpp
 
-   #include <Einsums/ComputeGraph/ComputeGraph.hpp>
+   #include <Einsums/ComputeGraph.hpp>
 
    namespace cg = einsums::compute_graph;
    using namespace einsums;
-   using namespace einsums::index;
 
    // 1. Create the input tensors.
    auto A = create_random_tensor<double>("A", 10, 5);

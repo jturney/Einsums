@@ -28,7 +28,6 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomDefinite.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -40,7 +39,6 @@ namespace cg = einsums::compute_graph;
 
 int einsums_main() {
     using namespace einsums;
-    using namespace einsums::index;
 
     constexpr size_t nbf = 8; // Number of basis functions
 
@@ -74,7 +72,7 @@ int einsums_main() {
     // ═════════════════════════════════════════════════════════════════════════
     {
         auto [U, s] = linear_algebra::syev(S);
-        tensor_algebra::element_transform(&s, [](double val) { return 1.0 / std::sqrt(val); });
+        cg::element_transform(&s, [](double val) { return 1.0 / std::sqrt(val); });
         for (size_t col = 0; col < nbf; col++)
             linear_algebra::scale_column(col, s(col), &U);
         linear_algebra::gemm<false, true>(1.0, U, U, 0.0, &X);

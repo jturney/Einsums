@@ -18,7 +18,6 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -28,7 +27,6 @@ namespace cg = einsums::compute_graph;
 
 int einsums_main() {
     using namespace einsums;
-    using namespace einsums::index;
 
     // ═══════════════════════════════════════════════════════════════════════
     // 1. Conditional node, if-then-else based on tensor value
@@ -110,7 +108,7 @@ int einsums_main() {
 
         // Verify: C should equal A * B (halved 3 times then × 8)
         auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
-        tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+        cg::einsum("ij <- ik ; kj", &C_ref, A, B);
 
         double max_diff = 0;
         for (size_t ii = 0; ii < 4; ii++)

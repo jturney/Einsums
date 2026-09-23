@@ -15,7 +15,6 @@
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -27,7 +26,6 @@ namespace tp = einsums::task_pool;
 
 int einsums_main() {
     using namespace einsums;
-    using namespace einsums::index;
 
     einsums::println("=== ComputeGraph + TaskPool Integration ===\n");
 

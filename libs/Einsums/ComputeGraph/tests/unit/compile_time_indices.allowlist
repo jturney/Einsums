@@ -7,26 +7,6 @@
 # the new code with a string spec instead.
 #
 # <count> <path relative to libs/Einsums/ComputeGraph>
-1 docs/getting_started.rst
-1 docs/views.rst
-2 examples/AsyncIO.cpp
-2 examples/BasicCapture.cpp
-14 examples/ContinuationPipeline.cpp
-6 examples/ControlFlow.cpp
-2 examples/DeferredAllocation.cpp
-6 examples/DistributedGEMM.cpp
-2 examples/FockBuildTaskPool.cpp
-10 examples/GPUOffload.cpp
-2 examples/GraphRebind.cpp
-2 examples/IntegralTransform.cpp
-2 examples/MixedOperations.cpp
-2 examples/OptimizationPasses.cpp
-2 examples/ParallelExecution.cpp
-2 examples/PipelineWorkflow.cpp
-2 examples/SCFSimulation.cpp
-2 examples/StringEinsum.cpp
-1 examples/TagsAndProviders.cpp
-2 examples/TaskPoolIntegration.cpp
 6 tests/performance/BenchmarkExecutors.cpp
 6 tests/performance/BenchmarkGraphOverhead.cpp
 6 tests/unit/ControlFlow.cpp

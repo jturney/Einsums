@@ -26,7 +26,6 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -36,7 +35,6 @@ namespace cg = einsums::compute_graph;
 
 int einsums_main() {
     using namespace einsums;
-    using namespace einsums::index;
 
     // ═══════════════════════════════════════════════════════════════════════
     // 1. ScaleAbsorption (einsum case)

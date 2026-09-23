@@ -17,7 +17,6 @@
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -29,7 +28,6 @@ namespace tp = einsums::task_pool;
 
 int einsums_main() {
     using namespace einsums;
-    using namespace einsums::index;
 
     auto            &pool = tp::TaskPool::get_singleton();
     constexpr size_t N    = 50;
@@ -69,10 +67,10 @@ int einsums_main() {
     auto ABC = create_zero_tensor<double>("ABC", N, N);
 
     // Step 1: AB = A * B (async)
-    auto step1 = pool.submit("A*B", [&]() { tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B); });
+    auto step1 = pool.submit("A*B", [&]() { cg::einsum("ij <- ik ; kj", &AB, A, B); });
 
     // Step 2: ABC = AB * C (continuation, runs after step1 completes)
-    auto step2 = step1.then("AB*C", [&]() { tensor_algebra::einsum(Indices{i, j}, &ABC, Indices{i, k}, AB, Indices{k, j}, C); });
+    auto step2 = step1.then("AB*C", [&]() { cg::einsum("ij <- ik ; kj", &ABC, AB, C); });
 
     // Step 3: compute trace (continuation)
     auto trace_result = step2.then("trace", [&]() {
@@ -93,7 +91,7 @@ int einsums_main() {
             auto Y = create_random_tensor<double>("Y_" + std::to_string(batch), N, N);
             auto Z = create_zero_tensor<double>("Z_" + std::to_string(batch), N, N);
 
-            tensor_algebra::einsum(Indices{i, j}, &Z, Indices{i, k}, X, Indices{k, j}, Y);
+            cg::einsum("ij <- ik ; kj", &Z, X, Y);
 
             // Return trace
             double trace = 0.0;

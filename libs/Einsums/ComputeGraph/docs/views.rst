@@ -41,7 +41,6 @@ Slicing a constant range, the first 2 rows of a 4×4 matrix:
 .. code-block:: cpp
 
    namespace cg = einsums::compute_graph;
-   using namespace einsums::index;
 
    Tensor<double, 2> A("A", 4, 4);
    Tensor<double, 2> dst("dst", 2, 4);

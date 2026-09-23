@@ -19,7 +19,6 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -30,7 +29,6 @@ namespace cg = einsums::compute_graph;
 
 int einsums_main() {
     using namespace einsums;
-    using namespace einsums::index;
 
     std::cout << "=== ComputeGraph GPU Offloading Example ===\n\n";
 
@@ -44,8 +42,8 @@ int einsums_main() {
     // ── 2. Compute reference on CPU ─────────────────────────────────────────
     auto C_ref = Tensor<float, 2>(C);
     auto D_ref = Tensor<float, 2>(D);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &D_ref, 1.0, Indices{i, k}, C_ref, Indices{k, j}, B);
+    cg::einsum("ij <- ik ; kj", 0.0f, &C_ref, 1.0f, A, B);
+    cg::einsum("ij <- ik ; kj", 0.0f, &D_ref, 1.0f, C_ref, B);
 
     // ── 3. Capture into graph ───────────────────────────────────────────────
     cg::Graph graph("gpu_offload_example");

@@ -16,7 +16,6 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 
 #include <iostream>
 
@@ -24,7 +23,6 @@ namespace cg = einsums::compute_graph;
 
 int einsums_main() {
     using namespace einsums;
-    using namespace einsums::index;
 
     // ── 1. Create Workspace with input tensors ─────────────────────────────
     cg::Workspace workspace("basic_example");

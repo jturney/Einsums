@@ -23,7 +23,6 @@
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -35,7 +34,6 @@ namespace tp = einsums::task_pool;
 
 int einsums_main() {
     using namespace einsums;
-    using namespace einsums::index;
 
     // Sized so every half-transformed intermediate (1.28 MB) crosses
     // FreeInsertion's 1 MiB floor: the deferred scratch then gets the full

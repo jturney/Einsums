@@ -18,7 +18,6 @@
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -30,7 +29,6 @@ namespace tp = einsums::task_pool;
 
 int einsums_main() {
     using namespace einsums;
-    using namespace einsums::index;
 
     constexpr size_t nbf     = 20;                  // Basis functions
     constexpr size_t n_pairs = nbf * (nbf + 1) / 2; // Unique shell pairs
