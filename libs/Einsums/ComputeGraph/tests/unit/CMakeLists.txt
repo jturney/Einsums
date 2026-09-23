@@ -315,3 +315,26 @@ if(TARGET SaveLoad_test)
     SaveLoad_test PRIVATE EINSUMS_GRAPH_IR_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/goldens"
   )
 endif()
+
+# ComputeGraph takes contractions as string specs; the compile-time Indices{...} API is being
+# removed from the module. This holds the module to the files still listed in
+# compile_time_indices.allowlist, with the counts listed there, so the remaining code can only
+# shrink and nothing new comes in. The self test proves the patterns still catch what they claim
+# to: the list is generated with those same patterns, so a pattern that stopped matching would
+# agree with its own list and pass forever.
+add_test(
+  NAME Tests.Unit.Modules.ComputeGraph.CompileTimeIndices
+  COMMAND
+    ${CMAKE_COMMAND} -DROOT=${PROJECT_SOURCE_DIR}/libs/Einsums/ComputeGraph
+    -DALLOWLIST=${CMAKE_CURRENT_SOURCE_DIR}/compile_time_indices.allowlist -P
+    ${PROJECT_SOURCE_DIR}/cmake/scripts/check_compile_time_indices.cmake
+)
+add_test(
+  NAME Tests.Unit.Modules.ComputeGraph.CompileTimeIndicesSelfTest
+  COMMAND ${CMAKE_COMMAND} -DSELF_TEST=ON -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/compile_time_indices_self_test -P
+          ${PROJECT_SOURCE_DIR}/cmake/scripts/check_compile_time_indices.cmake
+)
+set_tests_properties(
+  Tests.Unit.Modules.ComputeGraph.CompileTimeIndices Tests.Unit.Modules.ComputeGraph.CompileTimeIndicesSelfTest
+  PROPERTIES LABELS "UNIT_ONLY"
+)

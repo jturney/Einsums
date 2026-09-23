@@ -1,0 +1,84 @@
+# Files under libs/Einsums/ComputeGraph that still contain compile-time index code, and how many
+# constructs each holds. Checked by Tests.Unit.Modules.ComputeGraph.CompileTimeIndices; the patterns
+# and the rules are in cmake/scripts/check_compile_time_indices.cmake.
+#
+# This list only shrinks. When you remove index code from a file, lower its count or delete its
+# line in the same change; the check fails until you do. Never add a line or raise a count: write
+# the new code with a string spec instead.
+#
+# <count> <path relative to libs/Einsums/ComputeGraph>
+1 docs/getting_started.rst
+1 docs/views.rst
+2 examples/AsyncIO.cpp
+2 examples/BasicCapture.cpp
+14 examples/ContinuationPipeline.cpp
+6 examples/ControlFlow.cpp
+2 examples/DeferredAllocation.cpp
+5 examples/DistributedGEMM.cpp
+2 examples/FockBuildTaskPool.cpp
+10 examples/GPUOffload.cpp
+2 examples/GraphRebind.cpp
+2 examples/IntegralTransform.cpp
+2 examples/MixedOperations.cpp
+2 examples/OptimizationPasses.cpp
+2 examples/ParallelExecution.cpp
+2 examples/PipelineWorkflow.cpp
+2 examples/SCFSimulation.cpp
+2 examples/StringEinsum.cpp
+1 examples/TagsAndProviders.cpp
+2 examples/TaskPoolIntegration.cpp
+1 examples/Views.cpp
+4 include/Einsums/ComputeGraph/Operations.hpp
+1 include/Einsums/ComputeGraph/StringDispatch.hpp
+2 src/ExecutorBuilder.cpp
+1 src/MetricFitFactorization.cpp
+6 src/Passes/SUMMAExpansion.cpp
+1 src/ThcFactorization.cpp
+5 src/ThreadSweep.cpp
+6 tests/performance/BenchmarkExecutors.cpp
+6 tests/performance/BenchmarkGraphOverhead.cpp
+1 tests/unit/Blueprints.cpp
+5 tests/unit/ControlFlow.cpp
+77 tests/unit/CostModel.cpp
+19 tests/unit/DependencyOrder.cpp
+72 tests/unit/DistributedIntegration.cpp
+173 tests/unit/DistributiveFactoring.cpp
+50 tests/unit/EagerParityGaps.cpp
+25 tests/unit/Executor.cpp
+45 tests/unit/GEMMBatching.cpp
+29 tests/unit/GPUPasses.cpp
+20 tests/unit/GraphCapture.cpp
+49 tests/unit/GraphFeatures.cpp
+13 tests/unit/LoopOptimizationCorrectness.cpp
+25 tests/unit/MemoryNodes.cpp
+8 tests/unit/MixedOps.cpp
+5 tests/unit/OperationsCoverage.cpp
+9 tests/unit/ParallelForGraph.cpp
+26 tests/unit/PassManager.cpp
+53 tests/unit/Pass_CSE.cpp
+1 tests/unit/Pass_CommunicationPasses.cpp
+8 tests/unit/Pass_ConstantFolding.cpp
+138 tests/unit/Pass_ContractionPlanning.cpp
+25 tests/unit/Pass_DeadNodeElimination.cpp
+5 tests/unit/Pass_DistributionPasses.cpp
+1 tests/unit/Pass_ElementWiseFusion.cpp
+10 tests/unit/Pass_FreeInsertion.cpp
+28 tests/unit/Pass_InplaceOptimization.cpp
+1 tests/unit/Pass_LinearCombinationContractionFolding.cpp
+22 tests/unit/Pass_LoopInvariantHoisting.cpp
+1 tests/unit/Pass_Materialization.cpp
+129 tests/unit/Pass_MemoryPlanning.cpp
+35 tests/unit/Pass_Reorder.cpp
+49 tests/unit/Pass_ScaleAbsorption.cpp
+50 tests/unit/Pass_StreamContractionFusion.cpp
+9 tests/unit/Pass_SymmetryPropagation.cpp
+5 tests/unit/PipelineLoop.cpp
+25 tests/unit/Rebind.cpp
+5 tests/unit/RegionIdentity.cpp
+7 tests/unit/SaveLoad.cpp
+101 tests/unit/StringEinsum.cpp
+13 tests/unit/TensorLifetime.cpp
+1 tests/unit/UsageAnalysis.cpp
+1 tests/unit/View.cpp
+34 tests/unit/Workspace.cpp
+13 tools/calibrate_hardware.cpp
