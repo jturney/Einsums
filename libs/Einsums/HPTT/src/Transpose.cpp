@@ -944,9 +944,21 @@ TransposeImpl<floatType>::TransposeImpl(size_t const *sizeA, int const *perm, si
     : _A(A), _B(B), _alpha(alpha), _beta(beta), _dim(-1), _innerStrideA(0), _innerStrideB(0), _numThreads(numThreads), _masterPlan(nullptr),
       _selectionMethod(selectionMethod), _maxAutotuningCandidates(-1), _selectedParallelStrategyId(-1), _selectedLoopOrderId(-1),
       _conjA(false) {
-#ifdef _OPENMP
-    omp_init_lock(&_writelock);
-#endif
+    // The caller's permutation indexes the size and stride arrays below (account_for_row_major reads
+    // sizeA[perm[i]]), so it is checked before anything uses it. A bad argument throws: this is a
+    // library, and ending the caller's process, a Python interpreter included, is not its call.
+    if (dim < 1) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: dimensionality {} is too low", dim);
+    }
+    std::vector<int> seen(dim, 0);
+    for (int i = 0; i < dim; ++i) {
+        if (perm[i] < 0 || perm[i] >= dim || seen[perm[i]]++ != 0) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: permutation invalid at position {} (value {})", i, perm[i]);
+        }
+        if (sizeA[i] == 0) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: size at position {} is zero", i);
+        }
+    }
 
     std::vector<int>    tmpPerm(dim);
     std::vector<size_t> tmpSizeA(dim), tmpOuterSizeA(dim), tmpOuterSizeB(dim), tmpOffsetA(dim), tmpOffsetB(dim);
@@ -977,6 +989,12 @@ TransposeImpl<floatType>::TransposeImpl(size_t const *sizeA, int const *perm, si
 
     verify_parameter(tmpSizeA.data(), tmpPerm.data(), tmpOuterSizeA.data(), tmpOuterSizeB.data(), tmpOffsetA.data(), tmpOffsetB.data(),
                      innerStrideA, innerStrideB, dim);
+
+    // Only once the arguments are known good: a constructor that throws never runs the destructor
+    // that would release the lock.
+#ifdef _OPENMP
+    omp_init_lock(&_writelock);
+#endif
 
     _innerStrideA = innerStrideA;
     _innerStrideB = innerStrideB;
@@ -1580,62 +1598,56 @@ void TransposeImpl<floatType>::verify_parameter(size_t const *size, int const *p
                                                 size_t const *offsetA, size_t const *offsetB, size_t const innerStrideA,
                                                 size_t const innerStrideB, int const dim) const {
     if (dim < 1) {
-        EINSUMS_LOG_ERROR("HPTT: dimensionality too low.");
-        exit(-1);
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: dimensionality too low.");
     }
 
     std::vector<int> found(dim, 0);
 
     for (int i = 0; i < dim; ++i) {
         if (size[i] <= 0) {
-            EINSUMS_LOG_ERROR("HPTT: size at position {} is invalid", i);
-            exit(-1);
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: size at position {} is invalid", i);
+        }
+        if (perm[i] < 0 || perm[i] >= dim) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: permutation invalid at position {} (value {})", i, perm[i]);
         }
         found[perm[i]] = 1;
     }
 
     for (int i = 0; i < dim; ++i)
         if (found[i] <= 0) {
-            EINSUMS_LOG_ERROR("HPTT: permutation invalid");
-            exit(-1);
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: permutation invalid");
         }
 
     if (outerSizeA != nullptr)
         for (int i = 0; i < dim; ++i)
             if (outerSizeA[i] < size[i]) {
-                EINSUMS_LOG_ERROR("HPTT: outerSizeA invalid");
-                exit(-1);
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: outerSizeA invalid");
             }
 
     if (outerSizeB != nullptr)
         for (int i = 0; i < dim; ++i)
             if (outerSizeB[i] < size[perm[i]]) {
-                EINSUMS_LOG_ERROR("HPTT: outerSizeB invalid");
-                exit(-1);
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: outerSizeB invalid");
             }
 
     if (offsetA != nullptr)
         for (int i = 0; i < dim; ++i)
             if (offsetA[i] + size[i] > outerSizeA[i]) {
-                EINSUMS_LOG_ERROR("HPTT: offsetA invalid");
-                exit(-1);
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: offsetA invalid");
             }
 
     if (offsetB != nullptr)
         for (int i = 0; i < dim; ++i)
             if (offsetB[i] + size[perm[i]] > outerSizeB[i]) {
-                EINSUMS_LOG_ERROR("HPTT: offsetB invalid");
-                exit(-1);
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: offsetB invalid");
             }
 
     if (innerStrideA < 0) {
-        EINSUMS_LOG_ERROR("HPTT: innerStrideA invalid");
-        exit(-1);
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: innerStrideA invalid");
     }
 
     if (innerStrideB < 0) {
-        EINSUMS_LOG_ERROR("HPTT: innerStrideB invalid");
-        exit(-1);
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "HPTT: innerStrideB invalid");
     }
 }
 
