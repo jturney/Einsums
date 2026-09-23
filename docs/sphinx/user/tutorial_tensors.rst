@@ -208,20 +208,6 @@ you want the whole shape at once.
 rank travelling with the value. In exchange, a function taking a tensor accepts a matrix and a
 rank-4 tensor without being a template.
 
-Raw Data Pointer
-================
-
-For interoperability with C libraries or BLAS, C++ exposes the underlying storage directly:
-
-.. code-block:: cpp
-
-    double *ptr = A.data();  // Pointer to the first element
-
-Tensors are column-major at construction, so the first index varies fastest. Code that walks this
-pointer itself has to respect that; code that stays inside the tensor API does not. From Python
-the equivalent is ``np.asarray(t)``, which hands back a zero-copy view rather than a raw pointer;
-:ref:`howto-from-numpy` covers that boundary.
-
 Filling and Zeroing
 ====================
 

@@ -73,7 +73,7 @@ For intermediate tensors that shouldn't outlive the graph, use
 .. code-block:: cpp
 
     cg::Graph graph("pipeline");
-    auto &tmp = graph.create_zero_tensor<double, 2>("tmp", 10, 10);
+    auto &tmp = graph.create_zero_tensor<double, 2>("tmp", 10, 8);
 
     {
         cg::CaptureGuard guard(graph);
@@ -395,9 +395,12 @@ its output tensors:
         cg::axpy(-1.0, K, &F);
 
         // Node 3: compute energy (depends on F)
-        cg::parallel_reduce<double>("energy", 0, N*N, &energy,
+        cg::parallel_reduce<double>("energy", 0, N, &energy,
             []() { return 0.0; },
-            [&](size_t idx, double &acc) { acc += D(idx) * F(idx); },
+            [&](size_t i, double &acc) {
+                for (size_t j = 0; j < N; ++j)
+                    acc += D(i, j) * F(i, j);
+            },
             [](double &g, double const &l) { g += l; },
             &D, &F);
     }
@@ -604,8 +607,8 @@ user-defined computations like integral evaluation, and ``cg::read()`` /
 
         // Custom computation: build Fock matrix
         cg::custom("build_fock",
-            std::tie(ERI, D),    // inputs
-            std::tie(F),         // outputs
+            std::make_tuple(std::cref(ERI), std::cref(D)),   // inputs
+            std::make_tuple(std::ref(F)),                     // outputs
             [&]() { build_fock_matrix(ERI, D, F); });
 
         // Standard einsums: F_mo = C F C, one pairwise contraction at a time
@@ -651,7 +654,8 @@ to overlap disk I/O with independent computation. These accept three lambdas:
         cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);
 
         // Depends on ERI, waits for async read to finish
-        cg::custom("build_fock", std::tie(ERI, D), std::tie(F),
+        cg::custom("build_fock", std::make_tuple(std::cref(ERI), std::cref(D)),
+            std::make_tuple(std::ref(F)),
             [&]() { build_fock_matrix(ERI, D, F); });
     }
 

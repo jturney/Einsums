@@ -18,6 +18,9 @@
 
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>
+#include <Einsums/ComputeGraph/Optimizer.hpp>
+#include <Einsums/ComputeGraph/Pipeline.hpp>
+#include <Einsums/ComputeGraph/Workspace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
@@ -29,6 +32,7 @@
 
 #include <cmath>
 #include <complex>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -225,7 +229,6 @@ TEST_CASE("tutorial - tensors: shape queries and copying", "[Docs][Tutorials]") 
     CHECK(A.dim(2) == 5);
     CHECK(A.size() == 3 * 4 * 5);
     CHECK(A.name() == "A");
-    CHECK(A.data() != nullptr);
 
     auto B  = create_random_tensor<double>("B", {4, 4});
     auto D  = B; // deep copy
@@ -417,4 +420,201 @@ TEST_CASE("tutorial - linalg: a captured gemm and scale", "[Docs][Tutorials]") {
     auto reference = create_zero_tensor<double>("reference", {64, 64});
     la::gemm<false, false>(1.0, A, B, 0.0, &reference);
     CHECK(C(0, 0) == Catch::Approx(0.5 * reference(0, 0)));
+}
+
+// ── user/tutorial_compute_graph.rst ─────────────────────────────────────────
+
+TEST_CASE("tutorial - compute graph: capture, execute and replay", "[Docs][Tutorials]") {
+    auto A = create_random_tensor<double>("A", 10, 5);
+    auto B = create_random_tensor<double>("B", 5, 8);
+    auto C = create_zero_tensor<double>("C", 10, 8);
+
+    cg::Graph graph("matmul");
+    {
+        cg::CaptureGuard guard(graph);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
+    }
+    // Capture records; nothing has run yet.
+    CHECK(C(3, 4) == 0.0);
+
+    graph.execute();
+    auto reference = create_zero_tensor<double>("reference", 10, 8);
+    la::gemm<false, false>(1.0, A, B, 0.0, &reference);
+    CHECK(C(3, 4) == Catch::Approx(reference(3, 4)));
+
+    // Replay reads A's new data.
+    A.set_all(1.0);
+    graph.execute();
+    double column_sum = 0.0;
+    for (size_t k = 0; k < 5; ++k)
+        column_sum += B(k, 4);
+    CHECK(C(3, 4) == Catch::Approx(column_sum));
+}
+
+TEST_CASE("tutorial - compute graph: a graph-owned intermediate", "[Docs][Tutorials]") {
+    auto A = create_random_tensor<double>("A", 10, 5);
+    auto B = create_random_tensor<double>("B", 5, 8);
+    auto C = create_zero_tensor<double>("C", 10, 8);
+
+    cg::Graph graph("pipeline");
+    auto     &tmp = graph.create_zero_tensor<double, 2>("tmp", 10, 8);
+    {
+        cg::CaptureGuard guard(graph);
+        cg::einsum("ij <- ik ; kj", &tmp, A, B);
+        cg::scale(2.0, &tmp);
+        cg::axpy(1.0, tmp, &C);
+    }
+    graph.execute();
+
+    auto reference = create_zero_tensor<double>("reference", 10, 8);
+    la::gemm<false, false>(2.0, A, B, 0.0, &reference);
+    CHECK(C(9, 7) == Catch::Approx(reference(9, 7)));
+}
+
+TEST_CASE("tutorial - compute graph: a pipeline with a setup stage and a loop", "[Docs][Tutorials]") {
+    auto H = create_random_tensor<double>("H", 6, 6);
+    auto D = create_random_tensor<double>("D", 6, 6);
+    auto F = create_zero_tensor<double>("F", 6, 6);
+
+    size_t iterations = 0;
+
+    cg::Pipeline pipeline("scf");
+    pipeline.add_stage("setup", [&]() { cg::einsum("ij <- ik ; kj", &F, H, D); });
+    pipeline.add_loop(
+        "iterate", 100, [&](size_t iter) { return iter + 1 < 3; },
+        [&]() {
+            cg::einsum("ij <- ik ; kj", &F, H, D);
+            cg::custom("count", [&]() { ++iterations; }, &F);
+        });
+    pipeline.execute();
+
+    CHECK(iterations == 3);
+    auto reference = create_zero_tensor<double>("reference", 6, 6);
+    la::gemm<false, false>(1.0, H, D, 0.0, &reference);
+    CHECK(F(2, 5) == Catch::Approx(reference(2, 5)));
+}
+
+TEST_CASE("tutorial - compute graph: parallel_for and parallel_reduce order around an assembly", "[Docs][Tutorials]") {
+    size_t const N       = 6;
+    size_t const n_pairs = N * N;
+
+    auto H = create_random_tensor<double>("H", N, N);
+    auto D = create_random_tensor<double>("D", N, N);
+    auto J = create_zero_tensor<double>("J", N, N);
+    auto K = create_zero_tensor<double>("K", N, N);
+    auto F = create_zero_tensor<double>("F", N, N);
+
+    double energy = 0.0;
+
+    cg::Graph graph("fock_build");
+    {
+        cg::CaptureGuard guard(graph);
+
+        cg::parallel_for(
+            "integrals", 0, n_pairs,
+            [&](size_t pair) {
+                J(pair / N, pair % N) = 1.0;
+                K(pair / N, pair % N) = 0.5;
+            },
+            &J, &K);
+
+        cg::permute("ij <- ij", 0.0, &F, 1.0, H);
+        cg::axpy(2.0, J, &F);
+        cg::axpy(-1.0, K, &F);
+
+        cg::parallel_reduce<double>(
+            "energy", 0, N, &energy, []() { return 0.0; },
+            [&](size_t i, double &acc) {
+                for (size_t j = 0; j < N; ++j)
+                    acc += D(i, j) * F(i, j);
+            },
+            [](double &g, double const &l) { g += l; }, &D, &F);
+    }
+    graph.execute();
+
+    // F = H + 2J - K with J = 1 and K = 0.5 everywhere, so F = H + 1.5.
+    CHECK(F(1, 2) == Catch::Approx(H(1, 2) + 1.5));
+    double expected = 0.0;
+    for (size_t i = 0; i < N; ++i)
+        for (size_t j = 0; j < N; ++j)
+            expected += D(i, j) * (H(i, j) + 1.5);
+    CHECK(energy == Catch::Approx(expected));
+}
+
+TEST_CASE("tutorial - compute graph: a float contraction through the default passes", "[Docs][Tutorials]") {
+    auto A = create_random_tensor<float>("A", 256, 256);
+    auto B = create_random_tensor<float>("B", 256, 256);
+    auto C = create_zero_tensor<float>("C", 256, 256);
+
+    cg::Graph graph("my_computation");
+    {
+        cg::CaptureGuard guard(graph);
+        cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);
+    }
+
+    // The GPU passes join the default pipeline only when a backend is built in; the answer is the
+    // same either way.
+    auto pm = cg::PassManager::create_default();
+    graph.apply(pm);
+    graph.execute();
+
+    auto reference = create_zero_tensor<float>("reference", 256, 256);
+    la::gemm<false, false>(1.0f, A, B, 0.0f, &reference);
+    CHECK(C(17, 200) == Catch::Approx(reference(17, 200)).epsilon(1e-4));
+}
+
+TEST_CASE("tutorial - compute graph: a custom node feeding a pairwise contraction", "[Docs][Tutorials]") {
+    size_t const nmo = 5;
+
+    auto C    = create_random_tensor<double>("C", nmo, nmo);
+    auto D    = create_random_tensor<double>("D", nmo, nmo);
+    auto F    = create_zero_tensor<double>("F", nmo, nmo);
+    auto F_mo = create_zero_tensor<double>("F_mo", nmo, nmo);
+
+    cg::Graph graph("scf_iteration");
+    auto     &CF = graph.create_zero_tensor<double, 2>("CF", nmo, nmo);
+    {
+        cg::CaptureGuard guard(graph);
+
+        // Stands in for the page's build_fock_matrix; the page reads its inputs from disk first.
+        // std::tie does not compile here: it yields non-const references, and the inputs tuple is
+        // std::tuple<Inputs const &...>. The page shows make_tuple over cref and ref for that reason.
+        cg::custom("build_fock", std::make_tuple(std::cref(D)), std::make_tuple(std::ref(F)),
+                   [&]() { la::gemm<false, false>(1.0, D, D, 0.0, &F); });
+
+        cg::einsum("pj <- pi ; ij", 0.0, &CF, 1.0, C, F);
+        cg::einsum("pq <- pj ; jq", 0.0, &F_mo, 1.0, CF, C);
+    }
+    graph.execute();
+
+    auto fock = create_zero_tensor<double>("fock", nmo, nmo);
+    auto cf   = create_zero_tensor<double>("cf", nmo, nmo);
+    auto ref  = create_zero_tensor<double>("ref", nmo, nmo);
+    la::gemm<false, false>(1.0, D, D, 0.0, &fock);
+    la::gemm<false, false>(1.0, C, fock, 0.0, &cf);
+    la::gemm<false, false>(1.0, cf, C, 0.0, &ref);
+    CHECK(F_mo(1, 3) == Catch::Approx(ref(1, 3)));
+}
+
+TEST_CASE("tutorial - compute graph: workspace tensors are declared, then materialized", "[Docs][Tutorials]") {
+    size_t const nao = 4;
+
+    cg::Workspace ws("calculation");
+    auto         &eri = ws.declare_tensor<double, 4>("ERI", nao, nao, nao, nao);
+    auto          D   = create_random_tensor<double>("D", nao, nao);
+
+    cg::Pipeline scf("scf");
+    scf.set_workspace(ws);
+
+    auto &F = scf.declare_zero_tensor<double, 2>("F", nao, nao);
+
+    {
+        auto            &stage = scf.add_stage("compute");
+        cg::CaptureGuard guard(stage);
+        cg::einsum("ij <- ijkl ; kl", 0.0, &F, 1.0, eri, D);
+    }
+
+    auto pm = cg::PassManager::create_default();
+    scf.apply(pm);
+    CHECK_NOTHROW(scf.execute());
 }
