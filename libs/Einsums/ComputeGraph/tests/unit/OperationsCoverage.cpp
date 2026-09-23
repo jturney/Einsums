@@ -271,3 +271,108 @@ TEST_CASE("Operation - ger then gemm in graph", "[ComputeGraph][Operations]") {
         }
     }
 }
+
+// ── custom with typed inputs and outputs ───────────────────────────────
+
+namespace {
+/// The one custom node in @p graph; each case below records exactly one.
+cg::Node const &only_custom_node(cg::Graph const &graph) {
+    cg::Node const *found = nullptr;
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == cg::OpKind::Custom) {
+            REQUIRE(found == nullptr);
+            found = &node;
+        }
+    }
+    REQUIRE(found != nullptr);
+    return *found;
+}
+} // namespace
+
+// std::tie is the spelling a caller reaches for, and the tutorial and the views page both showed
+// it, but the inputs parameter used to be std::tuple<Inputs const &...>: std::tie yields
+// non-const references, deduction failed, and neither page's example compiled.
+TEST_CASE("Operation - custom takes std::tie for its inputs and outputs", "[ComputeGraph][Operations]") {
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+
+    cg::Graph graph("custom tie");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::custom("sum", std::tie(A, B), std::tie(C), [&]() {
+            for (size_t i = 0; i < 4; ++i)
+                for (size_t j = 0; j < 4; ++j)
+                    C(i, j) = A(i, j) + B(i, j);
+        });
+    }
+
+    auto const &node = only_custom_node(graph);
+    CHECK(node.inputs.size() == 2);
+    CHECK(node.outputs.size() == 1);
+
+    graph.execute();
+    CHECK(C(2, 3) == Catch::Approx(A(2, 3) + B(2, 3)));
+}
+
+TEST_CASE("Operation - custom takes const inputs through std::tie", "[ComputeGraph][Operations]") {
+    auto const A = create_random_tensor<double>("A", 3, 3);
+    auto       C = create_zero_tensor<double>("C", 3, 3);
+
+    cg::Graph graph("custom const tie");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::custom("copy", std::tie(A), std::tie(C), [&]() {
+            for (size_t i = 0; i < 3; ++i)
+                for (size_t j = 0; j < 3; ++j)
+                    C(i, j) = A(i, j);
+        });
+    }
+
+    CHECK(only_custom_node(graph).inputs.size() == 1);
+    graph.execute();
+    CHECK(C(1, 2) == A(1, 2));
+}
+
+TEST_CASE("Operation - custom still takes cref and ref tuples", "[ComputeGraph][Operations]") {
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto C = create_zero_tensor<double>("C", 3, 3);
+
+    cg::Graph graph("custom cref");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::custom("copy", std::make_tuple(std::cref(A)), std::make_tuple(std::ref(C)), [&]() {
+            for (size_t i = 0; i < 3; ++i)
+                for (size_t j = 0; j < 3; ++j)
+                    C(i, j) = A(i, j);
+        });
+    }
+
+    auto const &node = only_custom_node(graph);
+    CHECK(node.inputs.size() == 1);
+    CHECK(node.outputs.size() == 1);
+    graph.execute();
+    CHECK(C(0, 1) == A(0, 1));
+}
+
+TEST_CASE("Operation - custom with inputs and no outputs", "[ComputeGraph][Operations]") {
+    auto A = create_random_tensor<double>("A", 3, 3);
+
+    double trace = 0.0;
+
+    cg::Graph graph("custom read only");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::custom("trace", std::tie(A), std::tuple<>{}, [&]() {
+            trace = 0.0;
+            for (size_t i = 0; i < 3; ++i)
+                trace += A(i, i);
+        });
+    }
+
+    auto const &node = only_custom_node(graph);
+    CHECK(node.inputs.size() == 1);
+    CHECK(node.outputs.empty());
+    graph.execute();
+    CHECK(trace == Catch::Approx(A(0, 0) + A(1, 1) + A(2, 2)));
+}

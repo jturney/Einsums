@@ -7734,9 +7734,21 @@ void custom(std::string label, F &&executor, Outputs *...outputs) {
     ctx.record(OpKind::Custom, std::move(label), {}, std::move(output_ids), std::forward<F>(executor));
 }
 
-/// @brief Record a custom operation with typed input and output tensors.
-template <typename F, CoreBasicTensorConcept... Inputs, CoreBasicTensorConcept... Outputs>
-void custom(std::string label, std::tuple<Inputs const &...> inputs, std::tuple<Outputs &...> outputs, F &&executor) {
+/**
+ * @brief Record a custom operation with typed input and output tensors.
+ *
+ * The inputs tuple may hold const or non-const references, so both
+ * ``std::tie(A, B)`` and ``std::make_tuple(std::cref(A), std::cref(B))``
+ * work; either way the node only reads them. Pass ``std::tuple<>{}`` for
+ * an operation that writes no tensor.
+ *
+ * @code
+ * cg::custom("build_fock", std::tie(ERI, D), std::tie(F), [&]() { build_fock_matrix(ERI, D, F); });
+ * @endcode
+ */
+template <typename F, typename... Inputs, CoreBasicTensorConcept... Outputs>
+    requires(CoreBasicTensorConcept<std::remove_const_t<Inputs>> && ...)
+void custom(std::string label, std::tuple<Inputs &...> inputs, std::tuple<Outputs &...> outputs, F &&executor) {
     auto &ctx = CaptureContext::current();
 
     std::vector<TensorId> input_ids;

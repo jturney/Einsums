@@ -82,7 +82,7 @@ once at runtime (per molecule) and never changes during the loop:
 
        // ... fock build, syev populates C ...
 
-       // C_occ aliases C[:, 0:n_occ] — re-resolved each iteration.
+       // C_occ aliases C[:, 0:n_occ], re-resolved each iteration.
        auto &C_occ = cg::view<double, 2>(C,
            cg::ViewAxis::full(),
            cg::ViewAxis::range(0, "n_occ"));
@@ -116,7 +116,7 @@ Method (MOM), level shifting, or integer-occupation excited-state SCF, use
        cg::custom("compute_mom_n_occ", std::tie(C, eps), std::tuple<>{},
                   [&]{ n_occ_new = compute_mom(C, eps); });
 
-       // Push the new value into the param table — explicit dataflow edge:
+       // Push the new value into the param table; this is an explicit dataflow edge:
        //   compute_mom_n_occ → write_param → C_occ view
        cg::write_param("n_occ", n_occ_new);
 

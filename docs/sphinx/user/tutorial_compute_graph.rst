@@ -607,8 +607,8 @@ user-defined computations like integral evaluation, and ``cg::read()`` /
 
         // Custom computation: build Fock matrix
         cg::custom("build_fock",
-            std::make_tuple(std::cref(ERI), std::cref(D)),   // inputs
-            std::make_tuple(std::ref(F)),                     // outputs
+            std::tie(ERI, D),    // inputs
+            std::tie(F),         // outputs
             [&]() { build_fock_matrix(ERI, D, F); });
 
         // Standard einsums: F_mo = C F C, one pairwise contraction at a time
@@ -654,8 +654,7 @@ to overlap disk I/O with independent computation. These accept three lambdas:
         cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);
 
         // Depends on ERI, waits for async read to finish
-        cg::custom("build_fock", std::make_tuple(std::cref(ERI), std::cref(D)),
-            std::make_tuple(std::ref(F)),
+        cg::custom("build_fock", std::tie(ERI, D), std::tie(F),
             [&]() { build_fock_matrix(ERI, D, F); });
     }
 

@@ -577,10 +577,7 @@ TEST_CASE("tutorial - compute graph: a custom node feeding a pairwise contractio
         cg::CaptureGuard guard(graph);
 
         // Stands in for the page's build_fock_matrix; the page reads its inputs from disk first.
-        // std::tie does not compile here: it yields non-const references, and the inputs tuple is
-        // std::tuple<Inputs const &...>. The page shows make_tuple over cref and ref for that reason.
-        cg::custom("build_fock", std::make_tuple(std::cref(D)), std::make_tuple(std::ref(F)),
-                   [&]() { la::gemm<false, false>(1.0, D, D, 0.0, &F); });
+        cg::custom("build_fock", std::tie(D), std::tie(F), [&]() { la::gemm<false, false>(1.0, D, D, 0.0, &F); });
 
         cg::einsum("pj <- pi ; ij", 0.0, &CF, 1.0, C, F);
         cg::einsum("pq <- pj ; jq", 0.0, &F_mo, 1.0, CF, C);
