@@ -39,9 +39,10 @@ C++ module under its real library.
 may be different from the name of the library. For instance, the ``Python`` module is given
 the Python name of ``_core``.
 
-``--reindex``: Goes through and updates the CMake files and auto-generated documentation to
-see the modules that are currently present. If no libraries are given, it will reindex all
-libraries in the ``libs`` directory.
+``--reindex``: Updates each library's module list and the module pages listed in
+``libs/overview.rst`` to match the modules that are currently present. The module list keeps
+the order it already has, drops modules that are gone, and appends new ones. If no libraries
+are given, it will reindex all libraries in the ``libs`` directory.
 
 ``--rebuild``: Adds new files to the given module that may not have existed when the module was
 originally created.
@@ -58,11 +59,14 @@ directory that contains the script, so you normally do not need to set it.
 Output Files
 ------------
 
-``CMakeLists.txt``: This is the library's CMake file. It is automatically populated when the library is indexed
-and should not be edited.
+``CMakeLists.txt``: This is the library's CMake file, holding its module list. The list is in dependency
+order and the order is maintained by hand: a module that uses another at configure time comes after it.
+Indexing keeps that order and appends new modules at the end, printing a note for each, so move a new
+module earlier when something already listed needs it.
 
-``modules.rst``: This is the top-level documentation for the library, containing a list of modules within
-the library. It is automatically populated when the library is indexed, and should not be edited.
+``libs/overview.rst``: The Library Modules page, whose toctree links every module page into the site.
+Indexing rewrites the library's entries in that toctree, sorted, from the modules that have a
+``docs/index.rst``. A module page left out of every toctree fails the documentation build.
 
 ``MODULE/docs/index.rst``: This is the top-level documentation for the module.
 

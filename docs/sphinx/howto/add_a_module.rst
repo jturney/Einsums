@@ -79,19 +79,22 @@ List headers and sources, then name the modules you depend on:
 ``DEPENDENCIES`` is for external targets.
 Keep both minimal: the dependency list is what makes the build order tractable, and a module that depends on everything is a module nobody can build in isolation.
 
-Reindex, do not hand-edit
-=========================
+Reindex, then place the module
+==============================
 
-``libs/Einsums/CMakeLists.txt`` holds the module list, and its first line says not to edit it.
-It is generated, along with the library's ``modules.rst`` documentation index.
-Regenerate both:
+``libs/Einsums/CMakeLists.txt`` holds the module list, and ``libs/overview.rst`` links every module page into the site.
+The generator maintains both:
 
 .. code-block:: bash
 
     python3 libs/create_module_skeleton --reindex
 
 Run this after adding a module and after removing one.
-Editing the generated list by hand works right up until the next person runs the generator, at which point your edit disappears.
+It adds the new module's page to the ``overview.rst`` toctree, where a page must be for the warnings-as-errors documentation build to pass.
+
+The module list is in dependency order, and that order is kept by hand.
+The generator preserves it, drops modules that are gone, and appends new ones at the end with a note.
+When a module already in the list needs yours at configure time, move yours above it; the next reindex keeps it there.
 
 Where shared build helpers go
 =============================
@@ -149,7 +152,7 @@ Checklist
 
 #. ``python3 libs/create_module_skeleton Einsums MyModule``
 #. Fill in ``CMakeLists.txt``: sources, headers, module dependencies.
-#. ``python3 libs/create_module_skeleton --reindex``
+#. ``python3 libs/create_module_skeleton --reindex``, then move the module earlier in the list if a module above it needs it.
 #. Write the code under ``include/Einsums/MyModule/`` and ``src/``.
 #. Add unit tests under ``tests/unit/``, without extra ``target_link_libraries``.
 #. Configure and build; run ``ctest --test-dir build -R MyModule``.
