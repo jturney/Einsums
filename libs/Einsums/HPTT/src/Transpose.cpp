@@ -1032,10 +1032,7 @@ TransposeImpl<floatType>::~TransposeImpl() {
 
 template <typename floatType>
 void TransposeImpl<floatType>::execute_estimate(Plan const *plan) noexcept {
-    if (plan == nullptr) {
-        EINSUMS_LOG_ERROR("HPTT: plan has not yet been created.");
-        exit(-1);
-    }
+    EINSUMS_ASSERT_(plan != nullptr, "HPTT: plan has not yet been created.");
 
     constexpr bool useStreamingStores = false;
 
@@ -1177,10 +1174,7 @@ int TransposeImpl<floatType>::get_local_thread_id(int myThreadId) const {
 template <typename floatType>
 template <bool useStreamingStores, bool spawnThreads, bool betaIsZero>
 void TransposeImpl<floatType>::execute_expert() noexcept {
-    if (_masterPlan == nullptr) {
-        EINSUMS_LOG_ERROR("HPTT: master plan has not yet been created.");
-        exit(-1);
-    }
+    EINSUMS_ASSERT_(_masterPlan != nullptr, "HPTT: master plan has not yet been created.");
 
     size_t myStart = 0;
     size_t myEnd   = 0;
@@ -1234,10 +1228,7 @@ void TransposeImpl<floatType>::execute_expert() noexcept {
 }
 template <typename floatType>
 void TransposeImpl<floatType>::execute() noexcept {
-    if (_masterPlan == nullptr) {
-        EINSUMS_LOG_ERROR("HPTT: master plan has not yet been created.");
-        exit(-1);
-    }
+    EINSUMS_ASSERT_(_masterPlan != nullptr, "HPTT: master plan has not yet been created.");
 
     bool           spawnThreads       = _numThreads > 1;
     bool           betaIsZero         = (_beta == (floatType)0.0);
@@ -2216,18 +2207,14 @@ double TransposeImpl<floatType>::get_time_limit() const {
     else if (_selectionMethod == CRAZY)
         return 3600.; // 1h
     else {
-        EINSUMS_LOG_ERROR("HPTT: selectionMethod unknown.");
-        exit(-1);
+        EINSUMS_ASSERT_(false, "HPTT: selectionMethod {} unknown.", static_cast<int>(_selectionMethod));
     }
     return -1;
 }
 
 template <typename floatType>
 std::shared_ptr<Plan> TransposeImpl<floatType>::select_plan(std::vector<std::shared_ptr<Plan>> const &plans) {
-    if (plans.size() <= 0) {
-        EINSUMS_LOG_ERROR("HPTT: internal error: not enough plans generated.");
-        exit(-1);
-    }
+    EINSUMS_ASSERT_(!plans.empty(), "HPTT: internal error: no plans generated.");
     if (_selectionMethod == ESTIMATE) // fast return
         return plans[0];
 
