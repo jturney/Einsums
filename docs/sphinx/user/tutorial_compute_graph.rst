@@ -37,7 +37,6 @@ Setup
     #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
     using namespace einsums;
-    using namespace einsums::index;
     namespace cg = einsums::compute_graph;
 
 Basic Capture and Execute
@@ -55,7 +54,7 @@ Wrap operations in a ``CaptureGuard`` to record them into a graph:
     {
         cg::CaptureGuard guard(graph);
         // Operations here are RECORDED, not executed
-        cg::einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B);
+        cg::einsum("ij <- ik ; kj", &C, A, B);
     }
 
     // Execute the recorded operations
@@ -78,7 +77,7 @@ For intermediate tensors that shouldn't outlive the graph, use
 
     {
         cg::CaptureGuard guard(graph);
-        cg::einsum(Indices{i, j}, &tmp, Indices{i, k}, A, Indices{k, j}, B);
+        cg::einsum("ij <- ik ; kj", &tmp, A, B);
         cg::scale(2.0, &tmp);
         cg::axpy(1.0, tmp, &C);
     }
@@ -273,14 +272,14 @@ For iterative algorithms with convergence checks:
 
     // Stage 1: Setup (runs once)
     pipeline.add_stage("setup", [&]() {
-        cg::einsum(Indices{i, j}, &F, Indices{i, k}, H, Indices{k, j}, D);
+        cg::einsum("ij <- ik ; kj", &F, H, D);
     });
 
     // Stage 2: Iteration loop (runs until convergence or max iterations)
     pipeline.add_loop("iterate", 100,
         [&](size_t iter) { return std::abs(energy - energy_old) > 1e-8; },
         [&]() {
-            cg::einsum(Indices{i, j}, &F, Indices{i, k}, H, Indices{k, j}, D);
+            cg::einsum("ij <- ik ; kj", &F, H, D);
             cg::syev(F, &eigvecs, &eigvals);
             // ... update density, energy ...
         }
@@ -391,7 +390,7 @@ its output tensors:
             &J, &K);  // Declare J and K as outputs
 
         // Node 2: assemble F = H + 2*J - K (depends on J and K)
-        cg::permute(0.0, Indices{i,j}, &F, 1.0, Indices{i,j}, H);
+        cg::permute("ij <- ij", 0.0, &F, 1.0, H);
         cg::axpy(2.0, J, &F);
         cg::axpy(-1.0, K, &F);
 
@@ -453,7 +452,7 @@ Requirements
     cg::Graph graph("my_computation");
     {
         cg::CaptureGuard guard(graph);
-        cg::einsum(0.0, Indices{i, j}, &C, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+        cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);
     }
 
     // Apply all passes including GPU optimization
@@ -594,6 +593,7 @@ user-defined computations like integral evaluation, and ``cg::read()`` /
 .. code-block:: cpp
 
     cg::Graph graph("scf_iteration");
+    auto &CF = graph.create_zero_tensor<double, 2>("CF", nmo, nmo);
     {
         cg::CaptureGuard guard(graph);
 
@@ -608,9 +608,9 @@ user-defined computations like integral evaluation, and ``cg::read()`` /
             std::tie(F),         // outputs
             [&]() { build_fock_matrix(ERI, D, F); });
 
-        // Standard einsum
-        cg::einsum(0.0, Indices{p,q}, &F_mo, 1.0,
-                   Indices{p,i}, C, Indices{i,j}, F, Indices{j,q}, C);
+        // Standard einsums: F_mo = C F C, one pairwise contraction at a time
+        cg::einsum("pj <- pi ; ij", 0.0, &CF, 1.0, C, F);
+        cg::einsum("pq <- pj ; jq", 0.0, &F_mo, 1.0, CF, C);
 
         // Checkpoint to disk
         cg::write("save F_mo", "checkpoint.h5", "/fock_mo", &F_mo, [&]() {
@@ -648,8 +648,7 @@ to overlap disk I/O with independent computation. These accept three lambdas:
         );
 
         // Independent computation, runs concurrently with the read
-        cg::einsum(0.0, Indices{i,j}, &C, 1.0,
-                   Indices{i,k}, A, Indices{k,j}, B);
+        cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);
 
         // Depends on ERI, waits for async read to finish
         cg::custom("build_fock", std::tie(ERI, D), std::tie(F),
@@ -747,7 +746,7 @@ Tensors are declared with their shape but no data is allocated until the
     {
         auto &stage = scf.add_stage("compute");
         cg::CaptureGuard guard(stage);
-        cg::einsum(0.0, Indices{i,j}, &F, 1.0, Indices{i,j,k,l}, eri, Indices{k,l}, D);
+        cg::einsum("ij <- ijkl ; kl", 0.0, &F, 1.0, eri, D);
     }
 
     auto pm = cg::PassManager::create_default();
