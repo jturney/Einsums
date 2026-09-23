@@ -108,7 +108,7 @@ void check_cyclic(bool a_row_major, bool c_row_major, size_t a_pad, size_t c_pad
 
     // "kij" <- "ijk" is a 3-cycle, so it differs from its own inverse ("jki" <- "ijk"). A kernel
     // that built the inverse permutation passed every transpose and failed here.
-    tp::permute(T{0}, "kij", &C.impl, T{1}, "ijk", A.impl);
+    tp::permute("kij <- ijk", T{0}, &C.impl, T{1}, A.impl);
 
     A.for_each([&](auto const &idx, size_t) { CHECK(C.at({idx[2], idx[0], idx[1]}) == A.at(idx)); });
 }
@@ -152,7 +152,7 @@ TEMPLATE_TEST_CASE("TensorPermute - prefactors scale the output and the input", 
 
     TestType const beta{0.5};
     TestType const alpha{2};
-    tp::permute(beta, "ji", &C.impl, alpha, "ij", A.impl);
+    tp::permute("ji <- ij", beta, &C.impl, alpha, A.impl);
 
     C.for_each([&](auto const &idx, size_t) {
         size_t const flat = idx[0] * C.strides[0] + idx[1] * C.strides[1];
@@ -165,7 +165,7 @@ TEMPLATE_TEST_CASE("TensorPermute - conjugating the input", "[TensorPermute]", s
     Operand<TestType, 2> C({4, 3}, false);
     A.for_each([&](auto const &idx, size_t n) { A.at(idx) = value_for<TestType>(n); });
 
-    tp::permute<true>(TestType{0}, "ji", &C.impl, TestType{1}, "ij", A.impl);
+    tp::permute<true>("ji <- ij", TestType{0}, &C.impl, TestType{1}, A.impl);
 
     A.for_each([&](auto const &idx, size_t) { CHECK(C.at({idx[1], idx[0]}) == std::conj(A.at(idx))); });
 }
@@ -173,7 +173,7 @@ TEMPLATE_TEST_CASE("TensorPermute - conjugating the input", "[TensorPermute]", s
 TEMPLATE_TEST_CASE("TensorPermute - a compiled plan runs again on new data", "[TensorPermute]", float, double) {
     Operand<TestType, 2> A({3, 4}, false);
     Operand<TestType, 2> C({4, 3}, false);
-    auto                 plan = tp::compile_permute(TestType{0}, "ji", &C.impl, TestType{1}, "ij", A.impl);
+    auto                 plan = tp::compile_permute("ji <- ij", TestType{0}, &C.impl, TestType{1}, A.impl);
 
     // Compiling does not run it.
     C.for_each([&](auto const &idx, size_t) { CHECK(C.at(idx) == TestType{0}); });
@@ -216,16 +216,16 @@ TEST_CASE("TensorPermute - the index strings are checked before HPTT sees them",
     Operand<double, 2> C({4, 3}, false);
 
     SECTION("a letter only in the input") {
-        CHECK_THROWS_AS(tp::permute(0.0, "ki", &C.impl, 1.0, "ij", A.impl), einsums::RankError);
+        CHECK_THROWS_AS(tp::permute("ki <- ij", 0.0, &C.impl, 1.0, A.impl), einsums::RankError);
     }
     SECTION("a letter only in the output") {
-        CHECK_THROWS_AS(tp::permute(0.0, "ji", &C.impl, 1.0, "ik", A.impl), einsums::RankError);
+        CHECK_THROWS_AS(tp::permute("ji <- ik", 0.0, &C.impl, 1.0, A.impl), einsums::RankError);
     }
     SECTION("more letters than axes") {
-        CHECK_THROWS_AS(tp::permute(0.0, "jik", &C.impl, 1.0, "ijk", A.impl), einsums::RankError);
+        CHECK_THROWS_AS(tp::permute("jik <- ijk", 0.0, &C.impl, 1.0, A.impl), einsums::RankError);
     }
     SECTION("fewer letters than axes") {
-        CHECK_THROWS_AS(tp::permute(0.0, "j", &C.impl, 1.0, "i", A.impl), einsums::RankError);
+        CHECK_THROWS_AS(tp::permute("j <- i", 0.0, &C.impl, 1.0, A.impl), einsums::RankError);
     }
 }
 
@@ -235,11 +235,11 @@ TEMPLATE_TEST_CASE("TensorPermute - empty operands", "[TensorPermute]", float, d
     Operand<TestType, 3> C({4, 2, 0}, false);
 
     SECTION("permute does nothing") {
-        CHECK_NOTHROW(tp::permute(TestType{0}, "kij", &C.impl, TestType{1}, "ijk", A.impl));
+        CHECK_NOTHROW(tp::permute("kij <- ijk", TestType{0}, &C.impl, TestType{1}, A.impl));
     }
 
     SECTION("compile_permute has no plan, and running it does nothing") {
-        auto plan = tp::compile_permute(TestType{0}, "kij", &C.impl, TestType{1}, "ijk", A.impl);
+        auto plan = tp::compile_permute("kij <- ijk", TestType{0}, &C.impl, TestType{1}, A.impl);
         CHECK(plan == nullptr);
         CHECK_NOTHROW(tp::permute(&C.impl, A.impl, plan));
     }
@@ -277,7 +277,7 @@ TEMPLATE_TEST_CASE("TensorPermute - tensors are taken as they are, without impl(
 
     SECTION("permute") {
         FakeTensor<TestType, 3> C({4, 2, 3});
-        tp::permute(TestType{0}, "kij", &C, TestType{1}, "ijk", A);
+        tp::permute("kij <- ijk", TestType{0}, &C, TestType{1}, A);
         A.operand.for_each([&](auto const &idx, size_t) { CHECK(C.operand.at({idx[2], idx[0], idx[1]}) == A.operand.at(idx)); });
     }
 
@@ -287,4 +287,32 @@ TEMPLATE_TEST_CASE("TensorPermute - tensors are taken as they are, without impl(
         tp::transpose(&MT, M);
         M.operand.for_each([&](auto const &idx, size_t) { CHECK(MT.operand.at({idx[1], idx[0]}) == M.operand.at(idx)); });
     }
+}
+
+TEST_CASE("TensorPermute - the spec grammar", "[TensorPermute]") {
+    using einsums::tensor_permute::detail::parse_permute_spec;
+    // Each side becomes one character per axis; names are re-encoded in order of appearance in A.
+    CHECK(parse_permute_spec("ji <- ij") == std::pair<std::string, std::string>{"ba", "ab"});
+    CHECK(parse_permute_spec("ij -> ji") == std::pair<std::string, std::string>{"ba", "ab"});
+    CHECK(parse_permute_spec("nu,mu <- mu,nu") == std::pair<std::string, std::string>{"ba", "ab"});
+    CHECK(parse_permute_spec(" k i j<-i j k ") == std::pair<std::string, std::string>{"cab", "abc"});
+
+    CHECK_THROWS_AS(parse_permute_spec("ji ij"), std::invalid_argument);           // no arrow
+    CHECK_THROWS_AS(parse_permute_spec("j(i) <- ij"), std::invalid_argument);      // not a name
+    CHECK_THROWS_AS(parse_permute_spec("mu,,nu <- mu,nu"), std::invalid_argument); // empty name
+
+    // The spec forms reach the same kernel; the multi-character spelling transposes too.
+    Operand<double, 2> A({3, 4}, false);
+    Operand<double, 2> C({4, 3}, false);
+    A.for_each([&](auto const &idx, size_t n) { A.at(idx) = value_for<double>(n); });
+    tp::permute("nu,mu <- mu,nu", 0.0, &C.impl, 1.0, A.impl);
+    A.for_each([&](auto const &idx, size_t) { CHECK(C.at({idx[1], idx[0]}) == A.at(idx)); });
+}
+
+TEMPLATE_TEST_CASE("TensorPermute - the overwrite shorthand", "[TensorPermute]", float, double) {
+    FakeTensor<TestType, 2> M({3, 5}), MT({5, 3});
+    M.operand.for_each([&](auto const &idx, size_t n) { M.operand.at(idx) = value_for<TestType>(n); });
+    MT.operand.for_each([&](auto const &idx, size_t) { MT.operand.at(idx) = TestType{99}; });
+    tp::permute("ji <- ij", &MT, M);
+    M.operand.for_each([&](auto const &idx, size_t) { CHECK(MT.operand.at({idx[1], idx[0]}) == M.operand.at(idx)); });
 }

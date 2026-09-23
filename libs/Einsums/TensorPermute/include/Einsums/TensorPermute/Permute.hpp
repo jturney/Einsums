@@ -27,36 +27,22 @@
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 #include <Einsums/TensorPermute/Detail/HpttPlanCache.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(tensor_permute)
 
-/**
- * @brief Build the HPTT plan for @f$ C = \beta C + \alpha\,\mathrm{permute}(A) @f$ without running it.
- *
- * @p C_indices and @p A_indices name the axes of each operand, one character per axis; the same
- * characters must appear in both. The plan comes from a per-thread cache keyed on the shapes, so
- * building the same permutation again is cheap. Run it with the plan's own ``execute()``, or rebind
- * it to new data of the same shapes with the three-argument ``permute``.
- *
- * @tparam ConjA If true, conjugate the elements of @p A as they are permuted.
- * @param beta The scale applied to the existing contents of @p C.
- * @param C_indices The axes of @p C.
- * @param C The output tensor.
- * @param alpha The scale applied to the permuted @p A.
- * @param A_indices The axes of @p A.
- * @param A The input tensor. It must not share storage with @p C.
- * @param method How hard HPTT searches for a fast plan.
- * @return The plan, or null when either operand is empty: there is nothing to permute, and running
- *         the null plan through the three-argument ``permute`` does nothing.
- * @throws RankError when an index string does not have one letter per axis of its operand, or the
- *         two strings do not name the same axes.
- *
- * @versionadded{2.0.0}
- */
+namespace detail {
+
+/// The kernel behind compile_permute: each operand's axes named by one character per axis. The
+/// public forms parse a spec into these; ComputeGraph's string dispatch, which already holds the
+/// characters, calls it directly.
 template <bool ConjA = false, typename T>
 std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C_indices, einsums::detail::TensorImpl<T> *C, T alpha,
                                                     std::string const &A_indices, einsums::detail::TensorImpl<T> const &A,
@@ -186,6 +172,118 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
     }
 }
 
+/// Build and run the plan for C = beta * C + alpha * permute(A), axes named by characters.
+template <bool ConjA = false, typename T>
+void permute(T beta, std::string const &C_indices, einsums::detail::TensorImpl<T> *C, T alpha, std::string const &A_indices,
+             einsums::detail::TensorImpl<T> const &A) {
+    auto plan = compile_permute<ConjA>(beta, C_indices, C, alpha, A_indices, A);
+    if (plan != nullptr) {
+        plan->execute();
+    }
+}
+
+/// Parse a permute spec, ``"ji <- ij"`` or ``"ij -> ji"``, into one character per axis for each side.
+/// Names are single characters, or comma-separated for multi-character names (``"nu,mu <- mu,nu"``),
+/// which are re-encoded onto characters. The kernel checks that the two sides name the same axes.
+inline std::pair<std::string, std::string> parse_permute_spec(std::string_view spec) {
+    std::string_view c_text, a_text;
+    if (auto const at = spec.find("<-"); at != std::string_view::npos) {
+        c_text = spec.substr(0, at);
+        a_text = spec.substr(at + 2);
+    } else if (auto const at2 = spec.find("->"); at2 != std::string_view::npos) {
+        a_text = spec.substr(0, at2);
+        c_text = spec.substr(at2 + 2);
+    } else {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "permute: '{}' has no '<-' or '->'", spec);
+    }
+    auto names_of = [&](std::string_view text) {
+        std::vector<std::string> names;
+        bool const               commas = text.find(',') != std::string_view::npos;
+        std::string              current;
+        auto                     flush = [&] {
+            if (!current.empty()) {
+                names.push_back(current);
+                current.clear();
+            } else if (commas) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "permute: empty index name in '{}'", spec);
+            }
+        };
+        for (char const ch : text) {
+            if (ch == ' ' || ch == '\t') {
+                continue;
+            }
+            if (ch == ',') {
+                flush();
+            } else if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_') {
+                current.push_back(ch);
+                if (!commas) {
+                    flush();
+                }
+            } else {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "permute: '{}' in '{}' is not an index name", ch, spec);
+            }
+        }
+        if (commas) {
+            flush();
+        }
+        return names;
+    };
+    auto const c_names = names_of(c_text);
+    auto const a_names = names_of(a_text);
+
+    std::vector<std::string> seen;
+    auto                     encode = [&](std::vector<std::string> const &names) {
+        std::string chars;
+        for (auto const &name : names) {
+            auto it = std::find(seen.begin(), seen.end(), name);
+            if (it == seen.end()) {
+                seen.push_back(name);
+                it = seen.end() - 1;
+            }
+            chars.push_back(static_cast<char>('a' + (it - seen.begin())));
+        }
+        return chars;
+    };
+    std::string a_chars = encode(a_names);
+    std::string c_chars = encode(c_names);
+    if (seen.size() > 26) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "permute: '{}' names more than 26 axes", spec);
+    }
+    return {std::move(c_chars), std::move(a_chars)};
+}
+
+} // namespace detail
+
+/**
+ * @brief Build the HPTT plan for @f$ C = \beta C + \alpha\,\mathrm{permute}(A) @f$ without running it.
+ *
+ * The spec names each operand's axes, output first: ``"ji <- ij"`` (or ``"ij -> ji"``) transposes a
+ * matrix. The same letters must appear on both sides. The plan comes from a per-thread cache keyed
+ * on the shapes, so building the same permutation again is cheap. Run it with the plan's own
+ * ``execute()``, or rebind it to new data of the same shapes with the three-argument ``permute``.
+ *
+ * @tparam ConjA If true, conjugate the elements of @p A as they are permuted.
+ * @param spec The axes of @p C and of @p A.
+ * @param beta The scale applied to the existing contents of @p C.
+ * @param C The output tensor.
+ * @param alpha The scale applied to the permuted @p A.
+ * @param A The input tensor. It must not share storage with @p C.
+ * @param method How hard HPTT searches for a fast plan.
+ * @return The plan, or null when either operand is empty: there is nothing to permute, and running
+ *         the null plan through the three-argument ``permute`` does nothing.
+ * @throws RankError when a side does not have one letter per axis of its operand, or the two sides
+ *         do not name the same axes.
+ *
+ * @versionadded{2.0.0}
+ */
+template <bool ConjA = false, typename T>
+std::shared_ptr<hptt::Transpose<T>> compile_permute(std::string_view spec, T beta, einsums::detail::TensorImpl<T> *C, T alpha,
+                                                    einsums::detail::TensorImpl<T> const &A,
+                                                    hptt::SelectionMethod                 method = hptt::ESTIMATE) {
+    auto const [c_chars, a_chars] = detail::parse_permute_spec(spec);
+    return detail::compile_permute<ConjA>(beta, c_chars, C, alpha, a_chars, A, method);
+}
+
 /**
  * @brief Run a plan from @ref compile_permute on new data of the same shapes. A null plan, which
  * compile_permute returns for empty operands, does nothing.
@@ -204,27 +302,24 @@ void permute(einsums::detail::TensorImpl<T> *C, einsums::detail::TensorImpl<T> c
 }
 
 /**
- * @brief Compute @f$ C = \beta C + \alpha\,\mathrm{permute}(A) @f$, with the axes named by characters.
+ * @brief Compute @f$ C = \beta C + \alpha\,\mathrm{permute}(A) @f$, the axes named by a spec.
  *
  * @code
- * tensor_permute::permute(0.0, "kij", &C, 1.0, "ijk", A);  // C(k, i, j) = A(i, j, k)
+ * tensor_permute::permute("kij <- ijk", 0.0, &C, 1.0, A);  // C(k, i, j) = A(i, j, k)
  * @endcode
  *
  * Empty operands are valid and leave @p C as it is.
  *
  * @tparam ConjA If true, conjugate the elements of @p A as they are permuted.
- * @throws RankError when an index string does not have one letter per axis of its operand, or the
- *         two strings do not name the same axes.
+ * @throws RankError when a side does not have one letter per axis of its operand, or the two sides
+ *         do not name the same axes.
  *
  * @versionadded{2.0.0}
  */
 template <bool ConjA = false, typename T>
-void permute(T beta, std::string const &C_indices, einsums::detail::TensorImpl<T> *C, T alpha, std::string const &A_indices,
-             einsums::detail::TensorImpl<T> const &A) {
-    auto plan = compile_permute<ConjA>(beta, C_indices, C, alpha, A_indices, A);
-    if (plan != nullptr) {
-        plan->execute();
-    }
+void permute(std::string_view spec, T beta, einsums::detail::TensorImpl<T> *C, T alpha, einsums::detail::TensorImpl<T> const &A) {
+    auto const [c_chars, a_chars] = detail::parse_permute_spec(spec);
+    detail::permute<ConjA>(beta, c_chars, C, alpha, a_chars, A);
 }
 
 /**
@@ -243,7 +338,7 @@ void transpose(einsums::detail::TensorImpl<T> *C, einsums::detail::TensorImpl<T>
     if (C->dim(0) < A.dim(1) || C->dim(1) < A.dim(0)) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "transpose: the output tensor is smaller than the transposed input");
     }
-    permute<ConjA>(T{0}, "ij", C, T{1}, "ji", A);
+    detail::permute<ConjA>(T{0}, "ij", C, T{1}, "ji", A);
 }
 
 /**
@@ -263,23 +358,34 @@ concept HasTensorImpl = requires(T &t, T const &ct) {
 };
 
 /**
- * @brief Compute @f$ C = \beta C + \alpha\,\mathrm{permute}(A) @f$ on tensors, with the axes named
- *        by characters.
+ * @brief Compute @f$ C = \beta C + \alpha\,\mathrm{permute}(A) @f$ on tensors, the axes named by a
+ *        spec. The same signature as ``compute_graph::permute``.
  *
  * @code
- * tensor_permute::permute(0.0, "kij", &C, 1.0, "ijk", A);  // C(k, i, j) = A(i, j, k)
+ * tensor_permute::permute("kij <- ijk", 0.0, &C, 1.0, A);  // C(k, i, j) = A(i, j, k)
  * @endcode
  *
- * @throws RankError when an index string does not have one letter per axis of its operand, or the
- *         two strings do not name the same axes.
+ * @throws RankError when a side does not have one letter per axis of its operand, or the two sides
+ *         do not name the same axes.
  *
  * @versionadded{2.0.0}
  */
 template <bool ConjA = false, HasTensorImpl CType, HasTensorImpl AType>
     requires std::is_same_v<typename CType::ValueType, typename AType::ValueType>
-void permute(typename AType::ValueType beta, std::string const &C_indices, CType *C, typename AType::ValueType alpha,
-             std::string const &A_indices, AType const &A) {
-    permute<ConjA>(beta, C_indices, &C->impl(), alpha, A_indices, A.impl());
+void permute(std::string_view spec, typename AType::ValueType beta, CType *C, typename AType::ValueType alpha, AType const &A) {
+    permute<ConjA>(spec, beta, &C->impl(), alpha, A.impl());
+}
+
+/**
+ * @brief Compute @f$ C = \mathrm{permute}(A) @f$ on tensors, overwriting @p C.
+ *
+ * @versionadded{2.0.0}
+ */
+template <bool ConjA = false, HasTensorImpl CType, HasTensorImpl AType>
+    requires std::is_same_v<typename CType::ValueType, typename AType::ValueType>
+void permute(std::string_view spec, CType *C, AType const &A) {
+    using T = typename AType::ValueType;
+    permute<ConjA>(spec, T{0}, &C->impl(), T{1}, A.impl());
 }
 
 /**

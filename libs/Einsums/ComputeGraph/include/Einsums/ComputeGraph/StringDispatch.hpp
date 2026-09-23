@@ -1120,7 +1120,7 @@ void string_permute_impl(ParsedPermuteSpec const &parsed, T beta, einsums::detai
         for (size_t i = 0; i < rank; i++) {
             c_chars[i] = static_cast<char>('a' + perm[i]);
         }
-        tensor_permute::permute<false, T>(beta, c_chars, C, alpha, a_chars, A);
+        tensor_permute::detail::permute<false, T>(beta, c_chars, C, alpha, a_chars, A);
         return;
     }
 

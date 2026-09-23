@@ -232,7 +232,7 @@ double measure_permute_rank2_gbps(size_t N, size_t warmup, size_t repeats) {
     auto A = create_random_tensor<double>("A", N, N);
     auto C = Tensor<double, 2>("C", N, N);
 
-    double const seconds = median_seconds(warmup, repeats, [&] { tensor_permute::permute(0.0, "ji", &C, 1.0, "ij", A); });
+    double const seconds = median_seconds(warmup, repeats, [&] { tensor_permute::permute("ji <- ij", 0.0, &C, 1.0, A); });
 
     double const bytes = 2.0 * static_cast<double>(N) * static_cast<double>(N) * sizeof(double);
     return bytes / (seconds * 1e9);
@@ -243,7 +243,7 @@ double measure_permute_rank3_gbps(size_t N, size_t warmup, size_t repeats) {
     auto A = create_random_tensor<double>("A", N, N, N);
     auto C = Tensor<double, 3>("C", N, N, N);
 
-    double const seconds = median_seconds(warmup, repeats, [&] { tensor_permute::permute(0.0, "kij", &C, 1.0, "ijk", A); });
+    double const seconds = median_seconds(warmup, repeats, [&] { tensor_permute::permute("kij <- ijk", 0.0, &C, 1.0, A); });
 
     double const bytes = 2.0 * std::pow(static_cast<double>(N), 3.0) * sizeof(double);
     return bytes / (seconds * 1e9);
@@ -255,7 +255,7 @@ double measure_permute_rank4_gbps(size_t N, size_t warmup, size_t repeats) {
     auto A = create_random_tensor<double>("A", N, N, N, N);
     auto C = Tensor<double, 4>("C", N, N, N, N);
 
-    double const seconds = median_seconds(warmup, repeats, [&] { tensor_permute::permute(0.0, "jilk", &C, 1.0, "ijkl", A); });
+    double const seconds = median_seconds(warmup, repeats, [&] { tensor_permute::permute("jilk <- ijkl", 0.0, &C, 1.0, A); });
 
     double const bytes = 2.0 * std::pow(static_cast<double>(N), 4.0) * sizeof(double);
     return bytes / (seconds * 1e9);

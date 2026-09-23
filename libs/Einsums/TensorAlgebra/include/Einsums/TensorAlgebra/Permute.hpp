@@ -32,10 +32,7 @@ EINSUMS_NAMESPACE_BEGIN(tensor_algebra)
 
 namespace detail {
 
-// The character-index permute and its plan cache live in TensorPermute, which ComputeGraph uses
-// without the index machinery below. These keep the names they had here working.
-using tensor_permute::compile_permute;
-using tensor_permute::permute;
+// The plan cache lives in TensorPermute, with the character-index permute ComputeGraph uses.
 using tensor_permute::detail::get_or_create_hptt_plan;
 
 template <bool ConjA = false, typename T, typename... CIndices, typename... AIndices>
@@ -334,7 +331,7 @@ compile_permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, 
 template <CoreTensorConcept AType, CoreTensorConcept CType>
     requires SameUnderlyingAndRank<AType, CType>
 void permute(CType *C, AType const &A, std::shared_ptr<hptt::Transpose<typename AType::ValueType>> plan) {
-    detail::permute(&C->impl(), A.impl(), plan);
+    tensor_permute::permute(&C->impl(), A.impl(), plan);
 }
 
 // Sort with default values, no smart pointers

@@ -199,7 +199,7 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
             C2           = einsums::Tensor<double, 2>("sweep_pc", n, n);
             fill(A2.data(), n * n);
             C2.zero();
-            run = [&A2, &C2] { einsums::tensor_permute::permute(0.0, "ji", &C2, 1.0, "ij", A2); };
+            run = [&A2, &C2] { einsums::tensor_permute::permute("ji <- ij", 0.0, &C2, 1.0, A2); };
             break;
         }
         case KernelFamily::Elementwise: {

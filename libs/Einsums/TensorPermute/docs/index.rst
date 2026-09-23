@@ -8,8 +8,8 @@
 TensorPermute
 =============
 
-This module reorders the axes of a tensor, with each axis named by a character.
-``permute(0.0, "kij", &C, 1.0, "ijk", A)`` sets ``C(k, i, j) = A(i, j, k)``.
+This module reorders the axes of a tensor, with the axes of each side named by a spec.
+``permute("kij <- ijk", 0.0, &C, 1.0, A)`` sets ``C(k, i, j) = A(i, j, k)``, the same signature as the compute graph's ``permute``.
 It works on the rank-erased ``TensorImpl`` that every tensor type wraps, and nothing in it is templated on the index letters.
 A permutation can therefore be built at run time and rewritten as data, which is what the compute graph's string specs need.
 
@@ -22,7 +22,7 @@ details.
 Public API
 ----------
 
-- :cpp:func:`~einsums::tensor_permute::permute` - computes ``C = beta * C + alpha * permute(A)``, with the axes of each operand named by a string.
+- :cpp:func:`~einsums::tensor_permute::permute` - computes ``C = beta * C + alpha * permute(A)``, with the axes named by a spec such as ``"ji <- ij"``.
 - :cpp:func:`~einsums::tensor_permute::transpose` - computes ``C = A^T`` for matrices, and checks the ranks and the output's size first.
 - :cpp:func:`~einsums::tensor_permute::compile_permute` - builds the plan without running it, for a permutation repeated on new data of the same shapes.
 
