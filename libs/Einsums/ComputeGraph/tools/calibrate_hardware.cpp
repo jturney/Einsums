@@ -22,9 +22,10 @@
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Runtime.hpp>
-#include <Einsums/TensorAlgebra.hpp>
+#include <Einsums/TensorPermute/Permute.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
 #include <algorithm>
@@ -228,11 +229,10 @@ double median_seconds(size_t warmup, size_t repeats, F &&run) {
 
 /// Achieved (read + write) bandwidth of a rank-2 transpose of an N x N tensor.
 double measure_permute_rank2_gbps(size_t N, size_t warmup, size_t repeats) {
-    using namespace einsums::index;
     auto A = create_random_tensor<double>("A", N, N);
     auto C = Tensor<double, 2>("C", N, N);
 
-    double const seconds = median_seconds(warmup, repeats, [&] { tensor_algebra::permute(Indices{j, i}, &C, Indices{i, j}, A); });
+    double const seconds = median_seconds(warmup, repeats, [&] { tensor_permute::permute(0.0, "ji", &C, 1.0, "ij", A); });
 
     double const bytes = 2.0 * static_cast<double>(N) * static_cast<double>(N) * sizeof(double);
     return bytes / (seconds * 1e9);
@@ -240,11 +240,10 @@ double measure_permute_rank2_gbps(size_t N, size_t warmup, size_t repeats) {
 
 /// Same for a rank-3 cyclic permutation of an N x N x N tensor.
 double measure_permute_rank3_gbps(size_t N, size_t warmup, size_t repeats) {
-    using namespace einsums::index;
     auto A = create_random_tensor<double>("A", N, N, N);
     auto C = Tensor<double, 3>("C", N, N, N);
 
-    double const seconds = median_seconds(warmup, repeats, [&] { tensor_algebra::permute(Indices{k, i, j}, &C, Indices{i, j, k}, A); });
+    double const seconds = median_seconds(warmup, repeats, [&] { tensor_permute::permute(0.0, "kij", &C, 1.0, "ijk", A); });
 
     double const bytes = 2.0 * std::pow(static_cast<double>(N), 3.0) * sizeof(double);
     return bytes / (seconds * 1e9);
@@ -253,12 +252,10 @@ double measure_permute_rank3_gbps(size_t N, size_t warmup, size_t repeats) {
 /// Same for a rank-4 permutation that swaps both index pairs, the shape a
 /// coupled-cluster residual keeps asking for.
 double measure_permute_rank4_gbps(size_t N, size_t warmup, size_t repeats) {
-    using namespace einsums::index;
     auto A = create_random_tensor<double>("A", N, N, N, N);
     auto C = Tensor<double, 4>("C", N, N, N, N);
 
-    double const seconds =
-        median_seconds(warmup, repeats, [&] { tensor_algebra::permute(Indices{j, i, l, k}, &C, Indices{i, j, k, l}, A); });
+    double const seconds = median_seconds(warmup, repeats, [&] { tensor_permute::permute(0.0, "jilk", &C, 1.0, "ijkl", A); });
 
     double const bytes = 2.0 * std::pow(static_cast<double>(N), 4.0) * sizeof(double);
     return bytes / (seconds * 1e9);

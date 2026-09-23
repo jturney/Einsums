@@ -26,7 +26,7 @@
 #include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
-#include <Einsums/TensorAlgebra/Permute.hpp>
+#include <Einsums/TensorPermute/Permute.hpp>
 
 #include <fmt/format.h>
 
@@ -1120,7 +1120,7 @@ void string_permute_impl(ParsedPermuteSpec const &parsed, T beta, einsums::detai
         for (size_t i = 0; i < rank; i++) {
             c_chars[i] = static_cast<char>('a' + perm[i]);
         }
-        tensor_algebra::detail::permute<false, T>(beta, c_chars, C, alpha, a_chars, A);
+        tensor_permute::permute<false, T>(beta, c_chars, C, alpha, a_chars, A);
         return;
     }
 

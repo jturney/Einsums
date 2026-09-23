@@ -19,6 +19,7 @@
 #include <Einsums/ComputeGraph/Passes/InputSlicing.hpp>
 #include <Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 

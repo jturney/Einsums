@@ -30,8 +30,7 @@
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
 #include <Einsums/TensorAlgebra/Backends/ElementTransform.hpp>
-#include <Einsums/TensorAlgebra/Permute.hpp>
-#include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
+#include <Einsums/TensorPermute/Permute.hpp>
 
 #include <fmt/format.h>
 
@@ -151,11 +150,11 @@ concept MatrixOrVectorOperand = MatrixOperand<T> || VectorOperand<T>;
 // einsum: graph-aware, runtime-string contraction spec
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// The tuple-indexed overloads (`einsum(Indices{i,j}, ...)`) were removed
-// in favour of the runtime-string form. Index tuples are compile-time
-// types and can't be rewritten by optimization passes; strings are data
-// that live on the graph and can be mutated in place. See the string
-// overloads further down in this file for the public entry points.
+// Contractions are specified by runtime strings only. The compile-time
+// index-tuple overloads were removed: index tuples are types and can't be
+// rewritten by optimization passes, while strings are data that live on the
+// graph and can be mutated in place. See the string overloads further down in
+// this file for the public entry points.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // scale
@@ -616,7 +615,7 @@ void transpose(CType *C, AType const &A) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("transpose eager");
-        tensor_algebra::transpose(C, A);
+        tensor_permute::transpose(C, A);
         return;
     }
 

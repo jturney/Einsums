@@ -31,6 +31,7 @@
 #include <Einsums/ComputeGraph/GraphIR.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
+#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateIdentity.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>

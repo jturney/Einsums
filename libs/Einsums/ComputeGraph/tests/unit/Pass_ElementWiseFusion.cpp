@@ -17,7 +17,6 @@
 
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("ElementWiseFusion - empty graph", "[ComputeGraph][Passes]") {

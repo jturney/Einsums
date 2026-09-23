@@ -25,6 +25,7 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateIncrementedTensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>

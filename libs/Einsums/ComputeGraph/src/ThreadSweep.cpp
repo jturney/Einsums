@@ -19,7 +19,7 @@
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
+#include <Einsums/TensorPermute/Permute.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -199,10 +199,7 @@ std::vector<EfficiencyCurve> measure_thread_efficiency(DeviceProfile const &prof
             C2           = einsums::Tensor<double, 2>("sweep_pc", n, n);
             fill(A2.data(), n * n);
             C2.zero();
-            run = [&A2, &C2] {
-                using namespace einsums::index;
-                einsums::tensor_algebra::permute(Indices{j, i}, &C2, Indices{i, j}, A2);
-            };
+            run = [&A2, &C2] { einsums::tensor_permute::permute(0.0, "ji", &C2, 1.0, "ij", A2); };
             break;
         }
         case KernelFamily::Elementwise: {

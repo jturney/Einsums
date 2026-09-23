@@ -7,6 +7,7 @@
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 

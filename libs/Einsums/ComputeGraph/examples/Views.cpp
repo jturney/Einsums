@@ -32,7 +32,6 @@ namespace cg = einsums::compute_graph;
 
 int einsums_main() {
     using namespace einsums;
-    using namespace einsums::index;
 
     // ═══════════════════════════════════════════════════════════════════════
     // 1. Constant-bound view, slice the first 2 rows of a 4×4 matrix

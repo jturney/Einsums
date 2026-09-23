@@ -7,21 +7,20 @@
 #include <Einsums/Comm/DistributionDescriptor.hpp>
 #include <Einsums/Comm/ProcessGrid.hpp>
 #include <Einsums/Comm/Runtime.hpp>
+#include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp>
+#include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 
 #include <cstring>
 #include <variant>
 #include <vector>
-
-using namespace einsums::index;
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -30,7 +29,7 @@ namespace {
 /// One process's SUMMA panel loop for element type @p T: prescale C by its
 /// prefactor, then for each panel broadcast the A block along the process row
 /// and the B block along the process column and accumulate the local GEMM via
-/// einsum (which routes through PackedGemm). Templating over T collapses what
+/// the string einsum dispatch (which routes through PackedGemm). Templating over T collapses what
 /// were two byte-identical double/float copies into a single body.
 template <typename T>
 void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, void *b_ptr, void *c_ptr, PrefactorScalar c_pf) {
@@ -81,10 +80,17 @@ void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, vo
             (void)placeholder;
         }
 
-        // Step 3: local GEMM accumulate via einsum dispatch (enables PackedGemm).
+        // Step 3: local GEMM accumulate through the string einsum dispatch (enables PackedGemm).
         {
             LabeledSection("local_gemm");
-            tensor_algebra::einsum(T{1}, Indices{i, j}, C_local, T{1}, Indices{i, k}, A_panel, Indices{k, j}, B_panel);
+            static ParsedEinsumSpec const spec = [] {
+                auto parsed = parse_einsum_spec("ij <- ik ; kj");
+                if (!parsed) {
+                    EINSUMS_THROW_EXCEPTION(std::logic_error, "SUMMA: {}", parsed.error().message);
+                }
+                return *parsed;
+            }();
+            dispatch::string_einsum(spec, T{1}, C_local, T{1}, A_panel, B_panel);
         }
     }
 }

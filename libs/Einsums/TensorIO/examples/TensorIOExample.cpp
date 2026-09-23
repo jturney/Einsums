@@ -27,7 +27,6 @@
 #include <filesystem>
 
 using namespace einsums;
-using namespace einsums::index;
 namespace cg   = einsums::compute_graph;
 namespace tio  = einsums::tensor_io;
 namespace ckpt = einsums::tensor_io::checkpoint;

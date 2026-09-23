@@ -14,7 +14,6 @@
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>

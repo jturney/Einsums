@@ -19,7 +19,6 @@
 
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 namespace {

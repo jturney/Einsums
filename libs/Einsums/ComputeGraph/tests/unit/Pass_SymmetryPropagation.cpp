@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/SymmetryOps.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>

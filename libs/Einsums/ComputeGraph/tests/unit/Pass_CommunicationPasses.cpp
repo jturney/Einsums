@@ -27,7 +27,6 @@
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 namespace {

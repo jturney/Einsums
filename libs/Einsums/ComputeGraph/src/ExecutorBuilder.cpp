@@ -18,8 +18,8 @@
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
-#include <Einsums/TensorAlgebra/Permute.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
+#include <Einsums/TensorPermute/Permute.hpp>
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -97,9 +97,9 @@ std::function<void()> build_permute(packed_gemm::ScalarType dtype, PermuteDescri
     });
 }
 
-/// ``C = A^T``. Rank-erased; the kernel is the same ``tensor_algebra::detail::permute``
-/// the typed ``tensor_algebra::transpose`` reduces to, reached with the index
-/// letters that spell a rank-2 axis swap.
+/// ``C = A^T``. Rank-erased, through ``tensor_permute::transpose``, the same
+/// kernel the eager ``cg::transpose`` calls, so capture and eager share one
+/// implementation and one dimension check.
 ///
 /// A transpose carries NO descriptor, deliberately. It is a fixed permutation
 /// with no scalars, so (kind, dtype, rank, operand ids) is its complete
@@ -110,17 +110,9 @@ std::function<void()> build_transpose(packed_gemm::ScalarType dtype, OperandAcce
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
         return [a, c]() {
             LabeledSection("transpose execute");
-            auto const *source = a.impl<T>();
-            auto       *target = c.impl<T>();
-            // The dimension guard the typed entry point applies. Kept because a
-            // rebind validates dims against the slot, not against the operand
-            // this node is paired with.
-            if (target->dim(0) < source->dim(1) || target->dim(1) < source->dim(0)) {
-                EINSUMS_THROW_EXCEPTION(DimensionError, "transpose: the output tensor is smaller than the transposed input");
-            }
-            static std::string const c_indices = "ab";
-            static std::string const a_indices = "ba";
-            tensor_algebra::detail::permute<false, T>(T{0}, c_indices, target, T{1}, a_indices, *source);
+            // transpose checks the ranks and that the output can hold the result on every replay:
+            // a rebind validates dims against the slot, not against the operand this node pairs.
+            tensor_permute::transpose(c.impl<T>(), *a.impl<T>());
         };
     });
 }
