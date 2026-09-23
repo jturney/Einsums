@@ -285,6 +285,10 @@ function(einsums_add_module libname modulename)
     einsums_debug(${header_file})
   endforeach(header_file)
 
+  # Every module, as <library>/<module>, for anything configured after libs/ that has to cover all
+  # of them (the C++ API reference does) without keeping its own list.
+  set_property(GLOBAL APPEND PROPERTY EINSUMS_MODULES "${libname}/${modulename}")
+
   if(sources)
     set(module_is_interface_library FALSE)
   else()
