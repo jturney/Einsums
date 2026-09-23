@@ -22,6 +22,7 @@
 
 using einsums::testing::parse_reference_spec;
 using einsums::testing::reference_einsum;
+using einsums::testing::reference_permute;
 
 namespace {
 
@@ -93,7 +94,6 @@ TEST_CASE("reference einsum - operands must match the spec", "[Testing][Referenc
 
     CHECK_THROWS_AS(reference_einsum("ij <- ikl ; kj", &C, A, B), einsums::RankError);
     CHECK_THROWS_AS(reference_einsum("ij <- ik ; jk", &C, A, B), einsums::DimensionError); // k is 4 in A, 5 in B
-    CHECK_THROWS_AS(reference_einsum("ii <- ik ; ki", &C, A, B), std::invalid_argument);   // a repeated output letter
     CHECK_THROWS_AS(reference_einsum("iq <- ik ; kj", &C, A, B), std::invalid_argument);   // q is in neither input
 }
 
@@ -176,6 +176,17 @@ TEST_CASE("reference einsum - small cases worked by hand", "[Testing][ReferenceE
         CHECK(C(0, 0) == 1);
     }
 
+    SECTION("a repeated output letter writes the diagonal, after scaling all of C") {
+        auto const x = vector({2, 3});
+        auto const y = vector({5, 7});
+        auto       C = matrix(1, 1, 1, 1);
+        reference_einsum("ii <- i ; i", 10.0, &C, 1.0, x, y);
+        CHECK(C(0, 0) == 10 + 2 * 5);
+        CHECK(C(1, 1) == 10 + 3 * 7);
+        CHECK(C(0, 1) == 10);
+        CHECK(C(1, 0) == 10);
+    }
+
     SECTION("conjugation") {
         using Z = std::complex<double>;
         auto a  = einsums::create_zero_tensor<Z>("a", 1);
@@ -242,6 +253,14 @@ TEMPLATE_TEST_CASE("reference einsum - agrees with the templated engine", "[Test
         agree<T>("i <- ii ; i", Indices{i}, create_random_tensor<T>("C", 3), Indices{i, i}, create_random_tensor<T>("A", 3, 3), Indices{i},
                  create_random_tensor<T>("B", 3));
     }
+    SECTION("a repeated output letter writes the diagonal") {
+        agree<T>("ii <- ijk ; jik", Indices{i, i}, create_random_tensor<T>("C", 3, 3), Indices{i, j, k},
+                 create_random_tensor<T>("A", 3, 4, 2), Indices{j, i, k}, create_random_tensor<T>("B", 4, 3, 2));
+    }
+    SECTION("a repeated output letter at rank 3") {
+        agree<T>("iji <- iji ; jij", Indices{i, j, i}, create_random_tensor<T>("C", 3, 4, 3), Indices{i, j, i},
+                 create_random_tensor<T>("A", 3, 4, 3), Indices{j, i, j}, create_random_tensor<T>("B", 4, 3, 4));
+    }
     SECTION("a zero-extent contraction") {
         agree<T>("ij <- ik ; kj", Indices{i, j}, create_random_tensor<T>("C", 3, 4), Indices{i, k}, create_random_tensor<T>("A", 3, 0),
                  Indices{k, j}, create_random_tensor<T>("B", 0, 4));
@@ -272,4 +291,79 @@ TEMPLATE_TEST_CASE("reference einsum - agrees with the templated engine on a dot
     einsums::tensor_algebra::einsum(c_pf, Indices{}, &scalar, ab_pf, Indices{i}, x, Indices{i}, y);
     reference_einsum(" <- i ; i", c_pf, &d, ab_pf, x, y);
     CHECK_THAT(scalar, einsums::CheckWithinMagnitude(d(0), static_cast<double>(std::abs(d(0)))));
+}
+
+// ── The reference permute ───────────────────────────────────────────────────
+
+TEST_CASE("reference permute - worked by hand, and its contract", "[Testing][ReferenceEinsum]") {
+    auto A  = einsums::create_zero_tensor<double>("A", 2, 3);
+    A(0, 0) = 1, A(0, 1) = 2, A(0, 2) = 3;
+    A(1, 0) = 4, A(1, 1) = 5, A(1, 2) = 6;
+
+    SECTION("a transpose, in both spellings") {
+        for (auto spec : {"ji <- ij", "ij -> ji"}) {
+            CAPTURE(spec);
+            auto C = einsums::create_zero_tensor<double>("C", 3, 2);
+            reference_permute(spec, 0.0, &C, 1.0, A);
+            CHECK(C(0, 1) == 4);
+            CHECK(C(2, 0) == 3);
+            CHECK(C(1, 1) == 5);
+        }
+    }
+
+    SECTION("prefactors") {
+        auto C = einsums::create_zero_tensor<double>("C", 3, 2);
+        C.set_all(10.0);
+        reference_permute("ji <- ij", 0.5, &C, 2.0, A);
+        CHECK(C(2, 1) == 0.5 * 10.0 + 2.0 * 6.0);
+    }
+
+    SECTION("beta == 0 overwrites C without reading it") {
+        auto C = einsums::create_zero_tensor<double>("C", 3, 2);
+        C.set_all(std::numeric_limits<double>::quiet_NaN());
+        reference_permute("ji <- ij", 0.0, &C, 1.0, A);
+        CHECK(C(0, 0) == 1);
+    }
+
+    SECTION("a cyclic rank-3 permutation") {
+        auto T = einsums::create_random_tensor<double>("T", 2, 3, 4);
+        auto C = einsums::create_zero_tensor<double>("C", 4, 2, 3);
+        reference_permute("kij <- ijk", 0.0, &C, 1.0, T);
+        CHECK(C(3, 1, 2) == T(1, 2, 3));
+        CHECK(C(0, 0, 1) == T(0, 1, 0));
+    }
+
+    SECTION("an empty operand") {
+        auto E  = einsums::create_zero_tensor<double>("E", 0, 3);
+        auto CE = einsums::create_zero_tensor<double>("CE", 3, 0);
+        CHECK_NOTHROW(reference_permute("ji <- ij", 0.0, &CE, 1.0, E));
+    }
+
+    SECTION("the contract") {
+        auto C  = einsums::create_zero_tensor<double>("C", 3, 2);
+        auto C3 = einsums::create_zero_tensor<double>("C3", 3, 2, 1);
+        CHECK_THROWS_AS(reference_permute("ji ; ij", 0.0, &C, 1.0, A), std::invalid_argument);    // no arrow
+        CHECK_THROWS_AS(reference_permute("jk <- ij", 0.0, &C, 1.0, A), std::invalid_argument);   // k only in C
+        CHECK_THROWS_AS(reference_permute("jj <- ij", 0.0, &C, 1.0, A), std::invalid_argument);   // repeated letter
+        CHECK_THROWS_AS(reference_permute("ij <- ij", 0.0, &C, 1.0, A), einsums::DimensionError); // C is 3x2, A is 2x3
+        CHECK_THROWS_AS(reference_permute("jik <- ij", 0.0, &C3, 1.0, A), einsums::RankError);    // three letters, two axes of A
+    }
+}
+
+TEMPLATE_TEST_CASE("reference permute - agrees with the typed permute", "[Testing][ReferenceEinsum]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    using namespace einsums::index;
+    using einsums::Indices;
+    using T          = TestType;
+    T const    beta  = prefactor<T>(0.5, 0.25);
+    T const    alpha = prefactor<T>(1.5, -0.75);
+    bool const rows  = GENERATE(false, true);
+    CAPTURE(rows);
+
+    auto A        = einsums::create_random_tensor<T>(rows, "A", 2, 3, 4);
+    auto C        = einsums::create_random_tensor<T>(rows, "C", 4, 2, 3);
+    auto expected = C;
+    einsums::tensor_algebra::permute(beta, Indices{k, i, j}, &C, alpha, Indices{i, j, k}, A);
+    reference_permute("kij <- ijk", beta, &expected, alpha, A);
+    check_same(C, expected);
 }
