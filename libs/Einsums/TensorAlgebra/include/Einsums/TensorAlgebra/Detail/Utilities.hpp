@@ -84,6 +84,7 @@ enum AlgorithmChoice {
     GEMM,         /// Matrix-matrix product
     PACKED_GEMM,  /// Used packed GEMM backend
     SORT_GEMM,    /// Auto sort (permute) + GEMM
+    EMPTY,        /// An operand was empty: nothing contracted, only the C prefactor applied
     INDETERMINATE /// Something happened and the einsum call failed.
 };
 } // namespace detail

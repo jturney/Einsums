@@ -162,17 +162,26 @@ AlgorithmChoice einsum_generic_default(ValueTypeT<CType> const C_prefactor, std:
                                                                        dry_B);
         }
     } else {
-        constexpr auto A_unique              = UniqueT<std::tuple<AIndices...>>();
-        constexpr auto B_unique              = UniqueT<std::tuple<BIndices...>>();
-        constexpr auto C_unique              = UniqueT<std::tuple<CIndices...>>();
-        constexpr auto linksAB               = IntersectT<std::tuple<AIndices...>, std::tuple<BIndices...>>();
-        constexpr auto links                 = DifferenceT<decltype(linksAB), std::tuple<CIndices...>>();
-        constexpr auto link_unique           = CUniqueT<decltype(links)>();
-        constexpr auto link_position_in_A    = detail::find_type_with_position(link_unique, A_indices);
+        constexpr auto A_unique = UniqueT<std::tuple<AIndices...>>();
+        constexpr auto B_unique = UniqueT<std::tuple<BIndices...>>();
+        constexpr auto C_unique = UniqueT<std::tuple<CIndices...>>();
+        constexpr auto linksAB  = IntersectT<std::tuple<AIndices...>, std::tuple<BIndices...>>();
+        constexpr auto links    = DifferenceT<decltype(linksAB), std::tuple<CIndices...>>();
+        // A letter in one input alone and absent from C is summed over that input too. It used to be
+        // left out of the links, so the loop never iterated it and read only its first slice:
+        // "i <- ij ; i" computed A(i, 0) * B(i). Letters in A come first, with A's extents; letters
+        // only in B follow, with B's. Extents are taken once per distinct letter, so a letter repeated
+        // within an operand (a diagonal) cannot put the extents out of step with the letters.
+        constexpr auto lone_A = DifferenceT<DifferenceT<std::tuple<AIndices...>, std::tuple<BIndices...>>, std::tuple<CIndices...>>();
+        constexpr auto lone_B = DifferenceT<DifferenceT<std::tuple<BIndices...>, std::tuple<AIndices...>>, std::tuple<CIndices...>>();
+        constexpr auto link_unique_A         = CUniqueT<decltype(std::tuple_cat(links, lone_A))>();
+        constexpr auto link_unique_B         = CUniqueT<decltype(lone_B)>();
+        constexpr auto link_unique           = std::tuple_cat(link_unique_A, link_unique_B);
         constexpr auto link_position_in_link = detail::find_type_with_position(link_unique, links);
         constexpr auto target_position_in_C  = detail::find_type_with_position(C_unique, C_indices);
         auto           unique_target_dims    = detail::get_dim_for(*C, detail::unique_find_type_with_position(C_unique, C_indices));
-        auto           unique_link_dims      = detail::get_dim_for(A, link_position_in_A);
+        auto unique_link_dims = std::tuple_cat(detail::get_dim_for(A, detail::unique_find_type_with_position(link_unique_A, A_indices)),
+                                               detail::get_dim_for(B, detail::unique_find_type_with_position(link_unique_B, B_indices)));
 
         EINSUMS_LOG_TRACE("Performing the generic algorithm.");
 
@@ -224,6 +233,19 @@ constexpr bool einsum_has_broadcast_target(std::tuple<CIndices...> const &, std:
     using CminusA  = DifferenceT<std::tuple<CIndices...>, std::tuple<AIndices...>>;
     using CminusAB = DifferenceT<CminusA, std::tuple<BIndices...>>;
     return std::tuple_size_v<CminusAB> != 0;
+}
+
+/**
+ * @brief Checks for a summed letter that appears in only one input.
+ *
+ * Such a letter (in A alone or B alone, and not in C) is summed over that input. No fast path
+ * inspects it, so the spec must go to the generic algorithm.
+ */
+template <typename... CIndices, typename... AIndices, typename... BIndices>
+constexpr bool einsum_has_lone_summed(std::tuple<CIndices...> const &, std::tuple<AIndices...> const &, std::tuple<BIndices...> const &) {
+    using AOnly = DifferenceT<DifferenceT<std::tuple<AIndices...>, std::tuple<BIndices...>>, std::tuple<CIndices...>>;
+    using BOnly = DifferenceT<DifferenceT<std::tuple<BIndices...>, std::tuple<AIndices...>>, std::tuple<CIndices...>>;
+    return std::tuple_size_v<AOnly> + std::tuple_size_v<BOnly> != 0;
 }
 
 /**
@@ -1322,7 +1344,8 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
     if constexpr (OnlyUseGenericAlgorithm) {
         // Skip to the generic algorithm.
     } else if constexpr (einsum_is_all_hadamard_found(C_indices, A_indices, B_indices) ||
-                         einsum_has_broadcast_target(C_indices, A_indices, B_indices) || !std::is_same_v<CDataType, ADataType> ||
+                         einsum_has_broadcast_target(C_indices, A_indices, B_indices) ||
+                         einsum_has_lone_summed(C_indices, A_indices, B_indices) || !std::is_same_v<CDataType, ADataType> ||
                          !std::is_same_v<CDataType, BDataType> ||
                          (!IsAlgebraTensorV<AType> || !IsAlgebraTensorV<BType> || (!IsAlgebraTensorV<CType> && !IsScalarV<CType>))) {
         // Mixed datatypes and poorly behaved tensor types go directly to the generic algorithm.
@@ -1333,6 +1356,8 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
         // every other slice at whatever the prefactor had scaled it to - a
         // wrong answer with no diagnostic. Only the generic algorithm carries
         // a broadcast index, as a target loop with a zero stride into A and B.
+        // A letter summed over one input alone is the same story from the
+        // other side: no fast path looks at it, so only the generic loop sums it.
     } else if constexpr (einsum_is_dot_product(C_indices, A_indices, B_indices)) {
         if constexpr (!DryRun) {
             if constexpr (ConjA == ConjB || (!IsComplexV<ADataType> && !IsComplex<BDataType>)) {
@@ -1573,6 +1598,50 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
     }
 #endif
 
+    // Zero-extent operands: nothing to contract, but the output prefactor still applies, once. An
+    // empty C is a no-op; an empty input with a non-empty C (a zero-extent link or summed letter)
+    // means C = c_pf * C, with c_pf == 0 assigning zero so stale NaNs never survive. The string
+    // engine (StringDispatch.hpp) has the same rule. Without it an empty link left C untouched,
+    // unscaled, because no algorithm below ever ran an iteration to apply the prefactor in.
+    if constexpr (IsBasicTensorV<AType> && IsBasicTensorV<BType> && (!IsTensorV<CType> || IsBasicTensorV<CType>)) {
+        // A rank-0 tensor holds one element and has no size() or zero(); it is never empty.
+        auto const is_empty = []<typename TT>(TT const &t) {
+            if constexpr (TensorRank<TT> == 0) {
+                return false;
+            } else {
+                return t.size() == 0;
+            }
+        };
+        bool empty_output = false;
+        if constexpr (IsTensorV<CType>) {
+            empty_output = is_empty(*C);
+        }
+        if (empty_output || is_empty(A) || is_empty(B)) {
+            if (!empty_output) {
+                if constexpr (IsTensorV<CType> && TensorRank<CType> > 0) {
+                    if (C_prefactor == CDataType{0}) {
+                        C->zero();
+                    } else if (C_prefactor != CDataType{1}) {
+                        linear_algebra::scale(C_prefactor, C);
+                    }
+                } else {
+                    CDataType &value = [&]() -> CDataType & {
+                        if constexpr (IsTensorV<CType>) {
+                            return *C->data();
+                        } else {
+                            return *C;
+                        }
+                    }();
+                    value = (C_prefactor == CDataType{0}) ? CDataType{0} : C_prefactor * value;
+                }
+            }
+            if (algorithm_choice != nullptr) {
+                *algorithm_choice = detail::EMPTY;
+            }
+            return;
+        }
+    }
+
     // Default einsums.
     detail::AlgorithmChoice retval =
         detail::einsum<false, false, ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B);
@@ -1764,8 +1833,8 @@ void einsum(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTyp
 #endif
     // Annotate the profiling zone with the algorithm choice and tensor ranks.
     {
-        static constexpr char const *algo_names[] = {"GENERIC", "DOT",         "DIRECT",    "GER",          "GEMV",
-                                                     "GEMM",    "PACKED_GEMM", "SORT_GEMM", "INDETERMINATE"};
+        static constexpr char const *algo_names[] = {"GENERIC", "DOT",         "DIRECT",    "GER",   "GEMV",
+                                                     "GEMM",    "PACKED_GEMM", "SORT_GEMM", "EMPTY", "INDETERMINATE"};
 #if defined(EINSUMS_HAVE_PROFILER)
         if (retval >= 0 && retval < static_cast<detail::AlgorithmChoice>(sizeof(algo_names) / sizeof(algo_names[0]))) {
             ProfileAnnotate("algorithm", algo_names[retval]);

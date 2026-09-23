@@ -140,12 +140,11 @@ TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGra
 // absent from C AND from the shared link. The graph/string path handles it -
 // string_einsum's has_lone_summed_index guard routes it to the repeat-aware
 // generic loop, which sums it. The eager typed-Indices dispatcher
-// (TensorAlgebra Backends/Dispatch.hpp) still MIS-HANDLES it, in two modes:
-// the empty-link case computes a wrong value (the lone axis is not summed),
-// and the shared-link case throws std::out_of_range on a stride access. The
-// graph cases assert correctness (guarding the string_einsum fix); the eager
-// cases are tagged [!shouldfail] until the eager dispatcher gains the same
-// guard - when it does, the run turns red here as a reminder to drop the tag.
+// (TensorAlgebra Backends/Dispatch.hpp) mis-handled it in two modes until
+// 2026-09-23: the empty-link case computed a wrong value (the lone axis was not
+// summed), and the shared-link case threw std::out_of_range on a stride access.
+// It now routes such specs to its generic loop and iterates every summed letter,
+// so both paths are held to the same reference here.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -211,9 +210,8 @@ TEST_CASE("cg parity - lone summed index with shared link jk<-jl;plk", "[Compute
     require_close(C_graph, ref);
 }
 
-TEST_CASE("eager BUG - lone summed index dropped empty link ij<-ijk;ij", "[ComputeGraph][EagerParity][lone-summed][!shouldfail]") {
-    // Eager typed-Indices path does not sum the lone k: wrong value. Drop the
-    // [!shouldfail] once Backends/Dispatch.hpp gains a lone-summed guard.
+TEST_CASE("eager parity - lone summed index empty link ij<-ijk;ij", "[ComputeGraph][EagerParity][lone-summed]") {
+    // The eager path used to leave the lone k unsummed and read only k = 0.
     auto S   = create_random_tensor<double>("S", 3, 4, 5);
     auto W   = create_random_tensor<double>("W", 3, 4);
     auto ref = lone_empty_link_reference(S, W);
@@ -224,10 +222,9 @@ TEST_CASE("eager BUG - lone summed index dropped empty link ij<-ijk;ij", "[Compu
     require_close(C_eager, ref);
 }
 
-TEST_CASE("eager BUG - lone summed index dropped with shared link jk<-jl;plk", "[ComputeGraph][EagerParity][lone-summed][!shouldfail]") {
-    // Eager typed-Indices path throws std::out_of_range on the lone p here
-    // (stride access past the operand rank). Drop the [!shouldfail] once the
-    // eager dispatcher handles lone summed indices.
+TEST_CASE("eager parity - lone summed index with shared link jk<-jl;plk", "[ComputeGraph][EagerParity][lone-summed]") {
+    // The eager path used to throw std::out_of_range on the lone p here (a stride
+    // access past the operand rank); p lives only in B.
     auto A   = create_random_tensor<double>("A", 3, 4);
     auto B   = create_random_tensor<double>("B", 2, 4, 5);
     auto ref = link_plus_lone_reference(A, B);

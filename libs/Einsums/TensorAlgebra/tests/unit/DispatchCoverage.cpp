@@ -13,6 +13,7 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
 #include <complex>
+#include <limits>
 
 #include <Einsums/Testing.hpp>
 
@@ -626,5 +627,108 @@ TEST_CASE("broadcast_output_index_reaches_generic", "[dispatch][generic][broadca
                 REQUIRE_THAT(C(i0, k0, l0), Catch::Matchers::WithinRel(ref, 1.0e-12));
             }
         }
+    }
+}
+
+// A letter in one input alone, absent from C, is summed over that input. The engine left such a
+// letter out of the loop entirely, so it read only the letter's first slice: "i <- ij ; i" gave
+// A(i, 0) * B(i) instead of the row sum times B(i). The string engine had the same defect and had
+// it fixed; this engine did not, until the reference einsum compared the two.
+TEST_CASE("Dispatch - a letter summed over one input alone", "[einsum][dispatch]") {
+    tensor_algebra::detail::AlgorithmChoice alg_choice = tensor_algebra::detail::INDETERMINATE;
+
+    size_t constexpr di = 3, dj = 4, dk = 2;
+    auto A = create_random_tensor<double>("A", di, dj);
+    auto b = create_random_tensor<double>("b", di);
+
+    auto row_sum = [&](size_t i0) {
+        double sum = 0.0;
+        for (size_t j0 = 0; j0 < dj; j0++)
+            sum += A(i0, j0);
+        return sum;
+    };
+
+    SECTION("only in A") {
+        auto C = create_zero_tensor<double>("C", di);
+        einsum(Indices{i}, &C, Indices{i, j}, A, Indices{i}, b, &alg_choice);
+        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        for (size_t i0 = 0; i0 < di; i0++)
+            REQUIRE_THAT(C(i0), Catch::Matchers::WithinRel(row_sum(i0) * b(i0), 1.0e-12));
+    }
+
+    SECTION("only in B") {
+        auto C = create_zero_tensor<double>("C", di);
+        einsum(Indices{i}, &C, Indices{i}, b, Indices{i, j}, A, &alg_choice);
+        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        for (size_t i0 = 0; i0 < di; i0++)
+            REQUIRE_THAT(C(i0), Catch::Matchers::WithinRel(b(i0) * row_sum(i0), 1.0e-12));
+    }
+
+    SECTION("beside an outer product") {
+        auto c = create_random_tensor<double>("c", dk);
+        auto C = create_zero_tensor<double>("C", di, dk);
+        einsum(Indices{i, k}, &C, Indices{i, j}, A, Indices{k}, c, &alg_choice);
+        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        for (size_t i0 = 0; i0 < di; i0++)
+            for (size_t k0 = 0; k0 < dk; k0++)
+                REQUIRE_THAT(C(i0, k0), Catch::Matchers::WithinRel(row_sum(i0) * c(k0), 1.0e-12));
+    }
+
+    SECTION("repeated within that input") {
+        // "i <- ijj ; i": the trace of each slice of T, times b.
+        auto T = create_random_tensor<double>("T", di, dj, dj);
+        auto C = create_zero_tensor<double>("C", di);
+        einsum(Indices{i}, &C, Indices{i, j, j}, T, Indices{i}, b, &alg_choice);
+        REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
+        for (size_t i0 = 0; i0 < di; i0++) {
+            double trace = 0.0;
+            for (size_t j0 = 0; j0 < dj; j0++)
+                trace += T(i0, j0, j0);
+            REQUIRE_THAT(C(i0), Catch::Matchers::WithinRel(trace * b(i0), 1.0e-12));
+        }
+    }
+}
+
+// An empty operand leaves nothing to contract, but the output prefactor still applies, once. The
+// engine ran no iteration for an empty link and so never applied c_pf: C came back unscaled. The
+// string engine had this rule already.
+TEST_CASE("Dispatch - an empty operand applies the output prefactor once", "[einsum][dispatch]") {
+    tensor_algebra::detail::AlgorithmChoice alg_choice = tensor_algebra::detail::INDETERMINATE;
+
+    SECTION("an empty link scales C") {
+        auto A = create_zero_tensor<double>("A", 3, 0);
+        auto B = create_zero_tensor<double>("B", 0, 4);
+        auto C = create_zero_tensor<double>("C", 3, 4);
+        C.set_all(3.0);
+        einsum(2.0, Indices{i, j}, &C, 1.0, Indices{i, k}, A, Indices{k, j}, B, &alg_choice);
+        REQUIRE(alg_choice == tensor_algebra::detail::EMPTY);
+        REQUIRE(C(0, 0) == 6.0);
+        REQUIRE(C(2, 3) == 6.0);
+    }
+
+    SECTION("c_pf == 0 assigns zero, whatever C held") {
+        auto A = create_zero_tensor<double>("A", 3, 0);
+        auto B = create_zero_tensor<double>("B", 0, 4);
+        auto C = create_zero_tensor<double>("C", 3, 4);
+        C.set_all(std::numeric_limits<double>::quiet_NaN());
+        einsum(0.0, Indices{i, j}, &C, 1.0, Indices{i, k}, A, Indices{k, j}, B, &alg_choice);
+        REQUIRE(C(1, 1) == 0.0);
+    }
+
+    SECTION("an empty output is left alone") {
+        auto A = create_random_tensor<double>("A", 0, 5);
+        auto B = create_random_tensor<double>("B", 5, 4);
+        auto C = create_zero_tensor<double>("C", 0, 4);
+        REQUIRE_NOTHROW(einsum(2.0, Indices{i, j}, &C, 1.0, Indices{i, k}, A, Indices{k, j}, B, &alg_choice));
+        REQUIRE(alg_choice == tensor_algebra::detail::EMPTY);
+    }
+
+    SECTION("a scalar output") {
+        auto   x = create_zero_tensor<double>("x", 0);
+        auto   y = create_zero_tensor<double>("y", 0);
+        double c = 5.0;
+        einsum(2.0, Indices{}, &c, 1.0, Indices{i}, x, Indices{i}, y, &alg_choice);
+        REQUIRE(alg_choice == tensor_algebra::detail::EMPTY);
+        REQUIRE(c == 10.0);
     }
 }

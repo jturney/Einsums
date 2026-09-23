@@ -51,6 +51,8 @@ char const *route_name(tensor_algebra::detail::AlgorithmChoice c) {
         return "PACKED_GEMM";
     case SORT_GEMM:
         return "SORT_GEMM";
+    case EMPTY:
+        return "EMPTY";
     default:
         return "INDETERMINATE";
     }
