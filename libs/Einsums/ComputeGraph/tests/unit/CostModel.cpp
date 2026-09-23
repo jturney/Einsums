@@ -10,9 +10,9 @@
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cmath>
 #include <complex>
@@ -23,8 +23,9 @@
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -396,7 +397,7 @@ TEST_CASE("ContractionPlanning - works with create_default()", "[ComputeGraph][P
     auto C = create_zero_tensor<double>("C", 4, 5);
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("cp_default");
     {
@@ -470,9 +471,9 @@ TEST_CASE("ContractionPlanning - 3-GEMM chain analysis", "[ComputeGraph][Passes]
     auto T3_ref = create_zero_tensor<double>("T3r", 50, 5);
     auto T1r    = create_zero_tensor<double>("T1r", 50, 50);
     auto T2r    = create_zero_tensor<double>("T2r", 50, 20);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &T2r, 1.0, Indices{i, k}, T1r, Indices{k, j}, C);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &T3_ref, 1.0, Indices{i, k}, T2r, Indices{k, j}, D);
+    reference_einsum("ij <- ik ; kj", 0.0, &T1r, 1.0, A, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &T2r, 1.0, T1r, C);
+    reference_einsum("ij <- ik ; kj", 0.0, &T3_ref, 1.0, T2r, D);
 
     graph.execute();
 
@@ -501,8 +502,8 @@ TEST_CASE("ContractionPlanning - rank-3 contraction chain", "[ComputeGraph][Pass
     auto T1r = create_zero_tensor<double>("T1r", 10, 8, 6);
     auto T2r = create_zero_tensor<double>("T2r", 10, 8, 4);
 
-    tensor_algebra::einsum(0.0, Indices{i, j, l}, &T1r, 1.0, Indices{i, j, k}, A, Indices{k, l}, B);
-    tensor_algebra::einsum(0.0, Indices{i, j, l}, &T2r, 1.0, Indices{i, j, k}, T1r, Indices{k, l}, C);
+    reference_einsum("ijl <- ijk ; kl", 0.0, &T1r, 1.0, A, B);
+    reference_einsum("ijl <- ijk ; kl", 0.0, &T2r, 1.0, T1r, C);
 
     cg::Graph graph("cp_rank3");
     {
@@ -580,8 +581,8 @@ TEST_CASE("ContractionPlanning - restructured 2-GEMM chain correct", "[ComputeGr
     // Reference
     auto T1r = create_zero_tensor<double>("T1r", 100, 100);
     auto T2r = create_zero_tensor<double>("T2r", 100, 1);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &T2r, 1.0, Indices{i, k}, T1r, Indices{k, j}, C);
+    reference_einsum("ij <- ik ; kj", 0.0, &T1r, 1.0, A, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &T2r, 1.0, T1r, C);
 
     cg::Graph graph("cp_restructure");
     // Chain interiors must be graph-owned: restructuring elides their writes,
@@ -618,9 +619,9 @@ TEST_CASE("ContractionPlanning - restructured 3-GEMM chain correct", "[ComputeGr
     auto T1r = create_zero_tensor<double>("T1r", 50, 50);
     auto T2r = create_zero_tensor<double>("T2r", 50, 3);
     auto T3r = create_zero_tensor<double>("T3r", 50, 10);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &T2r, 1.0, Indices{i, k}, T1r, Indices{k, j}, C);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &T3r, 1.0, Indices{i, k}, T2r, Indices{k, j}, D);
+    reference_einsum("ij <- ik ; kj", 0.0, &T1r, 1.0, A, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &T2r, 1.0, T1r, C);
+    reference_einsum("ij <- ik ; kj", 0.0, &T3r, 1.0, T2r, D);
 
     cg::Graph graph("cp_3chain");
     // Graph-owned interiors: see the 2-GEMM test above.
@@ -652,8 +653,8 @@ TEST_CASE("ContractionPlanning - rank-3 chain analysis only (not restructured)",
 
     auto T1r = create_zero_tensor<double>("T1r", 10, 8, 20);
     auto T2r = create_zero_tensor<double>("T2r", 10, 8, 3);
-    tensor_algebra::einsum(0.0, Indices{i, j, l}, &T1r, 1.0, Indices{i, j, k}, A, Indices{k, l}, B);
-    tensor_algebra::einsum(0.0, Indices{i, j, l}, &T2r, 1.0, Indices{i, j, k}, T1r, Indices{k, l}, C);
+    reference_einsum("ijl <- ijk ; kl", 0.0, &T1r, 1.0, A, B);
+    reference_einsum("ijl <- ijk ; kl", 0.0, &T2r, 1.0, T1r, C);
 
     cg::Graph graph("cp_rank3_analysis");
     {
@@ -1028,8 +1029,8 @@ TEST_CASE("ContractionPlanning - float chain detected and analyzed", "[ComputeGr
     // Graph should still execute correctly
     auto T1r = create_zero_tensor<float>("T1r", 50, 50);
     auto T2r = create_zero_tensor<float>("T2r", 50, 5);
-    tensor_algebra::einsum(0.0f, Indices{i, j}, &T1r, 1.0f, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(0.0f, Indices{i, j}, &T2r, 1.0f, Indices{i, k}, T1r, Indices{k, j}, C);
+    reference_einsum("ij <- ik ; kj", 0.0f, &T1r, 1.0f, A, B);
+    reference_einsum("ij <- ik ; kj", 0.0f, &T2r, 1.0f, T1r, C);
 
     graph.execute();
 
@@ -1120,8 +1121,8 @@ TEST_CASE("ContractionPlanning - user-visible interior blocks restructuring", "[
 
     auto T1r = create_zero_tensor<double>("T1r", 100, 100);
     auto T2r = create_zero_tensor<double>("T2r", 100, 1);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &T2r, 1.0, Indices{i, k}, T1r, Indices{k, j}, C);
+    reference_einsum("ij <- ik ; kj", 0.0, &T1r, 1.0, A, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &T2r, 1.0, T1r, C);
 
     cg::Graph graph("cp_user_interior");
     {
@@ -1168,8 +1169,8 @@ TEST_CASE("ContractionPlanning - outside reader of interior blocks restructuring
 
     auto T1r = create_zero_tensor<double>("T1r", 100, 100);
     auto Dr  = create_zero_tensor<double>("Dr", 100, 100);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &T1r, 1.0, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &Dr, 1.0, Indices{i, k}, T1r, Indices{k, j}, E);
+    reference_einsum("ij <- ik ; kj", 0.0, &T1r, 1.0, A, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &Dr, 1.0, T1r, E);
     for (size_t ii = 0; ii < 100; ii++) {
         for (size_t jj = 0; jj < 100; jj++) {
             CHECK(D(ii, jj) == Catch::Approx(Dr(ii, jj)).margin(1e-8));

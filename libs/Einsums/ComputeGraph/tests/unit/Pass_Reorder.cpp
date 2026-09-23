@@ -8,15 +8,16 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("Reorder - empty graph", "[ComputeGraph][Passes]") {
@@ -49,8 +50,8 @@ TEST_CASE("Reorder - produces valid topological order", "[ComputeGraph][Passes]"
 
     auto C_ref = create_zero_tensor<double>("Cref", 5, 5);
     auto D_ref = create_zero_tensor<double>("Dref", 5, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(Indices{i, j}, &D_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
+    reference_einsum("ij <- ik ; kj", &D_ref, A, B);
 
     cg::Graph graph("reorder_indep");
     {
@@ -78,8 +79,8 @@ TEST_CASE("Reorder - preserves data dependencies", "[ComputeGraph][Passes]") {
 
     auto C_ref = create_zero_tensor<double>("Cref", 5, 5);
     auto D_ref = create_zero_tensor<double>("Dref", 5, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(Indices{i, j}, &D_ref, Indices{i, k}, C_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
+    reference_einsum("ij <- ik ; kj", &D_ref, C_ref, B);
 
     cg::Graph graph("reorder_chain");
     {
@@ -127,9 +128,8 @@ TEST_CASE("Reorder - preserves rank-3 BatchedGemm chain (row-major)", "[ComputeG
     auto C_ref = create_zero_tensor<double>(true, "Cref", 4, 3, 3);
     auto D_ref = create_zero_tensor<double>(true, "Dref", 4, 3, 3);
     {
-        using namespace einsums::index;
-        tensor_algebra::einsum(Indices{b, i, j}, &C_ref, Indices{b, i, k}, A, Indices{b, k, j}, B);
-        tensor_algebra::einsum(Indices{b, i, j}, &D_ref, Indices{b, i, k}, C_ref, Indices{b, k, j}, B);
+        reference_einsum("bij <- bik ; bkj", &C_ref, A, B);
+        reference_einsum("bij <- bik ; bkj", &D_ref, C_ref, B);
     }
 
     cg::Graph graph("reorder_rank3_row");
@@ -169,9 +169,8 @@ TEST_CASE("Reorder - preserves rank-3 BatchedGemm dependency chain", "[ComputeGr
     auto C_ref = create_zero_tensor<double>("Cref", 3, 3, 4);
     auto D_ref = create_zero_tensor<double>("Dref", 3, 3, 4);
     {
-        using namespace einsums::index;
-        tensor_algebra::einsum(Indices{i, j, b}, &C_ref, Indices{i, k, b}, A, Indices{k, j, b}, B);
-        tensor_algebra::einsum(Indices{i, j, b}, &D_ref, Indices{i, k, b}, C_ref, Indices{k, j, b}, B);
+        reference_einsum("ijb <- ikb ; kjb", &C_ref, A, B);
+        reference_einsum("ijb <- ikb ; kjb", &D_ref, C_ref, B);
     }
 
     cg::Graph graph("reorder_rank3");

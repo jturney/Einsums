@@ -8,17 +8,19 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <algorithm>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+using einsums::testing::reference_permute;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("create_default - includes expected passes", "[ComputeGraph][PassManager]") {
@@ -57,7 +59,7 @@ TEST_CASE("create_default - safe on simple graph", "[ComputeGraph][PassManager]"
     auto C = create_zero_tensor<double>("C", 4, 5);
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("default_simple");
     {
@@ -83,7 +85,7 @@ TEST_CASE("create_default - safe on Pipeline with loop", "[ComputeGraph][PassMan
 
     auto C_ref = create_zero_tensor<double>("Cref", 5, 5);
     for (int it = 0; it < 5; it++) {
-        tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+        reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, A, B);
         linear_algebra::scale(0.9, &C_ref);
     }
 
@@ -114,9 +116,9 @@ TEST_CASE("create_default - safe on mixed operations", "[ComputeGraph][PassManag
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
     auto D_ref = create_zero_tensor<double>("Dref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     linear_algebra::scale(2.0, &C_ref);
-    tensor_algebra::permute(0.0, Indices{j, i}, &D_ref, 1.0, Indices{i, j}, C_ref);
+    reference_permute("ji <- ij", 0.0, &D_ref, 1.0, C_ref);
 
     cg::Graph graph("default_mixed");
     {
@@ -148,8 +150,7 @@ TEST_CASE("create_default - safe on rank-3 BatchedGemm (row-major)", "[ComputeGr
 
     auto C_ref = create_zero_tensor<double>(true, "Cref", 4, 3, 6);
     {
-        using namespace einsums::index;
-        tensor_algebra::einsum(Indices{b, i, j}, &C_ref, Indices{b, i, k}, A, Indices{b, k, j}, B);
+        reference_einsum("bij <- bik ; bkj", &C_ref, A, B);
     }
 
     cg::Graph graph("default_rank3_row");
@@ -183,8 +184,7 @@ TEST_CASE("create_default - safe on rank-3 BatchedGemm", "[ComputeGraph][PassMan
 
     auto C_ref = create_zero_tensor<double>("Cref", 3, 6, 4);
     {
-        using namespace einsums::index;
-        tensor_algebra::einsum(Indices{i, j, b}, &C_ref, Indices{i, k, b}, A, Indices{k, j, b}, B);
+        reference_einsum("ijb <- ikb ; kjb", &C_ref, A, B);
     }
 
     cg::Graph graph("default_rank3");

@@ -5,14 +5,15 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("Graph::create_tensor - basic ownership", "[ComputeGraph][Lifetime]") {
@@ -33,7 +34,7 @@ TEST_CASE("Graph::create_tensor - basic ownership", "[ComputeGraph][Lifetime]") 
 
     // Verify result
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
@@ -65,7 +66,7 @@ TEST_CASE("Graph::create_tensor - survives capture block scope", "[ComputeGraph]
 
     // Reference
     auto tmp_ref = create_zero_tensor<double>("tmpref", 5, 5);
-    tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &tmp_ref, A, B);
     linear_algebra::scale(2.0, &tmp_ref);
 
     for (size_t ii = 0; ii < 5; ii++) {
@@ -120,7 +121,7 @@ TEST_CASE("Pipeline::create_tensor - owned by pipeline", "[ComputeGraph][Lifetim
 
     // C = 2 * A * B
     auto C_ref = create_zero_tensor<double>("Cref", 3, 3);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     linear_algebra::scale(2.0, &C_ref);
 
     for (size_t ii = 0; ii < 3; ii++) {

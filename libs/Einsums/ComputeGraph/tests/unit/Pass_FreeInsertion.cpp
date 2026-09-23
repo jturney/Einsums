@@ -10,15 +10,16 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 namespace {
@@ -260,9 +261,9 @@ TEST_CASE("FreeInsertion - Free is ordered after every reader under DataflowExec
     auto             C = create_zero_tensor<double>("C", n, n);
 
     Tensor<double, 2> t1_ref("t1_ref", n, n), t2_ref("t2_ref", n, n), C_ref("C_ref", n, n);
-    einsum(0.0, Indices{i, j}, &t1_ref, 1.0, Indices{i, k}, A, Indices{k, j}, A);
-    einsum(0.0, Indices{i, j}, &t2_ref, 1.0, Indices{i, k}, t1_ref, Indices{k, j}, A);
-    einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, t2_ref, Indices{k, j}, t1_ref);
+    reference_einsum("ij <- ik ; kj", 0.0, &t1_ref, 1.0, A, A);
+    reference_einsum("ij <- ik ; kj", 0.0, &t2_ref, 1.0, t1_ref, A);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, t2_ref, t1_ref);
 
     cg::Graph g("free_dataflow");
     auto     &t1 = g.scratch<double, 2>("t1", n, n);

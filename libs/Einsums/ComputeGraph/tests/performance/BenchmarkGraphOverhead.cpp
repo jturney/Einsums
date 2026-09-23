@@ -20,9 +20,9 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Performance.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <fmt/format.h>
 
@@ -30,8 +30,9 @@
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
-using namespace einsums::index;
 using namespace einsums::performance;
 namespace cg = einsums::compute_graph;
 
@@ -151,7 +152,7 @@ EINSUMS_TEST_CASE("Bench GraphOverhead: serial replay of 100-node chain", "[Comp
         "eager equivalent",
         [&]() {
             for (size_t n = 1; n < pool.size(); n++) {
-                tensor_algebra::einsum(0.0, Indices{i, j}, &pool[n], 1.0, Indices{i, k}, A, Indices{k, j}, pool[n - 1]);
+                reference_einsum("ij <- ik ; kj", 0.0, &pool[n], 1.0, A, pool[n - 1]);
                 linear_algebra::scale(0.99, &pool[n]);
             }
         },

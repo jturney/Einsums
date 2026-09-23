@@ -25,16 +25,18 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateIncrementedTensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <complex>
 #include <string>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
+
+using einsums::testing::reference_einsum;
 
 using namespace einsums;
 namespace cg = einsums::compute_graph;
@@ -348,8 +350,7 @@ TEST_CASE("a refused lowering leaves the graph exactly as it was", "[ComputeGrap
     // And it still computes the right thing.
     graph.execute();
     auto ref = create_zero_tensor<double>("ref", 4, 5);
-    using namespace einsums::index;
-    tensor_algebra::einsum(Indices{i, j}, &ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &ref, A, B);
     for (std::size_t row = 0; row < 4; ++row) {
         for (std::size_t col = 0; col < 5; ++col) {
             CHECK(C(row, col) == ref(row, col));

@@ -5,9 +5,9 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cmath>
 #include <cstddef>
@@ -15,9 +15,10 @@
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("create_tensor - creates graph-owned tensor with Alloc node", "[ComputeGraph][Memory]") {
@@ -44,7 +45,7 @@ TEST_CASE("create_tensor - creates graph-owned tensor with Alloc node", "[Comput
 
     // Verify the result
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
@@ -113,8 +114,8 @@ TEST_CASE("alloc + use + free - full lifecycle", "[ComputeGraph][Memory]") {
     // Verify: E = A * B * D
     auto T_ref = create_zero_tensor<double>("Tref", 4, 5);
     auto E_ref = create_zero_tensor<double>("Eref", 4, 2);
-    tensor_algebra::einsum(Indices{i, j}, &T_ref, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(Indices{i, j}, &E_ref, Indices{i, k}, T_ref, Indices{k, j}, D);
+    reference_einsum("ij <- ik ; kj", &T_ref, A, B);
+    reference_einsum("ij <- ik ; kj", &E_ref, T_ref, D);
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 2; jj++) {
@@ -181,11 +182,11 @@ namespace {
 /// ((A*B)*B)*B, the value both graphs below compute through a body.
 Tensor<double, 2> chained_reference(Tensor<double, 2> const &a, Tensor<double, 2> const &b, size_t n) {
     auto r = create_zero_tensor<double>("r", n, n);
-    tensor_algebra::einsum(Indices{i, j}, &r, Indices{i, k}, a, Indices{k, j}, b);
+    reference_einsum("ij <- ik ; kj", &r, a, b);
     auto s = create_zero_tensor<double>("s", n, n);
-    tensor_algebra::einsum(Indices{i, j}, &s, Indices{i, k}, r, Indices{k, j}, b);
+    reference_einsum("ij <- ik ; kj", &s, r, b);
     auto o = create_zero_tensor<double>("o", n, n);
-    tensor_algebra::einsum(Indices{i, j}, &o, Indices{i, k}, s, Indices{k, j}, b);
+    reference_einsum("ij <- ik ; kj", &o, s, b);
     return o;
 }
 

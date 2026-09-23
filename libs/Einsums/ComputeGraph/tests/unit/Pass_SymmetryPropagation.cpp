@@ -9,16 +9,17 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/SymmetryOps.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorBase/SymmetryDescriptor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("SymmetryPropagation - A^T A (ki,kj->ij) produces symmetric", "[ComputeGraph][Passes][Symmetry]") {
@@ -182,9 +183,9 @@ TEST_CASE("SymmetryPropagation - inferred C executes correctly via gemm dispatch
     graph.execute();
 
     auto C_ref = create_zero_tensor<double>("Cref", 6, 6);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{k, i}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ki ; kj", &C_ref, A, A);
     auto D_ref = create_zero_tensor<double>("Dref", 6, 6);
-    tensor_algebra::einsum(Indices{i, k}, &D_ref, Indices{i, j}, C_ref, Indices{j, k}, B);
+    reference_einsum("ik <- ij ; jk", &D_ref, C_ref, B);
 
     for (int ii = 0; ii < 6; ++ii)
         for (int jj = 0; jj < 6; ++jj)

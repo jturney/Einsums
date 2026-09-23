@@ -31,10 +31,10 @@
 #include <Einsums/ComputeGraph/GraphIR.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateIdentity.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <fmt/format.h>
 
@@ -48,6 +48,8 @@
 #include <vector>
 
 #include <Einsums/Testing.hpp>
+
+using einsums::testing::reference_einsum;
 
 using namespace einsums;
 namespace cg = einsums::compute_graph;
@@ -529,11 +531,15 @@ TEST_CASE("SaveLoad - spaces, dim symbols and a re-bind at a new size", "[Comput
     loaded.bind("F", F2, "G", G2, "H", H2);
     loaded.execute();
 
+    // Checked against the reference to a tolerance, not bitwise: the reference sums in its own order,
+    // and the property under test is that the rebound graph computes this product at all.
     auto expected = create_zero_tensor<double>("expected", 5, 5);
-    einsums::tensor_algebra::einsum(0.0, std::tuple{einsums::index::i, einsums::index::j}, &expected, 1.0,
-                                    std::tuple{einsums::index::i, einsums::index::a}, F2, std::tuple{einsums::index::a, einsums::index::j},
-                                    G2);
-    REQUIRE(bytes_of(H2) == bytes_of(expected));
+    reference_einsum("ij <- ia ; aj", &expected, F2, G2);
+    for (size_t i = 0; i < 5; ++i) {
+        for (size_t j = 0; j < 5; ++j) {
+            REQUIRE_THAT(H2(i, j), Catch::Matchers::WithinAbs(expected(i, j), 1.0e-12));
+        }
+    }
 }
 
 TEST_CASE("SaveLoad - a deferred intermediate comes back deferred and rebinds", "[ComputeGraph][SaveLoad][Symbolic]") {

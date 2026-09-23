@@ -9,16 +9,17 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <tuple>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_permute;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 // ── Capturable operations ──────────────────────────────────────────────
@@ -72,7 +73,7 @@ TEST_CASE("Operation - transpose in graph", "[ComputeGraph][Operations]") {
     auto B = create_zero_tensor<double>("B", 6, 4);
 
     auto B_ref = create_zero_tensor<double>("B_ref", 6, 4);
-    tensor_algebra::transpose(&B_ref, A);
+    reference_permute("ij <- ji", 0.0, &B_ref, 1.0, A);
 
     cg::Graph graph("transpose");
     {
@@ -222,7 +223,7 @@ TEST_CASE("Operation - chain of mixed ops in graph", "[ComputeGraph][Operations]
     auto D_ref = create_zero_tensor<double>("D_ref", 4, 4);
     linear_algebra::gemm<false, false>(1.0, A, B, 0.0, &C_ref);
     linear_algebra::scale(0.5, &C_ref);
-    tensor_algebra::permute(0.0, Indices{i, j}, &D_ref, 1.0, Indices{i, j}, C_ref);
+    reference_permute("ij <- ij", 0.0, &D_ref, 1.0, C_ref);
     linear_algebra::axpy(1.0, A, &D_ref);
 
     cg::Graph graph("mixed_chain");

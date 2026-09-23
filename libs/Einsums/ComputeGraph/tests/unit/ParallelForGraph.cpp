@@ -7,14 +7,15 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("cg::parallel_for - basic capture and execute", "[ComputeGraph][ParallelFor]") {
@@ -48,7 +49,7 @@ TEST_CASE("cg::parallel_for - ordering with einsum", "[ComputeGraph][ParallelFor
         for (size_t jj = 0; jj < N; jj++)
             J_ref(ii, jj) = D(ii, jj) * D(ii, jj);
     auto F_ref = create_zero_tensor<double>("F_ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &F_ref, Indices{i, k}, J_ref, Indices{k, j}, D);
+    reference_einsum("ij <- ik ; kj", &F_ref, J_ref, D);
 
     // Graph: parallel_for to fill J, then einsum F = J * D
     cg::Graph graph("pf_then_einsum");
@@ -131,7 +132,7 @@ TEST_CASE("cg::parallel_for + einsum + parallel_reduce in one graph", "[ComputeG
         for (size_t jj = 0; jj < N; jj++)
             J_ref(ii, jj) = D(ii, jj) * 2.0;
     auto F_ref = create_zero_tensor<double>("F_ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &F_ref, Indices{i, k}, J_ref, Indices{k, j}, D);
+    reference_einsum("ij <- ik ; kj", &F_ref, J_ref, D);
     double energy_ref = 0.0;
     for (size_t ii = 0; ii < N; ii++)
         for (size_t jj = 0; jj < N; jj++)

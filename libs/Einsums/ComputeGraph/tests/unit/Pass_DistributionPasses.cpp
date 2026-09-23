@@ -19,17 +19,18 @@
 #include <Einsums/ComputeGraph/Passes/InputSlicing.hpp>
 #include <Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <string>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 namespace {
@@ -219,7 +220,7 @@ TEST_CASE("SUMMAExpansion - single-rank pipeline is a numeric identity", "[Compu
 
     // Eager reference.
     auto C_ref = create_zero_tensor<double>("C_ref", 12, 10);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("summa-numeric");
     auto     &C = graph.declare_zero_tensor<double, 2>(std::string("C"), 12, 10);

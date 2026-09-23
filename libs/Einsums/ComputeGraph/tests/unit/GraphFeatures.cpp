@@ -7,20 +7,21 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <sstream>
 #include <string>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using TensorId        = einsums::compute_graph::TensorId;
 namespace packed_gemm = einsums::packed_gemm;
 
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("Graph - to_json produces valid structure", "[ComputeGraph][JSON]") {
@@ -104,7 +105,7 @@ TEST_CASE("Graph - move constructor", "[ComputeGraph][Move]") {
     auto C = create_zero_tensor<double>("C", 4, 4);
 
     auto C_ref = create_zero_tensor<double>("C_ref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph1("original");
     {
@@ -133,7 +134,7 @@ TEST_CASE("Graph - move assignment", "[ComputeGraph][Move]") {
     auto C = create_zero_tensor<double>("C", 3, 3);
 
     auto C_ref = create_zero_tensor<double>("C_ref", 3, 3);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph1("src");
     {
@@ -208,7 +209,7 @@ TEST_CASE("Graph - PassManager default end-to-end", "[ComputeGraph][PassManager]
     auto C = create_zero_tensor<double>("C", 5, 5);
 
     auto C_ref = create_zero_tensor<double>("C_ref", 5, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("passmanager");
     {
@@ -435,7 +436,7 @@ TEST_CASE("Graph - execute with annotations", "[ComputeGraph][Profiler]") {
     REQUIRE_NOTHROW(graph.execute());
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     linear_algebra::scale(2.0, &C_ref);
 
     for (size_t ii = 0; ii < 4; ii++) {
@@ -474,9 +475,9 @@ TEST_CASE("scratch - deferred, intermediate, and fully pass-managed", "[ComputeG
     // parked by the arena) - either way not holding its own live buffer.
     // The result must be right regardless:
     auto tmp_ref = create_zero_tensor<double>("tmpref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &tmp_ref, A, B);
     auto out_ref = create_zero_tensor<double>("OUTref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, tmp_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &out_ref, tmp_ref, B);
     for (size_t ii = 0; ii < N; ii += 37) {
         for (size_t jj = 0; jj < N; jj += 41) {
             REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-8);
@@ -547,9 +548,9 @@ TEST_CASE("optimize + explain - one-call pipeline with a readable report", "[Com
     graph.execute();
 
     auto tmp_ref = create_zero_tensor<double>("tmpref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &tmp_ref, A, B);
     auto out_ref = create_zero_tensor<double>("OUTref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, tmp_ref, Indices{k, j}, tmp_ref);
+    reference_einsum("ij <- ik ; kj", &out_ref, tmp_ref, tmp_ref);
     for (size_t ii = 0; ii < N; ii += 41) {
         for (size_t jj = 0; jj < N; jj += 37) {
             REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-8);
@@ -582,9 +583,9 @@ TEST_CASE("optimize levels - O0 is a no-op, O1 cleans up only", "[ComputeGraph][
 
     graph.execute();
     auto tmp_ref = create_zero_tensor<double>("tmpref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &tmp_ref, A, A);
     auto out_ref = create_zero_tensor<double>("OUTref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, tmp_ref, Indices{k, j}, tmp_ref);
+    reference_einsum("ij <- ik ; kj", &out_ref, tmp_ref, tmp_ref);
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
             REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
@@ -622,9 +623,9 @@ TEST_CASE("deferred tensor without Materialization - actionable execute error", 
     REQUIRE_NOTHROW(graph.execute());
 
     auto tmp_ref = create_zero_tensor<double>("tmpref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &tmp_ref, Indices{i, k}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &tmp_ref, A, A);
     auto out_ref = create_zero_tensor<double>("OUTref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, tmp_ref, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &out_ref, tmp_ref, A);
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
             REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);

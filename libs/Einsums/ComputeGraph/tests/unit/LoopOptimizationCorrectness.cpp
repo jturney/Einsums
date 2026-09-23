@@ -20,15 +20,16 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 namespace {
@@ -84,7 +85,7 @@ TEST_CASE("Loop correctness - mutable-reuse body through full default pipeline",
 
     // Eager reference: acc_0 = 0; each iter acc = 0.9 * (acc + A*A + (H+A) + H).
     auto AA = create_zero_tensor<double>("AA", 4, 4);
-    einsum(Indices{i, j}, &AA, Indices{i, k}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &AA, A, A);
     auto ref = create_zero_tensor<double>("ref", 4, 4);
     for (size_t it = 0; it < N; ++it) {
         for (size_t idx = 0; idx < ref.size(); ++idx) {
@@ -185,7 +186,7 @@ TEST_CASE("Loop correctness - workspace-backed mutable reuse through full pipeli
     g.execute();
 
     auto AA = create_zero_tensor<double>("AA", 4, 4);
-    einsum(Indices{i, j}, &AA, Indices{i, k}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &AA, A, A);
     auto ref = create_zero_tensor<double>("ref", 4, 4);
     for (size_t it = 0; it < N; ++it) {
         for (size_t idx = 0; idx < ref.size(); ++idx) {
@@ -224,8 +225,8 @@ TEST_CASE("Loop correctness - GEMM chain restructured inside a loop body", "[Com
     // Eager reference: out = (A·B)·C, computed directly.
     auto T1_ref  = create_zero_tensor<double>("T1_ref", 100, 100);
     auto out_ref = create_zero_tensor<double>("out_ref", 100, 1);
-    einsum(Indices{i, j}, &T1_ref, Indices{i, k}, A, Indices{k, j}, B);
-    einsum(Indices{i, j}, &out_ref, Indices{i, k}, T1_ref, Indices{k, j}, C);
+    reference_einsum("ij <- ik ; kj", &T1_ref, A, B);
+    reference_einsum("ij <- ik ; kj", &out_ref, T1_ref, C);
 
     for (size_t idx = 0; idx < out.size(); ++idx) {
         CHECK(std::abs(out.data()[idx] - out_ref.data()[idx]) < 1e-9);

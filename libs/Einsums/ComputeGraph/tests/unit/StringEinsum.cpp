@@ -5,18 +5,21 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <array>
 #include <string>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_permute;
+
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("String einsum - arrow notation, direct execute", "[ComputeGraph][StringEinsum]") {
@@ -26,7 +29,7 @@ TEST_CASE("String einsum - arrow notation, direct execute", "[ComputeGraph][Stri
     auto C_expected = create_zero_tensor<double>("Ce", 4, 5);
 
     // Reference via template-based einsum
-    tensor_algebra::einsum(Indices{i, j}, &C_expected, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_expected, A, B);
 
     // String-based direct execution (no capture)
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
@@ -45,7 +48,7 @@ TEST_CASE("String einsum - numpy notation, direct execute", "[ComputeGraph][Stri
     auto C          = create_zero_tensor<double>("C", 4, 5);
     auto C_expected = create_zero_tensor<double>("Ce", 4, 5);
 
-    tensor_algebra::einsum(Indices{i, j}, &C_expected, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ik;kj -> ij", &C, A, B);
@@ -63,7 +66,7 @@ TEST_CASE("String einsum - with prefactors", "[ComputeGraph][StringEinsum]") {
     auto C          = create_random_tensor<double>("C", 3, 3);
     auto C_expected = Tensor<double, 2>(C);
 
-    tensor_algebra::einsum(2.0, Indices{i, j}, &C_expected, 3.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 2.0, &C_expected, 3.0, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ik ; kj", 2.0, &C, 3.0, A, B);
@@ -81,7 +84,7 @@ TEST_CASE("String einsum - graph capture and execute", "[ComputeGraph][StringEin
     auto C          = create_zero_tensor<double>("C", 5, 4);
     auto C_expected = create_zero_tensor<double>("Ce", 5, 4);
 
-    tensor_algebra::einsum(Indices{i, j}, &C_expected, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_expected, A, B);
 
     cg::Graph graph("string_einsum_test");
     {
@@ -108,8 +111,8 @@ TEST_CASE("String einsum - chain in graph", "[ComputeGraph][StringEinsum]") {
     auto T1_ref = create_zero_tensor<double>("T1r", 4, 5);
     auto E_ref  = create_zero_tensor<double>("Er", 4, 2);
 
-    tensor_algebra::einsum(Indices{i, j}, &T1_ref, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(Indices{i, l}, &E_ref, Indices{i, j}, T1_ref, Indices{j, l}, D);
+    reference_einsum("ij <- ik ; kj", &T1_ref, A, B);
+    reference_einsum("il <- ij ; jl", &E_ref, T1_ref, D);
 
     cg::Graph graph("string_chain");
     {
@@ -135,7 +138,7 @@ TEST_CASE("String einsum - works with optimization passes", "[ComputeGraph][Stri
 
     auto C_ref = Tensor<double, 2>(C);
     linear_algebra::scale(2.0, &C_ref);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, A, B);
 
     cg::Graph graph("string_with_passes");
     {
@@ -191,7 +194,7 @@ TEST_CASE("String einsum - pipeline with loop", "[ComputeGraph][StringEinsum]") 
 
     // acc = 3 * C = 3 * A * B
     auto C_ref = create_zero_tensor<double>("Cref", 3, 3);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {
@@ -207,7 +210,7 @@ TEST_CASE("String einsum - transposed A", "[ComputeGraph][StringEinsum]") {
     auto C_expected = create_zero_tensor<double>("Ce", 4, 5);
 
     // C[i,j] = A[k,i] * B[k,j]  (A is transposed)
-    tensor_algebra::einsum(Indices{i, j}, &C_expected, Indices{k, i}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ki ; kj", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ki ; kj", &C, A, B);
@@ -229,7 +232,7 @@ TEST_CASE("String einsum - GEMV (matrix-vector)", "[ComputeGraph][StringEinsum][
     auto y          = create_zero_tensor<double>("y", 4);
     auto y_expected = create_zero_tensor<double>("ye", 4);
 
-    tensor_algebra::einsum(Indices{i}, &y_expected, Indices{i, k}, A, Indices{k}, x);
+    reference_einsum("i <- ik ; k", &y_expected, A, x);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("i <- ik ; k", &y, A, x);
@@ -245,7 +248,7 @@ TEST_CASE("String einsum - GEMV transposed", "[ComputeGraph][StringEinsum][Phase
     auto y          = create_zero_tensor<double>("y", 4);
     auto y_expected = create_zero_tensor<double>("ye", 4);
 
-    tensor_algebra::einsum(Indices{i}, &y_expected, Indices{k, i}, A, Indices{k}, x);
+    reference_einsum("i <- ki ; k", &y_expected, A, x);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("i <- ki ; k", &y, A, x);
@@ -261,7 +264,7 @@ TEST_CASE("String einsum - GEMV vector * matrix", "[ComputeGraph][StringEinsum][
     auto y          = create_zero_tensor<double>("y", 5);
     auto y_expected = create_zero_tensor<double>("ye", 5);
 
-    tensor_algebra::einsum(Indices{j}, &y_expected, Indices{k}, x, Indices{k, j}, B);
+    reference_einsum("j <- k ; kj", &y_expected, x, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("j <- k ; kj", &y, x, B);
@@ -277,7 +280,7 @@ TEST_CASE("String einsum - GER (outer product)", "[ComputeGraph][StringEinsum][P
     auto C          = create_zero_tensor<double>("C", 4, 5);
     auto C_expected = create_zero_tensor<double>("Ce", 4, 5);
 
-    tensor_algebra::einsum(Indices{i, j}, &C_expected, Indices{i}, x, Indices{j}, y);
+    reference_einsum("ij <- i ; j", &C_expected, x, y);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture, einsums-no-link-index)
     cg::einsum("ij <- i ; j", &C, x, y);
@@ -327,7 +330,7 @@ TEST_CASE("String einsum - GEMV in graph capture", "[ComputeGraph][StringEinsum]
     auto y          = create_zero_tensor<double>("y", 4);
     auto y_expected = create_zero_tensor<double>("ye", 4);
 
-    tensor_algebra::einsum(Indices{i}, &y_expected, Indices{i, k}, A, Indices{k}, x);
+    reference_einsum("i <- ik ; k", &y_expected, A, x);
 
     cg::Graph graph("gemv_graph");
     {
@@ -348,7 +351,7 @@ TEST_CASE("String einsum - GER in graph capture", "[ComputeGraph][StringEinsum][
     auto C          = create_zero_tensor<double>("C", 3, 4);
     auto C_expected = create_zero_tensor<double>("Ce", 3, 4);
 
-    tensor_algebra::einsum(Indices{i, j}, &C_expected, Indices{i}, x, Indices{j}, y);
+    reference_einsum("ij <- i ; j", &C_expected, x, y);
 
     cg::Graph graph("ger_graph");
     {
@@ -372,7 +375,7 @@ TEST_CASE("String einsum - multi-char indices with GEMM", "[ComputeGraph][String
     auto C          = create_zero_tensor<double>("C", 4, 5);
     auto C_expected = create_zero_tensor<double>("Ce", 4, 5);
 
-    tensor_algebra::einsum(Indices{i, j}, &C_expected, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("mu,nu <- mu,rho ; rho,nu", &C, A, B);
@@ -395,7 +398,7 @@ TEST_CASE("String einsum - rank-3 contraction to rank-2", "[ComputeGraph][String
     auto C          = create_zero_tensor<double>("C", 3, 2);
     auto C_expected = create_zero_tensor<double>("Ce", 3, 2);
 
-    tensor_algebra::einsum(Indices{i, l}, &C_expected, Indices{i, j, k}, A, Indices{j, k, l}, B);
+    reference_einsum("il <- ijk ; jkl", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("il <- ijk ; jkl", &C, A, B);
@@ -414,7 +417,7 @@ TEST_CASE("String einsum - rank-3 contraction to rank-1", "[ComputeGraph][String
     auto C          = create_zero_tensor<double>("C", 3);
     auto C_expected = create_zero_tensor<double>("Ce", 3);
 
-    tensor_algebra::einsum(Indices{i}, &C_expected, Indices{i, j, k}, A, Indices{j, i, k}, B);
+    reference_einsum("i <- ijk ; jik", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("i <- ijk ; jik", &C, A, B);
@@ -432,7 +435,7 @@ TEST_CASE("String einsum - rank-3 × rank-2 contraction", "[ComputeGraph][String
     auto C          = create_zero_tensor<double>("C", 3, 4);
     auto C_expected = create_zero_tensor<double>("Ce", 3, 4);
 
-    tensor_algebra::einsum(Indices{i, j}, &C_expected, Indices{i, j, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ijk ; kj", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ijk ; kj", &C, A, B);
@@ -450,7 +453,7 @@ TEST_CASE("String einsum - rank-3 × rank-3 to rank-2 in graph", "[ComputeGraph]
     auto C          = create_zero_tensor<double>("C", 3, 2);
     auto C_expected = create_zero_tensor<double>("Ce", 3, 2);
 
-    tensor_algebra::einsum(Indices{i, l}, &C_expected, Indices{i, j, k}, A, Indices{j, k, l}, B);
+    reference_einsum("il <- ijk ; jkl", &C_expected, A, B);
 
     cg::Graph graph("rank3_graph");
     {
@@ -474,7 +477,7 @@ TEST_CASE("String einsum - rank-4 contraction", "[ComputeGraph][StringEinsum][Hi
     auto C          = create_zero_tensor<double>("C", 2, 3, 2, 3);
     auto C_expected = create_zero_tensor<double>("Ce", 2, 3, 2, 3);
 
-    tensor_algebra::einsum(Indices{i, j, k, l}, &C_expected, Indices{i, j, p}, A, Indices{k, l, p}, B);
+    reference_einsum("ijkl <- ijp ; klp", &C_expected, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ijkl <- ijp ; klp", &C, A, B);
@@ -496,7 +499,7 @@ TEST_CASE("String einsum - higher-rank with prefactors", "[ComputeGraph][StringE
     auto C          = create_random_tensor<double>("C", 3, 2);
     auto C_expected = Tensor<double, 2>(C);
 
-    tensor_algebra::einsum(2.0, Indices{i, l}, &C_expected, 3.0, Indices{i, j, k}, A, Indices{j, k, l}, B);
+    reference_einsum("il <- ijk ; jkl", 2.0, &C_expected, 3.0, A, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("il <- ijk ; jkl", 2.0, &C, 3.0, A, B);
@@ -517,7 +520,7 @@ TEST_CASE("String permute - matrix transpose, direct execute", "[ComputeGraph][S
     auto C = create_zero_tensor<double>("C", 3, 4);
 
     auto C_expected = create_zero_tensor<double>("Ce", 3, 4);
-    tensor_algebra::permute(Indices{j, i}, &C_expected, Indices{i, j}, A);
+    reference_permute("ji <- ij", 0.0, &C_expected, 1.0, A);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::permute("ji <- ij", &C, A);
@@ -534,7 +537,7 @@ TEST_CASE("String permute - with prefactors", "[ComputeGraph][StringPermute]") {
     auto C = create_random_tensor<double>("C", 3, 4);
 
     auto C_expected = Tensor<double, 2>(C);
-    tensor_algebra::permute(2.0, Indices{j, i}, &C_expected, 3.0, Indices{i, j}, A);
+    reference_permute("ji <- ij", 2.0, &C_expected, 3.0, A);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::permute("ji <- ij", 2.0, &C, 3.0, A);
@@ -551,7 +554,7 @@ TEST_CASE("String permute - rank-3 transpose", "[ComputeGraph][StringPermute]") 
     auto C = create_zero_tensor<double>("C", 5, 3, 4);
 
     auto C_expected = create_zero_tensor<double>("Ce", 5, 3, 4);
-    tensor_algebra::permute(Indices{k, i, j}, &C_expected, Indices{i, j, k}, A);
+    reference_permute("kij <- ijk", 0.0, &C_expected, 1.0, A);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::permute("kij <- ijk", &C, A);
@@ -567,7 +570,7 @@ TEST_CASE("String permute - graph capture and execute", "[ComputeGraph][StringPe
     auto C = create_zero_tensor<double>("C", 3, 4);
 
     auto C_expected = create_zero_tensor<double>("Ce", 3, 4);
-    tensor_algebra::permute(Indices{j, i}, &C_expected, Indices{i, j}, A);
+    reference_permute("ji <- ij", 0.0, &C_expected, 1.0, A);
 
     cg::Graph graph("string_permute_test");
     {

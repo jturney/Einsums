@@ -12,14 +12,16 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
+#include <Einsums/TensorAlgebra/Backends/ElementTransform.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_permute;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("Dependency - scale is both input and output", "[ComputeGraph][Dependency]") {
@@ -35,7 +37,7 @@ TEST_CASE("Dependency - scale is both input and output", "[ComputeGraph][Depende
     auto A_ref = Tensor<double, 2>(A);
     linear_algebra::scale(2.0, &A_ref);
     auto B_ref = create_zero_tensor<double>("B_ref", 4, 4);
-    tensor_algebra::permute(0.0, Indices{i, j}, &B_ref, 1.0, Indices{i, j}, A_ref);
+    reference_permute("ij <- ij", 0.0, &B_ref, 1.0, A_ref);
 
     // Graph: same operations
     A = Tensor<double, 2>(A_orig); // Reset A
@@ -65,7 +67,7 @@ TEST_CASE("Dependency - permute then scale (write-after-read)", "[ComputeGraph][
 
     // Reference: permute A->B, then scale A
     auto B_ref = create_zero_tensor<double>("B_ref", 4, 4);
-    tensor_algebra::permute(0.0, Indices{j, i}, &B_ref, 1.0, Indices{i, j}, A);
+    reference_permute("ji <- ij", 0.0, &B_ref, 1.0, A);
     linear_algebra::scale(0.5, &A);
     auto A_after_ref = Tensor<double, 2>(A);
 
@@ -138,8 +140,8 @@ TEST_CASE("Dependency - diamond DAG", "[ComputeGraph][Dependency]") {
     auto B_ref = create_zero_tensor<double>("B_ref", 3, 3);
     auto C_ref = create_zero_tensor<double>("C_ref", 3, 3);
     auto D_ref = create_zero_tensor<double>("D_ref", 3, 3);
-    tensor_algebra::permute(0.0, Indices{i, j}, &B_ref, 2.0, Indices{i, j}, A);
-    tensor_algebra::permute(0.0, Indices{j, i}, &C_ref, 1.0, Indices{i, j}, A);
+    reference_permute("ij <- ij", 0.0, &B_ref, 2.0, A);
+    reference_permute("ji <- ij", 0.0, &C_ref, 1.0, A);
     // D = B + C
     linear_algebra::axpy(1.0, B_ref, &D_ref);
     linear_algebra::axpy(1.0, C_ref, &D_ref);
@@ -173,7 +175,7 @@ TEST_CASE("Dependency - multiple writes to same tensor", "[ComputeGraph][Depende
     // Reference: scale A, then A = B^T (overwrite)
     auto A_ref = Tensor<double, 2>(A);
     linear_algebra::scale(3.0, &A_ref);
-    tensor_algebra::permute(0.0, Indices{i, j}, &A_ref, 1.0, Indices{j, i}, B);
+    reference_permute("ij <- ji", 0.0, &A_ref, 1.0, B);
 
     // Reset
     A = Tensor<double, 2>(A_orig);
@@ -207,7 +209,7 @@ TEST_CASE("Dependency - symmetrize pattern in graph", "[ComputeGraph][Dependency
     // Reference: symmetrize A = 0.5*(A + A^T)
     auto A_ref = Tensor<double, 2>(A);
     auto At    = Tensor<double, 2>("At", 4, 4);
-    tensor_algebra::permute(0.0, Indices{j, i}, &At, 1.0, Indices{i, j}, A_ref);
+    reference_permute("ji <- ij", 0.0, &At, 1.0, A_ref);
     linear_algebra::scale(0.5, &A_ref);
     linear_algebra::axpy(0.5, At, &A_ref);
 

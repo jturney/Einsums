@@ -8,17 +8,18 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cmath>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("CSE - empty graph", "[ComputeGraph][CSE]") {
@@ -69,7 +70,7 @@ TEST_CASE("CSE - eliminates duplicate einsum", "[ComputeGraph][CSE]") {
     graph.execute();
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
@@ -149,9 +150,9 @@ TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivo
 
     // Reference: out = (A·B)·F
     auto AB = create_zero_tensor<double>("AB", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &AB, A, B);
     auto out_ref = create_zero_tensor<double>("OUTref", 4, 2);
-    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, AB, Indices{k, j}, F);
+    reference_einsum("ij <- ik ; kj", &out_ref, AB, F);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
@@ -197,9 +198,9 @@ TEST_CASE("CSE - redirect survives a rebind of the survivor", "[ComputeGraph][CS
     graph.execute();
 
     auto AB = create_zero_tensor<double>("AB", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &AB, A, B);
     auto out_ref = create_zero_tensor<double>("OUTref", 4, 2);
-    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, AB, Indices{k, j}, F);
+    reference_einsum("ij <- ik ; kj", &out_ref, AB, F);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
@@ -308,7 +309,7 @@ TEST_CASE("CSE - keeps a duplicate whose output a loop body reads", "[ComputeGra
     graph.execute();
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     double out_norm = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
@@ -335,7 +336,7 @@ TEST_CASE("CSE - merges a duplicate inside a loop body", "[ComputeGraph][CSE][Co
     auto out = create_zero_tensor<double>("out", 4, 5);
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("cse_in_body");
     auto     &P    = graph.create_zero_tensor<double, 2>("P", 4, 5);
@@ -374,7 +375,7 @@ TEST_CASE("CSE - keeps a body duplicate whose output the parent reads", "[Comput
     auto seen = create_zero_tensor<double>("seen", 4, 5);
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("cse_body_escapes");
     auto     &P    = graph.create_zero_tensor<double, 2>("P", 4, 5);
@@ -534,9 +535,9 @@ TEST_CASE("CSE - merges a proportional duplicate and folds the factor into its r
     graph.execute();
 
     auto AB = create_zero_tensor<double>("AB", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &AB, A, B);
     auto ref = create_zero_tensor<double>("ref", 4, 2);
-    tensor_algebra::einsum(Indices{i, j}, &ref, Indices{i, k}, AB, Indices{k, j}, F);
+    reference_einsum("ij <- ik ; kj", &ref, AB, F);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
@@ -598,7 +599,7 @@ TEST_CASE("CSE - declines a proportional duplicate whose reader cannot take the 
     graph.execute();
 
     auto AB = create_zero_tensor<double>("AB", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &AB, A, B);
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
             REQUIRE(std::abs(QT(jj, ii) - 0.5 * AB(ii, jj)) < 1e-12);
@@ -634,7 +635,7 @@ TEST_CASE("CSE - merges proportional axpby copies", "[ComputeGraph][CSE][Prefact
     graph.execute();
 
     auto ref = create_zero_tensor<double>("ref", 4, 2);
-    tensor_algebra::einsum(Indices{i, j}, &ref, Indices{i, k}, X, Indices{k, j}, G);
+    reference_einsum("ij <- ik ; kj", &ref, X, G);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
@@ -793,7 +794,7 @@ TEST_CASE("CSE - an axpy consumer of an eliminated duplicate reads the survivor"
     // Reference: acc = 2 * (A·B). Zeros here would mean the axpy was left
     // pointed at D's never-written buffer.
     auto AB = create_zero_tensor<double>("AB", 4, 5);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &AB, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &AB, 1.0, A, B);
 
     double magnitude = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {

@@ -11,16 +11,16 @@
 // and executes the same contraction through graph capture.
 
 #include <Einsums/ComputeGraph.hpp>
-#include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
-namespace ta = einsums::tensor_algebra;
 
 namespace {
 
@@ -64,8 +64,8 @@ TEST_CASE("cg parity - Hadamard diagonal outer ij<-ii;jj", "[ComputeGraph][Eager
     auto             A = create_random_tensor<double>("A", N, N);
     auto             B = create_random_tensor<double>("B", N, N);
 
-    auto C_eager = create_zero_tensor<double>("Ce", N, N);
-    REQUIRE_NOTHROW(ta::einsum(Indices{i, j}, &C_eager, Indices{i, i}, A, Indices{j, j}, B));
+    auto C_ref = create_zero_tensor<double>("Cr", N, N);
+    reference_einsum("ij <- ii ; jj", &C_ref, A, B);
 
     auto      C_graph = create_zero_tensor<double>("Cg", N, N);
     cg::Graph graph("hadamard_ii_jj");
@@ -75,7 +75,7 @@ TEST_CASE("cg parity - Hadamard diagonal outer ij<-ii;jj", "[ComputeGraph][Eager
     }
     graph.execute();
 
-    require_close(C_graph, C_eager);
+    require_close(C_graph, C_ref);
 }
 
 TEST_CASE("cg parity - Hadamard rank-3 operands ij<-iij;jji", "[ComputeGraph][EagerParity][hadamard]") {
@@ -83,8 +83,8 @@ TEST_CASE("cg parity - Hadamard rank-3 operands ij<-iij;jji", "[ComputeGraph][Ea
     auto             A = create_random_tensor<double>("A", N, N, N);
     auto             B = create_random_tensor<double>("B", N, N, N);
 
-    auto C_eager = create_zero_tensor<double>("Ce", N, N);
-    REQUIRE_NOTHROW(ta::einsum(Indices{i, j}, &C_eager, Indices{i, i, j}, A, Indices{j, j, i}, B));
+    auto C_ref = create_zero_tensor<double>("Cr", N, N);
+    reference_einsum("ij <- iij ; jji", &C_ref, A, B);
 
     auto      C_graph = create_zero_tensor<double>("Cg", N, N);
     cg::Graph graph("hadamard_iij_jji");
@@ -94,7 +94,7 @@ TEST_CASE("cg parity - Hadamard rank-3 operands ij<-iij;jji", "[ComputeGraph][Ea
     }
     graph.execute();
 
-    require_close(C_graph, C_eager);
+    require_close(C_graph, C_ref);
 }
 
 TEST_CASE("cg parity - Hadamard repeated output index iji<-iji;jij", "[ComputeGraph][EagerParity][hadamard]") {
@@ -102,8 +102,8 @@ TEST_CASE("cg parity - Hadamard repeated output index iji<-iji;jij", "[ComputeGr
     auto             A = create_random_tensor<double>("A", N, N, N);
     auto             B = create_random_tensor<double>("B", N, N, N);
 
-    auto C_eager = create_zero_tensor<double>("Ce", N, N, N);
-    REQUIRE_NOTHROW(ta::einsum(Indices{i, j, i}, &C_eager, Indices{i, j, i}, A, Indices{j, i, j}, B));
+    auto C_ref = create_zero_tensor<double>("Cr", N, N, N);
+    reference_einsum("iji <- iji ; jij", &C_ref, A, B);
 
     auto      C_graph = create_zero_tensor<double>("Cg", N, N, N);
     cg::Graph graph("hadamard_iji");
@@ -113,7 +113,7 @@ TEST_CASE("cg parity - Hadamard repeated output index iji<-iji;jij", "[ComputeGr
     }
     graph.execute();
 
-    require_close(C_graph, C_eager);
+    require_close(C_graph, C_ref);
 }
 
 TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGraph][EagerParity][hadamard]") {
@@ -121,8 +121,8 @@ TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGra
     auto             A = create_random_tensor<double>("A", N, N, N);
     auto             B = create_random_tensor<double>("B", N, N, N);
 
-    auto C_eager = create_zero_tensor<double>("Ce", N, N);
-    REQUIRE_NOTHROW(ta::einsum(Indices{i, i}, &C_eager, Indices{i, j, k}, A, Indices{j, i, k}, B));
+    auto C_ref = create_zero_tensor<double>("Cr", N, N);
+    reference_einsum("ii <- ijk ; jik", &C_ref, A, B);
 
     auto      C_graph = create_zero_tensor<double>("Cg", N, N);
     cg::Graph graph("hadamard_ii_sum");
@@ -132,7 +132,7 @@ TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGra
     }
     graph.execute();
 
-    require_close(C_graph, C_eager);
+    require_close(C_graph, C_ref);
 }
 
 // ---------------------------------------------------------------------------
@@ -143,8 +143,9 @@ TEST_CASE("cg parity - Hadamard diagonal accumulation ii<-ijk;jik", "[ComputeGra
 // (TensorAlgebra Backends/Dispatch.hpp) mis-handled it in two modes until
 // 2026-09-23: the empty-link case computed a wrong value (the lone axis was not
 // summed), and the shared-link case threw std::out_of_range on a stride access.
-// It now routes such specs to its generic loop and iterates every summed letter,
-// so both paths are held to the same reference here.
+// It now routes such specs to its generic loop and iterates every summed letter;
+// its cases live with it, in TensorAlgebra's EagerSemantics.cpp. The graph cases
+// below are held to hand-written references.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -210,31 +211,6 @@ TEST_CASE("cg parity - lone summed index with shared link jk<-jl;plk", "[Compute
     require_close(C_graph, ref);
 }
 
-TEST_CASE("eager parity - lone summed index empty link ij<-ijk;ij", "[ComputeGraph][EagerParity][lone-summed]") {
-    // The eager path used to leave the lone k unsummed and read only k = 0.
-    auto S   = create_random_tensor<double>("S", 3, 4, 5);
-    auto W   = create_random_tensor<double>("W", 3, 4);
-    auto ref = lone_empty_link_reference(S, W);
-
-    auto C_eager = create_zero_tensor<double>("Ce", 3, 4);
-    ta::einsum(Indices{i, j}, &C_eager, Indices{i, j, k}, S, Indices{i, j}, W);
-
-    require_close(C_eager, ref);
-}
-
-TEST_CASE("eager parity - lone summed index with shared link jk<-jl;plk", "[ComputeGraph][EagerParity][lone-summed]") {
-    // The eager path used to throw std::out_of_range on the lone p here (a stride
-    // access past the operand rank); p lives only in B.
-    auto A   = create_random_tensor<double>("A", 3, 4);
-    auto B   = create_random_tensor<double>("B", 2, 4, 5);
-    auto ref = link_plus_lone_reference(A, B);
-
-    auto C_eager = create_zero_tensor<double>("Ce", 3, 5);
-    ta::einsum(Indices{j, k}, &C_eager, Indices{j, l}, A, Indices{p, l, k}, B);
-
-    require_close(C_eager, ref);
-}
-
 // ---------------------------------------------------------------------------
 // Gap 3: Khatri-Rao pattern (TensorAlgebra/KhatriRao.cpp parity)
 // ---------------------------------------------------------------------------
@@ -245,8 +221,8 @@ TEMPLATE_TEST_CASE("cg parity - Khatri-Rao einsum imr<-ir;mr", "[ComputeGraph][E
     auto             T_op = create_random_tensor<TestType>("T", I_dim, R_dim);
     auto             U_op = create_random_tensor<TestType>("U", M_dim, R_dim);
 
-    auto C_eager = create_zero_tensor<TestType>("Ce", I_dim, M_dim, R_dim);
-    ta::einsum(Indices{I, M, r}, &C_eager, Indices{I, r}, T_op, Indices{M, r}, U_op);
+    auto C_ref = create_zero_tensor<TestType>("Cr", I_dim, M_dim, R_dim);
+    reference_einsum("IMr <- Ir ; Mr", &C_ref, T_op, U_op);
 
     auto      C_graph = create_zero_tensor<TestType>("Cg", I_dim, M_dim, R_dim);
     cg::Graph graph("khatri_rao");
@@ -259,18 +235,18 @@ TEMPLATE_TEST_CASE("cg parity - Khatri-Rao einsum imr<-ir;mr", "[ComputeGraph][E
     double const tol = std::is_same_v<TestType, float> ? 1e-5 : 1e-10;
     auto const   n   = C_graph.size();
     for (size_t flat = 0; flat < n; ++flat) {
-        REQUIRE(std::abs(C_graph.data()[flat] - C_eager.data()[flat]) <= tol * (1.0 + std::abs(C_eager.data()[flat])));
+        REQUIRE(std::abs(C_graph.data()[flat] - C_ref.data()[flat]) <= tol * (1.0 + std::abs(C_ref.data()[flat])));
     }
 }
 
 // ---------------------------------------------------------------------------
 // Gap 6: #283 outer products with non-contiguous operand indices in the
-// output (TensorAlgebra/OuterProduct.cpp sweep parity). The eager path is
-// KNOWN WRONG for these orderings (see PR #257 discussion; eager cases are
-// tagged [!shouldfail]). FINDING (2026-07-17): the graph path does NOT
-// share that bug - its string-einsum lowering routes these through a
-// kernel that handles non-contiguous operand orderings correctly, so the
-// cases below assert correct results with no shouldfail tag.
+// output (TensorAlgebra/OuterProduct.cpp sweep parity). The eager path was
+// wrong for these orderings until the #257 contiguity gate was ported
+// (3e8120026); the graph path never shared the bug, since its string-einsum
+// lowering routes these through a kernel that handles non-contiguous operand
+// orderings. The cases below assert correct results against hand-rolled and
+// reference oracles.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -292,8 +268,8 @@ TEST_CASE("cg parity - outer product contiguous control ijk<-ij;k", "[ComputeGra
     auto A = create_random_tensor<double>("A", 3, 4);
     auto B = create_random_tensor<double>("B", 5);
 
-    auto C_eager = create_zero_tensor<double>("Ce", 3, 4, 5);
-    ta::einsum(Indices{i, j, k}, &C_eager, Indices{i, j}, A, Indices{k}, B);
+    auto C_ref = create_zero_tensor<double>("Cr", 3, 4, 5);
+    reference_einsum("ijk <- ij ; k", &C_ref, A, B);
 
     auto      C_graph = create_zero_tensor<double>("Cg", 3, 4, 5);
     cg::Graph graph("outer_contig");
@@ -303,7 +279,7 @@ TEST_CASE("cg parity - outer product contiguous control ijk<-ij;k", "[ComputeGra
     }
     graph.execute();
 
-    require_close(C_graph, C_eager);
+    require_close(C_graph, C_ref);
 }
 
 TEST_CASE("cg parity - #283 non-contiguous outer abc<-ac;b", "[ComputeGraph][EagerParity][outer-product]") {
@@ -476,28 +452,11 @@ TEST_CASE("cg aliasing - in-place update survives the generic loop routes", "[Co
     }
 }
 
-TEST_CASE("eager aliasing - in-place update survives the generic algorithm", "[ComputeGraph][EagerParity][aliasing]") {
-    // Same defect, same fix, in the eager generic algorithm. Eager is the
-    // oracle the differential tests compare against, so a silent zero here
-    // would agree with a silent zero in the graph path and neither would fail.
-    auto const A0 = create_random_tensor<double>("A0", 3, 4);
-    auto const v  = create_random_tensor<double>("v", 4);
-
-    auto expected = create_zero_tensor<double>("E", 3, 4);
-    for (size_t a = 0; a < 3; ++a)
-        for (size_t b = 0; b < 4; ++b)
-            expected(a, b) = A0(a, b) * v(b);
-
-    auto C = A0;
-    ta::einsum(Indices{i, j}, &C, Indices{i, j}, C, Indices{j}, v);
-    require_close(C, expected);
-}
-
 TEST_CASE("cg aliasing - A and B sharing a tensor is allowed", "[ComputeGraph][EagerParity][aliasing]") {
     auto A = create_random_tensor<double>("A", 3, 3);
 
     auto expected = create_zero_tensor<double>("E", 3, 3);
-    ta::einsum(Indices{i, j}, &expected, Indices{i, k}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &expected, A, A);
 
     auto      C = create_zero_tensor<double>("C", 3, 3);
     cg::Graph graph("alias_ab");
@@ -508,28 +467,6 @@ TEST_CASE("cg aliasing - A and B sharing a tensor is allowed", "[ComputeGraph][E
     graph.execute();
 
     require_close(C, expected);
-}
-
-TEST_CASE("eager aliasing - typed-Indices dispatcher matches the policy", "[ComputeGraph][EagerParity][aliasing]") {
-    auto C = create_random_tensor<double>("C", 4, 4);
-    auto B = create_random_tensor<double>("B", 4, 4);
-
-    // Contraction with C as an input: rejected.
-    REQUIRE_THROWS_AS(ta::einsum(Indices{i, j}, &C, Indices{i, k}, C, Indices{k, j}, B), std::invalid_argument);
-
-    // Elementwise in-place (identical index lists): allowed and correct.
-    auto D        = create_random_tensor<double>("D", 4, 4);
-    auto expected = create_zero_tensor<double>("E", 4, 4);
-    for (size_t a = 0; a < 4; ++a)
-        for (size_t b = 0; b < 4; ++b)
-            expected(a, b) = D(a, b) * B(a, b);
-    REQUIRE_NOTHROW(ta::einsum(Indices{i, j}, &D, Indices{i, j}, D, Indices{i, j}, B));
-    require_close(D, expected);
-
-    // A and B sharing a tensor: always allowed.
-    auto A  = create_random_tensor<double>("A", 4, 4);
-    auto C2 = create_zero_tensor<double>("C2", 4, 4);
-    REQUIRE_NOTHROW(ta::einsum(Indices{i, j}, &C2, Indices{i, k}, A, Indices{k, j}, A));
 }
 
 // ---------------------------------------------------------------------------
@@ -889,8 +826,8 @@ TEST_CASE("cg parity - sort-gemm batch scrambled pilj<-pjki;plk", "[ComputeGraph
     auto         A = create_random_tensor<double>("A", dp, dj, dk, di);
     auto         B = create_random_tensor<double>("B", dp, dl, dk);
 
-    auto C_eager = create_zero_tensor<double>("Ce", dp, di, dl, dj);
-    ta::einsum(Indices{p, i, l, j}, &C_eager, Indices{p, j, k, i}, A, Indices{p, l, k}, B);
+    auto C_ref = create_zero_tensor<double>("Cr", dp, di, dl, dj);
+    reference_einsum("pilj <- pjki ; plk", &C_ref, A, B);
 
     auto      C_graph = create_zero_tensor<double>("Cg", dp, di, dl, dj);
     cg::Graph graph("sort_gemm_scrambled");
@@ -900,7 +837,7 @@ TEST_CASE("cg parity - sort-gemm batch scrambled pilj<-pjki;plk", "[ComputeGraph
     }
     graph.execute();
 
-    require_close(C_graph, C_eager);
+    require_close(C_graph, C_ref);
 }
 
 TEST_CASE("cg parity - sort-gemm combined conjugation ilj<-conj(jki);conj(lk)", "[ComputeGraph][EagerParity][sort-gemm]") {
@@ -909,8 +846,8 @@ TEST_CASE("cg parity - sort-gemm combined conjugation ilj<-conj(jki);conj(lk)", 
     auto         A = create_random_tensor<T>("A", dj, dk, di);
     auto         B = create_random_tensor<T>("B", dl, dk);
 
-    auto C_eager = create_zero_tensor<T>("Ce", di, dl, dj);
-    ta::einsum<true, true>(T{0.0}, Indices{i, l, j}, &C_eager, T{1.0}, Indices{j, k, i}, A, Indices{l, k}, B);
+    auto C_ref = create_zero_tensor<T>("Cr", di, dl, dj);
+    reference_einsum("ilj <- jki ; lk", T{0.0}, &C_ref, T{1.0}, A, B, true, true);
 
     auto      C_graph = create_zero_tensor<T>("Cg", di, dl, dj);
     cg::Graph graph("sort_gemm_conj");
@@ -922,7 +859,7 @@ TEST_CASE("cg parity - sort-gemm combined conjugation ilj<-conj(jki);conj(lk)", 
 
     auto const n = C_graph.size();
     for (size_t flat = 0; flat < n; ++flat) {
-        REQUIRE(std::abs(C_graph.data()[flat] - C_eager.data()[flat]) <= 1e-10 * (1.0 + std::abs(C_eager.data()[flat])));
+        REQUIRE(std::abs(C_graph.data()[flat] - C_ref.data()[flat]) <= 1e-10 * (1.0 + std::abs(C_ref.data()[flat])));
     }
 }
 
@@ -954,9 +891,9 @@ TEST_CASE("cg parity - smart-pointer operands are eager-only", "[ComputeGraph][E
     auto B  = create_random_tensor<double>("B", 3, 3);
     auto C  = create_zero_tensor<double>("C", 3, 3);
 
-    // Eager: smart-pointer operand works.
-    auto C_eager = create_zero_tensor<double>("Ce", 3, 3);
-    REQUIRE_NOTHROW(ta::einsum(Indices{i, j}, &C_eager, Indices{i, k}, sp, Indices{k, j}, B));
+    // The eager smart-pointer path has its own coverage in TensorAlgebra's SharedPointer.cpp.
+    auto C_ref = create_zero_tensor<double>("Cr", 3, 3);
+    reference_einsum("ij <- ik ; kj", &C_ref, *sp, B);
 
     // Graph: capture the DEREFERENCED tensor - the supported spelling.
     cg::Graph graph("smart_ptr_deref");
@@ -966,5 +903,5 @@ TEST_CASE("cg parity - smart-pointer operands are eager-only", "[ComputeGraph][E
     }
     graph.execute();
 
-    require_close(C, C_eager);
+    require_close(C, C_ref);
 }

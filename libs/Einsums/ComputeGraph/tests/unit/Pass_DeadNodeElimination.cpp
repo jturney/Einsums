@@ -8,18 +8,19 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <algorithm>
 #include <string>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("DeadNodeElimination - empty graph", "[ComputeGraph][Passes]") {
@@ -223,9 +224,9 @@ TEST_CASE("DeadNodeElimination - keeps a body intermediate consumed by the paren
     g.execute();
 
     auto AA = create_zero_tensor<double>("AA", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &AA, Indices{i, k}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &AA, A, A);
     auto ref = create_zero_tensor<double>("ref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &ref, Indices{i, k}, AA, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &ref, AA, A);
     for (size_t i = 0; i < 4; i++) {
         for (size_t j = 0; j < 4; j++) {
             CHECK(std::abs(out(i, j) - ref(i, j)) < 1e-10);
@@ -262,9 +263,9 @@ TEST_CASE("DeadNodeElimination - keeps a body intermediate consumed by a sibling
     g.execute();
 
     auto AA = create_zero_tensor<double>("AA", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &AA, Indices{i, k}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &AA, A, A);
     auto ref = create_zero_tensor<double>("ref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &ref, Indices{i, k}, AA, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &ref, AA, A);
     for (size_t i = 0; i < 4; i++) {
         for (size_t j = 0; j < 4; j++) {
             CHECK(std::abs(acc(i, j) - ref(i, j)) < 1e-10);
@@ -300,9 +301,9 @@ TEST_CASE("DeadNodeElimination - keeps a then-branch intermediate consumed by th
     g.execute();
 
     auto AA = create_zero_tensor<double>("AA", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &AA, Indices{i, k}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &AA, A, A);
     auto ref = create_zero_tensor<double>("ref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &ref, Indices{i, k}, AA, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &ref, AA, A);
     for (size_t i = 0; i < 4; i++) {
         for (size_t j = 0; j < 4; j++) {
             CHECK(std::abs(out(i, j) - ref(i, j)) < 1e-10);

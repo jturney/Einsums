@@ -1,48 +1,11 @@
-# Files under libs/Einsums/ComputeGraph that still contain compile-time index code, and how many
-# constructs each holds. Checked by Tests.Unit.Modules.ComputeGraph.CompileTimeIndices; the patterns
-# and the rules are in cmake/scripts/check_compile_time_indices.cmake.
+# Files under libs/Einsums/ComputeGraph that may contain compile-time index code: none.
+# Checked by Tests.Unit.Modules.ComputeGraph.CompileTimeIndices; the patterns and the rules are in
+# cmake/scripts/check_compile_time_indices.cmake.
 #
-# This list only shrinks. When you remove index code from a file, lower its count or delete its
-# line in the same change; the check fails until you do. Never add a line or raise a count: write
-# the new code with a string spec instead.
+# ComputeGraph takes its contractions and permutations as string specs, which passes can rewrite.
+# The templated Indices{...} API cannot be rewritten, and the module no longer uses it anywhere:
+# library code, examples, docs and tests. With this list empty the check forbids it outright.
+# Write new code with string specs; test values come from einsums::testing::reference_einsum and
+# reference_permute. Do not add a line here.
 #
 # <count> <path relative to libs/Einsums/ComputeGraph>
-6 tests/performance/BenchmarkExecutors.cpp
-6 tests/performance/BenchmarkGraphOverhead.cpp
-6 tests/unit/ControlFlow.cpp
-78 tests/unit/CostModel.cpp
-20 tests/unit/DependencyOrder.cpp
-73 tests/unit/DistributedIntegration.cpp
-174 tests/unit/DistributiveFactoring.cpp
-50 tests/unit/EagerParityGaps.cpp
-26 tests/unit/Executor.cpp
-46 tests/unit/GEMMBatching.cpp
-30 tests/unit/GPUPasses.cpp
-21 tests/unit/GraphCapture.cpp
-50 tests/unit/GraphFeatures.cpp
-14 tests/unit/LoopOptimizationCorrectness.cpp
-26 tests/unit/MemoryNodes.cpp
-9 tests/unit/MixedOps.cpp
-6 tests/unit/OperationsCoverage.cpp
-10 tests/unit/ParallelForGraph.cpp
-27 tests/unit/PassManager.cpp
-54 tests/unit/Pass_CSE.cpp
-9 tests/unit/Pass_ConstantFolding.cpp
-139 tests/unit/Pass_ContractionPlanning.cpp
-26 tests/unit/Pass_DeadNodeElimination.cpp
-6 tests/unit/Pass_DistributionPasses.cpp
-11 tests/unit/Pass_FreeInsertion.cpp
-29 tests/unit/Pass_InplaceOptimization.cpp
-23 tests/unit/Pass_LoopInvariantHoisting.cpp
-130 tests/unit/Pass_MemoryPlanning.cpp
-36 tests/unit/Pass_Reorder.cpp
-50 tests/unit/Pass_ScaleAbsorption.cpp
-50 tests/unit/Pass_StreamContractionFusion.cpp
-10 tests/unit/Pass_SymmetryPropagation.cpp
-6 tests/unit/PipelineLoop.cpp
-26 tests/unit/Rebind.cpp
-6 tests/unit/RegionIdentity.cpp
-8 tests/unit/SaveLoad.cpp
-102 tests/unit/StringEinsum.cpp
-14 tests/unit/TensorLifetime.cpp
-35 tests/unit/Workspace.cpp

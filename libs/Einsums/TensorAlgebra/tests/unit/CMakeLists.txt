@@ -8,6 +8,7 @@ set(TensorAlgebraTests
     Batched.cpp
     DispatchCoverage.cpp
     Dot.cpp
+    EagerSemantics.cpp
     Einsum1.cpp
     Einsum2.cpp
     Einsum3.cpp

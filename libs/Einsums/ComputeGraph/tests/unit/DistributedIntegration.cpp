@@ -19,9 +19,9 @@
 #include <Einsums/ComputeGraph/Passes/InputSlicing.hpp>
 #include <Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cstddef>
 #include <cstring>
@@ -29,8 +29,10 @@
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+using einsums::testing::reference_permute;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -71,7 +73,7 @@ TEST_CASE("Distributed - GEMM via graph matches direct", "[ComputeGraph][Distrib
 
     // Reference: direct einsum
     auto C_ref = create_zero_tensor<double>("C_ref", 20, 15);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     // Graph: capture, optimize, execute
     cg::Graph graph("dist_gemm");
@@ -103,7 +105,7 @@ TEST_CASE("Distributed - deferred GEMM with Workspace", "[ComputeGraph][Distribu
 
     // Reference
     auto C_ref = create_zero_tensor<double>("C_ref", 8, 10);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     // Graph with deferred C
     cg::Graph graph("dist_deferred");
@@ -135,8 +137,8 @@ TEST_CASE("Distributed - two-GEMM chain", "[ComputeGraph][Distributed]") {
     // Reference
     auto T_ref = create_zero_tensor<double>("T_ref", 12, 6);
     auto C_ref = create_zero_tensor<double>("C_ref", 12, 10);
-    tensor_algebra::einsum(Indices{i, j}, &T_ref, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, T_ref, Indices{k, j}, D);
+    reference_einsum("ij <- ik ; kj", &T_ref, A, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, T_ref, D);
 
     // Graph
     auto T = create_zero_tensor<double>("T", 12, 6);
@@ -239,8 +241,8 @@ TEST_CASE("Distributed - float GEMM chain", "[ComputeGraph][Distributed]") {
     // Reference
     auto T_ref = create_zero_tensor<float>("T_ref", 16, 12);
     auto C_ref = create_zero_tensor<float>("C_ref", 16, 8);
-    tensor_algebra::einsum(0.0f, Indices{i, j}, &T_ref, 1.0f, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(0.0f, Indices{i, j}, &C_ref, 1.0f, Indices{i, k}, T_ref, Indices{k, j}, D);
+    reference_einsum("ij <- ik ; kj", 0.0f, &T_ref, 1.0f, A, B);
+    reference_einsum("ij <- ik ; kj", 0.0f, &C_ref, 1.0f, T_ref, D);
 
     // Graph
     auto T = create_zero_tensor<float>("T", 16, 12);
@@ -271,7 +273,7 @@ TEST_CASE("Distributed - rank-3 contraction", "[ComputeGraph][Distributed]") {
 
     // Reference: use p,q,r,s indices for rank-3
     auto C_ref = create_zero_tensor<double>("C_ref", 4, 5, 6);
-    tensor_algebra::einsum(Indices{p, q, s}, &C_ref, Indices{p, q, r}, A, Indices{r, s}, B);
+    reference_einsum("pqs <- pqr ; rs", &C_ref, A, B);
 
     // Graph
     cg::Graph graph("dist_rank3");
@@ -344,7 +346,7 @@ TEST_CASE("Distributed - embarrassingly parallel GEMM", "[ComputeGraph][Distribu
 
     // Reference: direct einsum (full size)
     auto C_ref = create_zero_tensor<double>("C_ref", M, N);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A_full, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A_full, B);
 
     // Graph: both A and C are deferred so they can both be distributed along dim 0.
     // B is pre-allocated and replicated (every rank has the full B).
@@ -455,7 +457,7 @@ TEST_CASE("Distributed - SUMMA GEMM on 2D grid", "[ComputeGraph][Distributed]") 
     (void)comm::broadcast<double>(std::span<double>(B_full.data(), B_full.size()), 0); // NOLINT
 
     auto C_ref = create_zero_tensor<double>("C_ref", M, N);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A_full, Indices{k, j}, B_full);
+    reference_einsum("ij <- ik ; kj", &C_ref, A_full, B_full);
 
     // All three tensors are deferred
     cg::Graph graph("dist_summa");
@@ -562,7 +564,7 @@ TEST_CASE("Distributed - automatic input slicing", "[ComputeGraph][Distributed]"
 
     // Reference
     auto C_ref = create_zero_tensor<double>("C_ref", M, N);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     // Only C is deferred. A and B are pre-allocated
     cg::Graph graph("dist_autoslice");
@@ -643,7 +645,7 @@ TEST_CASE("Distributed - rank-3 contraction on 2D grid", "[ComputeGraph][Distrib
 
     // Reference
     auto C_ref = create_zero_tensor<double>("C_ref", P, Q, S);
-    tensor_algebra::einsum(Indices{p, q, s}, &C_ref, Indices{p, q, r}, A_full, Indices{r, s}, B_full);
+    reference_einsum("pqs <- pqr ; rs", &C_ref, A_full, B_full);
 
     // Deferred C, pre-allocated A and B
     cg::Graph graph("dist_rank3_2d");
@@ -717,7 +719,7 @@ TEST_CASE("Distributed - batched GEMM distributes batch dim", "[ComputeGraph][Di
     (void)comm::broadcast<double>(std::span<double>(B_full.data(), B_full.size()), 0); // NOLINT
 
     auto C_ref = create_zero_tensor<double>("C_ref", B_dim, I_dim, J_dim);
-    tensor_algebra::einsum(Indices{n, i, j}, &C_ref, Indices{n, i, k}, A_full, Indices{n, k, j}, B_full);
+    reference_einsum("nij <- nik ; nkj", &C_ref, A_full, B_full);
 
     // Deferred C, pre-allocated A and B
     cg::Graph graph("dist_batched");
@@ -771,7 +773,7 @@ TEST_CASE("Distributed - scale on distributed tensor", "[ComputeGraph][Distribut
 
     // Reference: C = 2.0 * (A * B)
     auto C_ref = create_zero_tensor<double>("C_ref", M, N);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     linear_algebra::scale(2.0, &C_ref);
 
     // Graph: einsum then scale, C is deferred+distributed
@@ -827,8 +829,8 @@ TEST_CASE("Distributed - deferred chain propagates distribution", "[ComputeGraph
     (void)comm::broadcast<double>(std::span<double>(B.data(), B.size()), 0); // NOLINT
     auto T_ref = create_zero_tensor<double>("T_ref", M, K2);
     auto C_ref = create_zero_tensor<double>("C_ref", M, N);
-    tensor_algebra::einsum(Indices{i, j}, &T_ref, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, T_ref, Indices{k, j}, D);
+    reference_einsum("ij <- ik ; kj", &T_ref, A, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, T_ref, D);
 
     // Graph: both T and C deferred
     cg::Graph graph("dist_chain");
@@ -915,7 +917,7 @@ TEST_CASE("Distributed - permute with cross-axis redistribution", "[ComputeGraph
 
     // Reference: C[j,i] = A[i,j]
     auto C_ref = create_zero_tensor<double>("C_ref", N, M);
-    tensor_algebra::permute(0.0, Indices{j, i}, &C_ref, 1.0, Indices{i, j}, A);
+    reference_permute("ji <- ij", 0.0, &C_ref, 1.0, A);
 
     // Graph: C is deferred, distributed. A is pre-allocated.
     cg::Graph graph("dist_permute");
@@ -983,7 +985,7 @@ TEST_CASE("Distributed - batched transposed GEMM", "[ComputeGraph][Distributed]"
 
     // Reference
     auto C_ref = create_zero_tensor<double>("C_ref", N_dim, I_dim, J_dim);
-    tensor_algebra::einsum(Indices{n, i, j}, &C_ref, Indices{n, i, k}, A_full, Indices{n, j, k}, B_full);
+    reference_einsum("nij <- nik ; njk", &C_ref, A_full, B_full);
 
     // Graph: deferred C, pre-allocated A and B
     cg::Graph graph("dist_batched_trans");
@@ -1124,7 +1126,7 @@ TEST_CASE("Distributed - batch ERI fill + contraction", "[ComputeGraph][Distribu
                     eri_ref(p, q, r, s) = 1.0 / (r + 1.0 + p + q + s); // NOLINT Fake ERI
 
     auto half_ref = create_zero_tensor<double>("half_ref", nao, nao, nao, nmo);
-    tensor_algebra::einsum(Indices{p, q, r, a}, &half_ref, Indices{p, q, r, s}, eri_ref, Indices{s, a}, C);
+    reference_einsum("pqra <- pqrs ; sa", &half_ref, eri_ref, C);
 
     // Graph: fill ERIs using batch pattern, then contract
     cg::Graph graph("dist_eri");

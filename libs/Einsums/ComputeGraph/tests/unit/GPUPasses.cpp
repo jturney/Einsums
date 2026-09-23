@@ -7,9 +7,9 @@
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <sstream>
 #include <unordered_map>
@@ -17,8 +17,9 @@
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 // ===========================================================================
@@ -356,8 +357,8 @@ TEST_CASE("TransferInsertion - loop seam: body GPU consumer of a parent producer
         // Reference: X = A*B (parent), acc = X*Cc (one loop iteration).
         auto X_ref   = Tensor<float, 2>("X_ref", 128, 128);
         auto acc_ref = Tensor<float, 2>("acc_ref", 128, 128);
-        tensor_algebra::einsum(0.0, Indices{i, j}, &X_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
-        tensor_algebra::einsum(0.0, Indices{i, j}, &acc_ref, 1.0, Indices{i, k}, X_ref, Indices{k, j}, Cc);
+        reference_einsum("ij <- ik ; kj", 0.0, &X_ref, 1.0, A, B);
+        reference_einsum("ij <- ik ; kj", 0.0, &acc_ref, 1.0, X_ref, Cc);
 
         cg::Graph graph("loop-seam-fwd");
         {
@@ -737,7 +738,7 @@ TEST_CASE("TransferInsertion - skips H2D for dead input (c_prefactor=0)", "[Comp
 
     // The graph should still execute correctly.
     auto C_ref = Tensor<float, 2>("C_ref", 128, 128);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, A, B);
 
     graph.apply<cg::passes::TransferElimination>();
     graph.execute();
@@ -1353,8 +1354,8 @@ TEST_CASE("GPU pass pipeline end-to-end: chained GEMMs", "[ComputeGraph][GPU]") 
     // Reference: compute on CPU.
     auto C_ref = Tensor<float, 2>(C);
     auto D_ref = Tensor<float, 2>(D);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &D_ref, 1.0, Indices{i, k}, C_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, A, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &D_ref, 1.0, C_ref, B);
 
     cg::Graph graph("gpu-pipeline");
     {
@@ -1397,7 +1398,7 @@ TEST_CASE("GPU pass pipeline: mixed GPU/CPU graph produces correct results", "[C
 
     // Reference.
     auto C_ref = Tensor<float, 2>(C);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, A, B);
     linear_algebra::scale(2.0, &C_ref);
 
     cg::Graph graph("mixed-gpu-cpu");
@@ -1532,7 +1533,7 @@ TEST_CASE("GPU pipeline: GEMM then Scale stays on GPU", "[ComputeGraph][GPU]") {
 
     // Reference.
     auto C_ref = Tensor<float, 2>(C);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, A, B);
     linear_algebra::scale(2.0f, &C_ref);
 
     cg::Graph graph("gemm-then-scale");

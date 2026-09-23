@@ -6,18 +6,19 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cmath>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("Rebind - basic tensor rebind", "[ComputeGraph][Rebind]") {
@@ -37,7 +38,7 @@ TEST_CASE("Rebind - basic tensor rebind", "[ComputeGraph][Rebind]") {
     graph.execute();
 
     auto C_ref1 = create_zero_tensor<double>("Cr1", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref1, Indices{i, k}, A1, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref1, A1, B);
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
@@ -53,7 +54,7 @@ TEST_CASE("Rebind - basic tensor rebind", "[ComputeGraph][Rebind]") {
     graph.execute();
 
     auto C_ref2 = create_zero_tensor<double>("Cr2", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref2, Indices{i, k}, A2, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref2, A2, B);
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
@@ -120,7 +121,7 @@ TEST_CASE("Rebind - string einsum", "[ComputeGraph][Rebind]") {
     graph.execute();
 
     auto C_ref = create_zero_tensor<double>("Cr", 4, 5);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A2, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A2, B);
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
@@ -161,9 +162,9 @@ TEST_CASE("update_prefactors - correct after CSE removes an earlier einsum", "[C
     graph.execute();
 
     auto AB = create_zero_tensor<double>("AB", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &AB, A, B);
     auto out_ref = create_zero_tensor<double>("OUTref", 4, 4);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &out_ref, 2.0, Indices{i, k}, AB, Indices{k, j}, AB);
+    reference_einsum("ij <- ik ; kj", 0.0, &out_ref, 2.0, AB, AB);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
@@ -202,7 +203,7 @@ TEST_CASE("update_prefactors - changes computation", "[ComputeGraph][Rebind]") {
 
     // Verify: C_new = C_v1 + 2*A*B
     auto C_ref = Tensor<double, 2>(C_v1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &C_ref, 2.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 1.0, &C_ref, 2.0, A, B);
 
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {

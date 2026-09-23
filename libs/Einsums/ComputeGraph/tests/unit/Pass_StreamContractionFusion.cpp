@@ -11,17 +11,18 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cmath>
 #include <complex>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 namespace {
@@ -34,8 +35,8 @@ TEST_CASE("StreamContractionFusion - J and K from one TEI stream (distinct outpu
 
     // Eager reference.
     Tensor<double, 2> J_ref("J_ref", kN, kN), K_ref("K_ref", kN, kN);
-    einsum(0.0, Indices{i, j}, &J_ref, 2.0, Indices{i, j, k, l}, TEI, Indices{k, l}, D);
-    einsum(0.0, Indices{i, j}, &K_ref, -1.0, Indices{i, k, j, l}, TEI, Indices{k, l}, D);
+    reference_einsum("ij <- ijkl ; kl", 0.0, &J_ref, 2.0, TEI, D);
+    reference_einsum("ij <- ikjl ; kl", 0.0, &K_ref, -1.0, TEI, D);
 
     RuntimeTensor<double> TEI_rt(TEI), D_rt(D);
     RuntimeTensor<double> J_rt("J", std::vector<size_t>{kN, kN}), K_rt("K", std::vector<size_t>{kN, kN});
@@ -70,8 +71,8 @@ TEST_CASE("StreamContractionFusion - shared accumulated output (G = 2J - K)", "[
     auto D   = create_random_tensor<double>("D", kN, kN);
 
     Tensor<double, 2> G_ref("G_ref", kN, kN);
-    einsum(0.0, Indices{i, j}, &G_ref, 2.0, Indices{i, j, k, l}, TEI, Indices{k, l}, D);
-    einsum(1.0, Indices{i, j}, &G_ref, -1.0, Indices{i, k, j, l}, TEI, Indices{k, l}, D);
+    reference_einsum("ij <- ijkl ; kl", 0.0, &G_ref, 2.0, TEI, D);
+    reference_einsum("ij <- ikjl ; kl", 1.0, &G_ref, -1.0, TEI, D);
 
     RuntimeTensor<double> TEI_rt(TEI), D_rt(D);
     RuntimeTensor<double> G_rt("G", std::vector<size_t>{kN, kN});
@@ -160,8 +161,8 @@ TEST_CASE("StreamContractionFusion - complex prefactors on complex tensors", "[C
 
     Tensor<T, 2> J_ref = J0;
     Tensor<T, 2> K_ref("K_ref", n_c, n_c);
-    einsum(c_j, Indices{i, j}, &J_ref, alpha_j, Indices{i, j, k, l}, TEI, Indices{k, l}, D);
-    einsum(T{0.0}, Indices{i, j}, &K_ref, alpha_k, Indices{i, k, j, l}, TEI, Indices{k, l}, D);
+    reference_einsum("ij <- ijkl ; kl", c_j, &J_ref, alpha_j, TEI, D);
+    reference_einsum("ij <- ikjl ; kl", T{0.0}, &K_ref, alpha_k, TEI, D);
 
     RuntimeTensor<T> TEI_rt(TEI), D_rt(D);
     RuntimeTensor<T> J_rt(J0);
@@ -211,8 +212,8 @@ TEST_CASE("StreamContractionFusion - cost_model-derived output cap", "[ComputeGr
         cost_model.cpu.caches = {cg::CacheLevel{.size_bytes = 4096}};
 
         Tensor<double, 2> J_ref("J_ref", kN, kN), K_ref("K_ref", kN, kN);
-        einsum(0.0, Indices{i, j}, &J_ref, 2.0, Indices{i, j, k, l}, TEI, Indices{k, l}, D);
-        einsum(0.0, Indices{i, j}, &K_ref, -1.0, Indices{i, k, j, l}, TEI, Indices{k, l}, D);
+        reference_einsum("ij <- ijkl ; kl", 0.0, &J_ref, 2.0, TEI, D);
+        reference_einsum("ij <- ikjl ; kl", 0.0, &K_ref, -1.0, TEI, D);
 
         RuntimeTensor<double> TEI_rt(TEI), D_rt(D);
         RuntimeTensor<double> J_rt("J", std::vector<size_t>{kN, kN}), K_rt("K", std::vector<size_t>{kN, kN});
@@ -273,8 +274,8 @@ TEST_CASE("StreamContractionFusion - cost_model-derived output cap", "[ComputeGr
 
         Tensor<double, 2> J_ref("J_ref", kN, kN);
         Tensor<double, 1> Y_ref("Y_ref", kN);
-        einsum(0.0, Indices{i, j}, &J_ref, 2.0, Indices{i, j, k, l}, TEI, Indices{k, l}, D);
-        einsum(0.0, Indices{k}, &Y_ref, 0.5, Indices{i, j, k, l}, TEI, Indices{i, j, l}, W3);
+        reference_einsum("ij <- ijkl ; kl", 0.0, &J_ref, 2.0, TEI, D);
+        reference_einsum("k <- ijkl ; ijl", 0.0, &Y_ref, 0.5, TEI, W3);
 
         RuntimeTensor<double> TEI_rt(TEI), D_rt(D), W3_rt(W3);
         RuntimeTensor<double> J_rt("J", std::vector<size_t>{kN, kN}), Y_rt("Y", std::vector<size_t>{kN});
@@ -336,8 +337,8 @@ TEST_CASE("StreamContractionFusion - complex elements with real prefactors", "[C
     auto D   = create_random_tensor<T>("D", n_c, n_c);
 
     Tensor<T, 2> J_ref("J_ref", n_c, n_c), K_ref("K_ref", n_c, n_c);
-    einsum(T{0.0}, Indices{i, j}, &J_ref, T{2.0}, Indices{i, j, k, l}, TEI, Indices{k, l}, D);
-    einsum(T{0.0}, Indices{i, j}, &K_ref, T{-1.0}, Indices{i, k, j, l}, TEI, Indices{k, l}, D);
+    reference_einsum("ij <- ijkl ; kl", T{0.0}, &J_ref, T{2.0}, TEI, D);
+    reference_einsum("ij <- ikjl ; kl", T{0.0}, &K_ref, T{-1.0}, TEI, D);
 
     RuntimeTensor<T> TEI_rt(TEI), D_rt(D);
     RuntimeTensor<T> J_rt("J", std::vector<size_t>{n_c, n_c}), K_rt("K", std::vector<size_t>{n_c, n_c});
@@ -396,8 +397,8 @@ TEMPLATE_TEST_CASE("StreamContractionFusion - scaled AXPY branch (1,1,0)", "[Com
 
     // C(i,j) = sum_k S(i,j,k) * W(j,k): i (unit-stride axis) is in C, not W.
     Tensor<T, 2> C1_ref("C1_ref", kM, kM), C2_ref("C2_ref", kM, kM);
-    einsum(T{0}, Indices{i, j}, &C1_ref, T{1}, Indices{i, j, k}, S, Indices{j, k}, W1);
-    einsum(T{0}, Indices{i, j}, &C2_ref, T{1}, Indices{i, j, k}, S, Indices{j, k}, W2);
+    reference_einsum("ij <- ijk ; jk", T{0}, &C1_ref, T{1}, S, W1);
+    reference_einsum("ij <- ijk ; jk", T{0}, &C2_ref, T{1}, S, W2);
 
     RuntimeTensor<T> S_rt(S), W1_rt(W1), W2_rt(W2);
     RuntimeTensor<T> C1_rt("C1", std::vector<size_t>{kM, kM}), C2_rt("C2", std::vector<size_t>{kM, kM});
@@ -484,8 +485,8 @@ TEMPLATE_TEST_CASE("StreamContractionFusion - dot-reduction branch (1,0,1)", "[C
 
     // C(j) = sum_{i,k} S(i,j,k) * W(i,k): i (unit-stride axis) is in W, not C.
     Tensor<T, 1> C1_ref("C1_ref", kM), C2_ref("C2_ref", kM);
-    einsum(T{0}, Indices{j}, &C1_ref, T{1}, Indices{i, j, k}, S, Indices{i, k}, W1);
-    einsum(T{0}, Indices{j}, &C2_ref, T{1}, Indices{i, j, k}, S, Indices{i, k}, W2);
+    reference_einsum("j <- ijk ; ik", T{0}, &C1_ref, T{1}, S, W1);
+    reference_einsum("j <- ijk ; ik", T{0}, &C2_ref, T{1}, S, W2);
 
     RuntimeTensor<T> S_rt(S), W1_rt(W1), W2_rt(W2);
     RuntimeTensor<T> C1_rt("C1", std::vector<size_t>{kM}), C2_rt("C2", std::vector<size_t>{kM});

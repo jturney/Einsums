@@ -5,14 +5,16 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+using einsums::testing::reference_permute;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("Graph capture and execute - simple einsum", "[ComputeGraph]") {
@@ -22,7 +24,7 @@ TEST_CASE("Graph capture and execute - simple einsum", "[ComputeGraph]") {
     auto C_expected = create_zero_tensor<double>("C_expected", 10, 8);
 
     // Eager execution for reference
-    tensor_algebra::einsum(Indices{i, j}, &C_expected, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_expected, A, B);
 
     // Graph capture and execute
     cg::Graph graph("test_simple");
@@ -54,8 +56,8 @@ TEST_CASE("Graph capture - einsum chain", "[ComputeGraph]") {
     auto Ee  = create_zero_tensor<double>("Ee", 10, 3);
 
     // Eager reference
-    tensor_algebra::einsum(Indices{i, j}, &T1e, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(Indices{i, l}, &Ee, Indices{i, j}, T1e, Indices{j, l}, D);
+    reference_einsum("ij <- ik ; kj", &T1e, A, B);
+    reference_einsum("il <- ij ; jl", &Ee, T1e, D);
 
     // Graph capture
     cg::Graph graph("test_chain");
@@ -104,7 +106,7 @@ TEST_CASE("Graph capture - permute operation", "[ComputeGraph]") {
     auto C_expected = create_zero_tensor<double>("C_expected", 6, 4);
 
     // Eager reference: transpose
-    tensor_algebra::permute(0.0, Indices{j, i}, &C_expected, 1.0, Indices{i, j}, A);
+    reference_permute("ji <- ij", 0.0, &C_expected, 1.0, A);
 
     cg::Graph graph("test_permute");
     {
@@ -160,7 +162,7 @@ TEST_CASE("Graph replay executes multiple times", "[ComputeGraph]") {
 
     // Compute reference: 3 * A * B
     auto C_expected = create_zero_tensor<double>("Ce", 3, 3);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &C_expected, 3.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_expected, 3.0, A, B);
 
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {

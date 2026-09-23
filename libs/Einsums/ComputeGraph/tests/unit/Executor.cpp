@@ -5,9 +5,9 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -18,9 +18,10 @@
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("SequentialExecutor - matches default execute()", "[ComputeGraph][Executor]") {
@@ -60,7 +61,7 @@ TEST_CASE("OpenMPExecutor - produces correct results", "[ComputeGraph][Executor]
     auto D = create_zero_tensor<double>("D", 6, 5);
 
     // Reference: eager
-    tensor_algebra::einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C, A, B);
     linear_algebra::scale(2.0, &C);
 
     // OpenMP executor
@@ -90,8 +91,8 @@ TEST_CASE("OpenMPExecutor - independent nodes", "[ComputeGraph][Executor]") {
     auto C_ref = create_zero_tensor<double>("Cref", 5, 5);
     auto D_ref = create_zero_tensor<double>("Dref", 5, 5);
 
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(Indices{i, j}, &D_ref, Indices{i, k}, B, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
+    reference_einsum("ij <- ik ; kj", &D_ref, B, A);
 
     cg::Graph graph("independent");
     {
@@ -121,8 +122,8 @@ TEST_CASE("OpenMPExecutor - dependent chain", "[ComputeGraph][Executor]") {
     auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
     auto D_ref = create_zero_tensor<double>("Dref", 4, 4);
 
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(Indices{i, j}, &D_ref, Indices{i, k}, C_ref, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
+    reference_einsum("ij <- ik ; kj", &D_ref, C_ref, A);
 
     cg::Graph graph("chain");
     {
@@ -173,7 +174,7 @@ TEST_CASE("OpenMPExecutor - pipeline with executor", "[ComputeGraph][Executor]")
     REQUIRE(count == 3);
 
     auto C_ref = create_zero_tensor<double>("Cref", 3, 3);
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {

@@ -5,15 +5,18 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
+#include <Einsums/TensorAlgebra/Backends/ElementTransform.hpp>
 #include <Einsums/TensorUtilities/CreateRandomDefinite.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+using einsums::testing::reference_permute;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("Graph - gemm operation", "[ComputeGraph][Phase2]") {
@@ -154,8 +157,8 @@ TEST_CASE("Graph - mixed operations pipeline", "[ComputeGraph][Phase2]") {
     auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
     auto D_ref = create_zero_tensor<double>("Dref", 4, 4);
 
-    tensor_algebra::einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::permute(0.0, Indices{i, j}, &D_ref, 2.0, Indices{i, j}, C_ref);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
+    reference_permute("ij <- ij", 0.0, &D_ref, 2.0, C_ref);
     tensor_algebra::element_transform(&D_ref, [](double x) { return x * x; });
 
     // Graph version

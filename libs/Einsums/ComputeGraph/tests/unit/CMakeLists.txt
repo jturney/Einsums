@@ -316,10 +316,9 @@ if(TARGET SaveLoad_test)
   )
 endif()
 
-# ComputeGraph takes contractions as string specs; the compile-time Indices{...} API is being
-# removed from the module. This holds the module to the files still listed in
-# compile_time_indices.allowlist, with the counts listed there, so the remaining code can only
-# shrink and nothing new comes in. The self test proves the patterns still catch what they claim
+# ComputeGraph takes contractions as string specs; the compile-time Indices{...} API cannot be
+# rewritten by passes and is gone from the module. compile_time_indices.allowlist is empty, so this
+# forbids it outright; the script's ratchet (a listed file may only shrink) is what got it there. The self test proves the patterns still catch what they claim
 # to: the list is generated with those same patterns, so a pattern that stopped matching would
 # agree with its own list and pass forever.
 add_test(

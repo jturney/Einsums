@@ -5,15 +5,16 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -196,7 +197,7 @@ TEST_CASE("Graph declare_tensor - usable in capture and execute", "[ComputeGraph
 
     // Reference
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("declared_graph");
     // Use declare_tensor for the intermediate, deferred allocation
@@ -240,7 +241,7 @@ TEST_CASE("Pipeline declare_tensor - usable in stages", "[ComputeGraph][Declared
 
     // Reference
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     linear_algebra::scale(2.0, &C_ref);
 
     cg::Pipeline pipeline("declared_pipeline");
@@ -301,7 +302,7 @@ TEST_CASE("Graph declare + Materialization only + execute", "[ComputeGraph][Decl
     auto B = create_random_tensor<double>("B", 3, 5);
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("deferred_mat_only");
     auto     &C = graph.declare_tensor<double, 2>(std::string("C"), 4, 5);
@@ -337,7 +338,7 @@ TEST_CASE("Graph declare + create_default + execute - full deferred path", "[Com
     auto B = create_random_tensor<double>("B", 3, 5);
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("deferred_full");
     auto     &C = graph.declare_tensor<double, 2>(std::string("C"), 4, 5);
@@ -362,7 +363,7 @@ TEST_CASE("Pipeline declare + create_default + execute - full deferred path", "[
     auto B = create_random_tensor<double>("B", 3, 5);
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     linear_algebra::scale(2.0, &C_ref);
 
     cg::Pipeline pipeline("deferred_pipeline");
@@ -438,7 +439,7 @@ TEST_CASE("Workspace + Pipeline - materialize_all before execute", "[ComputeGrap
 
     // Reference
     auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, B, Indices{j, k}, B);
+    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
 
     cg::Workspace ws("ws");
     auto         &A = ws.declare_zero_tensor<double, 2>("A", 4, 4);
@@ -500,7 +501,7 @@ TEST_CASE("Pipeline::run() applies defaults + materializes + executes", "[Comput
     // Reference computation via the classic four-step ritual.
     auto B     = create_random_tensor<double>("B_ref", 4, 4);
     auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, B, Indices{j, k}, B);
+    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
 
     cg::Workspace ws("ws");
     auto         &A = ws.declare_zero_tensor<double, 2>("A", 4, 4);
@@ -527,7 +528,7 @@ TEST_CASE("Pipeline::run() throws without workspace", "[ComputeGraph][Facade]") 
 TEST_CASE("cg::make_pipeline builds then returns by value", "[ComputeGraph][Facade]") {
     auto B     = create_random_tensor<double>("B_ref", 4, 4);
     auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, B, Indices{j, k}, B);
+    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
 
     cg::Workspace ws("ws");
     auto         &A = ws.declare_zero_tensor<double, 2>("A", 4, 4);
@@ -547,7 +548,7 @@ TEST_CASE("cg::make_pipeline builds then returns by value", "[ComputeGraph][Faca
 TEST_CASE("cg::run does build + run in one expression", "[ComputeGraph][Facade]") {
     auto B     = create_random_tensor<double>("B_ref", 4, 4);
     auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, B, Indices{j, k}, B);
+    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
 
     cg::Workspace ws("ws");
     auto         &A = ws.declare_zero_tensor<double, 2>("A", 4, 4);
@@ -630,7 +631,7 @@ TEST_CASE("Materialization hoists workspace tensors used inside a loop body", "[
     // Reference: A = B B^T
     Tensor<double, 2> C_ref{"Cref", 4, 4};
     C_ref.zero();
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, B, Indices{j, k}, B);
+    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
             CHECK(A(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
@@ -691,7 +692,7 @@ TEST_CASE("Workspace declare_zero_tensor propagates pending_init through capture
 
     Tensor<double, 2> C_ref{"Cref", 3, 3};
     C_ref.zero();
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, B, Indices{j, k}, B);
+    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {
             CHECK(A(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));

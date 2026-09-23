@@ -8,9 +8,9 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <ranges>
 #include <sstream>
@@ -18,9 +18,10 @@
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 namespace {
@@ -164,13 +165,13 @@ TEST_CASE("MemoryPlanning - arena shares storage between disjoint-lifetime inter
 
     // Reference.
     auto X_ref = create_zero_tensor<double>("Xref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &X_ref, A, B);
     auto OUT1_ref = create_zero_tensor<double>("OUT1ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT1_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &OUT1_ref, X_ref, B);
     auto Y_ref = create_zero_tensor<double>("Yref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, OUT1_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &Y_ref, OUT1_ref, B);
     auto OUT2_ref = create_zero_tensor<double>("OUT2ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT2_ref, Indices{i, k}, Y_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &OUT2_ref, Y_ref, B);
 
     cg::Graph graph("mp_arena");
     auto     &X = graph.create_tensor<double, 2>("X", N, N);
@@ -244,21 +245,21 @@ TEST_CASE("MemoryPlanning - arena slot reuse is ordered under DataflowExecutor",
 
     // Eager references.
     auto X_ref = create_zero_tensor<double>("Xref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &X_ref, A, B);
     auto OUT1_ref = create_zero_tensor<double>("OUT1ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT1_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &OUT1_ref, X_ref, B);
     auto OUT1B_ref = create_zero_tensor<double>("OUT1Bref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT1B_ref, Indices{i, k}, X_ref, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &OUT1B_ref, X_ref, A);
     auto OUT1C_ref = create_zero_tensor<double>("OUT1Cref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT1C_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &OUT1C_ref, X_ref, B);
     auto OUT1D_ref = create_zero_tensor<double>("OUT1Dref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT1D_ref, Indices{i, k}, X_ref, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &OUT1D_ref, X_ref, A);
     auto OUT1E_ref = create_zero_tensor<double>("OUT1Eref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT1E_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &OUT1E_ref, X_ref, B);
     auto Y_ref = create_zero_tensor<double>("Yref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, OUT1_ref, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &Y_ref, OUT1_ref, A);
     auto OUT2_ref = create_zero_tensor<double>("OUT2ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT2_ref, Indices{i, k}, Y_ref, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &OUT2_ref, Y_ref, A);
 
     cg::Graph graph("mp_arena_dataflow");
     auto     &X = graph.create_tensor<double, 2>("X", N, N);
@@ -341,11 +342,11 @@ TEST_CASE("MemoryPlanning - arena keeps overlapping lifetimes apart", "[ComputeG
 
     // Numerics with both intermediates arena-resident at distinct offsets.
     auto X_ref = create_zero_tensor<double>("Xref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &X_ref, A, B);
     auto Y_ref = create_zero_tensor<double>("Yref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &Y_ref, X_ref, B);
     auto out_ref = create_zero_tensor<double>("OUTref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, Y_ref, Indices{k, j}, X_ref);
+    reference_einsum("ij <- ik ; kj", &out_ref, Y_ref, X_ref);
 
     graph.execute();
     for (size_t ii = 0; ii < N; ii += 41) {
@@ -521,15 +522,15 @@ TEST_CASE("MemoryPlanning - a setup at graph level leaves the arena on", "[Compu
 
     // Reference: S = A*B once, then the chain each replay reads it.
     auto S_ref = create_zero_tensor<double>("Sref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &S_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &S_ref, A, B);
     auto X_ref = create_zero_tensor<double>("Xref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, S_ref);
+    reference_einsum("ij <- ik ; kj", &X_ref, A, S_ref);
     auto OUT1_ref = create_zero_tensor<double>("OUT1ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT1_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &OUT1_ref, X_ref, B);
     auto Y_ref = create_zero_tensor<double>("Yref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, OUT1_ref, Indices{k, j}, S_ref);
+    reference_einsum("ij <- ik ; kj", &Y_ref, OUT1_ref, S_ref);
     auto OUT2_ref = create_zero_tensor<double>("OUT2ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT2_ref, Indices{i, k}, Y_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &OUT2_ref, Y_ref, B);
 
     cg::Graph graph("mp_arena_setup");
     auto     &S = graph.create_tensor<double, 2>("S", N, N);
@@ -596,17 +597,17 @@ TEST_CASE("MemoryPlanning - an intermediate a setup body reads is kept out of th
     auto             out2 = create_zero_tensor<double>("out2", N, N);
 
     auto R_ref = create_zero_tensor<double>("Rref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &R_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &R_ref, A, B);
     auto S_ref = create_zero_tensor<double>("Sref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &S_ref, Indices{i, k}, R_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &S_ref, R_ref, B);
     auto X_ref = create_zero_tensor<double>("Xref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, S_ref);
+    reference_einsum("ij <- ik ; kj", &X_ref, A, S_ref);
     auto OUT1_ref = create_zero_tensor<double>("OUT1ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT1_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &OUT1_ref, X_ref, B);
     auto Y_ref = create_zero_tensor<double>("Yref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, OUT1_ref, Indices{k, j}, S_ref);
+    reference_einsum("ij <- ik ; kj", &Y_ref, OUT1_ref, S_ref);
     auto OUT2_ref = create_zero_tensor<double>("OUT2ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT2_ref, Indices{i, k}, Y_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &OUT2_ref, Y_ref, B);
 
     cg::Graph graph("mp_arena_setup_reads");
     auto     &R = graph.create_tensor<double, 2>("R", N, N);
@@ -682,16 +683,16 @@ TEST_CASE("MemoryPlanning - a loop at graph level suppresses the flat-prefix are
 
     // Eager references.
     auto X_ref = create_zero_tensor<double>("Xref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &X_ref, A, B);
     auto OUT1_ref = create_zero_tensor<double>("OUT1ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT1_ref, Indices{i, k}, X_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &OUT1_ref, X_ref, B);
     auto Y_ref = create_zero_tensor<double>("Yref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &Y_ref, Indices{i, k}, OUT1_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &Y_ref, OUT1_ref, B);
     auto OUT2_ref = create_zero_tensor<double>("OUT2ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &OUT2_ref, Indices{i, k}, Y_ref, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &OUT2_ref, Y_ref, B);
     auto ACC_ref = create_zero_tensor<double>("ACCref", N, N); // acc += A*B, twice
-    tensor_algebra::einsum(1.0, Indices{i, j}, &ACC_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &ACC_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 1.0, &ACC_ref, 1.0, A, B);
+    reference_einsum("ij <- ik ; kj", 1.0, &ACC_ref, 1.0, A, B);
 
     cg::Graph graph("mp_prefix_loop");
     auto     &X = graph.create_tensor<double, 2>("X", N, N);

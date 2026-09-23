@@ -8,15 +8,16 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("ConstantFolding - user-owned tensors are not assumed constant", "[ComputeGraph][Passes]") {
@@ -82,7 +83,7 @@ TEST_CASE("ConstantFolding - safe with Pipeline loop body", "[ComputeGraph][Pass
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
     for (int iter = 0; iter < 3; iter++) {
-        tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+        reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, A, B);
         linear_algebra::scale(0.9, &C_ref);
     }
 
@@ -162,7 +163,7 @@ TEST_CASE("ConstantFolding - safe no-op on a loop body with deferred tensors", "
     g.execute();
 
     auto AA = create_zero_tensor<double>("AA", 4, 4);
-    einsum(Indices{i, j}, &AA, Indices{i, k}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &AA, A, A);
     for (size_t idx = 0; idx < acc.size(); ++idx) {
         CHECK(std::abs(acc.data()[idx] - static_cast<double>(N) * AA.data()[idx]) < 1e-10);
     }

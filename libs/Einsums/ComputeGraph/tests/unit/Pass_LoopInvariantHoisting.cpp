@@ -8,15 +8,16 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("LoopInvariantHoisting - empty loop body", "[ComputeGraph][Passes]") {
@@ -104,7 +105,7 @@ TEST_CASE("LoopInvariantHoisting - does NOT hoist a producer whose output is ove
 
     // Correct result: C = 0.9 * (A·B) (the reset runs every iteration).
     auto C_ref = create_zero_tensor<double>("C_ref", 3, 3);
-    einsum(Indices{i, j}, &C_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     for (size_t k = 0; k < C.size(); ++k) {
         CHECK(C.data()[k] == Catch::Approx(0.9 * C_ref.data()[k]));
     }
@@ -217,7 +218,7 @@ TEST_CASE("LoopInvariantHoisting - hoisted node with a deferred output stays mat
 
     // acc = N * (A·B).
     auto AB = create_zero_tensor<double>("AB", 3, 3);
-    einsum(Indices{i, j}, &AB, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &AB, A, B);
     for (size_t k = 0; k < acc.size(); ++k) {
         CHECK(acc.data()[k] == Catch::Approx(static_cast<double>(N) * AB.data()[k]));
     }
@@ -268,9 +269,9 @@ TEST_CASE("LoopInvariantHoisting - inner-loop invariant hoists all the way to pa
 
     // Hand reference: acc = 4·(A·A)·B.
     auto AA = create_zero_tensor<double>("AA", 3, 3);
-    einsum(Indices{i, j}, &AA, Indices{i, k}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &AA, A, A);
     auto WB = create_zero_tensor<double>("WB", 3, 3);
-    einsum(Indices{i, j}, &WB, Indices{i, k}, AA, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &WB, AA, B);
 
     acc.zero();
     graph.execute();
@@ -309,9 +310,9 @@ TEST_CASE("LoopInvariantHoisting - invariant w.r.t. inner loop only hoists exact
 
     // Reference computed BEFORE execution mutates M and acc.
     auto MM = create_zero_tensor<double>("MM", 3, 3);
-    einsum(Indices{i, j}, &MM, Indices{i, k}, M, Indices{k, j}, M);
+    reference_einsum("ij <- ik ; kj", &MM, M, M);
     auto MMB = create_zero_tensor<double>("MMB", 3, 3);
-    einsum(Indices{i, j}, &MMB, Indices{i, k}, MM, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &MMB, MM, B);
 
     cg::Graph graph("lih_inner_only");
     auto     &outer_body = graph.add_loop("outer", 2, [](size_t it) { return it + 1 < 2; });
@@ -392,7 +393,7 @@ TEST_CASE("LoopInvariantHoisting - does NOT hoist out of a conditional branch in
 
     // Predicate is always true → acc = 2·(A·A) over the two loop iterations.
     auto AA = create_zero_tensor<double>("AA", 3, 3);
-    einsum(Indices{i, j}, &AA, Indices{i, k}, A, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &AA, A, A);
 
     acc.zero();
     graph.execute();

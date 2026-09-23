@@ -5,14 +5,15 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 /// A machine profile on which factoring always pays: contractions are slow and
@@ -38,8 +39,8 @@ TEST_CASE("DistributiveFactoring - rewrites 2 terms sharing operand A", "[Comput
 
     // Reference: R_ref = A*B1 + A*B2
     auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
 
     // Graph version
     auto      R = create_zero_tensor<double>("R", 4, 5);
@@ -73,9 +74,9 @@ TEST_CASE("DistributiveFactoring - rewrites 3 terms", "[ComputeGraph][Distributi
     auto B3 = create_random_tensor<double>("B3", 3, 5);
 
     auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B3);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B3);
 
     auto      R = create_zero_tensor<double>("R", 4, 5);
     cg::Graph graph("factor3");
@@ -141,8 +142,8 @@ TEST_CASE("DistributiveFactoring - shared operand on B side", "[ComputeGraph][Di
     auto B  = create_random_tensor<double>("B", 3, 5);
 
     auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A1, Indices{k, j}, B);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A2, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A1, B);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A2, B);
 
     auto      R = create_zero_tensor<double>("R", 4, 5);
     cg::Graph graph("factor_b_shared");
@@ -170,8 +171,8 @@ TEST_CASE("DistributiveFactoring - rank-4 contraction", "[ComputeGraph][Distribu
     auto T2 = create_random_tensor<double>("T2", 2, 2, 4, 4);
 
     auto R_ref = create_zero_tensor<double>("R_ref", 3, 3, 4, 4);
-    tensor_algebra::einsum(1.0, Indices{i, j, a, b}, &R_ref, 1.0, Indices{i, j, k, l}, g, Indices{k, l, a, b}, T1);
-    tensor_algebra::einsum(1.0, Indices{i, j, a, b}, &R_ref, 1.0, Indices{i, j, k, l}, g, Indices{k, l, a, b}, T2);
+    reference_einsum("ijab <- ijkl ; klab", 1.0, &R_ref, 1.0, g, T1);
+    reference_einsum("ijab <- ijkl ; klab", 1.0, &R_ref, 1.0, g, T2);
 
     auto      R = create_zero_tensor<double>("R", 3, 3, 4, 4);
     cg::Graph graph("factor_rank4");
@@ -202,8 +203,8 @@ TEST_CASE("DistributiveFactoring - different ab_prefactors", "[ComputeGraph][Dis
 
     // Reference: R = 0.5*A*B1 + 2.0*A*B2
     auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 0.5, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 2.0, Indices{i, k}, A, Indices{k, j}, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 0.5, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 2.0, A, B2);
 
     auto      R = create_zero_tensor<double>("R", 4, 5);
     cg::Graph graph("mixed_prefactors");
@@ -231,10 +232,10 @@ TEST_CASE("DistributiveFactoring - downstream reader keeps program order", "[Com
 
     // Reference: R = A*B1 + A*B2 ; S = R*E (S reads the factored output R)
     auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
     auto S_ref = create_zero_tensor<double>("S_ref", 4, 2);
-    tensor_algebra::einsum(0.0, Indices{i, l}, &S_ref, 1.0, Indices{i, j}, R_ref, Indices{j, l}, E);
+    reference_einsum("il <- ij ; jl", 0.0, &S_ref, 1.0, R_ref, E);
 
     auto      R = create_zero_tensor<double>("R", 4, 5);
     auto      S = create_zero_tensor<double>("S", 4, 2);
@@ -268,8 +269,8 @@ TEST_CASE("DistributiveFactoring - idempotent", "[ComputeGraph][DistributiveFact
     auto B2 = create_random_tensor<double>("B2", 3, 5);
 
     auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
 
     auto      R = create_zero_tensor<double>("R", 4, 5);
     cg::Graph graph("factor_idempotent");
@@ -301,8 +302,8 @@ TEST_CASE("DistributiveFactoring - replay factored graph", "[ComputeGraph][Distr
     auto B2 = create_random_tensor<double>("B2", 2, 4);
 
     auto R_ref = create_zero_tensor<double>("R_ref", 3, 4);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
 
     auto      R = create_zero_tensor<double>("R", 3, 4);
     cg::Graph graph("replay_factored");
@@ -339,8 +340,8 @@ TEST_CASE("DistributiveFactoring - declines a member accumulating with c_pf != 1
 
     // R_ref = 2*(R0 + A*B1) + A*B2, the sequential meaning of the two nodes.
     auto R_ref = Tensor<double, 2>(R0);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(2.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 2.0, &R_ref, 1.0, A, B2);
 
     auto      R = Tensor<double, 2>(R0);
     cg::Graph graph("non_unit_accumulate");
@@ -421,10 +422,10 @@ TEST_CASE("DistributiveFactoring - two consumers share one summed intermediate",
 
     auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
     auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
-    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 1.0, Indices{l, k}, C, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 1.0, Indices{l, k}, C, Indices{k, j}, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
+    reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 1.0, C, B1);
+    reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 1.0, C, B2);
 
     auto      R = create_zero_tensor<double>("R", 4, 5);
     auto      S = create_zero_tensor<double>("S", 6, 5);
@@ -474,10 +475,10 @@ TEST_CASE("DistributiveFactoring - sums differing only in a prefactor are not sh
 
     auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
     auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
-    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 1.0, Indices{l, k}, C, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 0.5, Indices{l, k}, C, Indices{k, j}, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
+    reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 1.0, C, B1);
+    reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 0.5, C, B2);
 
     auto      R = create_zero_tensor<double>("R", 4, 5);
     auto      S = create_zero_tensor<double>("S", 6, 5);
@@ -530,11 +531,11 @@ TEST_CASE("DistributiveFactoring - a rewritten operand blocks the second group",
 
     auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
     auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
     // B2 = Bs and C = Cs happen in between, so S sees the new values.
-    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 1.0, Indices{l, k}, Cs, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 1.0, Indices{l, k}, Cs, Indices{k, j}, Bs);
+    reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 1.0, Cs, B1);
+    reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 1.0, Cs, Bs);
 
     auto      R = create_zero_tensor<double>("R", 4, 5);
     auto      S = create_zero_tensor<double>("S", 6, 5);
@@ -588,10 +589,10 @@ TEST_CASE("DistributiveFactoring - a proportional sum reuses the build and scale
 
     auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
     auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
-    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 0.5, Indices{l, k}, C, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 0.5, Indices{l, k}, C, Indices{k, j}, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
+    reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 0.5, C, B1);
+    reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 0.5, C, B2);
 
     auto      R = create_zero_tensor<double>("R", 4, 5);
     auto      S = create_zero_tensor<double>("S", 6, 5);
@@ -641,10 +642,10 @@ TEST_CASE("DistributiveFactoring - a ratio that is not a power of two is not sha
 
     auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
     auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B2);
-    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 3.0, Indices{l, k}, C, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{l, j}, &S_ref, 3.0, Indices{l, k}, C, Indices{k, j}, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
+    reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 3.0, C, B1);
+    reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 3.0, C, B2);
 
     auto      R = create_zero_tensor<double>("R", 4, 5);
     auto      S = create_zero_tensor<double>("S", 6, 5);
@@ -716,9 +717,9 @@ TEST_CASE("DistributiveFactoring - declines a bandwidth-bound contraction", "[Co
 
     // Reference: the unfactored meaning, which must survive the decline.
     auto R_ref = create_zero_tensor<double>("R_ref", I, J);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, S, Indices{k, j}, B1);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, S, Indices{k, j}, B2);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &R_ref, 1.0, Indices{i, k}, S, Indices{k, j}, B3);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, S, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, S, B2);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, S, B3);
 
     cg::Graph graph("bandwidth_bound");
     {

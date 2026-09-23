@@ -9,17 +9,19 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cmath>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+using einsums::testing::reference_permute;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 // Every in-tree writer of a prefactor keeps the descriptor SNAPSHOT and the shared params block
@@ -101,7 +103,7 @@ TEST_CASE("ScaleAbsorption - absorbs into einsum", "[ComputeGraph][Passes]") {
 
     auto C_ref = Tensor<double, 2>(C);
     linear_algebra::scale(3.0, &C_ref);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, A, B);
 
     cg::Graph graph("absorb_einsum");
     {
@@ -142,7 +144,7 @@ TEST_CASE("ScaleAbsorption - absorbs into permute", "[ComputeGraph][Passes]") {
 
     auto C_ref = Tensor<double, 2>(C);
     linear_algebra::scale(5.0, &C_ref);
-    tensor_algebra::permute(0.0, Indices{j, i}, &C_ref, 1.0, Indices{i, j}, A);
+    reference_permute("ji <- ij", 0.0, &C_ref, 1.0, A);
 
     cg::Graph graph("absorb_permute");
     {
@@ -226,7 +228,7 @@ TEST_CASE("ScaleAbsorption - folds scale into a sole einsum operand", "[ComputeG
 
     // Oracle computed eagerly (C is still its original value here).
     auto D_ref = create_zero_tensor<double>("Dref", 4, 5);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &D_ref, 3.0, Indices{i, k}, E, Indices{k, j}, C);
+    reference_einsum("ij <- ik ; kj", 0.0, &D_ref, 3.0, E, C);
 
     cg::Graph graph("sa_fold_operand");
     {
@@ -324,8 +326,8 @@ TEST_CASE("ScaleAbsorption - folds into every reader of the scaled tensor", "[Co
 
     auto D1_ref = create_zero_tensor<double>("D1ref", 4, 5);
     auto D2_ref = create_zero_tensor<double>("D2ref", 4, 5);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &D1_ref, 3.0, Indices{i, k}, E1, Indices{k, j}, C);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &D2_ref, 3.0, Indices{i, k}, E2, Indices{k, j}, C);
+    reference_einsum("ij <- ik ; kj", 0.0, &D1_ref, 3.0, E1, C);
+    reference_einsum("ij <- ik ; kj", 0.0, &D2_ref, 3.0, E2, C);
 
     cg::Graph graph("sa_fold_all_readers");
     {
@@ -389,7 +391,7 @@ TEST_CASE("ScaleAbsorption - folds into an accumulating einsum destination", "[C
 
     auto C_ref = Tensor<double, 2>(C);
     linear_algebra::scale(3.0, &C_ref);
-    tensor_algebra::einsum(1.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 1.0, &C_ref, 1.0, A, B);
 
     cg::Graph graph("sa_fold_accumulator");
     {
@@ -449,7 +451,7 @@ TEST_CASE("ScaleAbsorption - one reader that cannot take the factor blocks the f
     auto C_scaled = Tensor<double, 2>(C);
     linear_algebra::scale(3.0, &C_scaled);
     auto D_ref = create_zero_tensor<double>("Dref", 4, 5);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &D_ref, 1.0, Indices{i, k}, E, Indices{k, j}, C_scaled);
+    reference_einsum("ij <- ik ; kj", 0.0, &D_ref, 1.0, E, C_scaled);
 
     cg::Graph graph("sa_unfoldable_reader");
     {
@@ -537,7 +539,7 @@ TEST_CASE("ScaleAbsorption in Pipeline loop", "[ComputeGraph][Passes][Pipeline]"
     auto C_ref = create_zero_tensor<double>("Cref", 3, 3);
     for (int iter = 0; iter < 3; iter++) {
         linear_algebra::scale(0.5, &C_ref);
-        tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 1.0, Indices{i, k}, A, Indices{k, j}, B);
+        reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, A, B);
     }
 
     cg::Pipeline pipeline("fuse_loop");
@@ -571,7 +573,7 @@ TEST_CASE("ScaleAbsorption - rank-3 BatchedGemm", "[ComputeGraph][Passes][Higher
 
     auto C_ref = Tensor<double, 3>(C);
     linear_algebra::scale(2.5, &C_ref);
-    tensor_algebra::einsum(0.0, Indices{i, j, b}, &C_ref, 1.0, Indices{i, k, b}, A, Indices{k, j, b}, B);
+    reference_einsum("ijb <- ikb ; kjb", 0.0, &C_ref, 1.0, A, B);
 
     cg::Graph graph("sa_rank3_batched");
     {
@@ -607,13 +609,11 @@ TEST_CASE("ScaleAbsorption - rank-4 scale into permute", "[ComputeGraph][Passes]
     auto C_ref = Tensor<double, 4>(C);
     linear_algebra::scale(1.5, &C_ref);
     {
-        using namespace einsums::index;
-        tensor_algebra::permute(0.0, Indices{l, k, j, i}, &C_ref, 1.0, Indices{i, j, k, l}, A);
+        reference_permute("lkji <- ijkl", 0.0, &C_ref, 1.0, A);
     }
 
     cg::Graph graph("sa_rank4_permute");
     {
-        using namespace einsums::index;
         cg::CaptureGuard const guard(graph);
         cg::scale(1.5, &C);
         cg::permute("lkji <- ijkl", 0.0, &C, 1.0, A);
@@ -754,7 +754,7 @@ TEST_CASE("ScaleAbsorption - a slice view READING the scaled store keeps the sca
     auto D_ref = create_zero_tensor<double>("Dref", M, M);
     {
         auto slice_ref = T_scaled(Range{0, M}, Range{0, M});
-        tensor_algebra::einsum(0.0, Indices{i, j}, &D_ref, 1.0, Indices{i, k}, E, Indices{k, j}, slice_ref);
+        reference_einsum("ij <- ik ; kj", 0.0, &D_ref, 1.0, E, slice_ref);
     }
 
     cg::Graph graph("sa_view_reader");
@@ -877,7 +877,7 @@ TEST_CASE("ScaleAbsorption - the documented operand fold still fires beside unre
     auto V = create_random_tensor<double>("V", 4, 2);
 
     auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
-    tensor_algebra::einsum(0.0, Indices{i, j}, &C_ref, 3.0, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 3.0, A, B);
 
     cg::Graph graph("sa_fold_beside_unrelated_views");
     {

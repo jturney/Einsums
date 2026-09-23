@@ -10,9 +10,9 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Performance.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <fmt/format.h>
 
@@ -20,8 +20,9 @@
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
-using namespace einsums::index;
 using namespace einsums::performance;
 namespace cg = einsums::compute_graph;
 
@@ -233,7 +234,7 @@ EINSUMS_TEST_CASE("Bench Executor: replay overhead 100 iterations N=20", "[Compu
         "bare einsum",
         [&]() {
             C.zero();
-            tensor_algebra::einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B);
+            reference_einsum("ij <- ik ; kj", &C, A, B);
         },
         100);
 

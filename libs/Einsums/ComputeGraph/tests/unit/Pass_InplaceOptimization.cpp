@@ -8,15 +8,17 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+using einsums::testing::reference_permute;
+
 using namespace einsums;
 using namespace einsums::tensor_algebra;
-using namespace einsums::index;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("InplaceOptimization - empty graph", "[ComputeGraph][Passes]") {
@@ -74,11 +76,11 @@ TEST_CASE("InplaceOptimization - merges direct_product output into dying input",
 
     // Reference, computed eagerly.
     auto X_ref = create_zero_tensor<double>("Xref", 6, 6);
-    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &X_ref, A, B);
     auto Y_ref = create_zero_tensor<double>("Yref", 6, 6);
     linear_algebra::direct_product(2.0, X_ref, B, 0.0, &Y_ref);
     auto out_ref = create_zero_tensor<double>("OUTref", 6, 6);
-    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, Y_ref, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &out_ref, Y_ref, A);
 
     cg::Graph graph("inplace_merge");
     auto     &X = graph.create_zero_tensor<double, 2>("X", 6, 6);
@@ -142,11 +144,11 @@ TEST_CASE("InplaceOptimization - a permute is never merged onto its dying input"
     auto out = create_zero_tensor<double>("out", 6, 6);
 
     auto X_ref = create_zero_tensor<double>("Xref", 6, 6);
-    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &X_ref, A, B);
     auto Y_ref = create_zero_tensor<double>("Yref", 6, 6);
-    tensor_algebra::permute(Indices{j, i}, &Y_ref, Indices{i, j}, X_ref);
+    reference_permute("ji <- ij", 0.0, &Y_ref, 1.0, X_ref);
     auto out_ref = create_zero_tensor<double>("OUTref", 6, 6);
-    tensor_algebra::einsum(Indices{i, j}, &out_ref, Indices{i, k}, Y_ref, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &out_ref, Y_ref, A);
 
     cg::Graph graph("inplace_permute");
     auto     &X = graph.create_zero_tensor<double, 2>("X", 6, 6);
@@ -217,9 +219,9 @@ TEST_CASE("InplaceOptimization - twice-read input is not merged", "[ComputeGraph
     // Numerics stay correct regardless.
     graph.execute();
     auto X_ref = create_zero_tensor<double>("Xref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &X_ref, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", &X_ref, A, B);
     auto OUT2_ref = create_zero_tensor<double>("OUT2ref", 4, 4);
-    tensor_algebra::einsum(Indices{i, j}, &OUT2_ref, Indices{i, k}, X_ref, Indices{k, j}, A);
+    reference_einsum("ij <- ik ; kj", &OUT2_ref, X_ref, A);
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
             REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-12);

@@ -9,14 +9,15 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+
 using namespace einsums;
-using namespace einsums::index;
 using namespace einsums::tensor_algebra;
 namespace cg = einsums::compute_graph;
 
@@ -414,7 +415,7 @@ TEST_CASE("GEMMBatching - profitability gate still batches small GEMMs", "[Compu
     graph.execute();
     // Numerics through the batched node.
     auto C1_ref = create_zero_tensor<double>("C1ref", N, N);
-    tensor_algebra::einsum(Indices{i, j}, &C1_ref, Indices{i, k}, A1, Indices{k, j}, B1);
+    reference_einsum("ij <- ik ; kj", &C1_ref, A1, B1);
     for (size_t ii = 0; ii < N; ii++) {
         for (size_t jj = 0; jj < N; jj++) {
             REQUIRE(std::abs(C1(ii, jj) - C1_ref(ii, jj)) < 1e-12);
@@ -451,10 +452,10 @@ TEST_CASE("GEMMBatching - batched node placed before consumers of member outputs
 
     Tensor<double, 2> C_ref("Cref", N, N);
     C_ref.zero();
-    tensor_algebra::einsum(Indices{index::i, index::j}, &C_ref, Indices{index::k, index::i}, A, Indices{index::k, index::j}, B);
+    reference_einsum("ij <- ki ; kj", &C_ref, A, B);
     Tensor<double, 2> D_ref("Dref", N, N);
     D_ref.zero();
-    tensor_algebra::einsum(Indices{index::i, index::j}, &D_ref, Indices{index::i, index::k}, C_ref, Indices{index::k, index::j}, E);
+    reference_einsum("ij <- ik ; kj", &D_ref, C_ref, E);
 
     for (size_t ii = 0; ii < N; ii++) {
         for (size_t jj = 0; jj < N; jj++) {
@@ -490,10 +491,10 @@ TEST_CASE("GEMMBatching - interfering node between members disables the batch", 
 
     Tensor<double, 2> C_ref("Cref", N, N);
     C_ref.zero();
-    tensor_algebra::einsum(Indices{index::i, index::j}, &C_ref, Indices{index::i, index::k}, A, Indices{index::k, index::j}, B);
+    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     Tensor<double, 2> D_ref("Dref", N, N);
     D_ref.zero();
-    tensor_algebra::einsum(Indices{index::i, index::j}, &D_ref, Indices{index::i, index::k}, C_ref, Indices{index::k, index::j}, E);
+    reference_einsum("ij <- ik ; kj", &D_ref, C_ref, E);
 
     for (size_t ii = 0; ii < N; ii++) {
         for (size_t jj = 0; jj < N; jj++) {
