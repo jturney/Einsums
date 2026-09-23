@@ -18,12 +18,11 @@ set(TensorAlgebraHeaders
     Einsums/TensorAlgebra/Backends/KhatriRao.hpp
     Einsums/TensorAlgebra/Backends/TileAlgebra.hpp
     Einsums/TensorAlgebra/Backends/Unfold.hpp
-    Einsums/TensorAlgebra/Detail/HpttPlanCache.hpp
     Einsums/TensorAlgebra/Detail/Index.hpp
     Einsums/TensorAlgebra/Detail/Utilities.hpp
 )
 
-set(TensorAlgebraSources Permute.cpp)
+set(TensorAlgebraSources)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -45,5 +44,6 @@ einsums_add_module(
     Einsums_TensorUtilities
     Einsums_PackedGemm
     Einsums_HPTT
+    Einsums_TensorPermute
   CMAKE_SUBDIRS examples tests
 )

@@ -60,6 +60,7 @@ generated API reference for its public headers.
     /libs/Einsums/TensorBase/docs/index.rst
     /libs/Einsums/TensorIO/docs/index.rst
     /libs/Einsums/TensorImpl/docs/index.rst
+    /libs/Einsums/TensorPermute/docs/index.rst
     /libs/Einsums/TensorUtilities/docs/index.rst
     /libs/Einsums/TypeSupport/docs/index.rst
     /libs/Einsums/Utilities/docs/index.rst

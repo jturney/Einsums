@@ -6,7 +6,7 @@
 // Plan cache regression coverage.
 //
 // HPTT's create_plan() builds a plan tree (loop ordering, parallelism strategy)
-// every call. The cache helper in TensorAlgebra/Detail/HpttPlanCache.hpp keeps
+// every call. The cache helper in TensorPermute/Detail/HpttPlanCache.hpp keeps
 // that tree across calls so only A/B/alpha/beta change per execute. The win is
 // largest at small N where the build cost dominates the actual transpose.
 //
@@ -20,7 +20,7 @@
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/Performance.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/TensorAlgebra/Detail/HpttPlanCache.hpp>
+#include <Einsums/TensorPermute/Detail/HpttPlanCache.hpp>
 
 #include <cstddef>
 #include <vector>
@@ -62,12 +62,12 @@ void bench_plan(int N) {
 
     // Warm the per-thread cache once before the timed loop so we measure
     // the steady-state hit cost, not the first-build cost.
-    auto warm = einsums::tensor_algebra::detail::get_or_create_hptt_plan<float>(perm, 2, 1.0f, A.data(), size, 0.0f, B.data(), false);
+    auto warm = einsums::tensor_permute::detail::get_or_create_hptt_plan<float>(perm, 2, 1.0f, A.data(), size, 0.0f, B.data(), false);
     warm->execute();
 
     auto t_cached = time_us("plan-cached", [&] {
         auto const plan =
-            einsums::tensor_algebra::detail::get_or_create_hptt_plan<float>(perm, 2, 1.0f, A.data(), size, 0.0f, B.data(), false);
+            einsums::tensor_permute::detail::get_or_create_hptt_plan<float>(perm, 2, 1.0f, A.data(), size, 0.0f, B.data(), false);
         plan->execute();
     });
     publish_benchmark_result("plan-cached", "t_plan", N, t_cached);

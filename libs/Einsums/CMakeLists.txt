@@ -42,6 +42,7 @@ set(_Einsums_modules
   TaskPool
   Tensor
   PackedGemm
+  TensorPermute
   TensorAlgebra
   ComputeGraphTypes
   ComputeGraph
