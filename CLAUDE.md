@@ -79,17 +79,22 @@ Putting one under `libs/Einsums/<Module>/cmake/` instead requires exporting the 
 
 The templated (compile-time `Indices`) `TensorAlgebra::einsum()` dispatches through `Backends/Dispatch.hpp`, selecting BLAS specializations > packed-GEMM (`try_packed_gemm`) > generic algorithm.
 The outer-product fast path requires each operand's indices to be contiguous within C (the #257/#283 gate); interleaved targets route to the generic algorithm.
+The character-index permute kernel and the per-thread HPTT plan cache live in `TensorPermute`, below TensorAlgebra; the typed `tensor_algebra::permute` is built on them.
 
 ### ComputeGraph (deferred execution)
 
 ComputeGraph is the PREFERRED mechanism for new computational code: capture once, optimize with passes, replay many times.
 The optimization passes, automatic GPU offload, and distributed execution all operate on captured graphs; eager execution gets none of them.
-Eager remains the reference semantics and is the oracle the differential tests compare against.
+Eager execution defines the semantics a captured graph must reproduce, but it is not the test oracle: eager `cg::` calls and graph replay run the same string engine, so comparing them checks the engine against itself.
+C++ tests take expected values from `einsums::testing::reference_einsum` and `reference_permute` (`<Einsums/Testing/ReferenceEinsum.hpp>`), brute-force loops that share no code with either engine; Python tests use numpy.
 The user-guide tutorials use `RuntimeTensor` and teach an operation eagerly before showing the same thing captured, so a reader meets the graph once they know what it is capturing; a documented example that repeats work should end up captured.
 
 `cg::einsum`/`cg::gemm`/... capture into a `Graph` under a `CaptureGuard`, then `graph.execute()` replays; outside capture the same calls run eagerly.
 `cg::einsum` takes only runtime string specs; the tuple-indexed overloads were removed so passes can rewrite specs in place.
-String-spec einsum is the direction for ComputeGraph: new graph code, passes, examples, and docs use string specs, never the templated `Indices{...}` einsum.
+ComputeGraph contains no compile-time index code: library, tools, examples, docs and tests all use string specs.
+`Tests.Unit.Modules.ComputeGraph.CompileTimeIndices` enforces it; its allowlist (`tests/unit/compile_time_indices.allowlist`) is empty, so any `Indices{`, `einsums::index`, templated `tensor_algebra::einsum`/`permute`/`transpose`, or `TensorAlgebra.hpp`/`Permute.hpp` include in the module fails.
+Never add a line to it.
+Rank-erased permutes go through the `TensorPermute` module: `tensor_permute::permute("ji <- ij", beta, &C, alpha, A)`, the same signature as `cg::permute`; its tensor overloads take tensors directly, so call sites never spell `impl()`.
 The spec is parsed once at capture into an `EinsumDescriptor` (links, index spaces, GEMM hint) and routed again at each replay.
 String-spec einsums lower through `StringDispatch.hpp::string_einsum`, whose fast-path cascade assumes each index letter appears once per operand; repeated-letter (diagonal) specs route to the repeat-aware generic loop.
 Semantics enforced at this layer: zero-extent operands still apply the C prefactor exactly once; an output overlapping an input throws `std::invalid_argument` unless the aliased operand's index list is identical to C's (pure elementwise in-place); A and B may always share a tensor.
@@ -163,6 +168,8 @@ einsums_add_python_unit_test("Modules.<M>" Name SCRIPT test_name_python.py)
   There is no `tests/regressions/` tier and adding one back would be a mistake: a guard that sits beside the component's other invariants is read by the next person about to violate it, and a guard filed by why it was written is not.
   Name the defect in a comment so the case says what it defends, and prefer a deterministic construction over the input that happened to expose it, since a guard that reproduces one run in nine hundred is not a guard.
 - `einsums.testing` provides `ALL_DTYPES`/`REAL_DTYPES`/`COMPLEX_DTYPES`, `tolerance_for`, `assert_close`; prefer parametrizing over `ALL_DTYPES` (float64-only graph tests have hidden real bugs).
+- C++ expected values come from `einsums::testing::reference_einsum(spec, c_pf, &C, ab_pf, A, B)` and `reference_permute(spec, beta, &C, alpha, A)`.
+  They enumerate every index assignment, so keep the tensors small; compare against them to a tolerance, not bitwise.
 - Zero-extent inputs are valid: empty BLAS/LAPACK calls are quick-return no-ops (never let `lwork`-style workspace formulas hit zero) and empty contractions still scale C by its prefactor.
 
 ### CMake Options
