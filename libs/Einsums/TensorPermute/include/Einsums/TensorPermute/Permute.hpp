@@ -29,6 +29,7 @@
 
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(tensor_permute)
@@ -243,6 +244,56 @@ void transpose(einsums::detail::TensorImpl<T> *C, einsums::detail::TensorImpl<T>
         EINSUMS_THROW_EXCEPTION(DimensionError, "transpose: the output tensor is smaller than the transposed input");
     }
     permute<ConjA>(T{0}, "ij", C, T{1}, "ji", A);
+}
+
+/**
+ * @brief A tensor type that exposes the TensorImpl it wraps, as every dense tensor, view and
+ *        RuntimeTensor does.
+ *
+ * The overloads below take such tensors directly, so callers never reach for ``impl()``, while
+ * this module still depends on nothing above TensorImpl.
+ *
+ * @versionadded{2.0.0}
+ */
+template <typename T>
+concept HasTensorImpl = requires(T &t, T const &ct) {
+    typename T::ValueType;
+    t.impl();
+    ct.impl();
+};
+
+/**
+ * @brief Compute @f$ C = \beta C + \alpha\,\mathrm{permute}(A) @f$ on tensors, with the axes named
+ *        by characters.
+ *
+ * @code
+ * tensor_permute::permute(0.0, "kij", &C, 1.0, "ijk", A);  // C(k, i, j) = A(i, j, k)
+ * @endcode
+ *
+ * @throws RankError when an index string does not have one letter per axis of its operand, or the
+ *         two strings do not name the same axes.
+ *
+ * @versionadded{2.0.0}
+ */
+template <bool ConjA = false, HasTensorImpl CType, HasTensorImpl AType>
+    requires std::is_same_v<typename CType::ValueType, typename AType::ValueType>
+void permute(typename AType::ValueType beta, std::string const &C_indices, CType *C, typename AType::ValueType alpha,
+             std::string const &A_indices, AType const &A) {
+    permute<ConjA>(beta, C_indices, &C->impl(), alpha, A_indices, A.impl());
+}
+
+/**
+ * @brief Compute @f$ C = A^T @f$ for rank-2 tensors.
+ *
+ * @throws RankError when either operand is not rank 2.
+ * @throws DimensionError when @p C is smaller than the transposed @p A.
+ *
+ * @versionadded{2.0.0}
+ */
+template <bool ConjA = false, HasTensorImpl CType, HasTensorImpl AType>
+    requires std::is_same_v<typename CType::ValueType, typename AType::ValueType>
+void transpose(CType *C, AType const &A) {
+    transpose<ConjA>(&C->impl(), A.impl());
 }
 
 EINSUMS_NAMESPACE_END(tensor_permute)

@@ -250,3 +250,41 @@ TEMPLATE_TEST_CASE("TensorPermute - empty operands", "[TensorPermute]", float, d
         CHECK_NOTHROW(tp::transpose(&MT.impl, M.impl));
     }
 }
+
+namespace {
+
+/// The smallest thing that counts as a tensor here: a ValueType and an impl(). Real tensors come
+/// from a module above this one, which these tests do not use.
+template <typename T, size_t Rank>
+struct FakeTensor {
+    using ValueType = T;
+    Operand<T, Rank> operand;
+
+    explicit FakeTensor(std::array<size_t, Rank> dims) : operand(dims, false) {}
+    TensorImpl<T>       &impl() { return operand.impl; }
+    TensorImpl<T> const &impl() const { return operand.impl; }
+};
+
+} // namespace
+
+TEMPLATE_TEST_CASE("TensorPermute - tensors are taken as they are, without impl() at the call site", "[TensorPermute]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    static_assert(tp::HasTensorImpl<FakeTensor<TestType, 2>>);
+    static_assert(!tp::HasTensorImpl<TensorImpl<TestType>>);
+
+    FakeTensor<TestType, 3> A({2, 3, 4});
+    A.operand.for_each([&](auto const &idx, size_t n) { A.operand.at(idx) = value_for<TestType>(n); });
+
+    SECTION("permute") {
+        FakeTensor<TestType, 3> C({4, 2, 3});
+        tp::permute(TestType{0}, "kij", &C, TestType{1}, "ijk", A);
+        A.operand.for_each([&](auto const &idx, size_t) { CHECK(C.operand.at({idx[2], idx[0], idx[1]}) == A.operand.at(idx)); });
+    }
+
+    SECTION("transpose") {
+        FakeTensor<TestType, 2> M({3, 5}), MT({5, 3});
+        M.operand.for_each([&](auto const &idx, size_t n) { M.operand.at(idx) = value_for<TestType>(n); });
+        tp::transpose(&MT, M);
+        M.operand.for_each([&](auto const &idx, size_t) { CHECK(MT.operand.at({idx[1], idx[0]}) == M.operand.at(idx)); });
+    }
+}
