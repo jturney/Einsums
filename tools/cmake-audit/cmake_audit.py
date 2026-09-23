@@ -32,7 +32,12 @@ What "defined" means here:
     `cmake_path`, `separate_arguments`, `math(EXPR ...)`, the
     `einsums_get_target_property` wrapper, and top-level `set()` /
     `set(... CACHE ...)` declarations visible from any function in the
-    same file.
+    same file. `string()` outputs are found by subcommand, since the
+    output is not always the last argument (`string(REPLACE <m> <r> <out>
+    <input>)`). A call to a function defined in the same file defines
+    whatever it writes back: a parameter the function sets with
+    `set(${param} ... PARENT_SCOPE)`, or with plain `set(${param} ...)`
+    in a macro.
 
 Known false-negative classes (not flagged):
     - References to vars defined in *other* files (CMake includes).
@@ -177,6 +182,123 @@ def split_functions(text: str):
         pos = m_close.end()
 
 
+def command_args(text: str, open_paren: int) -> list[str]:
+    """The arguments of the command whose `(` is at `open_paren`, split the
+    way CMake splits them: quoted and bracket arguments are one token each
+    (quotes stripped), unquoted ones end at whitespace, and parentheses
+    nest. Stops at the matching `)`."""
+    tokens: list[str] = []
+    i, n, depth = open_paren + 1, len(text), 0
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif c == ")" and depth == 0:
+            break
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            tokens.append(text[i + 1:j])
+            i = j + 1
+        elif c == "[" and (m := re.match(r"\[(=*)\[", text[i:])):
+            close = text.find("]" + m.group(1) + "]", i + m.end())
+            end = n if close == -1 else close
+            tokens.append(text[i + m.end():end])
+            i = end + len(m.group(1)) + 2
+        else:
+            j = i
+            while j < n and not text[j].isspace():
+                if text[j] == "(":
+                    depth += 1
+                elif text[j] == ")":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                j += 1
+            tokens.append(text[i:j])
+            i = j
+    return tokens
+
+
+COMMAND_CALL = re.compile(r"(?:^|(?<=[\s;(]))([A-Za-z_][\w]*)\s*\(")
+NAME = re.compile(r"[A-Za-z_][\w]*")
+
+# Where string(<subcommand> ...) writes, as an index into the arguments
+# after the subcommand; -1 is the last argument.
+STRING_OUT_INDEX = {
+    "APPEND": 0, "PREPEND": 0, "CONCAT": 0, "TIMESTAMP": 0, "UUID": 0,
+    "JSON": 0, "MD5": 0, "SHA1": 0, "SHA224": 0, "SHA256": 0, "SHA384": 0,
+    "SHA512": 0, "SHA3_224": 0, "SHA3_256": 0, "SHA3_384": 0, "SHA3_512": 0,
+    "JOIN": 1, "LENGTH": 1, "STRIP": 1, "TOLOWER": 1, "TOUPPER": 1,
+    "GENEX_STRIP": 1, "MAKE_C_IDENTIFIER": 1, "HEX": 1, "CONFIGURE": 1,
+    "REPLACE": 2, "FIND": 2, "REPEAT": 2, "SUBSTRING": 3, "COMPARE": 3,
+    "ASCII": -1, "RANDOM": -1,
+}
+# string(REGEX <mode> <regex> ...), as an index into all the arguments
+# (REGEX is 0, the mode 1, the regex 2): MATCH and MATCHALL write the
+# argument after the regex, REPLACE the one after the replacement.
+STRING_REGEX_OUT_INDEX = {"MATCH": 3, "MATCHALL": 3, "REPLACE": 4}
+
+
+def string_outputs(body: str) -> set[str]:
+    names: set[str] = set()
+    for m in COMMAND_CALL.finditer(body):
+        if m.group(1).lower() != "string":
+            continue
+        args = command_args(body, m.end() - 1)
+        if not args:
+            continue
+        sub = args[0].upper()
+        out = None
+        if sub == "REGEX" and len(args) > 1:
+            k = STRING_REGEX_OUT_INDEX.get(args[1].upper())
+            if k is not None and k < len(args):
+                out = args[k]
+        elif sub in STRING_OUT_INDEX:
+            rest = args[1:]
+            k = STRING_OUT_INDEX[sub]
+            if rest and -len(rest) <= k < len(rest):
+                out = rest[k]
+        if out and NAME.fullmatch(out):
+            names.add(out)
+    return names
+
+
+def function_outputs(text: str) -> dict[str, list[int]]:
+    """For each function or macro defined in `text`, the positions of the
+    parameters it writes back to its caller."""
+    outputs: dict[str, list[int]] = {}
+    for m in FN_OPEN.finditer(text):
+        kind, name, params = m.group(1).lower(), m.group(2), NAME.findall(m.group(3))
+        m_close = FN_CLOSE.search(text, m.end())
+        body = text[m.end():m_close.start() if m_close else len(text)]
+        written = []
+        for index, param in enumerate(params):
+            for s in re.finditer(r"(?:^|(?<=[\s;(]))set\s*(\()\s*\$\{" + re.escape(param) + r"\}", body, re.IGNORECASE):
+                args = command_args(body, s.start(1))
+                if kind == "macro" or "PARENT_SCOPE" in args:
+                    written.append(index)
+                    break
+        if written:
+            outputs[name.lower()] = written
+    return outputs
+
+
+def call_outputs(body: str, outputs: dict[str, list[int]]) -> set[str]:
+    """Names defined in `body` by calls to the functions in `outputs`."""
+    names: set[str] = set()
+    for m in COMMAND_CALL.finditer(body):
+        positions = outputs.get(m.group(1).lower())
+        if not positions:
+            continue
+        args = command_args(body, m.end() - 1)
+        for k in positions:
+            if k < len(args) and NAME.fullmatch(args[k]):
+                names.add(args[k])
+    return names
+
+
 def collect_defined(args_str: str, body: str):
     """Return (names_set, cmake_parse_arguments_prefixes_set) for a body."""
     names: set[str] = set()
@@ -193,6 +315,7 @@ def collect_defined(args_str: str, body: str):
         names.add(m.group(1))
     for m in STRING_OUT.finditer(body):
         names.add(m.group(1))
+    names |= string_outputs(body)
     for m in GET_FILENAME.finditer(body):
         names.add(m.group(1))
     for m in GET_TARGET_PROP.finditer(body):
@@ -277,10 +400,12 @@ def audit_file(path: Path):
     raw = path.read_text()
     text = strip_comments(raw)
     top_level = collect_top_level_defined(text)
+    outputs = function_outputs(text)
     findings = []
     for fn_name, fn_args, body, line_offset in split_functions(text):
         defined, parse_prefixes = collect_defined(fn_args, body)
         defined |= top_level
+        defined |= call_outputs(body, outputs)
         for m in REF.finditer(body):
             name = m.group(1)
             if name in defined:
@@ -299,8 +424,14 @@ def find_all_cmake_files(root: Path):
         "build", ".git", ".cache", "third_party", "external",
         ".einsums-studio", ".idea", ".vs", ".vscode", "node_modules",
     }
+    # A directory holding a CMakeCache.txt is a build tree whatever it is
+    # called (build-no-profile, build-asan, ...); its .cmake files are
+    # generated or copied, not ours to audit.
+    build_trees = {c.parent for c in root.rglob("CMakeCache.txt")}
     for p in root.rglob("*"):
         if any(part in skip_dirs or part.startswith("cmake-build-") for part in p.parts):
+            continue
+        if any(tree in p.parents for tree in build_trees):
             continue
         if not p.is_file():
             continue
