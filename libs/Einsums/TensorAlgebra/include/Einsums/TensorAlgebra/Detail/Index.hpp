@@ -5,6 +5,10 @@
 
 #pragma once
 
+/// Defined whenever this header is included, so that a module which must not reach the compile-time
+/// index machinery (ComputeGraph) can assert it at compile time, through any chain of includes.
+#define EINSUMS_TENSOR_ALGEBRA_DETAIL_INDEX_HPP 1
+
 #include <Einsums/Config.hpp>
 
 #include <Einsums/Config/Namespace.hpp>

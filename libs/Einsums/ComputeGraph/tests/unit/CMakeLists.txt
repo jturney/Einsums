@@ -56,6 +56,7 @@ set(ComputeGraphTests
     GraphCapture.cpp
     GraphFeatures.cpp
     GraphRegistry.cpp
+    HeadersWithoutIndices.cpp
     InterfaceManifest.cpp
     Json.cpp
     LayoutAssignment.cpp
