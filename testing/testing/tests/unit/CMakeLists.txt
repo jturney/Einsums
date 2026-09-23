@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(TestingTests Matchers)
+set(TestingTests Matchers ReferenceEinsum)
 
 foreach(test ${TestingTests})
   set(sources ${test}.cpp)
