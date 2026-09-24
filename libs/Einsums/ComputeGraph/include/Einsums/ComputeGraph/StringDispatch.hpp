@@ -853,12 +853,11 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 
         // ── Rank-erased BLAS fast paths ─────────────────────────────────────────
         // Mirror of the typed BLAS ladder above, reached whenever that one did
-        // not apply. We build a zero-copy TensorView<T, K> over each operand's
-        // data, whose impl carries the same dims and strides, then call the
-        // same rank-specialized BLAS helpers. The upcast is just a pointer plus
-        // a small metadata array, with no allocation and no copy, and it reads
-        // only data()/dim()/stride() - which typed and runtime-rank tensors
-        // both have, so it does not care which it is handed.
+        // not apply. Each route passes the operands' TensorImpls straight to the
+        // rank-erased linear_algebra kernels, the ones the typed helpers call
+        // underneath, which check the ranks at run time. Every dense tensor, view
+        // and RuntimeTensor exposes its impl(), so this does not care whether it
+        // is handed typed or runtime-rank operands.
         //
         // That is what makes a MIXED triple work. This used to require all
         // three operands to be runtime-rank, so one typed and one runtime
@@ -875,27 +874,18 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             std::size_t const b_rank = detail::tensor_rank(B);
             std::size_t const c_rank = detail::tensor_rank(*C);
 
-            auto upcast = [](auto const &t, auto rank_tag) {
-                constexpr std::size_t K = decltype(rank_tag)::value;
-                using ValueType         = typename std::remove_cvref_t<decltype(t)>::ValueType;
-                std::array<size_t, K> dims;
-                std::array<size_t, K> strides;
-                for (std::size_t i = 0; i < K; ++i) {
-                    dims[i]    = t.dim(i);
-                    strides[i] = t.stride(i);
-                }
-                ::einsums::detail::TensorImpl<ValueType> impl(const_cast<ValueType *>(t.data()), dims, strides);
-                return TensorView<ValueType, K>(impl);
-            };
+            // Every route below hands the operands' own TensorImpls to the rank-erased kernels.
+            // They used to be upcast to TensorView<T, K> first, and building those views (a
+            // TensorImpl each, whose dims and strides are heap vectors) cost about 230 ns per
+            // call for three operands, a third of a small contraction's whole eager call.
+            namespace la = linear_algebra::detail;
 
             // ── DOT product ──────────────────────────────────────────────
             if (a_rank == 1 && b_rank == 1 && c_rank <= 1) {
                 if (c_idx.empty() || (links.size() == a_idx.size())) {
                     ProfileAnnotate("dispatch", "dot_runtime");
                     last_dispatch_route() = "dot_runtime";
-                    auto av               = upcast(A, std::integral_constant<std::size_t, 1>{});
-                    auto bv               = upcast(B, std::integral_constant<std::size_t, 1>{});
-                    T    temp             = linear_algebra::dot(av, bv);
+                    T const temp          = la::dot(A.impl(), B.impl());
                     C->data()[0]          = c_pf * C->data()[0] + ab_pf * temp;
                     return;
                 }
@@ -906,10 +896,8 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                 if (links.size() == 1) {
                     ProfileAnnotate("dispatch", "gemv_mat_vec_runtime");
                     last_dispatch_route() = "gemv_mat_vec_runtime";
-                    auto av               = upcast(A, std::integral_constant<std::size_t, 2>{});
-                    auto bv               = upcast(B, std::integral_constant<std::size_t, 1>{});
-                    auto cv               = upcast(*C, std::integral_constant<std::size_t, 1>{});
-                    string_gemv_mat_vec(parsed, c_pf, &cv, ab_pf, av, bv, a_idx, links[0]);
+                    char const trans      = (a_idx[0] == links[0]) ? 't' : 'n';
+                    la::gemv(trans, ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
                     return;
                 }
             }
@@ -919,11 +907,8 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                 if (links.size() == 1) {
                     ProfileAnnotate("dispatch", "gemv_vec_mat_runtime");
                     last_dispatch_route() = "gemv_vec_mat_runtime";
-                    auto av               = upcast(A, std::integral_constant<std::size_t, 1>{});
-                    auto bv               = upcast(B, std::integral_constant<std::size_t, 2>{});
-                    auto cv               = upcast(*C, std::integral_constant<std::size_t, 1>{});
-                    char trans            = (b_idx[1] == links[0]) ? 'n' : 't';
-                    linear_algebra::gemv(trans, ab_pf, bv, av, c_pf, &cv);
+                    char const trans      = (b_idx[1] == links[0]) ? 'n' : 't';
+                    la::gemv(trans, ab_pf, B.impl(), A.impl(), c_pf, &C->impl());
                     return;
                 }
             }
@@ -933,18 +918,15 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                 if (links.empty()) {
                     ProfileAnnotate("dispatch", "ger_runtime");
                     last_dispatch_route() = "ger_runtime";
-                    auto av               = upcast(A, std::integral_constant<std::size_t, 1>{});
-                    auto bv               = upcast(B, std::integral_constant<std::size_t, 1>{});
-                    auto cv               = upcast(*C, std::integral_constant<std::size_t, 2>{});
                     if (c_pf != T{1}) {
-                        linear_algebra::scale(c_pf, &cv);
+                        la::scale(c_pf, &C->impl());
                     }
                     // See the compile-time GER path: swap operands for a transposed
                     // output so the operand indexing C's first axis is x.
                     if (c_idx[0] == a_idx[0]) {
-                        linear_algebra::ger(ab_pf, av, bv, &cv);
+                        la::ger(ab_pf, A.impl(), B.impl(), &C->impl());
                     } else {
-                        linear_algebra::ger(ab_pf, bv, av, &cv);
+                        la::ger(ab_pf, B.impl(), A.impl(), &C->impl());
                     }
                     return;
                 }
@@ -955,34 +937,33 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                 if (links.size() == 1 && !route_prefers_packed) {
                     ProfileAnnotate("dispatch", "gemm_direct_runtime");
                     last_dispatch_route() = "gemm_direct_runtime";
-                    auto av               = upcast(A, std::integral_constant<std::size_t, 2>{});
-                    auto bv               = upcast(B, std::integral_constant<std::size_t, 2>{});
-                    auto cv               = upcast(*C, std::integral_constant<std::size_t, 2>{});
-                    string_gemm(parsed, links[0], c_pf, &cv, ab_pf, av, bv);
+                    // As string_gemm: C = [freeA, freeB] is op(A) op(B); the transposed output
+                    // C = [freeB, freeA] is op(B) op(A).
+                    std::string const &k     = links[0];
+                    std::string const &freeA = (a_idx[0] == k) ? a_idx[1] : a_idx[0];
+                    if (c_idx[0] == freeA) {
+                        char const ta = (a_idx[0] == k) ? 't' : 'n';
+                        char const tb = (b_idx[1] == k) ? 't' : 'n';
+                        la::gemm(ta, tb, ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
+                    } else {
+                        char const tb = (b_idx[0] == k) ? 't' : 'n';
+                        char const ta = (a_idx[1] == k) ? 't' : 'n';
+                        la::gemm(tb, ta, ab_pf, B.impl(), A.impl(), c_pf, &C->impl());
+                    }
                     return;
                 }
             }
 
             // ── Direct product at ANY rank ───────────────────────────────
-            // No upcast to a fixed K is needed: direct_product wants
-            // SameRank<A, B, C>, which three runtime-rank operands satisfy
-            // statically, so the runtime ranks are simply checked here. This
-            // used to sit inside the rank-2 block above, matching the typed
-            // ladder's old gate and sending every other rank to the generic
-            // loop.
-            //
-            // Only where SameRank holds. dynamic_rank matches any rank, but two
-            // typed operands of different ranks do not, and for such a triple
-            // this call failed to compile whatever the spec. Their ranks can
-            // never all be equal at run time, so the route is dead for them
-            // anyway, and they take the routes below.
-            if constexpr (SameRank<AType, BType, CType>) {
-                if (a_rank == b_rank && b_rank == c_rank && links.empty() && a_idx == b_idx && a_idx == c_idx) {
-                    ProfileAnnotate("dispatch", "direct_product_runtime");
-                    last_dispatch_route() = "direct_product_runtime";
-                    linear_algebra::direct_product(ab_pf, A, B, c_pf, C);
-                    return;
-                }
+            // The rank-erased kernel takes any rank, so the ranks are only
+            // checked here. This used to sit inside the rank-2 block above,
+            // matching the typed ladder's old gate and sending every other rank
+            // to the generic loop.
+            if (a_rank == b_rank && b_rank == c_rank && links.empty() && a_idx == b_idx && a_idx == c_idx) {
+                ProfileAnnotate("dispatch", "direct_product_runtime");
+                last_dispatch_route() = "direct_product_runtime";
+                la::direct_product(ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
+                return;
             }
         }
     } // end of the !conj_a && !conj_b BLAS fast-path gate

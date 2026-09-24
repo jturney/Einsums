@@ -787,8 +787,8 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         // string_einsum compiled a direct_product call, which requires SameRank<A, B, C>, for every
         // triple with a runtime-rank operand. dynamic_rank matches any rank, but two typed operands
         // of different ranks do not, so any eager einsum over such a triple failed to compile,
-        // whatever its spec: this contraction included. The route is now compiled only where
-        // SameRank holds, and a triple like this one takes the routes after it.
+        // whatever its spec: this contraction included. The runtime-rank routes now call the
+        // rank-erased kernels, which check ranks at run time, so no such constraint is left.
         auto const            A = create_random_tensor<double>("A", 4, 3, 5);
         auto const            b = create_random_tensor<double>("b", 5);
         RuntimeTensor<double> C("C", std::vector<size_t>{4, 3});
