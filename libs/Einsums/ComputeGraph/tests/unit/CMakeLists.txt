@@ -64,6 +64,7 @@ set(ComputeGraphTests
     MixedPrecisionRules.cpp
     LayoutAssignment.cpp
     MultiTermFactorization.cpp
+    Pass_ScratchPrivatization.cpp
     SaveLoad.cpp
     SetupSubgraph.cpp
     CostModel.cpp

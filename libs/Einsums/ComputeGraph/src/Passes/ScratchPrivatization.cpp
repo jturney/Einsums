@@ -17,9 +17,9 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -215,17 +215,21 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
     // Under the built-in sequential replay the clones cost cache locality and
     // buy no width, so only graphs that will actually run on a parallel
     // executor are rewritten (Graph::set_executor, installed before apply()).
-    if (_require_executor && graph.executor() == nullptr) {
-        return;
-    }
     auto &nodes = graph.nodes();
     if (nodes.empty()) {
+        return;
+    }
+    if (_require_executor && graph.executor() == nullptr) {
+        note_skip("no parallel executor is installed, and under sequential replay a clone buys no width",
+                  fmt::format("graph '{}'", graph.name()));
         return;
     }
 
     // ── Scan: per-tensor access sequence + local disqualifiers ──────────────
     std::unordered_map<TensorId, std::vector<Access>> accesses;
-    std::unordered_set<TensorId>                      disqualified;
+    // Why each disqualified tensor is left alone: the first reason found, which is what the skip
+    // tally reports if the tensor turns out to be reused scratch.
+    std::unordered_map<TensorId, char const *> disqualified;
 
     for (size_t i = 0; i < nodes.size(); ++i) {
         Node const &nd = nodes[i];
@@ -236,10 +240,10 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
         if (is_control_flow(nd.kind)) {
             auto [eff_in, eff_out] = graph.effective_io(nd);
             for (auto const raw : eff_in) {
-                disqualified.insert(graph.resolve_alias(raw));
+                disqualified.emplace(graph.resolve_alias(raw), "a control-flow node's body touches it");
             }
             for (auto const raw : eff_out) {
-                disqualified.insert(graph.resolve_alias(raw));
+                disqualified.emplace(graph.resolve_alias(raw), "a control-flow node's body touches it");
             }
             continue;
         }
@@ -251,7 +255,7 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
                 // A view access is a partial touch; a lifecycle node ties the
                 // buffer's storage to this graph's schedule. Both make
                 // renaming unsafe to reason about locally.
-                disqualified.insert(tid);
+                disqualified.emplace(tid, lifecycle ? "an allocation or free node touches it" : "it is accessed through a view");
                 continue;
             }
             accesses[tid].push_back({.node_idx = i, .starts_generation = false});
@@ -259,7 +263,7 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
         for (auto const raw : nd.outputs) {
             TensorId const tid = graph.resolve_alias(raw);
             if (raw != tid || lifecycle) {
-                disqualified.insert(tid);
+                disqualified.emplace(tid, lifecycle ? "an allocation or free node touches it" : "it is accessed through a view");
                 continue;
             }
             bool const reads_self = std::find(nd.inputs.begin(), nd.inputs.end(), raw) != nd.inputs.end() || reads_destination(nd);
@@ -279,19 +283,37 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
 
     bool changed = false;
     for (auto const tid : candidates) {
-        if (disqualified.contains(tid)) {
-            continue;
-        }
-        auto const *handle = graph.find_tensor(tid);
-        if (handle == nullptr || handle->aliases != 0 || !handle->impl_fn || handle->dims.empty() || !dispatchable_dtype(handle->dtype)) {
+        auto const &accs = accesses[tid];
+        // Only a tensor overwritten whole more than once is reused scratch. Anything else is an
+        // input, a result or single-use scratch: declining it is not news, and it could not be
+        // split anyway, so it is passed over without a word in the skip tally.
+        auto const overwrites = std::ranges::count_if(accs, [](Access const &a) { return a.starts_generation; });
+        if (overwrites < 2) {
             continue;
         }
 
-        auto const &accs = accesses[tid];
+        auto const *handle = graph.find_tensor(tid);
+        auto const  skip   = [&](std::string_view why) {
+            note_skip(why, fmt::format("tensor '{}'", handle != nullptr ? handle->name : fmt::format("id {}", tid)));
+        };
+        if (auto const d = disqualified.find(tid); d != disqualified.end()) {
+            skip(d->second);
+            continue;
+        }
+        if (handle == nullptr || !handle->impl_fn || handle->dims.empty() || !dispatchable_dtype(handle->dtype)) {
+            skip("its storage or element type cannot be cloned");
+            continue;
+        }
+        if (handle->aliases != 0) {
+            skip("other tensors alias it");
+            continue;
+        }
+
         // A read before the first pure overwrite consumes a value carried in
         // from outside this graph (e.g. the previous loop iteration); the
         // tensor is not scratch here.
-        if (accs.empty() || !accs.front().starts_generation) {
+        if (!accs.front().starts_generation) {
+            skip("it is read before its first whole overwrite, so it carries a value in");
             continue;
         }
 
@@ -324,6 +346,7 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
             }
         }
         if (!ok) {
+            skip("a node in one of its interior generations cannot be rebuilt onto a clone");
             continue;
         }
 
@@ -342,7 +365,8 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
             clones.push_back(clone);
         }
         if (clones.size() != num_clones) {
-            continue; // clone declaration failed; leave the tensor untouched
+            skip("declaring a clone failed"); // leave the tensor untouched
+            continue;
         }
 
         for (size_t j = 0; j < interior; ++j) {
