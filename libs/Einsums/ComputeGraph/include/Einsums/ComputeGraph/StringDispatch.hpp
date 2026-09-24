@@ -41,57 +41,6 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::dispatch)
 
-/**
- * @brief Execute a tensor contraction described by a string specification.
- *
- * Classifies the contraction pattern at runtime and dispatches to the
- * most efficient BLAS routine.
- *
- * **Supported patterns:**
- * - GEMM: rank-2 × rank-2 → rank-2, one link index
- * - GEMV: rank-2 × rank-1 → rank-1 (or reverse), one link index
- * - GER: rank-1 × rank-1 → rank-2, no link indices (outer product)
- * - DOT: rank-1 × rank-1 → scalar, all indices contracted
- * - Direct product: same indices on A, B, C (element-wise)
- */
-
-// ── GEMM dispatch (rank-2 × rank-2 → rank-2) ───────────────────────────────
-
-template <typename T, MatrixConcept AType, MatrixConcept BType, MatrixConcept CType>
-void string_gemm(ParsedEinsumSpec const &parsed, std::string const &k, T c_pf, CType *C, T ab_pf, AType const &A, BType const &B) {
-    // `k` is the single link index; string_einsum classified the contraction
-    // (links.size() == 1) before dispatching here, so it is not recomputed.
-
-    // A GEMM op(A)·op(B) yields rows = A's free (non-link) index, cols = B's free
-    // index. The output may be requested in EITHER order, so honor c_indices:
-    //   C = [freeA, freeB] -> op(A)·op(B)
-    //   C = [freeB, freeA] -> op(B)·op(A)   (the transposed product)
-    // Without this, a transposed-output contraction (e.g. "ia <- ma ; mi") writes
-    // the result with swapped dimensions and trips gemm's dimension check.
-    std::string const &freeA = (parsed.a_indices[0] == k) ? parsed.a_indices[1] : parsed.a_indices[0];
-
-    if (parsed.c_indices[0] == freeA) {
-        // op(A) must be [freeA, k]; op(B) must be [k, freeB].
-        char ta = (parsed.a_indices[0] == k) ? 't' : 'n';
-        char tb = (parsed.b_indices[1] == k) ? 't' : 'n';
-        linear_algebra::gemm(ta, tb, ab_pf, A, B, c_pf, C);
-    } else {
-        // Transposed output C = [freeB, freeA]: op(B) must be [freeB, k], op(A) [k, freeA].
-        char tb = (parsed.b_indices[0] == k) ? 't' : 'n';
-        char ta = (parsed.a_indices[1] == k) ? 't' : 'n';
-        linear_algebra::gemm(tb, ta, ab_pf, B, A, c_pf, C);
-    }
-}
-
-// ── GEMV dispatch (rank-2 × rank-1 → rank-1) ───────────────────────────────
-
-template <typename T, MatrixConcept MatType, VectorConcept VecType, VectorConcept OutType>
-void string_gemv_mat_vec(ParsedEinsumSpec const & /*parsed*/, T c_pf, OutType *out, T ab_pf, MatType const &mat, VecType const &vec,
-                         std::vector<std::string> const &mat_idx, std::string const &link) {
-    char trans = (mat_idx[0] == link) ? 't' : 'n';
-    linear_algebra::gemv(trans, ab_pf, mat, vec, c_pf, out);
-}
-
 // ── Generic nested-loop contraction ─────────────────────────────────────
 
 // last_dispatch_route() and the string_permute_impl declaration live in Detail/ErasedEinsum.hpp.
@@ -515,10 +464,22 @@ void reject_output_alias(ParsedEinsumSpec const &parsed, CType const &C, AType c
 
 // ── Main dispatch function ──────────────────────────────────────────────────
 
+/**
+ * @brief Execute a contraction described by a parsed string spec, on runtime-rank operands.
+ *
+ * Classifies the contraction at run time and takes the first route that fits: a dot product, GEMV,
+ * GER, GEMM or direct product on the operands' TensorImpls, then PackedGemm, then the generic loop.
+ * Repeated letters and lone summed indices go straight to the generic loop, which is the only route
+ * that handles them.
+ *
+ * Every caller hands it runtime-rank views: the graph's replay executors, and eager ``cg::einsum``
+ * through @ref erased_string_einsum, which is what code holding typed tensors calls.
+ */
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
     requires requires {
         requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
         requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
+        requires !HasCompileTimeRank<AType> && !HasCompileTimeRank<BType> && !HasCompileTimeRank<CType>;
     }
 void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf,
                    AType const &A, BType const &B, bool conj_a = false, bool conj_b = false,
@@ -551,17 +512,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         }
         einsums::detail::TensorImpl<T> temp_impl(scratch.data(), dims, C->impl().is_row_major());
 
-        // The temporary has to be the same KIND of tensor as C. A runtime-rank
-        // view standing in for a typed C reaches fast paths that have no mixed
-        // typed/runtime overload (direct_product is one), and that is a compile
-        // error at the call rather than a fallback to the generic loop.
-        auto temp = [&] {
-            if constexpr (HasCompileTimeRank<CType>) {
-                return TensorView<T, std::remove_cvref_t<CType>::Rank>(temp_impl);
-            } else {
-                return einsums::RuntimeTensorView<T>(temp_impl);
-            }
-        }();
+        einsums::RuntimeTensorView<T> temp(temp_impl);
 
         // c_pf = 0: the base result is the whole content of the temporary, so
         // the accumulation below is the only place C is touched.
@@ -680,64 +631,46 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // one BLAS shape with a conjugating form: PackedGemm rejects a rank-0
     // output, so without this a conjugated full contraction had nowhere to go
     // but the serial generic loop.
-    // dot() needs SameRank, which for two typed operands is a compile-time
-    // property and for two runtime-rank ones is automatic (their static Rank is
-    // the same dynamic sentinel), so the guard is constexpr and the runtime
-    // rank equality is re-checked below. A mixed typed/runtime pair is left to
-    // the paths further down.
-    if constexpr ((HasCompileTimeRank<AType> && HasCompileTimeRank<BType> &&
-                   std::remove_cvref_t<AType>::Rank == std::remove_cvref_t<BType>::Rank) ||
-                  (!HasCompileTimeRank<AType> && !HasCompileTimeRank<BType>)) {
-        if (c_idx.empty() && a_idx == b_idx && links.size() == a_idx.size() && detail::tensor_rank(A) == detail::tensor_rank(B)) {
-            T temp;
-            if constexpr (IsComplexV<T>) {
-                // true_dot(X, Y) is sum conj(X) * Y.
-                if (conj_a && conj_b) {
-                    temp = std::conj(linear_algebra::dot(A, B));
-                } else if (conj_a) {
-                    temp = linear_algebra::true_dot(A, B);
-                } else if (conj_b) {
-                    temp = linear_algebra::true_dot(B, A);
-                } else {
-                    temp = linear_algebra::dot(A, B);
-                }
+    if (c_idx.empty() && a_idx == b_idx && links.size() == a_idx.size() && detail::tensor_rank(A) == detail::tensor_rank(B)) {
+        T temp;
+        if constexpr (IsComplexV<T>) {
+            // true_dot(X, Y) is sum conj(X) * Y.
+            if (conj_a && conj_b) {
+                temp = std::conj(linear_algebra::dot(A, B));
+            } else if (conj_a) {
+                temp = linear_algebra::true_dot(A, B);
+            } else if (conj_b) {
+                temp = linear_algebra::true_dot(B, A);
             } else {
-                // Conjugation is the identity on a real type, so the flags
-                // carry no meaning here and plain dot is already correct.
                 temp = linear_algebra::dot(A, B);
             }
-
-            bool const conjugating = IsComplexV<T> && (conj_a || conj_b);
-            if constexpr (HasCompileTimeRank<AType>) {
-                ProfileAnnotate("dispatch", conjugating ? "true_dot" : "dot");
-                last_dispatch_route() = conjugating ? "true_dot" : "dot";
-            } else {
-                ProfileAnnotate("dispatch", conjugating ? "true_dot_runtime" : "dot_runtime");
-                last_dispatch_route() = conjugating ? "true_dot_runtime" : "dot_runtime";
-            }
-            C->data()[0] = c_pf * C->data()[0] + ab_pf * temp;
-            return;
+        } else {
+            // Conjugation is the identity on a real type, so the flags
+            // carry no meaning here and plain dot is already correct.
+            temp = linear_algebra::dot(A, B);
         }
+
+        bool const conjugating = IsComplexV<T> && (conj_a || conj_b);
+        ProfileAnnotate("dispatch", conjugating ? "true_dot_runtime" : "dot_runtime");
+        last_dispatch_route() = conjugating ? "true_dot_runtime" : "dot_runtime";
+        C->data()[0]          = c_pf * C->data()[0] + ab_pf * temp;
+        return;
     }
 
-    // ── Rank-1 special-case BLAS fast paths ─────────────────────────────────
-    // These call helpers (string_gemv_mat_vec, linear_algebra::ger, etc.)
-    // that are themselves rank-specific (MatrixConcept / VectorConcept), so
-    // they only compile for typed Tensor<T, K> operands and stay gated
-    // behind HasCompileTimeRank. PackedGemm (below) handles the rank-2+
-    // GEMM-shaped cases and works uniformly for typed and runtime-rank
-    // tensors via the runtime ContractionSpec entry point.
-    // Conjugation skips the non-conj BLAS fast paths below: those helpers
-    // (gemv, ger, string_gemm, direct_product) don't conjugate. Conjugated
+    // ── BLAS fast paths ─────────────────────────────────────────────────────
+    // Each route passes the operands' TensorImpls straight to the rank-erased
+    // linear_algebra kernels, which check the ranks at run time.
+    //
+    // Conjugation skips them: none of these kernels conjugates. Conjugated
     // contractions go to PackedGemm (native via spec.conj_a/conj_b) for
     // gemm-shaped cases, else the conj-aware generic loop.
     //
-    // The two rank-2 GEMM routes are the exception: a matrix times a matrix is
-    // the one shape here that a thread's node width could have spread, and a
-    // vendor GEMM issued under such a width is clamped to one thread by the BLAS
-    // wrappers' fence. When PackedGemm is the preferred route they stand aside
-    // and it takes the shape, whose packed loops fork from the ICV the width
-    // raised.
+    // The rank-2 GEMM route is the exception to taking the first fit: a matrix
+    // times a matrix is the one shape here that a thread's node width could have
+    // spread, and a vendor GEMM issued under such a width is clamped to one thread
+    // by the BLAS wrappers' fence. When PackedGemm is the preferred route it
+    // stands aside and PackedGemm takes the shape, whose packed loops fork from
+    // the ICV the width raised.
     //
     // Same answer the packed engine reaches, from the same call site's pin (@ref
     // packed_gemm::prefer_packed_route): a caller whose node has a pinned route
@@ -745,212 +678,109 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // other inside try_packed_gemm. A caller with no site - eager, or an
     // unplanned graph - reads the thread regime exactly as before.
     if (!conj_a && !conj_b) {
-        [[maybe_unused]] bool const route_prefers_packed = packed_gemm::prefer_packed_route(pg_site);
-        if constexpr (HasCompileTimeRank<AType> && HasCompileTimeRank<BType> && HasCompileTimeRank<CType>) {
-            constexpr size_t a_rank = std::remove_cvref_t<AType>::Rank;
-            constexpr size_t b_rank = std::remove_cvref_t<BType>::Rank;
-            constexpr size_t c_rank = std::remove_cvref_t<CType>::Rank;
+        bool const        route_prefers_packed = packed_gemm::prefer_packed_route(pg_site);
+        std::size_t const a_rank               = detail::tensor_rank(A);
+        std::size_t const b_rank               = detail::tensor_rank(B);
+        std::size_t const c_rank               = detail::tensor_rank(*C);
 
-            // ── DOT product: scalar output, all indices contracted ──────────
-            if constexpr (a_rank == 1 && b_rank == 1 && c_rank == 1) {
-                if (c_idx.empty() || (links.size() == a_idx.size())) {
-                    ProfileAnnotate("dispatch", "dot");
-                    last_dispatch_route() = "dot";
-                    T temp                = linear_algebra::dot(A, B);
-                    C->data()[0]          = c_pf * C->data()[0] + ab_pf * temp;
-                    return;
-                }
-            }
+        // Every route below hands the operands' own TensorImpls to the rank-erased kernels.
+        // They used to be upcast to TensorView<T, K> first, and building those views (a
+        // TensorImpl each, whose dims and strides are heap vectors) cost about 230 ns per
+        // call for three operands, a third of a small contraction's whole eager call.
+        namespace la = linear_algebra::detail;
 
-            // ── GEMV: matrix × vector → vector ──────────────────────────────
-            if constexpr (a_rank == 2 && b_rank == 1 && c_rank == 1) {
-                if (links.size() == 1) {
-                    ProfileAnnotate("dispatch", "gemv_mat_vec");
-                    last_dispatch_route() = "gemv_mat_vec";
-                    string_gemv_mat_vec(parsed, c_pf, C, ab_pf, A, B, a_idx, links[0]);
-                    return;
-                }
-            }
-
-            // ── GEMV: vector × matrix → vector ──────────────────────────────
-            if constexpr (a_rank == 1 && b_rank == 2 && c_rank == 1) {
-                if (links.size() == 1) {
-                    ProfileAnnotate("dispatch", "gemv_vec_mat");
-                    last_dispatch_route() = "gemv_vec_mat";
-                    // Reinterpret as B^T * A or B * A depending on where the link is
-                    char trans = (b_idx[1] == links[0]) ? 'n' : 't';
-                    linear_algebra::gemv(trans, ab_pf, B, A, c_pf, C);
-                    return;
-                }
-            }
-
-            // ── GER: vector × vector → matrix (outer product) ───────────────
-            if constexpr (a_rank == 1 && b_rank == 1 && c_rank == 2) {
-                if (links.empty()) {
-                    ProfileAnnotate("dispatch", "ger");
-                    last_dispatch_route() = "ger";
-                    if (c_pf != T{1}) {
-                        linear_algebra::scale(c_pf, C);
-                    }
-                    // ger(x, y, C) computes C[i,j] = x[i]*y[j], so the operand whose
-                    // index labels C's first axis must be x. Swap for a transposed
-                    // output (spec like "ji <- i ; j", where C's axes are ordered
-                    // opposite to the A-then-B operand order).
-                    if (c_idx[0] == a_idx[0]) {
-                        linear_algebra::ger(ab_pf, A, B, C);
-                    } else {
-                        linear_algebra::ger(ab_pf, B, A, C);
-                    }
-                    return;
-                }
-            }
-
-            // ── GEMM: matrix × matrix → matrix ──────────────────────────────
-            if constexpr (a_rank == 2 && b_rank == 2 && c_rank == 2) {
-                if (links.size() == 1 && !route_prefers_packed) {
-                    ProfileAnnotate("dispatch", "gemm_direct");
-                    last_dispatch_route() = "gemm_direct";
-                    string_gemm(parsed, links[0], c_pf, C, ab_pf, A, B);
-                    return;
-                }
-            }
-
-            // ── Direct product: same indices on all three, no links ─────────
-            // Elementwise at ANY rank, not just rank 2 - the gate used to sit
-            // inside the rank-2 block above, so "i <- i ; i" and
-            // "ijk <- ijk ; ijk" fell all the way to the serial generic loop
-            // even though linear_algebra::direct_product takes any rank.
-            if constexpr (a_rank == b_rank && b_rank == c_rank) {
-                if (links.empty() && a_idx == b_idx && a_idx == c_idx) {
-                    ProfileAnnotate("dispatch", "direct_product");
-                    last_dispatch_route() = "direct_product";
-                    linear_algebra::direct_product(ab_pf, A, B, c_pf, C);
-                    return;
-                }
+        // ── DOT product ──────────────────────────────────────────────
+        if (a_rank == 1 && b_rank == 1 && c_rank <= 1) {
+            if (c_idx.empty() || (links.size() == a_idx.size())) {
+                ProfileAnnotate("dispatch", "dot_runtime");
+                last_dispatch_route() = "dot_runtime";
+                T const temp          = la::dot(A.impl(), B.impl());
+                C->data()[0]          = c_pf * C->data()[0] + ab_pf * temp;
+                return;
             }
         }
 
-        // ── Rank-erased BLAS fast paths ─────────────────────────────────────────
-        // Mirror of the typed BLAS ladder above, reached whenever that one did
-        // not apply. Each route passes the operands' TensorImpls straight to the
-        // rank-erased linear_algebra kernels, the ones the typed helpers call
-        // underneath, which check the ranks at run time. Every dense tensor, view
-        // and RuntimeTensor exposes its impl(), so this does not care whether it
-        // is handed typed or runtime-rank operands.
-        //
-        // That is what makes a MIXED triple work. This used to require all
-        // three operands to be runtime-rank, so one typed and one runtime
-        // operand satisfied neither ladder and fell through to PackedGemm -
-        // which DEFERS a plain single-M/N/K GEMM back to direct BLAS, leaving
-        // the serial generic loop to run it. A rank-2 matmul was hitting the
-        // odometer loop purely because its operands were declared differently.
-        //
-        // Running it for an all-typed triple is harmless: every branch here
-        // tests the same shape conditions the typed ladder already returned on,
-        // so it only ever sees shapes that one declined.
-        if constexpr (!(HasCompileTimeRank<AType> && HasCompileTimeRank<BType> && HasCompileTimeRank<CType>)) {
-            std::size_t const a_rank = detail::tensor_rank(A);
-            std::size_t const b_rank = detail::tensor_rank(B);
-            std::size_t const c_rank = detail::tensor_rank(*C);
-
-            // Every route below hands the operands' own TensorImpls to the rank-erased kernels.
-            // They used to be upcast to TensorView<T, K> first, and building those views (a
-            // TensorImpl each, whose dims and strides are heap vectors) cost about 230 ns per
-            // call for three operands, a third of a small contraction's whole eager call.
-            namespace la = linear_algebra::detail;
-
-            // ── DOT product ──────────────────────────────────────────────
-            if (a_rank == 1 && b_rank == 1 && c_rank <= 1) {
-                if (c_idx.empty() || (links.size() == a_idx.size())) {
-                    ProfileAnnotate("dispatch", "dot_runtime");
-                    last_dispatch_route() = "dot_runtime";
-                    T const temp          = la::dot(A.impl(), B.impl());
-                    C->data()[0]          = c_pf * C->data()[0] + ab_pf * temp;
-                    return;
-                }
-            }
-
-            // ── GEMV: matrix × vector → vector ───────────────────────────
-            if (a_rank == 2 && b_rank == 1 && c_rank == 1) {
-                if (links.size() == 1) {
-                    ProfileAnnotate("dispatch", "gemv_mat_vec_runtime");
-                    last_dispatch_route() = "gemv_mat_vec_runtime";
-                    char const trans      = (a_idx[0] == links[0]) ? 't' : 'n';
-                    la::gemv(trans, ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
-                    return;
-                }
-            }
-
-            // ── GEMV: vector × matrix → vector ───────────────────────────
-            if (a_rank == 1 && b_rank == 2 && c_rank == 1) {
-                if (links.size() == 1) {
-                    ProfileAnnotate("dispatch", "gemv_vec_mat_runtime");
-                    last_dispatch_route() = "gemv_vec_mat_runtime";
-                    char const trans      = (b_idx[1] == links[0]) ? 'n' : 't';
-                    la::gemv(trans, ab_pf, B.impl(), A.impl(), c_pf, &C->impl());
-                    return;
-                }
-            }
-
-            // ── GER: vector × vector → matrix ────────────────────────────
-            if (a_rank == 1 && b_rank == 1 && c_rank == 2) {
-                if (links.empty()) {
-                    ProfileAnnotate("dispatch", "ger_runtime");
-                    last_dispatch_route() = "ger_runtime";
-                    if (c_pf != T{1}) {
-                        la::scale(c_pf, &C->impl());
-                    }
-                    // See the compile-time GER path: swap operands for a transposed
-                    // output so the operand indexing C's first axis is x.
-                    if (c_idx[0] == a_idx[0]) {
-                        la::ger(ab_pf, A.impl(), B.impl(), &C->impl());
-                    } else {
-                        la::ger(ab_pf, B.impl(), A.impl(), &C->impl());
-                    }
-                    return;
-                }
-            }
-
-            // ── GEMM: matrix × matrix → matrix ───────────────────────────
-            if (a_rank == 2 && b_rank == 2 && c_rank == 2) {
-                if (links.size() == 1 && !route_prefers_packed) {
-                    ProfileAnnotate("dispatch", "gemm_direct_runtime");
-                    last_dispatch_route() = "gemm_direct_runtime";
-                    // As string_gemm: C = [freeA, freeB] is op(A) op(B); the transposed output
-                    // C = [freeB, freeA] is op(B) op(A).
-                    std::string const &k     = links[0];
-                    std::string const &freeA = (a_idx[0] == k) ? a_idx[1] : a_idx[0];
-                    if (c_idx[0] == freeA) {
-                        char const ta = (a_idx[0] == k) ? 't' : 'n';
-                        char const tb = (b_idx[1] == k) ? 't' : 'n';
-                        la::gemm(ta, tb, ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
-                    } else {
-                        char const tb = (b_idx[0] == k) ? 't' : 'n';
-                        char const ta = (a_idx[1] == k) ? 't' : 'n';
-                        la::gemm(tb, ta, ab_pf, B.impl(), A.impl(), c_pf, &C->impl());
-                    }
-                    return;
-                }
-            }
-
-            // ── Direct product at ANY rank ───────────────────────────────
-            // The rank-erased kernel takes any rank, so the ranks are only
-            // checked here. This used to sit inside the rank-2 block above,
-            // matching the typed ladder's old gate and sending every other rank
-            // to the generic loop.
-            if (a_rank == b_rank && b_rank == c_rank && links.empty() && a_idx == b_idx && a_idx == c_idx) {
-                ProfileAnnotate("dispatch", "direct_product_runtime");
-                last_dispatch_route() = "direct_product_runtime";
-                la::direct_product(ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
+        // ── GEMV: matrix × vector → vector ───────────────────────────
+        if (a_rank == 2 && b_rank == 1 && c_rank == 1) {
+            if (links.size() == 1) {
+                ProfileAnnotate("dispatch", "gemv_mat_vec_runtime");
+                last_dispatch_route() = "gemv_mat_vec_runtime";
+                char const trans      = (a_idx[0] == links[0]) ? 't' : 'n';
+                la::gemv(trans, ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
                 return;
             }
+        }
+
+        // ── GEMV: vector × matrix → vector ───────────────────────────
+        if (a_rank == 1 && b_rank == 2 && c_rank == 1) {
+            if (links.size() == 1) {
+                ProfileAnnotate("dispatch", "gemv_vec_mat_runtime");
+                last_dispatch_route() = "gemv_vec_mat_runtime";
+                char const trans      = (b_idx[1] == links[0]) ? 'n' : 't';
+                la::gemv(trans, ab_pf, B.impl(), A.impl(), c_pf, &C->impl());
+                return;
+            }
+        }
+
+        // ── GER: vector × vector → matrix ────────────────────────────
+        if (a_rank == 1 && b_rank == 1 && c_rank == 2) {
+            if (links.empty()) {
+                ProfileAnnotate("dispatch", "ger_runtime");
+                last_dispatch_route() = "ger_runtime";
+                if (c_pf != T{1}) {
+                    la::scale(c_pf, &C->impl());
+                }
+                // ger(x, y, C) computes C[i,j] = x[i]*y[j], so the operand whose
+                // index labels C's first axis must be x. Swap for a transposed
+                // output (spec like "ji <- i ; j", where C's axes are ordered
+                // opposite to the A-then-B operand order).
+                if (c_idx[0] == a_idx[0]) {
+                    la::ger(ab_pf, A.impl(), B.impl(), &C->impl());
+                } else {
+                    la::ger(ab_pf, B.impl(), A.impl(), &C->impl());
+                }
+                return;
+            }
+        }
+
+        // ── GEMM: matrix × matrix → matrix ───────────────────────────
+        if (a_rank == 2 && b_rank == 2 && c_rank == 2) {
+            if (links.size() == 1 && !route_prefers_packed) {
+                ProfileAnnotate("dispatch", "gemm_direct_runtime");
+                last_dispatch_route() = "gemm_direct_runtime";
+                // C = [freeA, freeB] is op(A) op(B); the transposed output C = [freeB, freeA]
+                // is op(B) op(A). Honoring C's order is what keeps a transposed-output
+                // contraction such as "ia <- ma ; mi" off gemm's dimension check.
+                std::string const &k     = links[0];
+                std::string const &freeA = (a_idx[0] == k) ? a_idx[1] : a_idx[0];
+                if (c_idx[0] == freeA) {
+                    char const ta = (a_idx[0] == k) ? 't' : 'n';
+                    char const tb = (b_idx[1] == k) ? 't' : 'n';
+                    la::gemm(ta, tb, ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
+                } else {
+                    char const tb = (b_idx[0] == k) ? 't' : 'n';
+                    char const ta = (a_idx[1] == k) ? 't' : 'n';
+                    la::gemm(tb, ta, ab_pf, B.impl(), A.impl(), c_pf, &C->impl());
+                }
+                return;
+            }
+        }
+
+        // ── Direct product at ANY rank ───────────────────────────────
+        // The rank-erased kernel takes any rank, so the ranks are only
+        // checked here. It used to be gated on rank 2, which sent
+        // "i <- i ; i" and "ijk <- ijk ; ijk" to the serial generic loop.
+        if (a_rank == b_rank && b_rank == c_rank && links.empty() && a_idx == b_idx && a_idx == c_idx) {
+            ProfileAnnotate("dispatch", "direct_product_runtime");
+            last_dispatch_route() = "direct_product_runtime";
+            la::direct_product(ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
+            return;
         }
     } // end of the !conj_a && !conj_b BLAS fast-path gate
 
     // ── PackedGemm path ─────────────────────────────────────────────────────
     // Handles arbitrary-rank GEMM-shaped contractions, including those with
-    // batch (Hadamard) indices appearing in A, B, AND C. Works uniformly for
-    // typed Tensor<T, K> and RuntimeTensor<T, Alloc> via the runtime
+    // batch (Hadamard) indices appearing in A, B, AND C, through the runtime
     // ContractionSpec entry point. Returns false (defers) for cases the
     // direct rank-1/rank-2 paths above already handle, or for shapes
     // PackedGemm can't form (no M-dims, no N-dims, no link indices).

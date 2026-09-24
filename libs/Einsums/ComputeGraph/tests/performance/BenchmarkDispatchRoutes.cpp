@@ -146,7 +146,7 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: elementwise crossover", "[ComputeGraph][
 
     // Three columns, because the first two differ by more than the route:
     //   full     - cg::einsum(), which PARSES the spec string on every call
-    //   dispatch - string_einsum() on an already-parsed spec, i.e. route + kernel
+    //   dispatch - the library's erased string_einsum entry on an already-parsed spec, i.e. route + kernel
     //   generic  - the odometer loop on the same parsed spec
     // full-minus-dispatch is the per-call parse cost; dispatch-vs-generic is the
     // route decision on its own, which is the one a threshold should be set from.
@@ -158,8 +158,10 @@ EINSUMS_TEST_CASE("Bench DispatchRoute: elementwise crossover", "[ComputeGraph][
         auto C = create_zero_tensor<double>(std::string("C"), n, n, n);
 
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-        auto t_full   = time_us("full", [&]() { cg::einsum("ijk <- ijk ; ijk", &C, A, B); }, 50);
-        auto t_route  = time_us("dispatch", [&]() { cgd::string_einsum(parsed.value(), 0.0, &C, 1.0, A, B); }, 50);
+        auto t_full  = time_us("full", [&]() { cg::einsum("ijk <- ijk ; ijk", &C, A, B); }, 50);
+        auto t_route = time_us(
+            "dispatch", [&]() { cgd::erased_string_einsum<double>(parsed.value(), 0.0, C.impl(), 1.0, A.impl(), B.impl(), false, false); },
+            50);
         auto t_loop   = time_us("generic", [&]() { cgd::generic_string_einsum(parsed.value(), no_links, 0.0, &C, 1.0, A, B); }, 50);
         auto t_kernel = time_us("kernel", [&]() { linear_algebra::direct_product(1.0, A, B, 0.0, &C); }, 50);
 

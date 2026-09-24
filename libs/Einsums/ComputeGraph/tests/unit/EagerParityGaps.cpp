@@ -586,9 +586,9 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         CHECK(route() == "direct_product_runtime");
     }
 
-    // ── Runtime-rank mirror of the same ladder ──────────────────────────────
-    // The runtime ladder only fires when ALL THREE operands are runtime-rank;
-    // these pin that, and 2.2's mixed typed/runtime gap is a separate test.
+    // ── The same routes on runtime-rank operands ───────────────────────────
+    // RuntimeTensor operands reach the same routes under the same names; the
+    // mixed typed/runtime case is a separate test.
     SECTION("dot_runtime") {
         auto                  x_t = create_random_tensor<double>("x", 6);
         auto                  y_t = create_random_tensor<double>("y", 6);

@@ -7,11 +7,11 @@
 #include <Einsums/Comm/DistributionDescriptor.hpp>
 #include <Einsums/Comm/ProcessGrid.hpp>
 #include <Einsums/Comm/Runtime.hpp>
+#include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/SUMMAExpansion.hpp>
-#include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Logging.hpp>
@@ -90,7 +90,7 @@ void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, vo
                 }
                 return *parsed;
             }();
-            dispatch::string_einsum(spec, T{1}, C_local, T{1}, A_panel, B_panel);
+            dispatch::erased_string_einsum<T>(spec, T{1}, C_local->impl(), T{1}, A_panel.impl(), B_panel.impl(), false, false);
         }
     }
 }
