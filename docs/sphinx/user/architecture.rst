@@ -68,29 +68,34 @@ abstractions, not the vendor primitives directly.
 The dispatch flow
 =================
 
-Einsums' headline feature is that an :code:`einsum` call is routed at
-compile time to the most specialized backend that can handle the
-contraction's index pattern. There is no runtime "which kernel?" branch on
-the hot path. The dispatch is settled when the template instantiates.
+An :code:`einsum` names its operands' axes with a string spec, and the
+engine in :code:`ComputeGraph/StringDispatch.hpp` routes each call to the
+most specialized backend that can take the contraction's index pattern.
+The spec is data, not types: the route is chosen when the call runs, which
+is what lets a graph pass rewrite a spec and Python hand one through
+unchanged.
 
 When you write
 
 .. code-block:: cpp
 
-   einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B);
+   cg::einsum("ij <- ik ; kj", &C, A, B);
 
-the dispatcher (in :code:`TensorAlgebra/Backends/Dispatch.hpp`) does the
-following at instantiation time:
+the dispatcher:
 
-1. Extracts the index letters from each operand (``i, j`` on ``C``,
-   ``i, k`` on ``A``, ``k, j`` on ``B``).
+1. Parses the spec into index lists (``i, j`` on ``C``, ``i, k`` on ``A``,
+   ``k, j`` on ``B``).
 2. Classifies them into groups: the ``M`` axes appear only in the target and
    ``A``, the ``N`` axes appear only in the target and ``B``, the ``K`` axes
    are shared links, and the batch axes are shared targets.
-3. Tries each available backend in order of specialization:
+3. Takes the first route that fits:
 
-   * Vendor BLAS if the pattern matches a pure ``gemm``,
-     ``gemv``, ``ger``, ``syrk``, etc.
+   * Nothing, or only the scaling of ``C``, when an extent is zero.
+   * The repeat-aware generic loop, when a letter repeats within one
+     operand (a diagonal) or is summed out of one operand alone (a trace).
+   * Vendor BLAS, when the pattern is a plain ``dot``, ``gemv``, ``ger`` or
+     ``gemm``, or an elementwise product. It uses the transposition flags
+     BLAS offers, and copies no operand.
    * :ref:`PackedGemm <modules_Einsums_PackedGemm>` for arbitrary-rank
      contractions that don't fit a stock BLAS call. It either hands the
      whole contraction to a vendor ``gemm`` whose strides happen to fit,
@@ -99,18 +104,22 @@ following at instantiation time:
      takes the contraction.
    * A generic nested loop as the last resort.
 
-4. The matching backend is instantiated for this specific contraction
-   shape. No virtual dispatch, no runtime conditionals. The compiler emits the
-   specialized call.
-
 For the example above the dispatcher sees ``ij = ik * kj`` and matches a
-pure ``dgemm``. The emitted code is one ``cblas_dgemm`` call plus the
-strided-data setup with no extra abstraction overhead.
+pure ``dgemm``: one ``cblas_dgemm`` call on the operands' own strides.
 
 When the dispatcher can't match a stock BLAS shape, for example
-``ijl = ik * kjl``, it falls back to PackedGemm. The user wrote one
-expression, and the choice to route it here was made by the compiler; what
-happens next is decided at run time, from the plan and the machine.
+``ijl = ik * kjl``, it goes to PackedGemm, and what happens there is
+decided from the plan and the machine.
+
+Inside a :ref:`ComputeGraph <modules_Einsums_ComputeGraph>` the spec is
+parsed once, when the call is captured, into a node the optimization passes
+can read and rewrite. The route is chosen again each time the graph runs,
+since a pass may have changed the spec or the operands in between.
+
+The compile-time-index form, :code:`tensor_algebra::einsum` with
+:code:`Indices{...}`, still exists for code written against it and is being
+retired. It chooses its route when the template instantiates, and walks
+much the same ladder.
 
 Planning
 --------
@@ -207,25 +216,19 @@ Inspecting a decision
 
 Raising the log level to INFO (``--einsums:log:level 2``) reports the
 declines described above, not the accepted plans. To see what actually ran,
-ask for it directly. Every eager :code:`einsum` overload takes an optional
-trailing :code:`detail::AlgorithmChoice *`, which is written with the
-backend that took the call: ``GEMM``, ``GEMV``, ``GER``, ``DOT``,
-``DIRECT``, ``PACKED_GEMM``, ``SORT_GEMM``, or ``GENERIC``.
+ask for it directly: :code:`compute_graph::dispatch::last_dispatch_route()`
+names the route the last einsum on this thread took.
 
 .. code-block:: cpp
 
-   using einsums::tensor_algebra::detail::AlgorithmChoice;
-
-   AlgorithmChoice chosen{};
-   einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B, &chosen);
-   // chosen == AlgorithmChoice::GEMM
+   cg::einsum("ij <- ik ; kj", &C, A, B);
+   std::string const route = cg::dispatch::last_dispatch_route(); // "gemm_direct"
 
 One level down, :code:`packed_gemm::last_contraction_route()` names which
-of the four routes above PackedGemm took, and for string-spec einsums
-:code:`compute_graph::dispatch::last_dispatch_route()` names the route the
-last :code:`string_einsum` selected. Both are thread-local and exist for
-test introspection, not for steering execution; the test suite asserts on
-them so that a silent fall back to the generic loop cannot pass unnoticed.
+of the four routes above PackedGemm took. Both are thread-local and exist
+for test introspection, not for steering execution; the test suite asserts
+on them so that a silent fall back to the generic loop cannot pass
+unnoticed.
 
 Every decision is also annotated into the profile, under ``packed_gemm_skip``
 for a decline and ``packed_gemm_path`` for an accepted plan.

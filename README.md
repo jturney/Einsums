@@ -114,24 +114,23 @@ PYTHONPATH=build/lib python -m pytest libs/Einsums/TensorUtilities/tests/unit/te
 
 ## Examples
 
-The eager API is the reference surface: every `einsum` runs immediately, and each call is dispatched at compile time to the best available implementation.
+The eager API is the reference surface: every `einsum` runs immediately, and each call is classified from its index spec and dispatched to the best available implementation.
 It is the shortest path to a working result and the semantics everything else is checked against.
 For performance-critical code, prefer the [ComputeGraph](#computegraph-capture-optimize-replay) API below, which records these same calls and optimizes across them.
 
-A single contraction that optimizes at compile time to a BLAS dgemm call:
+A single contraction that dispatches to one BLAS dgemm call:
 
 ```C++
-#include <Einsums/TensorAlgebra.hpp>
+#include <Einsums/ComputeGraph.hpp>
 
-using namespace einsums;                 // Tensor, create_random_tensor
-using namespace einsums::tensor_algebra; // einsum, Indices
-using namespace einsums::index;          // i, j, k
+using namespace einsums;               // Tensor, create_random_tensor
+namespace cg = einsums::compute_graph; // einsum
 
 Tensor<double, 2> A = create_random_tensor("A", 7, 7);
 Tensor<double, 2> B = create_random_tensor("B", 7, 7);
 Tensor<double, 2> C{"C", 7, 7};
 
-einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B);
+cg::einsum("ij <- ik ; kj", &C, A, B);
 ```
 
 <details>
@@ -139,54 +138,39 @@ einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B);
 
 Two-electron contribution to the Fock matrix:
 ```C++
-#include <Einsums/TensorAlgebra.hpp>
+#include <Einsums/ComputeGraph.hpp>
 
 using namespace einsums;
+namespace cg = einsums::compute_graph;
 
 void build_Fock_2e_einsum(Tensor<double, 2> *F,
                           Tensor<double, 4> const &g,
                           Tensor<double, 2> const &D) {
-    using namespace einsums::tensor_algebra;
-    using namespace einsums::index;
+    // F += 2 (pq|rs) D_rs; PackedGemm
+    cg::einsum("pq <- pqrs ; rs", 1.0, F, 2.0, g, D);
 
-    // Will compile-time optimize to BLAS gemv
-    einsum(1.0, Indices{p, q}, F,
-           2.0, Indices{p, q, r, s}, g, Indices{r, s}, D);
-
-    // As written cannot be reduced to a single BLAS call.
-    // A generic arbitrary contraction function will be used.
-    einsum(1.0, Indices{p, q}, F,
-          -1.0, Indices{p, r, q, s}, g, Indices{r, s}, D);
+    // F -= (pr|qs) D_rs: the summed indices interleave with the kept ones,
+    // which PackedGemm packs around rather than falling back to a loop nest.
+    cg::einsum("pq <- prqs ; rs", 1.0, F, -1.0, g, D);
 }
 ```
 
-W intermediates in CCD:
+W intermediates in CCD, each of which PackedGemm contracts, including the last, whose indices interleave:
 ```C++
 Wmnij = g_oooo;
-// Compile-time optimizes to gemm
-einsum(1.0,  Indices{m, n, i, j}, &Wmnij,
-       0.25, Indices{i, j, e, f}, t_oovv,
-             Indices{m, n, e, f}, g_oovv);
+cg::einsum("mnij <- ijef ; mnef", 1.0, &Wmnij, 0.25, t_oovv, g_oovv);
 
 Wabef = g_vvvv;
-// Compile-time optimizes to gemm
-einsum(1.0,  Indices{a, b, e, f}, &Wabef,
-       0.25, Indices{m, n, e, f}, g_oovv,
-             Indices{m, n, a, b}, t_oovv);
+cg::einsum("abef <- mnef ; mnab", 1.0, &Wabef, 0.25, g_oovv, t_oovv);
 
 Wmbej = g_ovvo;
-// As written uses generic arbitrary contraction function
-einsum(1.0, Indices{m, b, e, j}, &Wmbej,
-      -0.5, Indices{j, n, f, b}, t_oovv,
-            Indices{m, n, e, f}, g_oovv);
+cg::einsum("mbej <- jnfb ; mnef", 1.0, &Wmbej, -0.5, t_oovv, g_oovv);
 ```
 
-CCD energy:
+CCD energy, a full contraction to a scalar, which comes out through a dot product:
 ```C++
-// Compile-time optimizes to a dot product
-einsum(0.0,  Indices{}, &e_ccd,
-       0.25, Indices{i, j, a, b}, new_t_oovv,
-             Indices{i, j, a, b}, g_oovv);
+cg::dot(&e_ccd, new_t_oovv, g_oovv);
+e_ccd *= 0.25;
 ```
 
 </details>
@@ -283,7 +267,9 @@ The serial pair shows that fusion alone buys almost nothing on one core (a singl
 Writing the same math as two `einsum` calls trades that hand fusion for notation: each contraction runs on the measured-best engine, but the integrals are streamed twice, so eager einsum lands near serial hand code on this bandwidth-bound workload, a few-fold above the fused OpenMP nest.
 Capturing the two calls as a ComputeGraph closes the gap and then some: the StreamContractionFusion pass sees that both contractions read the same tensor and fuses them into one storage-order pass feeding both accumulators - matching the hand-fused loops at small sizes and beating them at large ones, with no fusion written by the programmer.
 
-The "einsum (eager)" line in the figure below is exactly this code. These two einsums get executed as a call to BLAS gemv (the J) and a generic contraction algorithm (the K):
+The "einsum (eager)" line in the figure below is exactly this code, written with the compile-time-index API it was measured with, which is being retired.
+These two einsums get executed as a call to BLAS gemv (the J) and a generic contraction algorithm (the K).
+The string form, `cg::einsum`, sends both to PackedGemm instead, and the line will be remeasured with it:
 
 ```cpp
 using namespace einsums::tensor_algebra;

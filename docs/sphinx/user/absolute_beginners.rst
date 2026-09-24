@@ -480,7 +480,7 @@ transpositions, element mapping, and more. Here are some useful things we can do
 Permuting elements
 ------------------
 
-To permute the axes of a tensor, you can use the :cpp:func:`~einsums::tensor_algebra::permute` function. This takes an input tensor and an output tensor,
+To permute the axes of a tensor, you can use the ``cg::permute`` function. This takes an input tensor and an output tensor,
 and it permutes the input tensor, scales it, scales the output tensor, then adds them together.
 
 .. tab-set::

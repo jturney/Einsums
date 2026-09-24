@@ -82,6 +82,8 @@ This becomes the following code.
 
 .. code:: C++
 
+    namespace cg = einsums::compute_graph;
+
     double E_hf;
     int n_occ; // The number of occupied orbitals. 
     int n_orbs; // The number of orbitals.
@@ -92,24 +94,25 @@ This becomes the following code.
     Tensor t2_amps{"T2", n_occ, n_occ, n_virt, n_virt};
     // Populate these values.
 
-    double E_ccsd = E_hf;
-
-    // Defining an intermediate.
+    // The intermediate, scaled by the 1/4 of the energy expression: tau2 = (t2 + 2 t1 t1) / 4.
     Tensor tau2{"tau2", n_occ, n_occ, n_virt, n_virt};
     tau2 = t2_amps;
-    einsum(0.25, index::Indices{index::i, index::j, index::a, index::b}, &tau2, 0.5, index::Indices{index::i, index::a}, 
-           t1_amps, index::Indices{index::j, index::b}, t1_amps);
+    cg::einsum("ijab <- ia ; jb", 0.25, &tau2, 0.5, t1_amps, t1_amps);
 
-    // Compute the antisymmetrized two-electron integrals.
+    // The antisymmetrized two-electron integrals: <pq||rs> = <pq|rs> - <pq|sr>.
     Tensor TEI_antisym = TEI;
-    permute(1.0, index::Indices{index::p, index::q, index::r, index::s}, &TEI_antisym, -1.0, index::Indices{index::p, index::q, index::s, index::r}, TEI);
+    cg::permute("pqrs <- pqsr", 1.0, &TEI_antisym, -1.0, TEI);
 
-    // Computing each term.
-    TensorView Fia = F(Range{0, n_occ}, Range{n_occ, n_orbs});
-    einsum(1.0, index::Indices{}, &E_ccsd, 1.0, index::Indices{index::i, index::a}, Fia, index::Indices{index::i, index::a}, t1_amps);
-
+    // Each term is a full contraction to a scalar, which comes out through a dot product.
+    TensorView Fia      = F(Range{0, n_occ}, Range{n_occ, n_orbs});
     TensorView TEI_ijab = TEI_antisym(Range{0, n_occ}, Range{0, n_occ}, Range{n_occ, n_orbs}, Range{n_occ, n_orbs});
-    einsum(1.0, index::Indices{}, &E_ccsd, 1.0, index::Indices{index::i, index::j, index::a, index::b}, TEI_ijab, index::Indices{index::i, index::j, index::a, index::b}, tau2);
+
+    double e_singles = 0.0;
+    double e_doubles = 0.0;
+    cg::dot(&e_singles, Fia, t1_amps);
+    cg::dot(&e_doubles, TEI_ijab, tau2);
+
+    double E_ccsd = E_hf + e_singles + e_doubles;
 
 ===================
 Runtime Comparisons
@@ -169,6 +172,7 @@ The serial pair shows that fusion alone buys almost nothing on one core, because
 The fused OpenMP nest, which is what a careful programmer writes by hand, is the baseline to beat.
 
 Writing the same two contractions as :cpp:func:`~einsums::tensor_algebra::einsum` calls trades that hand fusion for notation.
+That line was measured with the compile-time-index API, which is being retired; the string form sends both contractions to PackedGemm instead, and the line will be remeasured with it.
 Each contraction still runs on the best engine available for it, but the integrals are streamed twice, so eager einsum lands near serial hand code on this workload.
 Capturing the same two calls into a :doc:`ComputeGraph <tutorial_compute_graph>` recovers the difference: the ``StreamContractionFusion`` pass sees that both contractions read the same tensor and fuses them into one storage-order pass that feeds both accumulators, matching the hand-fused loops at small sizes and beating them at large ones, with no fusion written by the programmer.
 
@@ -209,8 +213,8 @@ As of right now, Einsums is capable of the following:
 
 The following is not supported, but may be supported in the future.
 
-* When calling :cpp:func:`~einsums::tensor_algebra::einsum`, there is no transposing of the indices. If a call can not be optimized without transpositions,
-  it will use the generic algorithm rather than transpose indices until it can optimize the call.
+* An einsum never permutes an operand to reach a BLAS call. Index orders that BLAS's transposition flags cannot absorb go to PackedGemm,
+  which rearranges the data as it packs it, and only a pattern PackedGemm cannot decompose runs on the generic loop.
 * Most simple arithmetic does not work on :cpp:class:`einsums::BlockTensor`, :cpp:class:`einsums::TiledTensor`,
   :cpp:class:`einsums::tensor_base::FunctionTensor`, or any tensor for the GPU.
 * The Python module only supports contiguous tensors. It does not support block-sparse tensors, function tensors, or others.

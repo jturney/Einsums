@@ -22,89 +22,59 @@ truncating a space, see :doc:`optimizer`.
     :local:
     :depth: 2
 
-There Are Two Dispatch Paths
+How a Contraction Is Written
 ============================
 
-This is the first thing to know, because almost every question about "is this contraction fast"
-has two answers.
+An einsum names its operands' axes with a string spec, and the pattern is analysed when the call
+runs:
 
 .. list-table::
     :header-rows: 1
-    :widths: 22 39 39
+    :widths: 30 70
 
     * -
-      - Eager, compile-time indices
-      - Runtime string spec
+      - String spec
     * - How you write it
-      - ``einsum(Indices{i,j}, &C, Indices{i,k}, A, Indices{k,j}, B)``
       - ``cg::einsum("ik;kj->ij", &C, A, B)``
     * - Pattern analysed
-      - while your code compiles
-      - when the call runs
+      - when the call runs; inside a graph, once at capture and again at each replay
     * - Used by
-      - statically ranked :cpp:type:`einsums::Tensor` code
-      - the ComputeGraph, the Python bindings, :cpp:type:`einsums::RuntimeTensor`
+      - eager C++ on :cpp:type:`einsums::Tensor` and :cpp:type:`einsums::RuntimeTensor`, the
+        ComputeGraph, the Python bindings
     * - Names its route
-      - ``AlgorithmChoice`` out-parameter
       - ``last_dispatch_route()``
     * - Route names
-      - ``GEMM``, ``PACKED_GEMM``, ``GENERIC``, ...
-      - ``gemm_direct_runtime``, ``packed_gemm``, ``generic_loop``, ...
+      - ``gemm_direct``, ``gemm_direct_runtime``, ``packed_gemm``, ``generic_loop``, ...
 
-They share the packed-GEMM backend and the vendor BLAS beneath it, and they do **not** share the
-analysis that picks between them. So the two can classify the same contraction differently, and a
-pattern that is slow through one may be fast through the other:
+A route with a ``_runtime`` suffix is the same kernel reached from runtime-rank operands.
 
-.. list-table::
-    :header-rows: 1
-    :widths: 34 33 33
-
-    * - Contraction
-      - Eager
-      - String
-    * - :math:`C_{ij} = \sum_k A_{ik} B_{kj}`
-      - ``GEMM``
-      - ``gemm_direct_runtime``
-    * - :math:`C_{ij} = \sum_k A_{ijk} B_k`
-      - ``GEMV``
-      - ``packed_gemm``
-    * - :math:`C_i = \sum_j A_{ij} B_{ji}`
-      - ``GENERIC``
-      - ``packed_gemm``
-    * - :math:`C_i = \sum_k A_{ikk} B_k`
-      - does not compile
-      - ``generic_loop_repeated_indices``
-
-The last row is not a typo. A letter repeated inside one operand is a diagonal, and the eager API
-rejects it at compile time rather than falling back, while the string path has a repeat-aware
-loop for it.
-
-The practical reading: **if a contraction is awkward, try it through the string form before
-rewriting your algebra.** The rest of this page says which route each one takes and how to check.
+The compile-time-index form, ``einsum(Indices{i,j}, &C, Indices{i,k}, A, Indices{k,j}, B)``,
+still exists for code written against it and is being retired. It analyses the pattern while your
+code compiles and does not share that analysis with the string form, so the two can route one
+contraction differently; the string form is the one this page describes, and the one to tune for.
 
 How Dispatch Chooses
 ====================
 
-Both paths walk the same ladder, stopping at the first rung that fits.
+Dispatch walks a ladder, stopping at the first rung that fits. Two cases are settled before it:
+a zero-length dimension, which only scales the output, and a letter repeated inside one operand or
+summed out of one operand alone, which goes to a repeat-aware loop.
 
 1. **A vendor BLAS call**, when the contraction already is one: ``DOT`` for a scalar result over
    identical index packs, ``GER`` for an outer product, ``GEMV`` for matrix times vector, ``GEMM``
-   for matrix times matrix. Nothing is copied and nothing is packed.
+   for matrix times matrix, and an elementwise product. Nothing is copied and nothing is packed.
 
-2. **A permutation, then BLAS**, when the shape is a clean matrix multiplication whose indices are
-   in the wrong order. The operands are transposed with HPTT and handed to ``GEMM``.
-
-3. **PackedGemm**, when the contraction has a valid decomposition into output dimensions from A
+2. **PackedGemm**, when the contraction has a valid decomposition into output dimensions from A
    (M), output dimensions from B (N), summed dimensions (K), and batch dimensions present in both.
    This covers most higher-rank tensor contractions. See `Understanding PackedGemm`_.
 
-4. **A generic loop nest**, for everything else. Correct, and the slowest option.
+3. **A generic loop nest**, for everything else. Correct, and the slowest option.
 
-Einsums does not permute operands to force a contraction onto a faster rung beyond the explicit
-permute step in rung 2. It will use the transposition flags a BLAS call already offers, so
-:math:`C_{ik} = \sum_j A_{ji} B_{kj}` still reaches one ``GEMM``, but a pattern needing a physical
-rearrangement lands on the generic loop instead. If you know a permutation would pay, do it
-yourself with :cpp:func:`~einsums::tensor_algebra::permute` and contract the result.
+Dispatch never permutes an operand to reach a BLAS call. It uses the transposition flags a BLAS
+call already offers, so :math:`C_{ik} = \sum_j A_{ji} B_{kj}` still reaches one ``GEMM``; any other
+index order goes to PackedGemm, which rearranges the data as it packs it. If you know a
+permutation would pay for a contraction that lands on the generic loop, do it yourself with
+``cg::permute`` and contract the result.
 
 `Dispatch Reference`_ below has the measured route for every common shape.
 
@@ -353,34 +323,17 @@ the text report does.
 Finding Out Which Kernel Ran
 ----------------------------
 
-Four ways, in the order they are usually easiest.
+Three ways, in the order they are usually easiest.
 
 **The profile annotation.** Every einsum zone carries a ``dispatch`` annotation naming its route,
 and PackedGemm records why it declined under ``packed_gemm_skip`` and which path it took under
 ``packed_gemm_path``. No flags, no code change.
 
-**The log.** A contraction that falls back to the generic loop emits a one-time warning per unique
-pattern:
+**The log.** PackedGemm explains its declines at INFO level, which
+:option:`--einsums:log:level` controls. A contraction that lands on the generic loop is not
+logged; the annotation above and the route below are where it shows.
 
-.. code-block:: text
-
-    [warning] einsum dispatch: GENERIC fallback for "C"("i") = "A"("i", "j") * "B"("j", "i")
-              (ranks 1/2/2).  This contraction is not accelerated by BLAS.
-
-PackedGemm explains its declines at INFO level, which :option:`--einsums:log:level` controls.
-
-**Programmatically, eager path.** The trailing out-parameter:
-
-.. code-block:: cpp
-
-    #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
-    using einsums::tensor_algebra::detail::AlgorithmChoice;
-
-    AlgorithmChoice algo{};
-    einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B, &algo);
-    // algo == GEMM
-
-**Programmatically, string path.** A thread-local naming the last route:
+**Programmatically.** A thread-local naming the last route:
 
 .. code-block:: cpp
 
@@ -389,8 +342,8 @@ PackedGemm explains its declines at INFO level, which :option:`--einsums:log:lev
     cg::einsum("ik;kj->ij", &C, A, B);
     std::printf("%s\n", cg::dispatch::last_dispatch_route());   // gemm_direct_runtime
 
-Both of the last two exist for test introspection. Assert on them in a test that means to pin a
-fast path; do not branch on them inside a calculation.
+It exists for test introspection. Assert on it in a test that means to pin a fast path; do not
+branch on it inside a calculation.
 
 Performance Tips
 ================
@@ -409,7 +362,7 @@ Einsums dispatches to BLAS when it can. Hand-written loops almost never will:
                 C(i, j) += A(i, k) * B(k, j);
 
     // FAST: dispatches to BLAS GEMM
-    einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B);
+    cg::einsum("ij <- ik ; kj", &C, A, B);
 
 2. Use views instead of copying
 --------------------------------
@@ -631,51 +584,28 @@ Through the string form
 A contraction with a zero-length dimension reports ``empty_input_scale_only`` or
 ``empty_output_noop`` and still applies the output prefactor exactly once.
 
-Where the eager form differs
-----------------------------
-
-The eager path classifies three of those differently, and the difference is always in the same
-direction: it is the more conservative of the two.
-
-.. list-table::
-    :header-rows: 1
-    :widths: 34 33 33
-
-    * - Contraction
-      - Eager
-      - String
-    * - :math:`C_{ij} = \sum_k A_{ijk} B_k`
-      - ``GEMV``
-      - ``packed_gemm``
-    * - :math:`C_i = \sum_j A_{ij} B_{ji}`
-      - ``GENERIC``
-      - ``packed_gemm``
-    * - :math:`C_i = \sum_k A_{ikk} B_k`
-      - does not compile
-      - ``generic_loop_repeated_indices``
-
-Both reach ``DOT`` for a scalar over identical index packs, and both fall to the generic loop for
-a scalar over *permuted* packs such as :math:`s = \sum_{ij} A_{ij} B_{ji}`, which could be served
-by transposing one operand first but is not.
+A scalar over *permuted* index packs, such as :math:`s = \sum_{ij} A_{ij} B_{ji}`, falls to the
+generic loop: ``DOT`` needs the two operands to name their indices in the same order, and
+PackedGemm does not produce a scalar.
 
 What is still not accelerated
 -----------------------------
 
 **A letter repeated inside one operand.** ``A(i,k,k)`` is a diagonal, and a diagonal is not a
-matrix multiplication. The string form runs a repeat-aware loop; the eager form rejects it while
-compiling. If a diagonal sits inside an iteration, extract it once outside the loop.
+matrix multiplication, so it runs on a repeat-aware loop. If a diagonal sits inside an iteration,
+extract it once outside the loop.
 
 **A scalar result over permuted index packs.** ``DOT`` requires the two operands to name their
 indices in the same order, so :math:`s = \sum_{ij} A_{ij} B_{ji}` takes the generic loop. Permute
 one operand first if this is hot.
 
 **Mixed value types.** A contraction whose operands and output are not all the same scalar type
-skips the BLAS specializations. Convert first if you care about the speed.
+runs on ``generic_loop_mixed_precision``, never BLAS or PackedGemm. Convert first if you care
+about the speed.
 
-**Composite tensor types.** :cpp:class:`einsums::BlockTensor`, :cpp:class:`einsums::TiledTensor`
-and friends without a specialized dispatch recurse into their blocks and call ``einsum`` on the
-dense pieces, which are accelerated. The recursion itself is not free, so a structure with very
-many tiny blocks spends its time in bookkeeping.
+**Tiled tensors.** A contraction over ``TiledRuntimeTensor`` operands runs tile by tile, each tile
+a dense einsum that is accelerated. The per-tile work around it is not free, so a structure with
+very many tiny tiles spends its time in bookkeeping.
 
 What's Not Covered
 ==================

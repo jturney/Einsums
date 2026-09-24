@@ -115,16 +115,6 @@ Use the dot product, which writes through a pointer.
             double result = 0.0;
             cg::dot(&result, A, B);
 
-        The statically ranked eager API does accept an empty index tuple, and agrees to the last bit:
-
-        .. code-block:: cpp
-
-            using namespace einsums::tensor_algebra;
-            using namespace einsums::index;
-
-            double result = 0.0;
-            einsum(Indices{}, &result, Indices{i, j}, A, Indices{i, j}, B);
-
     .. tab-item:: Python
         :sync: python
 
@@ -145,7 +135,7 @@ A letter that appears in only one input and not in the output is summed over, wh
 Both of these leave the BLAS fast paths and run on the repeat-aware generic loop, which is correct but slower than a contraction that maps onto a matrix multiplication.
 That is worth knowing before you put one inside an iteration.
 
-A generalized transpose is :cpp:func:`~einsums::tensor_algebra::permute` rather than an einsum:
+A generalized transpose is ``cg::permute`` rather than an einsum:
 
 .. tab-set::
 

@@ -36,11 +36,12 @@ C++23 features through the CXX23 compatibility module, which supplies C++20 fall
 * A multidimensional :code:`Tensor` type with the usual algebraic operations,
   block-sparse and tiled variants, and a disk-backed tensor for out-of-core
   workloads.
-* Compile-time contraction pattern analysis. An :code:`einsum` expression
-  is statically routed to vendor BLAS, an in-tree BLIS-style packed
-  contraction backend (:ref:`PackedGemm <modules_Einsums_PackedGemm>`), or
-  a generic loop nest, which is chosen once when compiling your code with no runtime
-  dispatch overhead.
+* Contractions written as index specs. An :code:`einsum` such as
+  ``"ij <- ik ; kj"`` is classified from its indices and routed to vendor
+  BLAS, an in-tree BLIS-style packed contraction backend
+  (:ref:`PackedGemm <modules_Einsums_PackedGemm>`), or a generic loop nest.
+  The spec is data rather than types, so a graph can rewrite it and Python
+  can pass it through unchanged.
 * A deferred-execution :ref:`ComputeGraph <modules_Einsums_ComputeGraph>`
   with multi-pass optimization for whole-algorithm rewrites.
 * :ref:`Python bindings <modules_Einsums_Python>` auto-generated from the
@@ -48,20 +49,18 @@ C++23 features through the CXX23 compatibility module, which supplies C++20 fall
   C++ surface without hand-written glue.
 
 As a short example, the following :code:`einsum` call routes to a single
-:code:`dgemm` because the contraction pattern matches a pure GEMM at
-compile time:
+:code:`dgemm` because the contraction pattern matches a pure GEMM:
 
 .. code-block:: C++
 
-   using namespace einsums;                 // Tensor, create_tensor, create_random_tensor
-   using namespace einsums::tensor_algebra; // einsum
-   using namespace einsums::index;          // i, j, k, Indices
+   using namespace einsums;               // Tensor, create_tensor, create_random_tensor
+   namespace cg = einsums::compute_graph; // einsum
 
    auto A = create_random_tensor("A", 7, 7);
    auto B = create_random_tensor("B", 7, 7);
    auto C = create_tensor("C", 7, 7);
 
-   einsum(Indices{i, j}, &C, Indices{i, k}, A, Indices{k, j}, B);
+   cg::einsum("ij <- ik ; kj", &C, A, B);
 
 
 .. grid:: 2

@@ -19,8 +19,6 @@
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
-#include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -79,25 +77,17 @@ TEST_CASE("docs - contractions: spec, prefactors, and scalar output", "[Docs][Sn
         CHECK(C(0, 0) == Catch::Approx(200.0 + 3.0 * product));
     }
 
-    SECTION("a scalar comes out through dot, and agrees with the eager form") {
-        double graph_form = 0.0;
-        cg::dot(&graph_form, A, B);
-
-        using namespace einsums::tensor_algebra;
-        using namespace einsums::index;
-        auto   As         = create_random_tensor<double>("As", 4, 4);
-        auto   Bs         = create_random_tensor<double>("Bs", 4, 4);
-        double eager_form = 0.0;
-        einsum(Indices{}, &eager_form, Indices{i, j}, As, Indices{i, j}, Bs);
+    SECTION("a scalar comes out through dot") {
+        double result = 0.0;
+        cg::dot(&result, A, B);
 
         double reference = 0.0;
         for (size_t r = 0; r < 4; r++) {
             for (size_t c = 0; c < 4; c++) {
-                reference += As(r, c) * Bs(r, c);
+                reference += A(r, c) * B(r, c);
             }
         }
-        CHECK(eager_form == Catch::Approx(reference));
-        CHECK(graph_form != 0.0);
+        CHECK(result == Catch::Approx(reference));
     }
 }
 
@@ -320,35 +310,99 @@ TEST_CASE("docs - performance: the dispatch reference table is accurate", "[Docs
     }
 }
 
-TEST_CASE("docs - performance: the eager path classifies three cases differently", "[Docs][Snippets]") {
-    // The page states this divergence outright, because it is why a pattern can be slow through
-    // one API and fast through the other. If the two ever converge, the page should say so.
-    using namespace einsums::tensor_algebra;
-    using namespace einsums::index;
-    namespace ta = einsums::tensor_algebra::detail;
+TEST_CASE("docs - front page and README: the routes their examples name", "[Docs][Snippets]") {
+    // The front page and the README say which kernel each example reaches. Those are claims about
+    // the dispatch, so they are pinned here rather than left to go stale.
+    auto route_of = [](auto &&run) {
+        run();
+        return std::string(cg::dispatch::last_dispatch_route());
+    };
 
-    auto const N  = size_t{5};
-    auto       A2 = create_random_tensor<double>("A2", N, N);
-    auto       B2 = create_random_tensor<double>("B2", N, N);
-    auto       A3 = create_random_tensor<double>("A3", N, N, N);
-    auto       vv = create_random_tensor<double>("vv", N);
+    SECTION("front page: a matrix product") {
+        auto A = create_random_tensor("A", 7, 7);
+        auto B = create_random_tensor("B", 7, 7);
+        auto C = create_tensor("C", 7, 7);
+        CHECK(route_of([&] { cg::einsum("ij <- ik ; kj", &C, A, B); }) == "gemm_direct");
+    }
 
-    ta::AlgorithmChoice algo{};
+    SECTION("performance: a transposed operand still reaches one GEMM") {
+        // C_ik = sum_j A_ji B_kj: both operands through BLAS's transposition flags, no copy.
+        auto A = create_random_tensor("A", 5, 6);
+        auto B = create_random_tensor("B", 4, 5);
+        auto C = create_tensor("C", 6, 4);
+        CHECK(route_of([&] { cg::einsum("ik <- ji ; kj", &C, A, B); }) == "gemm_direct");
+    }
 
-    auto gemv = create_tensor<double>("gemv", N, N);
-    einsum(Indices{i, j}, &gemv, Indices{i, j, k}, A3, Indices{k}, vv, &algo);
-    CHECK(algo == ta::GEMV); // the string form takes packed_gemm here
+    SECTION("architecture: a contraction no stock BLAS call takes") {
+        auto A = create_random_tensor("A", 6, 5);
+        auto B = create_random_tensor("B", 5, 6, 4);
+        auto C = create_tensor("C", 6, 6, 4);
+        CHECK(route_of([&] { cg::einsum("ijl <- ik ; kjl", &C, A, B); }) == "packed_gemm");
+    }
 
-    auto shared = create_tensor<double>("shared", N);
-    einsum(Indices{i}, &shared, Indices{i, j}, A2, Indices{j, i}, B2, &algo);
-    CHECK(algo == ta::GENERIC); // the string form takes packed_gemm here
+    SECTION("README: the two-electron Fock build") {
+        size_t const n = 6;
+        auto         g = create_random_tensor("g", n, n, n, n);
+        auto         D = create_random_tensor("D", n, n);
+        auto         F = create_zero_tensor("F", n, n);
+        CHECK(route_of([&] { cg::einsum("pq <- pqrs ; rs", 1.0, &F, 2.0, g, D); }) == "packed_gemm");
+        CHECK(route_of([&] { cg::einsum("pq <- prqs ; rs", 1.0, &F, -1.0, g, D); }) == "packed_gemm");
+    }
 
-    // A scalar over permuted packs is generic on both paths.
-    double s = 0.0;
-    einsum(Indices{}, &s, Indices{i, j}, A2, Indices{j, i}, B2, &algo);
-    CHECK(algo == ta::GENERIC);
+    SECTION("README: the CCD intermediates") {
+        size_t const o = 3, v = 5;
+        auto         t_oovv = create_random_tensor("t", o, o, v, v);
+        auto         g_oovv = create_random_tensor("g", o, o, v, v);
+        auto         Wmnij  = create_zero_tensor("Wmnij", o, o, o, o);
+        auto         Wabef  = create_zero_tensor("Wabef", v, v, v, v);
+        auto         Wmbej  = create_zero_tensor("Wmbej", o, v, v, o);
+        CHECK(route_of([&] { cg::einsum("mnij <- ijef ; mnef", 1.0, &Wmnij, 0.25, t_oovv, g_oovv); }) == "packed_gemm");
+        CHECK(route_of([&] { cg::einsum("abef <- mnef ; mnab", 1.0, &Wabef, 0.25, g_oovv, t_oovv); }) == "packed_gemm");
+        CHECK(route_of([&] { cg::einsum("mbej <- jnfb ; mnef", 1.0, &Wmbej, -0.5, t_oovv, g_oovv); }) == "packed_gemm");
+    }
+}
 
-    // ... while identical packs reach DOT.
-    einsum(Indices{}, &s, Indices{i, j}, A2, Indices{i, j}, B2, &algo);
-    CHECK(algo == ta::DOT);
+TEST_CASE("docs - user guide: the CCSD energy example", "[Docs][Snippets]") {
+    // The page's code as printed, on small random data, each term checked against explicit loops.
+    size_t const n_occ = 2, n_orbs = 5, n_virt = n_orbs - n_occ;
+    double const E_hf    = -1.5;
+    auto         F       = create_random_tensor("F", n_orbs, n_orbs);
+    auto         TEI     = create_random_tensor("G", n_orbs, n_orbs, n_orbs, n_orbs);
+    auto         t1_amps = create_random_tensor("T1", n_occ, n_virt);
+    auto         t2_amps = create_random_tensor("T2", n_occ, n_occ, n_virt, n_virt);
+
+    Tensor tau2{"tau2", n_occ, n_occ, n_virt, n_virt};
+    tau2 = t2_amps;
+    cg::einsum("ijab <- ia ; jb", 0.25, &tau2, 0.5, t1_amps, t1_amps);
+
+    Tensor TEI_antisym = TEI;
+    cg::permute("pqrs <- pqsr", 1.0, &TEI_antisym, -1.0, TEI);
+
+    TensorView Fia      = F(Range{0, n_occ}, Range{n_occ, n_orbs});
+    TensorView TEI_ijab = TEI_antisym(Range{0, n_occ}, Range{0, n_occ}, Range{n_occ, n_orbs}, Range{n_occ, n_orbs});
+
+    double e_singles = 0.0;
+    double e_doubles = 0.0;
+    cg::dot(&e_singles, Fia, t1_amps);
+    cg::dot(&e_doubles, TEI_ijab, tau2);
+
+    double const E_ccsd = E_hf + e_singles + e_doubles;
+
+    double want_singles = 0.0;
+    double want_doubles = 0.0;
+    for (size_t i = 0; i < n_occ; i++) {
+        for (size_t a = 0; a < n_virt; a++) {
+            want_singles += F(i, n_occ + a) * t1_amps(i, a);
+            for (size_t j = 0; j < n_occ; j++) {
+                for (size_t b = 0; b < n_virt; b++) {
+                    double const antisym = TEI(i, j, n_occ + a, n_occ + b) - TEI(i, j, n_occ + b, n_occ + a);
+                    double const tau     = t2_amps(i, j, a, b) + 2.0 * t1_amps(i, a) * t1_amps(j, b);
+                    want_doubles += 0.25 * antisym * tau;
+                }
+            }
+        }
+    }
+    CHECK(e_singles == Catch::Approx(want_singles));
+    CHECK(e_doubles == Catch::Approx(want_doubles));
+    CHECK(E_ccsd == Catch::Approx(E_hf + want_singles + want_doubles));
 }

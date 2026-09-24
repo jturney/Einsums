@@ -95,7 +95,7 @@ It lets the rest of the program read like the equations:
 
 The explicit ``c_pf=0.0`` says the output is overwritten rather than accumulated, and ``ab_pf`` carries the coefficient from the equation, so a term with a factor of one half does not need a separate scaling step.
 
-A second helper does the same for :cpp:func:`~einsums::tensor_algebra::permute`, and the next section is the only place the program needs it:
+A second helper does the same for ``einsums.permute``, and the next section is the only place the program needs it:
 
 .. code-block:: python
 
