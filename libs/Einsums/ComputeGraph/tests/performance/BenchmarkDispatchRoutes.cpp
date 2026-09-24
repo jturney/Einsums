@@ -21,6 +21,7 @@
 /// differently.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Performance.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>

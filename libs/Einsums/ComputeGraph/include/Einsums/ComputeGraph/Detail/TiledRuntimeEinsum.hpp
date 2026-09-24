@@ -7,7 +7,7 @@
 
 #include <Einsums/Config.hpp>
 
-#include <Einsums/ComputeGraph/StringDispatch.hpp> // pulls ComputeGraph/EinsumSpec.hpp (ParsedEinsumSpec) + dispatch::string_einsum
+#include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp> // ParsedEinsumSpec + dispatch::erased_string_einsum
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
@@ -29,7 +29,7 @@ inline constexpr bool any_tiled_v =
  * Runtime-rank analogue of TensorAlgebra's compile-time `TileAlgebra` dispatch.
  * It walks the grid of all unique einsum indices and, for every combination of
  * tiles where the A and B operands are both populated, calls the dense
- * `dispatch::string_einsum` on the underlying `RuntimeTensor` tiles, accumulating
+ * `dispatch::erased_string_einsum` on the underlying `RuntimeTensor` tiles, accumulating
  * into the matching output tile.
  *
  * @par Semantics
@@ -159,7 +159,7 @@ void tiled_runtime_einsum(ParsedEinsumSpec const &parsed, T c_pf, TiledRuntimeTe
         auto &ctile = C->tile(ccoord); // infer-and-create
         ctile.materialize();
         // beta == 1: existing C tiles were pre-scaled, created tiles start zeroed.
-        dispatch::string_einsum(parsed, T{1}, &ctile, ab_pf, A.tile(acoord), B.tile(bcoord));
+        dispatch::erased_string_einsum<T>(parsed, T{1}, ctile.impl(), ab_pf, A.tile(acoord).impl(), B.tile(bcoord).impl(), false, false);
     }
 }
 

@@ -7,8 +7,8 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
-#include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra.hpp>

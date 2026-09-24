@@ -17,6 +17,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLAS/ThreadControl.hpp>
+#include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/MixedPrecision.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
@@ -93,29 +94,7 @@ void string_gemv_mat_vec(ParsedEinsumSpec const & /*parsed*/, T c_pf, OutType *o
 
 // ── Generic nested-loop contraction ─────────────────────────────────────
 
-/// Name of the kernel route the most recent string_einsum call on this
-/// thread selected ("packed_gemm", "gemv_mat_vec", "generic_loop",
-/// "generic_loop_repeated_indices", "empty_input_scale_only", ...).
-///
-/// Test introspection ONLY: lets dispatch-coverage tests assert the intended
-/// fast path fired instead of a silent generic-loop fallback, mirroring the
-/// eager API's AlgorithmChoice out-parameter. Thread-local; not an API for
-/// steering execution.
-///
-/// Defined OUT OF LINE, and exported, so the whole process shares one slot. An
-/// inline function's thread-local gets a copy per shared object under hidden
-/// visibility, and a graph whose executors were built inside the library (which
-/// is every einsum node since @ref build_executor took over the lowering) would
-/// then write a slot no test executable can read.
-[[nodiscard]] EINSUMS_EXPORT char const *&last_dispatch_route();
-
-/// Forward declaration: @ref string_einsum expands a permutation operator into
-/// signed permuted accumulations, and is defined ahead of the permute kernel it
-/// calls to do that.
-/// @see string_permute_impl for the definition and the parameter documentation.
-template <typename T>
-void string_permute_impl(ParsedPermuteSpec const &parsed, T beta, einsums::detail::TensorImpl<T> *C, T alpha,
-                         einsums::detail::TensorImpl<T> const &A);
+// last_dispatch_route() and the string_permute_impl declaration live in Detail/ErasedEinsum.hpp.
 
 /**
  * @brief Generic runtime nested-loop contraction for arbitrary rank/pattern.
@@ -1241,27 +1220,6 @@ void string_permute_impl(ParsedPermuteSpec const &parsed, T beta, einsums::detai
 
         C->data()[c_offset] += alpha * A.data()[a_offset];
     }
-}
-
-/**
- * @brief Tensor-object overload of @ref string_permute_impl.
- *
- * Forwards both operands' ``impl()`` to the one definition above, so every
- * caller that holds tensor objects (capture's eager path, the tiled lowering,
- * the reassociation passes) and the data-built executors run identical code.
- *
- * @tparam AType,CType Source and destination tensor types; same element type.
- * @param[in] parsed The index lists, and the raw spec for diagnostics.
- * @param[in] beta Prefactor on the destination; 0 overwrites it.
- * @param[in,out] C Destination tensor.
- * @param[in] alpha Prefactor on the source.
- * @param[in] A Source tensor.
- */
-template <BasicTensorConcept AType, BasicTensorConcept CType>
-    requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>
-void string_permute(ParsedPermuteSpec const &parsed, typename AType::ValueType beta, CType *C, typename AType::ValueType alpha,
-                    AType const &A) {
-    string_permute_impl<typename AType::ValueType>(parsed, beta, &C->impl(), alpha, A.impl());
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::dispatch)

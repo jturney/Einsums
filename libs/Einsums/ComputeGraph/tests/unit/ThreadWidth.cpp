@@ -13,6 +13,7 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/Moldability.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
