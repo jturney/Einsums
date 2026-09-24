@@ -267,9 +267,7 @@ The serial pair shows that fusion alone buys almost nothing on one core (a singl
 Writing the same math as two `einsum` calls trades that hand fusion for notation: each contraction runs on the measured-best engine, but the integrals are streamed twice, so eager einsum lands near serial hand code on this bandwidth-bound workload, a few-fold above the fused OpenMP nest.
 Capturing the two calls as a ComputeGraph closes the gap and then some: the StreamContractionFusion pass sees that both contractions read the same tensor and fuses them into one storage-order pass feeding both accumulators - matching the hand-fused loops at small sizes and beating them at large ones, with no fusion written by the programmer.
 
-The "einsum (eager)" line in the figure below is exactly this code, written with the compile-time-index API it was measured with, which is being retired.
-These two einsums get executed as a call to BLAS gemv (the J) and a generic contraction algorithm (the K).
-The string form, `cg::einsum`, sends both to PackedGemm instead, and the line will be remeasured with it:
+The "einsum (eager)" line in the figure below is exactly this code, written with the compile-time-index API it was measured with:
 
 ```cpp
 using namespace einsums::tensor_algebra;
@@ -279,6 +277,9 @@ using namespace einsums::index;
 einsum(0.0, Indices{mu, nu}, &G, 2.0, Indices{mu, nu, lambda, sigma}, TEI, Indices{lambda, sigma}, D);
 einsum(1.0, Indices{mu, nu}, &G, -1.0, Indices{mu, lambda, nu, sigma}, TEI, Indices{lambda, sigma}, D);
 ```
+
+These two einsums get executed as a call to BLAS gemv (the J) and a generic contraction algorithm (the K).
+The string form, `cg::einsum`, which ComputeGraph and the Python bindings use, sends both to PackedGemm instead.
 
 The stream-fused line is the same two contractions captured into a graph; the default optimization pipeline does the fusion.
 

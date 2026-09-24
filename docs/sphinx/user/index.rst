@@ -172,7 +172,7 @@ The serial pair shows that fusion alone buys almost nothing on one core, because
 The fused OpenMP nest, which is what a careful programmer writes by hand, is the baseline to beat.
 
 Writing the same two contractions as :cpp:func:`~einsums::tensor_algebra::einsum` calls trades that hand fusion for notation.
-That line was measured with the compile-time-index API, which is being retired; the string form sends both contractions to PackedGemm instead, and the line will be remeasured with it.
+That line was measured with the compile-time-index API; the string form, which ComputeGraph and the Python bindings use, sends both contractions to PackedGemm instead.
 Each contraction still runs on the best engine available for it, but the integrals are streamed twice, so eager einsum lands near serial hand code on this workload.
 Capturing the same two calls into a :doc:`ComputeGraph <tutorial_compute_graph>` recovers the difference: the ``StreamContractionFusion`` pass sees that both contractions read the same tensor and fuses them into one storage-order pass that feeds both accumulators, matching the hand-fused loops at small sizes and beating them at large ones, with no fusion written by the programmer.
 

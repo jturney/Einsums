@@ -117,9 +117,9 @@ can read and rewrite. The route is chosen again each time the graph runs,
 since a pass may have changed the spec or the operands in between.
 
 The compile-time-index form, :code:`tensor_algebra::einsum` with
-:code:`Indices{...}`, still exists for code written against it and is being
-retired. It chooses its route when the template instantiates, and walks
-much the same ladder.
+:code:`Indices{...}`, remains for eager code written against it; ComputeGraph
+and the Python bindings use the string form. It chooses its route when the
+template instantiates, and walks much the same ladder.
 
 Planning
 --------

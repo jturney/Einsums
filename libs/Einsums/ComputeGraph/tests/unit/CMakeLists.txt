@@ -342,3 +342,48 @@ set_tests_properties(
   Tests.Unit.Modules.ComputeGraph.CompileTimeIndices Tests.Unit.Modules.ComputeGraph.CompileTimeIndicesSelfTest
   PROPERTIES LABELS "UNIT_ONLY"
 )
+
+# ComputeGraph and every header it includes stay independent of the TensorAlgebra module. Each
+# probe is compiled with the compiler's include listing on, so the gate sees every header reached
+# through any chain of includes, with the build's own flags; the script fails if one lies under
+# TensorAlgebra. The include path is shared by the whole library, so ComputeGraph's CMake
+# dependencies alone cannot enforce this. The self-test probe includes a TensorAlgebra header and
+# must fail, which shows the listing is read at all.
+if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  set(_einsums_include_listing_flag /showIncludes)
+else()
+  set(_einsums_include_listing_flag -H)
+endif()
+foreach(_probe HeaderClosureProbe HeaderClosureProbeSelfTest)
+  add_library(ComputeGraph_${_probe} OBJECT EXCLUDE_FROM_ALL ${_probe}.cpp)
+  target_link_libraries(ComputeGraph_${_probe} PRIVATE Einsums::Einsums)
+  if(TARGET einsums_private_flags)
+    target_link_libraries(ComputeGraph_${_probe} PRIVATE einsums_private_flags)
+  endif()
+  target_compile_options(ComputeGraph_${_probe} PRIVATE ${_einsums_include_listing_flag})
+  set_target_properties(ComputeGraph_${_probe} PROPERTIES FOLDER "Tests/Unit/Modules/ComputeGraph")
+endforeach()
+foreach(_gate HeaderClosure HeaderClosureSelfTest)
+  if(_gate STREQUAL "HeaderClosure")
+    set(_probe HeaderClosureProbe)
+  else()
+    set(_probe HeaderClosureProbeSelfTest)
+  endif()
+  add_test(
+    NAME Tests.Unit.Modules.ComputeGraph.${_gate}
+    COMMAND
+      ${CMAKE_COMMAND} "-DOBJECT=$<TARGET_OBJECTS:ComputeGraph_${_probe}>" "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
+      "-DTARGET=ComputeGraph_${_probe}" "-DFORBID=[/\\\\]TensorAlgebra[/\\\\]"
+      "-DEXPECT=ComputeGraph[/\\\\]Operations\\.hpp" "-DCONFIG=$<CONFIG>" -P
+      ${PROJECT_SOURCE_DIR}/cmake/scripts/check_header_closure.cmake
+  )
+  # A build of the shared tree, like the header compile tests, so it takes their lock.
+  set_tests_properties(
+    Tests.Unit.Modules.ComputeGraph.${_gate} PROPERTIES LABELS "UNIT_ONLY" RESOURCE_LOCK "einsums_build_tree"
+  )
+endforeach()
+# The self-test passes only on the gate's own verdict: a build failure or a missing listing also
+# exits nonzero, and WILL_FAIL would count either as the gate working.
+set_tests_properties(
+  Tests.Unit.Modules.ComputeGraph.HeaderClosureSelfTest PROPERTIES PASS_REGULAR_EXPRESSION "FORBIDDEN_HEADER_REACHED"
+)

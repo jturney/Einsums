@@ -94,6 +94,8 @@ The user-guide tutorials use `RuntimeTensor` and teach an operation eagerly befo
 ComputeGraph contains no compile-time index code: library, tools, examples, docs and tests all use string specs.
 `Tests.Unit.Modules.ComputeGraph.CompileTimeIndices` enforces it; its allowlist (`tests/unit/compile_time_indices.allowlist`) is empty, so any `Indices{`, `einsums::index`, templated `tensor_algebra::einsum`/`permute`/`transpose`, or `TensorAlgebra.hpp`/`Permute.hpp` include in the module fails.
 Never add a line to it.
+ComputeGraph and every header it includes are also independent of the TensorAlgebra module, which keeps the templated engine for eager code: `Tests.Unit.Modules.ComputeGraph.HeaderClosure` compiles the umbrella header with the compiler's include listing on and fails if any TensorAlgebra header is reached, through any chain of includes.
+ComputeGraph therefore has its own dense element-wise kernel (`Detail/DenseElementTransform.hpp`), and the compile-time-index adapters live in TensorAlgebra (`Detail/PackedGemmIndices.hpp`, `Detail/IndexTable.hpp`), not in PackedGemm or TensorBase.
 Rank-erased permutes go through the `TensorPermute` module: `tensor_permute::permute("ji <- ij", beta, &C, alpha, A)`, the same signature as `cg::permute`; its tensor overloads take tensors directly, so call sites never spell `impl()`.
 The spec is parsed once at capture into an `EinsumDescriptor` (links, index spaces, GEMM hint) and routed again at each replay.
 String-spec einsums lower through `StringDispatch.hpp::string_einsum`, whose fast-path cascade assumes each index letter appears once per operand; repeated-letter (diagonal) specs route to the repeat-aware generic loop.

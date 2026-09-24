@@ -49,9 +49,10 @@ runs:
 A route with a ``_runtime`` suffix is the same kernel reached from runtime-rank operands.
 
 The compile-time-index form, ``einsum(Indices{i,j}, &C, Indices{i,k}, A, Indices{k,j}, B)``,
-still exists for code written against it and is being retired. It analyses the pattern while your
-code compiles and does not share that analysis with the string form, so the two can route one
-contraction differently; the string form is the one this page describes, and the one to tune for.
+remains for eager code written against it. It analyses the pattern while your code compiles and
+does not share that analysis with the string form, so the two can route one contraction
+differently; the string form, which ComputeGraph and the Python bindings use, is the one this page
+describes, and the one to tune for.
 
 How Dispatch Chooses
 ====================
