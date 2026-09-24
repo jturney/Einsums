@@ -8,6 +8,8 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/TensorUtilities/RMSD.hpp>
 
+#include <stdexcept>
+
 #include <Einsums/Testing.hpp>
 
 TEMPLATE_TEST_CASE("CP 1", "[decomposition]", float, double) {
@@ -100,4 +102,16 @@ TEMPLATE_TEST_CASE("CP 4", "[decomposition]", double) {
 
     REQUIRE(diff >= 0.0);
     REQUIRE(diff <= 1.0e-4);
+}
+
+TEST_CASE("CP - a singular ALS system is reported, not solved with garbage", "[decomposition]") {
+    // gesv's info was discarded, so an exactly singular normal-equations matrix left the factor
+    // unsolved and the iteration carried on with it. A zero tensor makes the first update zero a
+    // factor, and the next mode's system is then exactly singular.
+    using namespace einsums;
+    using namespace einsums::decomposition;
+
+    auto zero = create_tensor<double>("zero", 3, 4, 2);
+    zero.zero();
+    CHECK_THROWS_AS(parafac(zero, 2, 10, 1.0e-6), std::runtime_error);
 }

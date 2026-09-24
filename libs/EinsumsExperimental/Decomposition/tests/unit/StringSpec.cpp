@@ -18,6 +18,7 @@
 #include <Einsums/TensorUtilities/RMSD.hpp>
 
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -172,4 +173,12 @@ TEMPLATE_TEST_CASE("string spec - Tucker matches the original", "[decomposition]
     SECTION("3 x 2 x 3 x 2") {
         check_tucker(test_tensor_3232<TestType>(false), {2, 2, 2, 2}, 0.196843, 0.192402);
     }
+}
+
+TEST_CASE("string spec - CP reports a singular ALS system", "[decomposition][string-spec]") {
+    // The same guard as the original's: a zero tensor zeroes the first factor, and the next mode's
+    // normal-equations matrix is exactly singular.
+    auto zero = create_tensor<double>("zero", 3, 4, 2);
+    zero.zero();
+    CHECK_THROWS_AS(ss::parafac(zero, 2, 10, 1.0e-6), std::runtime_error);
 }

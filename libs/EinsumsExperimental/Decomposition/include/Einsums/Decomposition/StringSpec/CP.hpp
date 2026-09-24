@@ -24,6 +24,8 @@
 #include <Einsums/TensorPermute/Permute.hpp>
 #include <Einsums/TensorUtilities/CreateTensorLike.hpp>
 
+#include <stdexcept>
+
 EINSUMS_NAMESPACE_BEGIN(decomposition::string_spec)
 
 /**
@@ -233,7 +235,15 @@ auto parafac(Tensor<TType, TRank> const &tensor, size_t rank, int n_iter_max = 1
             // factor * V = M; V is symmetric, so it is V * factor^T = M^T, which is gesv's form.
             Tensor<TType, 2> factor_t{"factor^T", rank, ndim};
             tensor_permute::permute("ri <- ir", &factor_t, factors[n_ind]);
-            linear_algebra::gesv(&V, &factor_t);
+            // A nonzero info means V is exactly singular and factor_t is not solved; continuing would
+            // carry garbage into every later mode.
+            if (int const info = linear_algebra::gesv(&V, &factor_t); info != 0) {
+                EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                        "parafac: the ALS update for mode {} could not be solved (gesv info {}); a positive info "
+                                        "means the system is singular, and a rank-{} decomposition may be more than this tensor "
+                                        "supports",
+                                        static_cast<size_t>(n_ind), info, rank);
+            }
             tensor_permute::permute("ir <- ri", &factors[n_ind], factor_t);
         });
 
@@ -349,7 +359,15 @@ auto weighted_parafac(Tensor<TType, TRank> const &tensor, Tensor<TType, 1> const
             // factor * V = M; V is symmetric, so it is V * factor^T = M^T, which is gesv's form.
             Tensor<TType, 2> factor_t{"factor^T", rank, ndim};
             tensor_permute::permute("ri <- ir", &factor_t, factors[n_ind]);
-            linear_algebra::gesv(&V, &factor_t);
+            // A nonzero info means V is exactly singular and factor_t is not solved; continuing would
+            // carry garbage into every later mode.
+            if (int const info = linear_algebra::gesv(&V, &factor_t); info != 0) {
+                EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                        "weighted_parafac: the ALS update for mode {} could not be solved (gesv info {}); a positive info "
+                                        "means the system is singular, and a rank-{} decomposition may be more than this tensor "
+                                        "supports",
+                                        static_cast<size_t>(n_ind), info, rank);
+            }
             tensor_permute::permute("ir <- ri", &factors[n_ind], factor_t);
 
             n += 1;
