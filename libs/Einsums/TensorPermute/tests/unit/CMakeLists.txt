@@ -32,7 +32,7 @@ function(_einsums_snake_to_camel out_var snake)
   set(${out_var} "${_camel}" PARENT_SCOPE)
 endfunction()
 
-set(TensorPermuteTests Permute.cpp)
+set(TensorPermuteTests Permute.cpp Unfold.cpp)
 
 foreach(test ${TensorPermuteTests})
   get_filename_component(TestName ${test} NAME_WE)

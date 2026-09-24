@@ -59,6 +59,7 @@ set(ComputeGraphTests
     HeadersWithoutIndices.cpp
     InterfaceManifest.cpp
     Json.cpp
+    StringKhatriRao.cpp
     MixedPrecisionEinsum.cpp
     MixedPrecisionRules.cpp
     LayoutAssignment.cpp

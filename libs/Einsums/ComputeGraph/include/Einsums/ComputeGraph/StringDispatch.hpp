@@ -970,11 +970,19 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             // used to sit inside the rank-2 block above, matching the typed
             // ladder's old gate and sending every other rank to the generic
             // loop.
-            if (a_rank == b_rank && b_rank == c_rank && links.empty() && a_idx == b_idx && a_idx == c_idx) {
-                ProfileAnnotate("dispatch", "direct_product_runtime");
-                last_dispatch_route() = "direct_product_runtime";
-                linear_algebra::direct_product(ab_pf, A, B, c_pf, C);
-                return;
+            //
+            // Only where SameRank holds. dynamic_rank matches any rank, but two
+            // typed operands of different ranks do not, and for such a triple
+            // this call failed to compile whatever the spec. Their ranks can
+            // never all be equal at run time, so the route is dead for them
+            // anyway, and they take the routes below.
+            if constexpr (SameRank<AType, BType, CType>) {
+                if (a_rank == b_rank && b_rank == c_rank && links.empty() && a_idx == b_idx && a_idx == c_idx) {
+                    ProfileAnnotate("dispatch", "direct_product_runtime");
+                    last_dispatch_route() = "direct_product_runtime";
+                    linear_algebra::direct_product(ab_pf, A, B, c_pf, C);
+                    return;
+                }
             }
         }
     } // end of the !conj_a && !conj_b BLAS fast-path gate

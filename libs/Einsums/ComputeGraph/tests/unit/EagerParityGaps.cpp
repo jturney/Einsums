@@ -783,6 +783,30 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         }
     }
 
+    SECTION("typed operands of different ranks beside a runtime-rank one") {
+        // string_einsum compiled a direct_product call, which requires SameRank<A, B, C>, for every
+        // triple with a runtime-rank operand. dynamic_rank matches any rank, but two typed operands
+        // of different ranks do not, so any eager einsum over such a triple failed to compile,
+        // whatever its spec: this contraction included. The route is now compiled only where
+        // SameRank holds, and a triple like this one takes the routes after it.
+        auto const            A = create_random_tensor<double>("A", 4, 3, 5);
+        auto const            b = create_random_tensor<double>("b", 5);
+        RuntimeTensor<double> C("C", std::vector<size_t>{4, 3});
+        C.zero();
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ijk ; k", &C, A, b);
+
+        for (size_t i = 0; i < 4; i++) {
+            for (size_t j = 0; j < 3; j++) {
+                double want = 0.0;
+                for (size_t k = 0; k < 5; k++) {
+                    want += A(i, j, k) * b(k);
+                }
+                CHECK(std::abs(C(i, j) - want) <= 1e-12 * (1.0 + std::abs(want)));
+            }
+        }
+    }
+
     SECTION("conjugated gemv already reaches PackedGemm") {
         // Not a gap: the conjugating gate skips the BLAS ladder, but PackedGemm
         // conjugates natively during packing, so gemm- and gemv-shaped

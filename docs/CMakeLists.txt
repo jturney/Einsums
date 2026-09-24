@@ -91,7 +91,7 @@ configure_file(
 # einsums_add_module records each one, and libs/ is configured before this directory, so a new
 # module is documented without being added here.
 #
-# EinsumsExperimental/{Decomposition,Graph} are held back: wiring them tripped a Sphinx cpp-domain
+# EinsumsExperimental/Decomposition is held back: wiring them tripped a Sphinx cpp-domain
 # crash (AssertionError 'parent_symbol' in _resolve_xref_inner) on the incremental build.
 # Investigate before adding; likely a specific cross-reference with a missing parent scope.
 get_property(_einsums_all_modules GLOBAL PROPERTY EINSUMS_MODULES)

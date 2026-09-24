@@ -5,17 +5,26 @@
 
 #pragma once
 
+/// @file CP.hpp
+/// @brief CANDECOMP/PARAFAC decompositions, their contractions written as string specs.
+///
+/// The same algorithms as <Einsums/Decomposition/CP.hpp>, which spells its contractions with
+/// compile-time index types.
+
+#include <Einsums/ComputeGraph/KhatriRao.hpp>
+#include <Einsums/ComputeGraph/Operations.hpp>
 #include <Einsums/Concepts/NamedRequirements.hpp>
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Decomposition/StringSpec/Unfold.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorBase/Common.hpp>
+#include <Einsums/TensorPermute/Permute.hpp>
 #include <Einsums/TensorUtilities/CreateTensorLike.hpp>
 
-EINSUMS_NAMESPACE_BEGIN(decomposition)
+EINSUMS_NAMESPACE_BEGIN(decomposition::string_spec)
 
 /**
  * "Weight" a tensor for weighted CANDECOMP/PARAFAC decompositions (returns a copy) by input weights
@@ -102,8 +111,6 @@ template <size_t TRank, typename TType, typename Alloc>
 auto initialize_cp(std::vector<Tensor<TType, 2>, Alloc> &folds, size_t rank) -> BufferVector<Tensor<TType, 2>> {
     LabeledSection0();
 
-    using namespace einsums::tensor_algebra;
-
     BufferVector<Tensor<TType, 2>> factors;
     factors.reserve(TRank);
 
@@ -113,8 +120,7 @@ auto initialize_cp(std::vector<Tensor<TType, 2>, Alloc> &folds, size_t rank) -> 
 
         // Multiply the fold by its transpose
         Tensor fold_squared = create_tensor<TType>("fold squared", m, m);
-        einsum(0.0, Indices{index::M, index::N}, &fold_squared, 1.0, Indices{index::M, index::p}, folds[i], Indices{index::N, index::p},
-               folds[i]);
+        compute_graph::einsum("mn <- mp ; np", TType{0}, &fold_squared, TType{1}, folds[i], folds[i]);
 
         Tensor S = create_tensor<TType>("eigenvalues", m);
 
@@ -169,13 +175,12 @@ auto parafac(Tensor<TType, TRank> const &tensor, size_t rank, int n_iter_max = 1
     -> BufferVector<Tensor<TType, 2>> {
     LabeledSection0();
 
-    using namespace einsums::tensor_algebra;
-    using namespace einsums::index;
-
     // Compute set of unfolded matrices
     BufferVector<Tensor<TType, 2>> unfolded_matrices;
     unfolded_matrices.reserve(TRank);
-    for_sequence<TRank>([&](auto i) { unfolded_matrices.push_back(tensor_algebra::unfold<i>(tensor)); });
+    for (size_t i = 0; i < TRank; i++) {
+        unfolded_matrices.push_back(detail::unfolded(i, tensor));
+    }
 
     // Perform SVD guess for parafac decomposition procedure
     BufferVector<Tensor<TType, 2>> factors = initialize_cp<TRank>(unfolded_matrices, rank);
@@ -201,7 +206,7 @@ auto parafac(Tensor<TType, TRank> const &tensor, size_t rank, int n_iter_max = 1
                     // A_tA = A^T[j] @ A[j]
                     // println("iter {}, mind {}", iter, m_ind);
                     // println(factors[m_ind]);
-                    einsum(0.0, Indices{r, s}, &A_tA, 1.0, Indices{I, r}, factors[m_ind], Indices{I, s}, factors[m_ind]);
+                    compute_graph::einsum("rs <- ir ; is", TType{0}, &A_tA, TType{1}, factors[m_ind], factors[m_ind]);
 
                     if (first) {
                         V     = A_tA;
@@ -210,10 +215,10 @@ auto parafac(Tensor<TType, TRank> const &tensor, size_t rank, int n_iter_max = 1
                     } else {
                         // Uses a Hamamard Contraction to build V
                         Tensor<TType, 2> Vcopy = V;
-                        einsum(0.0, Indices{r, s}, &V, 1.0, Indices{r, s}, Vcopy, Indices{r, s}, A_tA);
+                        compute_graph::einsum("rs <- rs ; rs", TType{0}, &V, TType{1}, Vcopy, A_tA);
 
                         // Perform a Khatri-Rao contraction
-                        KR = tensor_algebra::khatri_rao(Indices{I, r}, KR, Indices{M, r}, factors[m_ind]);
+                        KR = compute_graph::khatri_rao("ir", KR, "mr", factors[m_ind]);
                     }
                 }
             });
@@ -222,14 +227,14 @@ auto parafac(Tensor<TType, TRank> const &tensor, size_t rank, int n_iter_max = 1
             size_t ndim = tensor.dim(n_ind);
 
             // Step 1: Matrix Multiplication
-            einsum(0.0, Indices{I, r}, &factors[n_ind], 1.0, Indices{I, K}, unfolded_matrices[n_ind], Indices{K, r}, KR);
+            compute_graph::einsum("ir <- ik ; kr", TType{0}, &factors[n_ind], TType{1}, unfolded_matrices[n_ind], KR);
 
             // Step 2: Linear Solve (instead of inversion, for numerical stability). The update solves
             // factor * V = M; V is symmetric, so it is V * factor^T = M^T, which is gesv's form.
             Tensor<TType, 2> factor_t{"factor^T", rank, ndim};
-            permute(Indices{r, I}, &factor_t, Indices{I, r}, factors[n_ind]);
+            tensor_permute::permute("ri <- ir", &factor_t, factors[n_ind]);
             linear_algebra::gesv(&V, &factor_t);
-            permute(Indices{I, r}, &factors[n_ind], Indices{r, I}, factor_t);
+            tensor_permute::permute("ir <- ri", &factors[n_ind], factor_t);
         });
 
         // Check for convergence
@@ -270,12 +275,12 @@ auto weighted_parafac(Tensor<TType, TRank> const &tensor, Tensor<TType, 1> const
                       double tolerance = 1.e-8) -> BufferVector<Tensor<TType, 2>> {
     LabeledSection0();
 
-    using namespace einsums::tensor_algebra;
-
     // Compute set of unfolded matrices (unweighted)
     BufferVector<Tensor<TType, 2>> unfolded_matrices;
     unfolded_matrices.reserve(TRank);
-    for_sequence<TRank>([&](auto i) { unfolded_matrices.push_back(tensor_algebra::unfold<i>(tensor)); });
+    for (size_t i = 0; i < TRank; i++) {
+        unfolded_matrices.push_back(detail::unfolded(i, tensor));
+    }
 
     // Perform SVD guess for parafac decomposition procedure
     BufferVector<Tensor<TType, 2>> factors = initialize_cp<TRank>(unfolded_matrices, rank);
@@ -283,12 +288,11 @@ auto weighted_parafac(Tensor<TType, TRank> const &tensor, Tensor<TType, 1> const
     { // Define new scope (for memory optimization)
         // Create the weighted tensor
         Tensor<TType, 1> square_weights("square_weights", weights.dim(0));
-        einsum(0.0, Indices{index::P}, &square_weights, 1.0, Indices{index::P}, weights, Indices{index::P}, weights);
+        compute_graph::einsum("p <- p ; p", TType{0}, &square_weights, TType{1}, weights, weights);
         Tensor<TType, TRank> weighted_tensor = weight_tensor(tensor, square_weights);
-        for_sequence<TRank>([&](auto i) {
-            if (i != 0)
-                unfolded_matrices[i] = tensor_algebra::unfold<i>(weighted_tensor);
-        });
+        for (size_t i = 1; i < TRank; i++) {
+            unfolded_matrices[i] = detail::unfolded(i, weighted_tensor);
+        }
     }
 
     double tensor_norm = linear_algebra::vec_norm(tensor);
@@ -314,11 +318,9 @@ auto weighted_parafac(Tensor<TType, TRank> const &tensor, Tensor<TType, 1> const
                     // A_tA = A^T[j] @ A[j]
                     if (m == 0) {
                         Tensor<TType, 2> weighted_factor = weight_tensor(factors[m_ind], weights);
-                        einsum(0.0, Indices{index::r, index::s}, &A_tA, 1.0, Indices{index::I, index::r}, weighted_factor,
-                               Indices{index::I, index::s}, weighted_factor);
+                        compute_graph::einsum("rs <- ir ; is", TType{0}, &A_tA, TType{1}, weighted_factor, weighted_factor);
                     } else {
-                        einsum(0.0, Indices{index::r, index::s}, &A_tA, 1.0, Indices{index::I, index::r}, factors[m_ind],
-                               Indices{index::I, index::s}, factors[m_ind]);
+                        compute_graph::einsum("rs <- ir ; is", TType{0}, &A_tA, TType{1}, factors[m_ind], factors[m_ind]);
                     }
 
                     if (first) {
@@ -328,11 +330,10 @@ auto weighted_parafac(Tensor<TType, TRank> const &tensor, Tensor<TType, 1> const
                     } else {
                         // Uses a Hamamard Contraction to build V
                         Tensor<TType, 2> Vcopy = V;
-                        einsum(0.0, Indices{index::r, index::s}, &V, 1.0, Indices{index::r, index::s}, Vcopy, Indices{index::r, index::s},
-                               A_tA);
+                        compute_graph::einsum("rs <- rs ; rs", TType{0}, &V, TType{1}, Vcopy, A_tA);
 
                         // Perform a Khatri-Rao contraction
-                        KR = tensor_algebra::khatri_rao(Indices{index::I, index::r}, KR, Indices{index::M, index::r}, factors[m_ind]);
+                        KR = compute_graph::khatri_rao("ir", KR, "mr", factors[m_ind]);
                     }
                 }
                 m += 1;
@@ -342,15 +343,14 @@ auto weighted_parafac(Tensor<TType, TRank> const &tensor, Tensor<TType, 1> const
             size_t ndim = tensor.dim(n_ind);
 
             // Step 1: Matrix Multiplication
-            einsum(0.0, Indices{index::I, index::r}, &factors[n_ind], 1.0, Indices{index::I, index::K}, unfolded_matrices[n_ind],
-                   Indices{index::K, index::r}, KR);
+            compute_graph::einsum("ir <- ik ; kr", TType{0}, &factors[n_ind], TType{1}, unfolded_matrices[n_ind], KR);
 
             // Step 2: Linear Solve (instead of inversion, for numerical stability). The update solves
             // factor * V = M; V is symmetric, so it is V * factor^T = M^T, which is gesv's form.
             Tensor<TType, 2> factor_t{"factor^T", rank, ndim};
-            permute(Indices{index::r, index::I}, &factor_t, Indices{index::I, index::r}, factors[n_ind]);
+            tensor_permute::permute("ri <- ir", &factor_t, factors[n_ind]);
             linear_algebra::gesv(&V, &factor_t);
-            permute(Indices{index::I, index::r}, &factors[n_ind], Indices{index::r, index::I}, factor_t);
+            tensor_permute::permute("ir <- ri", &factors[n_ind], factor_t);
 
             n += 1;
         });
@@ -381,4 +381,4 @@ auto weighted_parafac(Tensor<TType, TRank> const &tensor, Tensor<TType, 1> const
     return factors;
 }
 
-EINSUMS_NAMESPACE_END(decomposition)
+EINSUMS_NAMESPACE_END(decomposition::string_spec)

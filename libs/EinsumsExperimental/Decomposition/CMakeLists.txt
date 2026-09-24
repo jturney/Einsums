@@ -5,7 +5,10 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(DecompositionHeaders Einsums/Decomposition/CP.hpp Einsums/Decomposition/Tucker.hpp)
+set(DecompositionHeaders
+    Einsums/Decomposition/CP.hpp Einsums/Decomposition/Tucker.hpp Einsums/Decomposition/StringSpec/CP.hpp
+    Einsums/Decomposition/StringSpec/Tucker.hpp Einsums/Decomposition/StringSpec/Unfold.hpp
+)
 
 set(DecompositionSources)
 
@@ -18,11 +21,13 @@ einsums_add_module(
   MODULE_DEPENDENCIES
     Einsums_Config
     Einsums_LinearAlgebra
+    Einsums_ComputeGraph
     Einsums_Concepts
     Einsums_Errors
     Einsums_Print
     Einsums_Profile
     Einsums_Tensor
+    Einsums_TensorPermute
     Einsums_TensorUtilities
   CMAKE_SUBDIRS examples tests
 )

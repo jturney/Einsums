@@ -126,10 +126,11 @@ foreach(lib ${EINSUMS_LIBS})
 
   # OUTPUT_NAME carries the ABI generation, so two incompatible copies are two files rather than one
   # name the loader deduplicates down to whichever landed first. SOVERSION carries it too, for the
-  # ELF consumers that key on that.
+  # ELF consumers that key on that. The base is the library's own name: every library here used to
+  # share Einsums', and EinsumsExperimental's then collided with libEinsums at generate time.
   set_target_properties(
     ${lib} PROPERTIES VERSION ${EINSUMS_VERSION} SOVERSION ${EINSUMS_SOVERSION}
-                      OUTPUT_NAME ${EINSUMS_LIBRARY_OUTPUT_NAME} FOLDER "Core"
+                      OUTPUT_NAME "${lib}-abi${EINSUMS_ABI_VERSION}" FOLDER "Core"
   )
   include(Einsums_SymbolIsolation)
   einsums_apply_symbol_isolation(${lib})

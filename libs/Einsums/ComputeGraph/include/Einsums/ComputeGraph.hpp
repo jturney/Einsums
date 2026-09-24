@@ -93,6 +93,7 @@
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/GateFlags.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/ComputeGraph/KhatriRao.hpp>
 #include <Einsums/ComputeGraph/LuPivots.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Operations.hpp>

@@ -40,6 +40,14 @@ jobs:
             blas: openblas
             cmake_extra: >
               -DEINSUMS_WITH_COVERAGE=ON
+          # EinsumsExperimental is OFF by default, so no other leg builds it, and
+          # it went seven weeks unbuildable (its library took libEinsums' file
+          # name) before anyone noticed. Keyed on compiler and blas alone, so it
+          # joins the gcc/MKL leg rather than adding a job.
+          - compiler: default
+            blas: mkl
+            cmake_extra: >
+              -DEINSUMS_WITH_EXPERIMENTAL=ON
           # EINSUMS_WITH_PROFILER=OFF swaps the whole instrumentation API for
           # no-op shims, so nothing in the default matrix compiles that branch.
           # One leg is enough to keep it from rotting again.

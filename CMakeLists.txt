@@ -68,7 +68,6 @@ set(EINSUMS_ABI_VERSION 1)
 
 set(EINSUMS_LIBRARY_VERSION "${EINSUMS_VERSION}")
 set(EINSUMS_SOVERSION ${EINSUMS_ABI_VERSION})
-set(EINSUMS_LIBRARY_OUTPUT_NAME "Einsums-abi${EINSUMS_ABI_VERSION}")
 set(EINSUMS_PACKAGE_NAME Einsums)
 # To keep track of the einsums_root when other subprojects are declared
 set(EINSUMS_SOURCE_DIR "${PROJECT_SOURCE_DIR}")

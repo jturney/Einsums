@@ -5,17 +5,22 @@
 
 #pragma once
 
+/// @file Tucker.hpp
+/// @brief Tucker decompositions, their unfoldings written without compile-time index types.
+///
+/// The same algorithms as <Einsums/Decomposition/Tucker.hpp>.
+
 #include <Einsums/Concepts/NamedRequirements.hpp>
 #include <Einsums/Concepts/SubscriptChooser.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Decomposition/StringSpec/Unfold.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>
 
-EINSUMS_NAMESPACE_BEGIN(decomposition)
+EINSUMS_NAMESPACE_BEGIN(decomposition::string_spec)
 
 template <size_t TRank, typename TType, typename Alloc>
 auto tucker_reconstruct(Tensor<TType, TRank> const &g_tensor, std::vector<Tensor<TType, 2>, Alloc> const &factors) -> Tensor<TType, TRank> {
@@ -78,7 +83,6 @@ auto initialize_tucker(std::vector<TTensor, Alloc> &folds, Ranks &ranks) -> Buff
         size_t rank    = ranks[i];
         auto [U, S, _] = linear_algebra::svd_dd(folds[i]);
 
-        // println(tensor_algebra::unfold<i>(tensor));
         // println(S);
 
         if (folds[i].dim(0) < rank) {
@@ -109,7 +113,9 @@ auto tucker_ho_svd(Tensor<TType, TRank> const &tensor, Ranks &ranks, Folds const
     BufferVector<Tensor<TType, 2>> unfolded_matrices;
     unfolded_matrices.reserve(TRank);
     if (!folds.size()) {
-        for_sequence<TRank>([&](auto i) { unfolded_matrices.push_back(tensor_algebra::unfold<i>(tensor)); });
+        for (size_t i = 0; i < TRank; i++) {
+            unfolded_matrices.push_back(detail::unfolded(i, tensor));
+        }
     } else {
         unfolded_matrices = folds;
     }
@@ -231,7 +237,7 @@ auto tucker_ho_oi(Tensor<TType, TRank> const &tensor, Ranks &ranks, int n_iter_m
                 }
             });
 
-            Tensor<TType, 2> new_fold = tensor_algebra::unfold<i>(*new_fold_buffer);
+            Tensor<TType, 2> new_fold = detail::unfolded(i, *new_fold_buffer);
             new_folds.push_back(new_fold);
 
             // Only delete once to avoid a double free
@@ -265,4 +271,4 @@ auto tucker_ho_oi(Tensor<TType, TRank> const &tensor, Ranks &ranks, int n_iter_m
     return std::make_tuple(g_tensor, factors);
 }
 
-EINSUMS_NAMESPACE_END(decomposition)
+EINSUMS_NAMESPACE_END(decomposition::string_spec)

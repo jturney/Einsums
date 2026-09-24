@@ -98,6 +98,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/SpaceRegistryAccess.hpp
     Einsums/ComputeGraph/SymbolicCost.hpp
     Einsums/ComputeGraph/EinsumSpec.hpp
+    Einsums/ComputeGraph/KhatriRao.hpp
     Einsums/ComputeGraph/Executor.hpp
     Einsums/ComputeGraph/StringDispatch.hpp
     Einsums/ComputeGraph/TensorHandle.hpp

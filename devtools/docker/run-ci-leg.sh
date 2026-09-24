@@ -145,10 +145,12 @@ leg_settings() {
             EXTRA=("-DEINSUMS_BUILD_PYTHON=ON" "-DEINSUMS_WITH_COVERAGE=ON")
             ;;
         gcc-mkl)
+            # EinsumsExperimental rides on this leg, as on the gcc/MKL leg in
+            # linux-build-and-test.yml: nothing else builds it.
             COMPILER=default
             BLAS=mkl
             BUILD_TYPE=RelWithDebInfo
-            EXTRA=("-DEINSUMS_BUILD_PYTHON=OFF")
+            EXTRA=("-DEINSUMS_BUILD_PYTHON=OFF" "-DEINSUMS_WITH_EXPERIMENTAL=ON")
             ;;
         intel)
             # Intel oneAPI icx/icpx (dpcpp_linux-64) + MKL. merge_yml.py pulls
@@ -167,7 +169,7 @@ leg_settings() {
             COMPILER=default
             BLAS=mkl
             BUILD_TYPE=RelWithDebInfo
-            EXTRA=("-DEINSUMS_BUILD_PYTHON=ON")
+            EXTRA=("-DEINSUMS_BUILD_PYTHON=ON" "-DEINSUMS_WITH_EXPERIMENTAL=ON")
             ;;
         clang-openblas)
             COMPILER=clang

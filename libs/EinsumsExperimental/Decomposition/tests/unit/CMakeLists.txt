@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 #----------------------------------------------------------------------------------------------
 
-set(DecompositionTests CP Tucker)
+set(DecompositionTests CP StringSpec Tucker)
 
 foreach(test ${DecompositionTests})
   set(sources ${test}.cpp)

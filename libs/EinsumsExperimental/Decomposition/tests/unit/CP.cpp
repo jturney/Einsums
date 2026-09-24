@@ -15,7 +15,7 @@ TEMPLATE_TEST_CASE("CP 1", "[decomposition]", float, double) {
     using namespace einsums::tensor_algebra;
     using namespace einsums::decomposition;
 
-    Tensor test1        = create_tensor<TestType, true>("test 1", 3, 3, 3);
+    Tensor test1        = create_tensor<TestType>(true, "test 1", 3, 3, 3);
     test1.vector_data() = {0.94706517, 0.3959549,  0.14122476, 0.83665482, 0.27340639, 0.29811429, 0.1823041,  0.66556282, 0.73178046,
                            0.72504222, 0.58360409, 0.68301135, 0.8316929,  0.66955444, 0.25182224, 0.24108674, 0.09582611, 0.93056666,
                            0.60919366, 0.97363788, 0.24531965, 0.23757898, 0.43426057, 0.64763913, 0.61224901, 0.86068415, 0.12051599};
@@ -37,7 +37,7 @@ TEMPLATE_TEST_CASE("CP 2", "[decomposition]", float, double) {
     using namespace einsums::tensor_algebra;
     using namespace einsums::decomposition;
 
-    Tensor test2 = create_tensor<TestType, true>("test 2", 3, 4, 2);
+    Tensor test2 = create_tensor<TestType>(true, "test 2", 3, 4, 2);
 
     test2.vector_data() = {0.29945093, 0.0090937,  0.99788559, 0.0821231,  0.29625705, 0.80278977, 0.15189681, 0.35832086,
                            0.09648153, 0.39398175, 0.49662056, 0.83101396, 0.84288292, 0.48603425, 0.93286471, 0.47101289,
@@ -58,7 +58,7 @@ TEMPLATE_TEST_CASE("CP 3", "[decomposition]", float, double) {
     using namespace einsums::tensor_algebra;
     using namespace einsums::decomposition;
 
-    Tensor test3 = create_tensor<TestType, true>("test 3", 3, 2, 3, 2);
+    Tensor test3 = create_tensor<TestType>(true, "test 3", 3, 2, 3, 2);
 
     test3.vector_data() = {0.37001224, 0.77676895, 0.17589323, 0.02762156, 0.21037116, 0.83686174, 0.35042434, 0.19117270, 0.58095640,
                            0.99220655, 0.33536840, 0.15210615, 0.95033534, 0.73212124, 0.31346639, 0.83961596, 0.15418801, 0.58927303,
@@ -81,7 +81,7 @@ TEMPLATE_TEST_CASE("CP 4", "[decomposition]", double) {
     using namespace einsums::tensor_algebra;
     using namespace einsums::decomposition;
 
-    Tensor test2 = create_tensor<TestType, true>("test 2", 3, 4, 2);
+    Tensor test2 = create_tensor<TestType>(true, "test 2", 3, 4, 2);
 
     test2.vector_data() = {0.29945093, 0.0090937,  0.99788559, 0.0821231,  0.29625705, 0.80278977, 0.15189681, 0.35832086,
                            0.09648153, 0.39398175, 0.49662056, 0.83101396, 0.84288292, 0.48603425, 0.93286471, 0.47101289,

@@ -12,4 +12,3 @@ EinsumsExperimental Modules
     :maxdepth: 2
 
     /libs/EinsumsExperimental/Decomposition/docs/index.rst
-    /libs/EinsumsExperimental/Graph/docs/index.rst

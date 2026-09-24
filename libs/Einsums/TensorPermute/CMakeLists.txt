@@ -4,7 +4,7 @@
 #----------------------------------------------------------------------------------------------
 
 
-set(TensorPermuteHeaders Einsums/TensorPermute/Permute.hpp Einsums/TensorPermute/Detail/HpttPlanCache.hpp)
+set(TensorPermuteHeaders Einsums/TensorPermute/Permute.hpp Einsums/TensorPermute/Unfold.hpp Einsums/TensorPermute/Detail/HpttPlanCache.hpp)
 
 set(TensorPermuteSources)
 
