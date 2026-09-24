@@ -347,13 +347,17 @@ TEST_CASE("a refused lowering leaves the graph exactly as it was", "[ComputeGrap
     INFO("skip reason: " << reasons[0].first);
     CHECK(reasons[0].first.find("two operands") != std::string::npos);
 
-    // And it still computes the right thing.
+    // And it still computes the right thing. Within a tolerance rather than
+    // bitwise: the graph's GEMM and the reference loop sum in different orders,
+    // so their last bits depend on how the compiler contracts multiplies and
+    // adds (clang 23 differs from 22 here). The refusal itself is checked
+    // exactly above, by the node count.
     graph.execute();
     auto ref = create_zero_tensor<double>("ref", 4, 5);
     reference_einsum("ij <- ik ; kj", &ref, A, B);
     for (std::size_t row = 0; row < 4; ++row) {
         for (std::size_t col = 0; col < 5; ++col) {
-            CHECK(C(row, col) == ref(row, col));
+            CHECK_THAT(C(row, col), Catch::Matchers::WithinAbs(ref(row, col), 1e-12));
         }
     }
 }

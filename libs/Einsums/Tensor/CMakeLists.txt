@@ -21,6 +21,7 @@ set(TensorHeaders
     Einsums/Tensor/TiledRuntimeTensor.hpp
     Einsums/Tensor/InitModule.hpp
     Einsums/Tensor/ModuleVars.hpp
+    Einsums/Tensor/Options.hpp
 )
 
 set(TensorSources TensorDefs.cpp Requirements.cpp InitModule.cpp ModuleVars.cpp StorageBlock.cpp)

@@ -30,7 +30,7 @@ dependencies:
  # Prebuilts to save einsums the work
  # apiary: libclang codegen for the Python bindings and the C++ API reference,
  # plus the APIARY_* annotation macros every translation unit includes
- - apiary >=1,<2
+ - apiary >=1.1,<2
  - catch2
  - fftw
  # clang 22 / macOS libc++ needs fmt 12 (11.0.x fails consteval, 11.1+ fails the malloc allocator)

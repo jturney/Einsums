@@ -24,7 +24,7 @@ DIR_PATH = os.path.dirname(os.path.realpath(__file__))
 # --- Toolchain version pins (single source of truth) ------------------------
 # Bump these to move CI + local dev onto newer compilers.
 GCC_VERSION = "15"  # gcc/g++ on Linux            -> gcc_linux-64 / gxx_linux-64
-CLANG_VERSION = "22"  # clang/clang++ (Linux + macOS)
+CLANG_VERSION = "23"  # clang/clang++ (Linux + macOS)
 # The ICE that pinned this was never about the compiler VERSION.
 #
 # icx/icpx SIGSEGVs in CodeGenPrepare -> TargetMachine::getTLSModel on TUs that

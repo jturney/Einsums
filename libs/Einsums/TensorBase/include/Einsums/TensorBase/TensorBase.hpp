@@ -72,8 +72,12 @@ struct BlockTensor;
  */
 struct EINSUMS_EXPORT AlgebraOptimizedTensor {};
 
+/// Tag base of every runtime-rank tensor and view, whatever its element type.
+/// Test for one with ``std::is_base_of_v<tensor_base::RuntimeTensorNoType, T>``.
 class EINSUMS_EXPORT RuntimeTensorNoType {};
 
+/// Tag base of every runtime-rank tensor view, whatever its element type.
+/// Test for one with ``std::is_base_of_v<tensor_base::RuntimeTensorViewNoType, T>``.
 class EINSUMS_EXPORT RuntimeTensorViewNoType {};
 
 EINSUMS_NAMESPACE_END(tensor_base)

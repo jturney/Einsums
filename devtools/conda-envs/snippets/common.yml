@@ -32,7 +32,7 @@ dependencies:
   # which drags in the whole Clang/LLVM dev stack - so the entry is what keeps
   # a plain build cheap. Bounded on both sides: apiary's emitted C++ and its
   # CMake helper API are 1.x contracts.
-  - apiary >=1,<2
+  - apiary >=1.1,<2
   - catch2
   - fftw
   - fmt >=12,<13  # clang 22 / macOS libc++ needs fmt 12 (11.0.x fails consteval, 11.1+ fails the malloc allocator)
