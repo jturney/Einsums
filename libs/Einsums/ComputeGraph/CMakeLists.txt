@@ -39,6 +39,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/InterfaceManifest.hpp
     Einsums/ComputeGraph/LuPivots.hpp
     Einsums/ComputeGraph/Detail/DenseElementTransform.hpp
+    Einsums/ComputeGraph/Detail/ErasedEinsum.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/Detail/Json.hpp
     Einsums/ComputeGraph/Detail/MixedPrecision.hpp
@@ -120,6 +121,7 @@ set(ComputeGraphSources
     ElementOps.cpp
     Executor.cpp
     StringDispatch.cpp
+    ErasedEinsum.cpp
     ExecutorBuilder.cpp
     ABILayout.cpp
     Graph.cpp

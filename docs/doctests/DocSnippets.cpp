@@ -322,7 +322,7 @@ TEST_CASE("docs - front page and README: the routes their examples name", "[Docs
         auto A = create_random_tensor("A", 7, 7);
         auto B = create_random_tensor("B", 7, 7);
         auto C = create_tensor("C", 7, 7);
-        CHECK(route_of([&] { cg::einsum("ij <- ik ; kj", &C, A, B); }) == "gemm_direct");
+        CHECK(route_of([&] { cg::einsum("ij <- ik ; kj", &C, A, B); }) == "gemm_direct_runtime");
     }
 
     SECTION("performance: a transposed operand still reaches one GEMM") {
@@ -330,7 +330,7 @@ TEST_CASE("docs - front page and README: the routes their examples name", "[Docs
         auto A = create_random_tensor("A", 5, 6);
         auto B = create_random_tensor("B", 4, 5);
         auto C = create_tensor("C", 6, 4);
-        CHECK(route_of([&] { cg::einsum("ik <- ji ; kj", &C, A, B); }) == "gemm_direct");
+        CHECK(route_of([&] { cg::einsum("ik <- ji ; kj", &C, A, B); }) == "gemm_direct_runtime");
     }
 
     SECTION("architecture: a contraction no stock BLAS call takes") {

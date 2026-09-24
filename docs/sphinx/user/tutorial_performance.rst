@@ -44,9 +44,10 @@ runs:
     * - Names its route
       - ``last_dispatch_route()``
     * - Route names
-      - ``gemm_direct``, ``gemm_direct_runtime``, ``packed_gemm``, ``generic_loop``, ...
+      - ``gemm_direct_runtime``, ``packed_gemm``, ``generic_loop``, ...
 
-A route with a ``_runtime`` suffix is the same kernel reached from runtime-rank operands.
+The ``_runtime`` suffix on the BLAS routes names how they are reached: every einsum passes the library its
+operands' rank-erased form, whether the tensors are typed or runtime-rank.
 
 The compile-time-index form, ``einsum(Indices{i,j}, &C, Indices{i,k}, A, Indices{k,j}, B)``,
 remains for eager code written against it. It analyses the pattern while your code compiles and

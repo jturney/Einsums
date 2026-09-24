@@ -222,7 +222,7 @@ names the route the last einsum on this thread took.
 .. code-block:: cpp
 
    cg::einsum("ij <- ik ; kj", &C, A, B);
-   std::string const route = cg::dispatch::last_dispatch_route(); // "gemm_direct"
+   std::string const route = cg::dispatch::last_dispatch_route(); // "gemm_direct_runtime"
 
 One level down, :code:`packed_gemm::last_contraction_route()` names which
 of the four routes above PackedGemm took. Both are thread-local and exist

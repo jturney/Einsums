@@ -519,14 +519,17 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         CHECK(route() == "generic_loop_lone_summed");
     }
 
-    // ── Typed (compile-time rank) BLAS ladder ───────────────────────────────
+    // ── Typed (compile-time rank) operands reach the BLAS routes ───────────
+    // Eager calls run through the library's rank-erased entry, as graph replay
+    // does, so typed operands take the same routes as runtime-rank ones and
+    // report the _runtime names; the kernels are the same.
     SECTION("dot") {
         auto x = create_random_tensor<double>("x", 6);
         auto y = create_random_tensor<double>("y", 6);
         auto s = create_zero_tensor<double>("s", 1);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- i ; i", &s, x, y);
-        CHECK(route() == "dot");
+        CHECK(route() == "dot_runtime");
 
         // The scalar-output spec form is not exercised anywhere else, so pin
         // the value too: a route assertion alone would pass on a path that
@@ -544,7 +547,7 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         auto y = create_zero_tensor<double>("y", 4);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("i <- ij ; j", &y, A, x);
-        CHECK(route() == "gemv_mat_vec");
+        CHECK(route() == "gemv_mat_vec_runtime");
     }
 
     SECTION("gemv_vec_mat") {
@@ -553,7 +556,7 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         auto y = create_zero_tensor<double>("y", 3);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("j <- i ; ij", &y, x, A);
-        CHECK(route() == "gemv_vec_mat");
+        CHECK(route() == "gemv_vec_mat_runtime");
     }
 
     SECTION("ger") {
@@ -562,7 +565,7 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         auto G = create_zero_tensor<double>("G", 6, 6);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- i ; j", &G, x, y);
-        CHECK(route() == "ger");
+        CHECK(route() == "ger_runtime");
     }
 
     SECTION("gemm_direct") {
@@ -571,7 +574,7 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         auto C = create_zero_tensor<double>("C", 4, 5);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ik ; kj", &C, A, B);
-        CHECK(route() == "gemm_direct");
+        CHECK(route() == "gemm_direct_runtime");
     }
 
     SECTION("direct_product") {
@@ -580,7 +583,7 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         auto C = create_zero_tensor<double>("C", 4, 5);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ij ; ij", &C, A, B);
-        CHECK(route() == "direct_product");
+        CHECK(route() == "direct_product_runtime");
     }
 
     // ── Runtime-rank mirror of the same ladder ──────────────────────────────
@@ -667,7 +670,7 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         auto s = create_zero_tensor<double>("s", 1);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- ij ; ij", &s, A, B);
-        CHECK(route() == "dot");
+        CHECK(route() == "dot_runtime");
 
         double want = 0.0;
         for (size_t n = 0; n < A.size(); n++) {
@@ -692,7 +695,7 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         auto C = create_zero_tensor<double>("C", 7);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("i <- i ; i", &C, A, B);
-        CHECK(route() == "direct_product");
+        CHECK(route() == "direct_product_runtime");
         for (size_t n = 0; n < C.size(); n++) {
             CHECK(std::abs(C.data()[n] - A.data()[n] * B.data()[n]) <= 1e-12);
         }
@@ -704,7 +707,7 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         auto C = create_zero_tensor<double>("C", 3, 4, 5);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ijk <- ijk ; ijk", &C, A, B);
-        CHECK(route() == "direct_product");
+        CHECK(route() == "direct_product_runtime");
         for (size_t n = 0; n < C.size(); n++) {
             CHECK(std::abs(C.data()[n] - A.data()[n] * B.data()[n]) <= 1e-12);
         }
@@ -727,7 +730,7 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         auto s = create_zero_tensor<std::complex<double>>("s", 1);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- conj(i) ; i", &s, x, y);
-        CHECK(route() == "true_dot");
+        CHECK(route() == "true_dot_runtime");
 
         std::complex<double> want{};
         for (size_t n = 0; n < x.size(); n++) {
@@ -739,7 +742,7 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         auto s2 = create_zero_tensor<std::complex<double>>("s2", 1);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- i ; conj(i)", &s2, x, y);
-        CHECK(route() == "true_dot");
+        CHECK(route() == "true_dot_runtime");
 
         std::complex<double> want2{};
         for (size_t n = 0; n < x.size(); n++) {
@@ -751,7 +754,7 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         auto s3 = create_zero_tensor<std::complex<double>>("s3", 1);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- conj(i) ; conj(i)", &s3, x, y);
-        CHECK(route() == "true_dot");
+        CHECK(route() == "true_dot_runtime");
 
         std::complex<double> want3{};
         for (size_t n = 0; n < x.size(); n++) {

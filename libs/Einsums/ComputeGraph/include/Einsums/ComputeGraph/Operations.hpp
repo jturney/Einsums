@@ -11,6 +11,7 @@
 #include <Einsums/ComputeGraph/Detail/BatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/BlasAddressable.hpp>
 #include <Einsums/ComputeGraph/Detail/DenseElementTransform.hpp>
+#include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
@@ -7005,7 +7006,8 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("einsum eager");
-        dispatch::string_einsum(parsed, c_pf, C, ab_pf, A, B, conj_a, conj_b);
+        // Through the library, on the operands' TensorImpls: this file compiles no einsum engine.
+        dispatch::erased_string_einsum<T>(parsed, c_pf, C->impl(), ab_pf, A.impl(), B.impl(), conj_a, conj_b);
         return;
     }
 
@@ -7536,7 +7538,8 @@ void einsum(EinsumFormatString spec, typename CType::ValueType c_pf, CType *C,
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("einsum eager (mixed precision)");
-        dispatch::mixed_string_einsum(parsed, c_pf, C, ab_pf, A, B, conj_a, conj_b);
+        dispatch::erased_mixed_string_einsum<typename CType::ValueType, typename AType::ValueType, typename BType::ValueType>(
+            parsed, c_pf, C->impl(), ab_pf, A.impl(), B.impl(), conj_a, conj_b);
         return;
     }
 

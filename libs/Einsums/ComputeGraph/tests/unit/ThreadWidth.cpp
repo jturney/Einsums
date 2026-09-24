@@ -405,7 +405,7 @@ TEST_CASE("ThreadWidth - a rank-2 GEMM under a width leaves the vendor route", "
     auto             wide  = create_zero_tensor<double>("C_wide", n, n);
 
     cg::einsum("ik;kj->ij", &eager, A, B);
-    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct");
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct_runtime");
 
     {
         blas::set_moldable_width_scope(true);
@@ -420,7 +420,7 @@ TEST_CASE("ThreadWidth - a rank-2 GEMM under a width leaves the vendor route", "
     }
 
     cg::einsum("ik;kj->ij", &eager, A, B);
-    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct");
+    REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct_runtime");
 }
 
 // ── Kernel route pins ───────────────────────────────────────────────────────
