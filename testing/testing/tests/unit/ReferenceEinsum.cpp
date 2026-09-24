@@ -367,3 +367,66 @@ TEMPLATE_TEST_CASE("reference permute - agrees with the typed permute", "[Testin
     reference_permute("kij <- ijk", beta, &expected, alpha, A);
     check_same(C, expected);
 }
+
+// ── Mixed precision ─────────────────────────────────────────────────────────
+
+namespace {
+
+/// The templated engine against the reference, for operand types that differ. Both read the
+/// operands at the promoted type, so they agree to well inside a float's precision.
+template <typename TC, typename TA, typename TB>
+void agree_mixed() {
+    using namespace einsums::index;
+    using einsums::Indices;
+    auto const A        = einsums::create_random_tensor<TA>("A", 4, 5);
+    auto const B        = einsums::create_random_tensor<TB>("B", 5, 3);
+    auto       C        = einsums::create_random_tensor<TC>("C", 4, 3);
+    auto       expected = C;
+
+    // The templated engine takes both prefactors as one type; 0.5 and 1.5 are exact in all four.
+    einsums::tensor_algebra::einsum(TC{0.5}, Indices{i, j}, &C, TC{1.5}, Indices{i, k}, A, Indices{k, j}, B);
+    reference_einsum("ij <- ik ; kj", TC{0.5}, &expected, 1.5, A, B);
+    for (size_t n = 0; n < C.size(); ++n) {
+        CAPTURE(n);
+        CHECK(std::abs(C.data()[n] - expected.data()[n]) <= 1.0e-5 * (1.0 + std::abs(expected.data()[n])));
+    }
+}
+
+} // namespace
+
+TEST_CASE("reference einsum - mixed precision agrees with the templated engine", "[Testing][ReferenceEinsum][MixedPrecision]") {
+    // The combinations TensorAlgebra's MixedPrecision.cpp exercises.
+    SECTION("d <- f * d") {
+        agree_mixed<double, float, double>();
+    }
+    SECTION("d <- f * f") {
+        agree_mixed<double, float, float>();
+    }
+    SECTION("f <- d * d") {
+        agree_mixed<float, double, double>();
+    }
+    SECTION("cd <- cd * d") {
+        agree_mixed<std::complex<double>, std::complex<double>, double>();
+    }
+}
+
+TEST_CASE("reference einsum - complex<float> times double", "[Testing][ReferenceEinsum][MixedPrecision]") {
+    // No operator* exists between complex<float> and double, and the templated engine does not
+    // compile for the pair. The reference reads both as complex<double>, so it keeps the imaginary
+    // part and the double's precision.
+    using cf = std::complex<float>;
+    using cd = std::complex<double>;
+    static_assert(std::is_same_v<einsums::testing::detail::AccumulatorT<cf, double>, cd>);
+    static_assert(std::is_same_v<einsums::testing::detail::AccumulatorT<double, cf>, cd>);
+
+    auto a = einsums::create_zero_tensor<cf>("a", 2);
+    auto b = einsums::create_zero_tensor<double>("b", 2);
+    auto c = einsums::create_zero_tensor<cd>("c", 1);
+    a(0)   = cf{1.0f, 2.0f};
+    a(1)   = cf{3.0f, -1.0f};
+    b(0)   = 1.0 / 3.0; // not representable in float: a float accumulator would round it
+    b(1)   = 2.0;
+    reference_einsum(" <- i ; i", &c, a, b);
+    CHECK(c(0).real() == Catch::Approx(1.0 / 3.0 + 6.0).epsilon(1e-15));
+    CHECK(c(0).imag() == Catch::Approx(2.0 / 3.0 - 2.0).epsilon(1e-15));
+}

@@ -104,6 +104,33 @@ inline std::vector<std::string> parse_operand(std::string_view text, std::string
     return names;
 }
 
+/// The type a contraction of A with B is summed in: complex if either is complex, at the wider of
+/// the two precisions. Written out here rather than taken from the library, so a mistake in the
+/// library's rule cannot hide behind the same rule in its oracle.
+template <typename TA, typename TB>
+struct Accumulator {
+  private:
+    template <typename T>
+    struct Real {
+        using type = T;
+    };
+    template <typename T>
+    struct Real<std::complex<T>> {
+        using type = T;
+    };
+    template <typename T>
+    static constexpr bool complex = !std::is_same_v<typename Real<T>::type, T>;
+    using RA                      = typename Real<TA>::type;
+    using RB                      = typename Real<TB>::type;
+    using R                       = std::conditional_t<(sizeof(RA) >= sizeof(RB)), RA, RB>;
+
+  public:
+    using type = std::conditional_t<complex<TA> || complex<TB>, std::complex<R>, R>;
+};
+
+template <typename TA, typename TB>
+using AccumulatorT = typename Accumulator<TA, TB>::type;
+
 template <typename T>
 T maybe_conj(T value, bool conjugate) {
     if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
@@ -137,9 +164,13 @@ inline ReferenceSpec parse_reference_spec(std::string_view spec) {
 }
 
 /// C = c_pf * C + ab_pf * contract(A, B) over the rank-erased tensors, by brute force.
-template <typename T>
-void reference_einsum(std::string_view spec, T c_pf, einsums::detail::TensorImpl<T> *C, T ab_pf, einsums::detail::TensorImpl<T> const &A,
-                      einsums::detail::TensorImpl<T> const &B, bool conj_a = false, bool conj_b = false) {
+///
+/// The operands may have different element types: A and B are read as the accumulator type (see
+/// Accumulator), the sum is formed there, and the result is rounded to C's type once.
+template <typename TC, typename TA, typename TB>
+void reference_einsum(std::string_view spec, TC c_pf, einsums::detail::TensorImpl<TC> *C, detail::AccumulatorT<TA, TB> ab_pf,
+                      einsums::detail::TensorImpl<TA> const &A, einsums::detail::TensorImpl<TB> const &B, bool conj_a = false,
+                      bool conj_b = false) {
     ReferenceSpec const parsed = parse_reference_spec(spec);
 
     if (parsed.a.size() != A.rank() || parsed.b.size() != B.rank()) {
@@ -156,7 +187,7 @@ void reference_einsum(std::string_view spec, T c_pf, einsums::detail::TensorImpl
     std::vector<std::string> names;
     std::vector<size_t>      extents;
     auto id_of  = [&](std::string const &name) -> size_t { return static_cast<size_t>(std::ranges::find(names, name) - names.begin()); };
-    auto record = [&](std::vector<std::string> const &operand, einsums::detail::TensorImpl<T> const &tensor, char const *which) {
+    auto record = [&](std::vector<std::string> const &operand, auto const &tensor, char const *which) {
         for (size_t axis = 0; axis < operand.size(); ++axis) {
             size_t const id = id_of(operand[axis]);
             if (id == names.size()) {
@@ -204,7 +235,7 @@ void reference_einsum(std::string_view spec, T c_pf, einsums::detail::TensorImpl
     std::vector<size_t> const a_ids = ids_of(parsed.a), b_ids = ids_of(parsed.b), c_ids = ids_of(parsed.c);
 
     std::vector<size_t> value(names.size(), 0);
-    auto                offset = [&](std::vector<size_t> const &ids, einsums::detail::TensorImpl<T> const &tensor) {
+    auto                offset = [&](std::vector<size_t> const &ids, auto const &tensor) {
         size_t off = 0;
         for (size_t axis = 0; axis < ids.size(); ++axis) {
             off += value[ids[axis]] * tensor.stride(static_cast<int>(axis));
@@ -234,8 +265,8 @@ void reference_einsum(std::string_view spec, T c_pf, einsums::detail::TensorImpl
             for (size_t axis = 0; axis < at.size(); ++axis) {
                 off += at[axis] * C->stride(static_cast<int>(axis));
             }
-            T &element = C->data()[off];
-            element    = (c_pf == T{0}) ? T{0} : c_pf * element;
+            TC &element = C->data()[off];
+            element     = (c_pf == TC{0}) ? TC{0} : c_pf * element;
         } while ([&] {
             for (size_t k = at.size(); k-- > 0;) {
                 if (++at[k] < C->dim(static_cast<int>(k))) {
@@ -258,12 +289,13 @@ void reference_einsum(std::string_view spec, T c_pf, einsums::detail::TensorImpl
     for (size_t axis = 0; axis < b_ids.size(); ++axis) {
         step_b[b_ids[axis]] += B.stride(static_cast<int>(axis));
     }
-    T const *const a_data = A.data();
-    T const *const b_data = B.data();
+    using TR               = detail::AccumulatorT<TA, TB>;
+    TA const *const a_data = A.data();
+    TB const *const b_data = B.data();
 
     bool const empty_sum = any_empty(summed_ids);
     do {
-        T sum{0};
+        TR sum{0};
         if (!empty_sum) {
             // Only the summed letters restart; the free ones say which element of C this is.
             for (size_t const id : summed_ids) {
@@ -273,7 +305,7 @@ void reference_einsum(std::string_view spec, T c_pf, einsums::detail::TensorImpl
             size_t ob   = offset(b_ids, B);
             bool   more = true;
             while (more) {
-                sum += detail::maybe_conj(a_data[oa], conj_a) * detail::maybe_conj(b_data[ob], conj_b);
+                sum += detail::maybe_conj(static_cast<TR>(a_data[oa]), conj_a) * detail::maybe_conj(static_cast<TR>(b_data[ob]), conj_b);
                 more = false;
                 for (size_t k = summed_ids.size(); k-- > 0;) {
                     size_t const id = summed_ids[k];
@@ -289,11 +321,15 @@ void reference_einsum(std::string_view spec, T c_pf, einsums::detail::TensorImpl
                 }
             }
         }
-        T &out = C->data()[scalar_output ? 0 : offset(c_ids, *C)];
+        // The addition happens in a type holding both C's value and the sum, then rounds to C once.
+        using TS = detail::AccumulatorT<TR, TC>;
+        TC &out  = C->data()[scalar_output ? 0 : offset(c_ids, *C)];
         if (repeated_output) {
-            out += ab_pf * sum;
+            out = static_cast<TC>(static_cast<TS>(out) + static_cast<TS>(ab_pf * sum));
+        } else if (c_pf == TC{0}) {
+            out = static_cast<TC>(static_cast<TS>(ab_pf * sum));
         } else {
-            out = (c_pf == T{0}) ? ab_pf * sum : c_pf * out + ab_pf * sum;
+            out = static_cast<TC>(static_cast<TS>(c_pf * out) + static_cast<TS>(ab_pf * sum));
         }
     } while (advance(free_ids));
 }
@@ -305,8 +341,9 @@ template <typename CType, typename AType, typename BType>
         a.impl();
         b.impl();
     }
-void reference_einsum(std::string_view spec, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
-                      BType const &B, bool conj_a = false, bool conj_b = false) {
+void reference_einsum(std::string_view spec, typename CType::ValueType c_pf, CType *C,
+                      detail::AccumulatorT<typename AType::ValueType, typename BType::ValueType> ab_pf, AType const &A, BType const &B,
+                      bool conj_a = false, bool conj_b = false) {
     reference_einsum(spec, c_pf, &C->impl(), ab_pf, A.impl(), B.impl(), conj_a, conj_b);
 }
 
@@ -318,8 +355,10 @@ template <typename CType, typename AType, typename BType>
         b.impl();
     }
 void reference_einsum(std::string_view spec, CType *C, AType const &A, BType const &B) {
-    using T = typename AType::ValueType;
-    reference_einsum(spec, T{0}, &C->impl(), T{1}, A.impl(), B.impl());
+    using T  = typename AType::ValueType;
+    using TC = typename CType::ValueType;
+    using TR = detail::AccumulatorT<typename AType::ValueType, typename BType::ValueType>;
+    reference_einsum(spec, TC{0}, &C->impl(), TR{1}, A.impl(), B.impl());
 }
 
 /// C = beta * C + alpha * permute(A), by brute force, for tests to check permutations against.

@@ -17,6 +17,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLAS/ThreadControl.hpp>
+#include <Einsums/ComputeGraph/Detail/MixedPrecision.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/TensorRank.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
@@ -34,6 +35,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::dispatch)
@@ -142,12 +144,22 @@ void string_permute_impl(ParsedPermuteSpec const &parsed, T beta, einsums::detai
  */
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
     requires requires {
-        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
-        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
+        requires detail::EinsumElement<typename AType::ValueType>;
+        requires detail::EinsumElement<typename BType::ValueType>;
+        requires detail::EinsumElement<typename CType::ValueType>;
+        requires detail::storable_v<detail::PromoteT<typename AType::ValueType, typename BType::ValueType>, typename CType::ValueType>;
     }
-void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::string> const &links, typename AType::ValueType c_pf, CType *C,
-                           typename AType::ValueType ab_pf, AType const &A, BType const &B, bool conj_a = false, bool conj_b = false) {
-    using T = typename AType::ValueType;
+void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::string> const &links, typename CType::ValueType c_pf, CType *C,
+                           detail::PromoteT<typename AType::ValueType, typename BType::ValueType> ab_pf, AType const &A, BType const &B,
+                           bool conj_a = false, bool conj_b = false) {
+    // One loop for every combination of element types. The operands are read as the accumulator
+    // type TR (promoted from TA and TB, detail/MixedPrecision.hpp) and the sum is stored into C as TC.
+    // When all four are one type every conversion below is the identity, and the arithmetic, the
+    // summation order and so the result are exactly those of the single-type loop.
+    using TA = typename AType::ValueType;
+    using TB = typename BType::ValueType;
+    using TC = typename CType::ValueType;
+    using TR = detail::PromoteT<TA, TB>;
 
     auto const &c_idx = parsed.c_indices;
     auto const &a_idx = parsed.a_indices;
@@ -249,9 +261,10 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
     // Guarded on a non-empty iteration space: the loop reads nothing when
     // either total is zero, and that is also the only way an operand can carry
     // a zero extent, which the span arithmetic below cannot represent.
-    std::vector<T> a_snapshot, b_snapshot;
-    T const       *a_data = A.data();
-    T const       *b_data = B.data();
+    std::vector<TA> a_snapshot;
+    std::vector<TB> b_snapshot;
+    TA const       *a_data = A.data();
+    TB const       *b_data = B.data();
     if (target_total != 0 && link_total != 0) {
         auto const span_of = [](auto const &t) {
             size_t last = 0;
@@ -263,11 +276,15 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
         // Interval intersection, deliberately conservative: unlike the
         // dispatcher's guard this only decides whether to take a copy, so a
         // false positive costs one allocation rather than a spurious throw.
-        T const     *c_lo       = C->data();
-        size_t const c_span     = span_of(*C);
-        auto const   overlaps_c = [&](auto const &t) {
-            T const *lo = t.data();
-            return lo < c_lo + c_span && c_lo < lo + span_of(t);
+        // Compared in bytes, since the operands' element types may differ.
+        auto const bytes_of = [&](auto const &t) {
+            auto const *lo = reinterpret_cast<unsigned char const *>(t.data());
+            return std::pair{lo, lo + span_of(t) * sizeof(*t.data())};
+        };
+        auto const [c_lo, c_hi] = bytes_of(*C);
+        auto const overlaps_c   = [&](auto const &t) {
+            auto const [lo, hi] = bytes_of(t);
+            return lo < c_hi && c_lo < hi;
         };
         if (overlaps_c(A)) {
             a_snapshot.assign(a_data, a_data + span_of(A));
@@ -280,9 +297,9 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
     }
 
     // Scale C by c_pf
-    if (c_pf == T{0}) {
+    if (c_pf == TC{0}) {
         C->zero();
-    } else if (c_pf != T{1}) {
+    } else if (c_pf != TC{1}) {
         linear_algebra::scale(c_pf, C);
     }
 
@@ -384,16 +401,16 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
     size_t              a_target = 0, b_target = 0, c_offset = 0;
 
     for (size_t target_flat = 0; target_flat < target_total; target_flat++) {
-        T      sum    = T{0};
+        TR     sum    = TR{0};
         size_t a_off  = a_target;
         size_t b_off  = b_target;
         size_t unused = 0;
         std::ranges::fill(link_value, 0);
 
         for (size_t link_flat = 0; link_flat < link_total; link_flat++) {
-            T a_val = a_data[a_off];
-            T b_val = b_data[b_off];
-            if constexpr (IsComplexV<T>) {
+            auto a_val = static_cast<TR>(a_data[a_off]);
+            auto b_val = static_cast<TR>(b_data[b_off]);
+            if constexpr (IsComplexV<TR>) {
                 if (conj_a) {
                     a_val = std::conj(a_val);
                 }
@@ -405,8 +422,115 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
             advance(link_axes, link_value, a_off, b_off, unused);
         }
 
-        C->data()[c_offset] += ab_pf * sum;
+        if constexpr (std::is_same_v<TC, TR>) {
+            C->data()[c_offset] += ab_pf * sum;
+        } else {
+            // Add in a type that holds both C's existing value and the sum (a complex C with a real sum
+            // keeps its imaginary part; a float C with a double sum adds in double), then round to C's
+            // type once.
+            using TS = detail::PromoteT<TR, TC>;
+            TC &out  = C->data()[c_offset];
+            out      = static_cast<TC>(static_cast<TS>(out) + static_cast<TS>(ab_pf * sum));
+        }
         advance(target_axes, target_value, a_target, b_target, c_offset);
+    }
+}
+
+/// The contracted indices of a spec: in A and B, not in C. Index lists are tiny (rank-bounded), so
+/// linear scans beat building three sets; the result is sorted to match the set-based order this
+/// code historically produced.
+inline std::vector<std::string> einsum_links(ParsedEinsumSpec const &parsed) {
+    auto const              &a_idx = parsed.a_indices;
+    auto const              &b_idx = parsed.b_indices;
+    auto const              &c_idx = parsed.c_indices;
+    std::vector<std::string> links;
+    for (auto const &idx : a_idx) {
+        bool const in_b = std::find(b_idx.begin(), b_idx.end(), idx) != b_idx.end();
+        bool const in_c = std::find(c_idx.begin(), c_idx.end(), idx) != c_idx.end();
+        bool const seen = std::find(links.begin(), links.end(), idx) != links.end();
+        if (in_b && !in_c && !seen) {
+            links.push_back(idx);
+        }
+    }
+    std::sort(links.begin(), links.end());
+    return links;
+}
+
+/// Zero-extent operands: nothing to contract, but BLAS-style semantics still apply the output
+/// prefactor. An empty C is a pure no-op; an empty input with a non-empty C (zero-extent link or
+/// trace letter) means C = c_pf * C, with c_pf == 0 assigning zero rather than multiplying so stale
+/// NaNs never survive. Handled once, before any kernel, so no fast path (BLAS wrappers, PackedGemm
+/// tiling, generic loop) needs its own empty-tensor bookkeeping. Returns true when it handled the
+/// call.
+template <typename CType, typename AType, typename BType>
+bool einsum_empty_operands(typename CType::ValueType c_pf, CType *C, AType const &A, BType const &B) {
+    using TC              = typename CType::ValueType;
+    auto const total_size = [](auto const &t) {
+        size_t total = 1;
+        for (size_t d = 0; d < detail::tensor_rank(t); d++) {
+            total *= t.dim(d);
+        }
+        return total;
+    };
+    if (total_size(*C) == 0) {
+        ProfileAnnotate("dispatch", "empty_output_noop");
+        last_dispatch_route() = "empty_output_noop";
+        return true;
+    }
+    if (total_size(A) == 0 || total_size(B) == 0) {
+        ProfileAnnotate("dispatch", "empty_input_scale_only");
+        last_dispatch_route() = "empty_input_scale_only";
+        if (c_pf == TC{0}) {
+            C->zero();
+        } else if (c_pf != TC{1}) {
+            linear_algebra::scale(c_pf, C);
+        }
+        return true;
+    }
+    return false;
+}
+
+/// Output aliasing an input is rejected: contractions read operands while writing C, so overlap
+/// silently corrupts results (the GEMM-shaped case computed garbage before this check existed). The
+/// one provably safe shape is carved out: when C's index list is IDENTICAL to the aliased operand's,
+/// every element is read exactly once immediately before its own overwrite (pure elementwise update,
+/// e.g. "ij <- ij ; ij" with C aliasing A). A and B sharing a buffer is always fine - inputs are
+/// read-only. Must run after the zero-size check so the span arithmetic never sees a zero dimension.
+///
+/// Interval overlap alone is NOT proof of element overlap: disjoint column-major slices of one parent
+/// interleave in memory. Only provable overlap rejects: both regions contiguous, or identical base
+/// pointers (see the eager guard in TensorAlgebra's Backends/Dispatch.hpp for the full rationale).
+/// Regions are compared in bytes, so operands of different element types are handled alike.
+template <typename CType, typename AType, typename BType>
+void reject_output_alias(ParsedEinsumSpec const &parsed, CType const &C, AType const &A, BType const &B) {
+    struct Region {
+        unsigned char const *lo;
+        unsigned char const *hi;
+        bool                 contiguous;
+    };
+    auto const region_of = [](auto const &t) -> Region {
+        auto const *lo     = reinterpret_cast<unsigned char const *>(t.data());
+        size_t      last   = 0;
+        size_t      nelems = 1;
+        for (size_t d = 0; d < detail::tensor_rank(t); d++) {
+            last += (t.dim(d) - 1) * t.stride(d);
+            nelems *= t.dim(d);
+        }
+        return {lo, lo + (last + 1) * sizeof(*t.data()), last + 1 == nelems};
+    };
+    auto const c_region   = region_of(C);
+    auto const overlaps_c = [&](auto const &x) {
+        auto const r = region_of(x);
+        if (!(r.lo < c_region.hi && c_region.lo < r.hi)) {
+            return false;
+        }
+        return (r.contiguous && c_region.contiguous) || r.lo == c_region.lo;
+    };
+    if ((overlaps_c(A) && parsed.a_indices != parsed.c_indices) || (overlaps_c(B) && parsed.b_indices != parsed.c_indices)) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "einsum: output tensor overlaps an input operand. In-place einsum is only supported for pure "
+                                "elementwise updates (the aliased operand's index list identical to the output's); for this "
+                                "contraction, pass a separate output tensor or copy the input first.");
     }
 }
 
@@ -501,101 +625,17 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     auto const &a_idx = parsed.a_indices;
     auto const &b_idx = parsed.b_indices;
 
-    // Contracted indices (in A and B, not in C). Graph executors pass the
-    // list computed once at capture (EinsumIndices::link_indices) so replays
-    // don't recompute it; the eager path derives it here. Index lists are
-    // tiny (rank-bounded), so linear scans beat building three
-    // std::set<std::string>s, and the result is sorted to match the
-    // set-based order this code historically produced.
-    std::vector<std::string> links_storage;
-    if (precomputed_links == nullptr) {
-        for (auto const &idx : a_idx) {
-            bool const in_b = std::find(b_idx.begin(), b_idx.end(), idx) != b_idx.end();
-            bool const in_c = std::find(c_idx.begin(), c_idx.end(), idx) != c_idx.end();
-            bool const seen = std::find(links_storage.begin(), links_storage.end(), idx) != links_storage.end();
-            if (in_b && !in_c && !seen) {
-                links_storage.push_back(idx);
-            }
-        }
-        std::sort(links_storage.begin(), links_storage.end());
-    }
-    std::vector<std::string> const &links = precomputed_links != nullptr ? *precomputed_links : links_storage;
+    // Graph executors pass the links computed once at capture
+    // (EinsumIndices::link_indices) so replays don't recompute them; the
+    // eager path derives them here.
+    std::vector<std::string> const  links_storage = precomputed_links == nullptr ? einsum_links(parsed) : std::vector<std::string>{};
+    std::vector<std::string> const &links         = precomputed_links != nullptr ? *precomputed_links : links_storage;
 
-    // Zero-extent operands: nothing to contract, but BLAS-style semantics
-    // still apply the output prefactor. An empty C is a pure
-    // no-op; an empty input with a non-empty C (zero-extent link or trace
-    // letter) means C = c_pf * C, with c_pf == 0 assigning zero rather than
-    // multiplying so stale NaNs never survive. Handled here once so no
-    // fast path (BLAS wrappers, PackedGemm tiling, generic loop) needs its
-    // own empty-tensor bookkeeping.
-    auto const total_size = [](auto const &t) {
-        size_t total = 1;
-        for (size_t d = 0; d < detail::tensor_rank(t); d++) {
-            total *= t.dim(d);
-        }
-        return total;
-    };
-    if (total_size(*C) == 0) {
-        ProfileAnnotate("dispatch", "empty_output_noop");
-        last_dispatch_route() = "empty_output_noop";
-        return;
-    }
-    if (total_size(A) == 0 || total_size(B) == 0) {
-        ProfileAnnotate("dispatch", "empty_input_scale_only");
-        last_dispatch_route() = "empty_input_scale_only";
-        if (c_pf == T{0}) {
-            C->zero();
-        } else if (c_pf != T{1}) {
-            linear_algebra::scale(c_pf, C);
-        }
+    if (einsum_empty_operands(c_pf, C, A, B)) {
         return;
     }
 
-    // Output aliasing an input is rejected: contractions read operands while
-    // writing C, so overlap silently corrupts results (the GEMM-shaped case
-    // computed garbage before this check existed). The one provably safe
-    // shape is carved out: when C's index list is IDENTICAL to the aliased
-    // operand's, every element is read exactly once immediately before its
-    // own overwrite (pure elementwise update, e.g. "ij <- ij ; ij" with C
-    // aliasing A). A and B sharing a buffer is always fine - inputs are
-    // read-only. Runs after the zero-size quick-path so the span arithmetic
-    // never sees a zero dimension.
-    {
-        // Interval overlap alone is NOT proof of element overlap: disjoint
-        // column-major slices of one parent interleave in memory. Only
-        // provable overlap rejects: both regions contiguous, or identical
-        // base pointers (see the eager guard in TensorAlgebra's
-        // Backends/Dispatch.hpp for the full rationale).
-        struct Region {
-            T const *lo;
-            T const *hi;
-            bool     contiguous;
-        };
-        auto const region_of = [](auto const &t) -> Region {
-            T const *lo     = t.data();
-            size_t   last   = 0;
-            size_t   nelems = 1;
-            for (size_t d = 0; d < detail::tensor_rank(t); d++) {
-                last += (t.dim(d) - 1) * t.stride(d);
-                nelems *= t.dim(d);
-            }
-            return {lo, lo + last + 1, last + 1 == nelems};
-        };
-        auto const c_region   = region_of(*C);
-        auto const overlaps_c = [&](auto const &x) {
-            auto const r = region_of(x);
-            if (!(r.lo < c_region.hi && c_region.lo < r.hi)) {
-                return false;
-            }
-            return (r.contiguous && c_region.contiguous) || r.lo == c_region.lo;
-        };
-        if ((overlaps_c(A) && a_idx != c_idx) || (overlaps_c(B) && b_idx != c_idx)) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                    "einsum: output tensor overlaps an input operand. In-place einsum is only supported for pure "
-                                    "elementwise updates (the aliased operand's index list identical to the output's); for this "
-                                    "contraction, pass a separate output tensor or copy the input first.");
-        }
-    }
+    reject_output_alias(parsed, *C, A, B);
 
     // Repeated letters within one operand ('ij <- ii ; jj') are diagonal
     // accesses. Every fast path below classifies indices assuming each
@@ -995,6 +1035,53 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // valid GEMM shape (no M-dims, no N-dims, no links).
     ProfileAnnotate("dispatch", "generic_loop");
     last_dispatch_route() = "generic_loop";
+    generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
+}
+
+/**
+ * @brief An einsum whose operands do not all share one element type.
+ *
+ * The products and the sum are formed in the accumulator type promoted from A and B (complex if
+ * either is, at the wider precision; see Detail/MixedPrecision.hpp), and the result is rounded to
+ * C's type. There are no BLAS or PackedGemm routines over mixed types, so every such call runs the
+ * generic loop; the zero-extent rule and the output-aliasing policy are the ones string_einsum
+ * applies. Permutation operators are not supported here: their temporary goes through the
+ * single-type permute.
+ *
+ * @throws std::invalid_argument for a spec with permutation operators, or for output aliasing.
+ */
+template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
+    requires requires {
+        requires detail::EinsumElement<typename AType::ValueType>;
+        requires detail::EinsumElement<typename BType::ValueType>;
+        requires detail::EinsumElement<typename CType::ValueType>;
+        requires !(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+                   std::is_same_v<typename AType::ValueType, typename CType::ValueType>);
+    }
+void mixed_string_einsum(ParsedEinsumSpec const &parsed, typename CType::ValueType c_pf, CType *C,
+                         detail::PromoteT<typename AType::ValueType, typename BType::ValueType> ab_pf, AType const &A, BType const &B,
+                         bool conj_a = false, bool conj_b = false, std::vector<std::string> const *precomputed_links = nullptr) {
+    static_assert(detail::storable_v<detail::PromoteT<typename AType::ValueType, typename BType::ValueType>, typename CType::ValueType>,
+                  "einsum: a complex operand makes the contraction complex, and a real output cannot hold it; make the output complex");
+    if (!parsed.operators.empty()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "einsum '{}': permutation operators are not supported when the operands' element types differ; contract "
+                                "into a tensor of one type first, or convert the operands",
+                                parsed.raw);
+    }
+    LabeledSection("cg::einsum (mixed precision): {} <- {} ; {}", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
+                   fmt::join(parsed.b_indices, ","));
+
+    std::vector<std::string> const  links_storage = precomputed_links == nullptr ? einsum_links(parsed) : std::vector<std::string>{};
+    std::vector<std::string> const &links         = precomputed_links != nullptr ? *precomputed_links : links_storage;
+
+    if (einsum_empty_operands(c_pf, C, A, B)) {
+        return;
+    }
+    reject_output_alias(parsed, *C, A, B);
+
+    ProfileAnnotate("dispatch", "generic_loop_mixed_precision");
+    last_dispatch_route() = "generic_loop_mixed_precision";
     generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
 }
 

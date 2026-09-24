@@ -6907,6 +6907,57 @@ void validate_einsum_dims(ParsedEinsumSpec const &parsed, AType const &A, BType 
     }
 }
 
+/// The checks every cg::einsum runs before it records or computes anything: operand ranks against
+/// the spec, the parse, conjugation spelled in the spec, and one size per index name. Shared by the
+/// single-type and the mixed-precision overloads, so both reject the same mistakes the same way.
+/// Returns the parsed spec; ORs the spec's conj(...) wrappers into @p conj_a and @p conj_b.
+template <typename AType, typename BType, typename CType>
+ParsedEinsumSpec prepare_einsum(EinsumFormatString const &spec, AType const &A, BType const &B, CType const &C, bool &conj_a,
+                                bool &conj_b) {
+    // Operand rank ↔ spec consistency check. When the spec is a literal,
+    // ``spec.counts`` is populated at consteval time and folds to compile-
+    // time constants here; for typed tensors with a static ::Rank the whole
+    // condition is a constant comparison and the throw-branch is dead-code-
+    // eliminated. For runtime-rank tensors (RuntimeTensor) the check fires
+    // against ``tensor.rank()``. Spec strings built at runtime, ``Python``
+    // bindings, user input, leave ``counts.known == false`` and skip the
+    // check entirely (matching the "compile-time when possible, silent
+    // otherwise" policy).
+    if (spec.counts.known) {
+        std::size_t const a_rank = tensor_rank(A);
+        std::size_t const b_rank = tensor_rank(B);
+        std::size_t const c_rank = tensor_rank(C);
+        if (a_rank != spec.counts.a) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand A has rank {} but spec expects {} indices for A", a_rank,
+                                    spec.counts.a);
+        }
+        if (b_rank != spec.counts.b) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand B has rank {} but spec expects {} indices for B", b_rank,
+                                    spec.counts.b);
+        }
+        // Scalar-output convention: an empty C operand in the spec
+        // (e.g. ``" <- i ; i"`` for DOT) accepts either rank-0 or a rank-1
+        // single-element tensor. Otherwise C's rank must equal the index count.
+        bool const c_ok = (spec.counts.c == 0) ? (c_rank <= 1) : (c_rank == spec.counts.c);
+        if (!c_ok) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand C has rank {} but spec expects {} indices for C", c_rank,
+                                    spec.counts.c);
+        }
+    }
+
+    auto parse_result = parse_einsum_spec(static_cast<std::string_view>(spec));
+    if (!parse_result) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parse_result.error().message);
+    }
+    auto parsed = std::move(parse_result.value());
+    // A ``conj(...)`` wrapper in the spec ORs with the conj_a / conj_b kwargs.
+    conj_a = conj_a || parsed.conj_a;
+    conj_b = conj_b || parsed.conj_b;
+
+    validate_einsum_dims(parsed, A, B, C);
+    return parsed;
+}
+
 // build_einsum_descriptor now lives in Node.hpp so Graph::make_einsum_node can
 // share it; see einsums::compute_graph::detail there.
 
@@ -6949,47 +7000,7 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
             BType const &B, bool conj_a = false, bool conj_b = false) {
     using T = typename AType::ValueType;
 
-    // Operand rank ↔ spec consistency check. When the spec is a literal,
-    // ``spec.counts`` is populated at consteval time and folds to compile-
-    // time constants here; for typed tensors with a static ::Rank the whole
-    // condition is a constant comparison and the throw-branch is dead-code-
-    // eliminated. For runtime-rank tensors (RuntimeTensor) the check fires
-    // against ``tensor.rank()``. Spec strings built at runtime, ``Python``
-    // bindings, user input, leave ``counts.known == false`` and skip the
-    // check entirely (matching the "compile-time when possible, silent
-    // otherwise" policy).
-    if (spec.counts.known) {
-        std::size_t const a_rank = detail::tensor_rank(A);
-        std::size_t const b_rank = detail::tensor_rank(B);
-        std::size_t const c_rank = detail::tensor_rank(*C);
-        if (a_rank != spec.counts.a) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand A has rank {} but spec expects {} indices for A", a_rank,
-                                    spec.counts.a);
-        }
-        if (b_rank != spec.counts.b) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand B has rank {} but spec expects {} indices for B", b_rank,
-                                    spec.counts.b);
-        }
-        // Scalar-output convention: an empty C operand in the spec
-        // (e.g. ``" <- i ; i"`` for DOT) accepts either rank-0 or a rank-1
-        // single-element tensor. Otherwise C's rank must equal the index count.
-        bool const c_ok = (spec.counts.c == 0) ? (c_rank <= 1) : (c_rank == spec.counts.c);
-        if (!c_ok) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand C has rank {} but spec expects {} indices for C", c_rank,
-                                    spec.counts.c);
-        }
-    }
-
-    auto parse_result = parse_einsum_spec(static_cast<std::string_view>(spec));
-    if (!parse_result) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parse_result.error().message);
-    }
-    auto &parsed = parse_result.value();
-    // A ``conj(...)`` wrapper in the spec ORs with the conj_a / conj_b kwargs.
-    conj_a = conj_a || parsed.conj_a;
-    conj_b = conj_b || parsed.conj_b;
-
-    detail::validate_einsum_dims(parsed, A, B, *C);
+    auto parsed = detail::prepare_einsum(spec, A, B, *C, conj_a, conj_b);
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -7475,6 +7486,73 @@ template <TiledTensorConcept AType, TiledTensorConcept BType, TiledTensorConcept
 void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
     using T = typename AType::ValueType;
     einsum(spec, T{0}, C, T{1}, A, B);
+}
+
+/**
+ * @brief Graph-aware einsum whose operands do not all share one element type.
+ *
+ * @code
+ * cg::einsum("ij <- ik ; kj", 0.0, &C, 1.0, A, B);  // C double, A float, B complex<double>...
+ * @endcode
+ *
+ * The products and the sum are formed in the type promoted from A and B, complex if either is and
+ * at the wider of their precisions, and the result is rounded to C's type. Precision may narrow; a
+ * complex result cannot be stored in a real C, and that does not compile. No BLAS or PackedGemm
+ * routine takes mixed types, so these contractions always run the generic loop. Permutation
+ * operators in the spec are not supported for them.
+ *
+ * @param spec The contraction, as for the single-type einsum.
+ * @param c_pf Scale applied to C, in C's type.
+ * @param C The output.
+ * @param ab_pf Scale applied to the contraction, in the promoted type.
+ * @param A, B The inputs.
+ * @param conj_a, conj_b Conjugate an input; a no-op on a real one.
+ *
+ * @versionadded{2.0.0}
+ */
+template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
+    requires requires {
+        requires detail::EinsumElement<typename AType::ValueType>;
+        requires detail::EinsumElement<typename BType::ValueType>;
+        requires detail::EinsumElement<typename CType::ValueType>;
+        requires !(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+                   std::is_same_v<typename AType::ValueType, typename CType::ValueType>);
+        requires !detail::any_tiled_v<AType, BType, CType>;
+    }
+void einsum(EinsumFormatString spec, typename CType::ValueType c_pf, CType *C,
+            detail::PromoteT<typename AType::ValueType, typename BType::ValueType> ab_pf, AType const &A, BType const &B,
+            bool conj_a = false, bool conj_b = false) {
+    static_assert(detail::storable_v<detail::PromoteT<typename AType::ValueType, typename BType::ValueType>, typename CType::ValueType>,
+                  "cg::einsum: a complex operand makes the contraction complex, and a real output cannot hold it; make the output "
+                  "complex");
+    auto parsed = detail::prepare_einsum(spec, A, B, *C, conj_a, conj_b);
+
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection("einsum eager (mixed precision)");
+        dispatch::mixed_string_einsum(parsed, c_pf, C, ab_pf, A, B, conj_a, conj_b);
+        return;
+    }
+    EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                            "cg::einsum '{}': capturing an einsum whose operands have different element types is not supported",
+                            parsed.raw);
+}
+
+/// Mixed-precision einsum with the default prefactors: C is overwritten with the contraction.
+///
+/// @versionadded{2.0.0}
+template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
+    requires requires {
+        requires detail::EinsumElement<typename AType::ValueType>;
+        requires detail::EinsumElement<typename BType::ValueType>;
+        requires detail::EinsumElement<typename CType::ValueType>;
+        requires !(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+                   std::is_same_v<typename AType::ValueType, typename CType::ValueType>);
+        requires !detail::any_tiled_v<AType, BType, CType>;
+    }
+void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
+    using TR = detail::PromoteT<typename AType::ValueType, typename BType::ValueType>;
+    einsum(spec, typename CType::ValueType{0}, C, TR{1}, A, B);
 }
 
 /// Graph-aware einsum: contract A and B according to ``spec``.

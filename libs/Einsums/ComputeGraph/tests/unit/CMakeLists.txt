@@ -59,6 +59,8 @@ set(ComputeGraphTests
     HeadersWithoutIndices.cpp
     InterfaceManifest.cpp
     Json.cpp
+    MixedPrecisionEinsum.cpp
+    MixedPrecisionRules.cpp
     LayoutAssignment.cpp
     MultiTermFactorization.cpp
     SaveLoad.cpp
