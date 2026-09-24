@@ -10,6 +10,7 @@
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
 #include <Einsums/ComputeGraph/Detail/BatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/BlasAddressable.hpp>
+#include <Einsums/ComputeGraph/Detail/DenseElementTransform.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
@@ -29,7 +30,6 @@
 #include <Einsums/Profile.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
-#include <Einsums/TensorAlgebra/Backends/ElementTransform.hpp>
 #include <Einsums/TensorPermute/Permute.hpp>
 
 #include <fmt/format.h>
@@ -1457,7 +1457,7 @@ void element_transform(CType *C, UnaryOperator unary_op) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("element_transform eager");
-        tensor_algebra::element_transform(C, unary_op);
+        detail::dense_element_transform(C, unary_op);
         return;
     }
 
@@ -1466,7 +1466,7 @@ void element_transform(CType *C, UnaryOperator unary_op) {
 
     auto executor = [c_slot, unary_op]() {
         LabeledSection("element_transform execute");
-        tensor_algebra::element_transform(static_cast<CType *>(c_slot->ptr), unary_op);
+        detail::dense_element_transform(static_cast<CType *>(c_slot->ptr), unary_op);
     };
 
     ctx.record(OpKind::ElementTransform, "element_transform", {c_id}, {c_id}, std::move(executor));
@@ -1592,7 +1592,7 @@ void element_transform_named_python(TensorType *C, std::string const &op_name) {
 /// can't be reused here. This overload walks the contiguous underlying storage
 /// directly and accepts ``std::function<T(T)>`` so pybind11's caster can wrap a
 /// Python callable. A serial loop (rather than the OMP-parallel path used by
-/// ``tensor_algebra::element_transform``) keeps the per-call GIL acquire from
+/// ``detail::dense_element_transform``) keeps the per-call GIL acquire from
 /// causing thread contention, which is fine for the small unary maps typical of
 /// SCF/MP2 (eigenvalues, denominators).
 template <typename TensorType>

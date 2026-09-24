@@ -12,7 +12,6 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra/Backends/ElementTransform.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
@@ -106,7 +105,9 @@ TEST_CASE("Dependency - element_transform is both input and output", "[ComputeGr
 
     // Reference: transform A (square each element), then axpy A->B
     auto A_ref = Tensor<double, 1>(A);
-    tensor_algebra::element_transform(&A_ref, [](double v) { return v * v; });
+    for (size_t i = 0; i < 5; i++) {
+        A_ref(i) = A_ref(i) * A_ref(i);
+    }
     auto B_ref = Tensor<double, 1>(B);
     linear_algebra::axpy(1.0, A_ref, &B_ref);
 

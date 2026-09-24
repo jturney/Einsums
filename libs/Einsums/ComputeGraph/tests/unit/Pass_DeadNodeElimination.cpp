@@ -20,7 +20,6 @@
 using einsums::testing::reference_einsum;
 
 using namespace einsums;
-using namespace einsums::tensor_algebra;
 namespace cg = einsums::compute_graph;
 
 TEST_CASE("DeadNodeElimination - empty graph", "[ComputeGraph][Passes]") {

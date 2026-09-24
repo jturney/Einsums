@@ -23,6 +23,7 @@
 #include <Einsums/Performance.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
+#include <Einsums/TensorAlgebra/Detail/PackedGemmIndices.hpp>
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 
 #include <chrono>
@@ -77,7 +78,7 @@ namespace {
 template <typename... CI, typename... AI, typename... BI, size_t CR, size_t AR, size_t BR>
 bool run_packed_gemm(double beta, std::tuple<CI...> c_idx, einsums::Tensor<double, CR> &C, double alpha, std::tuple<AI...> a_idx,
                      einsums::Tensor<double, AR> const &A, std::tuple<BI...> b_idx, einsums::Tensor<double, BR> const &B) {
-    return einsums::packed_gemm::try_packed_gemm<false, false>(beta, c_idx, &C, alpha, a_idx, A, b_idx, B);
+    return einsums::tensor_algebra::detail::try_packed_gemm_indices<false, false>(beta, c_idx, &C, alpha, a_idx, A, b_idx, B);
 }
 
 /// Call the full einsum() dispatcher and return the algorithm it chose.

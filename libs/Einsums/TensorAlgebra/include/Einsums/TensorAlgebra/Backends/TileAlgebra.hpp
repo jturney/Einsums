@@ -8,6 +8,7 @@
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/TensorAlgebra/Backends/Dispatch.hpp>
+#include <Einsums/TensorAlgebra/Detail/IndexTable.hpp>
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 #include <Einsums/TensorAlgebra/TensorAlgebra.hpp>
 #include <Einsums/TensorBase/IndexUtilities.hpp>

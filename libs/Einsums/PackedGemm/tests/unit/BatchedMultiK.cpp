@@ -16,6 +16,7 @@
 #include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorAlgebra.hpp>
+#include <Einsums/TensorAlgebra/Detail/PackedGemmIndices.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
@@ -83,8 +84,8 @@ TEST_CASE("Batched multi-K: stride-1 lead axes (memcpy gather)", "[PackedGemm][B
         }
     }
 
-    bool const handled =
-        packed_gemm::try_packed_gemm<false, false>(0.0, Indices{i, j, b}, &C, 1.0, Indices{i, k, l, b}, A, Indices{j, k, l, b}, B);
+    bool const handled = tensor_algebra::detail::try_packed_gemm_indices<false, false>(0.0, Indices{i, j, b}, &C, 1.0, Indices{i, k, l, b},
+                                                                                       A, Indices{j, k, l, b}, B);
     REQUIRE(handled);
 
     for (size_t bb = 0; bb < NB; bb++) {
@@ -124,8 +125,8 @@ TEST_CASE("Batched multi-K: strided lead, batch axis outermost", "[PackedGemm][B
         }
     }
 
-    bool const handled =
-        packed_gemm::try_packed_gemm<false, false>(0.0, Indices{i, j, b}, &C, 1.0, Indices{k, i, l, b}, A, Indices{k, j, l, b}, B);
+    bool const handled = tensor_algebra::detail::try_packed_gemm_indices<false, false>(0.0, Indices{i, j, b}, &C, 1.0, Indices{k, i, l, b},
+                                                                                       A, Indices{k, j, l, b}, B);
     REQUIRE(handled);
 
     for (size_t bb = 0; bb < NB; bb++) {
@@ -165,8 +166,8 @@ TEST_CASE("Batched multi-K: strided lead, batch axis mid-tensor", "[PackedGemm][
         }
     }
 
-    bool const handled =
-        packed_gemm::try_packed_gemm<false, false>(0.0, Indices{i, j, b}, &C, 1.0, Indices{k, b, i, l}, A, Indices{k, b, j, l}, B);
+    bool const handled = tensor_algebra::detail::try_packed_gemm_indices<false, false>(0.0, Indices{i, j, b}, &C, 1.0, Indices{k, b, i, l},
+                                                                                       A, Indices{k, b, j, l}, B);
     REQUIRE(handled);
 
     for (size_t bb = 0; bb < NB; bb++) {
@@ -201,8 +202,8 @@ TEST_CASE("Batched multi-K: complex elements, mid-tensor batch axis", "[PackedGe
         }
     }
 
-    bool const handled =
-        packed_gemm::try_packed_gemm<false, false>(T{0.0}, Indices{i, j, b}, &C, T{1.0}, Indices{k, b, i, l}, A, Indices{k, b, j, l}, B);
+    bool const handled = tensor_algebra::detail::try_packed_gemm_indices<false, false>(T{0.0}, Indices{i, j, b}, &C, T{1.0},
+                                                                                       Indices{k, b, i, l}, A, Indices{k, b, j, l}, B);
     REQUIRE(handled);
 
     for (size_t bb = 0; bb < NB; bb++) {

@@ -14,7 +14,6 @@
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
-using namespace einsums::tensor_algebra;
 namespace cg = einsums::compute_graph;
 
 // ─── symmetrize ─────────────────────────────────────────────────────────────

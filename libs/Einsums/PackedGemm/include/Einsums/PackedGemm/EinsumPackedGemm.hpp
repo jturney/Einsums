@@ -30,7 +30,6 @@
 #include <numeric>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <unordered_set>
 #include <vector>
 
@@ -47,12 +46,6 @@ inline constexpr int64_t kOuterProductFloor = 768;
 // ---------------------------------------------------------------------------
 // Compile-time helpers
 // ---------------------------------------------------------------------------
-
-/// Extract the static letter string from each index type in a tuple.
-template <typename... Indices>
-std::vector<std::string> index_letters_from_tuple(std::tuple<Indices...> const & /*unused*/) {
-    return {std::string(Indices::letter)...};
-}
 
 /// De-duplicate while preserving first-occurrence order.
 inline std::vector<std::string> unique_ordered(std::vector<std::string> const &v) {
@@ -3145,46 +3138,6 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
 
     // Contraction doesn't fit packed GEMM, so fall back to generic algorithm.
     return false;
-}
-
-// ---------------------------------------------------------------------------
-// Compile-time index-pack overload: thin shim that builds the ContractionSpec
-// from `Indices...` packs and forwards to the runtime entry point.
-// ---------------------------------------------------------------------------
-
-/// @brief Attempt to execute the einsum contraction via the packed GEMM backend.
-///
-/// Compile-time-indices form, used by `tensor_algebra::einsum<CIndices...,
-/// AIndices..., BIndices...>` callers. Internally builds a ContractionSpec
-/// from the index packs and forwards to the runtime overload above.
-///
-/// Returns `true` if the contraction was handled; `false` if the backend
-/// should fall back to `einsum_generic_algorithm`.
-template <bool ConjA, bool ConjB, einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType, typename CType,
-          typename... CIndices, typename... AIndices, typename... BIndices>
-    requires(einsums::BasicTensorConcept<CType> || (einsums::ScalarConcept<CType> && sizeof...(CIndices) == 0))
-bool try_packed_gemm(einsums::ValueTypeT<CType> C_prefactor, std::tuple<CIndices...> const & /*C_indices_tup*/, CType *C,
-                     einsums::BiggestTypeT<typename AType::ValueType, typename BType::ValueType> AB_prefactor,
-                     std::tuple<AIndices...> const & /*A_indices_tup*/, AType const &A, std::tuple<BIndices...> const & /*B_indices_tup*/,
-                     BType const &B, bool allow_scatter = true) {
-    LabeledSection0();
-
-    // Scalar-output (CType is `T`, not a tensor) is not yet routed through the
-    // runtime entry point, so keep the original handling for that one shape.
-    if constexpr (!einsums::TensorConcept<CType>) {
-        return false; // The original implementation built a degenerate key here;
-                      // current packed-GEMM kernels require a tensor C anyway.
-    } else {
-        ContractionSpec spec;
-        spec.c_indices = index_letters_from_tuple(std::tuple<CIndices...>{});
-        spec.a_indices = index_letters_from_tuple(std::tuple<AIndices...>{});
-        spec.b_indices = index_letters_from_tuple(std::tuple<BIndices...>{});
-        spec.conj_a    = ConjA;
-        spec.conj_b    = ConjB;
-        // Derived fields (target/link/all_indices, scalar_type) are filled in by
-        // the runtime entry point.
-        return try_packed_gemm<AType, BType, CType>(spec, C_prefactor, C, AB_prefactor, A, B, allow_scatter);
-    }
 }
 
 EINSUMS_NAMESPACE_END(packed_gemm)

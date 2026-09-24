@@ -24,6 +24,7 @@
 #include <Einsums/TensorAlgebra/Backends/BlockTileAlgebra.hpp>
 #include <Einsums/TensorAlgebra/Backends/GenericAlgorithm.hpp>
 #include <Einsums/TensorAlgebra/Backends/TileAlgebra.hpp>
+#include <Einsums/TensorAlgebra/Detail/PackedGemmIndices.hpp>
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 #include <Einsums/TensorAlgebra/Permute.hpp> // Required for einsum_do_sort_gemm
 #include <Einsums/TensorBase/Common.hpp>
@@ -1422,8 +1423,9 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
     if (!has_performed_contraction) {
         if constexpr (!OnlyUseGenericAlgorithm && !DryRun && IsBasicTensorV<AType> && IsBasicTensorV<BType> && IsBasicTensorV<CType> &&
                       std::is_same_v<CDataType, ADataType> && std::is_same_v<CDataType, BDataType> && CRank >= 1) {
-            if (einsums::packed_gemm::try_packed_gemm<ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B,
-                                                                    /*allow_scatter=*/false)) {
+            if (einsums::tensor_algebra::detail::try_packed_gemm_indices<ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices,
+                                                                                       A, B_indices, B,
+                                                                                       /*allow_scatter=*/false)) {
                 has_performed_contraction = true;
                 retval                    = PACKED_GEMM;
             }

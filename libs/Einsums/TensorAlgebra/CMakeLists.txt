@@ -19,6 +19,8 @@ set(TensorAlgebraHeaders
     Einsums/TensorAlgebra/Backends/TileAlgebra.hpp
     Einsums/TensorAlgebra/Backends/Unfold.hpp
     Einsums/TensorAlgebra/Detail/Index.hpp
+    Einsums/TensorAlgebra/Detail/IndexTable.hpp
+    Einsums/TensorAlgebra/Detail/PackedGemmIndices.hpp
     Einsums/TensorAlgebra/Detail/Utilities.hpp
 )
 

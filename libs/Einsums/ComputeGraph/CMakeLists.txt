@@ -38,6 +38,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/GraphIR.hpp
     Einsums/ComputeGraph/InterfaceManifest.hpp
     Einsums/ComputeGraph/LuPivots.hpp
+    Einsums/ComputeGraph/Detail/DenseElementTransform.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/Detail/Json.hpp
     Einsums/ComputeGraph/Detail/MixedPrecision.hpp
@@ -234,12 +235,14 @@ einsums_add_module(
   HEADERS ${ComputeGraphHeaders}
   MODULE_DEPENDENCIES
     Einsums_BLAS
+    Einsums_BufferAllocator
     Einsums_Comm
     Einsums_Options
     Einsums_ComputeGraphTypes
     Einsums_Concepts
     Einsums_Config
     Einsums_CXX23
+    Einsums_Errors
     Einsums_GPU
     Einsums_Hardware
     Einsums_LinearAlgebra
@@ -249,7 +252,7 @@ einsums_add_module(
     Einsums_SIMD
     Einsums_TaskPool
     Einsums_Tensor
-    Einsums_TensorAlgebra
+    Einsums_TensorPermute
     Einsums_TypeSupport
   CMAKE_SUBDIRS examples tests tools
 )

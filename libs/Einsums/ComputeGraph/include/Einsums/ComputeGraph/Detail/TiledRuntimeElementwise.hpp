@@ -50,7 +50,7 @@ void tiled_scale(T factor, TiledRuntimeTensor<T> *A) {
 
 /// Tiled in-place unary map `A[i] = op(A[i])` over every stored tile. Walks the
 /// tile's contiguous storage directly (a RuntimeTensor tile has runtime rank, so
-/// the RankTensorConcept-constrained tensor_algebra::element_transform doesn't
+/// the RankTensorConcept-constrained detail::dense_element_transform doesn't
 /// apply), the same approach as the element_transform_python wrapper.
 template <typename T, typename UnaryOp>
 void tiled_element_transform(TiledRuntimeTensor<T> *A, UnaryOp unary_op) {

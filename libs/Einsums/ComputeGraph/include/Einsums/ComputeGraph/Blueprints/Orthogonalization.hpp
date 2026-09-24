@@ -52,7 +52,7 @@ void orthogonalize(MatType *X, MatType const &S) {
     auto [U, s] = linear_algebra::syev(S);
 
     // s^{-1/2}
-    tensor_algebra::element_transform(&s, [](T val) { return T{1} / std::sqrt(val); });
+    detail::dense_element_transform(&s, [](T val) { return T{1} / std::sqrt(val); });
 
     // U_scaled = U * diag(s^{-1/2}): scale columns of a copy
     auto U_scaled = RemoveViewT<MatType>(U); // Deep copy

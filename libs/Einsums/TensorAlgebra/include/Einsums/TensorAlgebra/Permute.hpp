@@ -22,6 +22,7 @@
 #include <Einsums/StringUtil/StringOps.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorAlgebra/Detail/Index.hpp>
+#include <Einsums/TensorAlgebra/Detail/IndexTable.hpp>
 #include <Einsums/TensorAlgebra/Detail/Utilities.hpp>
 #include <Einsums/TensorBase/Common.hpp>
 #include <Einsums/TensorPermute/Permute.hpp>

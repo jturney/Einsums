@@ -5,7 +5,6 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TensorAlgebra/Backends/ElementTransform.hpp>
 #include <Einsums/TensorUtilities/CreateRandomDefinite.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -129,7 +128,11 @@ TEST_CASE("Graph - element_transform", "[ComputeGraph][Phase2]") {
     auto A_expected = Tensor<double, 2>(A);
 
     // Eager: square each element
-    tensor_algebra::element_transform(&A_expected, [](double x) { return x * x; });
+    for (size_t i = 0; i < 3; i++) {
+        for (size_t j = 0; j < 3; j++) {
+            A_expected(i, j) = A_expected(i, j) * A_expected(i, j);
+        }
+    }
 
     cg::Graph graph("test_element_transform");
     {
@@ -159,7 +162,11 @@ TEST_CASE("Graph - mixed operations pipeline", "[ComputeGraph][Phase2]") {
 
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     reference_permute("ij <- ij", 0.0, &D_ref, 2.0, C_ref);
-    tensor_algebra::element_transform(&D_ref, [](double x) { return x * x; });
+    for (size_t i = 0; i < 4; i++) {
+        for (size_t j = 0; j < 4; j++) {
+            D_ref(i, j) = D_ref(i, j) * D_ref(i, j);
+        }
+    }
 
     // Graph version
     cg::Graph graph("test_mixed");

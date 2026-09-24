@@ -28,11 +28,11 @@ namespace APIARY_MODULE("graph") compute_graph {
  * - **Other**: HPTTPermute, Custom
  */
 enum class APIARY_EXPOSE OpKind : std::uint8_t {
-    // TensorAlgebra operations
-    Einsum,           ///< Tensor contraction via tensor_algebra::einsum()
-    Permute,          ///< Index reordering via tensor_algebra::permute()
+    // Tensor algebra operations
+    Einsum,           ///< Tensor contraction from a string spec, via dispatch::string_einsum()
+    Permute,          ///< Index reordering from a string spec, via dispatch::string_permute_impl()
     GroupedPermute,   ///< Many independent index reorderings, one per member
-    Transpose,        ///< 2D transpose via tensor_algebra::transpose()
+    Transpose,        ///< 2D transpose, via tensor_permute::transpose()
     ElementTransform, ///< Element-wise unary transform
     KhatriRao,        ///< Khatri-Rao product
 
