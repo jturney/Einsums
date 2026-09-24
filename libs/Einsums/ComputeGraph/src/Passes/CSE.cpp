@@ -424,6 +424,19 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
             if (!ratio)
                 continue;
 
+            // Guard G: the outputs must hold the same element types. Equal
+            // op_data and inputs used to imply it, but a mixed-precision
+            // einsum's output type is its own: `f <- d*d` and `d <- d*d` over
+            // the same operands are the same node except for C.
+            bool same_types = true;
+            for (size_t k = 0; k < nodes[i].outputs.size() && same_types; k++) {
+                auto const *hi = graph.find_tensor(nodes[i].outputs[k]);
+                auto const *hj = graph.find_tensor(nodes[j].outputs[k]);
+                same_types     = hi != nullptr && hj != nullptr && hi->dtype == hj->dtype;
+            }
+            if (!same_types)
+                continue;
+
             // Guard C: the duplicate's outputs must be graph-owned
             // intermediates. A user-visible output is a contract - the user
             // reads that tensor directly, not through an executor slot, so

@@ -230,6 +230,12 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             continue;
         if (desc->conj_a || desc->conj_b)
             continue; // conjugated contractions aren't factored (conj not threaded through the rewrite)
+        if (!einsum_is_uniform(graph, node)) {
+            // The shared temporary takes one operand's type, and whether the factored contraction
+            // then rounds as the original terms did is not established.
+            note_skip("the contraction's operands hold different element types", node.label);
+            continue;
+        }
         if (is_zero(desc->c_prefactor))
             continue;
         if (node.inputs.size() != 2 || node.outputs.size() != 1)

@@ -82,6 +82,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   graph's slot table, so a reader in the parent, a sibling branch, or a nested body would keep reading the eliminated
  *   duplicate's now never-written buffer. Inside a sub-graph the SURVIVOR must additionally be graph-owned: a loop predicate or
  *   DIIS callback runs between iterations and can write user tensors from Python, which no node list describes.
+ * - The paired outputs must hold the same element types (Guard G). Equal op_data and inputs do not imply it once operands may
+ *   differ in type: `f <- d*d` and `d <- d*d` over the same operands differ only in C.
  * - A proportional (`r != 1`) merge additionally needs EVERY reader of the duplicate's output to absorb `r` (Guard E): an einsum
  *   or axpby reading it as exactly one operand through live shared params. permute and batched-gemm bake their scalars into the
  *   executor closure, so a reader of either blocks the merge.

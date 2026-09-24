@@ -180,6 +180,7 @@ set(ComputeGraphSources
     Passes/IOPrefetch.cpp
     Passes/Materialization.cpp
     Passes/MultiTermFactorization.cpp
+    Passes/PassUtil.cpp
     Passes/PermuteFusion.cpp
     Passes/RegionRewrite.cpp
     Passes/Reorder.cpp

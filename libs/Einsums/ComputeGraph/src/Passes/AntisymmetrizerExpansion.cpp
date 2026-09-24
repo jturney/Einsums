@@ -59,6 +59,12 @@ bool AntisymmetrizerExpansion::run(Graph &graph) {
         if (operators.empty()) {
             continue;
         }
+        // Refused where the node is built, so only a node a pass edited or a loaded one gets here:
+        // the expansion's temporary takes C's type and its terms go through the same-type permute.
+        if (!einsum_is_uniform(graph, node)) {
+            note_skip("the operands hold different element types", fmt::format("einsum #{}", i));
+            continue;
+        }
         sites.push_back(i);
     }
 

@@ -907,3 +907,42 @@ TEST_CASE("ContractionPlanning - an interior a loop body reads blocks the fold",
         CHECK(D(ii, 0) == Catch::Approx(T1r(ii, 0)).margin(1e-8));
     }
 }
+
+TEST_CASE("ContractionPlanning - a chain with operands of different element types is left alone",
+          "[ComputeGraph][Passes][CP][MixedPrecision]") {
+    // The rebuild emits GEMMs and chain intermediates of one element type, taken from the chain. A
+    // member whose operands differ runs the mixed-precision generic loop, and folding it would read
+    // the float operand as a double. The uniform chain beside it is the control: the same shapes
+    // fold, so the mixed one is declined rather than never considered.
+    auto const L1 = create_random_tensor<double>("L1", 1, 100);
+    auto const L2 = create_random_tensor<double>("L2", 100, 2);
+
+    auto run = [&]<typename T0>(T0 /*tag*/) {
+        auto const L0  = create_random_tensor<T0>("L0", 100, 1);
+        auto       out = create_zero_tensor<double>("out", 100, 2);
+        cg::Graph  graph("cp_mixed");
+        {
+            auto                  &mid = graph.create_zero_tensor<double, 2>("mid", 100, 100);
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", &mid, L0, L1);
+            cg::einsum("ij;jl->il", 0.0, &out, 1.0, mid, L2);
+        }
+        cg::passes::ContractionPlanning pass(skewed_model());
+        pass.run(graph);
+        graph.execute();
+
+        auto mid_ref = create_zero_tensor<double>("mid_ref", 100, 100);
+        auto ref     = create_zero_tensor<double>("ref", 100, 2);
+        reference_einsum("ij <- ik ; kj", 0.0, &mid_ref, 1.0, L0, L1);
+        reference_einsum("il <- ij ; jl", 0.0, &ref, 1.0, mid_ref, L2);
+        for (size_t ii = 0; ii < 100; ii++) {
+            for (size_t jj = 0; jj < 2; jj++) {
+                CHECK(out(ii, jj) == Catch::Approx(ref(ii, jj)).margin(1e-10));
+            }
+        }
+        return pass.chains_restructured();
+    };
+
+    CHECK(run(double{}) == 1);
+    CHECK(run(float{}) == 0);
+}

@@ -741,3 +741,39 @@ TEST_CASE("DistributiveFactoring - declines a bandwidth-bound contraction", "[Co
         REQUIRE_THAT(R(ii, J - 1), Catch::Matchers::WithinRel(R_ref(ii, J - 1), 1e-10));
     }
 }
+
+TEST_CASE("DistributiveFactoring - leaves contractions whose operands differ in element type",
+          "[ComputeGraph][DistributiveFactoring][MixedPrecision]") {
+    // The shape of "rewrites 2 terms sharing operand A", with A in single precision. The shared
+    // temporary B1 + B2 would take one operand's type, and whether the factored contraction rounds
+    // as the two original terms did is not established, so the pass declines.
+    auto A  = create_random_tensor<float>("A", 4, 3);
+    auto B1 = create_random_tensor<double>("B1", 3, 5);
+    auto B2 = create_random_tensor<double>("B2", 3, 5);
+
+    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
+
+    auto      R = create_zero_tensor<double>("R", 4, 5);
+    cg::Graph graph("factor_mixed");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, 1.0, A, B2);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
+    CHECK_FALSE(modified);
+    CHECK(pass.num_groups() == 0);
+    auto const reasons = pass.skip_reasons();
+    REQUIRE_FALSE(reasons.empty());
+    CHECK(reasons[0].first.find("different element types") != std::string::npos);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 5; jj++) {
+            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+        }
+    }
+}

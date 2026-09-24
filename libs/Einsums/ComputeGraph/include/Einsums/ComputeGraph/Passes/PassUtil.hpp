@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
+#include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include <cmath>
@@ -19,7 +20,21 @@
 #include <variant>
 #include <vector>
 
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
+class Graph;
+EINSUMS_NAMESPACE_END(compute_graph)
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
+
+/**
+ * @brief Whether an einsum node's operands all hold one element type.
+ *
+ * A node whose operands differ runs the mixed-precision generic loop, and a pass that rebuilds a
+ * contraction as a GEMM, raises it into algebra, or synthesizes new nodes from one dtype must
+ * decline it. The rule is the executor's: the node is mixed when all three operands' types are
+ * recorded and they are not all the same. Anything that is not an einsum is uniform.
+ */
+[[nodiscard]] EINSUMS_EXPORT bool einsum_is_uniform(Graph const &graph, Node const &node);
 
 /**
  * @brief The live ``beta`` of an Axpby node, or null when @p nd is not an Axpby

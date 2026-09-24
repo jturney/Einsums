@@ -3357,10 +3357,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * never-written) buffer. See CSE.
      *
      * No-op if either slot is absent, a tensor never captured through a slot
-     * has no baked lambda to fix. The caller guarantees @p from and @p to have
-     * identical element type (CSE only merges nodes with equal op_data and
-     * output shapes; PermuteFusion fixes up rank/dims itself), so no
-     * validation is performed.
+     * has no baked lambda to fix. The two tensors must hold the same element
+     * type: an executor reads @p from's buffer as the type it was built for,
+     * and its accessor recorded that type before the redirect, so after it
+     * nothing downstream would notice the bytes are another type's.
      *
      * The redirect is durable, not a one-time pointer copy: it is recorded in
      * @ref _slot_redirects and re-applied whenever the target slot is
@@ -3371,6 +3371,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] from TensorId whose slot should be repointed.
      * @param[in] to   TensorId whose buffer @p from should resolve to, now and
      *                 after future rebinds of @p to.
+     * @throws std::logic_error if both tensors' element types are recorded and
+     *         differ. A pass that asks for it has a bug.
      */
     void redirect_slot(TensorId from, TensorId to) {
         // Collapse chains so every recorded redirect points at a terminal id.
@@ -3379,6 +3381,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         }
         if (from == to) {
             return;
+        }
+        if (TensorHandle const *fh = find_tensor(from), *th = find_tensor(to);
+            fh != nullptr && th != nullptr && fh->dtype != packed_gemm::ScalarType::Unknown &&
+            th->dtype != packed_gemm::ScalarType::Unknown && fh->dtype != th->dtype) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                    "Graph '{}': cannot redirect tensor {} to tensor {}, which holds a different element type", _name, from,
+                                    to);
         }
         TensorSlot const *to_slot   = find_slot(to);
         TensorSlot       *from_slot = find_slot(from);
@@ -4080,11 +4089,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * lambdas. Updating the params changes the computation on next execute().
      *
      * @param[in] c_pf Initial C prefactor.
-     * @param[in] ab_pf Initial AB prefactor.
+     * @param[in] ab_pf Initial AB prefactor; a mixed-precision einsum types it apart from @p c_pf.
      * @return Shared pointer to the params (stable for graph lifetime).
      */
-    template <typename T>
-    std::shared_ptr<EinsumParams> create_params(T c_pf, T ab_pf) {
+    template <typename TC, typename TAB>
+    std::shared_ptr<EinsumParams> create_params(TC c_pf, TAB ab_pf) {
         auto params   = std::make_shared<EinsumParams>();
         params->c_pf  = c_pf;
         params->ab_pf = ab_pf;

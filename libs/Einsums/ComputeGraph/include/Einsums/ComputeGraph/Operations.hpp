@@ -7527,15 +7527,50 @@ void einsum(EinsumFormatString spec, typename CType::ValueType c_pf, CType *C,
                   "complex");
     auto parsed = detail::prepare_einsum(spec, A, B, *C, conj_a, conj_b);
 
+    if (!parsed.operators.empty()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "cg::einsum '{}': permutation operators are not supported when the operands' element types differ",
+                                parsed.raw);
+    }
+
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
         LabeledSection("einsum eager (mixed precision)");
         dispatch::mixed_string_einsum(parsed, c_pf, C, ab_pf, A, B, conj_a, conj_b);
         return;
     }
-    EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                            "cg::einsum '{}': capturing an einsum whose operands have different element types is not supported",
-                            parsed.raw);
+
+    // Captured as an ordinary einsum node: the same params, index state and index-space binding as
+    // a single-type capture. What it leaves out is every fast path, the GEMM hint and the batched
+    // GEMM recordings, since none of them takes mixed types. The executor reads each operand's
+    // element type from its accessor and runs the mixed-precision generic loop.
+    LabeledSection("einsum capture (mixed precision)");
+    auto [a_id, a_slot] = ctx.get_slot(A);
+    auto [b_id, b_slot] = ctx.get_slot(B);
+    auto [c_id, c_slot] = ctx.get_slot(*C);
+
+    auto params    = ctx.graph()->create_params(c_pf, ab_pf);
+    params->conj_a = conj_a;
+    params->conj_b = conj_b;
+    auto desc      = detail::build_einsum_descriptor(parsed, params->c_pf, params->ab_pf, params->conj_a, params->conj_b);
+
+    auto indices = ctx.graph()->create_indices(parsed.a_indices, parsed.b_indices, parsed.c_indices, desc.spec.link_indices);
+    desc.indices = indices;
+    desc.params  = params;
+    desc.letter_spaces =
+        detail::bind_einsum_spaces(*ctx.graph(), a_id, b_id, c_id, parsed.a_indices, parsed.b_indices, parsed.c_indices, "cg::einsum");
+
+    auto label = fmt::format("einsum: C[{}] = A[{}] * B[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
+                             fmt::join(parsed.b_indices, ","));
+    std::vector<TensorId> const node_inputs{a_id, b_id};
+    std::vector<TensorId> const node_outputs{c_id};
+
+    // The node's dtype is C's, as for every einsum node; the executor does not rely on it for a
+    // mixed one.
+    OpData op_data{std::move(desc)};
+    auto executor = build_executor(OpKind::Einsum, packed_gemm::get_scalar_type<typename CType::ValueType>(), detail::tensor_rank(*C),
+                                   op_data, *ctx.graph(), std::span<TensorId const>{node_inputs}, std::span<TensorId const>{node_outputs});
+    ctx.record(OpKind::Einsum, std::move(label), node_inputs, node_outputs, std::move(executor), std::move(op_data));
 }
 
 /// Mixed-precision einsum with the default prefactors: C is overwritten with the contraction.

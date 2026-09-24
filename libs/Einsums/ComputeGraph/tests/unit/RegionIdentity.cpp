@@ -738,3 +738,28 @@ TEST_CASE("a ragged letter is priced by its typical extent, below the scale rung
     CHECK(family.typical_extent(target[1].letter) == 3); // (2 + 3 + 4 + 3) / 4
     CHECK(family.typical_extent(link) == 4);             // (5 + 2 + 3 + 6) / 4
 }
+
+TEST_CASE("raise_region refuses a contraction whose operands differ in element type", "[ComputeGraph][TensorExpr][MixedPrecision]") {
+    // The region of the determinism case above, with A in single precision. The algebra has one
+    // element type and lowering rebuilds every node from its destination's, so raising the
+    // mixed-precision contraction would lower it as a double GEMM reading A's floats. RegionRewrite,
+    // FactorizationPass, LaplaceTransform and MultiTermFactorization all raise through here.
+    auto A = create_random_tensor<float>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 5);
+    auto D = create_random_tensor<double>("D", 5, 2);
+    auto C = create_zero_tensor<double>("C", 4, 2);
+
+    cg::Graph graph("mixed");
+    auto     &tmp = graph.create_zero_runtime_tensor<double>("tmp", {4, 5}, true);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &tmp, A, B);
+        cg::einsum("ij;jl->il", &C, tmp, D);
+    }
+
+    auto const regions = cg::form_regions(graph, cg::EscapeAnalysis::over(graph));
+    REQUIRE_FALSE(regions.empty());
+    auto const raised = cg::raise_region(graph, regions[0]);
+    REQUIRE_FALSE(raised.has_value());
+    CHECK(raised.error().reason == "a contraction's operands hold different element types");
+}

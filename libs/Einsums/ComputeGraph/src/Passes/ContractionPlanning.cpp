@@ -58,6 +58,11 @@ PrefactorScalar const &live_ab_pf(EinsumDescriptor const &desc) {
 bool analyze_contraction(EinsumDescriptor const &desc, Graph const &graph, Node const &node, size_t &M, size_t &K, size_t &N) {
     auto const &spec = desc.spec;
 
+    // The rebuild emits GEMMs and chain intermediates of one element type. Operands of different
+    // types run the mixed-precision generic loop and would be read as that one type.
+    if (!einsum_is_uniform(graph, node))
+        return false;
+
     // Must be a pure multiplication (c_prefactor == 0, i.e., C = ab_pf * A * B)
     if (!is_zero(live_c_pf(desc)))
         return false;

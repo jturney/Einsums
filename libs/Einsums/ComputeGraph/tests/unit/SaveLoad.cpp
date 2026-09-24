@@ -1329,3 +1329,43 @@ TEST_CASE("a caller-supplied pass list still wins", "[ComputeGraph][SaveLoad][Pr
     REQUIRE(text.has_value());
     CHECK(text->find("SomeOfflineOptimizer") != std::string::npos);
 }
+
+TEMPLATE_TEST_CASE("SaveLoad - a mixed-precision einsum round-trips bitwise", "[ComputeGraph][SaveLoad][MixedPrecision]",
+                   (std::tuple<double, float, double>), (std::tuple<std::complex<float>, float, std::complex<double>>)) {
+    // The IR records no per-node element types for an einsum: the loader rebuilds the executor from
+    // the operands' manifest entries, whose types the accessors carry. The second triple promotes
+    // to complex<double> and narrows into a complex<float> C, so a loaded node that picked the wrong
+    // accumulator or store would not reproduce the captured bytes.
+    using TC = std::tuple_element_t<0, TestType>;
+    using TA = std::tuple_element_t<1, TestType>;
+    using TB = std::tuple_element_t<2, TestType>;
+    using TR = cg::detail::PromoteT<TA, TB>;
+
+    auto       A  = create_random_tensor<TA>("A", 4, 3);
+    auto       B  = create_random_tensor<TB>("B", 3, 5);
+    auto       C  = create_random_tensor<TC>("C", 4, 5);
+    auto const C0 = bytes_of(C);
+
+    cg::Graph graph("mixed");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", TC{0.5}, &C, TR{1.5}, A, B);
+    }
+    graph.execute();
+    auto const expected = bytes_of(C);
+
+    cg::Graph loaded = must_load(must_save(graph));
+    auto      C2     = create_zero_tensor<TC>("C2", 4, 5);
+    std::memcpy(C2.data(), C0.data(), C0.size());
+    loaded.bind("A", A, "B", B, "C", C2);
+    REQUIRE(loaded.unbound_manifest_entries().empty());
+    loaded.execute();
+
+    REQUIRE(bytes_of(C2) == expected);
+
+    // The saved types are the contract: an operand of another type would move the loaded node onto
+    // a different triple, so binding one is refused.
+    cg::Graph again = must_load(must_save(graph));
+    auto      wrong = create_random_tensor<TB>("wrong", 4, 3);
+    CHECK_THROWS_AS(again.bind("A", wrong), std::invalid_argument);
+}

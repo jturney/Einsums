@@ -11,6 +11,7 @@
 #include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/ComputeGraph/InterfaceManifest.hpp>
 #include <Einsums/ComputeGraph/LaplaceQuadrature.hpp>
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -170,6 +171,49 @@ std::function<void()> build_elementwise_binary(OpKind kind, packed_gemm::ScalarT
 }
 
 /**
+ * @brief The executor for an einsum whose operands do not all share one element type.
+ *
+ * Typed by each operand's own dtype, read from its accessor, and run by the generic loop through
+ * dispatch::mixed_string_einsum: no BLAS or PackedGemm routine takes mixed types. Views are built
+ * once and re-seated per call, as in the single-type builder.
+ */
+std::function<void()> build_mixed_einsum(std::shared_ptr<EinsumParams> const &params, std::shared_ptr<EinsumIndices> const &indices,
+                                         OperandAccessor const &a, OperandAccessor const &b, OperandAccessor const &c) {
+    return detail::dispatch_scalar_type(c.dtype(), [&]<typename TC>(TC /*tag*/) -> std::function<void()> {
+        return detail::dispatch_scalar_type(a.dtype(), [&]<typename TA>(TA /*tag*/) -> std::function<void()> {
+            return detail::dispatch_scalar_type(b.dtype(), [&]<typename TB>(TB /*tag*/) -> std::function<void()> {
+                using TR = detail::PromoteT<TA, TB>;
+                if constexpr ((std::is_same_v<TA, TB> && std::is_same_v<TA, TC>) || !detail::storable_v<TR, TC>) {
+                    // Unreachable: a single-type node never comes here, and capture and
+                    // make_einsum_node reject a complex contraction into a real output. The branch
+                    // exists because every combination is instantiated.
+                    EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Einsum): cannot store a {} contraction in a {} output",
+                                            scalar_type_name(packed_gemm::get_scalar_type<TR>()), scalar_type_name(c.dtype()));
+                } else {
+                    struct Views {
+                        Views(::einsums::detail::TensorImpl<TA> const &ai, ::einsums::detail::TensorImpl<TB> const &bi,
+                              ::einsums::detail::TensorImpl<TC> const &ci)
+                            : a(ai), b(bi), c(ci) {}
+                        RuntimeTensorView<TA> a;
+                        RuntimeTensorView<TB> b;
+                        RuntimeTensorView<TC> c;
+                    };
+                    auto views = std::make_shared<Views>(*a.impl<TA>(), *b.impl<TB>(), *c.impl<TC>());
+                    return [params, indices, views, a, b, c]() {
+                        LabeledSection("einsum execute (mixed precision)");
+                        views->a.impl() = *a.impl<TA>();
+                        views->b.impl() = *b.impl<TB>();
+                        views->c.impl() = *c.impl<TC>();
+                        dispatch::mixed_string_einsum(indices->spec, as<TC>(params->c_pf), &views->c, as<TR>(params->ab_pf), views->a,
+                                                      views->b, params->conj_a, params->conj_b, &indices->link_indices);
+                    };
+                }
+            });
+        });
+    });
+}
+
+/**
  * @brief ``C = c_pf*C + ab_pf*contract(A, B)``, at any rank.
  *
  * Rank-erased through @ref RuntimeTensorView, which is the rank-erased ladder
@@ -220,6 +264,14 @@ std::function<void()> build_einsum(packed_gemm::ScalarType dtype, EinsumDescript
     std::shared_ptr<packed_gemm::ContractionSite> site = desc.site;
     if (site == nullptr) {
         site = std::make_shared<packed_gemm::ContractionSite>();
+    }
+
+    // Operands of different element types take the mixed-precision generic loop. Each accessor
+    // recorded its tensor's type when it was resolved, so this holds for a captured node, a node a
+    // pass built and a loaded one alike.
+    auto const known = [](OperandAccessor const &x) { return x.dtype() != packed_gemm::ScalarType::Unknown; };
+    if (known(a) && known(b) && known(c) && !(a.dtype() == b.dtype() && a.dtype() == c.dtype())) {
+        return build_mixed_einsum(params, indices, a, b, c);
     }
 
     return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> std::function<void()> {
@@ -1144,12 +1196,20 @@ bool minor_stride_is_unit(::einsums::detail::TensorImpl<T> const &impl) {
 
 } // namespace
 
+void OperandAccessor::throw_operand_type_mismatch(packed_gemm::ScalarType held, packed_gemm::ScalarType asked) {
+    EINSUMS_THROW_EXCEPTION(std::logic_error,
+                            "executor: an operand holding {} was read as {}; the executor was built for the wrong element type",
+                            scalar_type_name(held), scalar_type_name(asked));
+}
+
 OperandAccessor try_resolve_operand(Graph &graph, TensorId id) {
+    TensorHandle const *handle = graph.find_tensor(id);
+    auto const          dtype  = handle != nullptr ? handle->dtype : packed_gemm::ScalarType::Unknown;
     if (TensorSlot *slot = graph.find_slot(id); slot != nullptr && slot->ptr != nullptr && slot->impl_of != nullptr) {
-        return OperandAccessor{slot};
+        return OperandAccessor{slot, dtype};
     }
-    if (TensorHandle const *handle = graph.find_tensor(id); handle != nullptr && handle->impl_fn) {
-        return OperandAccessor{handle->impl_fn};
+    if (handle != nullptr && handle->impl_fn) {
+        return OperandAccessor{handle->impl_fn, dtype};
     }
     return OperandAccessor{};
 }
@@ -1202,6 +1262,13 @@ std::shared_ptr<GemmHint> derive_gemm_hint(packed_gemm::ScalarType dtype, packed
     OperandAccessor const b = try_resolve_operand(graph, b_id);
     OperandAccessor const c = try_resolve_operand(graph, c_id);
     if (!a.valid() || !b.valid() || !c.valid()) {
+        return nullptr;
+    }
+    // A GEMM has one element type. Operands of different types run the mixed-precision generic
+    // loop, and a hint would let GEMMBatching fold the node into a batched GEMM that reads each
+    // operand as C's type. An operand of unrecorded type is taken at its word, as impl<T>() takes it.
+    auto const differs = [dtype](OperandAccessor const &x) { return x.dtype() != packed_gemm::ScalarType::Unknown && x.dtype() != dtype; };
+    if (differs(a) || differs(b) || differs(c)) {
         return nullptr;
     }
 

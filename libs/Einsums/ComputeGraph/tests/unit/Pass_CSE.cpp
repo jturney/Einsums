@@ -79,6 +79,36 @@ TEST_CASE("CSE - eliminates duplicate einsum", "[ComputeGraph][CSE]") {
     }
 }
 
+TEST_CASE("CSE - keeps einsums whose outputs differ in element type", "[ComputeGraph][CSE][MixedPrecision]") {
+    // `f <- d*d` and `d <- d*d` over the same operands are the same node except for C. Equal op_data
+    // and inputs used to imply equal output types; merging this pair would have the double output's
+    // readers read the float output's bytes.
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 5);
+
+    cg::Graph graph("cse_mixed");
+    auto     &F = graph.create_tensor<float, 2>("F", 4, 5);
+    auto     &D = graph.create_tensor<double, 2>("D", 4, 5);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &F, A, B);
+        cg::einsum("ik;kj->ij", &D, A, B);
+    }
+
+    // Captured, the float node's prefactor is a float and already tells the two apart. A node a pass
+    // builds carries whatever scalar the pass hands make_einsum_node, typically a double literal, so
+    // give it one.
+    for (auto &node : graph.nodes()) {
+        if (auto *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data); desc != nullptr) {
+            desc->params->c_pf = 0.0;
+        }
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    CHECK_FALSE(modified);
+    CHECK(graph.num_nodes() == 4); // Alloc(F), Alloc(D) and both einsums
+}
+
 TEST_CASE("CSE - never elides a write to a user-visible tensor", "[ComputeGraph][CSE][UserVisible]") {
     // Regression for the silent-contract-break: both C and D are USER
     // tensors capturing the same computation. Folding D's producer would

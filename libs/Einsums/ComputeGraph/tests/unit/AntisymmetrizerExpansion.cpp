@@ -197,3 +197,37 @@ TEST_CASE("AntisymmetrizerExpansion - a graph with no operator is untouched", "[
     CHECK(graph.num_nodes() == before);
     CHECK(pass->explain().empty());
 }
+
+TEST_CASE("AntisymmetrizerExpansion - declines a contraction whose operands differ in element type",
+          "[ComputeGraph][AntisymmetrizerExpansion][MixedPrecision]") {
+    // A mixed-precision einsum with an operator is refused where it is built, so the only way here
+    // is a pass that edits the operator into a mixed node, or a loaded graph. The expansion's
+    // temporary takes C's type and its terms go through the same-type permute, so it declines.
+    size_t const no = 3, nv = 4;
+    auto         t2 = create_random_tensor<float>("t2", no, no, nv, nv);
+    auto         F  = create_random_tensor<double>("F", no, no);
+    auto         C  = create_zero_tensor<double>("C", no, no, nv, nv);
+
+    cg::Graph graph("asym_mixed");
+    {
+        cg::CaptureGuard const capture(graph);
+        cg::einsum("i,j,a,b <- i,m,a,b ; m,j", 0.0, &C, 1.0, t2, F);
+    }
+    auto const operators = cg::parse_einsum_spec("i,j,a,b <- P(ij) P(ab) i,m,a,b ; m,j").value().operators;
+    for (auto &node : graph.nodes()) {
+        if (auto *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data); desc != nullptr) {
+            desc->indices->spec.operators = operators;
+        }
+    }
+
+    auto            pass = std::make_shared<cg::passes::AntisymmetrizerExpansion>();
+    cg::PassManager manager;
+    manager.add(pass);
+    graph.apply(manager);
+
+    CHECK(pass->num_expanded() == 0);
+    CHECK(count_kind(graph, cg::OpKind::Permute) == 0);
+    auto const reasons = pass->skip_reasons();
+    REQUIRE(reasons.size() == 1);
+    CHECK(reasons[0].first.find("different element types") != std::string::npos);
+}

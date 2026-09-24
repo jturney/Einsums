@@ -18,6 +18,7 @@
 
 #include <Einsums/CXX23/Expected.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/Detail/MixedPrecision.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
@@ -320,8 +321,19 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
                                 static_cast<bool>(a_h.impl_fn), static_cast<bool>(b_h.impl_fn), static_cast<bool>(c_h.impl_fn));
     }
     if (a_h.dtype != c_h.dtype || b_h.dtype != c_h.dtype) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph::make_einsum_node: operand dtypes disagree; mixed-precision einsum is not "
-                                                       "expressible through one runtime dispatch");
+        // Operands of different element types contract through the mixed-precision generic loop,
+        // whose executor reads each operand's type from its accessor. What cannot store its result
+        // is rejected here, where the node is built, rather than when it first runs: a complex
+        // contraction or a complex prefactor into a real output, and the permutation operators the
+        // mixed loop does not implement.
+        detail::check_mixed_einsum(c_h.dtype, a_h.dtype, b_h.dtype, !is_real_valued(c_pf) || !is_real_valued(ab_pf),
+                                   "Graph::make_einsum_node");
+        if (!spec.operators.empty()) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                    "Graph::make_einsum_node: '{}' has permutation operators, which are not supported when the "
+                                    "operands' element types differ",
+                                    spec.raw);
+        }
     }
     auto const dtype = c_h.dtype;
 

@@ -36,18 +36,12 @@ void require_close(Tensor<T, Rank> const &got, Tensor<T, Rank> const &want, doub
 
 // ---------------------------------------------------------------------------
 // Gap 1: mixed-operand-dtype einsum (TensorAlgebra/MixedPrecision.cpp parity)
+//
+// Closed. cg::einsum now takes operands of different element types, and
+// MixedPrecisionEinsum.cpp captures, replays and checks against the reference
+// every combination the rules allow, which includes all three of
+// TensorAlgebra/MixedPrecision.cpp's (d<-f*d, f<-d*d, cd<-cd*d).
 // ---------------------------------------------------------------------------
-
-TEST_CASE("cg parity - mixed-dtype einsum is not yet expressible through capture", "[ComputeGraph][EagerParity][mixed-precision]") {
-    // The eager dispatcher supports einsum with different scalar types per
-    // operand (TensorAlgebra/MixedPrecision.cpp: d<-f*d, f<-d*d, cd<-cd*d).
-    // cg::einsum (Operations.hpp) constrains A/B/C to a single ValueType, so
-    // the graph path cannot express those contractions at all. These
-    // placeholder records that CURRENT state; when the constraint is lifted,
-    // replace it with real graph-vs-eager parity checks over the
-    // MixedPrecision.cpp dtype combinations (d<-f*d, f<-d*d, cd<-cd*d).
-    SUCCEED("mixed-dtype einsum is rejected at the capture boundary; eager parity is untestable until the feature exists");
-}
 
 // ---------------------------------------------------------------------------
 // Gap 2: repeated-index / diagonal einsum (TensorAlgebra/Hadamard.cpp parity)

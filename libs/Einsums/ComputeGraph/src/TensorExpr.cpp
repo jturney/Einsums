@@ -9,6 +9,7 @@
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/ComputeGraph/SymbolicCost.hpp>
 #include <Einsums/ComputeGraph/TensorExpr.hpp>
@@ -947,6 +948,12 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
             if (desc == nullptr) {
                 return unexpected(
                     RaiseFailure{.reason = "a contraction carries no einsum descriptor", .detail = fmt::format("node '{}'", node->label)});
+            }
+            // The algebra has one element type, and lowering rebuilds every node from the
+            // destination's.
+            if (!passes::einsum_is_uniform(graph, *node)) {
+                return unexpected(RaiseFailure{.reason = "a contraction's operands hold different element types",
+                                               .detail = fmt::format("node '{}'", node->label)});
             }
             // The LIVE index lists, not the capture snapshot. A pass that rewrote
             // an index list wrote it through the shared block, and raising the

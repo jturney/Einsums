@@ -185,27 +185,45 @@ class OperandAccessor {
   public:
     OperandAccessor() = default;
 
-    /// Read through @p slot, which must carry a non-null @ref TensorSlot::impl_of.
-    explicit OperandAccessor(TensorSlot *slot) : _slot(slot) {}
+    /// Read through @p slot, which must carry a non-null @ref TensorSlot::impl_of. @p dtype is the
+    /// tensor's element type, when known.
+    explicit OperandAccessor(TensorSlot *slot, packed_gemm::ScalarType dtype = packed_gemm::ScalarType::Unknown)
+        : _slot(slot), _dtype(dtype) {}
 
     /// Read through a handle's own rank-erased accessor.
-    explicit OperandAccessor(std::function<void *()> handle_impl) : _handle_impl(std::move(handle_impl)) {}
+    explicit OperandAccessor(std::function<void *()> handle_impl, packed_gemm::ScalarType dtype = packed_gemm::ScalarType::Unknown)
+        : _handle_impl(std::move(handle_impl)), _dtype(dtype) {}
 
     /// Whether this accessor was bound to anything.
     [[nodiscard]] bool valid() const noexcept { return _slot != nullptr || static_cast<bool>(_handle_impl); }
 
+    /// The operand's element type, recorded from its tensor when the accessor was resolved; Unknown
+    /// when nothing recorded one. An einsum's executor reads its three operands' types from here.
+    [[nodiscard]] packed_gemm::ScalarType dtype() const noexcept { return _dtype; }
+
     /// The operand's CURRENT rank-erased geometry, type-erased.
     [[nodiscard]] void *raw() const { return _slot != nullptr ? _slot->impl_of(_slot->ptr) : _handle_impl(); }
 
-    /// The operand's CURRENT rank-erased geometry.
+    /// The operand's CURRENT rank-erased geometry, as element type @p T.
+    ///
+    /// @throws std::logic_error when the operand's recorded type is not @p T. The cast below would
+    /// otherwise reinterpret the tensor's memory as another type and compute garbage, silently: an
+    /// executor built with the wrong type, by a pass or anything else, fails here instead.
     template <typename T>
     [[nodiscard]] ::einsums::detail::TensorImpl<T> *impl() const {
+        constexpr auto asked = packed_gemm::get_scalar_type<T>();
+        if (_dtype != packed_gemm::ScalarType::Unknown && asked != packed_gemm::ScalarType::Unknown && _dtype != asked) {
+            throw_operand_type_mismatch(_dtype, asked);
+        }
         return static_cast<::einsums::detail::TensorImpl<T> *>(raw());
     }
 
   private:
+    [[noreturn]] EINSUMS_EXPORT static void throw_operand_type_mismatch(packed_gemm::ScalarType held, packed_gemm::ScalarType asked);
+
     TensorSlot             *_slot{nullptr};
     std::function<void *()> _handle_impl;
+    packed_gemm::ScalarType _dtype{packed_gemm::ScalarType::Unknown};
 };
 
 /**
