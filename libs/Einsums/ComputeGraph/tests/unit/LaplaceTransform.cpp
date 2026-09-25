@@ -387,7 +387,7 @@ TEST_CASE("LaplaceTransform - a consumer that is not a direct product is decline
     auto const ev = virtuals<double>();
     auto const D  = denominator<double>(eo, ev);
     auto const A  = create_random_tensor<double>("A", nocc, nlnk);
-    auto       P  = create_zero_tensor<double>("P", nocc, nlnk);
+    auto       P  = create_zero_tensor<double>("P", nocc, nocc);
 
     cg::Graph graph("contracted");
     auto     &numerator = graph.scratch<double, 2>("numerator", nocc, nvir);
@@ -396,7 +396,7 @@ TEST_CASE("LaplaceTransform - a consumer that is not a direct product is decline
         cg::einsum("i,k ; k,a -> i,a", &numerator, A, create_random_tensor<double>("B", nlnk, nvir));
         // The denominator is CONTRACTED with the numerator rather than multiplied elementwise
         // by it, so there is no per-axis factor for an exponential to ride on.
-        cg::einsum("i,a ; i,a -> i,k", &P, numerator, D);
+        cg::einsum("i,a ; j,a -> i,j", &P, numerator, D);
     }
     graph.annotate_tag(D, cg::passes::LaplaceTransform::denominator_tag({"eps_o", "eps_v"}, "-+"));
 

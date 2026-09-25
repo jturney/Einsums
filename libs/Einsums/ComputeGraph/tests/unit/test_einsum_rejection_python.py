@@ -38,10 +38,17 @@ def _run(mode, spec, C, A, B):
 # placeholder - the spec itself is what must be rejected.
 _INVALID = [
     # Index-role / extent errors
-    ("output label absent from inputs", "ijx <- ij ; jk", (2, 3), (3, 4), (2, 4, 5)),
+    ("output label absent from inputs", "ijx <- ij ; jk", (2, 3), (3, 4), (2, 3, 5)),
+    # The rank-1 DOT route wrote only C[0] here while the generic loop broadcast.
+    ("rank-1 output label absent",      "j <- i ; i",    (4,), (4,), (3,)),
     ("link extent mismatch",            "ij <- ik ; kj", (2, 3), (4, 5), (2, 5)),
     ("batch extent mismatch",           "ij <- ij ; ij", (2, 3), (2, 4), (2, 3)),
     ("operand rank mismatch",           "ij <- i ; jk",  (2, 3), (3, 4), (2, 4)),
+    # The rank check used to run only for C++ string literals, so a spec from
+    # Python ran these to completion, reading or writing the wrong elements.
+    ("extra axis on A",                 "ij <- ik ; kj", (2, 3, 4), (3, 3), (2, 3)),
+    ("extra axis on C",                 "ij <- ik ; kj", (2, 3), (3, 3), (2, 3, 2)),
+    ("more indices than A's rank",      "ij <- ikl ; kj", (2, 3), (3, 3), (2, 3)),
     ("output shape != spec output",     "ij <- ik ; kj", (2, 3), (3, 4), (5, 5)),
     # Malformed spec strings
     ("ellipsis unsupported",            "...ik <- ...ij ; jk", (2, 3, 4), (4, 5), (2, 3, 5)),
@@ -92,3 +99,13 @@ def test_numbered_indices_are_accepted(mode):
     C = _mk("C", np.zeros((2, 4)))
     _run(mode, "i1,i2 <- i1,i3 ; i3,i2", C, A, B)   # must NOT raise
     np.testing.assert_allclose(np.asarray(C), np.asarray(A) @ np.asarray(B), rtol=1e-12, atol=0.0)
+
+
+# The permute parser accepted any character as an index label and any output
+# label at all, so "j@ <- @j" ran as a transpose.
+@pytest.mark.parametrize("spec", ["j@ <- @j", "ik <- ij"])
+def test_invalid_permute_spec_rejected(spec):
+    A = _mk("A", np.ones((2, 3)))
+    C = _mk("C", np.zeros((3, 2)))
+    with pytest.raises((ValueError, RuntimeError)):
+        einsums.permute(spec, C, A)

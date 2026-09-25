@@ -53,22 +53,24 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @par Limitations
  * - The consumer must be an **Einsum** node and the permuted tensor must feed one of its first two operand slots (A or B); a
  *   permute feeding a third-or-later operand, or any non-einsum consumer, is not fused.
- * - The Permute must be a **pure axis reordering**: `alpha == 1 && beta == 0`, with `c_indices` a duplicate-free permutation of
- *   `a_indices`. Scaling, accumulation, or diagonal/sum index patterns disqualify it.
+ * - The Permute must be a **pure axis reordering**: `alpha == 1 && beta == 0` (the live values), no permutation operator, with
+ *   `c_indices` a duplicate-free permutation of `a_indices`. Scaling, accumulation, an antisymmetrizer, or diagonal/sum index
+ *   patterns disqualify it.
  * - The Permute's output must have **exactly one** consumer; a shared transposed temporary is left in place.
+ * - The Permute's output must be a **graph-owned intermediate** that no child sub-graph references. Fusing removes the only write
+ *   to it, so a tensor the caller holds, or one a loop body reads, keeps its permute.
  * - The consumer einsum must carry populated `EinsumDescriptor::indices` shared state (the mutable-indices infrastructure); an
  *   einsum without it, or a slot whose rank disagrees with the permute output rank, is skipped defensively.
- * - The producer kind must be `Permute` or `Transpose`; the fusion never introduces a permute, only removes one.
+ * - The producer kind must be `Permute`; the fusion never introduces a permute, only removes one.
  *
  * @par What this still owns after @ref LayoutAssignment
  * @ref LayoutAssignment deletes a permute by choosing its output's storage order so the copy
  * becomes an identity, which reaches the shared-temporary case this pass declines. It does not
- * replace this one. Four shapes are fused here and pinned there, each because the layout pass
+ * replace this one. Two shapes are fused here and pinned there, each because the layout pass
  * only ever moves a tensor it could equally have declared differently in the first place:
  * a **rank-two** copy (a layout decision variable is rank three and up, since BLAS reads a matrix
- * either way through `transa`), an `OpKind::Transpose` (no descriptor, and rank two by
- * definition), a copy the **caller owns** (its axis order is part of what the caller asked for),
- * and a copy whose **storage is already allocated** rather than a deferred declaration. A chain
+ * either way through `transa`), and a copy whose **storage is already allocated** rather than a
+ * deferred declaration. A chain
  * of two permutes is likewise fused here one link at a time and folded there not at all, since
  * the layout pass pins a permute's source.
  *

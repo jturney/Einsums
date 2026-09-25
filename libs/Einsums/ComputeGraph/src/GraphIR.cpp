@@ -81,7 +81,7 @@ std::uint64_t Graph::content_hash() const {
     // FNV-1a over the canonical bytes. Not a cryptographic digest and not meant
     // to be: the property wanted is that a structural change moves it, which is
     // what a differential test and a cache key need.
-    std::uint64_t hash = 1469598103934665603ULL;
+    std::uint64_t hash = 14695981039346656037ULL; // the 64-bit FNV offset basis
     for (char const byte : canonical) {
         hash ^= static_cast<std::uint64_t>(static_cast<unsigned char>(byte));
         hash *= 1099511628211ULL;

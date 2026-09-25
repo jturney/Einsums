@@ -10,6 +10,7 @@
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <Einsums/Testing.hpp>
 
@@ -53,9 +54,9 @@ TEST_CASE("PermuteFusion: 2D transpose absorbed into einsum A slot", "[ComputeGr
     }
 
     // Under test: the unfused graph (permute then einsum).
-    auto      A_T = create_zero_tensor<double>("A_T", 4, 3);
-    auto      C   = create_zero_tensor<double>("C", 3, 5);
+    auto      C = create_zero_tensor<double>("C", 3, 5);
     cg::Graph graph("fusion_test");
+    auto     &A_T = graph.scratch<double, 2>("A_T", 4, 3);
     {
         cg::CaptureGuard const guard(graph);
         cg::permute("ji <- ij", &A_T, A);
@@ -96,10 +97,9 @@ TEST_CASE("PermuteFusion: 2D transpose absorbed into einsum B slot", "[ComputeGr
         cg::einsum("ij;jk->ik", &C_ref, A, B);
         g.execute();
     }
-
-    auto      B_T = create_zero_tensor<double>("B_T", 5, 4);
-    auto      C   = create_zero_tensor<double>("C", 3, 5);
+    auto      C = create_zero_tensor<double>("C", 3, 5);
     cg::Graph graph("fusion_b_slot");
+    auto     &B_T = graph.scratch<double, 2>("B_T", 5, 4);
     {
         cg::CaptureGuard const guard(graph);
         cg::permute("kj <- jk", &B_T, B);
@@ -132,11 +132,10 @@ TEST_CASE("PermuteFusion: both inputs permuted in same einsum", "[ComputeGraph][
         cg::einsum("ij;jk->ik", &C_ref, A, B);
         g.execute();
     }
-
-    auto      A_T = create_zero_tensor<double>("A_T", 4, 3);
-    auto      B_T = create_zero_tensor<double>("B_T", 5, 4);
-    auto      C   = create_zero_tensor<double>("C", 3, 5);
+    auto      C = create_zero_tensor<double>("C", 3, 5);
     cg::Graph graph("both");
+    auto     &A_T = graph.scratch<double, 2>("A_T", 4, 3);
+    auto     &B_T = graph.scratch<double, 2>("B_T", 5, 4);
     {
         cg::CaptureGuard const guard(graph);
         cg::permute("ji <- ij", &A_T, A);
@@ -172,10 +171,9 @@ TEST_CASE("PermuteFusion: 3D permute on A slot (rank-3 × matrix)", "[ComputeGra
         cg::einsum("pqr;rs->pqs", &C_ref, T, M);
         g.execute();
     }
-
-    auto      T_perm = create_zero_tensor<double>("T_perm", 4, 2, 3);
-    auto      C      = create_zero_tensor<double>("C", 2, 3, 5);
+    auto      C = create_zero_tensor<double>("C", 2, 3, 5);
     cg::Graph graph("rank3");
+    auto     &T_perm = graph.scratch<double, 3>("T_perm", 4, 2, 3);
     {
         cg::CaptureGuard const guard(graph);
         cg::permute("rpq <- pqr", &T_perm, T);
@@ -208,10 +206,9 @@ TEST_CASE("PermuteFusion: identity permute is still fused (no-op removal)", "[Co
         cg::einsum("ij;jk->ik", &C_ref, A, B);
         g.execute();
     }
-
-    auto      A_copy = create_zero_tensor<double>("A_copy", 3, 4);
-    auto      C      = create_zero_tensor<double>("C", 3, 5);
+    auto      C = create_zero_tensor<double>("C", 3, 5);
     cg::Graph graph("identity");
+    auto     &A_copy = graph.scratch<double, 2>("A_copy", 3, 4);
     {
         cg::CaptureGuard const guard(graph);
         cg::permute("ij <- ij", &A_copy, A); // NOLINT
@@ -239,14 +236,13 @@ TEST_CASE("PermuteFusion: skip when permute output has multiple consumers", "[Co
     // A_T is consumed by TWO einsums, removing the permute would leave
     // the second one dangling. Pass should report the candidate but
     // not rewrite.
-    auto A  = create_random_tensor<double>("A", 3, 4);
-    auto B1 = create_random_tensor<double>("B1", 4, 5);
-    auto B2 = create_random_tensor<double>("B2", 4, 2);
-
-    auto      A_T = create_zero_tensor<double>("A_T", 4, 3);
-    auto      C1  = create_zero_tensor<double>("C1", 3, 5);
-    auto      C2  = create_zero_tensor<double>("C2", 3, 2);
+    auto      A  = create_random_tensor<double>("A", 3, 4);
+    auto      B1 = create_random_tensor<double>("B1", 4, 5);
+    auto      B2 = create_random_tensor<double>("B2", 4, 2);
+    auto      C1 = create_zero_tensor<double>("C1", 3, 5);
+    auto      C2 = create_zero_tensor<double>("C2", 3, 2);
     cg::Graph graph("multi_consumer");
+    auto     &A_T = graph.scratch<double, 2>("A_T", 4, 3);
     {
         cg::CaptureGuard const guard(graph);
         cg::permute("ji <- ij", &A_T, A);
@@ -266,12 +262,11 @@ TEST_CASE("PermuteFusion: skip when permute output has multiple consumers", "[Co
 TEST_CASE("PermuteFusion: skip when permute has non-trivial alpha", "[ComputeGraph][Optimizer][PermuteFusion]") {
     // permute with alpha != 1 scales values, not a pure axis reorder.
     // Must not fuse.
-    auto A = create_random_tensor<double>("A", 3, 4);
-    auto B = create_random_tensor<double>("B", 4, 5);
-
-    auto      A_T = create_zero_tensor<double>("A_T", 4, 3);
-    auto      C   = create_zero_tensor<double>("C", 3, 5);
+    auto      A = create_random_tensor<double>("A", 3, 4);
+    auto      B = create_random_tensor<double>("B", 4, 5);
+    auto      C = create_zero_tensor<double>("C", 3, 5);
     cg::Graph graph("scaled_permute");
+    auto     &A_T = graph.scratch<double, 2>("A_T", 4, 3);
     {
         cg::CaptureGuard const guard(graph);
         cg::permute("ji <- ij", 0.0, &A_T, 2.5, A); // beta=0, alpha=2.5
@@ -371,12 +366,12 @@ TEST_CASE("PermuteFusion: fused graph is replayable", "[ComputeGraph][Optimizer]
     // After fusion, re-executing the graph with different input values
     // must produce the correct result, confirms the shared indices
     // the executor reads are consistent across calls.
-    auto A   = create_random_tensor<double>("A", 3, 4);
-    auto B   = create_random_tensor<double>("B", 4, 5);
-    auto A_T = create_zero_tensor<double>("A_T", 4, 3);
-    auto C   = create_zero_tensor<double>("C", 3, 5);
+    auto A = create_random_tensor<double>("A", 3, 4);
+    auto B = create_random_tensor<double>("B", 4, 5);
+    auto C = create_zero_tensor<double>("C", 3, 5);
 
     cg::Graph graph("replay");
+    auto     &A_T = graph.scratch<double, 2>("A_T", 4, 3);
     {
         cg::CaptureGuard const guard(graph);
         cg::permute("ji <- ij", &A_T, A);
@@ -412,11 +407,10 @@ TEST_CASE("PermuteFusion: fused einsum output feeding a downstream consumer stay
         cg::einsum("ij;jk->ik", &D_ref, C_ref, E);
         g.execute();
     }
-
-    auto      A_T = create_zero_tensor<double>("A_T", 4, 3);
-    auto      C   = create_zero_tensor<double>("C", 3, 3);
-    auto      D   = create_zero_tensor<double>("D", 3, 5);
+    auto      C = create_zero_tensor<double>("C", 3, 3);
+    auto      D = create_zero_tensor<double>("D", 3, 5);
     cg::Graph graph("fusion_consumer");
+    auto     &A_T = graph.scratch<double, 2>("A_T", 4, 3);
     {
         cg::CaptureGuard const guard(graph);
         cg::permute("ji <- ij", &A_T, A);
@@ -431,5 +425,106 @@ TEST_CASE("PermuteFusion: fused einsum output feeding a downstream consumer stay
 
     graph.execute();
     require_close(C, C_ref);
+    require_close(D, D_ref);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cases the fusion must decline
+// ═══════════════════════════════════════════════════════════════════════════
+
+// A permute carrying P(ij) is the antisymmetrizer W = A^T - A, not a relabeling.
+// Fusing it into its one reader dropped the operator, so the optimized graph
+// computed A @ B from the plain transpose instead.
+TEST_CASE("PermuteFusion: skip a permute that carries a permutation operator", "[ComputeGraph][Optimizer][PermuteFusion]") {
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto B = create_random_tensor<double>("B", 3, 4);
+    auto C = create_zero_tensor<double>("C", 3, 4);
+
+    cg::Graph graph("antisymmetrizer");
+    auto     &W = graph.scratch<double, 2>("W", 3, 3);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("i,j <- P(ij) j,i", &W, A);
+        cg::einsum("ik <- ij ; jk", &C, W, B);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::PermuteFusion>();
+    CHECK_FALSE(modified);
+    CHECK(pass.num_rewrites() == 0);
+    REQUIRE(graph.num_nodes() == 2);
+
+    // The skipped permute's scratch output is still deferred; allocate it before running.
+    graph.apply<cg::passes::Materialization>();
+    graph.execute();
+    // W = P(ij) A^T = A^T - A. Spelled out because the reference helpers take no operators.
+    auto W_ref = create_zero_tensor<double>("W_ref", 3, 3);
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            W_ref(i, j) = A(j, i) - A(i, j);
+        }
+    }
+    auto C_ref = create_zero_tensor<double>("C_ref", 3, 4);
+    einsums::testing::reference_einsum("ik <- ij ; jk", 0.0, &C_ref, 1.0, W_ref, B);
+    require_close(C, C_ref);
+}
+
+// Fusing removes the only write to the permute's output. A tensor the caller
+// created is one the caller can read after execute(), so it has to keep its
+// permute; the pass used to fuse it and leave it holding zeros.
+TEST_CASE("PermuteFusion: skip when the caller owns the permute output", "[ComputeGraph][Optimizer][PermuteFusion]") {
+    auto A   = create_random_tensor<double>("A", 3, 4);
+    auto B   = create_random_tensor<double>("B", 4, 5);
+    auto A_T = create_zero_tensor<double>("A_T", 4, 3);
+    auto C   = create_zero_tensor<double>("C", 3, 5);
+
+    cg::Graph graph("caller_owned");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("ji <- ij", &A_T, A);
+        cg::einsum("ji;jk->ik", &C, A_T, B);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::PermuteFusion>();
+    CHECK_FALSE(modified);
+    REQUIRE(graph.num_nodes() == 2);
+
+    // The skipped permute's scratch output is still deferred; allocate it before running.
+    graph.apply<cg::passes::Materialization>();
+    graph.execute();
+    auto A_T_ref = create_zero_tensor<double>("A_T_ref", 4, 3);
+    einsums::testing::reference_permute("ji <- ij", 0.0, &A_T_ref, 1.0, A);
+    require_close(A_T, A_T_ref);
+}
+
+// A Loop node does not list its body's reads, so from the parent's node list the
+// permute output has one consumer. Fusing it would leave the body reading a
+// tensor nothing writes.
+TEST_CASE("PermuteFusion: skip when a loop body reads the permute output", "[ComputeGraph][Optimizer][PermuteFusion]") {
+    auto A = create_random_tensor<double>("A", 3, 4);
+    auto B = create_random_tensor<double>("B", 4, 5);
+    auto C = create_zero_tensor<double>("C", 3, 5);
+    auto D = create_zero_tensor<double>("D", 3, 5);
+
+    cg::Graph graph("loop_reader");
+    auto     &A_T = graph.scratch<double, 2>("A_T", 4, 3);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("ji <- ij", &A_T, A);
+        cg::einsum("ji;jk->ik", &C, A_T, B);
+    }
+    auto &body = graph.add_loop("once", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const body_guard(body);
+        cg::einsum("ji;jk->ik", &D, A_T, B);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::PermuteFusion>();
+    CHECK_FALSE(modified);
+
+    // The skipped permute's scratch output is still deferred; allocate it before running.
+    graph.apply<cg::passes::Materialization>();
+    graph.execute();
+    auto D_ref = create_zero_tensor<double>("D_ref", 3, 5);
+    einsums::testing::reference_einsum("ik <- ij ; jk", 0.0, &D_ref, 1.0, A, B);
     require_close(D, D_ref);
 }

@@ -124,6 +124,8 @@ void Graph::move_members_from(Graph &&other) noexcept {
     _declared_aliases = std::move(other._declared_aliases);
     _interface_names  = std::move(other._interface_names);
     _symbol_spaces    = std::move(other._symbol_spaces);
+    _space_extents    = std::move(other._space_extents);
+    _space_tiles      = std::move(other._space_tiles);
     _ragged_extents   = std::move(other._ragged_extents);
     _named_gate_flags = std::move(other._named_gate_flags);
     _slot_map         = std::move(other._slot_map);

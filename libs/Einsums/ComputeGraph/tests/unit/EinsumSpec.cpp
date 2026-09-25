@@ -71,14 +71,8 @@ TEST_CASE("parse_einsum_spec - conj(...) operand wrapper", "[ComputeGraph][Einsu
 }
 
 // Compile-time path (EinsumFormatString literal ctor): the consteval validator
-// must accept the conj(...) parens, and the index counter must count the wrapped
-// indices only (so a C++ literal like cg::einsum("ij <- conj(ki) ; kj", ...) both
-// compiles and gets the right operand ranks).
+// must accept the conj(...) parens.
 static_assert(validate_einsum_spec("ij <- conj(ki) ; kj"));
-static_assert(parse_index_counts("ij <- conj(ki) ; conj(kj)").a == 2);
-static_assert(parse_index_counts("ij <- conj(ki) ; conj(kj)").b == 2);
-static_assert(parse_index_counts("ij <- conj(ki) ; conj(kj)").c == 2);
-static_assert(parse_index_counts("mu,nu <- conj(mu,rho) ; rho,nu").a == 2);
 
 TEST_CASE("parse_einsum_spec - arrow notation, no whitespace", "[ComputeGraph][EinsumSpec]") {
     auto result = parse_einsum_spec("ij<-ik;kj");
@@ -511,27 +505,36 @@ TEST_CASE("ParsedEinsumSpec::render - permutation operators round-trip", "[Compu
     }
 }
 
-// parse_index_counts feeds cg::einsum's compile-time rank check. It counts
-// everything between the arrow and the ';' as A's indices, so a P(...) prefix
-// left in place counts the operator's letters as operand slots, leaves
-// counts.known true, and rejects a correctly-ranked operand at compile time with
-// a diagnostic pointing at the wrong thing. This has to be a POSITIVE test: the
-// failure mode is a compile error, so there is nothing to observe at runtime.
-TEST_CASE("parse_index_counts - a permutation operator does not inflate operand ranks", "[ComputeGraph][EinsumSpec]") {
-    STATIC_REQUIRE(parse_index_counts("i,a,j,b <- P(i/j) P(a/b) i,k,a,c ; k,c,j,b").known);
-    STATIC_REQUIRE(parse_index_counts("i,a,j,b <- P(i/j) P(a/b) i,k,a,c ; k,c,j,b").c == 4);
-    STATIC_REQUIRE(parse_index_counts("i,a,j,b <- P(i/j) P(a/b) i,k,a,c ; k,c,j,b").a == 4);
-    STATIC_REQUIRE(parse_index_counts("i,a,j,b <- P(i/j) P(a/b) i,k,a,c ; k,c,j,b").b == 4);
+// An output index that no operand carries has no meaning the engine agrees on:
+// the generic loop broadcast the result along it while the rank-1 DOT route wrote
+// one element, so "j <- i ; i" gave [x, 0, 0]. The parser rejects it, as numpy does.
+TEST_CASE("parse_einsum_spec - an output index must come from an operand", "[ComputeGraph][EinsumSpec]") {
+    auto const bad = parse_einsum_spec("j <- i ; i");
+    REQUIRE_FALSE(bad.has_value());
+    REQUIRE_THAT(bad.error().message, Catch::Matchers::ContainsSubstring("output index 'j' appears in neither operand"));
 
-    // numpy notation, and the character-mode sugar
-    STATIC_REQUIRE(parse_index_counts("P(ij) ikac ; kcjb -> iajb").a == 4);
-    STATIC_REQUIRE(parse_index_counts("P(ij) ikac ; kcjb -> iajb").c == 4);
+    REQUIRE_FALSE(parse_einsum_spec("i,x <- i,k ; k").has_value());
+    REQUIRE_FALSE(parse_einsum_spec("ik ; kj -> ix").has_value());
 
-    // an operator alongside a conj(...) wrapper
-    STATIC_REQUIRE(parse_index_counts("ijab <- P(i/j) conj(ikac) ; kcjb").a == 4);
+    // an index carried by only one operand is still fine
+    REQUIRE(parse_einsum_spec("ij <- ik ; kj").has_value());
+    REQUIRE(parse_einsum_spec("ij <- i ; j").has_value());
+    REQUIRE(parse_einsum_spec(" <- i ; i").has_value());
+}
 
-    // unchanged for specs that carry no operator
-    STATIC_REQUIRE(parse_index_counts("ij <- ik ; kj").a == 2);
+// The permute parser took any character as an index, so "j@ <- @j" ran as a
+// transpose; einsum specs already rejected it.
+TEST_CASE("parse_permute_spec - index labels are alphanumeric and come from the input", "[ComputeGraph][EinsumSpec]") {
+    auto const bad_char = parse_permute_spec("j@ <- @j");
+    REQUIRE_FALSE(bad_char.has_value());
+    REQUIRE_THAT(bad_char.error().message, Catch::Matchers::ContainsSubstring("non-letter character"));
+
+    auto const stray = parse_permute_spec("ik <- ij");
+    REQUIRE_FALSE(stray.has_value());
+    REQUIRE_THAT(stray.error().message, Catch::Matchers::ContainsSubstring("output index 'k' does not appear in the input"));
+
+    REQUIRE(parse_permute_spec("ji <- ij").has_value());
+    REQUIRE(parse_permute_spec("i1,i2 <- i2,i1").has_value());
 }
 
 TEST_CASE("validate_einsum_spec - permutation operators", "[ComputeGraph][EinsumSpec]") {

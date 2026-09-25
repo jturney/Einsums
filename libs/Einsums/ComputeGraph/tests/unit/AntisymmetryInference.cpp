@@ -194,7 +194,7 @@ TEST_CASE("AntisymmetryInference - R3 declines when the other operand sees the l
     {
         cg::CaptureGuard const capture(graph);
         // The second operand carries j and k as well, so the swap moves it too.
-        cg::einsum("j,k,m <- j,k,p ; p,j,k", 0.0, &Xc, 1.0, t2, shared);
+        cg::einsum("j,k,m <- j,k,p ; m,j,k", 0.0, &Xc, 1.0, t2, shared);
         cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &W, 1.0, Xc);
     }
 

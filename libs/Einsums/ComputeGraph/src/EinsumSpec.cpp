@@ -266,6 +266,19 @@ std::vector<std::pair<std::map<std::string, std::string>, double>> expand_one(Pe
     return out;
 }
 
+/// The first index label containing a character that is not a letter or digit.
+/// Letters plus digits allow numbered names like "i1"/"i2". A comma-less operand
+/// is char-split, so without this a stray '@' / '$' / '.' silently becomes an
+/// index label and the operation runs on a malformed spec.
+std::optional<std::string> first_non_alphanumeric(std::vector<std::string> const &group) {
+    for (auto const &idx : group) {
+        if (!std::ranges::all_of(idx, [](unsigned char ch) { return std::isalnum(ch) != 0; })) {
+            return idx;
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 std::string PermutationOperator::render() const {
@@ -400,25 +413,10 @@ expected<ParsedEinsumSpec, GraphError> parse_einsum_spec(std::string_view spec) 
     result.conj_b    = conj_b;
     result.operators = std::move(operators);
 
-    // Index labels must be alphanumeric (letters, plus digits for numbered
-    // names like "i1"/"i2"). A comma-less operand is char-split, so without
-    // this a stray '@' / '%' / '$' / '.' silently becomes an index label and
-    // the contraction runs on a malformed spec (the "valid characters"
-    // guarantee in the header). Reject with a clear message.
-    auto const first_bad_char = [](std::vector<std::string> const &group) -> std::optional<std::string> {
-        for (auto const &idx : group) {
-            for (unsigned char const ch : idx) {
-                if (std::isalnum(ch) == 0) {
-                    return idx;
-                }
-            }
-        }
-        return std::nullopt;
-    };
     for (auto const &[group, which] :
          {std::pair{std::cref(result.c_indices), "output"}, std::pair{std::cref(result.a_indices), "first operand"},
           std::pair{std::cref(result.b_indices), "second operand"}}) {
-        if (auto const bad = first_bad_char(group)) {
+        if (auto const bad = first_non_alphanumeric(group)) {
             return unexpected(
                 GraphError::parse(fmt::format("einsum spec '{}': {} index '{}' has a non-letter character", spec, which, *bad)));
         }
@@ -429,6 +427,16 @@ expected<ParsedEinsumSpec, GraphError> parse_einsum_spec(std::string_view spec) 
     }
     if (result.b_indices.empty()) {
         return unexpected(GraphError::parse(fmt::format("einsum spec '{}': second operand has no indices", spec)));
+    }
+
+    // An output index has to come from an input. The engine has no rule for one that does not: the generic loop
+    // broadcasts the result along it while a BLAS route writes one element, so two routes disagreed. numpy
+    // rejects it too.
+    for (auto const &idx : result.c_indices) {
+        if (std::ranges::find(result.a_indices, idx) == result.a_indices.end() &&
+            std::ranges::find(result.b_indices, idx) == result.b_indices.end()) {
+            return unexpected(GraphError::parse(fmt::format("einsum spec '{}': output index '{}' appears in neither operand", spec, idx)));
+        }
     }
 
     if (auto const bad = validate_operators(result.operators, result.c_indices)) {
@@ -562,9 +570,22 @@ expected<ParsedPermuteSpec, GraphError> parse_permute_spec(std::string_view spec
     if (result.c_indices.empty()) {
         return unexpected(GraphError::parse(fmt::format("permute spec '{}': output has no indices", spec)));
     }
+    for (auto const &[group, which] : {std::pair{std::cref(result.c_indices), "output"}, std::pair{std::cref(result.a_indices), "input"}}) {
+        if (auto const bad = first_non_alphanumeric(group)) {
+            return unexpected(
+                GraphError::parse(fmt::format("permute spec '{}': {} index '{}' has a non-letter character", spec, which, *bad)));
+        }
+    }
     if (result.c_indices.size() != result.a_indices.size()) {
         return unexpected(GraphError::parse(fmt::format("permute spec '{}': output has {} indices but input has {}", spec,
                                                         result.c_indices.size(), result.a_indices.size())));
+    }
+
+    for (auto const &idx : result.c_indices) {
+        if (std::ranges::find(result.a_indices, idx) == result.a_indices.end()) {
+            return unexpected(
+                GraphError::parse(fmt::format("permute spec '{}': output index '{}' does not appear in the input", spec, idx)));
+        }
     }
 
     if (auto const bad = validate_operators(result.operators, result.c_indices)) {

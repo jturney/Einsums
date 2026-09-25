@@ -19,6 +19,7 @@
 #include <Einsums/Tensor/Tensor.hpp>
 
 #include <cstring>
+#include <memory>
 #include <variant>
 #include <vector>
 
@@ -32,7 +33,8 @@ namespace {
 /// the string einsum dispatch (which routes through PackedGemm). Templating over T collapses what
 /// were two byte-identical double/float copies into a single body.
 template <typename T>
-void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, void *b_ptr, void *c_ptr, PrefactorScalar c_pf) {
+void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, void *b_ptr, void *c_ptr, PrefactorScalar c_pf,
+                      PrefactorScalar ab_pf) {
     auto *A_local = static_cast<Tensor<T, 2> *>(a_ptr);
     auto *B_local = static_cast<Tensor<T, 2> *>(b_ptr);
     auto *C_local = static_cast<Tensor<T, 2> *>(c_ptr);
@@ -43,7 +45,8 @@ void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, vo
     size_t const local_k_b = B_local->dim(0); // K/Pr (== K/Pc for a square grid)
 
     // Apply the C prefactor (typically 0 on the first call).
-    auto const c_pf_v = as<T>(c_pf);
+    auto const c_pf_v  = as<T>(c_pf);
+    auto const ab_pf_v = as<T>(ab_pf);
     if (c_pf_v == T{0}) {
         C_local->zero();
     } else if (c_pf_v != T{1}) {
@@ -90,7 +93,7 @@ void run_summa_panels(comm::ProcessGrid const &grid, int panels, void *a_ptr, vo
                 }
                 return *parsed;
             }();
-            dispatch::erased_string_einsum<T>(spec, T{1}, C_local->impl(), T{1}, A_panel.impl(), B_panel.impl(), false, false);
+            dispatch::erased_string_einsum<T>(spec, T{1}, C_local->impl(), ab_pf_v, A_panel.impl(), B_panel.impl(), false, false);
         }
     }
 }
@@ -159,6 +162,20 @@ bool SUMMAExpansion::run(Graph &graph) {
         if (out_handle.rank != 2 || a_handle.rank != 2 || b_handle.rank != 2)
             continue;
 
+        // The panel loop runs "ij <- ik ; kj" and DistributionPlanning lays the blocks out for that
+        // pattern, so the node's own indices have to be exactly it. Rank two alone let "ij <- ki ; kj"
+        // through, whose A block the kernel then read transposed.
+        bool const  live    = desc->indices != nullptr;
+        auto const &ci      = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
+        auto const &ai      = live ? desc->indices->spec.a_indices : desc->spec.a_indices;
+        auto const &bi      = live ? desc->indices->spec.b_indices : desc->spec.b_indices;
+        bool const  is_gemm = ci.size() == 2 && ai.size() == 2 && bi.size() == 2 && ci[0] == ai[0] && ai[1] == bi[0] && ci[1] == bi[1] &&
+                              ci[0] != ci[1] && ci[0] != ai[1] && ci[1] != ai[1];
+        if (!is_gemm || !desc->operators.empty()) {
+            EINSUMS_LOG_INFO("SUMMAExpansion: skipping '{}': not the plain 'ij <- ik ; kj' pattern", node.label);
+            continue;
+        }
+
         // Extract dimensions:
         // A_local = (M/Pr, K/Pc), B_local = (K/Pr, N/Pc), C_local = (M/Pr, N/Pc)
         // SUMMA iterates over Pc panels (for A broadcast) or Pr panels (for B broadcast).
@@ -182,10 +199,12 @@ bool SUMMAExpansion::run(Graph &graph) {
 
         int panels = grid.cols(); // == grid.rows() for square grid
 
-        // Replace the einsum's execute lambda with a SUMMA loop.
-        // Capture the original execute lambda as a fallback (for the local GEMM step).
-        auto original_execute = node.execute;
-        auto c_pf             = desc->c_prefactor; // PrefactorScalar; unwrapped per-dtype below
+        // Replace the einsum's execute lambda with a SUMMA loop. The prefactors are read from the
+        // node's live params block on every replay, so a scale folded into the node after this pass
+        // still applies; the snapshots stand in only for a node without one.
+        std::shared_ptr<EinsumParams const> params  = desc->params;
+        PrefactorScalar const               c_snap  = desc->c_prefactor;
+        PrefactorScalar const               ab_snap = desc->ab_prefactor;
 
         // Tensor IDS, resolved at EXECUTE time through Graph::live_tensor_ptr,
         // rather than pointers baked here. Two reasons, and the second is a
@@ -211,14 +230,16 @@ bool SUMMAExpansion::run(Graph &graph) {
         // Build the SUMMA executor lambda. The panels are broadcast through
         // comm::broadcast on the row/col communicators, not through the handle's
         // allreduce hook.
-        node.execute = [&grid, panels, graph_ptr, a_id, b_id, c_id, dtype, c_pf, original_execute]() {
-            void *a_ptr = graph_ptr->live_tensor_ptr(a_id);
-            void *b_ptr = graph_ptr->live_tensor_ptr(b_id);
-            void *c_ptr = graph_ptr->live_tensor_ptr(c_id);
+        node.execute = [&grid, panels, graph_ptr, a_id, b_id, c_id, dtype, params, c_snap, ab_snap]() {
+            void                 *a_ptr = graph_ptr->live_tensor_ptr(a_id);
+            void                 *b_ptr = graph_ptr->live_tensor_ptr(b_id);
+            void                 *c_ptr = graph_ptr->live_tensor_ptr(c_id);
+            PrefactorScalar const c_pf  = params ? params->c_pf : c_snap;
+            PrefactorScalar const ab_pf = params ? params->ab_pf : ab_snap;
             if (dtype == packed_gemm::ScalarType::Float64) {
-                run_summa_panels<double>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf);
+                run_summa_panels<double>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf, ab_pf);
             } else if (dtype == packed_gemm::ScalarType::Float32) {
-                run_summa_panels<float>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf);
+                run_summa_panels<float>(grid, panels, a_ptr, b_ptr, c_ptr, c_pf, ab_pf);
             }
         };
 

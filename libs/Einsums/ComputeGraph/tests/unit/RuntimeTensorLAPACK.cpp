@@ -43,6 +43,26 @@ TEST_CASE("RuntimeTensor cg::det — matches static-tensor det", "[ComputeGraph]
     CHECK_THAT(got, Catch::Matchers::WithinRel(ref, 1e-10));
 }
 
+// The returning forms copy their operand into a dense matrix first. That copy
+// was a flat memcpy of the operand's bytes, so a view whose columns are not
+// adjacent (here the leading 3x3 block of a 5x5, column stride 5) handed LAPACK
+// the wrong elements.
+TEST_CASE("RuntimeTensor cg::det - a strided view is read through its strides", "[ComputeGraph][runtime]") {
+    auto                            Astatic = create_random_tensor<double>("A", 5, 5);
+    auto                            parent  = runtime_copy_of(Astatic);
+    RuntimeTensorView<double> const block   = parent(Range{0, 3}, Range{0, 3});
+    REQUIRE(block.stride(1) == 5);
+
+    Tensor<double, 2> dense("dense", 3, 3);
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            dense(i, j) = Astatic(i, j);
+        }
+    }
+
+    CHECK_THAT(cg::det(block), Catch::Matchers::WithinRel(cg::det(dense), 1e-10));
+}
+
 TEST_CASE("RuntimeTensor cg::qr — Q*R reconstructs the input", "[ComputeGraph][runtime]") {
     auto Astatic = create_random_tensor<double>("A", 5, 3);
     auto Art     = runtime_copy_of(Astatic);

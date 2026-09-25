@@ -8,7 +8,9 @@
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -311,4 +313,27 @@ TEST_CASE("SpaceShapedDeclare - create_* takes spaces but writes no dim symbols"
     // Deliberately absent: this tensor is allocated NOW, and a bind cannot resize it, so a
     // symbol promising otherwise would be a bind-time error dressed up as an annotation.
     CHECK(graph.tensor_dim_symbols(id).empty());
+}
+
+// Graph's move is written member by member and missed these two maps, so a moved
+// graph forgot every pinned extent and tiling. load_graph returns by value, so
+// every load goes through this path.
+TEST_CASE("SpaceShapedDeclare - pinned extents and tilings survive a move", "[ComputeGraph][Spaces][SpaceShape]") {
+    Spaces spaces;
+
+    cg::Graph source("source");
+    source.set_space_registry(spaces.registry);
+    source.pin_space_extent(spaces.occ, 4);
+    source.pin_space_tiling(spaces.virt, {4, 4});
+
+    cg::Graph moved(std::move(source));
+    REQUIRE(moved.space_extent(spaces.occ).has_value());
+    CHECK(*moved.space_extent(spaces.occ) == 4);
+    REQUIRE(moved.space_tiling(spaces.virt).has_value());
+    CHECK(*moved.space_tiling(spaces.virt) == std::vector<int>{4, 4});
+
+    cg::Graph assigned("assigned");
+    assigned = std::move(moved);
+    CHECK(assigned.space_extent(spaces.occ) == std::optional<std::size_t>{4});
+    CHECK(assigned.space_tiling(spaces.virt) == std::optional<std::vector<int>>{std::vector<int>{4, 4}});
 }

@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
@@ -52,28 +53,6 @@ size_t next_gpu_use_after(NextUseMap const &map, TensorId tid, size_t after) {
     return *pos;
 }
 
-/// Check if a tensor is used inside a Loop node body (should be pinned).
-bool is_loop_tensor(std::vector<Node> const &nodes, TensorId tid) {
-    for (auto const &node : nodes) {
-        if (node.kind == OpKind::Loop) {
-            auto const *desc = node.op_data.get_if<LoopDescriptor>();
-            if (desc && desc->body) {
-                for (auto const &inner : desc->body->nodes()) {
-                    for (auto inner_tid : inner.inputs) {
-                        if (inner_tid == tid)
-                            return true;
-                    }
-                    for (auto inner_tid : inner.outputs) {
-                        if (inner_tid == tid)
-                            return true;
-                    }
-                }
-            }
-        }
-    }
-    return false;
-}
-
 } // namespace
 
 void TransferElimination::reset_stats() {
@@ -92,10 +71,12 @@ bool TransferElimination::run(Graph &graph) {
     // Build next-use map for Belady eviction decisions.
     auto next_use = build_next_use_map(nodes);
 
-    // Identify pinned tensors (used in loop bodies, don't evict).
+    // Identify pinned tensors (referenced by a sub-graph body, don't evict). A body numbers its
+    // tensors independently of this graph, so the question is asked of the storage, not the id.
+    auto const                   guard = EscapeAnalysis::over(graph);
     std::unordered_set<TensorId> pinned;
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (is_loop_tensor(nodes, tid)) {
+        if (guard.touched_by_subtree(tid)) {
             pinned.insert(tid);
         }
     }

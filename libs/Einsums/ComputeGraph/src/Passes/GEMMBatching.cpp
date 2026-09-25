@@ -16,10 +16,11 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <bit>
+#include <compare>
 #include <complex>
 #include <cstdint>
 #include <map>
-#include <tuple>
 #include <unordered_set>
 #include <vector>
 
@@ -32,19 +33,31 @@ namespace {
 // Two einsums can be merged iff every field here matches AND they live at
 // the same dependency level (level handled separately in the outer map).
 
-struct BatchKey {
-    int        m, n, k;
-    char       trans_a, trans_b;
-    BlasScalar scalar;
-    // Alpha/beta bit-equal so we don't accidentally batch 1.0 with
-    // 0.9999… (common precision drift would break the semantic match).
-    std::uint64_t alpha_bits;
-    std::uint64_t beta_bits;
+/// The exact bits of a prefactor's real and imaginary parts. The batch applies ONE alpha and ONE
+/// beta to every member, so members must agree on the value itself: comparing bits keeps 1.0 apart
+/// from 0.9999... and orders NaNs too. A hash of the value used to stand in for it here, and two
+/// prefactors that collided would have been batched under the first member's.
+struct PrefactorBits {
+    std::uint64_t real;
+    std::uint64_t imag;
 
-    bool operator<(BatchKey const &o) const {
-        return std::tie(m, n, k, trans_a, trans_b, scalar, alpha_bits, beta_bits) <
-               std::tie(o.m, o.n, o.k, o.trans_a, o.trans_b, o.scalar, o.alpha_bits, o.beta_bits);
+    explicit PrefactorBits(PrefactorScalar const &value) {
+        auto const z = as<std::complex<double>>(value);
+        real         = std::bit_cast<std::uint64_t>(z.real());
+        imag         = std::bit_cast<std::uint64_t>(z.imag());
     }
+
+    auto operator<=>(PrefactorBits const &) const = default;
+};
+
+struct BatchKey {
+    int           m, n, k;
+    char          trans_a, trans_b;
+    BlasScalar    scalar;
+    PrefactorBits alpha;
+    PrefactorBits beta;
+
+    auto operator<=>(BatchKey const &) const = default;
 };
 
 } // namespace
@@ -87,7 +100,7 @@ bool GEMMBatching::run(Graph &graph) {
         auto *desc = nodes[nd].op_data.get_if<EinsumDescriptor>();
         if (!desc || !desc->gemm_hint)
             continue; // non-GEMM-pattern einsums skipped by capture
-        if (desc->conj_a || desc->conj_b)
+        if (live_conj_a(*desc) || live_conj_b(*desc))
             continue; // conjugated einsums aren't batched (conj not threaded through the batch rewrite)
         // A GEMM-shaped einsum lists its two operands first and its destination as its one output;
         // an accumulating one also lists the destination among its inputs, after them. The batch
@@ -95,17 +108,14 @@ bool GEMMBatching::run(Graph &graph) {
         if (nodes[nd].inputs.size() < 2 || nodes[nd].outputs.size() != 1)
             continue;
 
-        BatchKey key;
-        key.m       = desc->gemm_hint->m;
-        key.n       = desc->gemm_hint->n;
-        key.k       = desc->gemm_hint->k;
-        key.trans_a = desc->gemm_hint->trans_a;
-        key.trans_b = desc->gemm_hint->trans_b;
-        key.scalar  = desc->gemm_hint->scalar;
-        // PrefactorScalar carries dtype info too; fold both index + bytes
-        // into the batching key so we never group differently-typed prefactors.
-        key.alpha_bits = static_cast<std::uint64_t>(hash(desc->ab_prefactor));
-        key.beta_bits  = static_cast<std::uint64_t>(hash(desc->c_prefactor));
+        BatchKey const key{.m       = desc->gemm_hint->m,
+                           .n       = desc->gemm_hint->n,
+                           .k       = desc->gemm_hint->k,
+                           .trans_a = desc->gemm_hint->trans_a,
+                           .trans_b = desc->gemm_hint->trans_b,
+                           .scalar  = desc->gemm_hint->scalar,
+                           .alpha   = PrefactorBits{live_ab_prefactor(*desc)},
+                           .beta    = PrefactorBits{live_c_prefactor(*desc)}};
         groups[{level[nd], key}].push_back(nd);
     }
 
@@ -218,11 +228,10 @@ bool GEMMBatching::run(Graph &graph) {
         d.ldc     = ldc;
         d.trans_a = key.trans_a;
         d.trans_b = key.trans_b;
-        // The descriptor carries the full complex prefactor; the batch key
-        // (alpha_bits/beta_bits) already hashes the full value, so only einsums
-        // with bit-identical prefactors (real and imaginary) are grouped here.
-        d.alpha       = as<std::complex<double>>(first_desc->ab_prefactor);
-        d.beta        = as<std::complex<double>>(first_desc->c_prefactor);
+        // The descriptor carries the full complex prefactor; the batch key holds
+        // its exact bits, so every member of the group has this same value.
+        d.alpha       = as<std::complex<double>>(live_ab_prefactor(*first_desc));
+        d.beta        = as<std::complex<double>>(live_c_prefactor(*first_desc));
         d.batch_count = static_cast<int>(group.size());
         d.scalar      = key.scalar;
 

@@ -689,17 +689,6 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         // call for three operands, a third of a small contraction's whole eager call.
         namespace la = linear_algebra::detail;
 
-        // ── DOT product ──────────────────────────────────────────────
-        if (a_rank == 1 && b_rank == 1 && c_rank <= 1) {
-            if (c_idx.empty() || (links.size() == a_idx.size())) {
-                ProfileAnnotate("dispatch", "dot_runtime");
-                last_dispatch_route() = "dot_runtime";
-                T const temp          = la::dot(A.impl(), B.impl());
-                C->data()[0]          = c_pf * C->data()[0] + ab_pf * temp;
-                return;
-            }
-        }
-
         // ── GEMV: matrix × vector → vector ───────────────────────────
         if (a_rank == 2 && b_rank == 1 && c_rank == 1) {
             if (links.size() == 1) {

@@ -43,13 +43,14 @@ std::optional<OperatorWrite> as_operator_write(Node const &node, std::size_t ind
     if (desc == nullptr || desc->operators.empty()) {
         return std::nullopt;
     }
-    bool const overwrites = desc->params != nullptr ? is_zero(desc->params->beta) : desc->beta == std::complex<double>{0.0, 0.0};
-    if (!overwrites) {
+    if (!pure_overwrite(node)) {
         return std::nullopt;
     }
+    // Without a params block the snapshot is the value; keep it complex only when it is.
+    PrefactorScalar const snapshot = desc->alpha.imag() == 0.0 ? PrefactorScalar{desc->alpha.real()} : PrefactorScalar{desc->alpha};
     return OperatorWrite{.index     = index,
                          .source    = node.inputs[0],
-                         .alpha     = desc->params != nullptr ? desc->params->alpha : PrefactorScalar{desc->alpha.real()},
+                         .alpha     = desc->params != nullptr ? desc->params->alpha : snapshot,
                          .operators = desc->operators};
 }
 

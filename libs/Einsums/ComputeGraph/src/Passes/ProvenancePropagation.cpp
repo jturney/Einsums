@@ -62,6 +62,7 @@ std::vector<std::string> ProvenancePropagation::explain() const {
 }
 
 bool ProvenancePropagation::run(Graph &graph) {
+    PassCounter const propagated{_num_propagated};
     graph.topological_sort();
 
     // A body's handle for a caller's tensor is the SAME tensor, not a view of it, so a tag
@@ -110,9 +111,13 @@ bool ProvenancePropagation::run(Graph &graph) {
         }
 
         // A tag only describes the WHOLE tensor, so an output of a different shape is not the
-        // same object however the node is labelled. Cheap, and it catches a rank-reducing or
-        // rank-changing permute that no other check here would.
-        if (source->dims != target->dims && source->rank != target->rank) {
+        // same object however the node is labelled. A relabeling keeps the rank and permutes the
+        // extents; anything else (a rank change, a different size along some axis) is not one.
+        auto sorted_dims = [](std::vector<std::size_t> dims) {
+            std::ranges::sort(dims);
+            return dims;
+        };
+        if (source->rank != target->rank || sorted_dims(source->dims) != sorted_dims(target->dims)) {
             note_skip("the output has a different shape from the tagged input",
                       fmt::format("node '{}': '{}' is rank {} and '{}' is rank {}", node.label, source->name, source->rank, target->name,
                                   target->rank));
@@ -124,9 +129,10 @@ bool ProvenancePropagation::run(Graph &graph) {
         report(2, fmt::format("carried tag '{}' from '{}' to '{}' across {}", source->tag.name, source->name, target->name, node.kind));
     }
 
-    if (_num_propagated != 0) {
-        report(1, fmt::format("carried a provenance tag onto {} tensor(s)", _num_propagated));
-        EINSUMS_LOG_INFO("ProvenancePropagation: carried a provenance tag onto {} tensor(s)", _num_propagated);
+    // This graph's own count: the member is the total over every sub-graph visited so far.
+    if (propagated.moved()) {
+        report(1, fmt::format("carried a provenance tag onto {} tensor(s)", propagated.delta()));
+        EINSUMS_LOG_INFO("ProvenancePropagation: carried a provenance tag onto {} tensor(s)", propagated.delta());
     }
     // Annotations only; the node set is untouched, which the pass manager checks.
     return false;

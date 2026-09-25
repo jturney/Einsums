@@ -1770,3 +1770,30 @@ TEST_CASE("GPU pass pipeline: node ordering is valid after all passes", "[Comput
         }
     }
 }
+
+// ─── DeviceShadowMap ────────────────────────────────────────────────────────
+
+// The map held raw device pointers with a defaulted move-assignment, so moving
+// into a non-empty map dropped its buffers without freeing them (Graph's move
+// reaches it). The mock backend allocates real heap memory, which is what lets
+// the sanitizer legs' leak checker see a regression here.
+TEST_CASE("DeviceShadowMap - move-assignment and growth free what they replace", "[ComputeGraph][GPU]") {
+    cg::DeviceShadowMap target;
+    REQUIRE(target.ensure(cg::TensorId{1}, 64) != nullptr);
+    REQUIRE(target.ensure(cg::TensorId{2}, 64) != nullptr);
+
+    // Growth replaces the buffer; the old one goes back to the device.
+    void *const grown = target.ensure(cg::TensorId{1}, 4096);
+    REQUIRE(grown != nullptr);
+    CHECK(target.get(cg::TensorId{1}) == grown);
+    CHECK(target.ensure(cg::TensorId{1}, 16) == grown); // never shrinks
+
+    cg::DeviceShadowMap source;
+    void *const         kept = source.ensure(cg::TensorId{3}, 128);
+    REQUIRE(kept != nullptr);
+
+    target = std::move(source);
+    CHECK(target.size() == 1);
+    CHECK(target.get(cg::TensorId{3}) == kept);
+    CHECK_FALSE(target.has(cg::TensorId{1}));
+}

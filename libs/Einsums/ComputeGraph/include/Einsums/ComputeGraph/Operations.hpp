@@ -75,12 +75,22 @@ inline void reject_if_capturing(char const *message) {
 
 /// A dense rank-2 copy of @p A, which the returning-form LAPACK wrappers need
 /// because they run against the compile-time-rank kernels while their own
-/// operand is runtime-rank.
+/// operand is runtime-rank. Copied through @p A's strides, since a view may be
+/// a transpose or a slice; a flat copy of its bytes read the wrong elements.
 template <typename AType>
 auto to_static_matrix(AType const &A) -> Tensor<typename AType::ValueType, 2> {
-    using T = typename AType::ValueType;
-    Tensor<T, 2> out{A.name(), A.dim(0), A.dim(1)};
-    std::memcpy(out.data(), A.data(), A.size() * sizeof(T));
+    using T                = typename AType::ValueType;
+    std::size_t const rows = A.dim(0);
+    std::size_t const cols = A.dim(1);
+    Tensor<T, 2>      out{A.name(), rows, cols};
+    T const          *src = A.data();
+    std::size_t const s0  = A.stride(0);
+    std::size_t const s1  = A.stride(1);
+    for (std::size_t j = 0; j < cols; ++j) {
+        for (std::size_t i = 0; i < rows; ++i) {
+            out(i, j) = src[i * s0 + j * s1];
+        }
+    }
     return out;
 }
 
@@ -5943,42 +5953,32 @@ void validate_einsum_dims(ParsedEinsumSpec const &parsed, AType const &A, BType 
 template <typename AType, typename BType, typename CType>
 ParsedEinsumSpec prepare_einsum(EinsumFormatString const &spec, AType const &A, BType const &B, CType const &C, bool &conj_a,
                                 bool &conj_b) {
-    // Operand rank ↔ spec consistency check. When the spec is a literal,
-    // ``spec.counts`` is populated at consteval time and folds to compile-
-    // time constants here; for typed tensors with a static ::Rank the whole
-    // condition is a constant comparison and the throw-branch is dead-code-
-    // eliminated. For runtime-rank tensors (RuntimeTensor) the check fires
-    // against ``tensor.rank()``. Spec strings built at runtime, ``Python``
-    // bindings, user input, leave ``counts.known == false`` and skip the
-    // check entirely (matching the "compile-time when possible, silent
-    // otherwise" policy).
-    if (spec.counts.known) {
-        std::size_t const a_rank = tensor_rank(A);
-        std::size_t const b_rank = tensor_rank(B);
-        std::size_t const c_rank = tensor_rank(C);
-        if (a_rank != spec.counts.a) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand A has rank {} but spec expects {} indices for A", a_rank,
-                                    spec.counts.a);
-        }
-        if (b_rank != spec.counts.b) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand B has rank {} but spec expects {} indices for B", b_rank,
-                                    spec.counts.b);
-        }
-        // Scalar-output convention: an empty C operand in the spec
-        // (e.g. ``" <- i ; i"`` for DOT) accepts either rank-0 or a rank-1
-        // single-element tensor. Otherwise C's rank must equal the index count.
-        bool const c_ok = (spec.counts.c == 0) ? (c_rank <= 1) : (c_rank == spec.counts.c);
-        if (!c_ok) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand C has rank {} but spec expects {} indices for C", c_rank,
-                                    spec.counts.c);
-        }
-    }
-
     auto parse_result = parse_einsum_spec(static_cast<std::string_view>(spec));
     if (!parse_result) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}", parse_result.error().message);
     }
     auto parsed = std::move(parse_result.value());
+
+    // Each operand's rank has to match its index count. Checked for every spec, however it was built: a spec
+    // that arrives as data (Python, a pass) is the common case, and a rank-3 A under "ij <- ik ; kj" otherwise
+    // runs to completion reading the wrong elements.
+    std::size_t const a_rank = tensor_rank(A);
+    std::size_t const b_rank = tensor_rank(B);
+    std::size_t const c_rank = tensor_rank(C);
+    if (a_rank != parsed.a_indices.size()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand A has rank {} but spec '{}' gives A {} indices", a_rank,
+                                parsed.raw, parsed.a_indices.size());
+    }
+    if (b_rank != parsed.b_indices.size()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand B has rank {} but spec '{}' gives B {} indices", b_rank,
+                                parsed.raw, parsed.b_indices.size());
+    }
+    // Scalar-output convention: an empty C (``" <- i ; i"``) accepts a rank-0 or a rank-1 single-element tensor.
+    if (parsed.c_indices.empty() ? c_rank > 1 : c_rank != parsed.c_indices.size()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: operand C has rank {} but spec '{}' gives C {} indices", c_rank,
+                                parsed.raw, parsed.c_indices.size());
+    }
+
     // A ``conj(...)`` wrapper in the spec ORs with the conj_a / conj_b kwargs.
     conj_a = conj_a || parsed.conj_a;
     conj_b = conj_b || parsed.conj_b;

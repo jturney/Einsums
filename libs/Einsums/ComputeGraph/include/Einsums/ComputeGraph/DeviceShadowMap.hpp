@@ -10,9 +10,26 @@
 #include <Einsums/GPU/Runtime.hpp>
 
 #include <cstddef>
+#include <memory>
 #include <unordered_map>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
+
+namespace detail {
+
+struct DeviceFree {
+    void operator()(void *ptr) const noexcept { gpu::device_free(ptr); }
+};
+
+// One owned device buffer, so replacing, erasing, destroying and move-assigning all free what they
+// drop. DeviceShadowMap used to hold raw pointers with a defaulted move-assignment, which overwrote
+// a non-empty map's buffers without freeing them.
+struct DeviceShadow {
+    std::unique_ptr<void, DeviceFree> ptr;
+    size_t                            bytes{0}; // what ptr holds; zero when the allocation failed
+};
+
+} // namespace detail
 
 /**
  * @brief Manages device (GPU) shadow allocations for tensors.
@@ -26,16 +43,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  */
 class DeviceShadowMap {
   public:
-    DeviceShadowMap() = default;
-    ~DeviceShadowMap() { free_all(); }
-
-    DeviceShadowMap(DeviceShadowMap const &)            = delete;
-    DeviceShadowMap &operator=(DeviceShadowMap const &) = delete;
-    DeviceShadowMap(DeviceShadowMap &&)                 = default;
-    DeviceShadowMap &operator=(DeviceShadowMap &&)      = default;
-
     /// Allocate a device shadow for a tensor if not already allocated.
-    /// Returns the device pointer.
+    /// Returns the device pointer, or nullptr when the device is out of memory.
     void *ensure(TensorId tid, size_t bytes) {
         auto it = _shadows.find(tid);
         if (it != _shadows.end()) {
@@ -46,49 +55,38 @@ class DeviceShadowMap {
             // allocation and the other overruns it. Grow rather than truncate,
             // since a too-small device buffer is a heap corruption on the device.
             if (bytes > it->second.bytes) {
-                gpu::device_free(it->second.ptr);
-                auto grown       = gpu::device_malloc(bytes);
-                it->second.ptr   = grown ? grown.value() : nullptr;
-                it->second.bytes = bytes;
+                it->second = allocate(bytes);
             }
-            return it->second.ptr;
+            return it->second.ptr.get();
         }
-
-        auto  result  = gpu::device_malloc(bytes);
-        void *ptr     = result ? result.value() : nullptr;
-        _shadows[tid] = {.ptr = ptr, .bytes = bytes};
-        return ptr;
+        return _shadows.emplace(tid, allocate(bytes)).first->second.ptr.get();
     }
 
     /// Get the device pointer for a tensor, or nullptr if not allocated.
     [[nodiscard]] void *get(TensorId tid) const {
         auto it = _shadows.find(tid);
-        return it != _shadows.end() ? it->second.ptr : nullptr;
+        return it != _shadows.end() ? it->second.ptr.get() : nullptr;
     }
 
     /// Check if a shadow exists for the given tensor.
-    [[nodiscard]] bool has(TensorId tid) const { return _shadows.find(tid) != _shadows.end(); }
+    [[nodiscard]] bool has(TensorId tid) const { return _shadows.contains(tid); }
 
     /// Free all device shadows.
-    void free_all() {
-        for (auto &[tid, shadow] : _shadows) {
-            if (shadow.ptr) {
-                gpu::device_free(shadow.ptr);
-                shadow.ptr = nullptr;
-            }
-        }
-        _shadows.clear();
-    }
+    void free_all() { _shadows.clear(); }
 
     /// Number of allocated shadows.
     [[nodiscard]] size_t size() const { return _shadows.size(); }
 
   private:
-    struct Shadow {
-        void  *ptr{nullptr};
-        size_t bytes{0};
-    };
-    std::unordered_map<TensorId, Shadow> _shadows;
+    static detail::DeviceShadow allocate(size_t bytes) {
+        auto result = gpu::device_malloc(bytes);
+        if (!result) {
+            return {};
+        }
+        return {.ptr = std::unique_ptr<void, detail::DeviceFree>{result.value()}, .bytes = bytes};
+    }
+
+    std::unordered_map<TensorId, detail::DeviceShadow> _shadows;
 };
 
 EINSUMS_NAMESPACE_END(compute_graph)

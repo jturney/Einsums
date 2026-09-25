@@ -73,13 +73,22 @@ def gen_element_wise_fusion(rng):
     return [("scale", 2.0, 0), ("scale", 3.0, 0)], _pool(rng), [], []
 
 
-def gen_permute_fusion(rng):
-    """A transpose with a single consumer, folded into that consumer's slot."""
-    return [("perm", 1.0, 0.0, 0, 1), ("einsum", _SQ_SPEC, 1.0, 1, 2, 0.0, 3)], _pool(rng), [], []
-
-
 # ── Builder generators ─────────────────────────────────────────────────────
 # These need something the statement format cannot say.
+
+
+def gen_permute_fusion(rng):
+    """A transpose into graph scratch with a single consumer, folded into that consumer's slot.
+
+    The transpose has to write graph scratch: fusing removes the only write to
+    its output, which the pass will not do to a tensor the caller holds.
+    """
+    def build(g, m, v, t, name):
+        w = g.create_zero_tensor(f"{name}_w", [3, 3], dtype="float64")
+        with cg.capture(g):
+            einsums.permute("ji <- ij", w, m[0])
+            einsums.einsum(_SQ_SPEC, m[3], w, m[2])
+    return build, _pool(rng), [], []
 
 
 def gen_cse(rng):

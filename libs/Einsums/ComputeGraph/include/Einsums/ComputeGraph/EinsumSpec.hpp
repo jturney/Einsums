@@ -262,164 +262,6 @@ constexpr bool is_einsum_char(char c) {
            c == '/';                                                    // group separator inside P(...)
 }
 
-/// @brief Strip the leading run of ``P(...)`` operators off a term.
-///
-/// Shared by the @c consteval index counter and the structural validators, both
-/// of which have to see the operand list the way the runtime parser will. The
-/// input is NOT whitespace-stripped, so leading blanks are skipped between
-/// operators the way the runtime parser's pre-stripped input has none.
-///
-/// Returns @p s unchanged when it does not start with an operator, and stops at
-/// the first unterminated one so the validator can reject it separately.
-constexpr std::string_view strip_permutation_operators(std::string_view s) {
-    while (true) {
-        std::size_t begin = 0;
-        while (begin < s.size() && (s[begin] == ' ' || s[begin] == '\t')) {
-            ++begin;
-        }
-        std::string_view const rest = s.substr(begin);
-        if (rest.size() < 2 || rest[0] != 'P' || rest[1] != '(') {
-            return s;
-        }
-        std::size_t const close = rest.find(')');
-        if (close == std::string_view::npos) {
-            return s; // unterminated; validate_* reports it
-        }
-        s = rest.substr(close + 1);
-    }
-}
-
-} // namespace detail
-
-// ─── Compile-time index counter ─────────────────────────────────────────────
-//
-// Used by cg::einsum to validate that the rank of each typed tensor operand
-// matches the number of indices the spec asks for. Runs at consteval time
-// from EinsumFormatString's literal ctor so the resulting counts fold to
-// compile-time constants at every well-typed callsite. Zeroed for runtime-
-// constructed strings, the dispatcher then skips the rank check, matching
-// the "if possible, compile-time check; otherwise silent" policy.
-
-/// @brief Per-operand index counts parsed from an einsum spec.
-struct IndexCounts {
-    std::size_t c     = 0;
-    std::size_t a     = 0;
-    std::size_t b     = 0;
-    bool        known = false; ///< true when populated by a consteval parse.
-};
-
-namespace detail {
-
-// Count indices in one operand: comma-separated multi-char tokens if a
-// comma is present, otherwise one index per non-whitespace character.
-// Used by parse_index_counts below.
-constexpr std::size_t count_operand_indices(std::string_view s) {
-    // A ``P(...)`` prefix names OUTPUT letters, not operand slots, so it must go
-    // before anything is counted. Leaving it in counted its letters as operand
-    // indices, which left ``counts.known`` true and made cg::einsum reject a
-    // correctly-ranked operand at compile time, pointing at the wrong thing.
-    s = strip_permutation_operators(s);
-
-    while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
-        s.remove_prefix(1);
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
-        s.remove_suffix(1);
-    if (s.empty())
-        return 0;
-
-    // A ``conj(...)`` wrapper counts as just the indices it encloses.
-    if (s.size() >= 6 && s.starts_with("conj(") && s.back() == ')')
-        s = s.substr(5, s.size() - 6);
-
-    bool has_comma = false;
-    for (char const ch : s) {
-        if (ch == ',') {
-            has_comma = true;
-            break;
-        }
-    }
-
-    if (has_comma) {
-        std::size_t commas   = 0;
-        bool        in_token = false;
-        for (char const ch : s) {
-            if (ch == ',') {
-                ++commas;
-                in_token = false;
-            } else if (ch != ' ' && ch != '\t') {
-                in_token = true;
-            }
-        }
-        return commas + 1;
-    }
-
-    std::size_t n = 0;
-    for (char const ch : s) {
-        if (ch != ' ' && ch != '\t')
-            ++n;
-    }
-    return n;
-}
-
-} // namespace detail
-
-/// @brief Parse per-operand index counts from a (validated) einsum spec.
-///
-/// Accepts both arrow forms: ``"C <- A ; B"`` and ``"A ; B -> C"``.
-/// Returns ``known = false`` for malformed input so the caller falls back
-/// to runtime parsing (validate_einsum_spec is responsible for diagnostics).
-constexpr IndexCounts parse_index_counts(std::string_view spec) {
-    IndexCounts r;
-
-    std::size_t arrow_pos = std::string_view::npos;
-    bool        reverse   = false;
-    for (std::size_t i = 0; i + 1 < spec.size(); ++i) {
-        if (spec[i] == '<' && spec[i + 1] == '-') {
-            arrow_pos = i;
-            reverse   = false;
-            break;
-        }
-        if (spec[i] == '-' && spec[i + 1] == '>') {
-            arrow_pos = i;
-            reverse   = true;
-            break;
-        }
-    }
-    if (arrow_pos == std::string_view::npos)
-        return r;
-
-    std::size_t const semi = spec.find(';');
-    if (semi == std::string_view::npos)
-        return r;
-
-    std::string_view target_part;
-    std::string_view a_part;
-    std::string_view b_part;
-    if (reverse) {
-        // "A ; B -> C"
-        if (semi >= arrow_pos)
-            return r;
-        a_part      = spec.substr(0, semi);
-        b_part      = spec.substr(semi + 1, arrow_pos - semi - 1);
-        target_part = spec.substr(arrow_pos + 2);
-    } else {
-        // "C <- A ; B"
-        if (semi <= arrow_pos)
-            return r;
-        target_part = spec.substr(0, arrow_pos);
-        a_part      = spec.substr(arrow_pos + 2, semi - arrow_pos - 2);
-        b_part      = spec.substr(semi + 1);
-    }
-
-    r.c     = detail::count_operand_indices(target_part);
-    r.a     = detail::count_operand_indices(a_part);
-    r.b     = detail::count_operand_indices(b_part);
-    r.known = true;
-    return r;
-}
-
-namespace detail {
-
 /// @brief Structural check on the ``conj(...)`` and ``P(...)`` wrappers.
 ///
 /// Character-level only: parentheses balance, never nest, and never enclose
@@ -506,10 +348,6 @@ constexpr bool validate_einsum_spec(std::string_view spec) {
  */
 struct EinsumFormatString {
     std::string_view str;
-    /// Per-operand index counts. Populated at consteval time when the
-    /// string is a literal; ``counts.known == false`` for runtime-built
-    /// strings. Used by cg::einsum to validate operand ranks.
-    IndexCounts counts;
 
     /**
      * @brief Construct from a string literal with compile-time validation.
@@ -520,7 +358,7 @@ struct EinsumFormatString {
      * @param[in] s The einsum specification string literal.
      */
     template <size_t N>
-    consteval EinsumFormatString(char const (&s)[N]) : str(s, N - 1), counts(parse_index_counts(str)) { // NOLINT
+    consteval EinsumFormatString(char const (&s)[N]) : str(s, N - 1) { // NOLINT
         if (!validate_einsum_spec(str)) {
             throw "Invalid einsum format string: must contain exactly one '<-' or '->' and exactly one ';'";
         }
@@ -540,7 +378,7 @@ struct EinsumFormatString {
      *
      * @param[in] s The einsum specification string.
      */
-    EinsumFormatString(std::string_view s) : str(s), counts{} {} // NOLINT(google-explicit-constructor)
+    EinsumFormatString(std::string_view s) : str(s) {} // NOLINT(google-explicit-constructor)
 
     /// Implicit conversion to string_view for use with parse_einsum_spec().
     constexpr operator std::string_view() const { return str; }

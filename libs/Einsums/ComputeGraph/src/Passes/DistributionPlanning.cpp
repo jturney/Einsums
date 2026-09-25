@@ -13,6 +13,7 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -143,8 +144,10 @@ bool DistributionPlanning::run(Graph &graph) {
     };
     std::unordered_map<TensorId, std::vector<TensorRole>> tensor_usage;
 
-    // Synthetic ContractionSpecs for Permute nodes (all indices are "shared")
-    std::vector<packed_gemm::ContractionSpec> permute_specs;
+    // Synthetic ContractionSpecs for Permute nodes (all indices are "shared"). A deque,
+    // because tensor_usage keeps pointers into it while later permutes append: a vector
+    // reallocated under them once the graph held a second permute.
+    std::deque<packed_gemm::ContractionSpec> permute_specs;
 
     auto const &nodes = graph.nodes();
     for (size_t idx = 0; idx < nodes.size(); idx++) {

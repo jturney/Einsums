@@ -3,9 +3,11 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/PermuteFusion.hpp>
+#include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
@@ -19,11 +21,14 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 namespace {
 
 /// Is this permute safe to fuse into a consumer's index pattern?
-/// Must be a pure axis reordering, no scaling, no accumulation, no
-/// duplicate or missing labels (which would be a diagonal/sum, not a
-/// permutation).
+/// Must be a pure axis reordering: no scaling, no accumulation, no
+/// permutation operator (an antisymmetrizer is a sum of terms, not a
+/// relabeling), and no duplicate or missing labels (which would be a
+/// diagonal/sum, not a permutation). The prefactors are the live ones the
+/// executor reads, not the capture snapshot.
 bool can_fuse(PermuteDescriptor const &p) {
-    if (p.alpha != 1.0 || p.beta != 0.0)
+    bool const pure_scalars = p.params != nullptr ? is_one(p.params->alpha) && is_zero(p.params->beta) : p.alpha == 1.0 && p.beta == 0.0;
+    if (!pure_scalars || !p.operators.empty())
         return false;
     if (p.a_indices.size() != p.c_indices.size())
         return false;
@@ -33,11 +38,7 @@ bool can_fuse(PermuteDescriptor const &p) {
     auto sorted_c = p.c_indices;
     std::ranges::sort(sorted_a);
     std::ranges::sort(sorted_c);
-    if (sorted_a != sorted_c)
-        return false;
-    if (std::ranges::adjacent_find(sorted_c) != sorted_c.end())
-        return false;
-    return true;
+    return sorted_a == sorted_c && std::ranges::adjacent_find(sorted_c) == sorted_c.end();
 }
 
 /// Rewrite an einsum slot's subscript to absorb a preceding permute.
@@ -158,6 +159,7 @@ bool PermuteFusion::run(Graph &graph) {
         for (auto tid : n.inputs)
             consumer_count[tid]++;
 
+    auto const        guard = EscapeAnalysis::over(graph);
     std::vector<bool> remove(nodes.size(), false);
 
     for (size_t nd = 0; nd < nodes.size(); nd++) {
@@ -174,16 +176,30 @@ bool PermuteFusion::run(Graph &graph) {
             size_t const prod_idx = prod_it->second;
             if (remove[prod_idx])
                 continue; // already consumed by an earlier fusion this pass
-            if (nodes[prod_idx].kind != OpKind::Permute && nodes[prod_idx].kind != OpKind::Transpose)
+            if (nodes[prod_idx].kind != OpKind::Permute)
                 continue;
 
             _num_candidates++;
+
+            // Removing the permute leaves its output unwritten, so the output has to be
+            // graph-owned scratch nobody can read afterwards, and no sub-graph body may
+            // read it: a Loop node does not list its body's reads.
+            auto const *handle = graph.find_tensor(input_tid);
+            if (handle == nullptr || !handle->is_intermediate) {
+                note_skip("the permuted tensor is not a graph-owned intermediate, so it must still be written",
+                          fmt::format("permute node {}", nodes[prod_idx].id));
+                continue;
+            }
+            if (guard.touched_by_subtree(input_tid)) {
+                note_skip("a child sub-graph references the permuted tensor", fmt::format("permute node {}", nodes[prod_idx].id));
+                continue;
+            }
 
             // Safety: exactly one consumer. If the permuted tensor is
             // read by multiple downstream nodes, removing the permute
             // would break them.
             if (consumer_count[input_tid] != 1) {
-                EINSUMS_LOG_INFO("PermuteFusion: skip {} (node {}) — {} consumers, need exactly 1", nodes[prod_idx].label,
+                EINSUMS_LOG_INFO("PermuteFusion: skip {} (node {}): {} consumers, need exactly 1", nodes[prod_idx].label,
                                  nodes[prod_idx].id, consumer_count[input_tid]);
                 note_skip("permuted tensor has more than one consumer, so the permute cannot be removed",
                           fmt::format("permute node {} has {} consumers", nodes[prod_idx].id, consumer_count[input_tid]));
@@ -191,9 +207,9 @@ bool PermuteFusion::run(Graph &graph) {
             }
 
             if (!try_fuse(graph, nodes, prod_idx, nd, slot)) {
-                EINSUMS_LOG_INFO("PermuteFusion: skip {} (node {}) — non-pure permute (alpha/beta/dup indices)", nodes[prod_idx].label,
-                                 nodes[prod_idx].id);
-                note_skip("permute is not pure (scaled, accumulating, or repeats an index)",
+                EINSUMS_LOG_INFO("PermuteFusion: skip {} (node {}): non-pure permute (alpha/beta/operators/dup indices)",
+                                 nodes[prod_idx].label, nodes[prod_idx].id);
+                note_skip("permute is not pure (scaled, accumulating, antisymmetrized, or repeats an index)",
                           fmt::format("permute node {}", nodes[prod_idx].id));
                 continue;
             }
