@@ -126,7 +126,7 @@ std::function<void()> build_transpose(packed_gemm::ScalarType dtype, OperandAcce
 /// ``linear_algebra::detail::axpy`` / ``axpby``.
 ///
 /// The ``beta == 1`` arm is the BLAS axpy fast path, matching the capture-time
-/// axpy executor and ``Graph::make_axpby_executor``: a pass may rewrite beta
+/// axpy executor: a pass may rewrite beta
 /// away from 1, so the choice belongs to the executor rather than to the kind.
 std::function<void()> build_axpby(packed_gemm::ScalarType dtype, AxpbyDescriptor const &desc, OperandAccessor const &x,
                                   OperandAccessor const &y) {
@@ -1250,9 +1250,8 @@ std::string reconstruction_blocker(Node const &node) {
     case OpKind::Transpose:
         // A transpose is fully described by its kind, dtype, rank and operands;
         // anything else on op_data means the node is not the transpose it claims.
-        return node.op_data.holds<std::monostate>()
-                   ? std::string{}
-                   : fmt::format("Transpose: expected no descriptor, found {}", descriptor_name(node.op_data));
+        return node.op_data.empty() ? std::string{}
+                                    : fmt::format("Transpose: expected no descriptor, found {}", descriptor_name(node.op_data));
     case OpKind::Axpby:
         return node.op_data.holds<AxpbyDescriptor>()
                    ? std::string{}
@@ -1311,7 +1310,7 @@ std::string reconstruction_blocker(Node const &node) {
         if (node.op_data.holds<ElementTransformDescriptor>()) {
             return {};
         }
-        if (node.op_data.holds<std::monostate>()) {
+        if (node.op_data.empty()) {
             return "ElementTransform: the kernel is an anonymous closure; register a named op with element_ops::register_op and "
                    "capture with cg::element_transform(C, name)";
         }

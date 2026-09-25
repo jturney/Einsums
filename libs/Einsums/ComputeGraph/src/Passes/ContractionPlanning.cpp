@@ -626,10 +626,10 @@ bool ContractionPlanning::run(Graph &graph) {
             bool all_rank2 = true;
             for (auto const &ci : chain) {
                 for (auto tid : {ci.input_a_tid, ci.input_b_tid, ci.output_tid}) {
-                    auto it = graph.tensors_map().find(tid);
-                    if (it == graph.tensors_map().end())
+                    auto const *handle = graph.find_tensor(tid);
+                    if (handle == nullptr)
                         continue;
-                    if (it->second.rank != 2 || (it->second.is_runtime && !it->second.impl_fn)) {
+                    if (handle->rank != 2 || (handle->is_runtime && !handle->impl_fn)) {
                         all_rank2 = false;
                         break;
                     }
@@ -685,8 +685,8 @@ bool ContractionPlanning::run(Graph &graph) {
                 }
                 bool interior_observable = false;
                 for (auto const tid : interior) {
-                    auto const it = graph.tensors_map().find(tid);
-                    if (it == graph.tensors_map().end() || !it->second.is_intermediate || it->second.aliases != 0) {
+                    auto const *handle = graph.find_tensor(tid);
+                    if (handle == nullptr || !handle->is_intermediate || handle->aliases != 0) {
                         interior_observable = true; // user-visible (or aliased): the eliminated write is observable
                         break;
                     }
@@ -729,24 +729,22 @@ bool ContractionPlanning::run(Graph &graph) {
                 // deferred intermediate has no buffer yet to compare either; that is the same key
                 // `Materialization` audits its own sub-graph uses by, for the same reason.
                 if (!interior_observable) {
-                    std::unordered_set<std::string>          below;
-                    std::function<void(Graph const &)> const collect = [&](Graph const &sub) {
+                    std::unordered_set<std::string> below;
+                    std::as_const(graph).for_each_descendant([&](Graph const &sub) {
                         for (auto const &node : sub.nodes()) {
                             if (is_lifecycle(node.kind)) {
                                 continue;
                             }
                             for (auto const tid : node.inputs) {
-                                if (auto const hit = sub.tensors_map().find(tid); hit != sub.tensors_map().end()) {
-                                    below.insert(hit->second.name);
+                                if (auto const *handle = sub.find_tensor(tid)) {
+                                    below.insert(handle->name);
                                 }
                             }
                         }
-                        sub.for_each_subgraph(collect);
-                    };
-                    std::as_const(graph).for_each_subgraph(collect);
+                    });
                     for (auto const tid : interior) {
-                        auto const hit = graph.tensors_map().find(tid);
-                        if (hit != graph.tensors_map().end() && below.count(hit->second.name) != 0) {
+                        auto const *handle = graph.find_tensor(tid);
+                        if (handle != nullptr && below.count(handle->name) != 0) {
                             interior_observable = true;
                             break;
                         }

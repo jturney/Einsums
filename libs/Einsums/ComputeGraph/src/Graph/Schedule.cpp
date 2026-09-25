@@ -33,16 +33,11 @@
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
-#include <Einsums/ComputeGraph/StringDispatch.hpp>
-#include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
-#include <Einsums/GPU/BLAS.hpp>
-#include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/TaskPool/WidthBudget.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #include <fmt/format.h>
 
@@ -67,6 +62,47 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
+namespace {
+
+/// A view's box in its alias root's axis space: per axis, the half-open range [lo, hi).
+using Box = std::vector<std::pair<std::int64_t, std::int64_t>>;
+
+/// Whether two boxes might share an element. A missing box, or two of different rank, is
+/// unprovable and so answers yes; one axis with an empty intersection makes them disjoint.
+bool may_overlap(Box const *a, Box const *b) {
+    if (a == nullptr || b == nullptr || a->size() != b->size()) {
+        return true;
+    }
+    for (size_t d = 0; d < a->size(); ++d) {
+        if (std::max((*a)[d].first, (*b)[d].first) >= std::min((*a)[d].second, (*b)[d].second)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// The byte range a tensor's elements occupy, [lo, hi).
+struct ByteSpan {
+    char const *lo;
+    char const *hi;
+};
+
+/// The byte span of every tensor whose storage can be reasoned about; a deferred or tiled tensor
+/// has none and is left out.
+std::unordered_map<TensorId, ByteSpan> byte_spans(std::unordered_map<TensorId, TensorHandle> const &tensors) {
+    std::unordered_map<TensorId, ByteSpan> out;
+    for (auto const &[id, handle] : tensors) {
+        char const *lo = nullptr;
+        char const *hi = nullptr;
+        if (alias_geometry::handle_byte_span(handle, lo, hi)) {
+            out.emplace(id, ByteSpan{.lo = lo, .hi = hi});
+        }
+    }
+    return out;
+}
+
+} // namespace
+
 using namespace alias_geometry;
 
 void Graph::collect_subtree_referenced_ptrs(std::unordered_set<void const *> &out, bool *saw_unresolved) const {
@@ -74,9 +110,9 @@ void Graph::collect_subtree_referenced_ptrs(std::unordered_set<void const *> &ou
     // own nodes. Resolves each TensorId through that graph's own map.
     auto collect_own = [saw_unresolved](Graph const &g, std::unordered_set<void const *> &acc) {
         auto add = [&](TensorId tid) {
-            auto it = g._tensors.find(tid);
-            if (it != g._tensors.end() && it->second.tensor_ptr != nullptr) {
-                acc.insert(it->second.tensor_ptr);
+            auto const *handle = g.find_tensor(tid);
+            if (handle != nullptr && handle->tensor_ptr != nullptr) {
+                acc.insert(handle->tensor_ptr);
                 return;
             }
             // Either this graph's map has no entry for the id or the handle is an
@@ -122,10 +158,10 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::subtree_io(Node c
                 // through a view inside the subtree is attributed to the parent
                 // tensor: otherwise an op outside the control-flow node that
                 // touches the owner sees no dependency and can be misordered.
-                auto it = sub._tensors.find(sub.resolve_alias(tid));
-                if (it != sub._tensors.end() && it->second.tensor_ptr != nullptr) {
-                    dst.insert(it->second.tensor_ptr);
-                    rep_handle.emplace(it->second.tensor_ptr, it->second);
+                auto const *handle = sub.find_tensor(sub.resolve_alias(tid));
+                if (handle != nullptr && handle->tensor_ptr != nullptr) {
+                    dst.insert(handle->tensor_ptr);
+                    rep_handle.emplace(handle->tensor_ptr, *handle);
                 }
             };
             for (auto tid : nd.inputs) {
@@ -253,8 +289,6 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     // full-cover bug and the 32-hop cap. Sharing it also widened what is
     // describable here, since the walk composes chains - a permuted view and a
     // view of a view were both refused outright by the scan this replaces.
-    using Box = std::vector<std::pair<std::int64_t, std::int64_t>>; // per root axis: [lo, hi)
-
     std::unordered_map<TensorId, Box>      view_box;    // view tid -> box in root axis space
     std::unordered_map<TensorId, TensorId> view_parent; // view tid -> alias ROOT tid
     StructuralAliasResolver                resolver(*this);
@@ -296,18 +330,6 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
         view_parent.emplace(tid, h.aliases);
         view_box.emplace(tid, Box(h.alias_box.begin(), h.alias_box.end()));
     }
-
-    auto const may_overlap = [](Box const *a, Box const *b) {
-        if (a == nullptr || b == nullptr || a->size() != b->size()) {
-            return true; // unprovable -> conservative
-        }
-        for (size_t d = 0; d < a->size(); ++d) {
-            if (std::max((*a)[d].first, (*b)[d].first) >= std::min((*a)[d].second, (*b)[d].second)) {
-                return false; // some axis with empty intersection -> disjoint
-            }
-        }
-        return true;
-    };
 
     // a fully inside b. A retired reader may only be dropped when the write
     // COVERS it: an overlapped-but-uncovered reader still needs WAR edges
@@ -471,18 +493,7 @@ std::vector<std::string> Graph::unjustified_hazard_edges() {
         return tid;
     };
 
-    struct Span {
-        char const *lo;
-        char const *hi;
-    };
-    std::unordered_map<TensorId, Span> span;
-    for (auto const &[id, handle] : _tensors) {
-        char const *lo = nullptr;
-        char const *hi = nullptr;
-        if (handle_byte_span(handle, lo, hi)) {
-            span.emplace(id, Span{.lo = lo, .hi = hi});
-        }
-    }
+    auto const span = byte_spans(_tensors);
 
     auto const may_share = [&](TensorId a, TensorId b) {
         if (a == b) {
@@ -560,18 +571,7 @@ void Graph::verify_level_independence() const {
     // reasoned about (deferred allocation, tiled layout) is skipped entirely
     // rather than guessed at; the hazard scan skips it too, so a conflict
     // through one is out of scope for both.
-    struct Span {
-        char const *lo;
-        char const *hi;
-    };
-    std::unordered_map<TensorId, Span> span;
-    for (auto const &[id, h] : _tensors) {
-        char const *lo = nullptr;
-        char const *hi = nullptr;
-        if (handle_byte_span(h, lo, hi)) {
-            span.emplace(id, Span{.lo = lo, .hi = hi});
-        }
-    }
+    auto const span = byte_spans(_tensors);
     if (span.size() < 2) {
         return;
     }
@@ -579,7 +579,7 @@ void Graph::verify_level_independence() const {
     // Group tensors whose byte ranges overlap, by merging sorted intervals.
     // This is the independence that matters: it never consults `aliases`, so a
     // defect in the alias links cannot hide a conflict from this check.
-    std::vector<std::pair<TensorId, Span>> ordered(span.begin(), span.end());
+    std::vector<std::pair<TensorId, ByteSpan>> ordered(span.begin(), span.end());
     std::ranges::sort(ordered, [](auto const &a, auto const &b) {
         return a.second.lo != b.second.lo ? a.second.lo < b.second.lo : a.second.hi > b.second.hi;
     });
@@ -618,19 +618,6 @@ void Graph::verify_level_independence() const {
         TensorId tid;
         bool     is_write;
     };
-    using Box = std::vector<std::pair<std::int64_t, std::int64_t>>;
-
-    auto const may_overlap = [](Box const *a, Box const *b) {
-        if (a == nullptr || b == nullptr || a->size() != b->size()) {
-            return true;
-        }
-        for (size_t d = 0; d < a->size(); ++d) {
-            if (std::max((*a)[d].first, (*b)[d].first) >= std::min((*a)[d].second, (*b)[d].second)) {
-                return false;
-            }
-        }
-        return true;
-    };
 
     // A region's box in its group root's axis space, derived from the two
     // handles alone. Memoized: a tensor read by many nodes derives once.
@@ -643,19 +630,19 @@ void Graph::verify_level_independence() const {
         if (auto it = box_cache.find(tid); it != box_cache.end()) {
             return &it->second;
         }
-        auto const self  = _tensors.find(tid);
-        auto const owner = _tensors.find(root[g]);
-        if (self == _tensors.end() || owner == _tensors.end()) {
+        auto const *self  = find_tensor(tid);
+        auto const *owner = find_tensor(root[g]);
+        if (self == nullptr || owner == nullptr) {
             box_absent.insert(tid);
             return nullptr;
         }
         Box derived;
         if (tid == root[g]) {
-            derived.reserve(owner->second.dims.size());
-            for (size_t const d : owner->second.dims) {
+            derived.reserve(owner->dims.size());
+            for (size_t const d : owner->dims) {
                 derived.emplace_back(0, static_cast<std::int64_t>(d));
             }
-        } else if (!derive_alias_box(owner->second, self->second, derived)) {
+        } else if (!derive_alias_box(*owner, *self, derived)) {
             box_absent.insert(tid);
             return nullptr;
         }
@@ -958,6 +945,7 @@ std::vector<size_t> Graph::schedule_level_sizes() {
 
 void Graph::topological_sort() {
     std::scoped_lock const lock(*_content_mutex);
+    assign_node_ids();
     // Defense in depth: a pass that mutates the node list without declaring
     // it (mark_sorted / add_node) leaves stale flags. A count mismatch is the
     // detectable symptom; downgrade to a full re-sort instead of letting a

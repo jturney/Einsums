@@ -21,18 +21,12 @@
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
-#include <Einsums/ComputeGraph/Optimizer.hpp> // For OptimizerPass and PassManager
 #include <Einsums/ComputeGraph/Options.hpp>
-#include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
-#include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
-#include <Einsums/GPU/BLAS.hpp>
-#include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/TaskPool/WidthBudget.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TypeSupport/JsonEscape.hpp>
 
@@ -159,13 +153,13 @@ void Graph::rebuild_profile_strings() {
                 std::vector<size_t> const *shared  = nullptr;
                 bool                       uniform = true;
                 for (TensorId const tid : ids) {
-                    auto it = _tensors.find(tid);
-                    if (it == _tensors.end() || it->second.dims.empty()) {
+                    auto const *handle = find_tensor(tid);
+                    if (handle == nullptr || handle->dims.empty()) {
                         continue;
                     }
                     if (shared == nullptr) {
-                        shared = &it->second.dims;
-                    } else if (it->second.dims != *shared) {
+                        shared = &handle->dims;
+                    } else if (handle->dims != *shared) {
                         uniform = false;
                         break;
                     }
@@ -176,11 +170,11 @@ void Graph::rebuild_profile_strings() {
                 return;
             }
             for (TensorId const tid : ids) {
-                auto it = _tensors.find(tid);
-                if (it != _tensors.end() && !it->second.dims.empty()) {
-                    text(fmt::format("{}.{}", prefix, it->second.name), fmt::format("{}", fmt::join(it->second.dims, "x")));
-                    if (it->second.is_distributed) {
-                        text(fmt::format("{}.{}.distributed", prefix, it->second.name), "true");
+                auto const *handle = find_tensor(tid);
+                if (handle != nullptr && !handle->dims.empty()) {
+                    text(fmt::format("{}.{}", prefix, handle->name), fmt::format("{}", fmt::join(handle->dims, "x")));
+                    if (handle->is_distributed) {
+                        text(fmt::format("{}.{}.distributed", prefix, handle->name), "true");
                     }
                 }
             }
@@ -243,8 +237,8 @@ void Graph::print_summary(std::ostream &os) const {
         std::vector<std::string_view> names;
         names.reserve(ids.size());
         for (auto const tid : ids) {
-            auto const it = _tensors.find(tid);
-            names.emplace_back(it != _tensors.end() ? std::string_view{it->second.name} : std::string_view{"?"});
+            auto const *handle = find_tensor(tid);
+            names.emplace_back(handle != nullptr ? std::string_view{handle->name} : std::string_view{"?"});
         }
         return fmt::format("{}", fmt::join(names, ", "));
     };

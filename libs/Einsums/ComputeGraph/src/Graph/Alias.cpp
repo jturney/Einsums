@@ -26,20 +26,12 @@
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
-#include <Einsums/ComputeGraph/Optimizer.hpp> // For OptimizerPass and PassManager
 #include <Einsums/ComputeGraph/Options.hpp>
-#include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
-#include <Einsums/ComputeGraph/StringDispatch.hpp>
-#include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
-#include <Einsums/GPU/BLAS.hpp>
-#include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/TaskPool/WidthBudget.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #include <fmt/format.h>
 
@@ -70,8 +62,8 @@ void Graph::declare_alias(TensorId child, TensorId parent) {
     if (child == 0 || parent == 0 || child == parent) {
         return;
     }
-    auto const child_it = _tensors.find(child);
-    if (child_it == _tensors.end() || !_tensors.contains(parent)) {
+    auto *child_handle = find_tensor(child);
+    if (child_handle == nullptr || !_tensors.contains(parent)) {
         return;
     }
     // A cycle would turn every later resolve_alias into a throw, and the message
@@ -85,17 +77,17 @@ void Graph::declare_alias(TensorId child, TensorId parent) {
                                     "alias declaration has to name a containing buffer, and containment is not symmetric",
                                     _name, child, parent);
         }
-        auto const it = _tensors.find(walk);
-        if (it == _tensors.end()) {
+        auto const *link = find_tensor(walk);
+        if (link == nullptr) {
             break;
         }
-        walk = it->second.aliases;
+        walk = link->aliases;
     }
     _declared_aliases.insert_or_assign(child, parent);
-    child_it->second.aliases = parent;
+    child_handle->aliases = parent;
     // A declaration says WHICH buffer, never WHICH REGION - the manifest schema
     // carries no box - so the declared alias conflicts as the whole parent.
-    child_it->second.alias_box.clear();
+    child_handle->alias_box.clear();
     // The hazard relation just changed, so anything derived from it is stale.
     _deps_valid = false;
 }
@@ -113,12 +105,12 @@ void Graph::clear_alias_links() noexcept {
 
 void Graph::apply_declared_aliases() {
     for (auto const &[child, parent] : _declared_aliases) {
-        auto const it = _tensors.find(child);
-        if (it == _tensors.end() || child == parent || !_tensors.contains(parent)) {
+        auto *handle = find_tensor(child);
+        if (handle == nullptr || child == parent || !_tensors.contains(parent)) {
             continue;
         }
-        it->second.aliases = parent;
-        it->second.alias_box.clear();
+        handle->aliases = parent;
+        handle->alias_box.clear();
     }
 }
 
@@ -163,12 +155,12 @@ void Graph::link_alias_structural() {
         updates.push_back({.tid = id, .root = res.root, .box = std::move(box)});
     }
     for (auto &update : updates) {
-        auto const it = _tensors.find(update.tid);
-        if (it == _tensors.end()) {
+        auto *handle = find_tensor(update.tid);
+        if (handle == nullptr) {
             continue;
         }
-        it->second.aliases   = update.root;
-        it->second.alias_box = std::move(update.box);
+        handle->aliases   = update.root;
+        handle->alias_box = std::move(update.box);
     }
 
     // Deliberately NOT marking the pointer derivation as done. Structural adds
@@ -317,15 +309,15 @@ void Graph::link_alias_storage() {
                     // in sorted order, so the owner's own link is already final
                     // here and one resolve gives the true root.
                     TensorId const root_id = resolve_alias(owner->first);
-                    auto const     root    = _tensors.find(root_id);
-                    if (root == _tensors.end()) {
+                    auto const    *root    = find_tensor(root_id);
+                    if (root == nullptr) {
                         break;
                     }
                     self->second.aliases = root_id;
                     // The box has to live in the axis space of whatever
                     // ``aliases`` names, which is now the root rather than the
                     // immediate container.
-                    if (!derive_alias_box(root->second, self->second, self->second.alias_box)) {
+                    if (!derive_alias_box(*root, self->second, self->second.alias_box)) {
                         self->second.alias_box.clear(); // unknown box reads as the whole parent
                     }
                     break;
@@ -383,11 +375,11 @@ void Graph::link_alias_storage() {
                 } else if (root != first_root) {
                     mixed = true;
                 }
-                auto const it = _tensors.find(root);
-                if (it == _tensors.end()) {
+                auto const *handle = find_tensor(root);
+                if (handle == nullptr) {
                     continue;
                 }
-                size_t const extent = it->second.total_elems();
+                size_t const extent = handle->total_elems();
                 if (canonical == 0 || extent > widest || (extent == widest && root < canonical)) {
                     canonical = root;
                     widest    = extent;
@@ -399,15 +391,15 @@ void Graph::link_alias_storage() {
                     if (root == canonical) {
                         continue;
                     }
-                    auto it = _tensors.find(root);
-                    if (it == _tensors.end()) {
+                    auto *handle = find_tensor(root);
+                    if (handle == nullptr) {
                         continue;
                     }
                     // Only ever a root, and only ever onto a DIFFERENT root of
                     // the same run, so the relation stays acyclic and every
                     // member of the run resolves to `canonical` from here.
-                    it->second.aliases = canonical;
-                    it->second.alias_box.clear();
+                    handle->aliases = canonical;
+                    handle->alias_box.clear();
                 }
             }
             run_begin = run_end + 1;

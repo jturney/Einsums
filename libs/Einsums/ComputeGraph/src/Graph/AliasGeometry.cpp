@@ -27,20 +27,12 @@
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
-#include <Einsums/ComputeGraph/Optimizer.hpp> // For OptimizerPass and PassManager
 #include <Einsums/ComputeGraph/Options.hpp>
-#include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
-#include <Einsums/ComputeGraph/StringDispatch.hpp>
-#include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
-#include <Einsums/GPU/BLAS.hpp>
-#include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/TaskPool/WidthBudget.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #include <fmt/format.h>
 

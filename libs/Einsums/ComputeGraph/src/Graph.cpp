@@ -33,20 +33,12 @@
 #include <Einsums/ComputeGraph/Error.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
-#include <Einsums/ComputeGraph/Optimizer.hpp> // For OptimizerPass and PassManager
 #include <Einsums/ComputeGraph/Options.hpp>
-#include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
-#include <Einsums/ComputeGraph/StringDispatch.hpp>
-#include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
-#include <Einsums/GPU/BLAS.hpp>
-#include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/TaskPool/WidthBudget.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #include <fmt/format.h>
 
@@ -203,13 +195,18 @@ NodeId Graph::add_node(Node node) {
     node.id         = _next_node_id++;
     NodeId const id = node.id;
     _nodes.push_back(std::move(node));
-    _sorted                = false;
-    _deps_valid            = false;
-    _profile_strings_valid = false;
-    _executed              = false;
-    _analysis_version++;
+    _sorted = false;
+    note_node_edit();
     _structure_version++;
     return id;
+}
+
+void Graph::note_node_edit() noexcept {
+    _executed              = false;
+    _deps_valid            = false;
+    _profile_strings_valid = false;
+    _slots_validated       = false;
+    _analysis_version++;
 }
 
 size_t Graph::erase_nodes(std::vector<bool> const &remove) {
@@ -226,6 +223,9 @@ size_t Graph::erase_nodes(std::vector<bool> const &remove) {
     }
     _nodes = std::move(filtered);
     if (removed != 0) {
+        // Erasing keeps the survivors' relative order, so a sorted graph stays sorted; what the
+        // positions keyed is stale all the same.
+        note_node_edit();
         _structure_version++;
     }
     return removed;
@@ -475,6 +475,20 @@ void Graph::for_each_subgraph(std::function<void(Graph const &)> const &visitor)
     }
 }
 
+void Graph::for_each_descendant(std::function<void(Graph &)> const &visitor) {
+    for_each_subgraph([&visitor](Graph &sub) {
+        visitor(sub);
+        sub.for_each_descendant(visitor);
+    });
+}
+
+void Graph::for_each_descendant(std::function<void(Graph const &)> const &visitor) const {
+    for_each_subgraph([&visitor](Graph const &sub) {
+        visitor(sub);
+        sub.for_each_descendant(visitor);
+    });
+}
+
 EINSUMS_NAMESPACE_END(compute_graph)
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
@@ -510,16 +524,6 @@ void *Graph::live_tensor_ptr(TensorId id) const noexcept {
     return handle->live_ptr();
 }
 
-void Graph::record_node_timing(NodeId id, OpKind kind, double duration_ms, unsigned width) {
-    std::scoped_lock const lock(*_content_mutex);
-    _timing_samples.push_back({.id = id, .kind = kind, .duration_ms = duration_ms, .width = width});
-    _timing_report_valid = false;
-}
-
-void Graph::record_node_timing(NodeId id, std::string const & /*label*/, OpKind kind, double duration_ms) {
-    record_node_timing(id, kind, duration_ms);
-}
-
 void Graph::record_node_timings(std::vector<NodeTimingSample> &&samples) {
     std::scoped_lock const lock(*_content_mutex);
     if (_timing_samples.empty()) {
@@ -542,11 +546,11 @@ std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> 
 
 TensorId Graph::resolve_alias(TensorId id) const {
     for (size_t hops = 0; hops <= _tensors.size(); ++hops) {
-        auto it = _tensors.find(id);
-        if (it == _tensors.end() || it->second.aliases == 0) {
+        auto const *handle = find_tensor(id);
+        if (handle == nullptr || handle->aliases == 0) {
             return id;
         }
-        id = it->second.aliases;
+        id = handle->aliases;
     }
     EINSUMS_THROW_EXCEPTION(std::runtime_error,
                             "Graph '{}': alias chain from tensor {} exceeds the tensor count ({}), which means a "
@@ -555,18 +559,19 @@ TensorId Graph::resolve_alias(TensorId id) const {
 }
 
 void Graph::mark_sorted() {
-    _sorted   = true;
-    _executed = false;
-    // The caller vouches for the node ORDER, but node positions changed,
-    // so the position-keyed _deps lists must be rebuilt on next demand.
-    _deps_valid = false;
-    // Passes also rewrite labels/descriptors; refresh cached profiler
-    // payloads on next execute.
-    _profile_strings_valid = false;
-    // ... and slot pointers (arena slices, CSE redirects).
-    _slots_validated = false;
-    // Position-keyed analyses (UsageAnalysis) are stale too.
-    _analysis_version++;
+    // The caller vouches for the node ORDER, but node positions, labels, descriptors and slot
+    // pointers may all have changed.
+    _sorted = true;
+    assign_node_ids();
+    note_node_edit();
+}
+
+void Graph::assign_node_ids() {
+    for (auto &node : _nodes) {
+        if (node.id == unassigned_node_id) {
+            node.id = _next_node_id++;
+        }
+    }
 }
 
 double Graph::accuracy_budget_value() const noexcept {

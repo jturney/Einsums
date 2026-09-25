@@ -285,12 +285,16 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
         for (size_t bi = 0; bi < body_nodes.size(); bi++) {
             if (invariant[bi]) {
                 Node h = std::move(body_nodes[bi]);
+                // The body numbered this node; the parent issues its own id when the pass hands
+                // the graph back, or the two counters would name two nodes with one id.
+                h.id = unassigned_node_id;
                 for (auto &tid : h.inputs)
                     tid = remap_or_register(tid);
                 for (auto &tid : h.outputs)
                     tid = remap_or_register(tid);
                 EINSUMS_LOG_INFO("LoopInvariantHoisting: hoisting '{}' out of loop '{}'", h.label, nodes[loop_idx].label);
-                report(2, fmt::format("hoist '{}' out of loop '{}' — inputs invariant across iterations", h.label, nodes[loop_idx].label));
+                report(2, fmt::format("hoist '{}' out of loop '{}': its inputs are invariant across iterations", h.label,
+                                      nodes[loop_idx].label));
                 hoisted.push_back(std::move(h));
                 _num_hoisted++;
             } else {

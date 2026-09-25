@@ -614,7 +614,7 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
 
     switch (node.kind) {
     case OpKind::Transpose:
-        node.descriptor = std::monostate{};
+        node.descriptor = OpData{};
         return;
     case OpKind::Scale: {
         ScaleDescriptor desc;

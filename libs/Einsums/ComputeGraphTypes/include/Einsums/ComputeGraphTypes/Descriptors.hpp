@@ -72,6 +72,7 @@ constexpr BlasScalar blas_scalar_of() {
     } else if constexpr (std::is_same_v<T, std::complex<float>>) {
         return BlasScalar::ComplexFloat;
     } else {
+        static_assert(std::is_same_v<T, std::complex<double>>, "blas_scalar_of: not a BLAS element type");
         return BlasScalar::ComplexDouble;
     }
 }

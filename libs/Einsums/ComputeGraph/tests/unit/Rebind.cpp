@@ -175,6 +175,37 @@ TEST_CASE("update_prefactors - correct after CSE removes an earlier einsum", "[C
     REQUIRE(max_abs > 1e-10);
 }
 
+TEST_CASE("update_prefactors - finds its einsum after Materialization inserts nodes", "[ComputeGraph][Rebind]") {
+    // Defends node identity across pass-inserted nodes. Materialize, Free and Initialize nodes
+    // used to keep the default id 0, which is also the first captured node's id, so a lookup by
+    // the einsum's id found the Materialize placed in front of it and threw "not an einsum".
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 4);
+
+    cg::Graph graph("update_pf_after_materialize");
+    auto     &C = graph.declare_tensor<double, 2>(std::string("C"), 4, 4);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
+    }
+    cg::NodeId const einsum_id = graph.nodes()[0].id;
+
+    auto [modified, pass] = graph.apply<cg::passes::Materialization>();
+    REQUIRE(modified);
+    REQUIRE(graph.nodes()[0].kind == cg::OpKind::Materialize);
+
+    graph.update_prefactors(einsum_id, 0.0, 2.0);
+    graph.execute();
+
+    auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 2.0, A, B);
+    for (size_t ii = 0; ii < 4; ii++) {
+        for (size_t jj = 0; jj < 4; jj++) {
+            REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < 1e-12);
+        }
+    }
+}
+
 TEST_CASE("update_prefactors - changes computation", "[ComputeGraph][Rebind]") {
     auto A = create_random_tensor<double>("A", 3, 3);
     auto B = create_random_tensor<double>("B", 3, 3);

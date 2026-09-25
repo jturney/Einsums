@@ -293,14 +293,13 @@ bool DistributionPlanning::run(Graph &graph) {
         // intermediates maintain consistent distributions.
         auto const &node = nodes[usage.node_idx];
         for (size_t inp_idx = 0; inp_idx < node.inputs.size(); inp_idx++) {
-            auto inp_it = graph.tensors_map().find(node.inputs[inp_idx]);
-            if (inp_it == graph.tensors_map().end())
+            auto const *inp_handle = graph.find_tensor(node.inputs[inp_idx]);
+            if (inp_handle == nullptr)
                 continue;
-            auto const &inp_handle = inp_it->second;
-            if (!inp_handle.is_distributed || !inp_handle.distribution_info)
+            if (!inp_handle->is_distributed || !inp_handle->distribution_info)
                 continue;
 
-            auto        inp_desc    = std::static_pointer_cast<comm::DistributionDescriptor>(inp_handle.distribution_info);
+            auto        inp_desc    = std::static_pointer_cast<comm::DistributionDescriptor>(inp_handle->distribution_info);
             auto const &inp_indices = (inp_idx == 0) ? usage.spec->a_indices : usage.spec->b_indices;
 
             for (size_t id = 0; id < inp_desc->dim_to_axis.size() && id < inp_indices.size(); id++) {

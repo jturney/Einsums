@@ -42,7 +42,7 @@ from _fuzz_diff_common import *  # shared fuzz/differential harness
 # whose tensors are GeneralRuntimeTensor<T> the axpy chain then added a runtime
 # source into a fixed-rank destination and threw RankError. DF now builds a
 # RUNTIME accumulator (create_zero_runtime_tensor_dynamic) when its operands are
-# runtime, and dispatch_binary/dispatch_unary cast runtime handles correctly, so
+# runtime, and its nodes' executors read runtime handles through their impls, so
 # the rewrite executes on runtime tensors and is fuzzed with full execution below.
 #
 # --- Fixed: DistributiveFactoring program order -------------------------------

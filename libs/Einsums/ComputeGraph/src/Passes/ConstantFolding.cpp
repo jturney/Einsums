@@ -84,8 +84,8 @@ bool ConstantFolding::run(Graph &graph) {
     // (create_*_tensor) are Materialized from the start and fold normally.
     auto all_tensors_materialized = [&](Node const &node) {
         auto materialized = [&](TensorId tid) {
-            auto it = graph.tensors_map().find(tid);
-            return it != graph.tensors_map().end() && it->second.alloc_state == AllocState::Materialized;
+            auto const *handle = graph.find_tensor(tid);
+            return handle != nullptr && handle->alloc_state == AllocState::Materialized;
         };
         for (auto tid : node.inputs) {
             if (!materialized(tid)) {

@@ -153,7 +153,7 @@ void Graph::learn_space_extents(TensorHandle const &handle) {
         if (!space.valid()) {
             continue;
         }
-        auto const [it, inserted] = _space_extents.try_emplace(space.value(), handle.dims[axis], true);
+        auto const [it, inserted] = _space_extents.try_emplace(space, handle.dims[axis], true);
         if (!inserted && it->second.first != handle.dims[axis]) {
             // Not an error. Two axes over one space with different extents is exactly what a
             // ragged family is, and the design says so: PNO domains have a different virtual
@@ -168,7 +168,7 @@ std::optional<std::size_t> Graph::space_extent(SpaceId space) const noexcept {
     if (!space.valid()) {
         return std::nullopt;
     }
-    auto const it = _space_extents.find(space.value());
+    auto const it = _space_extents.find(space);
     if (it == _space_extents.end() || !it->second.second) {
         return std::nullopt;
     }
@@ -180,17 +180,17 @@ void Graph::pin_space_extent(SpaceId space, std::size_t extent) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': pin_space_extent: the id does not name a space", _name);
     }
     if (extent == 0) {
-        _space_extents.erase(space.value());
+        _space_extents.erase(space);
         return;
     }
-    _space_extents[space.value()] = {extent, true};
+    _space_extents[space] = {extent, true};
 }
 
 std::optional<std::vector<int>> Graph::space_tiling(SpaceId space) const {
     if (!space.valid()) {
         return std::nullopt;
     }
-    auto const it = _space_tiles.find(space.value());
+    auto const it = _space_tiles.find(space);
     if (it == _space_tiles.end() || !it->second.second) {
         return std::nullopt;
     }
@@ -202,7 +202,7 @@ void Graph::pin_space_tiling(SpaceId space, std::vector<int> tile_sizes) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': pin_space_tiling: the id does not name a space", _name);
     }
     if (tile_sizes.empty()) {
-        _space_tiles.erase(space.value());
+        _space_tiles.erase(space);
         return;
     }
 
@@ -227,13 +227,13 @@ void Graph::pin_space_tiling(SpaceId space, std::vector<int> tile_sizes) {
                                 _name, name, total, *known);
     }
 
-    auto const [it, inserted] = _space_tiles.try_emplace(space.value(), tile_sizes, true);
+    auto const [it, inserted] = _space_tiles.try_emplace(space, tile_sizes, true);
     if (!inserted && it->second.first != tile_sizes) {
         // Mirrors the extent rule: a second, different statement is not an error but it does
         // leave the space without a canonical answer, so an axis has to bring its own.
         it->second.second = false;
     }
-    _space_extents[space.value()] = {total, true};
+    _space_extents[space] = {total, true};
 }
 
 Graph::ResolvedTiledShape Graph::resolve_tiled_shape(std::vector<SpaceTiling> const &shape, std::string const &name) const {
@@ -266,7 +266,7 @@ Graph::ResolvedTiledShape Graph::resolve_tiled_shape(std::vector<SpaceTiling> co
         if (axis_tiles.empty()) {
             auto const canonical = space_tiling(entry.space);
             if (!canonical.has_value()) {
-                auto const it = _space_tiles.find(entry.space.value());
+                auto const it = _space_tiles.find(entry.space);
                 if (it != _space_tiles.end() && !it->second.second) {
                     EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                             "Graph '{}': tensor '{}' axis {} takes its tiling from index space '{}', which has been "
@@ -337,7 +337,7 @@ Graph::ResolvedSpaceShape Graph::resolve_space_shape(std::vector<SpaceDim> const
         if (!extent.has_value()) {
             SpaceRegistry const &registry = space_registry();
             std::string const    space    = registry.space(dim.space).name;
-            auto const           it       = _space_extents.find(dim.space.value());
+            auto const           it       = _space_extents.find(dim.space);
             if (it != _space_extents.end() && !it->second.second) {
                 EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                         "Graph '{}': tensor '{}' axis {} is shaped by index space '{}', whose extent differs between "

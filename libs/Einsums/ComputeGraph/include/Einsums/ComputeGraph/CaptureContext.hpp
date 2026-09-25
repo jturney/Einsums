@@ -76,7 +76,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * @brief Check if this thread is currently in capture mode.
      * @return True if between begin_capture() and end_capture().
      */
-    APIARY_EXPOSE [[nodiscard]] bool is_capturing() const { return _capturing; }
+    APIARY_EXPOSE [[nodiscard]] bool is_capturing() const { return _graph != nullptr; }
 
     /// Access the graph being captured into.
     [[nodiscard]] Graph *graph() const { return _graph; }
@@ -267,7 +267,6 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
     };
 
     Graph                               *_graph{nullptr};
-    bool                                 _capturing{false};
     std::unordered_map<void *, CachedId> _ptr_to_id; ///< Maps tensor address → TensorId for deduplication
 };
 
@@ -301,35 +300,14 @@ TensorId CaptureContext::get_or_register(TensorType const &tensor) {
         _ptr_to_id.erase(it);
     }
 
-    // Already registered with the graph (e.g. from create_tensor())? This
-    // was a linear scan of the tensor table, which made a capture quadratic
-    // in the number of distinct operands.
-    if (TensorId const tid = _graph->find_tensor_id_by_ptr(ptr); tid != 0) {
-        auto const *existing = _graph->find_tensor(tid);
-        if (existing != nullptr && detail::same_tensor(existing->caller_token, token)) {
-            _ptr_to_id[ptr] = {.id = tid, .token = token};
-            return tid;
-        }
-    }
-
-    // New tensor *to this graph*, register it. Inside a loop body or
-    // conditional branch this is also the path a parent-registered tensor
-    // takes: it gets a fresh default handle, deliberately dropping the
-    // parent's metadata. See the contract note above before "fixing" this.
-    //
-    // The handle's lambdas are baked over the graph's stand-in, not the
-    // caller's wrapper, so impl_fn / swap_data / the validator all reach an
-    // object the graph keeps alive. ``tensor_ptr`` still names the caller's
-    // tensor: it is the handle's identity, compared against user-held
-    // addresses all over the passes.
-    using Clean         = std::remove_cvref_t<TensorType>;
-    auto  owner         = _graph->adopt_operand(tensor);
-    auto &bound         = owner ? *static_cast<Clean *>(owner.get()) : const_cast<Clean &>(tensor);
-    auto  handle        = make_handle(bound, 0, ptr);
-    handle.owner        = std::move(owner);
-    handle.caller_token = token;
-    TensorId const id   = _graph->register_tensor(std::move(handle));
-    _ptr_to_id[ptr]     = {.id = id, .token = token};
+    // Already registered with the graph (e.g. from create_tensor()), or new to it: the graph's own
+    // registration answers both, and is what every other registering path uses. Inside a loop body
+    // or conditional branch a parent-registered tensor also takes the "new" path: it gets a fresh
+    // default handle, deliberately dropping the parent's metadata. See the contract note above
+    // before "fixing" this. The handle is bound to the graph's stand-in for the operand, not the
+    // caller's wrapper; ``tensor_ptr`` still names the caller's tensor, the handle's identity.
+    TensorId const id = _graph->register_operand(tensor);
+    _ptr_to_id[ptr]   = {.id = id, .token = token};
     return id;
 }
 

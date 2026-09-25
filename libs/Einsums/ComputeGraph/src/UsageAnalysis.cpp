@@ -84,33 +84,21 @@ UsageAnalysis UsageAnalysis::build(Graph &graph) {
         // sub-graphs. Recording own-list ids into a set keeps the subtree
         // pass from double-reporting the same buffer at the same position.
         std::unordered_set<TensorId> own_read, own_written;
-        for (auto const tid : node.inputs) {
-            TensorId const owner = graph.resolve_alias(tid);
-            if (own_read.insert(owner).second) {
-                ua._table[owner].uses.push_back(TensorUse{pos, node.kind, /*is_write=*/false, /*via_subtree=*/false});
+        auto const                   note = [&](auto const &ids, bool is_write, bool via_subtree) {
+            auto &seen = is_write ? own_written : own_read;
+            for (auto const tid : ids) {
+                TensorId const owner = graph.resolve_alias(tid);
+                if (seen.insert(owner).second) {
+                    ua._table[owner].uses.push_back(TensorUse{pos, node.kind, is_write, via_subtree});
+                }
             }
-        }
-        for (auto const tid : node.outputs) {
-            TensorId const owner = graph.resolve_alias(tid);
-            if (own_written.insert(owner).second) {
-                ua._table[owner].uses.push_back(TensorUse{pos, node.kind, /*is_write=*/true, /*via_subtree=*/false});
-            }
-        }
-
+        };
+        note(node.inputs, /*is_write=*/false, /*via_subtree=*/false);
+        note(node.outputs, /*is_write=*/true, /*via_subtree=*/false);
         if (is_control_flow(node.kind)) {
             auto [eff_in, eff_out] = graph.effective_io_cached(node, cache);
-            for (auto const tid : eff_in) {
-                TensorId const owner = graph.resolve_alias(tid);
-                if (own_read.insert(owner).second) {
-                    ua._table[owner].uses.push_back(TensorUse{pos, node.kind, /*is_write=*/false, /*via_subtree=*/true});
-                }
-            }
-            for (auto const tid : eff_out) {
-                TensorId const owner = graph.resolve_alias(tid);
-                if (own_written.insert(owner).second) {
-                    ua._table[owner].uses.push_back(TensorUse{pos, node.kind, /*is_write=*/true, /*via_subtree=*/true});
-                }
-            }
+            note(eff_in, /*is_write=*/false, /*via_subtree=*/true);
+            note(eff_out, /*is_write=*/true, /*via_subtree=*/true);
         }
     }
 

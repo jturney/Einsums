@@ -3451,22 +3451,6 @@ void grouped_batched_gemm_blocked(double alpha, std::vector<AType const *> a_lis
 // grouped_dot / grouped_axpby: a run of scalar-sized operations as ONE node
 // ─────────────────────────────────────────────────────────────────────────────
 
-namespace detail {
-
-/// Per-entry dims of a runtime- or statically-ranked tensor, for the shape
-/// agreement checks the grouped forms make once at capture.
-template <typename TensorType>
-std::vector<size_t> tensor_dims(TensorType const &t) {
-    size_t const        r = tensor_rank(t);
-    std::vector<size_t> dims(r);
-    for (size_t d = 0; d < r; d++) {
-        dims[d] = t.dim(d);
-    }
-    return dims;
-}
-
-} // namespace detail
-
 /// @brief One node holding many independent dot products:
 /// ``results[i]->data()[0] = sum(A_i * B_i)`` for every entry.
 ///

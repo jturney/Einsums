@@ -31,9 +31,10 @@ outside the builder and close over the arrays.
 Every operand a generator uses lives in the POOL, which the harness holds for
 the life of the trial, rather than being created inside the builder. That is
 partly hygiene and partly a live bug: dropping the caller's references after
-capture is safe for an unrewritten graph, and segfaults in
-``make_axpby_executor`` once ``DistributiveFactoring`` has folded the group.
-The pool sidesteps it; it does not fix it.
+capture is safe for an unrewritten graph, and segfaulted in the axpy
+executor ``DistributiveFactoring``'s folded group ran (``make_axpby_executor``,
+since replaced by the executor builder's) once the group was folded. The pool
+sidesteps it; whether the builder's executor still needs it is unverified.
 
 And a generator is only worth having if the pass FIRES on it, which is why the
 accompanying test asserts that rather than asserting the numbers come out

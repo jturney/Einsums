@@ -11,6 +11,7 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -97,6 +98,47 @@ TEST_CASE("Graph - to_json empty graph", "[ComputeGraph][JSON]") {
     REQUIRE(json.find("\"tensors\":[]") != std::string::npos);
     REQUIRE(json.find("\"nodes\":[]") != std::string::npos);
     REQUIRE(json.find("\"edges\":[]") != std::string::npos);
+}
+
+TEST_CASE("Graph - node ids stay unique through the default pipeline", "[ComputeGraph][NodeId]") {
+    // Node ids key update_prefactors, timing samples, the dot and JSON exports and the hazard
+    // scan's control-flow cache. Pass-built nodes (Materialize, Free, Initialize, transfers)
+    // used to keep the default id 0 and collide with the first captured node.
+    auto A = create_random_tensor<double>("A", 6, 5);
+    auto B = create_random_tensor<double>("B", 5, 6);
+    auto D = create_zero_tensor<double>("D", 6, 6);
+
+    cg::Graph graph("unique_ids");
+    auto     &W = graph.declare_tensor<double, 2>(std::string("W"), 6, 6);
+    auto     &T = graph.scratch<double, 2>("T", 6, 6);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &W, A, B);
+        cg::einsum("ik;kj->ij", &T, W, W);
+        cg::einsum("ik;kj->ij", &D, T, W);
+    }
+    auto pipeline = cg::PassManager::create_default();
+    pipeline.run(graph);
+
+    std::set<cg::NodeId> seen;
+    for (auto const &node : graph.nodes()) {
+        INFO(node.label << " id " << node.id);
+        REQUIRE(seen.insert(node.id).second);
+    }
+    REQUIRE(graph.num_nodes() > 3); // the pipeline inserted lifecycle nodes
+
+    graph.execute();
+    auto W_ref = create_zero_tensor<double>("Wref", 6, 6);
+    auto T_ref = create_zero_tensor<double>("Tref", 6, 6);
+    auto D_ref = create_zero_tensor<double>("Dref", 6, 6);
+    reference_einsum("ij <- ik ; kj", &W_ref, A, B);
+    reference_einsum("ij <- ik ; kj", &T_ref, W_ref, W_ref);
+    reference_einsum("ij <- ik ; kj", &D_ref, T_ref, W_ref);
+    for (size_t ii = 0; ii < 6; ii++) {
+        for (size_t jj = 0; jj < 6; jj++) {
+            REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < 1e-9 * (1.0 + std::abs(D_ref(ii, jj))));
+        }
+    }
 }
 
 TEST_CASE("Graph - move constructor", "[ComputeGraph][Move]") {
@@ -273,81 +315,6 @@ TEST_CASE("Graph - create_tensor_dynamic error on empty dims", "[ComputeGraph]")
     CHECK_FALSE(result.has_value());
     CHECK(result.error().kind == cg::GraphError::Kind::Type);
 }
-
-TEST_CASE("Graph - make_axpy_executor", "[ComputeGraph]") {
-    cg::Graph graph("axpy_test");
-    auto     &A = graph.create_tensor<double, 2>("A", 3, 3);
-    auto     &B = graph.create_tensor<double, 2>("B", 3, 3);
-
-    // Fill A with ones
-    for (size_t ii = 0; ii < 3; ii++)
-        for (size_t jj = 0; jj < 3; jj++)
-            A(ii, jj) = 1.0;
-    B.zero();
-
-    // Find tensor IDs
-    TensorId a_id = 0, b_id = 0;
-    for (auto const &[id, h] : graph.tensors_map()) {
-        if (h.name == "A")
-            a_id = id;
-        if (h.name == "B")
-            b_id = id;
-    }
-
-    auto executor = graph.make_axpy_executor(2.5, a_id, b_id);
-    executor();
-
-    for (size_t ii = 0; ii < 3; ii++)
-        for (size_t jj = 0; jj < 3; jj++)
-            REQUIRE_THAT(B(ii, jj), Catch::Matchers::WithinRel(2.5, 1e-12));
-}
-
-TEST_CASE("Graph - make_zero_executor", "[ComputeGraph]") {
-    cg::Graph graph("zero_test");
-    auto     &A = graph.create_tensor<double, 1>("A", 10);
-    for (size_t ii = 0; ii < 10; ii++)
-        A(ii) = 99.0;
-
-    TensorId a_id = 0;
-    for (auto const &[id, h] : graph.tensors_map()) {
-        if (h.name == "A")
-            a_id = id;
-    }
-
-    auto executor = graph.make_zero_executor(a_id);
-    executor();
-
-    for (size_t ii = 0; ii < 10; ii++)
-        REQUIRE(A(ii) == 0.0);
-}
-
-TEST_CASE("Graph - make_copy_executor", "[ComputeGraph]") {
-    cg::Graph graph("copy_test");
-    auto     &A = graph.create_tensor<double, 2>("A", 4, 4);
-    auto     &B = graph.create_tensor<double, 2>("B", 4, 4);
-
-    for (size_t ii = 0; ii < 4; ii++)
-        for (size_t jj = 0; jj < 4; jj++)
-            A(ii, jj) = static_cast<double>(ii * 4 + jj);
-    B.zero();
-
-    TensorId a_id = 0, b_id = 0;
-    for (auto const &[id, h] : graph.tensors_map()) {
-        if (h.name == "A")
-            a_id = id;
-        if (h.name == "B")
-            b_id = id;
-    }
-
-    auto executor = graph.make_copy_executor(a_id, b_id);
-    executor();
-
-    for (size_t ii = 0; ii < 4; ii++)
-        for (size_t jj = 0; jj < 4; jj++)
-            REQUIRE(B(ii, jj) == A(ii, jj));
-}
-
-// ─── Shape inference ────────────────────────────────────────────────────────
 
 TEST_CASE("Shape inference - valid graph passes", "[ComputeGraph][ShapeInference]") {
     auto A = create_random_tensor<double>("A", 4, 3);

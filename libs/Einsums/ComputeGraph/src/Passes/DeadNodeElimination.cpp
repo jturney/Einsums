@@ -133,15 +133,15 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
 
                 bool used_by_subgraph = false;
                 bool used_externally  = false;
-                if (auto it = graph.tensors_map().find(tid); it != graph.tensors_map().end() && it->second.tensor_ptr != nullptr) {
-                    used_by_subgraph = subtree_referenced.count(it->second.tensor_ptr) > 0;
+                if (auto const *handle = graph.find_tensor(tid); handle != nullptr && handle->tensor_ptr != nullptr) {
+                    used_by_subgraph = subtree_referenced.count(handle->tensor_ptr) > 0;
                     // Any reference from an enclosing graph (a parent node after
                     // this control-flow child, or a sibling loop body) keeps this
                     // output live. Conservative on purpose: a body tensor read
                     // only by an outside consumer must not have its producer
                     // eliminated, that would leave the reader observing unwritten
                     // storage.
-                    used_externally = external_refs.count(it->second.tensor_ptr) > 0;
+                    used_externally = external_refs.count(handle->tensor_ptr) > 0;
                 }
 
                 if (!is_intermediate || is_consumed || used_by_subgraph || used_externally) {

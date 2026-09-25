@@ -33,9 +33,9 @@ void count_subtree_writers(Graph const &graph, std::unordered_map<void const *, 
             // Resolve first: a write through a view of T is a write to T, and
             // counting the view object instead would report T as single-writer
             // while a different node overwrote it every iteration.
-            auto const hit = graph.tensors_map().find(graph.resolve_alias(tid));
-            if (hit != graph.tensors_map().end() && hit->second.tensor_ptr != nullptr) {
-                writers[hit->second.tensor_ptr]++;
+            auto const *handle = graph.find_tensor(graph.resolve_alias(tid));
+            if (handle != nullptr && handle->tensor_ptr != nullptr) {
+                writers[handle->tensor_ptr]++;
             }
         }
     }
@@ -110,17 +110,17 @@ int EscapeAnalysis::writer_count(TensorId id) const {
 }
 
 int EscapeAnalysis::subtree_writer_count(TensorId id) const {
-    auto const handle = _graph->tensors_map().find(_graph->resolve_alias(id));
-    if (handle == _graph->tensors_map().end() || handle->second.tensor_ptr == nullptr) {
+    auto const *handle = _graph->find_tensor(_graph->resolve_alias(id));
+    if (handle == nullptr || handle->tensor_ptr == nullptr) {
         return 0;
     }
-    auto const hit = _subtree_writers.find(handle->second.tensor_ptr);
+    auto const hit = _subtree_writers.find(handle->tensor_ptr);
     return hit == _subtree_writers.end() ? 0 : hit->second;
 }
 
 bool EscapeAnalysis::touched_by_subtree(TensorId id) const {
-    auto const handle = _graph->tensors_map().find(_graph->resolve_alias(id));
-    if (handle == _graph->tensors_map().end()) {
+    auto const *handle = _graph->find_tensor(_graph->resolve_alias(id));
+    if (handle == nullptr) {
         return true; // cannot prove otherwise
     }
     // A tensor with no pointer is a deferred shell whose storage is not attached
@@ -128,10 +128,10 @@ bool EscapeAnalysis::touched_by_subtree(TensorId id) const {
     // it as untouched: the pointer set cannot contain it either, and reporting
     // "touched" would decline every rewrite over a graph built from declare_*,
     // which is every graph the save/load path produces.
-    if (handle->second.tensor_ptr == nullptr) {
+    if (handle->tensor_ptr == nullptr) {
         return false;
     }
-    return _subtree_ptrs.count(handle->second.tensor_ptr) != 0;
+    return _subtree_ptrs.count(handle->tensor_ptr) != 0;
 }
 
 bool EscapeAnalysis::stable(TensorId id) const {
@@ -144,11 +144,11 @@ std::vector<TensorId> EscapeAnalysis::aliases_of(TensorId id) const {
 }
 
 Escape EscapeAnalysis::classify(TensorId id, std::unordered_set<NodeId> const &region) const {
-    auto const self = _graph->tensors_map().find(id);
-    if (self == _graph->tensors_map().end()) {
+    auto const *self = _graph->find_tensor(id);
+    if (self == nullptr) {
         return Escape::Unknown;
     }
-    if (!self->second.is_intermediate) {
+    if (!self->is_intermediate) {
         return Escape::UserOwned;
     }
 
@@ -170,8 +170,8 @@ Escape EscapeAnalysis::classify(TensorId id, std::unordered_set<NodeId> const &r
         if (alias == id) {
             continue;
         }
-        auto const other = _graph->tensors_map().find(alias);
-        if (other != _graph->tensors_map().end() && !other->second.is_intermediate) {
+        auto const *other = _graph->find_tensor(alias);
+        if (other != nullptr && !other->is_intermediate) {
             return Escape::AliasedFromOutside;
         }
     }

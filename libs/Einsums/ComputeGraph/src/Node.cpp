@@ -53,6 +53,10 @@ bool live_conj_b(EinsumDescriptor const &desc) noexcept {
     return desc.params != nullptr ? desc.params->conj_b : desc.conj_b;
 }
 
+void OpData::throw_wrong_descriptor(std::string_view wanted) const {
+    EINSUMS_THROW_EXCEPTION(std::logic_error, "OpData: the node holds {}, not a {}", name(), wanted);
+}
+
 EinsumIndexLists live_index_lists(EinsumDescriptor const &desc) noexcept {
     if (desc.indices != nullptr) {
         auto const &live = desc.indices->spec;

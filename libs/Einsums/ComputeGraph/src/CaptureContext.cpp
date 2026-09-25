@@ -18,27 +18,25 @@ CaptureContext &CaptureContext::current() {
 }
 
 void CaptureContext::begin_capture(Graph &graph) {
-    if (_capturing) {
+    if (is_capturing()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext: already capturing. Nested captures are not supported.");
     }
     profile::Profiler::instance().push(fmt::format("ComputeGraph::capture({})", graph.name()));
-    _graph     = &graph;
-    _capturing = true;
+    _graph = &graph;
     _ptr_to_id.clear();
 }
 
 void CaptureContext::end_capture() {
-    if (!_capturing) {
+    if (!is_capturing()) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext: not currently capturing.");
     }
 
     // Reset capture state and balance the profiler push unconditionally,
     // before running validation/finalization that can throw. If validation
     // fails the caller still sees the exception, but the next `with
-    // cg.capture(...)` is no longer locked out by a stale `_capturing` flag.
-    Graph *g   = _graph;
-    _capturing = false;
-    _graph     = nullptr;
+    // cg.capture(...)` is no longer locked out by a stale capture state.
+    Graph *g = _graph;
+    _graph   = nullptr;
     _ptr_to_id.clear();
     profile::Profiler::instance().pop();
 
@@ -51,7 +49,7 @@ void CaptureContext::end_capture() {
 
 void CaptureContext::record(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs,
                             std::function<void()> executor, OpData op_data) {
-    if (!_capturing || !_graph) {
+    if (_graph == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext::record called outside of capture");
     }
 
@@ -69,7 +67,7 @@ void CaptureContext::record(OpKind kind, std::string label, std::vector<TensorId
 void CaptureContext::record_built(OpKind kind, std::string label, packed_gemm::ScalarType dtype, std::size_t rank, OpData op_data,
                                   std::span<TensorId const> build_inputs, std::span<TensorId const> build_outputs,
                                   std::vector<TensorId> inputs, std::vector<TensorId> outputs) {
-    if (!_capturing || !_graph) {
+    if (_graph == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext::record_built called outside of capture");
     }
 
@@ -80,7 +78,7 @@ void CaptureContext::record_built(OpKind kind, std::string label, packed_gemm::S
 void CaptureContext::record_async(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs,
                                   std::function<void()> executor, std::function<void()> async_start, std::function<void()> async_finish,
                                   DiskIODescriptor op_data) {
-    if (!_capturing || !_graph) {
+    if (_graph == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext::record_async called outside of capture");
     }
 

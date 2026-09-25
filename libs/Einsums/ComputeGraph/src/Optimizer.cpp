@@ -60,9 +60,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <limits>
 #include <set>
 #include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -231,6 +235,27 @@ std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> observed_writes(G
     return seen;
 }
 
+/// Numbers what @p pass_name spliced in or moved across graphs, then enforces what everything
+/// keyed by NodeId relies on: each graph's ids are unique. A duplicate means the pass copied a
+/// node's id, or moved a node in from another graph without resetting it to
+/// unassigned_node_id, whose id was issued by a counter that numbers independently of this one.
+void settle_node_ids(Graph &root, std::string const &pass_name) {
+    auto const settle = [&pass_name](Graph &graph) {
+        graph.assign_node_ids();
+        std::unordered_set<NodeId> seen;
+        for (auto const &node : graph.nodes()) {
+            if (!seen.insert(node.id).second) {
+                EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                        "Graph '{}': pass '{}' left two nodes with id {} (the second is '{}'). A node copied or moved in "
+                                        "from another graph must be reset to unassigned_node_id.",
+                                        graph.name(), pass_name, node.id, node.label);
+            }
+        }
+    };
+    settle(root);
+    root.for_each_descendant(std::function<void(Graph &)>{settle});
+}
+
 void check_observed_writes(Graph const &graph, std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> const &before,
                            std::string const &pass_name, std::vector<std::pair<NodeId, TensorId>> const &compensated) {
     auto const after = observed_writes(graph);
@@ -258,8 +283,8 @@ void check_observed_writes(Graph const &graph, std::unordered_map<NodeId, std::u
                         break;
                     }
                 }
-                if (auto const hit = graph.tensors_map().find(tid); hit != graph.tensors_map().end()) {
-                    tensor_name = hit->second.name;
+                if (auto const *handle = graph.find_tensor(tid)) {
+                    tensor_name = handle->name;
                 }
                 EINSUMS_THROW_EXCEPTION(
                     std::logic_error,
@@ -410,8 +435,9 @@ bool PassManager::run(Graph &graph) {
             auto const baseline         = observed_writes(graph);
             auto const structure_before = graph.structure_version();
             bool const modified         = run_pass_recursive(*pass, graph);
-            auto       t1               = std::chrono::high_resolution_clock::now();
-            double     ms               = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            settle_node_ids(graph, pass->name());
+            auto   t1 = std::chrono::high_resolution_clock::now();
+            double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
             check_read_only_phase(graph, *pass, structure_before);
 

@@ -105,7 +105,7 @@ bool batched_gemm_shape_equal(BatchedGemmDescriptor const &a, BatchedGemmDescrip
 /// @ref pure_overwrite on the survivor alone, which only covers the duplicate
 /// because the pair is required to agree there.
 ///
-/// Descriptor kinds with no arm here (monostate, the tiled and view
+/// Descriptor kinds with no arm here (no descriptor, the tiled and view
 /// descriptors, control flow) never match. Those nodes are not pure-overwrite
 /// producers either, so this only restates the caller's gate.
 std::optional<double> op_data_ratio(OpData const &a, OpData const &b) {
@@ -281,8 +281,8 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
     // Resolve a TensorId in this graph to its underlying buffer pointer
     // (stable identity for a tensor; null when unresolved).
     auto ptr_of = [&](TensorId tid) -> void const * {
-        auto it = graph.tensors_map().find(tid);
-        return (it != graph.tensors_map().end()) ? it->second.tensor_ptr : nullptr;
+        auto const *handle = graph.find_tensor(tid);
+        return handle != nullptr ? handle->tensor_ptr : nullptr;
     };
 
     // Count real (non-lifecycle) writers of each buffer across the graph.

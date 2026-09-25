@@ -338,7 +338,7 @@ TEST_CASE("ElementOps - a named element_transform records a descriptor, an anony
     auto const *desc = graph.nodes()[0].op_data.get_if<cg::ElementTransformDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->op_name == "recip");
-    REQUIRE(graph.nodes()[1].op_data.holds<std::monostate>());
+    REQUIRE(graph.nodes()[1].op_data.empty());
 }
 
 TEST_CASE("ElementOps - a captured node carries the parameter it was given, and none when it was not", "[ComputeGraph][ElementOps]") {

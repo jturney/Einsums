@@ -727,15 +727,15 @@ bool BasisTruncation::run(Graph &graph) {
     // the other way round the two compose, which is what the decline says to do.
     // At any depth, because a quadrature fits its exponentials inside a setup body of its own.
     std::string quadrature;
-    auto const  find_quadrature = [&quadrature](Graph const &where, auto const &self) -> void {
+    auto const  find_quadrature = [&quadrature](Graph const &where) {
         for (auto const &node : where.nodes()) {
             if (node.kind == OpKind::LaplaceQuadrature && quadrature.empty()) {
                 quadrature = node.label;
             }
         }
-        where.for_each_subgraph([&](Graph const &sub) { self(sub, self); });
     };
-    find_quadrature(graph, find_quadrature);
+    find_quadrature(graph);
+    std::as_const(graph).for_each_descendant(find_quadrature);
     if (!quadrature.empty()) {
         note_skip("a quadrature has already been fitted to the orbital energies of the space being replaced; truncate the space "
                   "before transforming the denominator, which is the order the two compose in",

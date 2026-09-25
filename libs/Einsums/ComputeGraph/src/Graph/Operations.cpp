@@ -26,18 +26,11 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp> // For OptimizerPass and PassManager
 #include <Einsums/ComputeGraph/Options.hpp>
-#include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
-#include <Einsums/ComputeGraph/StringDispatch.hpp>
-#include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
-#include <Einsums/GPU/BLAS.hpp>
-#include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/TaskPool/WidthBudget.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #include <fmt/format.h>
 
@@ -104,169 +97,38 @@ expected<std::pair<TensorId, void *>, GraphError> Graph::create_tensor_dynamic(s
     // use Graph::create_runtime_tensor / create_zero_runtime_tensor
     // directly.
     auto make = [&]<typename T>(T /*tag*/) -> expected<std::pair<TensorId, void *>, GraphError> {
+        // One arm per rank, each spelling create_zero_tensor<T, Rank>(name, dims[0], ..., dims[Rank-1]).
+        auto const make_rank = [&]<std::size_t... Axis>(std::index_sequence<Axis...>) -> std::pair<TensorId, void *> {
+            auto &t = create_zero_tensor<T, sizeof...(Axis)>(std::move(name), dims[Axis]...);
+            return {find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
+        };
         switch (dims.size()) {
-        case 1: {
-            auto &t = create_zero_tensor<T, 1>(std::move(name), dims[0]);
-            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
-        }
-        case 2: {
-            auto &t = create_zero_tensor<T, 2>(std::move(name), dims[0], dims[1]);
-            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
-        }
-        case 3: {
-            auto &t = create_zero_tensor<T, 3>(std::move(name), dims[0], dims[1], dims[2]);
-            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
-        }
-        case 4: {
-            auto &t = create_zero_tensor<T, 4>(std::move(name), dims[0], dims[1], dims[2], dims[3]);
-            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
-        }
-        case 5: {
-            auto &t = create_zero_tensor<T, 5>(std::move(name), dims[0], dims[1], dims[2], dims[3], dims[4]);
-            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
-        }
-        case 6: {
-            auto &t = create_zero_tensor<T, 6>(std::move(name), dims[0], dims[1], dims[2], dims[3], dims[4], dims[5]);
-            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
-        }
-        case 7: {
-            auto &t = create_zero_tensor<T, 7>(std::move(name), dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6]);
-            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
-        }
-        case 8: {
-            auto &t = create_zero_tensor<T, 8>(std::move(name), dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6], dims[7]);
-            return std::pair{find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
-        }
+        case 1:
+            return make_rank(std::make_index_sequence<1>{});
+        case 2:
+            return make_rank(std::make_index_sequence<2>{});
+        case 3:
+            return make_rank(std::make_index_sequence<3>{});
+        case 4:
+            return make_rank(std::make_index_sequence<4>{});
+        case 5:
+            return make_rank(std::make_index_sequence<5>{});
+        case 6:
+            return make_rank(std::make_index_sequence<6>{});
+        case 7:
+            return make_rank(std::make_index_sequence<7>{});
+        case 8:
+            return make_rank(std::make_index_sequence<8>{});
         default:
             return unexpected(GraphError::type_error(
                 fmt::format("create_tensor_dynamic: unsupported rank {}; use create_runtime_tensor for higher ranks", dims.size())));
         }
     };
 
-    switch (dtype) {
-    case packed_gemm::ScalarType::Float32:
-        return make(float{});
-    case packed_gemm::ScalarType::Float64:
-        return make(double{});
-    case packed_gemm::ScalarType::Complex64:
-        return make(std::complex<float>{});
-    case packed_gemm::ScalarType::Complex128:
-        return make(std::complex<double>{});
-    default:
+    if (dtype == packed_gemm::ScalarType::Unknown) {
         return unexpected(GraphError::type_error("create_tensor_dynamic: unknown ScalarType"));
     }
-}
-
-// ── Runtime dispatch helpers for type-erased operations ────────────────────
-
-namespace {
-
-/// Dispatch a binary operation on two tensors with matching dtype and rank.
-/// The Fn receives typed pointers: fn(Tensor<T,Rank>*, Tensor<T,Rank>*)
-/// Dispatch a binary operation on two tensors.
-///
-/// Both operands are reached through @ref TensorHandle::live_ptr rather than
-/// ``tensor_ptr``. These helpers back the ``make_*_executor`` family, which
-/// resolves its operands by id at REPLAY, and by then the caller's wrapper may
-/// legally be gone: capture's whole contract is that an operand's wrapper may
-/// be destroyed before ``execute()``. Reading the identity pointer there is a
-/// use-after-free, and it was one, silently, for every pass-built axpy.
-template <typename Fn>
-void dispatch_binary(TensorHandle const &a, TensorHandle const &b, Fn &&fn) {
-    if (a.dtype != b.dtype || a.rank != b.rank) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_binary: dtype or rank mismatch");
-    }
-    // A runtime tensor's storage layout differs from Tensor<T, Rank>; casting one
-    // handle's pointer with the other's shape is type confusion. Both operands
-    // must be the same kind (callers gate on is_runtime, so this only guards misuse).
-    if (a.is_runtime != b.is_runtime) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_binary: cannot mix runtime and compile-time tensors");
-    }
-
-    auto go = [&]<typename T>(T /*tag*/) {
-        // GeneralRuntimeTensor<T> carries its rank dynamically, so one cast covers
-        // every rank; branch on the handle kind before the compile-time rank switch.
-        if (a.is_runtime) {
-            using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
-            fn(static_cast<RT *>(a.live_ptr()), static_cast<RT *>(b.live_ptr()));
-            return;
-        }
-        detail::dispatch_by_rank(a.rank, [&](auto rank_tag) {
-            constexpr std::size_t K = decltype(rank_tag)::value;
-            fn(static_cast<Tensor<T, K> *>(a.live_ptr()), static_cast<Tensor<T, K> *>(b.live_ptr()));
-        });
-    };
-
-    detail::dispatch_scalar_type(a.dtype, go);
-}
-
-/// Dispatch a unary operation on one tensor.
-template <typename Fn>
-void dispatch_unary(TensorHandle const &a, Fn &&fn) {
-    auto go = [&]<typename T>(T /*tag*/) {
-        // See dispatch_binary: a runtime handle casts to GeneralRuntimeTensor<T>
-        // (rank carried dynamically) rather than the compile-time Tensor<T, Rank>.
-        if (a.is_runtime) {
-            using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
-            fn(static_cast<RT *>(a.live_ptr()));
-            return;
-        }
-        detail::dispatch_by_rank(a.rank, [&](auto rank_tag) {
-            constexpr std::size_t K = decltype(rank_tag)::value;
-            fn(static_cast<Tensor<T, K> *>(a.live_ptr()));
-        });
-    };
-
-    detail::dispatch_scalar_type(a.dtype, go);
-}
-
-} // namespace
-
-std::function<void()> Graph::make_axpy_executor(double alpha, TensorId src_id, TensorId dst_id) {
-    return [this, alpha, src_id, dst_id]() {
-        auto const &src = tensor(src_id);
-        auto       &dst = tensor(dst_id);
-        dispatch_binary(src, dst, [alpha](auto *s, auto *d) {
-            using T = typename std::remove_pointer_t<decltype(s)>::ValueType;
-            linear_algebra::axpy(static_cast<T>(alpha), *s, d);
-        });
-    };
-}
-
-std::function<void()> Graph::make_axpby_executor(std::shared_ptr<AxpbyParams> params, TensorId src_id, TensorId dst_id) {
-    // Reads the scalars from the shared params on every replay, so a node built
-    // with this executor can carry a real AxpbyDescriptor: passes rewrite the
-    // params and the replay honors them. The beta == 1 case keeps the BLAS axpy
-    // fast path - the common one, since accumulation is what pass-built nodes of
-    // this shape are for.
-    return [this, params = std::move(params), src_id, dst_id]() {
-        auto const &src = tensor(src_id);
-        auto       &dst = tensor(dst_id);
-        dispatch_binary(src, dst, [&params](auto *s, auto *d) {
-            using T          = typename std::remove_pointer_t<decltype(s)>::ValueType;
-            auto const alpha = as<T>(params->alpha);
-            auto const beta  = as<T>(params->beta);
-            if (beta == T{1}) {
-                linear_algebra::axpy(alpha, *s, d);
-            } else {
-                linear_algebra::axpby(alpha, *s, beta, d);
-            }
-        });
-    };
-}
-
-std::function<void()> Graph::make_copy_executor(TensorId src_id, TensorId dst_id) {
-    return [this, src_id, dst_id]() {
-        auto const &src = tensor(src_id);
-        auto       &dst = tensor(dst_id);
-        dispatch_binary(src, dst, [](auto *s, auto *d) {
-            // Element-by-element copy (works for any rank)
-            size_t const n  = s->size();
-            auto        *sp = s->data();
-            auto        *dp = d->data();
-            std::memcpy(dp, sp, n * sizeof(*sp));
-        });
-    };
+    return detail::dispatch_scalar_type(dtype, make);
 }
 
 expected<std::pair<TensorId, void *>, GraphError> Graph::create_zero_runtime_tensor_dynamic(std::string name, packed_gemm::ScalarType dtype,
@@ -280,18 +142,10 @@ expected<std::pair<TensorId, void *>, GraphError> Graph::create_zero_runtime_ten
         return {find_tensor_id_by_ptr(&t), static_cast<void *>(&t)};
     };
 
-    switch (dtype) {
-    case packed_gemm::ScalarType::Float32:
-        return make(float{});
-    case packed_gemm::ScalarType::Float64:
-        return make(double{});
-    case packed_gemm::ScalarType::Complex64:
-        return make(std::complex<float>{});
-    case packed_gemm::ScalarType::Complex128:
-        return make(std::complex<double>{});
-    default:
+    if (dtype == packed_gemm::ScalarType::Unknown) {
         return unexpected(GraphError::type_error("create_zero_runtime_tensor_dynamic: unknown ScalarType"));
     }
+    return detail::dispatch_scalar_type(dtype, make);
 }
 
 std::function<void()> Graph::make_gemm_executor(TensorId a_id, TensorId b_id, TensorId c_id, double alpha, double beta) {
@@ -397,17 +251,10 @@ Node Graph::make_axpby_node(TensorId x, TensorId y, PrefactorScalar alpha, Prefa
     AxpbyDescriptor desc;
     desc.alpha  = params->alpha;
     desc.beta   = params->beta;
-    desc.params = params;
+    desc.params = std::move(params);
 
-    Node node;
-    node.id      = reserve_node_id();
-    node.kind    = OpKind::Axpby;
-    node.label   = std::move(label);
-    node.inputs  = {x, y};
-    node.outputs = {y};
-    node.op_data = std::move(desc);
-    node.execute = make_axpby_executor(std::move(params), x, y);
-    return node;
+    // Y is read as well as written, so it is an input too.
+    return make_node(OpKind::Axpby, tensor(y).dtype, OpData{std::move(desc)}, {x, y}, {y}, std::move(label));
 }
 
 Node Graph::make_permute_node(TensorId a_id, TensorId c_id, ParsedPermuteSpec const &spec, PrefactorScalar alpha, PrefactorScalar beta,
@@ -469,13 +316,6 @@ Node Graph::make_node(OpKind kind, packed_gemm::ScalarType dtype, OpData descrip
     return node;
 }
 
-std::function<void()> Graph::make_zero_executor(TensorId tensor_id) {
-    return [this, tensor_id]() {
-        auto &h = tensor(tensor_id);
-        dispatch_unary(h, [](auto *t) { t->zero(); });
-    };
-}
-
 expected<void, GraphError> Graph::validate_tensors() const {
     // Lazily built: TensorIds and tensor_ptrs that some Materialize node in
     // this graph will bring to life during execution. (tensor_ptr matters for
@@ -504,8 +344,8 @@ expected<void, GraphError> Graph::validate_tensors() const {
                         continue;
                     for (auto out : node.outputs) {
                         materialize_tids.insert(out);
-                        if (auto it = _tensors.find(out); it != _tensors.end() && it->second.tensor_ptr != nullptr) {
-                            materialize_ptrs.insert(it->second.tensor_ptr);
+                        if (auto const *target = find_tensor(out); target != nullptr && target->tensor_ptr != nullptr) {
+                            materialize_ptrs.insert(target->tensor_ptr);
                         }
                     }
                 }
@@ -515,21 +355,18 @@ expected<void, GraphError> Graph::validate_tensors() const {
                 // the parent; a setup body is the exception, since its lifecycle has to be
                 // skipped on the replays that skip the fitting. Matched by tensor_ptr, which
                 // is the identity two graphs share; ids are per-graph and would not.
-                // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest, so the walk over them does too.
-                std::function<void(Graph const &)> collect_sub = [&](Graph const &sub) {
+                std::as_const(*this).for_each_descendant([&](Graph const &sub) {
                     for (auto const &node : sub._nodes) {
                         if (node.kind != OpKind::Materialize) {
                             continue;
                         }
                         for (auto out : node.outputs) {
-                            if (auto it = sub._tensors.find(out); it != sub._tensors.end() && it->second.tensor_ptr != nullptr) {
-                                materialize_ptrs.insert(it->second.tensor_ptr);
+                            if (auto const *target = sub.find_tensor(out); target != nullptr && target->tensor_ptr != nullptr) {
+                                materialize_ptrs.insert(target->tensor_ptr);
                             }
                         }
                     }
-                    sub.for_each_subgraph(collect_sub);
-                };
-                for_each_subgraph(collect_sub);
+                });
             }
             // A deferred handle no node references cannot corrupt execution.
             // These exist by design: effective_io registers orphan parent
@@ -572,27 +409,24 @@ void Graph::validate_shapes_at_capture() const {
 
         // Check each input tensor's rank matches its index count
         for (size_t inp = 0; inp < node.inputs.size() && inp < 2; inp++) {
-            auto it = _tensors.find(node.inputs[inp]);
-            if (it == _tensors.end())
+            auto const *handle = find_tensor(node.inputs[inp]);
+            if (handle == nullptr)
                 continue;
 
-            auto const &handle        = it->second;
-            size_t      expected_rank = (inp == 0) ? desc->spec.a_indices.size() : desc->spec.b_indices.size();
+            size_t expected_rank = (inp == 0) ? desc->spec.a_indices.size() : desc->spec.b_indices.size();
 
-            if (handle.rank != 0 && handle.rank != expected_rank) {
+            if (handle->rank != 0 && handle->rank != expected_rank) {
                 EINSUMS_THROW_EXCEPTION(std::runtime_error,
                                         "Graph '{}': shape mismatch in node '{}': "
                                         "input tensor '{}' has rank {} but {} indices specified",
-                                        _name, node.label, handle.name, handle.rank, expected_rank);
+                                        _name, node.label, handle->name, handle->rank, expected_rank);
             }
         }
 
         // Check output tensor rank matches C index count
         if (!node.outputs.empty()) {
-            auto it = _tensors.find(node.outputs[0]);
-            if (it != _tensors.end()) {
-                auto const &handle        = it->second;
-                size_t      expected_rank = desc->spec.c_indices.size();
+            if (auto const *handle = find_tensor(node.outputs[0])) {
+                size_t expected_rank = desc->spec.c_indices.size();
                 // Scalar output ("<- ij ; ij") carries no indices, and the
                 // dispatch writes the result through C->data()[0]. The sink
                 // for that is a one-element rank-1 tensor, which is the
@@ -600,12 +434,12 @@ void Graph::validate_shapes_at_capture() const {
                 // ABOVE the index count is allowed when the whole output holds
                 // one element. Without this the contraction ran eagerly but
                 // could not be captured.
-                bool const scalar_sink = expected_rank == 0 && handle.total_elems() == 1;
-                if (handle.rank != 0 && handle.rank != expected_rank && !scalar_sink) {
+                bool const scalar_sink = expected_rank == 0 && handle->total_elems() == 1;
+                if (handle->rank != 0 && handle->rank != expected_rank && !scalar_sink) {
                     EINSUMS_THROW_EXCEPTION(std::runtime_error,
                                             "Graph '{}': shape mismatch in node '{}': "
                                             "output tensor '{}' has rank {} but {} indices specified",
-                                            _name, node.label, handle.name, handle.rank, expected_rank);
+                                            _name, node.label, handle->name, handle->rank, expected_rank);
                 }
             }
         }

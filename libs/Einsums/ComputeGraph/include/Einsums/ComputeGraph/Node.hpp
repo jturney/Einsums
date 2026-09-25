@@ -1340,24 +1340,20 @@ struct OpDataModel final : OpDataConcept {
  * identity correct across shared libraries.
  */
 class EINSUMS_EXPORT OpData {
-    template <typename D>
+    template <NodeDescriptor D>
     [[nodiscard]] D *find() const noexcept {
-        if constexpr (std::is_same_v<D, std::monostate>) {
-            return nullptr;
-        } else {
-            if (_model != nullptr && _model->name() == std::string_view{D::descriptor_name}) {
-                return &static_cast<detail::OpDataModel<D> *>(_model.get())->value;
-            }
-            return nullptr;
+        if (_model != nullptr && _model->name() == std::string_view{D::descriptor_name}) {
+            return &static_cast<detail::OpDataModel<D> *>(_model.get())->value;
         }
+        return nullptr;
     }
+
+    /// Why get<D>() failed, as a message naming both descriptors.
+    [[noreturn]] void throw_wrong_descriptor(std::string_view wanted) const;
 
   public:
     /// No descriptor.
     OpData() noexcept = default;
-
-    /// No descriptor, spelled as the monostate the variant-based OpData held.
-    OpData(std::monostate) noexcept {} // NOLINT(google-explicit-constructor)
 
     /// Hold a copy of @p descriptor. Implicit, so a descriptor converts wherever an OpData is expected.
     template <typename D>
@@ -1377,45 +1373,41 @@ class EINSUMS_EXPORT OpData {
     ~OpData()                             = default;
 
     /// The held descriptor if it is a @p D, else null.
-    template <typename D>
+    template <NodeDescriptor D>
     [[nodiscard]] D *get_if() noexcept {
         return find<D>();
     }
 
     /// The held descriptor if it is a @p D, else null.
-    template <typename D>
+    template <NodeDescriptor D>
     [[nodiscard]] D const *get_if() const noexcept {
         return find<D>();
     }
 
-    /// Whether the held descriptor is a @p D; for @c std::monostate, whether none is held.
-    template <typename D>
+    /// Whether the held descriptor is a @p D. Ask @ref empty whether none is held.
+    template <NodeDescriptor D>
     [[nodiscard]] bool holds() const noexcept {
-        if constexpr (std::is_same_v<D, std::monostate>) {
-            return empty();
-        } else {
-            return find<D>() != nullptr;
-        }
+        return find<D>() != nullptr;
     }
 
     /// The held descriptor, which must be a @p D.
-    /// @throws std::bad_variant_access when it is not, as the variant-based OpData did.
-    template <typename D>
+    /// @throws std::logic_error naming both descriptors when it is not.
+    template <NodeDescriptor D>
     [[nodiscard]] D &get() {
         if (D *d = find<D>()) {
             return *d;
         }
-        throw std::bad_variant_access{};
+        throw_wrong_descriptor(D::descriptor_name);
     }
 
     /// The held descriptor, which must be a @p D.
-    /// @throws std::bad_variant_access when it is not, as the variant-based OpData did.
-    template <typename D>
+    /// @throws std::logic_error naming both descriptors when it is not.
+    template <NodeDescriptor D>
     [[nodiscard]] D const &get() const {
         if (D const *d = find<D>()) {
             return *d;
         }
-        throw std::bad_variant_access{};
+        throw_wrong_descriptor(D::descriptor_name);
     }
 
     /// Whether @p other holds a descriptor of the same type as this one (both empty included).
@@ -1448,9 +1440,9 @@ class EINSUMS_EXPORT OpData {
  * @see CaptureContext::record()
  */
 struct Node {
-    NodeId id{0};                ///< Unique identifier assigned by Graph::add_node()
-    OpKind kind{OpKind::Custom}; ///< Operation type for pattern matching
-    Target target{Target::CPU};  ///< Execution target (set by GPUPlacement pass)
+    NodeId id{unassigned_node_id}; ///< Unique within its graph, issued by the graph (see @ref unassigned_node_id)
+    OpKind kind{OpKind::Custom};   ///< Operation type for pattern matching
+    Target target{Target::CPU};    ///< Execution target (set by GPUPlacement pass)
 
     /// @brief Threads this node's kernel is to execute with; 0 means unplanned
     ///        and is executed exactly as width 1.
@@ -1543,7 +1535,7 @@ struct Node {
      * @brief Operation-specific metadata for optimization passes.
      *
      * Contains EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, or
-     * std::monostate for operations without special metadata.
+     * empty for operations without special metadata.
      */
     OpData op_data;
 

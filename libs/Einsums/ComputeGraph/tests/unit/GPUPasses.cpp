@@ -961,7 +961,8 @@ TEST_CASE("TransferElimination - removes manually injected redundant H2D", "[Com
     for (size_t idx = 0; idx < nodes.size(); ++idx) {
         if (nodes[idx].kind == cg::OpKind::HostToDevice) {
             // Insert a duplicate right after.
-            cg::Node dup = nodes[idx]; // copy
+            cg::Node dup = nodes[idx];             // copy
+            dup.id       = cg::unassigned_node_id; // a copy is a new node and gets its own id
             nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(idx) + 1, std::move(dup));
             break;
         }
@@ -1004,7 +1005,8 @@ TEST_CASE("TransferElimination - removes manually injected redundant D2H", "[Com
     auto &nodes = graph.nodes();
     for (size_t idx = 0; idx < nodes.size(); ++idx) {
         if (nodes[idx].kind == cg::OpKind::DeviceToHost) {
-            cg::Node dup = nodes[idx]; // copy
+            cg::Node dup = nodes[idx];             // copy
+            dup.id       = cg::unassigned_node_id; // a copy is a new node and gets its own id
             nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(idx) + 1, std::move(dup));
             break;
         }

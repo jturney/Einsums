@@ -78,8 +78,8 @@ void capture_transpose(CaptureContext &ctx, TensorId a_id, TensorId c_id, std::s
     // No descriptor, deliberately: a transpose is a fixed permutation with no
     // scalars, so (kind, dtype, rank, operand ids) is its complete content and
     // an empty descriptor alternative would record nothing. See build_executor.
-    ctx.record_built(OpKind::Transpose, "transpose", packed_gemm::get_scalar_type<T>(), rank, std::monostate{},
-                     std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&c_id, 1}, {a_id}, {c_id});
+    ctx.record_built(OpKind::Transpose, "transpose", packed_gemm::get_scalar_type<T>(), rank, OpData{}, std::span<TensorId const>{&a_id, 1},
+                     std::span<TensorId const>{&c_id, 1}, {a_id}, {c_id});
 }
 
 #define EINSUMS_PERMUTE_OPERATIONS(T)                                                                                                      \

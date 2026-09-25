@@ -92,7 +92,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") GrowthClass {
     /// @param[in] lhs Left operand.
     /// @param[in] rhs Right operand.
     /// @return True when the exponents are identical.
-    [[nodiscard]] friend constexpr bool operator==(GrowthClass lhs, GrowthClass rhs) noexcept { return lhs.exponent == rhs.exponent; }
+    [[nodiscard]] friend constexpr bool operator==(GrowthClass const &, GrowthClass const &) noexcept = default;
 };
 
 /**
@@ -134,10 +134,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
     /// @param[in] lhs Left operand.
     /// @param[in] rhs Right operand.
     /// @return True when name, scale symbol, dim symbol, typical extent and growth all match.
-    [[nodiscard]] friend bool operator==(IndexSpace const &lhs, IndexSpace const &rhs) noexcept {
-        return lhs.name == rhs.name && lhs.scale_symbol == rhs.scale_symbol && lhs.dim_symbol == rhs.dim_symbol &&
-               lhs.typical_extent == rhs.typical_extent && lhs.growth == rhs.growth;
-    }
+    [[nodiscard]] friend bool operator==(IndexSpace const &, IndexSpace const &) = default;
 };
 
 /**
@@ -244,7 +241,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") SpaceId {
     /// @param[in] lhs Left operand.
     /// @param[in] rhs Right operand.
     /// @return True when both name the same space of the same registry.
-    [[nodiscard]] friend constexpr bool operator==(SpaceId lhs, SpaceId rhs) noexcept { return lhs._value == rhs._value; }
+    [[nodiscard]] friend constexpr bool operator==(SpaceId const &, SpaceId const &) noexcept = default;
 
     /// @brief Order two ids so they can key an ordered container.
     /// @param[in] rhs Right operand.
@@ -254,7 +251,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") SpaceId {
     /// tree already is: an id converts from nothing, so the two forms behave
     /// identically here, and the member form is the one the documentation
     /// extractor renders without mangling the operator's name.
-    [[nodiscard]] constexpr std::strong_ordering operator<=>(SpaceId rhs) const noexcept { return _value <=> rhs._value; }
+    [[nodiscard]] constexpr std::strong_ordering operator<=>(SpaceId const &) const noexcept = default;
 
   private:
     friend class SpaceRegistry;
@@ -337,9 +334,7 @@ struct SpacePolicy {
     /// @param[in] lhs Left operand.
     /// @param[in] rhs Right operand.
     /// @return True when both hints match.
-    [[nodiscard]] friend constexpr bool operator==(SpacePolicy lhs, SpacePolicy rhs) noexcept {
-        return lhs.dist == rhs.dist && lhs.storage == rhs.storage;
-    }
+    [[nodiscard]] friend constexpr bool operator==(SpacePolicy const &, SpacePolicy const &) noexcept = default;
 };
 
 /**

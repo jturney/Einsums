@@ -14,10 +14,20 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
 /**
  * @brief Unique identifier for a node within a computation graph.
  *
- * Assigned sequentially by Graph::add_node(). Used internally for
- * adjacency tracking and debugging output.
+ * Issued sequentially by the graph that holds the node. Keys update_prefactors,
+ * timing samples, the dot and JSON exports and the pass program-order validator.
  */
 using NodeId = uint64_t;
+
+/**
+ * @brief The id a node carries until a graph issues it one.
+ *
+ * A pass that builds a node, or moves one in from another graph, leaves or sets this
+ * value, and the graph issues a fresh id when the pass hands it back. A node never keeps
+ * an id issued by a different graph: two graphs number independently, so such an id would
+ * name another node here.
+ */
+inline constexpr NodeId unassigned_node_id = static_cast<NodeId>(-1);
 
 /**
  * @brief Unique identifier for a tensor within a computation graph.

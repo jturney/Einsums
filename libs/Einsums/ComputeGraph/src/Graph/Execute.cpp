@@ -27,16 +27,10 @@
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/ThreadPlanning.hpp>
 #include <Einsums/ComputeGraph/SpaceRegistryAccess.hpp>
-#include <Einsums/ComputeGraph/StringDispatch.hpp>
-#include <Einsums/ComputeGraphTypes/GraphData.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
-#include <Einsums/GPU/BLAS.hpp>
-#include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Profile/Profile.hpp>
-#include <Einsums/TaskPool/WidthBudget.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
-#include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #include <fmt/format.h>
 
@@ -278,12 +272,12 @@ void Graph::execute() {
             bool operands_ready = true;
             if constexpr (!gpu::has_unified_memory) {
                 auto check_ready = [&](TensorId tid) {
-                    auto it = _tensors.find(tid);
-                    if (it == _tensors.end()) {
+                    auto const *handle = find_tensor(tid);
+                    if (handle == nullptr) {
                         operands_ready = false;
                         return;
                     }
-                    if (!device_valid.count(tid) && live_host_ptr(it->second) == nullptr) {
+                    if (!device_valid.count(tid) && live_host_ptr(*handle) == nullptr) {
                         operands_ready = false;
                     }
                 };
@@ -395,9 +389,8 @@ void Graph::execute() {
                     node.execute();
                 }
                 for (auto tid : node.outputs) {
-                    auto it = _tensors.find(tid);
-                    if (it != _tensors.end()) {
-                        it->second.residency = Residency::Host;
+                    if (auto *handle = find_tensor(tid)) {
+                        handle->residency = Residency::Host;
                     }
                 }
             }
@@ -427,11 +420,10 @@ void Graph::execute() {
                     if (!device_valid.count(tid)) {
                         return;
                     }
-                    auto it = _tensors.find(tid);
-                    if (it != _tensors.end()) {
+                    if (auto const *handle = find_tensor(tid)) {
                         void const *shadow = _device_shadows.get(tid);
-                        if (void *host = live_host_ptr(it->second); shadow && host) {
-                            gpu::memcpy_device_to_host(host, shadow, it->second.total_bytes());
+                        if (void *host = live_host_ptr(*handle); shadow && host) {
+                            gpu::memcpy_device_to_host(host, shadow, handle->total_bytes());
                         }
                     }
                     device_valid.erase(tid);
@@ -489,13 +481,12 @@ void Graph::execute() {
         // directions: a tensor written CPU-then-GPU was excluded and its GPU
         // result silently dropped.
         for (auto &tid : device_valid) {
-            auto const it = _tensors.find(tid);
-            if (it == _tensors.end())
+            auto const *handle = find_tensor(tid);
+            if (handle == nullptr)
                 continue;
-            auto       &handle = it->second;
             void const *shadow = _device_shadows.get(tid);
-            if (void *host = live_host_ptr(handle); shadow && host) {
-                gpu::memcpy_device_to_host(host, shadow, handle.total_bytes());
+            if (void *host = live_host_ptr(*handle); shadow && host) {
+                gpu::memcpy_device_to_host(host, shadow, handle->total_bytes());
             }
         }
     }
@@ -575,13 +566,10 @@ bool Graph::apply(PassManager &pm) {
     // answered "this view aliases nothing": Reorder's hazard scan then missed
     // the view/parent edges entirely and was free to move a writer past a
     // reader of the same buffer. Silent, and invisible to a straight-line test.
-    // for_each_subgraph visits one level, so this recurses: a loop nested in a
-    // loop needs linking as much as the outer one does.
-    auto link_tree = [](Graph &g, auto &&self) -> void {
-        g.link_alias_storage();
-        g.for_each_subgraph([&self](Graph &sub) { self(sub, self); });
-    };
-    link_tree(*this, link_tree);
+    // At every depth: a loop nested in a loop needs linking as much as the
+    // outer one does.
+    link_alias_storage();
+    for_each_descendant([](Graph &sub) { sub.link_alias_storage(); });
     std::scoped_lock const lock(*_content_mutex);
     bool const             modified = pm.run(*this);
     if (modified) {

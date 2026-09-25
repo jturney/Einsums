@@ -21,12 +21,14 @@
 #include <fmt/format.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -138,6 +140,44 @@ void bind_holder_liveness(TensorHandle &handle, Holder const *holder) {
 
 namespace detail {
 
+/// Resolves a view's axes against @p params and the parent's live geometry.
+///
+/// Result axis i reads parent axis ``perm[i]`` (@p perm empty == identity) and @p axes[i]
+/// slices or drops it. Calls @p emit(dim, stride) once per kept axis, in result order, and
+/// returns the element offset of the slice's base. @p who names the caller in errors.
+template <typename Parent, typename Emit>
+std::ptrdiff_t resolve_view_axes(std::span<ViewAxis const> axes, std::span<size_t const> perm, Parent const &parent,
+                                 ParamTable const &params, std::string_view who, Emit &&emit) {
+    std::ptrdiff_t offset = 0;
+    for (size_t i = 0; i < axes.size(); ++i) {
+        size_t const p      = perm.empty() ? i : perm[i];
+        auto const  &ax     = axes[i];
+        auto const   stride = parent.stride(p);
+        switch (ax.kind) {
+        case ViewAxis::Kind::Full:
+            emit(parent.dim(p), stride);
+            break;
+        case ViewAxis::Kind::Range: {
+            std::int64_t const lo = ax.lo.resolve(params);
+            std::int64_t const hi = ax.hi.resolve(params);
+            if (lo < 0 || hi < lo || hi > static_cast<std::int64_t>(parent.dim(p)))
+                EINSUMS_THROW_EXCEPTION(std::out_of_range, "{}: range out of parent dim", who);
+            offset += lo * static_cast<std::ptrdiff_t>(stride);
+            emit(static_cast<size_t>(hi - lo), stride);
+            break;
+        }
+        case ViewAxis::Kind::Drop: {
+            std::int64_t const idx = ax.lo.resolve(params);
+            if (idx < 0 || idx >= static_cast<std::int64_t>(parent.dim(p)))
+                EINSUMS_THROW_EXCEPTION(std::out_of_range, "{}: drop index out of parent dim", who);
+            offset += idx * static_cast<std::ptrdiff_t>(stride);
+            break; // offset only, no result axis
+        }
+        }
+    }
+    return offset;
+}
+
 /// Shared body for the typed @ref cg::view and @ref cg::permute_view.
 ///
 /// @p axis_vec has one @ref ViewAxis per parent rank (the slice/full of
@@ -172,9 +212,12 @@ TensorView<T, Rank> &record_typed_view(ParentT &parent, std::vector<ViewAxis> co
     }
     auto const parent_axis = [&perm](size_t i) -> size_t { return perm.empty() ? i : perm[i]; };
 
-    // Allocate a holder on the heap. Owned by the graph so its address
+    // The holder lives on the heap, owned by the graph from the moment it exists, so its address
     // is stable across the lifetime of every executor that captured it.
-    auto *holder = new Holder;
+    auto *graph = ctx.graph();
+    if (graph == nullptr)
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view: no active graph");
+    auto *holder = graph->own(std::make_unique<Holder>());
 
     // At capture time we don't yet have a ParamTable to resolve Param
     // bounds against. Emplace a "full parent" view (permuted, if requested)
@@ -218,13 +261,6 @@ TensorView<T, Rank> &record_typed_view(ParentT &parent, std::vector<ViewAxis> co
     }
     holder->view.emplace(ph_base, parent_dims, parent_strides);
 
-    auto *graph = ctx.graph();
-    if (graph == nullptr)
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view: no active graph");
-
-    // Hand ownership to the graph alongside other owned tensors.
-    graph->adopt([holder]() { delete holder; });
-
     // Register the parent first so its TensorId is stable.
     auto [parent_id, parent_slot] = ctx.get_slot(parent);
 
@@ -261,36 +297,17 @@ TensorView<T, Rank> &record_typed_view(ParentT &parent, std::vector<ViewAxis> co
         if (parent_ptr->data() == nullptr)
             EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view executor: parent has no backing data (deferred?)");
 
-        // Resolve bounds and compute slice pointer + dims.
-        std::array<std::int64_t, Rank> offsets{};
-        Dim<Rank>                      slice_dims;
-        Stride<Rank>                   slice_strides;
-        std::ptrdiff_t                 ptr_offset = 0;
-
-        for (size_t i = 0; i < Rank; ++i) {
-            // Result axis i maps to parent axis p; axis_vec[i] slices it.
-            size_t const p   = perm.empty() ? i : perm[i];
-            auto const  &ax  = axis_vec[i];
-            slice_strides[i] = parent_ptr->stride(p);
-            switch (ax.kind) {
-            case ViewAxis::Kind::Full:
-                offsets[i]    = 0;
-                slice_dims[i] = parent_ptr->dim(p);
-                break;
-            case ViewAxis::Kind::Range: {
-                std::int64_t const lo = ax.lo.resolve(*params_ptr);
-                std::int64_t const hi = ax.hi.resolve(*params_ptr);
-                if (lo < 0 || hi < lo || hi > static_cast<std::int64_t>(parent_ptr->dim(p)))
-                    EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::view: range out of parent dim");
-                offsets[i]    = lo;
-                slice_dims[i] = static_cast<size_t>(hi - lo);
-                break;
-            }
-            case ViewAxis::Kind::Drop:
-                EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view: Drop axis not supported in v1");
-            }
-            ptr_offset += offsets[i] * static_cast<std::ptrdiff_t>(parent_ptr->stride(p));
-        }
+        // Resolve bounds and compute slice pointer + dims. Drop was rejected at capture, so
+        // every axis emits.
+        Dim<Rank>            slice_dims;
+        Stride<Rank>         slice_strides;
+        size_t               kept = 0;
+        std::ptrdiff_t const ptr_offset =
+            resolve_view_axes(axis_vec, perm, *parent_ptr, *params_ptr, "cg::view", [&](size_t dim, size_t stride) {
+                slice_dims[kept]    = dim;
+                slice_strides[kept] = stride;
+                ++kept;
+            });
 
         // Re-emplace the view with the new pointer/dims/strides. Address
         // of the contained TensorView is stable across emplace.
@@ -425,7 +442,10 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
 
     // The recipe moves into the holder and is read from there for the rest of
     // this function: the parameters are moved-from beyond this point.
-    auto *holder         = new Holder;
+    auto *graph = ctx.graph();
+    if (graph == nullptr)
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime: no active graph");
+    auto *holder         = graph->own(std::make_unique<Holder>());
     holder->axes         = std::move(axis_vec);
     holder->perm         = std::move(perm);
     auto const &axes_ref = holder->axes;
@@ -503,12 +523,6 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
     // is re-emplaced by the executor below once the parent is allocated.
     holder->view.emplace(::einsums::detail::TensorImpl<T>(const_cast<T *>(parent.impl().data()) + ph_offset, parent_dims, parent_strides));
 
-    auto *graph = ctx.graph();
-    if (graph == nullptr)
-        EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::view_runtime: no active graph");
-
-    graph->adopt([holder]() { delete holder; });
-
     auto [parent_id, parent_slot] = ctx.get_slot(parent);
 
     RuntimeTensorView<T> &slice_ref = holder->view.value();
@@ -564,37 +578,11 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &view_runtim
         auto &slice_strides = holder->scratch_strides;
         slice_dims.clear();
         slice_strides.clear();
-        std::ptrdiff_t ptr_offset = 0;
-
-        for (size_t i = 0; i < axes.size(); ++i) {
-            // Result reads parent axis p (perm[i], or i for identity); axes[i]
-            // slices/drops that axis. Drop contributes only an offset (no result axis).
-            size_t const p  = perm.empty() ? i : perm[i];
-            auto const  &ax = axes[i];
-            switch (ax.kind) {
-            case ViewAxis::Kind::Full:
-                slice_dims.push_back(parent_ptr->dim(p));
-                slice_strides.push_back(parent_ptr->stride(p));
-                break;
-            case ViewAxis::Kind::Range: {
-                std::int64_t const lo = ax.lo.resolve(*holder->params);
-                std::int64_t const hi = ax.hi.resolve(*holder->params);
-                if (lo < 0 || hi < lo || hi > static_cast<std::int64_t>(parent_ptr->dim(p)))
-                    EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::view_runtime: range out of parent dim");
-                ptr_offset += lo * static_cast<std::ptrdiff_t>(parent_ptr->stride(p));
-                slice_dims.push_back(static_cast<size_t>(hi - lo));
-                slice_strides.push_back(parent_ptr->stride(p));
-                break;
-            }
-            case ViewAxis::Kind::Drop: {
-                std::int64_t const idx = ax.lo.resolve(*holder->params);
-                if (idx < 0 || idx >= static_cast<std::int64_t>(parent_ptr->dim(p)))
-                    EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::view_runtime: drop index out of parent dim");
-                ptr_offset += idx * static_cast<std::ptrdiff_t>(parent_ptr->stride(p));
-                break; // dropped axis: offset only, no result axis
-            }
-            }
-        }
+        std::ptrdiff_t const ptr_offset =
+            detail::resolve_view_axes(axes, perm, *parent_ptr, *holder->params, "cg::view_runtime", [&](size_t dim, size_t stride) {
+                slice_dims.push_back(dim);
+                slice_strides.push_back(stride);
+            });
 
         T *slice_data = parent_ptr->data() + ptr_offset;
         holder->view.emplace(::einsums::detail::TensorImpl<T>(slice_data, slice_dims, slice_strides));
@@ -861,14 +849,12 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &tile_view_p
     // validation needs (the same trick the dense deferred-parent path uses).
     auto &tile = parent.tile(coord);
 
-    auto *holder = new Holder();
-    holder->view.emplace(tile.impl());
-
     auto *graph = ctx.graph();
     if (graph == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "cg::tile_view: no active graph");
     }
-    graph->adopt([holder]() { delete holder; });
+    auto *holder = graph->own(std::make_unique<Holder>());
+    holder->view.emplace(tile.impl());
 
     RuntimeTensorView<T> &slice_ref = holder->view.value();
     auto                  handle    = make_handle(slice_ref, 0);

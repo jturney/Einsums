@@ -227,13 +227,20 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /**
      * @brief Reserve a fresh unique NodeId without adding a node.
      *
-     * For passes that build replacement nodes and splice them into the node
-     * list directly (at a chosen position, not appended): every node in a
-     * graph must carry a unique id - the default Node::id of 0 collides with
-     * the first captured node and corrupts anything keyed by id (dependency
-     * bookkeeping, the pass program-order validator, profile strings).
+     * For a pass that needs a spliced node's id before it hands the graph back. A pass
+     * that does not can leave the node at @ref unassigned_node_id and let
+     * @ref assign_node_ids issue one.
      */
     NodeId reserve_node_id() { return _next_node_id++; }
+
+    /**
+     * @brief Issue a fresh id to every node still carrying @ref unassigned_node_id.
+     *
+     * Runs when a pass hands the graph back and on every sort, so a node spliced into the
+     * list directly, or moved in from another graph, is numbered before anything keys on its
+     * id. Ids already issued are kept. Does not descend into sub-graphs.
+     */
+    void assign_node_ids();
 
     /**
      * @brief Register a tensor handle with the graph.
@@ -1061,6 +1068,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         std::scoped_lock const lock(*_content_mutex);
         PassType               pass{std::forward<Args>(args)...};
         bool                   modified = pass.run(*this);
+        assign_node_ids();
+        for_each_descendant(std::function<void(Graph &)>{[](Graph &sub) { sub.assign_node_ids(); }});
         return {modified, std::move(pass)};
     }
 
@@ -1134,22 +1143,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// replay path.
     [[nodiscard]] std::vector<NodeTiming> const &timing_report() const;
 
-    /**
-     * @brief Record timing for a single node (used by custom Executors).
-     *
-     * Custom executors should call this after executing each node so that
-     * print_timing_report() works correctly. Executors that time a whole run
-     * before merging should prefer @ref record_node_timings(), which takes the
-     * content mutex once for the batch instead of once per node.
-     */
-    void record_node_timing(NodeId id, OpKind kind, double duration_ms, unsigned width = 0);
-
-    /// Label-carrying form kept for executors written against the older
-    /// signature. The label is ignored: @ref timing_report() resolves it from
-    /// the node list.
-    void record_node_timing(NodeId id, std::string const & /*label*/, OpKind kind, double duration_ms);
-
-    /// Append a whole run's samples under a single lock acquisition.
+    /// Record a run's per-node timings, under a single lock acquisition. A custom Executor calls
+    /// this after running the graph so that print_timing_report() reports its run.
     void record_node_timings(std::vector<NodeTimingSample> &&samples);
 
     /// Clear timing data (called at the start of execute()).
@@ -1377,6 +1372,16 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// the graph is destroyed.
     void adopt(std::function<void()> deleter);
 
+    /// Take ownership of @p object for the graph's lifetime and return it. Unlike a raw ``new``
+    /// followed by @ref adopt, nothing can leak between the allocation and the hand-over.
+    template <typename T>
+    T *own(std::unique_ptr<T> object) {
+        std::shared_ptr<T> shared(std::move(object));
+        T *const           raw = shared.get();
+        adopt([shared = std::move(shared)]() mutable { shared.reset(); });
+        return raw;
+    }
+
     /// Set/read the @ref ParamTable used by the View executor and
     /// ``BoundExpr::Param`` resolution. Pipeline plumbs its own table
     /// down to each stage Graph at construction. Standalone graphs get
@@ -1498,6 +1503,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /// Const overload of @ref for_each_subgraph. Visitor sees ``Graph const &``.
     void for_each_subgraph(std::function<void(Graph const &)> const &visitor) const;
+
+    /**
+     * @brief Call @p visitor on every graph nested under this one, at any depth, parents first.
+     *
+     * The recursive form of @ref for_each_subgraph, which visits one level. This graph itself is
+     * not visited.
+     *
+     * @param[in] visitor Called once per descendant graph.
+     */
+    void for_each_descendant(std::function<void(Graph &)> const &visitor);
+
+    /// Const overload of @ref for_each_descendant. Visitor sees ``Graph const &``.
+    void for_each_descendant(std::function<void(Graph const &)> const &visitor) const;
 
     /**
      * @brief Collect the underlying tensor pointers referenced anywhere in
@@ -2909,46 +2927,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                                                                                           std::vector<size_t> const &dims);
 
     /**
-     * @brief Create an executor lambda that performs axpy: dst += alpha * src.
-     *
-     * Uses runtime type dispatch based on the tensor handles' ScalarType and rank.
-     * Used by optimization passes (e.g. DistributiveFactoring) to build
-     * executor lambdas for dynamically created nodes.
-     *
-     * @param[in] alpha Scalar multiplier.
-     * @param[in] src_id TensorId of the source tensor.
-     * @param[in] dst_id TensorId of the destination tensor.
-     * @return A callable that performs the axpy operation.
-     */
-    std::function<void()> make_axpy_executor(double alpha, TensorId src_id, TensorId dst_id);
-
-    /**
-     * @brief Executor for ``dst = alpha*src + beta*dst`` reading LIVE scalars.
-     *
-     * Prefer this over @ref make_axpy_executor for any pass-built node that also
-     * carries an AxpbyDescriptor: the descriptor must share this @p params
-     * object, so a later pass that rewrites alpha/beta changes what replay
-     * actually computes. @ref make_axpy_executor bakes its alpha into the
-     * lambda, which makes a descriptor beside it a snapshot the executor can
-     * silently disagree with.
-     *
-     * @param[in] params Scalars shared with the node's AxpbyDescriptor.
-     * @param[in] src_id TensorId of the source tensor.
-     * @param[in] dst_id TensorId of the destination tensor.
-     * @return A callable that performs the axpby operation.
-     */
-    std::function<void()> make_axpby_executor(std::shared_ptr<AxpbyParams> params, TensorId src_id, TensorId dst_id);
-
-    /**
-     * @brief Create an executor lambda that copies src into dst: dst = src.
-     *
-     * @param[in] src_id TensorId of the source tensor.
-     * @param[in] dst_id TensorId of the destination tensor.
-     * @return A callable that performs the copy.
-     */
-    std::function<void()> make_copy_executor(TensorId src_id, TensorId dst_id);
-
-    /**
      * @brief Create a zero-initialized **runtime** tensor (GeneralRuntimeTensor)
      *        of a dtype/shape known only at run time, returning its id + pointer.
      *
@@ -3063,8 +3041,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * The scalars live in the shared params the executor reads on every replay,
      * with the descriptor holding the same handle, so a later pass that folds a
      * scale into @p alpha reaches the replay rather than being silently ignored.
-     * The executor is @ref make_axpby_executor, which keeps the BLAS axpy fast
-     * path whenever beta is one.
+     * The executor comes from @ref build_executor, whose axpby keeps the BLAS
+     * axpy fast path whenever beta is one.
      *
      * @param[in] x     Source operand.
      * @param[in] y     Destination, read when @p beta is nonzero and written always.
@@ -3136,14 +3114,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     Node make_node(OpKind kind, packed_gemm::ScalarType dtype, OpData descriptor, std::vector<TensorId> inputs,
                    std::vector<TensorId> outputs, std::string label);
-
-    /**
-     * @brief Create an executor lambda that zeros a tensor.
-     *
-     * @param[in] tensor_id TensorId of the tensor to zero.
-     * @return A callable that zeros the tensor.
-     */
-    std::function<void()> make_zero_executor(TensorId tensor_id);
 
     /**
      * @brief Validate that all registered tensors are still alive.
@@ -3756,6 +3726,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// callers handle unregister/register around it.
     void move_members_from(Graph &&other) noexcept;
 
+    /// Invalidate everything derived from the node list's positions: the dependency lists, the
+    /// cached profiler payloads, the validated slot pointers and the position-keyed analyses, and
+    /// mark the graph as not executed. The one place that says what a node edit makes stale, called
+    /// by every function that adds, removes or reorders nodes.
+    void note_node_edit() noexcept;
+
     /// Reapply every @ref declare_alias declaration onto the handles. Run at the
     /// head of both linking passes, because a declaration is an INPUT to the
     /// derivation and has to survive a relink that starts from a cleared state.
@@ -4050,12 +4026,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// What each space measures on the problem currently annotated, learned from
     /// @ref annotate_spaces. The bool is "still uniform": two annotated axes over one space
     /// that disagree set it false and the extent stops being usable, which is a ragged family
-    /// rather than a mistake. Keyed on the raw id value because SpaceId is not hashable.
-    std::unordered_map<std::uint32_t, std::pair<std::size_t, bool>> _space_extents;
+    /// rather than a mistake.
+    std::unordered_map<SpaceId, std::pair<std::size_t, bool>> _space_extents;
 
     /// The canonical partition of each space, from @ref pin_space_tiling. The bool mirrors
     /// @ref _space_extents: two disagreeing statements leave the space with no usable tiling.
-    std::unordered_map<std::uint32_t, std::pair<std::vector<int>, bool>> _space_tiles;
+    std::unordered_map<SpaceId, std::pair<std::vector<int>, bool>> _space_tiles;
 
     /// One space-typed TILED shape, resolved against @ref _space_tiles.
     struct ResolvedTiledShape {
@@ -4257,7 +4233,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// half-moved node vector while the owning thread mutates the graph. Locked
     /// by to_json (reader) and by the mutating entry points -- add_node,
     /// register_tensor, topological_sort, erase_nodes, insert_node_groups,
-    /// record_node_timing, and the pass runners apply(). RECURSIVE because a
+    /// record_node_timings, and the pass runners apply(). RECURSIVE because a
     /// locked pass runner calls the also-locked primitives. A unique_ptr because
     /// Graph must stay movable (a mutex is not) and each Graph keeps its OWN
     /// mutex across moves -- move_members_from never transfers it.
@@ -4589,10 +4565,7 @@ auto Graph::get_or_create_slot(TensorType const &tensor, TensorId tensor_id) -> 
     slot->name         = tensor.name();
     slot->rank         = detail::tensor_rank(tensor);
     slot->element_size = sizeof(typename std::remove_cvref_t<TensorType>::ValueType);
-    slot->dims.resize(slot->rank);
-    for (size_t d = 0; d < slot->rank; d++) {
-        slot->dims[d] = tensor.dim(d);
-    }
+    slot->dims         = detail::tensor_dims(tensor);
     // If capture adopted a stand-in for this operand, the handle owns it and
     // the slot must point at it and share that ownership: the slot outlives
     // the caller's wrapper, and pointing at a wrapper that may be destroyed
@@ -4685,12 +4658,8 @@ auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_c
                                 new_rank, slot->rank);
     }
 
-    std::vector<std::size_t> new_dims(new_rank);
-    std::vector<std::size_t> new_strides(new_rank);
-    for (std::size_t d = 0; d < new_rank; d++) {
-        new_dims[d]    = new_tensor.dim(d);
-        new_strides[d] = new_tensor.stride(d);
-    }
+    std::vector<std::size_t> const new_dims    = detail::tensor_dims(new_tensor);
+    std::vector<std::size_t> const new_strides = detail::tensor_strides(new_tensor);
 
     // Validate dimensions
     if (!allow_extent_change) {
@@ -4839,15 +4808,8 @@ auto Graph::bind_storage_span(TensorType const &tensor) -> BoundSpan {
             return {}; // no single buffer to span
         }
     }
-    std::size_t const        rank = detail::tensor_rank(tensor);
-    std::vector<std::size_t> dims(rank);
-    std::vector<std::size_t> strides(rank);
-    for (std::size_t d = 0; d < rank; ++d) {
-        dims[d]    = tensor.dim(d);
-        strides[d] = tensor.stride(d);
-    }
     BoundSpan span;
-    if (!detail::strided_byte_span(static_cast<void const *>(tensor.data()), dims, strides,
+    if (!detail::strided_byte_span(static_cast<void const *>(tensor.data()), detail::tensor_dims(tensor), detail::tensor_strides(tensor),
                                    sizeof(typename std::remove_cvref_t<TensorType>::ValueType), span.lo, span.hi)) {
         return {};
     }
@@ -4877,11 +4839,8 @@ auto Graph::bind_collect_one(InterfaceManifest const &contract, DimSolution &sol
 
     ManifestEntry const &entry = lookup_manifest_entry(contract, name);
 
-    std::size_t const        incoming_rank = detail::tensor_rank(tensor);
-    std::vector<std::size_t> incoming_dims(incoming_rank);
-    for (std::size_t d = 0; d < incoming_rank; ++d) {
-        incoming_dims[d] = tensor.dim(d);
-    }
+    std::size_t const              incoming_rank = detail::tensor_rank(tensor);
+    std::vector<std::size_t> const incoming_dims = detail::tensor_dims(tensor);
     validate_bind_shape(entry, packed_gemm::get_scalar_type<typename Clean::ValueType>(), incoming_rank, incoming_dims);
     solve_bind_dims(solution, entry, incoming_dims);
 

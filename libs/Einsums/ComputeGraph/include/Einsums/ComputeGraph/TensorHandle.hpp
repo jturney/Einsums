@@ -742,12 +742,8 @@ TensorHandle make_handle(TensorType const &tensor, TensorId id, void const *iden
     h.rank                 = detail::tensor_rank(tensor);
     h.element_size         = sizeof(typename std::remove_cvref_t<TensorType>::ValueType);
     h.dtype                = packed_gemm::get_scalar_type<typename std::remove_cvref_t<TensorType>::ValueType>();
-    h.dims.resize(h.rank);
-    h.strides.resize(h.rank);
-    for (size_t i = 0; i < h.rank; i++) {
-        h.dims[i]    = tensor.dim(i);
-        h.strides[i] = tensor.stride(i);
-    }
+    h.dims                 = detail::tensor_dims(tensor);
+    h.strides              = detail::tensor_strides(tensor);
 
     // Live rank-erased geometry accessor. make_handle knows T and Rank, so it can
     // bake the lookup that a pass cannot express; tiled tensors have no single
