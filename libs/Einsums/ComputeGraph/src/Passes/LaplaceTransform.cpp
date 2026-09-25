@@ -138,7 +138,7 @@ WriterVerdict classify_writers(Graph const &graph, TensorId id, std::vector<std:
     // owns the node set, not verified here.
     Node const *sum        = writers[0];
     Node const *reciprocal = writers[1];
-    auto const *outer      = std::get_if<OuterSumDescriptor>(&sum->op_data);
+    auto const *outer      = sum->op_data.get_if<OuterSumDescriptor>();
     if (sum->kind != OpKind::Custom || outer == nullptr) {
         trouble = "the first writer is not an outer sum of orbital energies";
         return WriterVerdict::Unverifiable;
@@ -166,7 +166,7 @@ WriterVerdict classify_writers(Graph const &graph, TensorId id, std::vector<std:
         }
     }
 
-    auto const *element = std::get_if<ElementTransformDescriptor>(&reciprocal->op_data);
+    auto const *element = reciprocal->op_data.get_if<ElementTransformDescriptor>();
     if (reciprocal->kind != OpKind::ElementTransform || element == nullptr || element->op_name != kReciprocal) {
         trouble = fmt::format("the second writer is not the '{}' element transform", kReciprocal);
         return WriterVerdict::Unverifiable;
@@ -667,7 +667,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             // descriptor rather than in the raised statement, because an elementwise node
             // records accumulation by listing its destination among its inputs and the
             // descriptor is where the number is.
-            auto const *scalars = std::get_if<ElementwiseBinaryDescriptor>(&product.descriptor);
+            auto const *scalars = product.descriptor.get_if<ElementwiseBinaryDescriptor>();
             if (scalars == nullptr || !is_real_valued(live_alpha(*scalars)) || !is_real_valued(live_beta(*scalars))) {
                 decline(denominator_id, name, "the direct product carries a complex prefactor, which a real quadrature has nowhere to put",
                         fmt::format("tensor '{}'", name));

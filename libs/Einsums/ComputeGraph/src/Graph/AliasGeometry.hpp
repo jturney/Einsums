@@ -158,7 +158,7 @@ class StructuralAliasResolver {
             if (nd.kind != OpKind::View || nd.outputs.size() != 1) {
                 continue;
             }
-            auto const *vd = std::get_if<ViewDescriptor>(&nd.op_data);
+            auto const *vd = nd.op_data.get_if<ViewDescriptor>();
             if (vd == nullptr) {
                 continue;
             }

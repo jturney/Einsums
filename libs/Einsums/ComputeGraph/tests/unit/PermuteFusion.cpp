@@ -72,7 +72,7 @@ TEST_CASE("PermuteFusion: 2D transpose absorbed into einsum A slot", "[ComputeGr
     // After fusion the lone node is the einsum and its A subscript is ["i","j"].
     auto const &node = graph.nodes()[0];
     REQUIRE(node.kind == cg::OpKind::Einsum);
-    auto *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    auto *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->indices != nullptr);
     REQUIRE(desc->indices->spec.a_indices == std::vector<std::string>{"i", "j"});
@@ -113,7 +113,7 @@ TEST_CASE("PermuteFusion: 2D transpose absorbed into einsum B slot", "[ComputeGr
     REQUIRE(graph.num_nodes() == 1);
 
     auto const &node = graph.nodes()[0];
-    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc->indices->spec.b_indices == std::vector<std::string>{"j", "k"});
 
     graph.execute();
@@ -187,7 +187,7 @@ TEST_CASE("PermuteFusion: 3D permute on A slot (rank-3 × matrix)", "[ComputeGra
     REQUIRE(pass.num_rewrites() == 1);
     REQUIRE(graph.num_nodes() == 1);
 
-    auto const *desc = std::get_if<cg::EinsumDescriptor>(&graph.nodes()[0].op_data);
+    auto const *desc = graph.nodes()[0].op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc->indices->spec.a_indices == std::vector<std::string>{"p", "q", "r"});
 
     graph.execute();
@@ -223,7 +223,7 @@ TEST_CASE("PermuteFusion: identity permute is still fused (no-op removal)", "[Co
     REQUIRE(pass.num_rewrites() == 1);
     REQUIRE(graph.num_nodes() == 1);
 
-    auto const *desc = std::get_if<cg::EinsumDescriptor>(&graph.nodes()[0].op_data);
+    auto const *desc = graph.nodes()[0].op_data.get_if<cg::EinsumDescriptor>();
     // Identity permute → subscript unchanged.
     REQUIRE(desc->indices->spec.a_indices == std::vector<std::string>{"i", "j"});
 

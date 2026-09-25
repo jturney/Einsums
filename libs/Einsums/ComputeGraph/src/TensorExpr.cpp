@@ -274,14 +274,14 @@ bool raisable_here(Node const &node, RegionOptions const &options) {
         // declares only the DISTINCT bases as outputs, so its member list of
         // destinations is not on the node at all. It stays a barrier rather
         // than raising into an algebra that would name the wrong destinations.
-        auto const *gemm = std::get_if<GroupedBatchedGemmDescriptor>(&node.op_data);
+        auto const *gemm = node.op_data.get_if<GroupedBatchedGemmDescriptor>();
         return gemm == nullptr || !gemm->blocked;
     }
     if (!is_raisable(node.kind)) {
         return false;
     }
     if (node.kind == OpKind::ElementTransform) {
-        auto const *desc = std::get_if<ElementTransformDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<ElementTransformDescriptor>();
         return desc != nullptr && !desc->op_name.empty();
     }
     return true;
@@ -641,7 +641,7 @@ expected<ExprStatement, RaiseFailure> raise_grouped(Graph const &graph, Node con
     statement.targets      = node.outputs;
 
     if (node.kind == OpKind::GroupedBatchedGemm) {
-        auto const *desc = std::get_if<GroupedBatchedGemmDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<GroupedBatchedGemmDescriptor>();
         if (desc == nullptr || desc->groups.empty()) {
             return unexpected(grouped_refusal(node, "a grouped batch carries no group table"));
         }
@@ -733,7 +733,7 @@ expected<ExprStatement, RaiseFailure> raise_grouped(Graph const &graph, Node con
     }
 
     if (node.kind == OpKind::GroupedDot) {
-        auto const *desc = std::get_if<GroupedDotDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<GroupedDotDescriptor>();
         if (desc == nullptr) {
             return unexpected(grouped_refusal(node, "a grouped reduction carries no descriptor"));
         }
@@ -798,14 +798,14 @@ expected<ExprStatement, RaiseFailure> raise_grouped(Graph const &graph, Node con
     std::vector<PrefactorScalar> betas;
     std::size_t                  sources = 0;
     if (node.kind == OpKind::GroupedAxpby) {
-        auto const *desc = std::get_if<GroupedAxpbyDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<GroupedAxpbyDescriptor>();
         if (desc == nullptr) {
             return unexpected(grouped_refusal(node, "a grouped accumulation carries no descriptor"));
         }
         betas   = desc->betas;
         sources = 1;
     } else {
-        auto const *desc = std::get_if<GroupedElementwiseDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<GroupedElementwiseDescriptor>();
         if (desc == nullptr) {
             return unexpected(grouped_refusal(node, "a grouped element-wise node carries no descriptor"));
         }
@@ -837,7 +837,7 @@ expected<ExprStatement, RaiseFailure> raise_grouped(Graph const &graph, Node con
     // A permute's own letters, prefixed so two families cannot collide on one.
     // Everything else names its axes positionally, which is what a dense
     // element-wise term already does.
-    auto const *elementwise = std::get_if<GroupedElementwiseDescriptor>(&node.op_data);
+    auto const *elementwise = node.op_data.get_if<GroupedElementwiseDescriptor>();
     auto const  axis_name   = [&](std::size_t axis, bool source) {
         if (node.kind == OpKind::GroupedPermute && elementwise != nullptr) {
             auto const &names = source ? elementwise->a_indices : elementwise->c_indices;
@@ -944,7 +944,7 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
         statement.origin_label = node->label;
 
         if (node->kind == OpKind::Einsum) {
-            auto const *desc = std::get_if<EinsumDescriptor>(&node->op_data);
+            auto const *desc = node->op_data.get_if<EinsumDescriptor>();
             if (desc == nullptr) {
                 return unexpected(
                     RaiseFailure{.reason = "a contraction carries no einsum descriptor", .detail = fmt::format("node '{}'", node->label)});
@@ -999,7 +999,7 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
             term.element_kind = node->kind;
             term.descriptor   = node->op_data;
             term.indices      = axes_of(graph, statement.target);
-            if (auto const *element = std::get_if<ElementTransformDescriptor>(&node->op_data); element != nullptr) {
+            if (auto const *element = node->op_data.get_if<ElementTransformDescriptor>(); element != nullptr) {
                 term.name = element->op_name;
             }
             for (auto const input : node->inputs) {
@@ -1262,13 +1262,13 @@ expected<Node, RaiseFailure> lower_grouped_elementwise(Graph &graph, TensorExpr 
 
     std::vector<PrefactorScalar> betas;
     if (term.element_kind == OpKind::GroupedAxpby) {
-        auto const *desc = std::get_if<GroupedAxpbyDescriptor>(&term.descriptor);
+        auto const *desc = term.descriptor.get_if<GroupedAxpbyDescriptor>();
         if (desc == nullptr || desc->betas.size() != count) {
             return unexpected(lower_refusal(statement, "a grouped accumulation's descriptor does not match its member count"));
         }
         betas = desc->betas;
     } else {
-        auto const *desc = std::get_if<GroupedElementwiseDescriptor>(&term.descriptor);
+        auto const *desc = term.descriptor.get_if<GroupedElementwiseDescriptor>();
         if (desc == nullptr || desc->betas.size() != count) {
             return unexpected(lower_refusal(statement, "a grouped element-wise node's descriptor does not match its member count"));
         }

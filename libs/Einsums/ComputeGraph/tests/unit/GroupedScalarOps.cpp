@@ -160,7 +160,7 @@ TEST_CASE("grouped_dot: the node declares every read and every write", "[Compute
     REQUIRE(graph.nodes()[0].inputs.size() == 2 * run.size());
     REQUIRE(graph.nodes()[0].outputs.size() == run.size());
 
-    auto const *d = std::get_if<cg::GroupedDotDescriptor>(&graph.nodes()[0].op_data);
+    auto const *d = graph.nodes()[0].op_data.get_if<cg::GroupedDotDescriptor>();
     REQUIRE(d != nullptr);
     REQUIRE(d->total == static_cast<int>(run.size()));
 }
@@ -410,7 +410,7 @@ TEST_CASE("grouped_axpby: only the accumulating entries record a read of Y", "[C
     REQUIRE(graph.nodes()[0].inputs.size() == 3);
     REQUIRE(graph.nodes()[0].outputs.size() == 2);
 
-    auto const *d = std::get_if<cg::GroupedAxpbyDescriptor>(&graph.nodes()[0].op_data);
+    auto const *d = graph.nodes()[0].op_data.get_if<cg::GroupedAxpbyDescriptor>();
     REQUIRE(d != nullptr);
     REQUIRE(d->total == 2);
     REQUIRE(d->alphas.size() == 2);

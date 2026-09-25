@@ -567,7 +567,7 @@ bool TiledExpansion::run(Graph &graph) {
             };
 
             // ── Elementwise: tiled scale and tiled axpy ──────────────────────────
-            if (auto const *edesc = std::get_if<TiledElementwiseDescriptor>(&src.op_data)) {
+            if (auto const *edesc = src.op_data.get_if<TiledElementwiseDescriptor>()) {
                 if (!edesc->params) {
                     continue;
                 }
@@ -748,7 +748,7 @@ bool TiledExpansion::run(Graph &graph) {
             // per-tile permute per stored A tile, each carrying (alpha, beta), plus
             // the leftover-scale rule for stored C tiles the permutation never
             // reaches - mirroring detail::tiled_permute's runtime semantics.
-            if (auto const *pdesc = std::get_if<TiledPermuteDescriptor>(&src.op_data)) {
+            if (auto const *pdesc = src.op_data.get_if<TiledPermuteDescriptor>()) {
                 if (src.outputs.size() != 1 || src.inputs.empty()) {
                     continue;
                 }
@@ -886,7 +886,7 @@ bool TiledExpansion::run(Graph &graph) {
             }
 
             // ── Tiled dot / dotc: dense scalar = sum over shared tiles ───────────
-            if (auto const *ddesc = std::get_if<TiledDotDescriptor>(&src.op_data)) {
+            if (auto const *ddesc = src.op_data.get_if<TiledDotDescriptor>()) {
                 if (src.inputs.size() != 2 || src.outputs.size() != 1) {
                     continue;
                 }
@@ -935,7 +935,7 @@ bool TiledExpansion::run(Graph &graph) {
             }
 
             // ── Contraction ──────────────────────────────────────────────────────
-            auto const *tdesc = std::get_if<TiledEinsumDescriptor>(&src.op_data);
+            auto const *tdesc = src.op_data.get_if<TiledEinsumDescriptor>();
             if (tdesc == nullptr || !tdesc->indices || !tdesc->params) {
                 continue;
             }

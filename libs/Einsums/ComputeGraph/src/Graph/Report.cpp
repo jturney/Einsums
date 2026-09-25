@@ -124,11 +124,11 @@ void Graph::rebuild_profile_strings() {
         };
         auto number = [&entry](std::string_view key, int64_t value) { entry.numbers.emplace_back(profile::intern_string(key), value); };
 
-        if (auto const *tdesc = std::get_if<TransferDescriptor>(&node.op_data)) {
+        if (auto const *tdesc = node.op_data.get_if<TransferDescriptor>()) {
             number("transfer_bytes", static_cast<int64_t>(tdesc->size_bytes));
         }
 
-        if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data)) {
+        if (auto const *desc = node.op_data.get_if<EinsumDescriptor>()) {
             text("c_prefactor", to_string(desc->c_prefactor));
             text("ab_prefactor", to_string(desc->ab_prefactor));
             if (!desc->spec.c_indices.empty()) {
@@ -136,9 +136,9 @@ void Graph::rebuild_profile_strings() {
                 text("a_indices", fmt::format("{}", fmt::join(desc->spec.a_indices, ",")));
                 text("b_indices", fmt::format("{}", fmt::join(desc->spec.b_indices, ",")));
             }
-        } else if (auto const *sdesc = std::get_if<ScaleDescriptor>(&node.op_data)) {
+        } else if (auto const *sdesc = node.op_data.get_if<ScaleDescriptor>()) {
             entry.reals.emplace_back(profile::intern_string("scale_factor"), as_real<double>(sdesc->factor));
-        } else if (auto const *cdesc = std::get_if<CommDescriptor>(&node.op_data)) {
+        } else if (auto const *cdesc = node.op_data.get_if<CommDescriptor>()) {
             number("comm_bytes", static_cast<int64_t>(cdesc->size_bytes));
             number("comm_tensor", static_cast<int64_t>(cdesc->tensor_id));
         }
@@ -219,7 +219,7 @@ void Graph::print_dot(std::ostream &os) const {
         }
 
         std::string label = node.label;
-        if (auto const *desc = std::get_if<TransferDescriptor>(&node.op_data)) {
+        if (auto const *desc = node.op_data.get_if<TransferDescriptor>()) {
             label += fmt::format("\\n({} bytes)", desc->size_bytes);
         }
 
@@ -313,7 +313,7 @@ std::string Graph::to_json() const {
             nd.timing_ms = tit->second;
 
         // Operation-specific data
-        if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data)) {
+        if (auto const *desc = node.op_data.get_if<EinsumDescriptor>()) {
             // GraphNodeData is a viewer-facing snapshot; project complex
             // prefactors to their real part for display. The live value is
             // preserved on the descriptor itself.
@@ -324,10 +324,10 @@ std::string Graph::to_json() const {
             nd.b_indices    = fmt::format("{}", fmt::join(desc->spec.b_indices, ","));
             nd.conj_a       = desc->conj_a;
             nd.conj_b       = desc->conj_b;
-        } else if (auto const *desc = std::get_if<ScaleDescriptor>(&node.op_data)) {
+        } else if (auto const *desc = node.op_data.get_if<ScaleDescriptor>()) {
             // Same viewer-facing projection as the einsum prefactors above.
             nd.scale_factor = as_real<double>(desc->factor);
-        } else if (auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data)) {
+        } else if (auto const *desc = node.op_data.get_if<PermuteDescriptor>()) {
             // Same viewer-facing projection as the einsum prefactors above.
             nd.alpha     = desc->alpha.real();
             nd.beta      = desc->beta.real();

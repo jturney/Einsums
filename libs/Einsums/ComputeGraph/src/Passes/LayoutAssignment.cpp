@@ -369,7 +369,7 @@ bool LayoutAssignment::run(Graph &graph) {
             Site permutation;
             permutation.kind   = SiteKind::Permutation;
             permutation.node   = nd;
-            auto const *desc   = std::get_if<PermuteDescriptor>(&node.op_data);
+            auto const *desc   = node.op_data.get_if<PermuteDescriptor>();
             bool        usable = desc != nullptr && node.inputs.size() == 1 && node.outputs.size() == 1;
             if (usable && !is_pure_reordering(*desc)) {
                 note_skip("permute is not a pure axis reordering, so no storage order makes it an identity",
@@ -417,7 +417,7 @@ bool LayoutAssignment::run(Graph &graph) {
             continue;
         }
 
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr || desc->indices == nullptr || node.inputs.size() < 2 || node.outputs.size() != 1) {
             for (auto id : node.inputs) {
                 pin(id);
@@ -801,7 +801,7 @@ bool LayoutAssignment::run(Graph &graph) {
         if (site.kind != SiteKind::Contraction) {
             continue; // a permute's index lists are never rewritten; see the fold below
         }
-        auto *desc    = std::get_if<EinsumDescriptor>(&nodes[site.node].op_data);
+        auto *desc    = nodes[site.node].op_data.get_if<EinsumDescriptor>();
         bool  touched = false;
         for (std::size_t role = 0; role < RoleCount; role++) {
             auto const it = plan.assignment.find(site.ids[role]);

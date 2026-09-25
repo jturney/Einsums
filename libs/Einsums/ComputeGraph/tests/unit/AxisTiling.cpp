@@ -274,7 +274,7 @@ double untiled_energy(Problem &problem) {
 /// The loop node the rewrite emitted, or nothing when it emitted none.
 cg::Graph const *loop_body(cg::Graph const &graph) {
     for (auto const &node : graph.nodes()) {
-        if (auto const *loop = std::get_if<cg::LoopDescriptor>(&node.op_data); loop != nullptr && loop->body) {
+        if (auto const *loop = node.op_data.get_if<cg::LoopDescriptor>(); loop != nullptr && loop->body) {
             return loop->body.get();
         }
     }
@@ -354,7 +354,7 @@ TEST_CASE("AxisTiling emits a loop whose body declares the slice, not the slab",
         if (node.kind != cg::OpKind::View) {
             continue;
         }
-        auto const *desc = std::get_if<cg::ViewDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<cg::ViewDescriptor>();
         REQUIRE(desc != nullptr);
         auto const *parent = body->find_tensor(desc->parent_id);
         REQUIRE(parent != nullptr);

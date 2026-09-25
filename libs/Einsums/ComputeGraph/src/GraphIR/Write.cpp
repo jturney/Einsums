@@ -266,14 +266,14 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         // object is still written rather than the key omitted.
         return Value{std::move(out)};
     case OpKind::Scale: {
-        auto const &desc = std::get<ScaleDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<ScaleDescriptor>();
         // The LIVE scalar when the node carries one, because that is what the
         // executor reads; the snapshot beside it can be a pass's stale copy.
         out.set("factor", write_prefactor(live_factor(desc)));
         return Value{std::move(out)};
     }
     case OpKind::Permute: {
-        auto const &desc = std::get<PermuteDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<PermuteDescriptor>();
         out.set("alpha", desc.params != nullptr ? write_prefactor(desc.params->alpha) : write_complex(desc.alpha));
         out.set("beta", desc.params != nullptr ? write_prefactor(desc.params->beta) : write_complex(desc.beta));
         out.set("c_indices", to_array(desc.c_indices));
@@ -286,7 +286,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         return Value{std::move(out)};
     }
     case OpKind::Axpby: {
-        auto const &desc = std::get<AxpbyDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<AxpbyDescriptor>();
         // The LIVE scalars, for the reason the Scale case above states.
         out.set("alpha", write_prefactor(live_alpha(desc)));
         out.set("beta", write_prefactor(live_beta(desc)));
@@ -294,14 +294,14 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
     }
     case OpKind::DirectProduct:
     case OpKind::DirectDivision: {
-        auto const &desc = std::get<ElementwiseBinaryDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<ElementwiseBinaryDescriptor>();
         // The LIVE scalars, for the reason the Scale case above states.
         out.set("alpha", write_prefactor(live_alpha(desc)));
         out.set("beta", write_prefactor(live_beta(desc)));
         return Value{std::move(out)};
     }
     case OpKind::Einsum: {
-        auto const &desc = std::get<EinsumDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<EinsumDescriptor>();
         // The LIVE index lists when the node shares them, for the same reason
         // the live scalars win above: the executor reads
         // ``indices->spec``, and the descriptor's own ContractionSpec beside it
@@ -364,13 +364,13 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         return Value{std::move(out)};
     }
     case OpKind::Dot: {
-        out.set("conjugated", Value{std::get<DotDescriptor>(node.op_data).conjugated});
+        out.set("conjugated", Value{node.op_data.get<DotDescriptor>().conjugated});
         return Value{std::move(out)};
     }
     case OpKind::Trace:
         return Value{std::move(out)};
     case OpKind::Gemm: {
-        auto const &desc = std::get<GemmDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<GemmDescriptor>();
         out.set("alpha", write_prefactor(desc.alpha));
         out.set("beta", write_prefactor(desc.beta));
         out.set("trans_a", Value{std::string(1, desc.trans_a)});
@@ -381,11 +381,11 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         // The LAPACK job, and nothing else. It is a template argument at the capture site, so
         // it is the one part of a syev a file has to carry; the operand roles, the triangle
         // read and the absence of a prefactor are all fixed by the operation.
-        out.set("compute_eigenvectors", Value{std::get<SyevDescriptor>(node.op_data).compute_eigenvectors});
+        out.set("compute_eigenvectors", Value{node.op_data.get<SyevDescriptor>().compute_eigenvectors});
         return Value{std::move(out)};
     }
     case OpKind::ElementTransform: {
-        auto const &desc = std::get<ElementTransformDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<ElementTransformDescriptor>();
         out.set("op", Value{desc.op_name});
         // Written only when the capture site chose one. An absent key is not
         // "no parameter" but "the default this op documents", which is what
@@ -398,7 +398,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         return Value{std::move(out)};
     }
     case OpKind::WriteParam: {
-        auto const &desc = std::get<WriteParamDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<WriteParamDescriptor>();
         out.set("param", Value{desc.name});
         out.set("source_type", Value{std::string(param_source_type_name(desc.source_type))});
         if (desc.source_expr.has_value()) {
@@ -407,7 +407,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         return Value{std::move(out)};
     }
     case OpKind::Conditional: {
-        auto const &desc = std::get<ConditionalDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<ConditionalDescriptor>();
         out.set("predicate", write_pred_expr(root, desc.predicate, node, "predicate"));
         if (desc.then_branch == nullptr) {
             refuse(node, "then_branch", "is null; a conditional without a then-branch has nothing to record");
@@ -418,7 +418,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         return Value{std::move(out)};
     }
     case OpKind::Loop: {
-        auto const &desc = std::get<LoopDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<LoopDescriptor>();
         out.set("max_iterations", Value{desc.max_iterations});
         out.set("condition", write_pred_expr(root, desc.condition, node, "condition"));
         if (desc.body == nullptr) {
@@ -428,7 +428,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         return Value{std::move(out)};
     }
     case OpKind::LaplaceQuadrature: {
-        auto const &desc = std::get<LaplaceQuadratureDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<LaplaceQuadratureDescriptor>();
         // All three, and all three REQUIRED on the way back in. A rule read at a different
         // tolerance, a different point count or a different sign per axis is a different
         // approximation, and none of the three has a default that could stand in for a
@@ -439,7 +439,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         return Value{std::move(out)};
     }
     case OpKind::Setup: {
-        auto const &desc = std::get<SetupDescriptor>(node.op_data);
+        auto const &desc = node.op_data.get<SetupDescriptor>();
         if (desc.body == nullptr) {
             refuse(node, "body", "is null; a setup node without a body has nothing to record");
         }

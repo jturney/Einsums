@@ -67,7 +67,7 @@ TEST_CASE("StridedBatchedGemm: col-major 3D ijb;jkb->ikb produces BatchedGemm at
     REQUIRE(graph.num_nodes() == 1);
     REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
 
-    auto const *d = std::get_if<cg::BatchedGemmDescriptor>(&graph.nodes()[0].op_data);
+    auto const *d = graph.nodes()[0].op_data.get_if<cg::BatchedGemmDescriptor>();
     REQUIRE(d != nullptr);
     REQUIRE(d->strided);
     REQUIRE(std::cmp_equal(d->batch_count, B));
@@ -147,7 +147,7 @@ TEST_CASE("StridedBatchedGemm: float precision works", "[ComputeGraph][StridedBa
     }
     REQUIRE(graph.num_nodes() == 1);
     REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
-    auto const *d = std::get_if<cg::BatchedGemmDescriptor>(&graph.nodes()[0].op_data);
+    auto const *d = graph.nodes()[0].op_data.get_if<cg::BatchedGemmDescriptor>();
     REQUIRE(d->scalar == cg::BlasScalar::Float);
 
     graph.execute();
@@ -311,7 +311,7 @@ TEST_CASE("StridedBatchedGemm: rank-4 with two batch indices (col-major, batches
     REQUIRE(graph.num_nodes() == 1);
     REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
 
-    auto const *d = std::get_if<cg::BatchedGemmDescriptor>(&graph.nodes()[0].op_data);
+    auto const *d = graph.nodes()[0].op_data.get_if<cg::BatchedGemmDescriptor>();
     REQUIRE(d->strided);
     REQUIRE(std::cmp_equal(d->batch_count, (A_ * B_)));
     REQUIRE(std::cmp_equal(d->batch_stride_a, (I * J)));
@@ -338,7 +338,7 @@ TEST_CASE("StridedBatchedGemm: rank-5 with three batch indices", "[ComputeGraph]
     REQUIRE(graph.num_nodes() == 1);
     REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
 
-    auto const *d = std::get_if<cg::BatchedGemmDescriptor>(&graph.nodes()[0].op_data);
+    auto const *d = graph.nodes()[0].op_data.get_if<cg::BatchedGemmDescriptor>();
     REQUIRE(std::cmp_equal(d->batch_count, (A_ * B_ * C_)));
 
     // Correctness: compute the same result slice-by-slice.

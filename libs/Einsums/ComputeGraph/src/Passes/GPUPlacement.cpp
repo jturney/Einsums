@@ -64,7 +64,7 @@ bool node_is_dispatchable(Node const &node, Graph const &graph);
 ///
 /// Keep this in step with try_gpu_gemm / try_gpu_gemv.
 bool einsum_is_dispatchable(Node const &node, Graph const &graph) {
-    auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<EinsumDescriptor>();
     if (desc == nullptr) {
         return false;
     }
@@ -114,20 +114,20 @@ bool backend_supports_dtype(packed_gemm::ScalarType dtype, OpKind kind) {
 
 bool node_is_dispatchable(Node const &node, Graph const &graph) {
     // Einsum -> try_gpu_gemm / try_gpu_gemv
-    if (std::holds_alternative<EinsumDescriptor>(node.op_data)) {
+    if (node.op_data.holds<EinsumDescriptor>()) {
         return einsum_is_dispatchable(node, graph);
     }
     // BatchedGemm -> try_gpu_batched_gemm, strided form only; the pointer-array
     // form is explicitly CPU-only.
-    if (auto const *bd = std::get_if<BatchedGemmDescriptor>(&node.op_data)) {
+    if (auto const *bd = node.op_data.get_if<BatchedGemmDescriptor>()) {
         return bd->strided;
     }
     // Scale -> try_gpu_scale, Axpby -> try_gpu_axpy. Both are real-scalar only,
     // which the dtype gate also enforces.
-    if (node.kind == OpKind::Scale && std::holds_alternative<ScaleDescriptor>(node.op_data)) {
+    if (node.kind == OpKind::Scale && node.op_data.holds<ScaleDescriptor>()) {
         return true;
     }
-    if (node.kind == OpKind::Axpby && std::holds_alternative<AxpbyDescriptor>(node.op_data)) {
+    if (node.kind == OpKind::Axpby && node.op_data.holds<AxpbyDescriptor>()) {
         return true;
     }
     return false;

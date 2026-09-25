@@ -127,7 +127,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         if (permute.kind != OpKind::Permute) {
             continue;
         }
-        auto const *pd = std::get_if<PermuteDescriptor>(&permute.op_data);
+        auto const *pd = permute.op_data.get_if<PermuteDescriptor>();
         if (pd == nullptr) {
             continue;
         }
@@ -231,7 +231,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         };
         // The live destination prefactor of an einsum, or null when the node is not one.
         auto const einsum_c_pf = [](Node const &node) -> PrefactorScalar const * {
-            auto const *ed = std::get_if<EinsumDescriptor>(&node.op_data);
+            auto const *ed = node.op_data.get_if<EinsumDescriptor>();
             return ed != nullptr ? &live_c_prefactor(*ed) : nullptr;
         };
 
@@ -296,7 +296,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         // unreadable and we cannot fold. Read it through the live params when
         // present: an earlier pass that folded a scale into this accumulate
         // wrote it there, and that is the value the executor will use.
-        auto const *ad = std::get_if<AxpbyDescriptor>(&axpby2.op_data);
+        auto const *ad = axpby2.op_data.get_if<AxpbyDescriptor>();
         if (ad == nullptr) {
             note_skip("accumulate carries no readable scalar (pass-built node without a descriptor)",
                       fmt::format("node #{} '{}'", a2, axpby2.label));
@@ -332,7 +332,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         }
         // Only fold a pure permutation (alpha == 1); a scaled permute would need
         // s2 * alpha folded into the accumulate, deferred until it appears.
-        auto *pd = std::get_if<PermuteDescriptor>(&nodes[s.permute_idx].op_data);
+        auto *pd = nodes[s.permute_idx].op_data.get_if<PermuteDescriptor>();
         if (pd == nullptr || pd->alpha != 1.0) {
             note_skip("permute is scaled (alpha != 1)", fmt::format("permute #{}", s.permute_idx));
             continue;

@@ -349,7 +349,7 @@ TEST_CASE("ElementWiseFusion - a fused axpby that drops Y stops listing it as an
 
     auto const &fused = graph.nodes()[0];
     CHECK(fused.inputs.size() == 1); // Y no longer read
-    auto const *desc = std::get_if<cg::AxpbyDescriptor>(&fused.op_data);
+    auto const *desc = fused.op_data.get_if<cg::AxpbyDescriptor>();
     REQUIRE(desc != nullptr);
     CHECK(einsums::compute_graph::is_zero(desc->beta));
 

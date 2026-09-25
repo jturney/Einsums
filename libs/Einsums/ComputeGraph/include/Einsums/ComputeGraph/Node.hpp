@@ -1187,40 +1187,120 @@ build_letter_spaces(std::span<LetterSpaceOperand const> operands, SpaceRegistry 
 } // namespace detail
 
 /**
- * @brief Type-erased operation metadata variant.
+ * @brief A node's operation-specific descriptor, or none.
  *
- * Each Node stores an OpData that may contain operation-specific metadata
- * for use by optimization passes. Nodes with no special metadata use
- * std::monostate.
+ * Each Node stores an OpData that may hold the metadata an optimization pass or
+ * @ref build_executor reads: an @ref EinsumDescriptor, a @ref ScaleDescriptor and
+ * so on. A node with no special metadata holds nothing (@ref empty).
+ *
+ * Callers reach the descriptor only through this interface - @ref get_if,
+ * @ref holds, @ref get and @ref name - never through the storage behind it, so
+ * that storage is free to change. It is a closed ``std::variant`` today; a
+ * representation whose set of descriptors can grow outside this header (for
+ * example a descriptor a foreign tensor backend defines) replaces it here
+ * without touching a call site.
+ *
+ * New alternatives are APPENDED, never inserted. The position is not a
+ * serialized property - the round-trip IR writes descriptors by NAME, precisely
+ * so adding one in the middle cannot silently reinterpret an old file - but
+ * keeping the order append-only costs nothing. A new alternative also needs its
+ * name in the table behind @ref name (src/Node.cpp), which a static_assert there
+ * enforces.
  */
-/// New alternatives are APPENDED, never inserted. The variant index is not a
-/// serialized property today - the round-trip IR writes
-/// descriptors by NAME, precisely so adding one in the middle cannot silently
-/// reinterpret an old file - but keeping the order append-only costs nothing
-/// and keeps every debug dump that prints ``op_data.index()`` comparable
-/// across builds.
-using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
-                            AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor,
-                            BatchedGemmDescriptor, GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor,
-                            GroupedDotDescriptor, GroupedAxpbyDescriptor, GroupedElementwiseDescriptor, GroupedSandwichDescriptor,
-                            GroupedGatherRotateDescriptor, TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor,
-                            TiledDotDescriptor, ElementwiseBinaryDescriptor, DotDescriptor, TraceDescriptor, GemmDescriptor,
-                            ElementTransformDescriptor, SetupDescriptor, SyevDescriptor, LaplaceQuadratureDescriptor, OuterSumDescriptor>;
+class EINSUMS_EXPORT OpData {
+    using Storage =
+        std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
+                     AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor, BatchedGemmDescriptor,
+                     GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, GroupedDotDescriptor,
+                     GroupedAxpbyDescriptor, GroupedElementwiseDescriptor, GroupedSandwichDescriptor, GroupedGatherRotateDescriptor,
+                     TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor,
+                     ElementwiseBinaryDescriptor, DotDescriptor, TraceDescriptor, GemmDescriptor, ElementTransformDescriptor,
+                     SetupDescriptor, SyevDescriptor, LaplaceQuadratureDescriptor, OuterSumDescriptor>;
 
-namespace detail {
-template <typename D, typename Variant>
-struct IsVariantAlternative : std::false_type {};
+    template <typename D, typename Variant>
+    struct IsAlternative : std::false_type {};
 
-template <typename D, typename... Ts>
-struct IsVariantAlternative<D, std::variant<Ts...>> : std::bool_constant<(std::is_same_v<D, Ts> || ...)> {};
-} // namespace detail
+    template <typename D, typename... Ts>
+    struct IsAlternative<D, std::variant<Ts...>> : std::bool_constant<(std::is_same_v<D, Ts> || ...)> {};
 
-/// A type @ref CaptureContext::record accepts as a node's descriptor: one of
-/// @ref OpData's alternatives, or @ref OpData itself. The library instantiates
-/// record once for each of them, so anything else would fail to link; this
-/// makes it fail to compile instead.
+  public:
+    /// Whether @p D is a descriptor an OpData can hold (std::monostate included).
+    template <typename D>
+    [[nodiscard]] static consteval bool can_hold() {
+        return IsAlternative<D, Storage>::value;
+    }
+
+    /// How many descriptor types an OpData can hold, std::monostate included.
+    static constexpr std::size_t alternative_count = std::variant_size_v<Storage>;
+
+    /// No descriptor.
+    OpData() noexcept = default;
+
+    /// Hold @p descriptor. Implicit, so a descriptor converts wherever an OpData is expected.
+    template <typename D>
+        requires(can_hold<std::remove_cvref_t<D>>())
+    OpData(D &&descriptor) : _storage(std::forward<D>(descriptor)) {} // NOLINT(google-explicit-constructor)
+
+    /// Replace the held descriptor with @p descriptor.
+    template <typename D>
+        requires(can_hold<std::remove_cvref_t<D>>())
+    OpData &operator=(D &&descriptor) {
+        _storage = std::forward<D>(descriptor);
+        return *this;
+    }
+
+    /// The held descriptor if it is a @p D, else null.
+    template <typename D>
+    [[nodiscard]] D *get_if() noexcept {
+        return std::get_if<D>(&_storage);
+    }
+
+    /// The held descriptor if it is a @p D, else null.
+    template <typename D>
+    [[nodiscard]] D const *get_if() const noexcept {
+        return std::get_if<D>(&_storage);
+    }
+
+    /// Whether the held descriptor is a @p D.
+    template <typename D>
+    [[nodiscard]] bool holds() const noexcept {
+        return std::holds_alternative<D>(_storage);
+    }
+
+    /// The held descriptor, which must be a @p D.
+    /// @throws std::bad_variant_access when it is not.
+    template <typename D>
+    [[nodiscard]] D &get() {
+        return std::get<D>(_storage);
+    }
+
+    /// The held descriptor, which must be a @p D.
+    /// @throws std::bad_variant_access when it is not.
+    template <typename D>
+    [[nodiscard]] D const &get() const {
+        return std::get<D>(_storage);
+    }
+
+    /// Whether @p other holds a descriptor of the same type as this one (both empty included).
+    [[nodiscard]] bool same_type_as(OpData const &other) const noexcept { return _storage.index() == other._storage.index(); }
+
+    /// Whether no descriptor is held.
+    [[nodiscard]] bool empty() const noexcept { return holds<std::monostate>(); }
+
+    /// The held descriptor's type name, for diagnostics: ``"EinsumDescriptor"``, or
+    /// ``"no descriptor"`` when @ref empty.
+    [[nodiscard]] std::string_view name() const noexcept;
+
+  private:
+    Storage _storage;
+};
+
+/// A type @ref CaptureContext::record accepts as a node's descriptor: one of the
+/// descriptors an @ref OpData holds, or @ref OpData itself. The library
+/// instantiates record once for each of them, so anything else would fail to
+/// link; this makes it fail to compile instead.
 template <typename D>
-concept OpDataOrAlternative = std::is_same_v<D, OpData> || detail::IsVariantAlternative<D, OpData>::value;
+concept OpDataOrAlternative = std::is_same_v<D, OpData> || OpData::can_hold<D>();
 
 /**
  * @brief A single operation node in the computation graph.
@@ -1414,13 +1494,13 @@ void for_each_child_graph(NodeT &node, F &&visit, bool include_setup = true) {
         }
     };
 
-    if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data); loop != nullptr) {
+    if (auto *loop = node.op_data.template get_if<LoopDescriptor>(); loop != nullptr) {
         step(loop->body);
-    } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data); cond != nullptr) {
+    } else if (auto *cond = node.op_data.template get_if<ConditionalDescriptor>(); cond != nullptr) {
         step(cond->then_branch);
         step(cond->else_branch);
     } else if (include_setup) {
-        if (auto *setup = std::get_if<SetupDescriptor>(&node.op_data); setup != nullptr) {
+        if (auto *setup = node.op_data.template get_if<SetupDescriptor>(); setup != nullptr) {
             step(setup->body);
         }
     }

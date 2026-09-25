@@ -106,7 +106,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         if (node.kind != OpKind::Einsum) {
             continue;
         }
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr) {
             continue;
         }
@@ -327,7 +327,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // combine below can cast operands uniformly to GeneralRuntimeTensor<T>.
         // The fused contraction is node-0's einsum; grab its descriptor up
         // front so the prefactor gate below can see c_prefactor too.
-        auto const *n0_desc = std::get_if<EinsumDescriptor>(&nodes[members[0].node_index].op_data);
+        auto const *n0_desc = nodes[members[0].node_index].op_data.get_if<EinsumDescriptor>();
         if (n0_desc == nullptr) {
             continue;
         }
@@ -358,7 +358,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // The create_* calls above append Alloc nodes and may reallocate the
         // node vector, dangling the descriptor pointer fetched for the gate;
         // re-resolve it before building the fused spec from it.
-        n0_desc = std::get_if<EinsumDescriptor>(&nodes[members[0].node_index].op_data);
+        n0_desc = nodes[members[0].node_index].op_data.get_if<EinsumDescriptor>();
 
         PrefactorScalar ab0 = members[0].ab_prefactor;
         if (is_zero(ab0)) {

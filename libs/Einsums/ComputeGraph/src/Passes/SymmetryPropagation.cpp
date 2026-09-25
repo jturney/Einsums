@@ -115,7 +115,7 @@ bool propagate_self_contraction(Graph &graph, Node const &node, InferGuard const
     if (node.inputs[0] != node.inputs[1])
         return false;
 
-    auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<EinsumDescriptor>();
     if (!desc)
         return false;
 
@@ -146,7 +146,7 @@ bool propagate_permute(Graph &graph, Node const &node, InferGuard const &guard) 
     if (node.inputs.size() != 1 || node.outputs.size() != 1)
         return false;
 
-    auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<PermuteDescriptor>();
     if (!desc)
         return false;
     if (desc->beta != 0.0)

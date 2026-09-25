@@ -407,7 +407,7 @@ TEST_CASE("ThcFit - an amplitude is fitted from itself and refitted at every upd
     // the body, which is what every iteration after it reads.
     std::size_t setups = 0;
     for (auto const &node : graph.nodes()) {
-        if (std::get_if<cg::SetupDescriptor>(&node.op_data) != nullptr) {
+        if (node.op_data.get_if<cg::SetupDescriptor>() != nullptr) {
             ++setups;
         }
     }

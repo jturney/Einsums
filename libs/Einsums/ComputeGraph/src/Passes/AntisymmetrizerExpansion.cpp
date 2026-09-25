@@ -48,7 +48,7 @@ bool AntisymmetrizerExpansion::run(Graph &graph) {
         if (node.kind != OpKind::Einsum) {
             continue;
         }
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr) {
             continue;
         }
@@ -108,7 +108,7 @@ bool AntisymmetrizerExpansion::run(Graph &graph) {
         bool                             conj_a = false;
         bool                             conj_b = false;
         {
-            auto const *desc = std::get_if<EinsumDescriptor>(&graph.nodes()[index].op_data);
+            auto const *desc = graph.nodes()[index].op_data.get_if<EinsumDescriptor>();
             bool const  live = desc->indices != nullptr;
             base.c_indices   = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
             base.a_indices   = live ? desc->indices->spec.a_indices : desc->spec.a_indices;

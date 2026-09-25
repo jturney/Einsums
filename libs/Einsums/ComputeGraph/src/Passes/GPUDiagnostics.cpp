@@ -35,7 +35,7 @@ GpuStats count_one(Graph &graph) {
     for (auto const &node : graph.nodes()) {
         if (node.kind == OpKind::HostToDevice) {
             stats.h2d++;
-            auto const *desc = std::get_if<TransferDescriptor>(&node.op_data);
+            auto const *desc = node.op_data.get_if<TransferDescriptor>();
             if (desc) {
                 stats.transfer_bytes += desc->size_bytes;
                 current_device_bytes += desc->size_bytes;
@@ -43,7 +43,7 @@ GpuStats count_one(Graph &graph) {
             }
         } else if (node.kind == OpKind::DeviceToHost) {
             stats.d2h++;
-            auto const *desc = std::get_if<TransferDescriptor>(&node.op_data);
+            auto const *desc = node.op_data.get_if<TransferDescriptor>();
             if (desc) {
                 stats.transfer_bytes += desc->size_bytes;
                 // D2H doesn't free device memory (tensor stays in Both state).

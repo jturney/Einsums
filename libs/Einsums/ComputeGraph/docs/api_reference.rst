@@ -151,7 +151,7 @@ Type Aliases
 :cpp:type:`einsums::compute_graph::TensorId`
 :cpp:type:`einsums::compute_graph::NodeId`
 :cpp:type:`einsums::compute_graph::LoopCondition`
-:cpp:type:`einsums::compute_graph::OpData`
+:cpp:class:`einsums::compute_graph::OpData`
 
 Optimization Passes
 ===================

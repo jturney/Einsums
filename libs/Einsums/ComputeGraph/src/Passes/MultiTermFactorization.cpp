@@ -187,7 +187,7 @@ std::optional<Modelled> model_statement(TensorExpr const &expr, ExprStatement co
     // per-member prefactors would have nowhere to go besides, since a grouped batch carries one
     // prefactor for the whole call.
     if (value.element_kind == OpKind::DirectProduct) {
-        auto const *scalars = std::get_if<ElementwiseBinaryDescriptor>(&value.descriptor);
+        auto const *scalars = value.descriptor.get_if<ElementwiseBinaryDescriptor>();
         if (scalars == nullptr) {
             return std::nullopt;
         }
@@ -208,7 +208,7 @@ std::optional<Modelled> model_statement(TensorExpr const &expr, ExprStatement co
     if (value.element_kind == OpKind::Dot) {
         // The TILED dot shares the kind and reduces over a grid rather than over one buffer; the
         // descriptor is what tells the two apart.
-        auto const *scalars = std::get_if<DotDescriptor>(&value.descriptor);
+        auto const *scalars = value.descriptor.get_if<DotDescriptor>();
         if (scalars == nullptr) {
             return std::nullopt;
         }

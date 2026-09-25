@@ -97,7 +97,7 @@ std::vector<std::vector<std::string>> spec_of(cg::Graph const &graph, size_t whi
         if (seen++ != which) {
             continue;
         }
-        auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
         REQUIRE(desc != nullptr);
         return {desc->spec.c_indices, desc->spec.a_indices, desc->spec.b_indices};
     }

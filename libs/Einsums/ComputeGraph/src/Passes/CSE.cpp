@@ -113,27 +113,27 @@ bool batched_gemm_shape_equal(BatchedGemmDescriptor const &a, BatchedGemmDescrip
 /// descriptors, control flow) never match. Those nodes are not pure-overwrite
 /// producers either, so this only restates the caller's gate.
 std::optional<double> op_data_ratio(OpData const &a, OpData const &b) {
-    if (a.index() != b.index()) {
+    if (!a.same_type_as(b)) {
         return std::nullopt;
     }
 
-    if (auto const *ea = std::get_if<EinsumDescriptor>(&a)) {
-        auto const &eb = std::get<EinsumDescriptor>(b);
+    if (auto const *ea = a.get_if<EinsumDescriptor>()) {
+        auto const &eb = b.get<EinsumDescriptor>();
         if (!(einsum_indices_equal(*ea, eb) && live_c_prefactor(*ea) == live_c_prefactor(eb) && live_conj_a(*ea) == live_conj_a(eb) &&
               live_conj_b(*ea) == live_conj_b(eb))) {
             return std::nullopt;
         }
         return exact_ratio(live_ab_prefactor(*ea), live_ab_prefactor(eb));
     }
-    if (auto const *aa = std::get_if<AxpbyDescriptor>(&a)) {
-        auto const &ab = std::get<AxpbyDescriptor>(b);
+    if (auto const *aa = a.get_if<AxpbyDescriptor>()) {
+        auto const &ab = b.get<AxpbyDescriptor>();
         if (live_beta(*aa) != live_beta(ab)) {
             return std::nullopt;
         }
         return exact_ratio(live_alpha(*aa), live_alpha(ab));
     }
-    if (auto const *pa = std::get_if<PermuteDescriptor>(&a)) {
-        auto const &pb = std::get<PermuteDescriptor>(b);
+    if (auto const *pa = a.get_if<PermuteDescriptor>()) {
+        auto const &pb = b.get<PermuteDescriptor>();
         // The index orders are half the operation: `C[j,i,k] = A[i,j,k]` and
         // `C[i,k,j] = A[i,j,k]` read the same source with the same scalars and
         // write the same shape, yet compute different transposes.
@@ -142,17 +142,17 @@ std::optional<double> op_data_ratio(OpData const &a, OpData const &b) {
         }
         return exact_ratio(pa->alpha, pb.alpha);
     }
-    if (auto const *ba = std::get_if<BatchedGemmDescriptor>(&a)) {
-        auto const &bb = std::get<BatchedGemmDescriptor>(b);
+    if (auto const *ba = a.get_if<BatchedGemmDescriptor>()) {
+        auto const &bb = b.get<BatchedGemmDescriptor>();
         if (!batched_gemm_shape_equal(*ba, bb)) {
             return std::nullopt;
         }
         return exact_ratio(ba->alpha, bb.alpha);
     }
-    if (auto const *sa = std::get_if<ScaleDescriptor>(&a)) {
+    if (auto const *sa = a.get_if<ScaleDescriptor>()) {
         // In place, so never a pure-overwrite producer and never reached; the
         // exact comparison is kept so the variant is covered explicitly.
-        return sa->factor == std::get<ScaleDescriptor>(b).factor ? std::optional<double>{1.0} : std::nullopt;
+        return sa->factor == b.get<ScaleDescriptor>().factor ? std::optional<double>{1.0} : std::nullopt;
     }
     return std::nullopt;
 }
@@ -177,11 +177,11 @@ bool foldable_reader(Node const &nd, TensorId tensor) {
         return false;
     }
     if (nd.kind == OpKind::Einsum) {
-        auto const *d = std::get_if<EinsumDescriptor>(&nd.op_data);
+        auto const *d = nd.op_data.get_if<EinsumDescriptor>();
         return d != nullptr && d->params != nullptr;
     }
     if (nd.kind == OpKind::Axpby) {
-        auto const *d = std::get_if<AxpbyDescriptor>(&nd.op_data);
+        auto const *d = nd.op_data.get_if<AxpbyDescriptor>();
         return d != nullptr && d->params != nullptr;
     }
     return false;
@@ -191,12 +191,12 @@ bool foldable_reader(Node const &nd, TensorId tensor) {
 /// @ref foldable_reader. Writes the live params the executor reads and the
 /// snapshot beside them, so later analysis sees the same value.
 void fold_reader(Node &nd, double r) {
-    if (auto *d = std::get_if<EinsumDescriptor>(&nd.op_data)) {
+    if (auto *d = nd.op_data.get_if<EinsumDescriptor>()) {
         d->params->ab_pf = scale_prefactor(d->params->ab_pf, r);
         d->ab_prefactor  = d->params->ab_pf;
         return;
     }
-    auto *d          = std::get_if<AxpbyDescriptor>(&nd.op_data);
+    auto *d          = nd.op_data.get_if<AxpbyDescriptor>();
     d->params->alpha = scale_prefactor(d->params->alpha, r);
     d->alpha         = d->params->alpha;
 }

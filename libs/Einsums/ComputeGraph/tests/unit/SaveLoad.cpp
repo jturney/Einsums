@@ -192,7 +192,7 @@ TEMPLATE_TEST_CASE("SaveLoad - einsum round-trips bitwise", "[ComputeGraph][Save
 
     bool hinted = false;
     for (auto const &node : loaded.nodes()) {
-        if (auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data); desc != nullptr && desc->gemm_hint != nullptr) {
+        if (auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr && desc->gemm_hint != nullptr) {
             hinted = true;
             REQUIRE(desc->gemm_hint->m == 6);
             REQUIRE(desc->gemm_hint->n == 5);
@@ -338,7 +338,7 @@ TEST_CASE("SaveLoad - an eigenvalues-only decomposition stays eigenvalues-only",
     // The flag itself, read back off the node rather than inferred from the numbers, so the
     // assertion still means something if LAPACK's two jobs ever agree on A for small inputs.
     REQUIRE(loaded.num_nodes() == 1);
-    auto const *descriptor = std::get_if<cg::SyevDescriptor>(&loaded.nodes()[0].op_data);
+    auto const *descriptor = loaded.nodes()[0].op_data.get_if<cg::SyevDescriptor>();
     REQUIRE(descriptor != nullptr);
     REQUIRE_FALSE(descriptor->compute_eigenvectors);
 
@@ -920,7 +920,7 @@ TEST_CASE("SaveLoad - an element transform's parameter travels with the node", "
 
     cg::Graph loaded = must_load(text);
     REQUIRE(loaded.num_nodes() == 1);
-    auto const *desc = std::get_if<cg::ElementTransformDescriptor>(&loaded.nodes()[0].op_data);
+    auto const *desc = loaded.nodes()[0].op_data.get_if<cg::ElementTransformDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->param.has_value());
     REQUIRE(*desc->param == 1.0e-10);
@@ -954,7 +954,7 @@ TEST_CASE("SaveLoad - an element transform with no parameter writes no key and r
     REQUIRE_THAT(text, !Catch::Matchers::ContainsSubstring(R"("param":)"));
 
     cg::Graph   loaded = must_load(text);
-    auto const *desc   = std::get_if<cg::ElementTransformDescriptor>(&loaded.nodes()[0].op_data);
+    auto const *desc   = loaded.nodes()[0].op_data.get_if<cg::ElementTransformDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE_FALSE(desc->param.has_value());
 
@@ -1059,7 +1059,7 @@ TEST_CASE("SaveLoad - a permutation operator crosses the file intact", "[Compute
     }
 
     cg::Graph   loaded = must_load(*saved);
-    auto const *desc   = std::get_if<cg::EinsumDescriptor>(&loaded.nodes()[0].op_data);
+    auto const *desc   = loaded.nodes()[0].op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->operators.size() == 2);
     CHECK(desc->operators[0].groups == std::vector<std::vector<std::string>>{{"i"}, {"j"}});
@@ -1105,7 +1105,7 @@ TEST_CASE("SaveLoad - a graph without operators writes no operators key", "[Comp
     REQUIRE_THAT(text, !Catch::Matchers::ContainsSubstring(R"("operators":)"));
 
     cg::Graph const loaded = must_load(text);
-    auto const     *desc   = std::get_if<cg::EinsumDescriptor>(&loaded.nodes()[0].op_data);
+    auto const     *desc   = loaded.nodes()[0].op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     CHECK(desc->operators.empty());
 }

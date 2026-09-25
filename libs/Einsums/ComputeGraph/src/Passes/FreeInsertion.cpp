@@ -85,11 +85,11 @@ void collect_freeable(Graph &graph, size_t min_bytes, std::vector<DescendantFree
     }
 
     for (auto &node : graph.nodes()) {
-        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+        if (auto *loop = node.op_data.get_if<LoopDescriptor>()) {
             if (loop->body) {
                 collect_freeable(*loop->body, min_bytes, out);
             }
-        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+        } else if (auto *cond = node.op_data.get_if<ConditionalDescriptor>()) {
             if (cond->then_branch) {
                 collect_freeable(*cond->then_branch, min_bytes, out);
             }
@@ -237,11 +237,11 @@ bool FreeInsertion::run(Graph &graph) {
         // never fills. Leaving a setup body's own scratch alone costs one allocation that
         // outlives the fitting and buys the guarantee that nothing a skipped node was
         // supposed to write is missing.
-        if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+        if (auto const *loop = node.op_data.get_if<LoopDescriptor>()) {
             if (loop->body) {
                 collect_from(*loop->body);
             }
-        } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+        } else if (auto const *cond = node.op_data.get_if<ConditionalDescriptor>()) {
             if (cond->then_branch) {
                 collect_from(*cond->then_branch);
             }

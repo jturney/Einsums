@@ -631,7 +631,7 @@ TEST_CASE("a grouped family whose members disagree on a shape contract is declin
         cg::grouped_batched_gemm(1.0, as_inputs(A), as_inputs(B), 0.0, as_outputs(C));
     }
     for (auto &node : graph.nodes()) {
-        if (auto *desc = std::get_if<cg::GroupedBatchedGemmDescriptor>(&node.op_data); desc != nullptr) {
+        if (auto *desc = node.op_data.get_if<cg::GroupedBatchedGemmDescriptor>(); desc != nullptr) {
             REQUIRE(desc->groups.size() == 2);
             desc->groups[1].trans_a = 'T';
         }

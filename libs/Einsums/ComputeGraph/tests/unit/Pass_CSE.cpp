@@ -98,7 +98,7 @@ TEST_CASE("CSE - keeps einsums whose outputs differ in element type", "[ComputeG
     // builds carries whatever scalar the pass hands make_einsum_node, typically a double literal, so
     // give it one.
     for (auto &node : graph.nodes()) {
-        if (auto *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data); desc != nullptr) {
+        if (auto *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr) {
             desc->params->c_pf = 0.0;
         }
     }

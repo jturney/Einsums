@@ -882,14 +882,14 @@ TEST_CASE("Factorization - an amplitude the loop body updates is refitted in the
     // after each update.
     std::size_t setups_in_parent = 0;
     for (auto const &node : graph.nodes()) {
-        if (std::get_if<cg::SetupDescriptor>(&node.op_data) != nullptr) {
+        if (node.op_data.get_if<cg::SetupDescriptor>() != nullptr) {
             ++setups_in_parent;
         }
     }
     CHECK(setups_in_parent == 1);
     std::size_t setups_in_body = 0;
     for (auto const &node : loop.body->nodes()) {
-        if (std::get_if<cg::SetupDescriptor>(&node.op_data) != nullptr) {
+        if (node.op_data.get_if<cg::SetupDescriptor>() != nullptr) {
             ++setups_in_body;
         }
     }

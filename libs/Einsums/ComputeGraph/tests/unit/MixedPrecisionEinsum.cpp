@@ -259,7 +259,7 @@ TEST_CASE("mixed precision einsum - a node a pass builds", "[ComputeGraph][Mixed
         auto node = graph.make_einsum_node(a_id, b_id, c_id, gemm_spec(), 0.0, 2.0);
         // No BLAS batching hint: GEMMBatching would fold the node into a GEMM that reads every
         // operand as C's type. Deriving one used to read A's floats as doubles.
-        auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
         REQUIRE(desc != nullptr);
         CHECK(desc->gemm_hint == nullptr);
         graph.add_node(std::move(node));

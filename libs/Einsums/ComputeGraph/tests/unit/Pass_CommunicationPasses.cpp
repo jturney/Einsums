@@ -129,7 +129,7 @@ TEST_CASE("CommunicationElimination - removes an exact-duplicate Allreduce", "[C
     CHECK(survivor.kind == cg::OpKind::Allreduce);
     CHECK(survivor.inputs == std::vector<cg::TensorId>{7});
     CHECK(survivor.outputs == std::vector<cg::TensorId>{7});
-    auto const *desc = std::get_if<cg::CommDescriptor>(&survivor.op_data);
+    auto const *desc = survivor.op_data.get_if<cg::CommDescriptor>();
     REQUIRE(desc != nullptr);
     CHECK(desc->tensor_id == 7);
 }

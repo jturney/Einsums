@@ -43,7 +43,7 @@ std::optional<OperatorSite> read_operator_site(Node const &node) {
     OperatorSite site;
 
     if (node.kind == OpKind::Einsum) {
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr) {
             return std::nullopt;
         }
@@ -52,7 +52,7 @@ std::optional<OperatorSite> read_operator_site(Node const &node) {
         site.c_indices  = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
         site.overwrites = is_zero(live_c_prefactor(*desc));
     } else if (node.kind == OpKind::Permute) {
-        auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<PermuteDescriptor>();
         if (desc == nullptr) {
             return std::nullopt;
         }
@@ -308,7 +308,7 @@ bool AntisymmetryInference::run(Graph &graph) {
         }
         // ── R3: antisymmetry through a contraction ──────────────────────────
         else if (node.kind == OpKind::Einsum && node.inputs.size() >= 2) {
-            auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+            auto const *desc = node.op_data.get_if<EinsumDescriptor>();
             if (desc != nullptr) {
                 ++_num_candidates;
                 bool const  live        = desc->indices != nullptr;
@@ -353,7 +353,7 @@ bool AntisymmetryInference::run(Graph &graph) {
         }
         // ── R2: division by an invariant ────────────────────────────────────
         else if (node.kind == OpKind::DirectDivision && node.inputs.size() >= 2) {
-            auto const *edesc = std::get_if<ElementwiseBinaryDescriptor>(&node.op_data);
+            auto const *edesc = node.op_data.get_if<ElementwiseBinaryDescriptor>();
             if (edesc != nullptr) {
                 ++_num_candidates;
                 contribution.overwrites = is_zero(live_beta(*edesc));
@@ -373,7 +373,7 @@ bool AntisymmetryInference::run(Graph &graph) {
         }
         // ── R4: a linear combination ────────────────────────────────────────
         else if (node.kind == OpKind::Axpby && node.inputs.size() >= 1) {
-            auto const *adesc = std::get_if<AxpbyDescriptor>(&node.op_data);
+            auto const *adesc = node.op_data.get_if<AxpbyDescriptor>();
             if (adesc != nullptr) {
                 ++_num_candidates;
                 contribution.overwrites = is_zero(live_beta(*adesc));

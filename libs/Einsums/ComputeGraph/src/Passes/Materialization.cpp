@@ -140,18 +140,18 @@ void collect_deferred(Graph &graph, std::vector<DeferredEntry> &out, std::vector
         }
     }
     for (auto &node : graph.nodes()) {
-        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+        if (auto *loop = node.op_data.get_if<LoopDescriptor>()) {
             if (loop->body) {
                 collect_deferred(*loop->body, out, nested_setups);
             }
-        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+        } else if (auto *cond = node.op_data.get_if<ConditionalDescriptor>()) {
             if (cond->then_branch) {
                 collect_deferred(*cond->then_branch, out, nested_setups);
             }
             if (cond->else_branch) {
                 collect_deferred(*cond->else_branch, out, nested_setups);
             }
-        } else if (auto *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
+        } else if (auto *setup = node.op_data.get_if<SetupDescriptor>()) {
             if (setup->body) {
                 nested_setups.emplace_back(setup->body.get(), node.label);
             }
@@ -317,11 +317,11 @@ bool Materialization::run(Graph &graph) {
             }
         };
 
-        if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+        if (auto const *loop = node.op_data.get_if<LoopDescriptor>()) {
             if (loop->body) {
                 collect_from(*loop->body);
             }
-        } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+        } else if (auto const *cond = node.op_data.get_if<ConditionalDescriptor>()) {
             if (cond->then_branch) {
                 collect_from(*cond->then_branch);
             }
@@ -484,7 +484,7 @@ bool Materialization::run(Graph &graph) {
     };
     // NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest, so the search does too.
     std::function<Graph *(Node const &, void const *)> setup_below = [&](Node const &node, void const *ptr) -> Graph * {
-        if (auto const *desc = std::get_if<SetupDescriptor>(&node.op_data)) {
+        if (auto const *desc = node.op_data.get_if<SetupDescriptor>()) {
             return (desc->body && body_writes(*desc->body, ptr)) ? desc->body.get() : nullptr;
         }
         auto search = [&](Graph &child) -> Graph * {
@@ -495,10 +495,10 @@ bool Materialization::run(Graph &graph) {
             }
             return nullptr;
         };
-        if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+        if (auto const *loop = node.op_data.get_if<LoopDescriptor>()) {
             return loop->body ? search(*loop->body) : nullptr;
         }
-        if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+        if (auto const *cond = node.op_data.get_if<ConditionalDescriptor>()) {
             if (cond->then_branch) {
                 if (Graph *found = search(*cond->then_branch); found != nullptr) {
                     return found;
@@ -628,7 +628,7 @@ bool Materialization::run(Graph &graph) {
     // unsaveable, which is the one thing a factorization exists to avoid.
     std::vector<std::pair<Graph *, std::string>> setup_bodies;
     for (auto const &node : nodes) {
-        if (auto const *setup = std::get_if<SetupDescriptor>(&node.op_data); setup != nullptr && setup->body) {
+        if (auto const *setup = node.op_data.get_if<SetupDescriptor>(); setup != nullptr && setup->body) {
             setup_bodies.emplace_back(setup->body.get(), node.label);
         }
     }

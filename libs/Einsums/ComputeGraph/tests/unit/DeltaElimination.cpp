@@ -288,7 +288,7 @@ TEST_CASE("prefactors survive the rewrite exactly", "[ComputeGraph][DeltaElimina
         if (node.kind != cg::OpKind::Permute) {
             continue;
         }
-        auto const *desc = std::get_if<cg::PermuteDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<cg::PermuteDescriptor>();
         REQUIRE(desc != nullptr);
         CHECK(desc->alpha == std::complex<double>{2.5, 0.0}); // the product prefactor
         CHECK(desc->beta == std::complex<double>{1.5, 0.0});  // the accumulation prefactor

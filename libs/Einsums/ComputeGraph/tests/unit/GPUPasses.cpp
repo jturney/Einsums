@@ -39,12 +39,12 @@ TransferCounts count_transfers(std::vector<cg::Node> const &nodes) {
     for (auto const &n : nodes) {
         if (n.kind == cg::OpKind::HostToDevice) {
             c.h2d_total++;
-            auto const *desc = std::get_if<cg::TransferDescriptor>(&n.op_data);
+            auto const *desc = n.op_data.get_if<cg::TransferDescriptor>();
             if (desc)
                 c.h2d_per_tensor[desc->tensor_id]++;
         } else if (n.kind == cg::OpKind::DeviceToHost) {
             c.d2h_total++;
-            auto const *desc = std::get_if<cg::TransferDescriptor>(&n.op_data);
+            auto const *desc = n.op_data.get_if<cg::TransferDescriptor>();
             if (desc)
                 c.d2h_per_tensor[desc->tensor_id]++;
         }
@@ -101,7 +101,7 @@ TEST_CASE("op_kind_name for transfer ops", "[ComputeGraph][GPU]") {
 
 TEST_CASE("TransferDescriptor in OpData variant", "[ComputeGraph][GPU]") {
     cg::OpData data = cg::TransferDescriptor{.tensor_id = 42, .size_bytes = 1024};
-    auto      *desc = std::get_if<cg::TransferDescriptor>(&data);
+    auto      *desc = data.get_if<cg::TransferDescriptor>();
     REQUIRE(desc != nullptr);
     CHECK(desc->tensor_id == 42);
     CHECK(desc->size_bytes == 1024);
@@ -703,7 +703,7 @@ TEST_CASE("TransferInsertion - precise H2D/D2H counts for single GPU node", "[Co
     // Verify transfer nodes have valid TransferDescriptors with non-zero size_bytes.
     for (auto const &n : graph.nodes()) {
         if (n.kind == cg::OpKind::HostToDevice || n.kind == cg::OpKind::DeviceToHost) {
-            auto const *desc = std::get_if<cg::TransferDescriptor>(&n.op_data);
+            auto const *desc = n.op_data.get_if<cg::TransferDescriptor>();
             REQUIRE(desc != nullptr);
             CHECK(desc->size_bytes > 0);
             CHECK_FALSE(n.label.empty());
@@ -1081,7 +1081,7 @@ TEST_CASE("TransferElimination - Belady eviction under memory pressure", "[Compu
         if (n.kind == cg::OpKind::DeviceToHost && n.label.find("evict") != std::string::npos) {
             evict_count++;
             // Each eviction node should have a valid TransferDescriptor.
-            auto const *desc = std::get_if<cg::TransferDescriptor>(&n.op_data);
+            auto const *desc = n.op_data.get_if<cg::TransferDescriptor>();
             REQUIRE(desc != nullptr);
             CHECK(desc->size_bytes > 0);
         }
@@ -1736,13 +1736,13 @@ TEST_CASE("GPU pass pipeline: node ordering is valid after all passes", "[Comput
 
     for (auto const &n : nodes) {
         if (n.kind == cg::OpKind::HostToDevice) {
-            auto const *desc = std::get_if<cg::TransferDescriptor>(&n.op_data);
+            auto const *desc = n.op_data.get_if<cg::TransferDescriptor>();
             REQUIRE(desc != nullptr);
             // Must be on host to transfer.
             CHECK(available_on_host.count(desc->tensor_id) > 0);
             available_on_device.insert(desc->tensor_id);
         } else if (n.kind == cg::OpKind::DeviceToHost) {
-            auto const *desc = std::get_if<cg::TransferDescriptor>(&n.op_data);
+            auto const *desc = n.op_data.get_if<cg::TransferDescriptor>();
             REQUIRE(desc != nullptr);
             // Must be on device to transfer back.
             CHECK(available_on_device.count(desc->tensor_id) > 0);

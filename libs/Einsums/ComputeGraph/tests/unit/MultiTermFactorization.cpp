@@ -92,7 +92,7 @@ std::vector<std::string> rewrite_fingerprint(cg::Graph const &graph) {
     std::vector<std::string> out;
     for (auto const &node : graph.nodes()) {
         std::string line = fmt::format("{}|{}", static_cast<int>(node.kind), node.label);
-        if (auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data); desc != nullptr) {
+        if (auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr) {
             line += fmt::format("|{}<-{};{}", fmt::join(desc->spec.c_indices, ","), fmt::join(desc->spec.a_indices, ","),
                                 fmt::join(desc->spec.b_indices, ","));
         }

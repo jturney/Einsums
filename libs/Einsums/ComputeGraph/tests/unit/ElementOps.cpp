@@ -335,10 +335,10 @@ TEST_CASE("ElementOps - a named element_transform records a descriptor, an anony
     }
 
     REQUIRE(graph.num_nodes() == 2);
-    auto const *desc = std::get_if<cg::ElementTransformDescriptor>(&graph.nodes()[0].op_data);
+    auto const *desc = graph.nodes()[0].op_data.get_if<cg::ElementTransformDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->op_name == "recip");
-    REQUIRE(std::holds_alternative<std::monostate>(graph.nodes()[1].op_data));
+    REQUIRE(graph.nodes()[1].op_data.holds<std::monostate>());
 }
 
 TEST_CASE("ElementOps - a captured node carries the parameter it was given, and none when it was not", "[ComputeGraph][ElementOps]") {
@@ -356,12 +356,12 @@ TEST_CASE("ElementOps - a captured node carries the parameter it was given, and 
     }
 
     REQUIRE(graph.num_nodes() == 2);
-    auto const *carried = std::get_if<cg::ElementTransformDescriptor>(&graph.nodes()[0].op_data);
+    auto const *carried = graph.nodes()[0].op_data.get_if<cg::ElementTransformDescriptor>();
     REQUIRE(carried != nullptr);
     REQUIRE(carried->param.has_value());
     REQUIRE(*carried->param == 1.0e-10);
 
-    auto const *bare = std::get_if<cg::ElementTransformDescriptor>(&graph.nodes()[1].op_data);
+    auto const *bare = graph.nodes()[1].op_data.get_if<cg::ElementTransformDescriptor>();
     REQUIRE(bare != nullptr);
     REQUIRE_FALSE(bare->param.has_value());
 }

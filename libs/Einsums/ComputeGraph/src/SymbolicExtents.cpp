@@ -93,13 +93,13 @@ struct NodeIndices {
 /// The letter lists of @p node, or an empty result for a kind with none.
 NodeIndices node_indices(Node const &node) {
     if (node.kind == OpKind::Einsum) {
-        if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data); desc != nullptr) {
+        if (auto const *desc = node.op_data.get_if<EinsumDescriptor>(); desc != nullptr) {
             return NodeIndices{.a = &desc->spec.a_indices, .b = &desc->spec.b_indices, .c = &desc->spec.c_indices};
         }
         return {};
     }
     if (node.kind == OpKind::Permute || node.kind == OpKind::Transpose) {
-        if (auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data); desc != nullptr) {
+        if (auto const *desc = node.op_data.get_if<PermuteDescriptor>(); desc != nullptr) {
             return NodeIndices{.a = &desc->a_indices, .b = nullptr, .c = &desc->c_indices};
         }
         return {};

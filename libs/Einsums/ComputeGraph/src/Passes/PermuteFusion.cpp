@@ -74,8 +74,8 @@ std::vector<std::string> rewrite_subscript(PermuteDescriptor const &perm, std::v
 /// successful rewrite; the caller is responsible for marking the permute
 /// node for removal.
 bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t einsum_idx, size_t slot) {
-    auto *perm_desc = std::get_if<PermuteDescriptor>(&nodes[perm_idx].op_data);
-    auto *ein_desc  = std::get_if<EinsumDescriptor>(&nodes[einsum_idx].op_data);
+    auto *perm_desc = nodes[perm_idx].op_data.get_if<PermuteDescriptor>();
+    auto *ein_desc  = nodes[einsum_idx].op_data.get_if<EinsumDescriptor>();
     if (!perm_desc || !ein_desc || !ein_desc->indices)
         return false;
     if (!can_fuse(*perm_desc))

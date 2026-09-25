@@ -155,7 +155,7 @@ bool DistributionPlanning::run(Graph &graph) {
         // documented as unsupported (docs/gemm_batching.rst), so we skip
         // BatchedGemm here rather than inventing a role for it.
         if (node.kind == OpKind::Einsum) {
-            auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+            auto const *desc = node.op_data.get_if<EinsumDescriptor>();
             if (!desc)
                 continue;
             if (!node.outputs.empty())
@@ -165,7 +165,7 @@ bool DistributionPlanning::run(Graph &graph) {
             if (node.inputs.size() > 1)
                 tensor_usage[node.inputs[1]].push_back({.node_idx = idx, .role = "B", .spec = &desc->spec});
         } else if (node.kind == OpKind::Permute || node.kind == OpKind::Transpose) {
-            auto const *pdesc = std::get_if<PermuteDescriptor>(&node.op_data);
+            auto const *pdesc = node.op_data.get_if<PermuteDescriptor>();
             if (!pdesc || pdesc->c_indices.empty())
                 continue;
             // Create a synthetic ContractionSpec treating permute as C[...] = A[...]

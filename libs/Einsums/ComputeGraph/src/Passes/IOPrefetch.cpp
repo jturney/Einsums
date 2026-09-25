@@ -212,13 +212,13 @@ bool process(Graph &graph, size_t &num_prefetched) {
         // vector, which can reallocate and invalidate any pointer into
         // graph.nodes()[idx].op_data. Resolve the sub-graph owners to stable
         // Graph* BEFORE hoisting, or the second hoist reads a dangling descriptor.
-        if (auto *loop = std::get_if<LoopDescriptor>(&graph.nodes()[idx].op_data); loop != nullptr && loop->body) {
+        if (auto *loop = graph.nodes()[idx].op_data.get_if<LoopDescriptor>(); loop != nullptr && loop->body) {
             Graph *body = loop->body.get();
             modified |= process(*body, num_prefetched);
             modified |= hoist_reads_from_body(graph, idx, *body, num_prefetched);
             continue;
         }
-        if (auto *cond = std::get_if<ConditionalDescriptor>(&graph.nodes()[idx].op_data); cond != nullptr) {
+        if (auto *cond = graph.nodes()[idx].op_data.get_if<ConditionalDescriptor>(); cond != nullptr) {
             Graph *then_g = cond->then_branch.get();
             Graph *else_g = cond->else_branch.get();
             if (then_g != nullptr) {

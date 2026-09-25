@@ -46,7 +46,7 @@ std::optional<OperatorProducer> read_producer(Node const &node) {
     OperatorProducer out;
 
     if (node.kind == OpKind::Permute) {
-        auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<PermuteDescriptor>();
         if (desc == nullptr || desc->operators.empty() || node.inputs.size() != 1) {
             return std::nullopt;
         }

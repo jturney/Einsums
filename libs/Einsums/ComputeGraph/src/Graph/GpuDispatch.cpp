@@ -389,7 +389,7 @@ bool try_gpu_scale(Node const &node, std::unordered_map<TensorId, TensorHandle> 
     if (node.kind != OpKind::Scale)
         return false;
 
-    auto const *desc = std::get_if<ScaleDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<ScaleDescriptor>();
     if (!desc)
         return false;
 
@@ -464,7 +464,7 @@ bool try_gpu_axpy(Node const &node, std::unordered_map<TensorId, TensorHandle> c
     // Read the live scalars. Prefer the shared params over the descriptor
     // snapshot: a pass that folded a scale into this node wrote them there, and
     // that is what the CPU executor would use.
-    auto const *desc = std::get_if<AxpbyDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<AxpbyDescriptor>();
     if (desc == nullptr) {
         return false; // pass-built node with no readable scalars: let the CPU executor run
     }
@@ -571,7 +571,7 @@ bool try_gpu_batched_gemm(BatchedGemmDescriptor const &desc, Node const &node, s
 /// Top-level GPU BLAS dispatcher: tries GEMM, GEMV, Scale, Axpy, BatchedGemm.
 bool try_gpu_blas_dispatch(Node const &node, std::unordered_map<TensorId, TensorHandle> const &tensors, DeviceShadowMap &shadows) {
     // Einsum operations: try GEMM, then GEMV.
-    if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data)) {
+    if (auto const *desc = node.op_data.get_if<EinsumDescriptor>()) {
         if (try_gpu_gemm(*desc, node, tensors, shadows))
             return true;
         if (try_gpu_gemv(*desc, node, tensors, shadows))
@@ -579,7 +579,7 @@ bool try_gpu_blas_dispatch(Node const &node, std::unordered_map<TensorId, Tensor
     }
 
     // Strided-batched GEMM (3D batch-contiguous einsums captured as BatchedGemm).
-    if (auto const *desc = std::get_if<BatchedGemmDescriptor>(&node.op_data)) {
+    if (auto const *desc = node.op_data.get_if<BatchedGemmDescriptor>()) {
         if (try_gpu_batched_gemm(*desc, node, tensors, shadows))
             return true;
     }

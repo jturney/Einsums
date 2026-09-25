@@ -107,7 +107,7 @@ bool CrossSpaceValidation::run(Graph &graph) {
             note_skip("not a contraction node", fmt::format("node {} is a {}", node.id, op_kind_name(node.kind)));
             continue;
         }
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr) {
             note_skip("contraction node carries no descriptor", fmt::format("node {} ('{}')", node.id, node.label));
             continue;

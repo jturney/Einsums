@@ -264,7 +264,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         node.outputs = remap(spec.outputs, "output");
         node.op_data = spec.descriptor;
 
-        if (auto *einsum = std::get_if<EinsumDescriptor>(&node.op_data)) {
+        if (auto *einsum = node.op_data.get_if<EinsumDescriptor>()) {
             // The live blocks a captured node carries. Restoring them is not
             // cosmetic: a loaded graph is optimized after loading, and a pass
             // that rewrites a prefactor writes through this handle.
@@ -319,7 +319,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
                 }
             }
         }
-        if (auto *conditional = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+        if (auto *conditional = node.op_data.get_if<ConditionalDescriptor>()) {
             if (spec.then_branch == nullptr) {
                 throw BuildFailure(fmt::format("conditional node '{}' has no then-branch", spec.label));
             }
@@ -327,14 +327,14 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
             conditional->else_branch = spec.else_branch != nullptr ? build_fragment(root, *spec.else_branch, loaded, gates, registry)
                                                                    : std::make_shared<Graph>("else");
         }
-        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+        if (auto *loop = node.op_data.get_if<LoopDescriptor>()) {
             if (spec.body == nullptr) {
                 throw BuildFailure(fmt::format("loop node '{}' has no body", spec.label));
             }
             loop->body  = build_fragment(root, *spec.body, loaded, gates, registry);
             loop->state = std::make_shared<LoopState>();
         }
-        if (auto *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
+        if (auto *setup = node.op_data.get_if<SetupDescriptor>()) {
             if (spec.body == nullptr) {
                 throw BuildFailure(fmt::format("setup node '{}' has no body", spec.label));
             }

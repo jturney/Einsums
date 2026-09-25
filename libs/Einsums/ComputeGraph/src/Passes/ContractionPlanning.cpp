@@ -161,7 +161,7 @@ std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &g
         // anything but a pure multiply, so nothing else of the node's arithmetic
         // survives here.
         ci.ab_prefactor = PrefactorScalar{double{1}};
-        if (auto const *desc = std::get_if<EinsumDescriptor>(&nodes[idx].op_data); desc != nullptr) {
+        if (auto const *desc = nodes[idx].op_data.get_if<EinsumDescriptor>(); desc != nullptr) {
             ci.ab_prefactor = live_ab_pf(*desc);
         }
         return ci;
@@ -171,7 +171,7 @@ std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &g
         if (in_chain[i] || nodes[i].kind != OpKind::Einsum)
             continue;
 
-        auto *desc = std::get_if<EinsumDescriptor>(&nodes[i].op_data);
+        auto *desc = nodes[i].op_data.get_if<EinsumDescriptor>();
         if (!desc)
             continue;
 
@@ -189,7 +189,7 @@ std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &g
             if (in_chain[j] || nodes[j].kind != OpKind::Einsum)
                 break;
 
-            auto *next_desc = std::get_if<EinsumDescriptor>(&nodes[j].op_data);
+            auto *next_desc = nodes[j].op_data.get_if<EinsumDescriptor>();
             if (!next_desc)
                 break;
 
@@ -304,7 +304,7 @@ std::optional<std::vector<bool>> chain_leaf_orientations(std::vector<Contraction
         if (chain[m].node_idx >= nodes.size())
             return std::nullopt; // stale index (a prior chain rebuilt the node list): decline conservatively
         auto const &node = nodes[chain[m].node_idx];
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr)
             return std::nullopt;
         if (!output_is_canonical(*desc))

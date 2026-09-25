@@ -59,7 +59,7 @@ TEST_CASE("free_tensor - inserts Free node", "[ComputeGraph][Memory]") {
     auto &tmp = graph.create_tensor<double, 2>("tmp", 5, 5);
 
     // Get the tensor ID from the Alloc node
-    auto *alloc_desc = std::get_if<cg::AllocDescriptor>(&graph.nodes()[0].op_data);
+    auto *alloc_desc = graph.nodes()[0].op_data.get_if<cg::AllocDescriptor>();
     REQUIRE(alloc_desc != nullptr);
     auto tmp_id = alloc_desc->tensor_id;
 
@@ -91,7 +91,7 @@ TEST_CASE("alloc + use + free - full lifecycle", "[ComputeGraph][Memory]") {
 
     // Allocate intermediate
     auto &T          = graph.create_tensor<double, 2>("T", 4, 5);
-    auto *alloc_desc = std::get_if<cg::AllocDescriptor>(&graph.nodes()[0].op_data);
+    auto *alloc_desc = graph.nodes()[0].op_data.get_if<cg::AllocDescriptor>();
     auto  t_id       = alloc_desc->tensor_id;
 
     {
@@ -127,7 +127,7 @@ TEST_CASE("MemoryPlanning sees Alloc/Free nodes", "[ComputeGraph][Memory]") {
     cg::Graph graph("memplan_alloc");
 
     auto &T1    = graph.create_tensor<double, 2>("T1", 10, 10);
-    auto *desc1 = std::get_if<cg::AllocDescriptor>(&graph.nodes()[0].op_data);
+    auto *desc1 = graph.nodes()[0].op_data.get_if<cg::AllocDescriptor>();
     auto  t1_id = desc1->tensor_id;
 
     {

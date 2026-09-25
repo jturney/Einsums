@@ -69,7 +69,7 @@ TEST_CASE("LoopInvariantHoisting - hoists invariant node", "[ComputeGraph][Passe
 
     cg::LoopDescriptor const *loop_desc = nullptr;
     for (auto const &node : graph.nodes()) {
-        loop_desc = std::get_if<cg::LoopDescriptor>(&node.op_data);
+        loop_desc = node.op_data.get_if<cg::LoopDescriptor>();
         if (loop_desc)
             break;
     }
@@ -171,7 +171,7 @@ TEST_CASE("LoopInvariantHoisting - rank-3 BatchedGemm hoists", "[ComputeGraph][P
     // Confirm the einsum is actually captured as BatchedGemm inside the body.
     auto const *loop_desc = [&]() -> cg::LoopDescriptor const * {
         for (auto const &n : graph.nodes())
-            if (auto const *d = std::get_if<cg::LoopDescriptor>(&n.op_data))
+            if (auto const *d = n.op_data.get_if<cg::LoopDescriptor>())
                 return d;
         return nullptr;
     }();
@@ -252,12 +252,12 @@ TEST_CASE("LoopInvariantHoisting - inner-loop invariant hoists all the way to pa
     // Locate the loop descriptors after hoisting.
     cg::LoopDescriptor const *outer_desc = nullptr;
     for (auto const &n : graph.nodes())
-        if (auto const *d = std::get_if<cg::LoopDescriptor>(&n.op_data))
+        if (auto const *d = n.op_data.get_if<cg::LoopDescriptor>())
             outer_desc = d;
     REQUIRE(outer_desc != nullptr);
     cg::LoopDescriptor const *inner_desc = nullptr;
     for (auto const &n : outer_desc->body->nodes())
-        if (auto const *d = std::get_if<cg::LoopDescriptor>(&n.op_data))
+        if (auto const *d = n.op_data.get_if<cg::LoopDescriptor>())
             inner_desc = d;
     REQUIRE(inner_desc != nullptr);
 
@@ -333,12 +333,12 @@ TEST_CASE("LoopInvariantHoisting - invariant w.r.t. inner loop only hoists exact
 
     cg::LoopDescriptor const *outer_desc = nullptr;
     for (auto const &n : graph.nodes())
-        if (auto const *d = std::get_if<cg::LoopDescriptor>(&n.op_data))
+        if (auto const *d = n.op_data.get_if<cg::LoopDescriptor>())
             outer_desc = d;
     REQUIRE(outer_desc != nullptr);
     cg::LoopDescriptor const *inner_desc = nullptr;
     for (auto const &n : outer_desc->body->nodes())
-        if (auto const *d = std::get_if<cg::LoopDescriptor>(&n.op_data))
+        if (auto const *d = n.op_data.get_if<cg::LoopDescriptor>())
             inner_desc = d;
     REQUIRE(inner_desc != nullptr);
 
@@ -383,7 +383,7 @@ TEST_CASE("LoopInvariantHoisting - does NOT hoist out of a conditional branch in
     // conditional, the parent keeps only the loop.
     cg::LoopDescriptor const *loop_desc = nullptr;
     for (auto const &n : graph.nodes())
-        if (auto const *d = std::get_if<cg::LoopDescriptor>(&n.op_data))
+        if (auto const *d = n.op_data.get_if<cg::LoopDescriptor>())
             loop_desc = d;
     REQUIRE(loop_desc != nullptr);
     CHECK(graph.num_nodes() == 1);            // only the loop at parent
@@ -430,7 +430,7 @@ TEST_CASE("LoopInvariantHoisting - hoists a pure-overwrite axpby", "[ComputeGrap
 
     cg::LoopDescriptor const *loop_desc = nullptr;
     for (auto const &n : graph.nodes())
-        if (auto const *dsc = std::get_if<cg::LoopDescriptor>(&n.op_data))
+        if (auto const *dsc = n.op_data.get_if<cg::LoopDescriptor>())
             loop_desc = dsc;
     REQUIRE(loop_desc != nullptr);
     CHECK(loop_desc->body->num_nodes() == 2); // the two accumulations remain

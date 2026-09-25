@@ -27,7 +27,7 @@ namespace {
 cg::AxpbyDescriptor *find_axpby_desc(cg::Graph &graph) {
     for (auto &node : graph.nodes()) {
         if (node.kind == cg::OpKind::Axpby) {
-            if (auto *d = std::get_if<cg::AxpbyDescriptor>(&node.op_data)) {
+            if (auto *d = node.op_data.get_if<cg::AxpbyDescriptor>()) {
                 return d;
             }
         }

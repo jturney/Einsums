@@ -47,7 +47,7 @@ void LoopInvariantHoisting::run_recursive(Graph &graph) {
     // conditional subtree, so nothing crosses a branch boundary in either
     // direction.
     for (auto &node : graph.nodes()) {
-        auto *loop_desc = std::get_if<LoopDescriptor>(&node.op_data);
+        auto *loop_desc = node.op_data.get_if<LoopDescriptor>();
         if (loop_desc != nullptr && loop_desc->body) {
             run_recursive(*loop_desc->body);
         }
@@ -67,7 +67,7 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
 
     // Find all Loop nodes
     for (size_t loop_idx = 0; loop_idx < nodes.size(); loop_idx++) {
-        auto *loop_desc = std::get_if<LoopDescriptor>(&nodes[loop_idx].op_data);
+        auto *loop_desc = nodes[loop_idx].op_data.get_if<LoopDescriptor>();
         if (!loop_desc || !loop_desc->body)
             continue;
 

@@ -142,11 +142,11 @@ struct OperatorGroups {
 
 /// Read the operators and output index list a node carries.
 bool read_operators(Node const &node, std::vector<PermutationOperator> &ops, std::vector<std::string> &c_indices) {
-    if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data); desc != nullptr && node.kind == OpKind::Einsum) {
+    if (auto const *desc = node.op_data.get_if<EinsumDescriptor>(); desc != nullptr && node.kind == OpKind::Einsum) {
         bool const live = desc->indices != nullptr;
         ops             = live ? desc->indices->spec.operators : desc->operators;
         c_indices       = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
-    } else if (auto const *pdesc = std::get_if<PermuteDescriptor>(&node.op_data); pdesc != nullptr && node.kind == OpKind::Permute) {
+    } else if (auto const *pdesc = node.op_data.get_if<PermuteDescriptor>(); pdesc != nullptr && node.kind == OpKind::Permute) {
         ops       = pdesc->operators;
         c_indices = pdesc->c_indices;
     } else {
@@ -160,7 +160,7 @@ bool read_einsum_indices(Node const &node, std::vector<std::string> &a, std::vec
     if (node.kind != OpKind::Einsum) {
         return false;
     }
-    auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<EinsumDescriptor>();
     if (desc == nullptr) {
         return false;
     }

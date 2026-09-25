@@ -218,7 +218,7 @@ void Graph::execute() {
 
         if (node.kind == OpKind::HostToDevice) {
             // H2D transfer.
-            auto const *tdesc = std::get_if<TransferDescriptor>(&node.op_data);
+            auto const *tdesc = node.op_data.get_if<TransferDescriptor>();
             if (tdesc) {
                 if constexpr (!gpu::has_unified_memory) {
                     // Discrete GPU: copy host data → device shadow.
@@ -239,7 +239,7 @@ void Graph::execute() {
             }
         } else if (node.kind == OpKind::DeviceToHost) {
             // D2H transfer.
-            auto const *tdesc = std::get_if<TransferDescriptor>(&node.op_data);
+            auto const *tdesc = node.op_data.get_if<TransferDescriptor>();
             if (tdesc) {
                 if constexpr (!gpu::has_unified_memory) {
                     // Discrete GPU: copy device shadow → host.

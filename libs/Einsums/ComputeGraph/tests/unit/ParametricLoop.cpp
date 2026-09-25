@@ -86,7 +86,7 @@ struct RowSumLoop {
 
     [[nodiscard]] cg::Graph const &body_graph() const {
         for (auto const &node : graph.nodes()) {
-            if (auto const *loop = std::get_if<cg::LoopDescriptor>(&node.op_data); loop != nullptr && loop->body) {
+            if (auto const *loop = node.op_data.get_if<cg::LoopDescriptor>(); loop != nullptr && loop->body) {
                 return *loop->body;
             }
         }

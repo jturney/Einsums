@@ -50,7 +50,7 @@ bool InputSlicing::run(Graph &graph) {
         std::vector<std::vector<std::string> const *> input_indices;
 
         if (node.kind == OpKind::Einsum) {
-            auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+            auto const *desc = node.op_data.get_if<EinsumDescriptor>();
             if (!desc)
                 continue;
             c_indices_ptr = &desc->spec.c_indices;
@@ -58,7 +58,7 @@ bool InputSlicing::run(Graph &graph) {
             if (node.inputs.size() > 1)
                 input_indices.push_back(&desc->spec.b_indices);
         } else if (node.kind == OpKind::Permute || node.kind == OpKind::Transpose) {
-            auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data);
+            auto const *desc = node.op_data.get_if<PermuteDescriptor>();
             if (!desc || desc->c_indices.empty())
                 continue;
             c_indices_ptr = &desc->c_indices;

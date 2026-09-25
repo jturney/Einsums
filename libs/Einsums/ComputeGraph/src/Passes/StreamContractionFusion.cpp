@@ -463,7 +463,7 @@ bool StreamContractionFusion::run(Graph &graph) {
         if (node.kind != OpKind::Einsum || node.inputs.size() != 2 || node.outputs.size() != 1) {
             continue;
         }
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr || desc->conj_a || desc->conj_b) {
             continue;
         }

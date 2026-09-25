@@ -688,7 +688,7 @@ TEST_CASE("make_einsum_node - produces a real Einsum node with a descriptor", "[
     auto node = graph.make_einsum_node(a_id, b_id, c_id, matmul_spec(), /*c_pf=*/0.0, /*ab_pf=*/2.0);
 
     CHECK(node.kind == cg::OpKind::Einsum);
-    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     CHECK(desc->params != nullptr);
     CHECK(desc->indices != nullptr);
@@ -733,7 +733,7 @@ TEST_CASE("make_einsum_node - executor honors a later prefactor edit", "[Compute
 
     // A pass folding a scale writes ab_pf through the shared params handle. A
     // baked-closure node would ignore this; a first-class one must not.
-    auto *desc = std::get_if<cg::EinsumDescriptor>(&graph.nodes()[0].op_data);
+    auto *desc = graph.nodes()[0].op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     desc->ab_prefactor  = 3.0;
     desc->params->ab_pf = 3.0;
@@ -777,7 +777,7 @@ TEST_CASE("make_einsum_node - builds a GemmHint when the shapes qualify", "[Comp
     auto const c_id = graph.register_tensor(cg::make_handle(C, 0));
 
     auto        node = graph.make_einsum_node(a_id, b_id, c_id, matmul_spec(), 0.0, 1.0);
-    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->gemm_hint != nullptr); // "i,j <- i,k ; k,j" is a plain GEMM
 
@@ -822,7 +822,7 @@ TEST_CASE("make_einsum_node - no GemmHint for a higher-rank contraction", "[Comp
     auto const c_id = graph.register_tensor(cg::make_handle(C, 0));
 
     auto        node = graph.make_einsum_node(a_id, b_id, c_id, spec, 0.0, 1.0);
-    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     // Rank-4 operand: not a GEMM, so no hint and GEMMBatching leaves it alone.
     CHECK(desc->gemm_hint == nullptr);
@@ -851,7 +851,7 @@ TEST_CASE("make_einsum_node - works on statically typed operands", "[ComputeGrap
     REQUIRE(graph.tensor(a_id).impl_fn != nullptr);
 
     auto        node = graph.make_einsum_node(a_id, b_id, c_id, matmul_spec(), 0.0, 1.0);
-    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     CHECK(node.kind == cg::OpKind::Einsum);
     CHECK(desc->gemm_hint != nullptr); // rank-2 typed operands still qualify

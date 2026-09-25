@@ -70,7 +70,7 @@ bool rebuildable(Graph &graph, Node const &nd) {
 
     switch (nd.kind) {
     case OpKind::Einsum: {
-        auto const *d = std::get_if<EinsumDescriptor>(&nd.op_data);
+        auto const *d = nd.op_data.get_if<EinsumDescriptor>();
         return d != nullptr && d->params != nullptr && d->indices != nullptr && nd.inputs.size() >= 2 && nd.inputs.size() <= 3 &&
                nd.outputs.size() == 1 && operands_resolve();
     }
@@ -78,13 +78,13 @@ bool rebuildable(Graph &graph, Node const &nd) {
         // Exactly one input and one output: a SymmetrizedAccumulation-rewritten
         // permute accumulates into a second input and its descriptor no longer
         // matches its baked executor, so it must not be rebuilt from it.
-        auto const *d = std::get_if<PermuteDescriptor>(&nd.op_data);
+        auto const *d = nd.op_data.get_if<PermuteDescriptor>();
         return d != nullptr && nd.inputs.size() == 1 && nd.outputs.size() == 1 && operands_resolve();
     }
     case OpKind::Axpby: {
         // The live params are what the captured executor reads; a descriptor
         // without them cannot be trusted to match the lambda.
-        auto const *d = std::get_if<AxpbyDescriptor>(&nd.op_data);
+        auto const *d = nd.op_data.get_if<AxpbyDescriptor>();
         return d != nullptr && d->params != nullptr && (nd.inputs.size() == 1 || nd.inputs.size() == 2) && nd.outputs.size() == 1 &&
                operands_resolve();
     }
@@ -99,7 +99,7 @@ void rebuild_node(Graph &graph, Node &nd, TensorId old_id, TensorId new_id) {
     auto const sub = [&](TensorId tid) { return tid == old_id ? new_id : tid; };
 
     if (nd.kind == OpKind::Einsum) {
-        auto const    *d = std::get_if<EinsumDescriptor>(&nd.op_data);
+        auto const    *d = nd.op_data.get_if<EinsumDescriptor>();
         TensorId const a = sub(nd.inputs[0]);
         TensorId const b = sub(nd.inputs[1]);
         TensorId const c = sub(nd.outputs[0]);
@@ -113,7 +113,7 @@ void rebuild_node(Graph &graph, Node &nd, TensorId old_id, TensorId new_id) {
     }
 
     if (nd.kind == OpKind::Permute) {
-        auto const    *d = std::get_if<PermuteDescriptor>(&nd.op_data);
+        auto const    *d = nd.op_data.get_if<PermuteDescriptor>();
         TensorId const a = sub(nd.inputs[0]);
         TensorId const c = sub(nd.outputs[0]);
 
@@ -145,7 +145,7 @@ void rebuild_node(Graph &graph, Node &nd, TensorId old_id, TensorId new_id) {
 
     // Axpby: Y = alpha*X + beta*Y. Keep the SHARED params object so later
     // scalar rewrites (ScaleAbsorption-style) still reach this executor.
-    auto const    *d      = std::get_if<AxpbyDescriptor>(&nd.op_data);
+    auto const    *d      = nd.op_data.get_if<AxpbyDescriptor>();
     TensorId const x      = sub(nd.inputs[0]);
     TensorId const y      = sub(nd.outputs[0]);
     auto           params = d->params;
@@ -197,9 +197,9 @@ bool ScratchPrivatization::run(Graph &graph) {
 
 void ScratchPrivatization::run_recursive(Graph &graph) {
     for (auto &node : graph.nodes()) {
-        if (auto *loop = std::get_if<LoopDescriptor>(&node.op_data); loop != nullptr && loop->body) {
+        if (auto *loop = node.op_data.get_if<LoopDescriptor>(); loop != nullptr && loop->body) {
             run_recursive(*loop->body);
-        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&node.op_data); cond != nullptr) {
+        } else if (auto *cond = node.op_data.get_if<ConditionalDescriptor>(); cond != nullptr) {
             if (cond->then_branch) {
                 run_recursive(*cond->then_branch);
             }

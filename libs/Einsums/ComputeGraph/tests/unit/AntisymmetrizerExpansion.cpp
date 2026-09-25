@@ -65,7 +65,7 @@ TEST_CASE("AntisymmetrizerExpansion - P(ij)P(ab) lowers to a contraction plus fo
         if (node.kind != cg::OpKind::Einsum) {
             continue;
         }
-        auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
         REQUIRE(desc != nullptr);
         CHECK(desc->operators.empty());
         if (desc->indices != nullptr) {
@@ -215,7 +215,7 @@ TEST_CASE("AntisymmetrizerExpansion - declines a contraction whose operands diff
     }
     auto const operators = cg::parse_einsum_spec("i,j,a,b <- P(ij) P(ab) i,m,a,b ; m,j").value().operators;
     for (auto &node : graph.nodes()) {
-        if (auto *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data); desc != nullptr) {
+        if (auto *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr) {
             desc->indices->spec.operators = operators;
         }
     }

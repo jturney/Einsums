@@ -130,7 +130,7 @@ RuleResult propagate_einsum(Graph &graph, Node const &node, InferGuard const &gu
         return {};
     }
 
-    auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<EinsumDescriptor>();
     if (desc == nullptr) {
         return {};
     }
@@ -182,7 +182,7 @@ RuleResult propagate_permute(Graph &graph, Node const &node, InferGuard const &g
         return {};
     }
 
-    auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<PermuteDescriptor>();
     if (desc == nullptr) {
         return {};
     }

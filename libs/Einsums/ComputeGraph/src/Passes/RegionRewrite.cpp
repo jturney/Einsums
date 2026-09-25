@@ -43,7 +43,7 @@ SymbolicPoly node_flops(std::vector<Node> const &nodes, auto &&include) {
         if (!include(node)) {
             continue;
         }
-        if (auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data); desc != nullptr) {
+        if (auto const *desc = node.op_data.get_if<EinsumDescriptor>(); desc != nullptr) {
             out += symbolic_cost_for(*desc).flops;
         }
     }
@@ -117,7 +117,7 @@ bool RegionRewrite::applicable(Graph const & /*graph*/) const {
 
 void RegionRewrite::note_subgraph_sites(Graph &graph) {
     for (auto const &node : graph.nodes()) {
-        bool const   setup = std::get_if<SetupDescriptor>(&node.op_data) != nullptr;
+        bool const   setup = node.op_data.get_if<SetupDescriptor>() != nullptr;
         NodeId const owner = node.id;
         for_each_child_graph(
             node, [&](Graph const &child) { _sites[&child] = SetupSite{.host = &graph, .owner = owner, .is_setup_body = setup}; });

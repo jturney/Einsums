@@ -84,22 +84,22 @@ size_t rebuild_executors(cg::Graph &graph) {
 /// snapshot scalars and nothing shared with a running executor. Rebuilding
 /// from this is the honest reconstruction test.
 cg::OpData strip_live_params(cg::OpData data) {
-    if (auto *d = std::get_if<cg::ScaleDescriptor>(&data)) {
+    if (auto *d = data.get_if<cg::ScaleDescriptor>()) {
         d->params.reset();
-    } else if (auto *d = std::get_if<cg::PermuteDescriptor>(&data)) {
+    } else if (auto *d = data.get_if<cg::PermuteDescriptor>()) {
         d->params.reset();
-    } else if (auto *d = std::get_if<cg::AxpbyDescriptor>(&data)) {
+    } else if (auto *d = data.get_if<cg::AxpbyDescriptor>()) {
         d->params.reset();
-    } else if (auto *d = std::get_if<cg::ElementwiseBinaryDescriptor>(&data)) {
+    } else if (auto *d = data.get_if<cg::ElementwiseBinaryDescriptor>()) {
         d->params.reset();
-    } else if (std::holds_alternative<cg::DotDescriptor>(data) || std::holds_alternative<cg::TraceDescriptor>(data) ||
-               std::holds_alternative<cg::GemmDescriptor>(data) || std::holds_alternative<cg::WriteParamDescriptor>(data)) {
+    } else if (data.holds<cg::DotDescriptor>() || data.holds<cg::TraceDescriptor>() || data.holds<cg::GemmDescriptor>() ||
+               data.holds<cg::WriteParamDescriptor>()) {
         // Nothing to strip. These four hold snapshots only: a dot records one
         // bool, a trace records nothing, a write_param records a name and a
         // storage type, and a gemm's prefactors have no live block because no
         // pass rewrites them (see GemmDescriptor). What capture built is
         // already exactly what a file would carry.
-    } else if (auto *d = std::get_if<cg::EinsumDescriptor>(&data)) {
+    } else if (auto *d = data.get_if<cg::EinsumDescriptor>()) {
         // An einsum carries three live handles, not one: the scalars, the index
         // lists, and the packed-GEMM memo. A saved file holds none of them - the
         // scalars and the indices are recoverable from the descriptor's own
@@ -625,7 +625,7 @@ TEST_CASE("ExecutorBuilder - a Scale factor rewritten after capture is applied",
 
     auto *node = find_node(graph, cg::OpKind::Scale);
     REQUIRE(node != nullptr);
-    auto *desc = std::get_if<cg::ScaleDescriptor>(&node->op_data);
+    auto *desc = node->op_data.get_if<cg::ScaleDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->params != nullptr);
 
@@ -654,7 +654,7 @@ TEST_CASE("ExecutorBuilder - Permute prefactors rewritten after capture are appl
 
     auto *node = find_node(graph, cg::OpKind::Permute);
     REQUIRE(node != nullptr);
-    auto *desc = std::get_if<cg::PermuteDescriptor>(&node->op_data);
+    auto *desc = node->op_data.get_if<cg::PermuteDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->params != nullptr);
 
@@ -690,7 +690,7 @@ TEST_CASE("ExecutorBuilder - a complex Scale factor survives capture", "[Compute
 
     auto *node = find_node(graph, cg::OpKind::Scale);
     REQUIRE(node != nullptr);
-    auto *desc = std::get_if<cg::ScaleDescriptor>(&node->op_data);
+    auto *desc = node->op_data.get_if<cg::ScaleDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(std::holds_alternative<T>(desc->factor));
     REQUIRE(std::get<T>(desc->factor) == T{2.0, 3.0});
@@ -821,7 +821,7 @@ TEST_CASE("ExecutorBuilder - an einsum no longer blocks a save", "[ComputeGraph]
 
     auto const *node = find_node(graph, cg::OpKind::Einsum);
     REQUIRE(node != nullptr);
-    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node->op_data);
+    auto const *desc = node->op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->gemm_hint != nullptr);
 
@@ -882,7 +882,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Einsum is bitwise identical for a 
 
     auto const *node = find_node(graph, cg::OpKind::Einsum);
     REQUIRE(node != nullptr);
-    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node->op_data);
+    auto const *desc = node->op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->gemm_hint != nullptr);
 
@@ -1166,7 +1166,7 @@ TEST_CASE("ExecutorBuilder - a rebind that changes an lda is honored, and the hi
 
     auto *node = find_node(graph, cg::OpKind::Einsum);
     REQUIRE(node != nullptr);
-    auto *desc = std::get_if<cg::EinsumDescriptor>(&node->op_data);
+    auto *desc = node->op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->gemm_hint != nullptr);
     int const recorded_lda = desc->gemm_hint->a.leading_dim;
@@ -1554,7 +1554,7 @@ TEST_CASE("ExecutorBuilder - a rebuilt WriteParam reads the graph's source, not 
     // could not see.
     auto const *node = find_node(*stage, cg::OpKind::WriteParam);
     REQUIRE(node != nullptr);
-    auto const *desc = std::get_if<cg::WriteParamDescriptor>(&node->op_data);
+    auto const *desc = node->op_data.get_if<cg::WriteParamDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->source_id != 0);
     REQUIRE(desc->source_type == cg::ParamSourceType::Int64);
@@ -1583,7 +1583,7 @@ TEST_CASE("ExecutorBuilder - a rebuilt WriteParam decodes a narrower source", "[
 
     auto const *node = find_node(*stage, cg::OpKind::WriteParam);
     REQUIRE(node != nullptr);
-    REQUIRE(std::get_if<cg::WriteParamDescriptor>(&node->op_data)->source_type == cg::ParamSourceType::Int);
+    REQUIRE(node->op_data.get_if<cg::WriteParamDescriptor>()->source_type == cg::ParamSourceType::Int);
 
     REQUIRE(rebuild_executors(*stage) == 1);
     pipe.execute();
@@ -1749,7 +1749,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Gemm honors a conjugate transpose"
 
     auto const *node = find_node(graph, cg::OpKind::Gemm);
     REQUIRE(node != nullptr);
-    auto const *desc = std::get_if<cg::GemmDescriptor>(&node->op_data);
+    auto const *desc = node->op_data.get_if<cg::GemmDescriptor>();
     REQUIRE(desc != nullptr);
     // Transpose::N is the BLAS character 'N'; the descriptor records it as given.
     REQUIRE(desc->trans_a == 'N');
@@ -1776,7 +1776,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Gemm honors a conjugate transpose"
 
     auto const *conj_node = find_node(conj_graph, cg::OpKind::Gemm);
     REQUIRE(conj_node != nullptr);
-    REQUIRE(std::get_if<cg::GemmDescriptor>(&conj_node->op_data)->trans_a == 'C');
+    REQUIRE(conj_node->op_data.get_if<cg::GemmDescriptor>()->trans_a == 'C');
 
     conj_graph.execute();
     auto const captured = bytes_of(D);
@@ -1875,7 +1875,7 @@ TEST_CASE("ExecutorBuilder - a Gemm prefactor rewritten after capture is applied
 
     auto *node = find_node(graph, cg::OpKind::Gemm);
     REQUIRE(node != nullptr);
-    std::get_if<cg::GemmDescriptor>(&node->op_data)->alpha = cg::PrefactorScalar{2.5};
+    node->op_data.get_if<cg::GemmDescriptor>()->alpha = cg::PrefactorScalar{2.5};
 
     REQUIRE(rebuild_executors(graph) == 1);
     graph.execute();
@@ -2008,7 +2008,7 @@ TEST_CASE("ExecutorBuilder - ContractionPlanning's Gemm nodes are data now", "[C
         INFO("node: " << node.label);
         // Absent from the report: the descriptor is there and it is the right one.
         REQUIRE(cg::reconstruction_blocker(node).empty());
-        REQUIRE(std::holds_alternative<cg::GemmDescriptor>(node.op_data));
+        REQUIRE(node.op_data.holds<cg::GemmDescriptor>());
     }
     REQUIRE(gemms > 0);
 
@@ -2278,7 +2278,7 @@ TEST_CASE("ExecutorBuilder - add_conditional_flag records the FlagTest arm", "[C
 
     auto const *node = find_node(graph, cg::OpKind::Conditional);
     REQUIRE(node != nullptr);
-    auto const *desc = std::get_if<cg::ConditionalDescriptor>(&node->op_data);
+    auto const *desc = node->op_data.get_if<cg::ConditionalDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->predicate.is_flag_test());
     REQUIRE(cg::reconstruction_blocker(*node).empty());
@@ -2383,7 +2383,7 @@ TEST_CASE("ExecutorBuilder - a loop's iteration count is observable on the node"
     auto const count = [&graph]() -> size_t {
         auto const *node = find_node(graph, cg::OpKind::Loop);
         REQUIRE(node != nullptr);
-        auto const *desc = std::get_if<cg::LoopDescriptor>(&node->op_data);
+        auto const *desc = node->op_data.get_if<cg::LoopDescriptor>();
         REQUIRE(desc != nullptr);
         return desc->last_iteration_count();
     };
@@ -2457,7 +2457,7 @@ TEST_CASE("ExecutorBuilder - a rebuilt loop replays its body identically", "[Com
 
     auto const *node = find_node(graph, cg::OpKind::Loop);
     REQUIRE(node != nullptr);
-    auto const *desc = std::get_if<cg::LoopDescriptor>(&node->op_data);
+    auto const *desc = node->op_data.get_if<cg::LoopDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->last_iteration_count() == 3);
 }

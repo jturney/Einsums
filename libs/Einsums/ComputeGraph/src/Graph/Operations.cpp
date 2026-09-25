@@ -65,7 +65,7 @@ void Graph::update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorSca
         if (node.id != node_id) {
             continue;
         }
-        auto *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                     "Graph '{}': node {} ({}) is not an einsum; update_prefactors only applies to einsum nodes", _name,
@@ -577,7 +577,7 @@ void Graph::validate_shapes_at_capture() const {
         if (node.kind != OpKind::Einsum)
             continue;
 
-        auto *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto *desc = node.op_data.get_if<EinsumDescriptor>();
         if (!desc)
             continue;
 

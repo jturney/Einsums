@@ -171,7 +171,7 @@ struct GemmShape {
 /// leaves it below the fork floor and so at width 1 - the same "do not guess"
 /// behaviour the default branch has.
 double batched_gemm_us(Node const &node, DeviceProfile const &profile) {
-    if (auto const *gr = std::get_if<GroupedGatherRotateDescriptor>(&node.op_data); gr != nullptr) {
+    if (auto const *gr = node.op_data.get_if<GroupedGatherRotateDescriptor>(); gr != nullptr) {
         // The only member of this family that is not arithmetic alone. Per
         // member the rotation is 2 nq nu^2 nt for the first contraction and
         // 2 nq nu nt^2 for the second, and the gather ahead of them streams
@@ -198,7 +198,7 @@ double batched_gemm_us(Node const &node, DeviceProfile const &profile) {
         }
         return work > 0.0 ? work + profile.kernel_launch_overhead_us : 0.0;
     }
-    if (auto const *sw = std::get_if<GroupedSandwichDescriptor>(&node.op_data); sw != nullptr) {
+    if (auto const *sw = node.op_data.get_if<GroupedSandwichDescriptor>(); sw != nullptr) {
         // Per member: the dress (2 nq nk na^2) plus the two sandwich GEMMs
         // (4 nq na^3), priced as one batched call the way the descriptor's
         // sibling kinds are.
@@ -224,10 +224,10 @@ double batched_gemm_us(Node const &node, DeviceProfile const &profile) {
     };
 
     double work = 0.0;
-    if (auto const *b = std::get_if<BatchedGemmDescriptor>(&node.op_data); b != nullptr) {
+    if (auto const *b = node.op_data.get_if<BatchedGemmDescriptor>(); b != nullptr) {
         work = member_us(static_cast<std::size_t>(b->m), static_cast<std::size_t>(b->n), static_cast<std::size_t>(b->k),
                          static_cast<double>(b->batch_count));
-    } else if (auto const *g = std::get_if<GroupedBatchedGemmDescriptor>(&node.op_data); g != nullptr) {
+    } else if (auto const *g = node.op_data.get_if<GroupedBatchedGemmDescriptor>(); g != nullptr) {
         for (auto const &grp : g->groups) {
             work += member_us(static_cast<std::size_t>(grp.m), static_cast<std::size_t>(grp.n), static_cast<std::size_t>(grp.k),
                               static_cast<double>(grp.count));
@@ -240,7 +240,7 @@ double batched_gemm_us(Node const &node, DeviceProfile const &profile) {
 }
 
 GemmShape gemm_shape_of(Graph const &graph, Node const &node) {
-    if (auto const *ein = std::get_if<EinsumDescriptor>(&node.op_data); ein != nullptr && ein->gemm_hint) {
+    if (auto const *ein = node.op_data.get_if<EinsumDescriptor>(); ein != nullptr && ein->gemm_hint) {
         auto const &hint = *ein->gemm_hint;
         if (hint.m > 0 && hint.n > 0 && hint.k > 0) {
             return {.m = static_cast<std::size_t>(hint.m), .n = static_cast<std::size_t>(hint.n), .k = static_cast<std::size_t>(hint.k)};
@@ -441,14 +441,14 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
     // nodes need their own widths whether or not the container earns one.
     std::vector<double> body_serial_us(n, 0.0);
     for (std::size_t i = 0; i < n; i++) {
-        if (auto *loop = std::get_if<LoopDescriptor>(&nodes[i].op_data); loop != nullptr && loop->body) {
+        if (auto *loop = nodes[i].op_data.get_if<LoopDescriptor>(); loop != nullptr && loop->body) {
             // Planned as though it owned the whole machine. It does not have to
             // share P with the parent here, because the one process-wide
             // WidthBudget composes the two at run time: the container's own
             // unit is lent back for the duration of the nested replay, so the
             // body is admitted against a budget nobody else is holding.
             body_serial_us[i] += plan_graph(*loop->body, p).serial_us;
-        } else if (auto *cond = std::get_if<ConditionalDescriptor>(&nodes[i].op_data); cond != nullptr) {
+        } else if (auto *cond = nodes[i].op_data.get_if<ConditionalDescriptor>(); cond != nullptr) {
             if (cond->then_branch) {
                 body_serial_us[i] += plan_graph(*cond->then_branch, p).serial_us;
             }
@@ -566,7 +566,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         // answer, so a serial plan leaves the dispatch exactly as it found it.
         if (p > 1) {
             packed_gemm::KernelRoute const pin = route_pin_for(node);
-            if (auto *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+            if (auto *desc = node.op_data.get_if<EinsumDescriptor>();
                 pin != packed_gemm::KernelRoute::Adaptive && desc != nullptr && desc->site) {
                 desc->site->route = pin;
                 _num_route_pinned++;

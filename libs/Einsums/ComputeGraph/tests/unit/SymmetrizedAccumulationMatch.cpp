@@ -203,7 +203,7 @@ TEST_CASE("axpy - descriptor scalars are live, and beta != 1 is honored", "[Comp
     }
 
     REQUIRE(graph.num_nodes() == 1);
-    auto *desc = std::get_if<cg::AxpbyDescriptor>(&graph.nodes()[0].op_data);
+    auto *desc = graph.nodes()[0].op_data.get_if<cg::AxpbyDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->params != nullptr);
     CHECK(cg::is_one(desc->params->beta));

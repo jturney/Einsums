@@ -44,7 +44,7 @@ bool CommunicationScheduling::run(Graph &graph) {
             continue;
 
         // Get the tensor handle for the allreduced tensor
-        auto const *desc = std::get_if<CommDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<CommDescriptor>();
         if (!desc)
             continue;
 

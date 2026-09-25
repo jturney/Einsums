@@ -239,7 +239,7 @@ TEST_CASE("LCCF - the L builder is a separate node that LIH hoists out of a loop
     // dangles a cached one.
     auto body_kind = [&graph](cg::OpKind want) -> size_t {
         for (auto const &n : graph.nodes()) {
-            if (auto const *d = std::get_if<cg::LoopDescriptor>(&n.op_data); d != nullptr && d->body) {
+            if (auto const *d = n.op_data.get_if<cg::LoopDescriptor>(); d != nullptr && d->body) {
                 return static_cast<size_t>(std::ranges::count_if(d->body->nodes(), [want](cg::Node const &bn) { return bn.kind == want; }));
             }
         }

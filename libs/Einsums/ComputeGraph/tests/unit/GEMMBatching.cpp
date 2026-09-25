@@ -74,7 +74,7 @@ TEST_CASE("GEMMBatching: two independent double GEMMs collapse into one BatchedG
     REQUIRE(graph.num_nodes() == 1);
     REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
 
-    auto const *d = std::get_if<cg::BatchedGemmDescriptor>(&graph.nodes()[0].op_data);
+    auto const *d = graph.nodes()[0].op_data.get_if<cg::BatchedGemmDescriptor>();
     REQUIRE(d != nullptr);
     REQUIRE(d->batch_count == 2);
     REQUIRE(std::cmp_equal(d->m, M));

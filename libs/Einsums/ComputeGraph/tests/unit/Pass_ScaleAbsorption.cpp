@@ -75,7 +75,7 @@ TEST_CASE("PassUtil - the destination predicates read the live prefactor, not th
         REQUIRE(cg::passes::pure_overwrite(node));
         REQUIRE_FALSE(cg::passes::reads_destination(node));
 
-        auto *live         = std::get_if<cg::PermuteDescriptor>(&node.op_data);
+        auto *live         = node.op_data.get_if<cg::PermuteDescriptor>();
         live->params->beta = cg::PrefactorScalar{3.0};
         REQUIRE_FALSE(cg::passes::pure_overwrite(node));
         REQUIRE(cg::passes::reads_destination(node));
@@ -124,7 +124,7 @@ TEST_CASE("ScaleAbsorption - absorbs into einsum", "[ComputeGraph][Passes]") {
     // GPU dispatch reads the descriptor - editing it would desync them).
     auto &surviving = graph.nodes()[0];
     REQUIRE(surviving.kind == cg::OpKind::Einsum);
-    auto *desc = std::get_if<cg::EinsumDescriptor>(&surviving.op_data);
+    auto *desc = surviving.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(cg::as<double>(desc->c_prefactor) == 0.0);
 
@@ -935,7 +935,7 @@ TEST_CASE("ScaleAbsorption - absorbs into an axpy accumulation", "[ComputeGraph]
     // would leave the replay computing the unscaled result.
     auto &surviving = graph.nodes()[0];
     REQUIRE(surviving.kind == cg::OpKind::Axpby);
-    auto *desc = std::get_if<cg::AxpbyDescriptor>(&surviving.op_data);
+    auto *desc = surviving.op_data.get_if<cg::AxpbyDescriptor>();
     REQUIRE(desc != nullptr);
     REQUIRE(desc->params != nullptr);
     REQUIRE(cg::as<double>(desc->params->beta) == 3.0);

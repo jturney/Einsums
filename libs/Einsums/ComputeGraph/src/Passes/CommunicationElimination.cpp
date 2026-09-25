@@ -32,7 +32,7 @@ bool CommunicationElimination::run(Graph &graph) {
         auto const &node = nodes[idx];
 
         if (node.kind == OpKind::Allreduce) {
-            auto const *desc = std::get_if<CommDescriptor>(&node.op_data);
+            auto const *desc = node.op_data.get_if<CommDescriptor>();
             if (desc && already_reduced.count(desc->tensor_id)) {
                 // Redundant: this tensor was already allreduced and hasn't been modified since.
                 remove[idx] = true;

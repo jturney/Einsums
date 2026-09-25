@@ -84,7 +84,7 @@ bool GEMMBatching::run(Graph &graph) {
     for (size_t nd = 0; nd < n_nodes; ++nd) {
         if (nodes[nd].kind != OpKind::Einsum)
             continue;
-        auto *desc = std::get_if<EinsumDescriptor>(&nodes[nd].op_data);
+        auto *desc = nodes[nd].op_data.get_if<EinsumDescriptor>();
         if (!desc || !desc->gemm_hint)
             continue; // non-GEMM-pattern einsums skipped by capture
         if (desc->conj_a || desc->conj_b)
@@ -155,13 +155,13 @@ bool GEMMBatching::run(Graph &graph) {
         // trusting these. A rebind that breaks a formed group's uniformity is
         // a caller error the executor cannot see; re-running this pass after
         // such a rebind re-forms the groups against the new layout.
-        auto     *first_desc = std::get_if<EinsumDescriptor>(&nodes[group.front()].op_data);
+        auto     *first_desc = nodes[group.front()].op_data.get_if<EinsumDescriptor>();
         int const lda = first_desc->gemm_hint->a.leading_dim, ldb = first_desc->gemm_hint->b.leading_dim,
                   ldc = first_desc->gemm_hint->c.leading_dim;
 
         bool uniform = true;
         for (size_t idx = 1; idx < group.size(); ++idx) {
-            auto const *d = std::get_if<EinsumDescriptor>(&nodes[group[idx]].op_data);
+            auto const *d = nodes[group[idx]].op_data.get_if<EinsumDescriptor>();
             if (d->gemm_hint->a.leading_dim != lda || d->gemm_hint->b.leading_dim != ldb || d->gemm_hint->c.leading_dim != ldc) {
                 uniform = false;
                 break;

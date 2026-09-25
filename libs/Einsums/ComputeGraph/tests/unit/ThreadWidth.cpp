@@ -435,7 +435,7 @@ namespace {
 
 /// The site the node's dispatch reads, or null for a node that has none.
 packed_gemm::ContractionSite *site_of(cg::Node &node) {
-    auto *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    auto *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     return desc != nullptr ? desc->site.get() : nullptr;
 }
 

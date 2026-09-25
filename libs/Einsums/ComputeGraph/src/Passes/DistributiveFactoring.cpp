@@ -225,7 +225,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         if (node.kind != OpKind::Einsum)
             continue;
 
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (!desc)
             continue;
         if (desc->conj_a || desc->conj_b)
@@ -379,7 +379,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         {
             bool unit_accumulate = true;
             for (size_t ci = 1; ci < available.size(); ci++) {
-                auto const *d = std::get_if<EinsumDescriptor>(&nodes[available[ci].node_index].op_data);
+                auto const *d = nodes[available[ci].node_index].op_data.get_if<EinsumDescriptor>();
                 if (d == nullptr || !is_unit_real(d->c_prefactor)) {
                     unit_accumulate = false;
                     break;
@@ -518,7 +518,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         // from a term count. A reused sum costs nothing to build, so those groups
         // are essentially always profitable. Factor::Always skips the question.
         if (_factor == Factor::Auto) {
-            auto const *fd    = std::get_if<EinsumDescriptor>(&nodes[first_pos].op_data);
+            auto const *fd    = nodes[first_pos].op_data.get_if<EinsumDescriptor>();
             auto        sh_h  = tensors.find(vg.key.shared_input_id);
             auto        out_h = tensors.find(vg.key.output_id);
             if (fd == nullptr || sh_h == tensors.end() || out_h == tensors.end()) {
@@ -592,7 +592,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         // the same sum each built their own copy (CSE has no nodes to match) and a
         // sum that is loop-invariant could not be hoisted out of a CC iteration.
         // Explicit nodes cost nothing at execute and let those passes do their job.
-        auto const *first_desc = std::get_if<EinsumDescriptor>(&nodes[first_pos].op_data);
+        auto const *first_desc = nodes[first_pos].op_data.get_if<EinsumDescriptor>();
         if (first_desc == nullptr) {
             continue;
         }

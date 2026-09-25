@@ -1024,77 +1024,9 @@ std::function<void()> build_grouped_elementwise(OpKind kind, packed_gemm::Scalar
     });
 }
 
-/// One name per @ref OpData alternative, in the variant's own declaration order.
-///
-/// Indexed by ``index()`` rather than matched by a chain of
-/// ``holds_alternative``: the chain silently answered "descriptor alternative
-/// #N" for every alternative nobody had added to it, which was most of them,
-/// and adding one to the variant left it that way with nothing complaining. The
-/// static_assert below is what complains now, at compile time.
-constexpr auto kDescriptorNames = std::to_array<std::string_view>({
-    "no descriptor",
-    "EinsumDescriptor",
-    "ScaleDescriptor",
-    "PermuteDescriptor",
-    "ConditionalDescriptor",
-    "LoopDescriptor",
-    "AllocDescriptor",
-    "TransferDescriptor",
-    "DiskIODescriptor",
-    "CommDescriptor",
-    "InitializeDescriptor",
-    "BatchedGemmDescriptor",
-    "GroupedBatchedGemmDescriptor",
-    "ViewDescriptor",
-    "WriteParamDescriptor",
-    "AxpbyDescriptor",
-    "GroupedDotDescriptor",
-    "GroupedAxpbyDescriptor",
-    "GroupedElementwiseDescriptor",
-    "GroupedSandwichDescriptor",
-    "GroupedGatherRotateDescriptor",
-    "TiledEinsumDescriptor",
-    "TiledElementwiseDescriptor",
-    "TiledPermuteDescriptor",
-    "TiledDotDescriptor",
-    "ElementwiseBinaryDescriptor",
-    "DotDescriptor",
-    "TraceDescriptor",
-    "GemmDescriptor",
-    "ElementTransformDescriptor",
-    "SetupDescriptor",
-    "SyevDescriptor",
-    "LaplaceQuadratureDescriptor",
-    "OuterSumDescriptor",
-});
-
-static_assert(kDescriptorNames.size() == std::variant_size_v<OpData>,
-              "OpData gained or lost an alternative: add or remove its name in kDescriptorNames, in the variant's own order");
-
-/// Where @c D sits in @ref OpData's alternative list.
-template <typename D, std::size_t Index = 0>
-constexpr std::size_t alternative_index() {
-    if constexpr (std::is_same_v<D, std::variant_alternative_t<Index, OpData>>) {
-        return Index;
-    } else {
-        return alternative_index<D, Index + 1>();
-    }
-}
-
-/// The table is POSITIONAL, so a name in the wrong slot names the wrong
-/// descriptor and the size check above would not notice. These pin the slots the
-/// refusal messages are written against, at compile time.
-static_assert(kDescriptorNames[alternative_index<std::monostate>()] == "no descriptor");
-static_assert(kDescriptorNames[alternative_index<EinsumDescriptor>()] == "EinsumDescriptor");
-static_assert(kDescriptorNames[alternative_index<ScaleDescriptor>()] == "ScaleDescriptor");
-static_assert(kDescriptorNames[alternative_index<AxpbyDescriptor>()] == "AxpbyDescriptor");
-static_assert(kDescriptorNames[alternative_index<GemmDescriptor>()] == "GemmDescriptor");
-static_assert(kDescriptorNames[alternative_index<SyevDescriptor>()] == "SyevDescriptor");
-static_assert(kDescriptorNames[alternative_index<LaplaceQuadratureDescriptor>()] == "LaplaceQuadratureDescriptor");
-
-/// The descriptor alternative @p data holds, for a diagnostic.
+/// The descriptor @p data holds, for a diagnostic.
 std::string_view descriptor_name(OpData const &data) {
-    return kDescriptorNames[data.index()];
+    return data.name();
 }
 
 /// Complain that a kind with a builder entry carries the wrong descriptor.
@@ -1121,7 +1053,7 @@ std::string_view descriptor_name(OpData const &data) {
 /// the hand-written checks reported the wrong descriptor.
 template <typename D>
 D const &expect(OpKind kind, OpData const &desc, char const *expected) {
-    D const *held = std::get_if<D>(&desc);
+    D const *held = desc.get_if<D>();
     if (held == nullptr) {
         wrong_descriptor(kind, desc, expected);
     }
@@ -1325,41 +1257,41 @@ std::string reconstruction_blocker(Node const &node) {
     }
     switch (node.kind) {
     case OpKind::Scale:
-        return std::holds_alternative<ScaleDescriptor>(node.op_data)
+        return node.op_data.holds<ScaleDescriptor>()
                    ? std::string{}
                    : fmt::format("Scale: expected a ScaleDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::Permute:
-        return std::holds_alternative<PermuteDescriptor>(node.op_data)
+        return node.op_data.holds<PermuteDescriptor>()
                    ? std::string{}
                    : fmt::format("Permute: expected a PermuteDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::Transpose:
         // A transpose is fully described by its kind, dtype, rank and operands;
         // anything else on op_data means the node is not the transpose it claims.
-        return std::holds_alternative<std::monostate>(node.op_data)
+        return node.op_data.holds<std::monostate>()
                    ? std::string{}
                    : fmt::format("Transpose: expected no descriptor, found {}", descriptor_name(node.op_data));
     case OpKind::Axpby:
-        return std::holds_alternative<AxpbyDescriptor>(node.op_data)
+        return node.op_data.holds<AxpbyDescriptor>()
                    ? std::string{}
                    : fmt::format("Axpby: expected an AxpbyDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::DirectProduct:
     case OpKind::DirectDivision:
-        if (std::holds_alternative<ElementwiseBinaryDescriptor>(node.op_data)) {
+        if (node.op_data.holds<ElementwiseBinaryDescriptor>()) {
             return {};
         }
-        if (std::holds_alternative<TiledElementwiseDescriptor>(node.op_data)) {
+        if (node.op_data.holds<TiledElementwiseDescriptor>()) {
             return fmt::format("{}: tiled variant, whose per-tile kernel has no builder entry", op_kind_name(node.kind));
         }
         return fmt::format("{}: expected an ElementwiseBinaryDescriptor, found {}", op_kind_name(node.kind), descriptor_name(node.op_data));
     case OpKind::Einsum:
-        return std::holds_alternative<EinsumDescriptor>(node.op_data)
+        return node.op_data.holds<EinsumDescriptor>()
                    ? std::string{}
                    : fmt::format("Einsum: expected an EinsumDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::Dot:
-        if (std::holds_alternative<DotDescriptor>(node.op_data)) {
+        if (node.op_data.holds<DotDescriptor>()) {
             return {};
         }
-        if (std::holds_alternative<TiledDotDescriptor>(node.op_data)) {
+        if (node.op_data.holds<TiledDotDescriptor>()) {
             return "Dot: tiled variant, whose per-tile reduction has no builder entry";
         }
         return fmt::format("Dot: expected a DotDescriptor, found {}", descriptor_name(node.op_data));
@@ -1367,11 +1299,11 @@ std::string reconstruction_blocker(Node const &node) {
         // The empty TraceDescriptor records nothing and is required anyway: it
         // is what separates the dense trace from the tiled one, which shares
         // the kind and reduces over a grid. See TraceDescriptor.
-        return std::holds_alternative<TraceDescriptor>(node.op_data)
+        return node.op_data.holds<TraceDescriptor>()
                    ? std::string{}
                    : fmt::format("Trace: expected a TraceDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::WriteParam: {
-        auto const *desc = std::get_if<WriteParamDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<WriteParamDescriptor>();
         if (desc == nullptr) {
             return fmt::format("WriteParam: expected a WriteParamDescriptor, found {}", descriptor_name(node.op_data));
         }
@@ -1385,7 +1317,7 @@ std::string reconstruction_blocker(Node const &node) {
         return {};
     }
     case OpKind::Gemm:
-        return std::holds_alternative<GemmDescriptor>(node.op_data)
+        return node.op_data.holds<GemmDescriptor>()
                    ? std::string{}
                    : fmt::format("Gemm: expected a GemmDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::ElementTransform:
@@ -1393,16 +1325,16 @@ std::string reconstruction_blocker(Node const &node) {
         // not an oversight: a closure has no name a file could carry. The
         // message names the fix rather than the field, because "the field is
         // missing" is not something a user can act on.
-        if (std::holds_alternative<ElementTransformDescriptor>(node.op_data)) {
+        if (node.op_data.holds<ElementTransformDescriptor>()) {
             return {};
         }
-        if (std::holds_alternative<std::monostate>(node.op_data)) {
+        if (node.op_data.holds<std::monostate>()) {
             return "ElementTransform: the kernel is an anonymous closure; register a named op with element_ops::register_op and "
                    "capture with cg::element_transform(C, name)";
         }
         return fmt::format("ElementTransform: expected an ElementTransformDescriptor, found {}", descriptor_name(node.op_data));
     case OpKind::Conditional: {
-        auto const *desc = std::get_if<ConditionalDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<ConditionalDescriptor>();
         if (desc == nullptr) {
             return fmt::format("Conditional: expected a ConditionalDescriptor, found {}", descriptor_name(node.op_data));
         }
@@ -1416,7 +1348,7 @@ std::string reconstruction_blocker(Node const &node) {
         return {};
     }
     case OpKind::Loop: {
-        auto const *desc = std::get_if<LoopDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<LoopDescriptor>();
         if (desc == nullptr) {
             return fmt::format("Loop: expected a LoopDescriptor, found {}", descriptor_name(node.op_data));
         }
@@ -1431,13 +1363,13 @@ std::string reconstruction_blocker(Node const &node) {
         // records NO descriptor, so "no descriptor" here is what a per-block syev looks like
         // rather than a field someone forgot to fill in. The message says both, because
         // "expected a SyevDescriptor" alone sends the reader hunting for a writer bug.
-        return std::holds_alternative<SyevDescriptor>(node.op_data)
+        return node.op_data.holds<SyevDescriptor>()
                    ? std::string{}
                    : fmt::format("Syev: expected a SyevDescriptor, found {}; the tiled variant records none, and its per-block "
                                  "decomposition has no builder entry",
                                  descriptor_name(node.op_data));
     case OpKind::LaplaceQuadrature: {
-        auto const *desc = std::get_if<LaplaceQuadratureDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<LaplaceQuadratureDescriptor>();
         if (desc == nullptr) {
             return fmt::format("LaplaceQuadrature: expected a LaplaceQuadratureDescriptor, found {}", descriptor_name(node.op_data));
         }
@@ -1448,7 +1380,7 @@ std::string reconstruction_blocker(Node const &node) {
         return {};
     }
     case OpKind::Setup: {
-        auto const *desc = std::get_if<SetupDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<SetupDescriptor>();
         if (desc == nullptr) {
             return fmt::format("Setup: expected a SetupDescriptor, found {}", descriptor_name(node.op_data));
         }
@@ -1491,12 +1423,12 @@ void collect_blockers(Graph const &graph, std::string const &path, std::vector<S
                                                  .subgraph_path = path});
         }
 
-        if (auto const *loop = std::get_if<LoopDescriptor>(&node.op_data)) {
+        if (auto const *loop = node.op_data.get_if<LoopDescriptor>()) {
             descend(loop->body.get(), fmt::format("loop({})", node.label));
-        } else if (auto const *cond = std::get_if<ConditionalDescriptor>(&node.op_data)) {
+        } else if (auto const *cond = node.op_data.get_if<ConditionalDescriptor>()) {
             descend(cond->then_branch.get(), fmt::format("then({})", node.label));
             descend(cond->else_branch.get(), fmt::format("else({})", node.label));
-        } else if (auto const *setup = std::get_if<SetupDescriptor>(&node.op_data)) {
+        } else if (auto const *setup = node.op_data.get_if<SetupDescriptor>()) {
             descend(setup->body.get(), fmt::format("setup({})", node.label));
         }
     }

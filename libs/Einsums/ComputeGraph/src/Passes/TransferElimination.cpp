@@ -56,7 +56,7 @@ size_t next_gpu_use_after(NextUseMap const &map, TensorId tid, size_t after) {
 bool is_loop_tensor(std::vector<Node> const &nodes, TensorId tid) {
     for (auto const &node : nodes) {
         if (node.kind == OpKind::Loop) {
-            auto const *desc = std::get_if<LoopDescriptor>(&node.op_data);
+            auto const *desc = node.op_data.get_if<LoopDescriptor>();
             if (desc && desc->body) {
                 for (auto const &inner : desc->body->nodes()) {
                     for (auto inner_tid : inner.inputs) {
@@ -123,7 +123,7 @@ bool TransferElimination::run(Graph &graph) {
         auto const &node = nodes[idx];
 
         if (node.kind == OpKind::HostToDevice) {
-            auto const *desc = std::get_if<TransferDescriptor>(&node.op_data);
+            auto const *desc = node.op_data.get_if<TransferDescriptor>();
             if (!desc)
                 continue;
 
@@ -184,7 +184,7 @@ bool TransferElimination::run(Graph &graph) {
             gpu_used += tensor_bytes;
 
         } else if (node.kind == OpKind::DeviceToHost) {
-            auto const *desc = std::get_if<TransferDescriptor>(&node.op_data);
+            auto const *desc = node.op_data.get_if<TransferDescriptor>();
             if (!desc)
                 continue;
 

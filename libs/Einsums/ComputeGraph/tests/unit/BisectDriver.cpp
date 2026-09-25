@@ -85,7 +85,7 @@ class PerturbingPass : public cg::OptimizerPass {
 
     bool run(cg::Graph &graph) override {
         for (auto &node : graph.nodes()) {
-            auto *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+            auto *desc = node.op_data.get_if<cg::EinsumDescriptor>();
             if (desc == nullptr || !desc->params) {
                 continue;
             }

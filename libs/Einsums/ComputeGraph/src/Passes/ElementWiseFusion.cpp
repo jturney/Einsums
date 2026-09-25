@@ -48,7 +48,7 @@ AxpbyDescriptor const *fusable_axpby(Node const &nd) {
     if (nd.kind != OpKind::Axpby || nd.outputs.size() != 1 || nd.inputs.empty()) {
         return nullptr;
     }
-    auto const *desc = std::get_if<AxpbyDescriptor>(&nd.op_data);
+    auto const *desc = nd.op_data.get_if<AxpbyDescriptor>();
     return (desc != nullptr && desc->params != nullptr) ? desc : nullptr;
 }
 
@@ -78,7 +78,7 @@ ScaleDescriptor *fusable_scale(Node &nd) {
     if (nd.kind != OpKind::Scale || nd.outputs.size() != 1) {
         return nullptr;
     }
-    auto *desc = std::get_if<ScaleDescriptor>(&nd.op_data);
+    auto *desc = nd.op_data.get_if<ScaleDescriptor>();
     return (desc != nullptr && desc->params != nullptr) ? desc : nullptr;
 }
 
@@ -139,7 +139,7 @@ bool ElementWiseFusion::run(Graph &graph) {
 
             auto const [alpha, beta] = compose_axpby(a1, b1, a2, b2);
 
-            auto *live_i          = std::get_if<AxpbyDescriptor>(&nodes[i].op_data);
+            auto *live_i          = nodes[i].op_data.get_if<AxpbyDescriptor>();
             live_i->params->alpha = alpha;
             live_i->params->beta  = beta;
             live_i->alpha         = alpha;

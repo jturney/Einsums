@@ -207,7 +207,7 @@ bool Graph::has_setup() const noexcept {
 
 void Graph::run_setup(bool force) {
     for (auto &node : _nodes) {
-        auto *desc = std::get_if<SetupDescriptor>(&node.op_data);
+        auto *desc = node.op_data.get_if<SetupDescriptor>();
         if (desc == nullptr || !desc->body) {
             continue;
         }
@@ -226,7 +226,7 @@ void Graph::run_setup(bool force) {
 
 void Graph::invalidate_setup() {
     for (auto &node : _nodes) {
-        auto *desc = std::get_if<SetupDescriptor>(&node.op_data);
+        auto *desc = node.op_data.get_if<SetupDescriptor>();
         if (desc == nullptr || desc->state == nullptr) {
             continue;
         }
@@ -372,7 +372,7 @@ void Graph::clear_accuracy_budget() {
 void Graph::set_setup_key(std::string key) {
     _setup_key = std::move(key);
     for (auto &node : _nodes) {
-        auto *desc = std::get_if<SetupDescriptor>(&node.op_data);
+        auto *desc = node.op_data.get_if<SetupDescriptor>();
         if (desc == nullptr || desc->state == nullptr) {
             continue;
         }

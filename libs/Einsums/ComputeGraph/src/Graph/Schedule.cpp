@@ -259,7 +259,7 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     std::unordered_map<TensorId, TensorId> view_parent; // view tid -> alias ROOT tid
     StructuralAliasResolver                resolver(*this);
     for (auto const &nd : _nodes) {
-        if (nd.kind != OpKind::View || nd.outputs.size() != 1 || !std::holds_alternative<ViewDescriptor>(nd.op_data)) {
+        if (nd.kind != OpKind::View || nd.outputs.size() != 1 || !nd.op_data.holds<ViewDescriptor>()) {
             continue;
         }
         TensorId const         vid = nd.outputs[0];

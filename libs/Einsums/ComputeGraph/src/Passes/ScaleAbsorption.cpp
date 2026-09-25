@@ -77,7 +77,7 @@ FoldSite fold_site(Node const &node, TensorId tensor) {
     }
 
     if (node.kind == OpKind::Einsum) {
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr || desc->params == nullptr) {
             return FoldSite::None;
         }
@@ -88,7 +88,7 @@ FoldSite fold_site(Node const &node, TensorId tensor) {
     }
 
     if (node.kind == OpKind::Axpby) {
-        auto const *desc = std::get_if<AxpbyDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<AxpbyDescriptor>();
         if (desc == nullptr || desc->params == nullptr) {
             return FoldSite::None;
         }
@@ -105,7 +105,7 @@ FoldSite fold_site(Node const &node, TensorId tensor) {
 /// @ref fold_site returned that site. Writes the live params the executor reads
 /// AND the snapshot beside them, so later analysis sees the same value.
 void apply_fold(Node &node, FoldSite site, double factor) {
-    if (auto *desc = std::get_if<EinsumDescriptor>(&node.op_data)) {
+    if (auto *desc = node.op_data.get_if<EinsumDescriptor>()) {
         if (site == FoldSite::Operand) {
             desc->params->ab_pf = scale_prefactor(desc->params->ab_pf, factor);
             desc->ab_prefactor  = desc->params->ab_pf;
@@ -115,7 +115,7 @@ void apply_fold(Node &node, FoldSite site, double factor) {
         }
         return;
     }
-    auto *desc = std::get_if<AxpbyDescriptor>(&node.op_data);
+    auto *desc = node.op_data.get_if<AxpbyDescriptor>();
     if (site == FoldSite::Operand) {
         desc->params->alpha = scale_prefactor(desc->params->alpha, factor);
         desc->alpha         = desc->params->alpha;
@@ -245,7 +245,7 @@ bool ScaleAbsorption::run(Graph &graph) {
         if (scale_node.kind != OpKind::Scale) {
             continue;
         }
-        auto *scale_desc = std::get_if<ScaleDescriptor>(&scale_node.op_data);
+        auto *scale_desc = scale_node.op_data.get_if<ScaleDescriptor>();
         if (scale_desc == nullptr || scale_node.outputs.size() != 1) {
             continue;
         }

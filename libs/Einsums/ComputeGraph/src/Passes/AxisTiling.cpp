@@ -138,7 +138,7 @@ std::optional<std::vector<SlotRef>> slots_of(Graph const &graph, Node const &nod
 /// letters wrote them there and the descriptor's own copy is the at-capture snapshot.
 std::optional<std::vector<std::vector<std::string>>> letters_of(Node const &node) {
     if (node.kind == OpKind::Einsum) {
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr) {
             return std::nullopt;
         }
@@ -149,7 +149,7 @@ std::optional<std::vector<std::vector<std::string>>> letters_of(Node const &node
         return std::vector<std::vector<std::string>>{desc->spec.c_indices, desc->spec.a_indices, desc->spec.b_indices};
     }
     if (node.kind == OpKind::Permute) {
-        auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<PermuteDescriptor>();
         if (desc == nullptr) {
             return std::nullopt;
         }
@@ -163,7 +163,7 @@ std::vector<std::string> link_letters_of(Node const &node) {
     if (node.kind != OpKind::Einsum) {
         return {};
     }
-    auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<EinsumDescriptor>();
     if (desc == nullptr) {
         return {};
     }
@@ -669,20 +669,20 @@ namespace {
 bool node_accumulates(Node const &node) {
     switch (node.kind) {
     case OpKind::Einsum: {
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         return desc == nullptr || !is_zero(live_c_prefactor(*desc));
     }
     case OpKind::Permute: {
-        auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<PermuteDescriptor>();
         return desc == nullptr || !is_zero(desc->params ? desc->params->beta : PrefactorScalar{desc->beta});
     }
     case OpKind::Axpby: {
-        auto const *desc = std::get_if<AxpbyDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<AxpbyDescriptor>();
         return desc == nullptr || !is_zero(live_beta(*desc));
     }
     case OpKind::DirectProduct:
     case OpKind::DirectDivision: {
-        auto const *desc = std::get_if<ElementwiseBinaryDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<ElementwiseBinaryDescriptor>();
         return desc == nullptr || !is_zero(live_beta(*desc));
     }
     case OpKind::Dot:
@@ -1265,7 +1265,7 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
 
         switch (op.kind) {
         case OpKind::Einsum: {
-            auto const &desc = std::get<EinsumDescriptor>(op.op_data);
+            auto const &desc = op.op_data.get<EinsumDescriptor>();
             auto const &spec =
                 desc.indices ? desc.indices->spec : ParsedEinsumSpec{desc.spec.c_indices, desc.spec.a_indices, desc.spec.b_indices};
             auto const c        = surviving(spec.c_indices, op.slots[0].labels);
@@ -1293,7 +1293,7 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
             break;
         }
         case OpKind::Permute: {
-            auto const &desc = std::get<PermuteDescriptor>(op.op_data);
+            auto const &desc = op.op_data.get<PermuteDescriptor>();
             // A permutation keeps its scalars in the params block where every other kind does,
             // and its own snapshots are plain complex doubles, so the live block is read first
             // and the snapshot only stands in for a node that has none.
@@ -1313,7 +1313,7 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
             break;
         }
         case OpKind::Axpby: {
-            auto const &desc  = std::get<AxpbyDescriptor>(op.op_data);
+            auto const &desc  = op.op_data.get<AxpbyDescriptor>();
             auto const  alpha = real_prefactor(live_alpha(desc));
             auto const  beta  = real_prefactor(live_beta(desc));
             if (chunked && alpha.has_value() && beta.has_value()) {
@@ -1326,7 +1326,7 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
             break;
         }
         case OpKind::Scale: {
-            auto const &desc = std::get<ScaleDescriptor>(op.op_data);
+            auto const &desc = op.op_data.get<ScaleDescriptor>();
             for (std::size_t member = 0; member < depth; ++member) {
                 scale(as<T>(live_factor(desc)), operand[0][member]);
             }
@@ -1334,7 +1334,7 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
         }
         case OpKind::DirectProduct:
         case OpKind::DirectDivision: {
-            auto const &desc  = std::get<ElementwiseBinaryDescriptor>(op.op_data);
+            auto const &desc  = op.op_data.get<ElementwiseBinaryDescriptor>();
             T const     alpha = as<T>(live_alpha(desc));
             T const     beta  = as<T>(live_beta(desc));
             if (chunked) {

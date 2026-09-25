@@ -160,7 +160,7 @@ TEST_CASE("grouped_batched_gemm: the derived grouping is visible in the descript
     REQUIRE(graph.num_nodes() == 1);
     REQUIRE(graph.nodes()[0].kind == cg::OpKind::GroupedBatchedGemm);
 
-    auto const *d = std::get_if<cg::GroupedBatchedGemmDescriptor>(&graph.nodes()[0].op_data);
+    auto const *d = graph.nodes()[0].op_data.get_if<cg::GroupedBatchedGemmDescriptor>();
     REQUIRE(d != nullptr);
     REQUIRE(d->total == 6);
     REQUIRE(d->groups.size() == 3);
@@ -303,7 +303,7 @@ TEST_CASE("grouped_batched_gemm_blocked: blocks of several bases, several shapes
     // whole base against this write.
     REQUIRE(graph.nodes()[0].outputs.size() == 2);
 
-    auto const *d = std::get_if<cg::GroupedBatchedGemmDescriptor>(&graph.nodes()[0].op_data);
+    auto const *d = graph.nodes()[0].op_data.get_if<cg::GroupedBatchedGemmDescriptor>();
     REQUIRE(d != nullptr);
     REQUIRE(d->groups.size() == 2);
     REQUIRE(d->total == 5);

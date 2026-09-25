@@ -99,7 +99,7 @@ MemStats analyze_one(Graph &graph) {
                 mark_device(tid);
         }
         if (node.kind == OpKind::HostToDevice) {
-            auto const *desc = std::get_if<TransferDescriptor>(&node.op_data);
+            auto const *desc = node.op_data.get_if<TransferDescriptor>();
             if (desc)
                 mark_device(desc->tensor_id);
         }

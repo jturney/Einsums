@@ -120,7 +120,7 @@ bool SUMMAExpansion::run(Graph &graph) {
         if (node.kind != OpKind::Einsum)
             continue;
 
-        auto const *desc = std::get_if<EinsumDescriptor>(&node.op_data);
+        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (!desc)
             continue;
 

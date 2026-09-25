@@ -39,7 +39,7 @@ std::optional<OperatorWrite> as_operator_write(Node const &node, std::size_t ind
     if (node.kind != OpKind::Permute || node.inputs.size() != 1 || node.outputs.size() != 1) {
         return std::nullopt;
     }
-    auto const *desc = std::get_if<PermuteDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<PermuteDescriptor>();
     if (desc == nullptr || desc->operators.empty()) {
         return std::nullopt;
     }
@@ -108,7 +108,7 @@ bool AntisymmetrizerLinearity::run(Graph &graph) {
         if (second.kind != OpKind::Axpby || second.inputs.size() < 2 || second.outputs.size() != 1) {
             continue;
         }
-        auto const *adesc = std::get_if<AxpbyDescriptor>(&second.op_data);
+        auto const *adesc = second.op_data.get_if<AxpbyDescriptor>();
         if (adesc == nullptr || !is_one(live_beta(*adesc))) {
             continue; // anything but a pure accumulate changes what the sum is
         }
@@ -184,7 +184,7 @@ bool AntisymmetrizerLinearity::run(Graph &graph) {
 
         Node &op  = graph.nodes()[site.operator_index];
         op.inputs = {sum_id};
-        if (auto *pdesc = std::get_if<PermuteDescriptor>(&op.op_data)) {
+        if (auto *pdesc = op.op_data.get_if<PermuteDescriptor>()) {
             pdesc->alpha = std::complex<double>{1.0, 0.0};
             if (pdesc->params != nullptr) {
                 pdesc->params->alpha = PrefactorScalar{double{1}};

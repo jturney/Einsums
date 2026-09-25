@@ -139,7 +139,7 @@ void CaptureContext::record_async(OpKind kind, std::string label, std::vector<Te
     X(OuterSumDescriptor)
 
 #define EINSUMS_COUNT_ONE(D) +1
-static_assert(0 EINSUMS_OP_DATA_ALTERNATIVES(EINSUMS_COUNT_ONE) == std::variant_size_v<OpData>,
+static_assert(0 EINSUMS_OP_DATA_ALTERNATIVES(EINSUMS_COUNT_ONE) == OpData::alternative_count,
               "EINSUMS_OP_DATA_ALTERNATIVES must list every OpData alternative");
 #undef EINSUMS_COUNT_ONE
 

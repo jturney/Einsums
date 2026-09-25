@@ -45,7 +45,7 @@ struct Spaces {
 /// The descriptor of the graph's single einsum node, or null when it has none.
 cg::EinsumDescriptor const *einsum_descriptor(cg::Graph const &graph) {
     for (auto const &node : graph.nodes()) {
-        if (auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data)) {
+        if (auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>()) {
             return desc;
         }
     }
@@ -340,7 +340,7 @@ TEST_CASE("SpaceAnnotation - a rebuilt node re-derives its letter map", "[Comput
 
     auto const node = graph.make_einsum_node(a_id, b_id, c_id, parsed.value(), cg::PrefactorScalar{0.0}, cg::PrefactorScalar{1.0});
 
-    auto const *desc = std::get_if<cg::EinsumDescriptor>(&node.op_data);
+    auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>();
     REQUIRE(desc != nullptr);
     CHECK(desc->space_for_letter("i") == std::optional<cg::SpaceId>{spaces.occ});
     CHECK(desc->space_for_letter("a") == std::optional<cg::SpaceId>{spaces.virt});
