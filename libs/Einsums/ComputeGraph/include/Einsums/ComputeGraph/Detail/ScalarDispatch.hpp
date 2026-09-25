@@ -45,6 +45,12 @@ decltype(auto) dispatch_scalar_type(packed_gemm::ScalarType dtype, F &&f) {
     EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_scalar_type: unknown ScalarType");
 }
 
+/// The BLAS scalar tag naming @p dtype. Throws `std::invalid_argument` for `Unknown`, as
+/// @ref dispatch_scalar_type does.
+inline BlasScalar blas_scalar_from(packed_gemm::ScalarType dtype) {
+    return dispatch_scalar_type(dtype, []<typename T>(T /*tag*/) { return blas_scalar_of<T>(); });
+}
+
 /**
  * @brief Invoke @p f with a `std::integral_constant<size_t, Rank>` tag for the
  *        runtime @p rank (1..4) and return its result.

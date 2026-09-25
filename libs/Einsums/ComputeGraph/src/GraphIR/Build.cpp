@@ -19,6 +19,7 @@
 /// unbound loaded graph from dereferencing nothing.
 
 #include <Einsums/ComputeGraph/Detail/Json.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
@@ -126,21 +127,12 @@ LoadedTensor adopt_outer_tensor(Graph &graph, IrTensor const &spec, LoadedTensor
 
 /// Dispatch @p spec's dtype and allocate or adopt accordingly.
 LoadedTensor materialize_tensor(Graph &root, Graph &graph, IrTensor const &spec, LoadedTensor const *outer) {
-    auto const apply = [&]<typename T>(T /*tag*/) {
-        return outer != nullptr ? adopt_outer_tensor<T>(graph, spec, *outer) : allocate_tensor<T>(root, graph, spec);
-    };
-    switch (spec.dtype) {
-    case packed_gemm::ScalarType::Float32:
-        return apply(float{});
-    case packed_gemm::ScalarType::Float64:
-        return apply(double{});
-    case packed_gemm::ScalarType::Complex64:
-        return apply(std::complex<float>{});
-    case packed_gemm::ScalarType::Complex128:
-        return apply(std::complex<double>{});
-    default:
+    if (spec.dtype == packed_gemm::ScalarType::Unknown) {
         throw BuildFailure(fmt::format("tensor '{}' has dtype 'unknown', which names no storage the loader can allocate", spec.name));
     }
+    return detail::dispatch_scalar_type(spec.dtype, [&]<typename T>(T /*tag*/) {
+        return outer != nullptr ? adopt_outer_tensor<T>(graph, spec, *outer) : allocate_tensor<T>(root, graph, spec);
+    });
 }
 
 std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrTensor> const &tensors, std::vector<IrNode> const &nodes,
@@ -284,22 +276,10 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
                 einsum->gemm_hint->a.id = hint_id(spec.hint_ids[0]);
                 einsum->gemm_hint->b.id = hint_id(spec.hint_ids[1]);
                 einsum->gemm_hint->c.id = hint_id(spec.hint_ids[2]);
-                switch (spec.dtype) {
-                case packed_gemm::ScalarType::Float32:
-                    einsum->gemm_hint->scalar = BlasScalar::Float;
-                    break;
-                case packed_gemm::ScalarType::Float64:
-                    einsum->gemm_hint->scalar = BlasScalar::Double;
-                    break;
-                case packed_gemm::ScalarType::Complex64:
-                    einsum->gemm_hint->scalar = BlasScalar::ComplexFloat;
-                    break;
-                case packed_gemm::ScalarType::Complex128:
-                    einsum->gemm_hint->scalar = BlasScalar::ComplexDouble;
-                    break;
-                default:
+                if (spec.dtype == packed_gemm::ScalarType::Unknown) {
                     throw BuildFailure(fmt::format("node '{}' carries a GEMM hint with dtype 'unknown'", spec.label));
                 }
+                einsum->gemm_hint->scalar = detail::blas_scalar_from(spec.dtype);
             }
         }
         if (auto *conditional = node.op_data.get_if<ConditionalDescriptor>()) {

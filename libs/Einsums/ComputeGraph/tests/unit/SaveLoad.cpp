@@ -871,6 +871,33 @@ TEST_CASE("SaveLoad - validate-only reports every seeded problem, not the first"
     REQUIRE(cg::validate_graph_ir_string(must_save(graph, cg::SaveOptions{.pretty = false})).has_value());
 }
 
+TEST_CASE("SaveLoad - a negative id or size is a problem and never a silent zero", "[ComputeGraph][SaveLoad]") {
+    // Defends the reader's count and id fields. Some of them reported a negative value while
+    // others clamped it to 0 without a word, and 0 is a real node id and the "no tensor" id, so
+    // a corrupt file read as a different, valid-looking graph.
+    auto A = create_zero_tensor<double>("A", 3, 3);
+
+    cg::Graph graph("negative_fields");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(2.0, &A);
+    }
+    std::string const text = must_save(graph, cg::SaveOptions{.pretty = false});
+
+    SECTION("node id") {
+        auto const result = cg::validate_graph_ir_string(patched(text, R"({"id":0,"kind":"Scale")", R"({"id":-1,"kind":"Scale")"));
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE_THAT(result.error().message, Catch::Matchers::ContainsSubstring("$.nodes[0].id"));
+        REQUIRE_THAT(result.error().message, Catch::Matchers::ContainsSubstring("must not be negative"));
+    }
+    SECTION("node rank") {
+        auto const result = cg::validate_graph_ir_string(patched(text, R"("rank":2,"descriptor")", R"("rank":-2,"descriptor")"));
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE_THAT(result.error().message, Catch::Matchers::ContainsSubstring("$.nodes[0].rank"));
+        REQUIRE_THAT(result.error().message, Catch::Matchers::ContainsSubstring("must not be negative"));
+    }
+}
+
 // ── Tier 3: content hash and renumbering ───────────────────────────────────
 
 TEST_CASE("SaveLoad - content_hash covers structure and nothing else", "[ComputeGraph][SaveLoad]") {

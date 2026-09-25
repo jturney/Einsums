@@ -53,6 +53,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::graph_ir)
 
 namespace {
 
+/// A one-character string, as a BLAS transpose flag is written.
+Value char_value(char c) {
+    return Value{std::string(1, c)};
+}
+
 /// @ref Graph::manifest mutates (it links aliases and builds usage analysis) and
 /// is documented as non-const "not by choice". Writing a graph is a read-only
 /// operation from the caller's point of view, so the const is kept at the API
@@ -105,8 +110,7 @@ Value write_permutation_operators(std::vector<PermutationOperator> const &operat
 /// only the number would silently merge them.
 Value write_prefactor(PrefactorScalar const &scalar) {
     Object out;
-    out.set("dtype",
-            Value{std::string(scalar_type_name(std::visit([](auto x) { return packed_gemm::get_scalar_type<decltype(x)>(); }, scalar)))});
+    out.set("dtype", Value{scalar_type_name(std::visit([](auto x) { return packed_gemm::get_scalar_type<decltype(x)>(); }, scalar))});
     std::visit(
         [&out](auto x) {
             using T = decltype(x);
@@ -222,14 +226,14 @@ Value write_pred_expr(Graph const &root, PredExpr const &pred, Node const &node,
     if (auto const *arm = std::get_if<PredExpr::Compare>(&pred.storage())) {
         Object compare;
         compare.set("lhs", write_bound_expr(arm->lhs, node, field));
-        compare.set("op", Value{std::string(cmp_op_name(arm->op))});
+        compare.set("op", Value{cmp_op_name(arm->op)});
         compare.set("rhs", write_bound_expr(arm->rhs, node, field));
         out.set("compare", Value{std::move(compare)});
         return Value{std::move(out)};
     }
     if (auto const *arm = std::get_if<PredExpr::Iteration>(&pred.storage())) {
         Object iteration;
-        iteration.set("op", Value{std::string(cmp_op_name(arm->op))});
+        iteration.set("op", Value{cmp_op_name(arm->op)});
         iteration.set("rhs", write_bound_expr(arm->rhs, node, field));
         out.set("iteration", Value{std::move(iteration)});
         return Value{std::move(out)};
@@ -286,19 +290,19 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         }
         return Value{std::move(out)};
     }
-    case OpKind::Axpby: {
-        auto const &desc = node.op_data.get<AxpbyDescriptor>();
-        // The LIVE scalars, for the reason the Scale case above states.
-        out.set("alpha", write_prefactor(live_alpha(desc)));
-        out.set("beta", write_prefactor(live_beta(desc)));
-        return Value{std::move(out)};
-    }
+    case OpKind::Axpby:
     case OpKind::DirectProduct:
     case OpKind::DirectDivision: {
-        auto const &desc = node.op_data.get<ElementwiseBinaryDescriptor>();
         // The LIVE scalars, for the reason the Scale case above states.
-        out.set("alpha", write_prefactor(live_alpha(desc)));
-        out.set("beta", write_prefactor(live_beta(desc)));
+        auto const write_scalars = [&](auto const &desc) {
+            out.set("alpha", write_prefactor(live_alpha(desc)));
+            out.set("beta", write_prefactor(live_beta(desc)));
+        };
+        if (node.kind == OpKind::Axpby) {
+            write_scalars(node.op_data.get<AxpbyDescriptor>());
+        } else {
+            write_scalars(node.op_data.get<ElementwiseBinaryDescriptor>());
+        }
         return Value{std::move(out)};
     }
     case OpKind::Einsum: {
@@ -349,8 +353,8 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
             hint.set("m", Value{static_cast<std::int64_t>(desc.gemm_hint->m)});
             hint.set("n", Value{static_cast<std::int64_t>(desc.gemm_hint->n)});
             hint.set("k", Value{static_cast<std::int64_t>(desc.gemm_hint->k)});
-            hint.set("trans_a", Value{std::string(1, desc.gemm_hint->trans_a)});
-            hint.set("trans_b", Value{std::string(1, desc.gemm_hint->trans_b)});
+            hint.set("trans_a", char_value(desc.gemm_hint->trans_a));
+            hint.set("trans_b", char_value(desc.gemm_hint->trans_b));
             auto const operand = [&frame](GemmOperand const &op) {
                 Object entry;
                 entry.set("id", Value{frame.intern(op.id)});
@@ -374,8 +378,8 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         auto const &desc = node.op_data.get<GemmDescriptor>();
         out.set("alpha", write_prefactor(desc.alpha));
         out.set("beta", write_prefactor(desc.beta));
-        out.set("trans_a", Value{std::string(1, desc.trans_a)});
-        out.set("trans_b", Value{std::string(1, desc.trans_b)});
+        out.set("trans_a", char_value(desc.trans_a));
+        out.set("trans_b", char_value(desc.trans_b));
         return Value{std::move(out)};
     }
     case OpKind::Syev: {
@@ -401,7 +405,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
     case OpKind::WriteParam: {
         auto const &desc = node.op_data.get<WriteParamDescriptor>();
         out.set("param", Value{desc.name});
-        out.set("source_type", Value{std::string(param_source_type_name(desc.source_type))});
+        out.set("source_type", Value{param_source_type_name(desc.source_type)});
         if (desc.source_expr.has_value()) {
             out.set("source_expr", write_bound_expr(*desc.source_expr, node, "source_expr"));
         }
@@ -457,7 +461,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         if (codec == nullptr) {
             refuse(node, "kind", "is a Custom node whose descriptor has no registered codec; register one with register_descriptor");
         }
-        out.set("name", Value{std::string(node.op_data.name())});
+        out.set("name", Value{node.op_data.name()});
         out.set("value", codec->write(node.op_data));
         return Value{std::move(out)};
     }
@@ -525,7 +529,7 @@ void write_provenance_tag(Object &out, ProvenanceTag const &tag) {
 /// reordering this is a format change, not a cleanup.
 void write_shape(Object &out, packed_gemm::ScalarType dtype, std::size_t rank, std::vector<std::size_t> const &dims,
                  std::vector<std::string> const &dim_symbols, Value spaces, bool spaces_inferred, ProvenanceTag const *tag) {
-    out.set("dtype", Value{std::string(scalar_type_name(dtype))});
+    out.set("dtype", Value{scalar_type_name(dtype)});
     out.set("rank", Value{rank});
     out.set("dims", to_array(dims));
     out.set("dim_symbols", to_array(dim_symbols));
@@ -553,13 +557,13 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
                 to_array(handle.spaces, [&graph](SpaceId space) { return Value{graph.space_registry().name_of(space)}; }),
                 handle.spaces_inferred, &handle.tag);
     out.set("intermediate", Value{handle.is_intermediate});
-    out.set("scope", Value{std::string(tensor_ownership_name(handle.ownership))});
-    out.set("init", Value{std::string(init_kind_name(handle.init_kind))});
+    out.set("scope", Value{tensor_ownership_name(handle.ownership)});
+    out.set("init", Value{init_kind_name(handle.init_kind)});
     // Whether the tensor has storage yet, which is NOT what "init" says: that one is what to
     // fill it with once it does. Dropping this turned every loaded intermediate into a
     // materialized one, and a materialized intermediate refuses the extent-changing bind that
     // cross-problem reuse is made of.
-    out.set("alloc", Value{std::string(alloc_state_name(handle.alloc_state))});
+    out.set("alloc", Value{alloc_state_name(handle.alloc_state)});
 
     if (auto const outer = frame.outer_of(handle.tensor_ptr); outer.has_value()) {
         out.set("outer", Value{*outer});
@@ -572,7 +576,7 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
 Value write_node(Node const &node, std::size_t dense_id, Graph const &graph, Graph const &root, Frame &frame) {
     Object out;
     out.set("id", Value{dense_id});
-    out.set("kind", Value{std::string(op_kind_name(node.kind))});
+    out.set("kind", Value{op_kind_name(node.kind)});
     out.set("label", Value{node.label});
 
     auto const dense_of = [&frame](TensorId id) { return Value{frame.intern(id)}; };
@@ -602,7 +606,7 @@ Value write_node(Node const &node, std::size_t dense_id, Graph const &graph, Gra
             dtype = handle->dtype;
         }
     }
-    out.set("dtype", Value{std::string(scalar_type_name(dtype))});
+    out.set("dtype", Value{scalar_type_name(dtype)});
     out.set("rank", Value{rank});
 
     // A Loop or Conditional node's own operand lists are EMPTY: its body is captured after the
@@ -654,6 +658,35 @@ Value write_node(Node const &node, std::size_t dense_id, Graph const &graph, Gra
     return Value{std::move(out)};
 }
 
+/// Every node of @p graph, in position order.
+// NOLINTNEXTLINE(misc-no-recursion): control-flow nodes write their fragments.
+Array write_nodes(Graph const &graph, Graph const &root, Frame &frame) {
+    Array nodes;
+    for (std::size_t position = 0; position < graph.nodes().size(); ++position) {
+        nodes.emplace_back(write_node(graph.nodes()[position], position, graph, root, frame));
+    }
+    return nodes;
+}
+
+/// Every tensor @p frame interned, in dense order, except those @p skip names. @p owner says
+/// whose table was missing a tensor, for the refusal.
+template <typename Skip>
+Array write_frame_tensors(Graph const &graph, Frame const &frame, std::string_view owner, Skip &&skip) {
+    Array tensors;
+    for (std::size_t dense = 0; dense < frame.order().size(); ++dense) {
+        TensorId const      id     = frame.order()[dense];
+        TensorHandle const *handle = graph.find_tensor(id);
+        if (handle == nullptr) {
+            throw SaveRefusal(
+                fmt::format("{} references tensor id {} that its graph does not define", owner, static_cast<std::uint64_t>(id)));
+        }
+        if (!skip(id)) {
+            tensors.emplace_back(write_tensor(graph, *handle, dense, frame));
+        }
+    }
+    return tensors;
+}
+
 /// A fragment: local tensors, local nodes, and the boundary references that tie
 /// them to the enclosing frame. The same shape at every level, which is the
 /// point; see the file note in GraphIR.hpp.
@@ -663,20 +696,8 @@ Value write_fragment(Graph const &graph, Graph const &root, Frame const *parent,
 
     // Nodes are walked first so the tensor numbering is first-mention order over
     // the node list, which is what makes two captures of one program agree.
-    Array nodes;
-    for (std::size_t position = 0; position < graph.nodes().size(); ++position) {
-        nodes.emplace_back(write_node(graph.nodes()[position], position, graph, root, frame));
-    }
-
-    Array tensors;
-    for (std::size_t dense = 0; dense < frame.order().size(); ++dense) {
-        TensorHandle const *handle = graph.find_tensor(frame.order()[dense]);
-        if (handle == nullptr) {
-            throw SaveRefusal(fmt::format("fragment '{}' references tensor id {} that the graph does not define", name,
-                                          static_cast<std::uint64_t>(frame.order()[dense])));
-        }
-        tensors.emplace_back(write_tensor(graph, *handle, dense, frame));
-    }
+    Array nodes   = write_nodes(graph, root, frame);
+    Array tensors = write_frame_tensors(graph, frame, fmt::format("fragment '{}'", name), [](TensorId) { return false; });
 
     Object out;
     out.set("name", Value{std::move(name)});
@@ -737,10 +758,7 @@ Object write_structure(Graph const &graph) {
         frame.intern(entry.id);
     }
 
-    Array nodes;
-    for (std::size_t position = 0; position < graph.nodes().size(); ++position) {
-        nodes.emplace_back(write_node(graph.nodes()[position], position, graph, graph, frame));
-    }
+    Array nodes = write_nodes(graph, graph, frame);
 
     Array manifest;
     for (auto const &entry : contract.entries()) {
@@ -748,14 +766,14 @@ Object write_structure(Graph const &graph) {
         Object record;
         record.set("id", Value{frame.intern(entry.id)});
         record.set("name", Value{entry.name});
-        record.set("direction", Value{std::string(manifest_direction_name(entry.direction))});
+        record.set("direction", Value{manifest_direction_name(entry.direction)});
         // The tag comes from the HANDLE rather than from the manifest entry, which carries none:
         // a tag is a statement about the tensor, and the manifest entry is a statement about the
         // interface slot it fills.
         TensorHandle const *handle = graph.find_tensor(entry.id);
         write_shape(record, entry.dtype, entry.rank, entry.dims, entry.dim_symbols, to_array(entry.spaces), entry.spaces_inferred,
                     handle != nullptr ? &handle->tag : nullptr);
-        record.set("scope", Value{std::string(tensor_ownership_name(entry.scope))});
+        record.set("scope", Value{tensor_ownership_name(entry.scope)});
 
         // By NAME, never by id: an alias declaration is part of the interface
         // contract and a caller binds by name.
@@ -769,19 +787,9 @@ Object write_structure(Graph const &graph) {
         manifest.emplace_back(std::move(record));
     }
 
-    Array tensors;
-    for (std::size_t dense = 0; dense < frame.order().size(); ++dense) {
-        TensorId const      id     = frame.order()[dense];
-        TensorHandle const *handle = graph.find_tensor(id);
-        if (handle == nullptr) {
-            throw SaveRefusal(
-                fmt::format("graph '{}' references tensor id {} that it does not define", graph.name(), static_cast<std::uint64_t>(id)));
-        }
-        if (contract.find_by_id(id) != nullptr) {
-            continue; // already fully described by its manifest entry
-        }
-        tensors.emplace_back(write_tensor(graph, *handle, dense, frame));
-    }
+    // A manifest tensor is already fully described by its manifest entry.
+    Array tensors = write_frame_tensors(graph, frame, fmt::format("graph '{}'", graph.name()),
+                                        [&contract](TensorId id) { return contract.find_by_id(id) != nullptr; });
 
     // Spaces: every name any slot or any contraction letter mentions, sorted so
     // the section is a function of the graph rather than of a hash table.
@@ -864,10 +872,10 @@ Object write_structure(Graph const &graph) {
     Value const approximations = to_array(graph.approximations(), [](auto const &record) {
         Object entry;
         entry.set("pass_name", Value{record.pass_name});
-        entry.set("effect", Value{std::string(approximation_effect_name(record.effect))});
+        entry.set("effect", Value{approximation_effect_name(record.effect)});
         entry.set("tolerance", Value{record.tolerance});
         entry.set("bound", Value{record.bound});
-        entry.set("origin", Value{std::string(approximation_origin_name(record.origin))});
+        entry.set("origin", Value{approximation_origin_name(record.origin)});
         entry.set("outputs", to_array(record.outputs));
         entry.set("spaces", to_array(record.spaces));
         entry.set("setup", Value{record.setup});
@@ -876,7 +884,7 @@ Object write_structure(Graph const &graph) {
     });
 
     Object out;
-    out.set(std::string(key_version), Value{std::string(graph_ir_schema_version)});
+    out.set(std::string(key_version), Value{graph_ir_schema_version});
     out.set("name", Value{graph.name()});
     out.set("manifest", Value{std::move(manifest)});
     out.set("spaces", Value{std::move(spaces)});
@@ -894,7 +902,7 @@ Object write_structure(Graph const &graph) {
 Value write_document(Graph const &graph, SaveOptions const &options) {
     Object const structure = write_structure(graph);
     Object       out;
-    out.set(std::string(key_version), Value{std::string(graph_ir_schema_version)});
+    out.set(std::string(key_version), Value{graph_ir_schema_version});
     out.set(std::string(key_provenance), write_provenance(graph, options));
     for (std::size_t i = 0; i < structure.size(); ++i) {
         if (structure.key_at(i) == key_version) {

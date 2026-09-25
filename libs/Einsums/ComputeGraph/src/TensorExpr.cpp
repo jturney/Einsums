@@ -1040,12 +1040,6 @@ struct GemmShapeKey {
     auto operator<=>(GemmShapeKey const &) const = default;
 };
 
-/// The BLAS scalar tag naming @p dtype, which is what the grouped batched
-/// descriptor dispatches its typed plan on.
-BlasScalar blas_scalar_from(packed_gemm::ScalarType dtype) {
-    return detail::dispatch_scalar_type(dtype, []<typename T>(T /*tag*/) { return blas_scalar_of<T>(); });
-}
-
 RaiseFailure lower_refusal(ExprStatement const &statement, std::string reason, std::string detail = {}) {
     return RaiseFailure{.reason = std::move(reason),
                         .detail = detail.empty() ? statement.target_name : fmt::format("'{}': {}", statement.target_name, detail)};
@@ -1146,7 +1140,7 @@ expected<Node, RaiseFailure> lower_grouped_gemm(Graph &graph, TensorExpr const &
 
     GroupedBatchedGemmDescriptor desc;
     desc.total  = static_cast<int>(count);
-    desc.scalar = blas_scalar_from(dtype);
+    desc.scalar = detail::blas_scalar_from(dtype);
     desc.groups.reserve(order.size());
     desc.labels.reserve(order.size());
     char const ta    = conj_a ? 'C' : (trans_a ? 'T' : 'N');

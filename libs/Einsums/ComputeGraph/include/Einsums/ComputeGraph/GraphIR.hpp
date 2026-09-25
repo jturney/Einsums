@@ -350,6 +350,13 @@ struct SaveOptions {
  */
 [[nodiscard]] EINSUMS_EXPORT expected<void, GraphError> validate_graph_ir(std::string const &path);
 
+/// @brief As @ref validate_graph_ir, resolving index spaces against @p registry.
+/// @param[in] path The file to check.
+/// @param[in] registry The registry to resolve space names in.
+/// @return Nothing, or every problem found.
+/// @versionadded{2.0.0}
+[[nodiscard]] EINSUMS_EXPORT expected<void, GraphError> validate_graph_ir(std::string const &path, SpaceRegistry &registry);
+
 /**
  * @brief Check ``einsums_graph_ir`` text, reporting every problem.
  * @param[in] text The document.

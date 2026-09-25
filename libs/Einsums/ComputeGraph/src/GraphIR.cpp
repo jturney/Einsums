@@ -227,11 +227,19 @@ expected<void, GraphError> validate_graph_ir_string(std::string_view text, Space
 }
 
 expected<void, GraphError> validate_graph_ir(std::string const &path) {
+    return validate_graph_ir(path, global_space_registry());
+}
+
+expected<void, GraphError> validate_graph_ir(std::string const &path, SpaceRegistry &registry) {
     auto text = read_file(path, "validate_graph_ir");
     if (!text) {
         return unexpected(text.error());
     }
-    return validate_graph_ir_string(*text);
+    auto done = validate_graph_ir_string(*text, registry);
+    if (!done) {
+        return unexpected(GraphError{.kind = done.error().kind, .message = fmt::format("{} (reading '{}')", done.error().message, path)});
+    }
+    return done;
 }
 
 // ── The Python spelling ────────────────────────────────────────────────────
@@ -243,13 +251,7 @@ void save_graph_file(Graph const &graph, std::string const &path) {
 }
 
 Graph *load_graph_file(std::string const &path) {
-    auto graph = load_graph(path);
-    if (!graph) {
-        EINSUMS_THROW_EXCEPTION(std::runtime_error, "{}", graph.error().message);
-    }
-    // A raw pointer because the Python binding takes ownership of it; there is
-    // no C++ caller for this overload.
-    return new Graph(std::move(*graph)); // NOLINT(cppcoreguidelines-owning-memory)
+    return load_graph_file_into(path, global_space_registry());
 }
 
 Graph *load_graph_file_into(std::string const &path, SpaceRegistry &registry) {
@@ -257,7 +259,8 @@ Graph *load_graph_file_into(std::string const &path, SpaceRegistry &registry) {
     if (!graph) {
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "{}", graph.error().message);
     }
-    // As load_graph_file: a raw pointer because the Python binding takes ownership.
+    // A raw pointer because the Python binding takes ownership of it; there is
+    // no C++ caller for this overload.
     return new Graph(std::move(*graph)); // NOLINT(cppcoreguidelines-owning-memory)
 }
 
