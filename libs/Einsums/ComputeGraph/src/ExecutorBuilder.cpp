@@ -5,6 +5,7 @@
 
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
+#include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
@@ -1236,6 +1237,10 @@ std::shared_ptr<GemmHint> derive_gemm_hint(packed_gemm::ScalarType dtype, packed
 }
 
 std::string reconstruction_blocker(Node const &node) {
+    // A Custom node carrying a registered descriptor is rebuilt by its codec.
+    if (node.kind == OpKind::Custom && find_descriptor_codec(node.op_data.name()) != nullptr) {
+        return {};
+    }
     if (!is_reconstructible(node.kind)) {
         // The batched family is held back for a reason worth stating, because "not yet" reads
         // as an oversight and this one is a decision. A grouped batch partitions its members
@@ -1444,6 +1449,14 @@ std::vector<SerializabilityBlocker> Graph::serializability_report() const {
 
 std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype, std::size_t rank, OpData const &desc, Graph &graph,
                                      std::span<TensorId const> inputs, std::span<TensorId const> outputs) {
+    // A descriptor declared outside this library is built by the codec registered for it, which
+    // sets its own conventions for the operand lists and the rank.
+    if (kind == OpKind::Custom) {
+        if (DescriptorCodec const *codec = find_descriptor_codec(desc.name()); codec != nullptr) {
+            return codec->build(desc, graph, dtype, rank, inputs, outputs);
+        }
+    }
+
     // Rank is keyed on the DESTINATION, and several kinds legitimately have a
     // rank-0 one: an einsum whose spec has no C indices ("<- i ; i"), a dot and
     // a trace writing a registered scalar, a write_param, whose destination is a

@@ -17,6 +17,7 @@
 /// problem it has. Nothing in this file throws on malformed input; the only
 /// export is @ref read_document.
 
+#include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
 #include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
@@ -34,6 +35,7 @@
 #include <cmath>
 #include <complex>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -846,6 +848,32 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
             node.body = std::make_shared<IrFragment>(read_fragment(*body, fmt::format("{}.body", path), problems, gates, registry));
         }
         node.descriptor = std::move(desc);
+        return;
+    }
+    case OpKind::Custom: {
+        // A descriptor declared outside this library, read by the codec registered for it. The
+        // codec reads its fields with take(), so the document-wide unconsumed-key audit covers
+        // them as it covers this library's own.
+        std::string const      name  = read_string(*object, "name", path, problems, value.position);
+        DescriptorCodec const *codec = find_descriptor_codec(name);
+        if (codec == nullptr) {
+            note(problems, fmt::format("{}.name", path), value.position,
+                 fmt::format("no descriptor is registered under '{}'; register its codec (register_descriptor) before loading", name));
+            return;
+        }
+        Value const *fields = field(*object, "value", path, problems, value.position);
+        if (fields == nullptr) {
+            return;
+        }
+        Object const *fields_object = as_object(*fields, fmt::format("{}.value", path), problems);
+        if (fields_object == nullptr) {
+            return;
+        }
+        try {
+            node.descriptor = codec->read(*fields_object);
+        } catch (std::exception const &error) {
+            note(problems, fmt::format("{}.value", path), fields->position, fmt::format("descriptor '{}': {}", name, error.what()));
+        }
         return;
     }
     default:

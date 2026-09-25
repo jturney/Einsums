@@ -44,7 +44,11 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <span>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -110,6 +114,61 @@ std::string patched(std::string text, std::string_view from, std::string_view to
     INFO("looking for '" << from << "'");
     REQUIRE(at != std::string::npos);
     return text.replace(at, from.size(), to);
+}
+
+/// A descriptor declared outside the library, as a foreign tensor backend would declare one:
+/// ``C := A + amount``, element by element.
+struct TestShiftDescriptor {
+    static constexpr std::string_view descriptor_name = "saveload_test.Shift";
+    double                            amount{0.0};
+};
+
+/// Register TestShiftDescriptor's codec once per process, whatever order the cases run in.
+void register_test_shift_descriptor() {
+    static bool const registered = [] {
+        cg::register_descriptor<TestShiftDescriptor>(
+            [](TestShiftDescriptor const &desc) {
+                cg::json::Object fields;
+                fields.set("amount", cg::json::Value{desc.amount});
+                return cg::json::Value{std::move(fields)};
+            },
+            [](cg::json::Object const &fields) {
+                cg::json::Value const *amount = fields.take("amount");
+                if (amount == nullptr || !amount->is_number()) {
+                    throw std::invalid_argument("'amount' must be a number");
+                }
+                return TestShiftDescriptor{.amount = amount->as_double()};
+            },
+            [](TestShiftDescriptor const &desc, cg::Graph &graph, packed_gemm::ScalarType, std::size_t,
+               std::span<cg::TensorId const> inputs, std::span<cg::TensorId const> outputs) -> std::function<void()> {
+                cg::OperandAccessor const a = cg::resolve_operand(graph, inputs[0], "saveload_test.Shift", "A");
+                cg::OperandAccessor const c = cg::resolve_operand(graph, outputs[0], "saveload_test.Shift", "C");
+                return [a, c, amount = desc.amount]() {
+                    auto const *src = a.impl<double>();
+                    auto       *dst = c.impl<double>();
+                    for (size_t i = 0; i < src->size(); ++i) {
+                        dst->data()[i] = src->data()[i] + amount;
+                    }
+                };
+            });
+        return true;
+    }();
+    (void)registered;
+}
+
+/// A one-node graph C := A + 2.5 through the registered descriptor.
+cg::Graph capture_shift(Tensor<double, 2> const &A, Tensor<double, 2> &C) {
+    register_test_shift_descriptor();
+    cg::Graph graph("registered_descriptor");
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &ctx  = cg::CaptureContext::current();
+        cg::TensorId const     a_id = ctx.get_slot(A).first;
+        cg::TensorId const     c_id = ctx.get_slot(C).first;
+        ctx.record_built(cg::OpKind::Custom, "shift", packed_gemm::ScalarType::Float64, 2, TestShiftDescriptor{.amount = 2.5},
+                         std::span<cg::TensorId const>{&a_id, 1}, std::span<cg::TensorId const>{&c_id, 1}, {a_id}, {c_id});
+    }
+    return graph;
 }
 
 } // namespace
@@ -1110,6 +1169,66 @@ TEST_CASE("SaveLoad - a graph without operators writes no operators key", "[Comp
     CHECK(desc->operators.empty());
 }
 
+TEST_CASE("SaveLoad - a registered descriptor saves, loads and rebuilds", "[ComputeGraph][SaveLoad][DescriptorRegistry]") {
+    // A backend's own descriptor rides on a Custom node. With its codec registered the node is
+    // reconstructible like any of the library's: the file names the descriptor and carries its
+    // fields, and the load rebuilds the executor from the codec rather than from a closure.
+    auto A = create_random_tensor<double>("A", 3, 4);
+    auto C = create_zero_tensor<double>("C", 3, 4);
+
+    cg::Graph graph = capture_shift(A, C);
+    graph.execute();
+    for (size_t i = 0; i < A.size(); ++i) {
+        REQUIRE(C.data()[i] == A.data()[i] + 2.5);
+    }
+
+    std::string const saved = must_save(graph);
+    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+        std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_8_0_registered_descriptor.eig.json", std::ios::binary);
+        out << saved;
+    }
+    CHECK(saved.find("\"saveload_test.Shift\"") != std::string::npos);
+
+    cg::Graph   loaded = must_load(saved);
+    auto const &node   = loaded.nodes()[0];
+    CHECK(node.kind == cg::OpKind::Custom);
+    auto const *desc = node.op_data.get_if<TestShiftDescriptor>();
+    REQUIRE(desc != nullptr);
+    CHECK(desc->amount == 2.5);
+
+    auto A2 = create_zero_tensor<double>("A2", 3, 4);
+    auto C2 = create_zero_tensor<double>("C2", 3, 4);
+    std::memcpy(A2.data(), A.data(), A.size() * sizeof(double));
+    loaded.bind("A", A2, "C", C2);
+    loaded.execute();
+    CHECK(bytes_of(C2) == bytes_of(C));
+
+    SECTION("an unregistered descriptor is refused by name") {
+        std::string text = saved;
+        auto const  at   = text.find("saveload_test.Shift");
+        REQUIRE(at != std::string::npos);
+        text.replace(at, std::string_view{"saveload_test.Shift"}.size(), "saveload_test.Unregistered");
+        auto const reloaded = cg::load_graph_string(text);
+        REQUIRE_FALSE(reloaded.has_value());
+        CHECK_THAT(reloaded.error().message,
+                   Catch::Matchers::ContainsSubstring("no descriptor is registered under 'saveload_test.Unregistered'"));
+    }
+
+    SECTION("names must be qualified and unique") {
+        auto const noop        = cg::DescriptorCodec{.write = [](cg::OpData const &) { return cg::json::Value{cg::json::Object{}}; },
+                                                     .read  = [](cg::json::Object const &) { return cg::OpData{}; },
+                                                     .build = [](cg::OpData const &, cg::Graph &, packed_gemm::ScalarType, std::size_t,
+                                                                 std::span<cg::TensorId const>,
+                                                                 std::span<cg::TensorId const>) { return std::function<void()>{[] {}}; }};
+        auto       unqualified = noop;
+        unqualified.name       = "Shift";
+        CHECK_THROWS_WITH(cg::register_descriptor(unqualified), Catch::Matchers::ContainsSubstring("is not qualified"));
+        auto duplicate = noop;
+        duplicate.name = "saveload_test.Shift";
+        CHECK_THROWS_WITH(cg::register_descriptor(duplicate), Catch::Matchers::ContainsSubstring("is already registered"));
+    }
+}
+
 // ── Tier 4: goldens ────────────────────────────────────────────────────────
 
 TEST_CASE("SaveLoad - every checked-in golden still loads", "[ComputeGraph][SaveLoad]") {
@@ -1127,6 +1246,9 @@ TEST_CASE("SaveLoad - every checked-in golden still loads", "[ComputeGraph][Save
     // program has declared. Registering it here rather than relying on another case having done
     // so keeps the corpus loadable whatever order the cases run in.
     cg::global_space_registry().register_space(cg::IndexSpace{.name = "golden_partial_aux", .scale_symbol = "a"});
+    // Likewise for a golden that carries a descriptor declared outside the library: the file
+    // names it, and the process has to have registered its codec.
+    register_test_shift_descriptor();
 
     size_t loaded_count = 0;
     for (auto const &entry : std::filesystem::directory_iterator(directory)) {

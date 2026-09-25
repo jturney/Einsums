@@ -85,6 +85,7 @@
 #include <Einsums/ComputeGraph/BisectDriver.hpp>
 #include <Einsums/ComputeGraph/Blueprints.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
+#include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
 #include <Einsums/ComputeGraph/Diis.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/ElementOps.hpp>

@@ -16,6 +16,7 @@
 /// `save_graph` emits. `Frame`, the dense per-fragment numbering the whole pass
 /// threads through itself, never leaves this translation unit.
 
+#include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
 #include <Einsums/ComputeGraph/Detail/Json.hpp>
 #include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
@@ -447,6 +448,17 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         // about one process holding one bound problem, and a loaded graph has neither: it
         // arrives having fitted nothing, which is what a default-constructed state says.
         out.set("body", write_fragment(*desc.body, root, &frame, fmt::format("setup({})", node.label)));
+        return Value{std::move(out)};
+    }
+    case OpKind::Custom: {
+        // A descriptor declared outside this library, written by the codec registered for it.
+        // The name comes first so a reader knows whose codec to hand the fields to.
+        DescriptorCodec const *codec = find_descriptor_codec(node.op_data.name());
+        if (codec == nullptr) {
+            refuse(node, "kind", "is a Custom node whose descriptor has no registered codec; register one with register_descriptor");
+        }
+        out.set("name", Value{std::string(node.op_data.name())});
+        out.set("value", codec->write(node.op_data));
         return Value{std::move(out)};
     }
     default:

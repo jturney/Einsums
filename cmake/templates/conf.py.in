@@ -114,7 +114,7 @@ nitpick_ignore_regex = {(r"c(pp)?:identifier", r"size_t"),
     (r"cpp:identifier",
      r"(compute_graph|packed_gemm|task_pool|linear_algebra|tensor_base|"
      r"string_util|fft|simd|hashes|blas|profile|print|comm|hptt|execution|cg|"
-     r"cl|config|option|design_pats|v1|v1::index)$"),
+     r"cl|config|option|design_pats|json|v1|v1::index)$"),
     # Dependent member types of our template classes (``flat_map::iterator``,
     # ``BufferAllocator::size_type``, ``TiledTensor::map_type``, ...): the
     # standard container/STL-style member aliases plus the project's own

@@ -38,6 +38,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/GraphIR.hpp
     Einsums/ComputeGraph/InterfaceManifest.hpp
     Einsums/ComputeGraph/LuPivots.hpp
+    Einsums/ComputeGraph/DescriptorRegistry.hpp
     Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp
     Einsums/ComputeGraph/Detail/DenseElementTransform.hpp
     Einsums/ComputeGraph/Detail/ErasedEinsum.hpp
@@ -123,6 +124,7 @@ set(ComputeGraphSources
     ElementOps.cpp
     Executor.cpp
     StringDispatch.cpp
+    DescriptorRegistry.cpp
     ErasedEinsum.cpp
     Operations/Batched.cpp
     Operations/Blas.cpp

@@ -99,6 +99,13 @@
  * means, since an older reader refuses the whole file by version rather than
  * mistaking the node for something else.
  *
+ * @ref OpKind::Custom nodes arrived at 1.8.0, for a descriptor declared outside
+ * this library and registered with @ref register_descriptor. The descriptor is
+ * written as its @c descriptor_name under ``name`` and the codec's fields under
+ * ``value``; a reader without that codec registered refuses the node naming the
+ * descriptor, rather than loading a node it cannot rebuild. As with a new kind,
+ * an older reader refuses the whole file by version.
+ *
  * @par The hash domain
  * @ref Graph::content_hash digests the canonical bytes of that object with
  * ``provenance`` REMOVED and nothing else changed. Provenance is therefore
@@ -232,7 +239,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.7.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.8.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}
