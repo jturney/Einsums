@@ -121,8 +121,7 @@ bool ProvenancePropagation::run(Graph &graph) {
 
         graph.annotate_tag(node.outputs[0], source->tag);
         ++_num_propagated;
-        report(2, fmt::format("carried tag '{}' from '{}' to '{}' across {}", source->tag.name, source->name, target->name,
-                              op_kind_name(node.kind)));
+        report(2, fmt::format("carried tag '{}' from '{}' to '{}' across {}", source->tag.name, source->name, target->name, node.kind));
     }
 
     if (_num_propagated != 0) {

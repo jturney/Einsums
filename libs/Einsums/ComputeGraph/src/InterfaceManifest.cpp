@@ -451,7 +451,7 @@ void Graph::bind_scalar_impl(std::string const &name, void *storage, packed_gemm
     }
     if (dtype != entry.dtype) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': bind_scalar('{}'): dtype mismatch (given {}, interface declares {})",
-                                _name, name, scalar_type_name(dtype), scalar_type_name(entry.dtype));
+                                _name, name, dtype, entry.dtype);
     }
     if (storage == nullptr) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': bind_scalar('{}'): the storage pointer is null", _name, name);
@@ -483,7 +483,7 @@ void Graph::validate_bind_shape(ManifestEntry const &entry, packed_gemm::ScalarT
                                 std::vector<std::size_t> const &dims) const {
     if (dtype != entry.dtype) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': bind('{}'): dtype mismatch (given {}, interface declares {})", _name,
-                                entry.name, scalar_type_name(dtype), scalar_type_name(entry.dtype));
+                                entry.name, dtype, entry.dtype);
     }
     if (rank != entry.rank) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': bind('{}'): rank mismatch (given {}, interface declares {})", _name,

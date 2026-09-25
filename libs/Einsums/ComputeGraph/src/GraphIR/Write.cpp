@@ -195,7 +195,7 @@ class Frame {
 /// Refuse, naming the node and the field, which is the shape every save refusal
 /// takes: a user can only act on a message that says which node and which arm.
 [[noreturn]] void refuse(Node const &node, std::string_view field, std::string_view why) {
-    throw SaveRefusal(fmt::format("node {} ('{}', {}): {} {}", node.id, node.label, op_kind_name(node.kind), field, why));
+    throw SaveRefusal(fmt::format("node {} ('{}', {}): {} {}", node.id, node.label, node.kind, field, why));
 }
 
 Value write_bound_expr(BoundExpr const &expr, Node const &node, std::string_view field) {

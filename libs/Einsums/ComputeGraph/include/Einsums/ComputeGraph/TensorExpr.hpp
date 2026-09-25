@@ -194,6 +194,11 @@ enum class TermKind : std::uint8_t {
 /// @return One of ``leaf``, ``contraction``, ``elementwise``, ``scale``, ``sum``.
 [[nodiscard]] EINSUMS_EXPORT std::string_view term_kind_name(TermKind kind);
 
+/// @c fmt formats a @ref TermKind as its name, so ``fmt::format("{}", value)`` needs no call to @ref term_kind_name.
+[[nodiscard]] inline std::string_view format_as(TermKind value) {
+    return term_kind_name(value);
+}
+
 /**
  * @brief One node of the expression arena.
  *

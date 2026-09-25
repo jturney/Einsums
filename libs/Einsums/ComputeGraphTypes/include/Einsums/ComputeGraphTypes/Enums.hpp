@@ -323,6 +323,12 @@ inline std::string_view op_kind_name(OpKind kind) {
     return "Unknown";
 }
 
+// fmt formats an OpKind as its name through this, found by argument-dependent lookup. Left out of the API
+// docs, which document format_as once, on the ComputeGraph page.
+[[nodiscard]] inline std::string_view format_as(OpKind value) {
+    return op_kind_name(value);
+}
+
 /**
  * @brief The @ref OpKind spelled @p name, if there is one.
  * @param[in] name A spelling @ref op_kind_name produces.
@@ -369,6 +375,12 @@ inline std::string_view op_kind_name(OpKind kind) {
     return "materialized";
 }
 
+// fmt formats an AllocState as its name through this, found by argument-dependent lookup. Left out of the API
+// docs, which document format_as once, on the ComputeGraph page.
+[[nodiscard]] inline std::string_view format_as(AllocState value) noexcept {
+    return alloc_state_name(value);
+}
+
 /**
  * @brief The @ref AllocState spelled @p name, if there is one.
  * @param[in] name A spelling @ref alloc_state_name produces.
@@ -402,6 +414,12 @@ inline std::string_view op_kind_name(OpKind kind) {
         return "from_disk";
     }
     return "none";
+}
+
+// fmt formats an InitKind as its name through this, found by argument-dependent lookup. Left out of the API
+// docs, which document format_as once, on the ComputeGraph page.
+[[nodiscard]] inline std::string_view format_as(InitKind value) noexcept {
+    return init_kind_name(value);
 }
 
 /**

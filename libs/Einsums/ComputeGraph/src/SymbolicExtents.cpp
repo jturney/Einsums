@@ -527,7 +527,7 @@ void Graph::prepare_bind_solution(DimSolution const &solution) const {
                                     "Graph '{}': this bind changes an extent, but node '{}' is a {} whose group shapes were planned "
                                     "for the previous problem. Batching is a resource decision, never saved and re-derived on load: "
                                     "bind before apply(), or re-run the batching passes after binding",
-                                    _name, node.label, op_kind_name(node.kind));
+                                    _name, node.label, node.kind);
         }
     }
 }

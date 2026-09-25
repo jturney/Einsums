@@ -288,7 +288,7 @@ std::string Graph::can_approximate(ApproximationRecord const &candidate) const {
     if (budget_effect != candidate.effect) {
         return fmt::format("pass '{}' bounds itself {}, and this graph's accuracy budget is stated {}; a budget in other units is not a "
                            "budget this pass can spend against",
-                           candidate.pass_name, approximation_effect_name(candidate.effect), approximation_effect_name(budget_effect));
+                           candidate.pass_name, candidate.effect, budget_effect);
     }
 
     // A budget IS the one place mixed effects have to be refused, and only because of what a
@@ -302,8 +302,7 @@ std::string Graph::can_approximate(ApproximationRecord const &candidate) const {
         }
         return fmt::format("pass '{}' would be spent against a {} budget, but '{}' has already been applied to the same outputs with a "
                            "{} bound, which that budget does not cap and cannot; clear the budget or state it in the other units",
-                           candidate.pass_name, approximation_effect_name(budget_effect), existing.pass_name,
-                           approximation_effect_name(existing.effect));
+                           candidate.pass_name, budget_effect, existing.pass_name, existing.effect);
     }
 
     // Checked per named output rather than graph-wide, so two passes over DISJOINT outputs
@@ -313,8 +312,8 @@ std::string Graph::can_approximate(ApproximationRecord const &candidate) const {
         double const composed = compose_approximation(candidate.effect, accuracy_spent(candidate.effect, target), candidate.bound);
         if (composed > budget) {
             return fmt::format("pass '{}' would take {} to {:g} on {}, over this graph's budget of {:g}", candidate.pass_name,
-                               approximation_effect_name(candidate.effect), composed,
-                               target.empty() ? std::string{"every output"} : fmt::format("'{}'", target), budget);
+                               candidate.effect, composed, target.empty() ? std::string{"every output"} : fmt::format("'{}'", target),
+                               budget);
         }
     }
     return {};

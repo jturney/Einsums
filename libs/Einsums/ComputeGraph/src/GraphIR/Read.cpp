@@ -877,9 +877,9 @@ void read_descriptor(IrNode &node, Value const &value, std::string const &path, 
         return;
     }
     default:
-        note(problems, path, value.position,
-             fmt::format("op kind '{}' is not one this schema can describe; the reconstructible set is what a file may contain",
-                         op_kind_name(node.kind)));
+        note(
+            problems, path, value.position,
+            fmt::format("op kind '{}' is not one this schema can describe; the reconstructible set is what a file may contain", node.kind));
         return;
     }
 }

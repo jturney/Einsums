@@ -344,7 +344,7 @@ RuntimeState Runtime::state() const {
 }
 
 void Runtime::state(RuntimeState state) {
-    EINSUMS_LOG_INFO("Runtime state changed from {} to {}", _state, state);
+    EINSUMS_LOG_INFO("Runtime state changed from {} to {}", _state.load(), state);
     _state = state;
 }
 

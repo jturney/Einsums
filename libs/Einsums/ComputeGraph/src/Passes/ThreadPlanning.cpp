@@ -557,7 +557,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
         // The census a "where does the time go" question is answered from:
         // every node's serial estimate, where it came from, and the curve that
         // will price its widening. Level 3 because it is one line per node.
-        report(3, fmt::format("node '{}' [{}] t1 {:.1f} us {} ({}, {} bytes)", node.label, op_kind_name(node.kind), c.t1_us,
+        report(3, fmt::format("node '{}' [{}] t1 {:.1f} us {} ({}, {} bytes)", node.label, node.kind, c.t1_us,
                               measured ? "measured" : "model", to_string(c.family), c.bytes));
 
         // Settle the route before the widths, and only where a width could have

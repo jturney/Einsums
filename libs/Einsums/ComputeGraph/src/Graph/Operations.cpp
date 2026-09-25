@@ -69,7 +69,7 @@ void Graph::update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorSca
         if (desc == nullptr) {
             EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                     "Graph '{}': node {} ({}) is not an einsum; update_prefactors only applies to einsum nodes", _name,
-                                    node_id, op_kind_name(node.kind));
+                                    node_id, node.kind);
         }
         // Keep both prefactor sources in sync: the descriptor snapshot
         // (read by GPU dispatch and analysis passes) and the shared

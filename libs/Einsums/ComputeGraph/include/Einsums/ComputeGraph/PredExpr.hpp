@@ -92,6 +92,11 @@ enum class CmpOp : std::uint8_t {
     return "eq";
 }
 
+/// @c fmt formats a @ref CmpOp as its name, so ``fmt::format("{}", value)`` needs no call to @ref cmp_op_name.
+[[nodiscard]] inline std::string_view format_as(CmpOp value) noexcept {
+    return cmp_op_name(value);
+}
+
 /**
  * @brief The @ref CmpOp spelled @p name, if there is one.
  * @param[in] name A spelling @ref cmp_op_name produces.

@@ -1131,10 +1131,10 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 // key, and a key that carried the rung would count one refusal as four.
                 note_skip("the decomposed form is not symbolically cheaper",
                           fmt::format("on '{}': {} vs {}, decided by {}", tagged_name, after.flops.to_string(ctx.registry),
-                                      before.flops.to_string(ctx.registry), compare_rung_name(verdict.rung)));
+                                      before.flops.to_string(ctx.registry), verdict.rung));
                 continue;
             }
-            report(2, fmt::format("'{}': the decomposed form is cheaper by {}", tagged_name, compare_rung_name(verdict.rung)));
+            report(2, fmt::format("'{}': the decomposed form is cheaper by {}", tagged_name, verdict.rung));
 
             // The bound-extent veto applies only where the capture extents ARE the problem
             // size. An axis annotated symbolic is one a later bind may resize, so a number
@@ -1157,7 +1157,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 }
                 report(2, fmt::format("the extent veto abstains on '{}': a symbolic axis makes the captured size a "
                                       "placeholder, so the verdict by {} stands alone ({})",
-                                      tagged_name, compare_rung_name(verdict.rung), measured));
+                                      tagged_name, verdict.rung, measured));
             } else if (before_flops.has_value() && after_flops.has_value() && *after_flops >= *before_flops) {
                 note_skip("the decomposed form is not cheaper at the extents this graph holds",
                           fmt::format("on '{}': {:g} vs {:g} flops", tagged_name, *after_flops, *before_flops));
@@ -1685,8 +1685,7 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
         if (verdict.order >= 0) {
             note_skip("the fit and the quadrature together are not symbolically cheaper than the region they replace",
                       fmt::format("'{}' on '{}': {} vs {}, decided by {}", provider->name(), tagged_name,
-                                  after.flops.to_string(ctx.registry), before.flops.to_string(ctx.registry),
-                                  compare_rung_name(verdict.rung)));
+                                  after.flops.to_string(ctx.registry), before.flops.to_string(ctx.registry), verdict.rung));
             continue;
         }
         ExtentLookup const extent_of    = table.lookup();
@@ -1695,7 +1694,7 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
         if (any_symbolic_extent) {
             report(2, fmt::format("the extent veto abstains on '{}' ({}): a symbolic axis makes the captured size a "
                                   "placeholder, so the verdict by {} stands alone",
-                                  tagged_name, provider->name(), compare_rung_name(verdict.rung)));
+                                  tagged_name, provider->name(), verdict.rung));
         } else if (before_flops.has_value() && after_flops.has_value() && *after_flops >= *before_flops) {
             note_skip("the fit and the quadrature together are not cheaper at the extents this graph holds",
                       fmt::format("'{}' on '{}': {:g} vs {:g} flops", provider->name(), tagged_name, *after_flops, *before_flops));

@@ -48,6 +48,11 @@ enum class APIARY_EXPOSE APIARY_MODULE("graph") CrossSpaceSeverity : std::uint8_
     return "note";
 }
 
+/// @c fmt formats a @ref CrossSpaceSeverity as its name, so ``fmt::format("{}", value)`` needs no call to @ref cross_space_severity_name.
+[[nodiscard]] inline std::string_view format_as(CrossSpaceSeverity value) noexcept {
+    return cross_space_severity_name(value);
+}
+
 /**
  * @brief One index letter of one contraction binding two different index spaces.
  *

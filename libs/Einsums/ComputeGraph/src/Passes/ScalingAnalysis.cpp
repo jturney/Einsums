@@ -110,7 +110,7 @@ bool ScalingAnalysis::run(Graph &graph) {
 
     for (auto const &node : graph.nodes()) {
         if (node.kind != OpKind::Einsum) {
-            note_skip("not a contraction node", fmt::format("node {} is a {}", node.id, op_kind_name(node.kind)));
+            note_skip("not a contraction node", fmt::format("node {} is a {}", node.id, node.kind));
             continue;
         }
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();

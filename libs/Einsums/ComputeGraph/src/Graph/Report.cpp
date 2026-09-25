@@ -102,7 +102,7 @@ void Graph::print_timing_report(std::ostream &os) const {
     os << fmt::format("Timing report for graph '{}' ({} nodes, {:.3f} ms total):\n", _name, sorted.size(), total);
     for (auto const &t : sorted) {
         double pct = (total > 0) ? 100.0 * t.duration_ms / total : 0.0;
-        os << fmt::format("  {:8.3f} ms ({:5.1f}%)  [{}] {} ({})\n", t.duration_ms, pct, t.id, t.label, op_kind_name(t.kind));
+        os << fmt::format("  {:8.3f} ms ({:5.1f}%)  [{}] {} ({})\n", t.duration_ms, pct, t.id, t.label, t.kind);
     }
 }
 
@@ -251,7 +251,7 @@ void Graph::print_summary(std::ostream &os) const {
 
     os << fmt::format("Graph '{}': {} nodes, {} tensors\n", _name, _nodes.size(), _tensors.size());
     for (auto const &node : _nodes) {
-        os << fmt::format("  [{}] {} ({})\n", node.id, node.label, op_kind_name(node.kind));
+        os << fmt::format("  [{}] {} ({})\n", node.id, node.label, node.kind);
         if (!node.inputs.empty()) {
             os << fmt::format("    inputs: {}\n", name_list(node.inputs));
         }

@@ -1057,6 +1057,11 @@ enum class ParamSourceType : std::uint8_t {
  */
 [[nodiscard]] EINSUMS_EXPORT std::string_view param_source_type_name(ParamSourceType type) noexcept;
 
+/// @c fmt formats a @ref ParamSourceType as its name, so ``fmt::format("{}", value)`` needs no call to @ref param_source_type_name.
+[[nodiscard]] inline std::string_view format_as(ParamSourceType value) noexcept {
+    return param_source_type_name(value);
+}
+
 /**
  * @brief The @ref ParamSourceType spelled @p name, if there is one.
  * @param[in] name A spelling @ref param_source_type_name produces.

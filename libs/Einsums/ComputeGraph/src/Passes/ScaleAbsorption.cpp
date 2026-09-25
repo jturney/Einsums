@@ -327,9 +327,9 @@ bool ScaleAbsorption::run(Graph &graph) {
             remove[sc] = true;
             ++_num_absorbed;
             EINSUMS_LOG_INFO("ScaleAbsorption: removed dead scale({}) of a tensor overwritten by {} node {}", scale_factor,
-                             op_kind_name(nodes[writer].kind), nodes[writer].id);
+                             nodes[writer].kind, nodes[writer].id);
             report(2, fmt::format("remove dead scale({}); {} node {} overwrites the tensor without reading it", scale_factor,
-                                  op_kind_name(nodes[writer].kind), nodes[writer].id));
+                                  nodes[writer].kind, nodes[writer].id));
             continue;
         }
 
@@ -372,9 +372,9 @@ bool ScaleAbsorption::run(Graph &graph) {
             // initial contents (the scale is gone) but is exact thanks to the
             // fold; waive the program-order guard for exactly that read.
             _compensated.emplace_back(nodes[idx].id, scaled_tensor);
-            EINSUMS_LOG_INFO("ScaleAbsorption: folded scale({}) into {} node {} ({} prefactor)", scale_factor,
-                             op_kind_name(nodes[idx].kind), nodes[idx].id, fold_site_name(site));
-            report(2, fmt::format("fold scale({}) into {} node {} {} prefactor", scale_factor, op_kind_name(nodes[idx].kind), nodes[idx].id,
+            EINSUMS_LOG_INFO("ScaleAbsorption: folded scale({}) into {} node {} ({} prefactor)", scale_factor, nodes[idx].kind,
+                             nodes[idx].id, fold_site_name(site));
+            report(2, fmt::format("fold scale({}) into {} node {} {} prefactor", scale_factor, nodes[idx].kind, nodes[idx].id,
                                   fold_site_name(site)));
         }
         remove[sc] = true;

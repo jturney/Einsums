@@ -116,6 +116,7 @@ set(ComputeGraphTests
     RegionIdentity.cpp
     RecursionPlumbing.cpp
     EagerParityGaps.cpp
+    EnumFormatting.cpp
     Gather.cpp
     RuntimeTensorEinsum.cpp
     RuntimeTensorLAPACK.cpp

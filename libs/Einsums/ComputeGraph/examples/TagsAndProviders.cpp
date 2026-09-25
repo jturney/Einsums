@@ -229,8 +229,7 @@ int einsums_main() {
     for (auto const &record : graph.approximations()) {
         println("  pass      {}", record.pass_name);
         println("  asked for {:.3e}", record.tolerance);
-        println("  bound     {:.3e} ({}, {})", record.bound, cg::approximation_effect_name(record.effect),
-                cg::approximation_origin_name(record.origin));
+        println("  bound     {:.3e} ({}, {})", record.bound, record.effect, record.origin);
         println("  setup     {}", record.setup.empty() ? std::string("(none)") : record.setup);
         println("  outputs   {}", record.outputs.empty() ? std::string("(every output)") : record.outputs.front());
     }

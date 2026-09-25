@@ -221,53 +221,43 @@ EINSUMS_EXPORT RuntimeConfiguration &runtime_config();
 /// @versionadded{1.0.0}
 APIARY_EXPOSE EINSUMS_EXPORT bool is_running();
 
-EINSUMS_NAMESPACE_END()
-
-template <>
-struct fmt::formatter<einsums::RuntimeState> : formatter<string_view> {
-    template <typename FormatContext>
-    auto format(einsums::RuntimeState state, FormatContext &ctx) const {
-        std::string_view name;
-        switch (state) {
-        case einsums::RuntimeState::Invalid:
-            name = "Invalid";
-            break;
-        case einsums::RuntimeState::Initialized:
-            name = "Initialized";
-            break;
-        case einsums::RuntimeState::PreStartup:
-            name = "PreStartup";
-            break;
-        case einsums::RuntimeState::Startup:
-            name = "Startup";
-            break;
-        case einsums::RuntimeState::PreMain:
-            name = "PreMain";
-            break;
-        case einsums::RuntimeState::Starting:
-            name = "Starting";
-            break;
-        case einsums::RuntimeState::Running:
-            name = "Running";
-            break;
-        case einsums::RuntimeState::PreShutdown:
-            name = "PreShutdown";
-            break;
-        case einsums::RuntimeState::Shutdown:
-            name = "Shutdown";
-            break;
-        case einsums::RuntimeState::Stopping:
-            name = "Stopping";
-            break;
-        case einsums::RuntimeState::Terminating:
-            name = "Terminating";
-            break;
-        case einsums::RuntimeState::Stopped:
-            name = "Stopped";
-            break;
-        default:
-            name = "Unknown";
-        }
-        return formatter<string_view>::format(name, ctx);
+/// The name of a runtime state, for diagnostics: ``"Running"``, ``"Stopped"`` and so on, or
+/// ``"Unknown"`` for a value outside the enumeration.
+/// @versionadded{2.0.0}
+[[nodiscard]] constexpr std::string_view runtime_state_name(RuntimeState state) noexcept {
+    switch (state) {
+    case RuntimeState::Invalid:
+        return "Invalid";
+    case RuntimeState::Initialized:
+        return "Initialized";
+    case RuntimeState::PreStartup:
+        return "PreStartup";
+    case RuntimeState::Startup:
+        return "Startup";
+    case RuntimeState::PreMain:
+        return "PreMain";
+    case RuntimeState::Starting:
+        return "Starting";
+    case RuntimeState::Running:
+        return "Running";
+    case RuntimeState::PreShutdown:
+        return "PreShutdown";
+    case RuntimeState::Shutdown:
+        return "Shutdown";
+    case RuntimeState::Stopping:
+        return "Stopping";
+    case RuntimeState::Terminating:
+        return "Terminating";
+    case RuntimeState::Stopped:
+        return "Stopped";
     }
-};
+    return "Unknown";
+}
+
+/// @c fmt formats a @ref RuntimeState as its name, so ``fmt::format("{}", state)`` needs no call to
+/// @ref runtime_state_name.
+[[nodiscard]] constexpr std::string_view format_as(RuntimeState state) noexcept {
+    return runtime_state_name(state);
+}
+
+EINSUMS_NAMESPACE_END()

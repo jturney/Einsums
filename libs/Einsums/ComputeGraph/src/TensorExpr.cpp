@@ -1283,7 +1283,7 @@ expected<Node, RaiseFailure> lower_grouped_elementwise(Graph &graph, TensorExpr 
     Node node;
     node.id      = graph.reserve_node_id();
     node.kind    = term.element_kind;
-    node.label   = statement.origin_label.empty() ? fmt::format("{} x{}", op_kind_name(term.element_kind), count) : statement.origin_label;
+    node.label   = statement.origin_label.empty() ? fmt::format("{} x{}", term.element_kind, count) : statement.origin_label;
     node.outputs = statement.targets;
     node.inputs.reserve((term.operands.size() + 1) * count);
     for (std::size_t i = 0; i < count; ++i) {
@@ -1334,8 +1334,7 @@ expected<Node, RaiseFailure> lower_grouped(Graph &graph, TensorExpr const &expr,
     if (term.kind == TermKind::Elementwise && is_grouped_raisable(term.element_kind)) {
         return lower_grouped_elementwise(graph, expr, statement);
     }
-    return unexpected(
-        lower_refusal(statement, "a grouped term's shape maps onto no grouped kind", fmt::format("a {} term", term_kind_name(term.kind))));
+    return unexpected(lower_refusal(statement, "a grouped term's shape maps onto no grouped kind", fmt::format("a {} term", term.kind)));
 }
 
 } // namespace
@@ -1400,14 +1399,14 @@ expected<void, RaiseFailure> lower_region(Graph &graph, Region const &region, Te
 
         if (term.kind != TermKind::Elementwise) {
             return unexpected(RaiseFailure{.reason = "a term kind has no node form yet",
-                                           .detail = fmt::format("target '{}' is a {}", statement.target_name, term_kind_name(term.kind))});
+                                           .detail = fmt::format("target '{}' is a {}", statement.target_name, term.kind)});
         }
 
         Node node;
-        node.id    = graph.reserve_node_id();
-        node.kind  = term.element_kind;
-        node.label = statement.origin_label.empty() ? fmt::format("{}({})", op_kind_name(term.element_kind), statement.target_name)
-                                                    : statement.origin_label;
+        node.id   = graph.reserve_node_id();
+        node.kind = term.element_kind;
+        node.label =
+            statement.origin_label.empty() ? fmt::format("{}({})", term.element_kind, statement.target_name) : statement.origin_label;
         node.outputs.push_back(statement.target);
         for (auto const operand : term.operands) {
             node.inputs.push_back(expr.at(operand).tensor);

@@ -261,7 +261,7 @@ expected<NodeId, std::string> amplitude_update_writer(Graph const &graph, Tensor
         return unexpected(std::string{"the tensor is accumulated into from something no division in this body produced"});
     }
 
-    return unexpected(fmt::format("the tensor is written by a {}, which is not an amplitude update", op_kind_name(writer->kind)));
+    return unexpected(fmt::format("the tensor is written by a {}, which is not an amplitude update", writer->kind));
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)

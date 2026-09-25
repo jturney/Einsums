@@ -347,7 +347,7 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         try {
             node.execute = build_executor(spec.kind, spec.dtype, spec.rank, node.op_data, graph, node.inputs, node.outputs);
         } catch (std::exception const &error) {
-            throw BuildFailure(fmt::format("node '{}' ({}): {}", spec.label, op_kind_name(spec.kind), error.what()));
+            throw BuildFailure(fmt::format("node '{}' ({}): {}", spec.label, spec.kind, error.what()));
         }
         graph.add_node(std::move(node));
     }
@@ -456,7 +456,7 @@ Graph build_graph(IrDocument const &document, SpaceRegistry &registry) {
         }
         if (derived->direction != entry.direction) {
             throw BuildFailure(fmt::format("interface tensor '{}' is declared '{}' but the rebuilt nodes make it '{}'", entry.name,
-                                           manifest_direction_name(entry.direction), manifest_direction_name(derived->direction)));
+                                           entry.direction, derived->direction));
         }
     }
     if (contract.size() != document.manifest.size()) {

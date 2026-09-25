@@ -78,6 +78,11 @@ enum class PassPhase : std::uint8_t {
  */
 [[nodiscard]] EINSUMS_EXPORT std::string_view pass_phase_name(PassPhase phase);
 
+/// @c fmt formats a @ref PassPhase as its name, so ``fmt::format("{}", value)`` needs no call to @ref pass_phase_name.
+[[nodiscard]] inline std::string_view format_as(PassPhase value) {
+    return pass_phase_name(value);
+}
+
 /**
  * @brief How close to the unoptimized answer a pass's output has to be.
  *
@@ -134,6 +139,11 @@ enum class PassTier : std::uint8_t {
  * @return One of ``bitwise-exact``, ``re-associating``, ``tuning``, ``lossy``.
  */
 [[nodiscard]] EINSUMS_EXPORT std::string_view pass_tier_name(PassTier tier);
+
+/// @c fmt formats a @ref PassTier as its name, so ``fmt::format("{}", value)`` needs no call to @ref pass_tier_name.
+[[nodiscard]] inline std::string_view format_as(PassTier value) {
+    return pass_tier_name(value);
+}
 
 /**
  * @brief The norm-relative gap a pass of @p tier may open, at a dtype whose machine epsilon is

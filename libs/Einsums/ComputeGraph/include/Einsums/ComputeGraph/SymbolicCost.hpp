@@ -378,6 +378,11 @@ enum class CompareRung : std::uint8_t {
 /// @return "ScaleOrder", "TypicalExtent", "BoundExtent" or "Lexicographic".
 [[nodiscard]] EINSUMS_EXPORT std::string_view compare_rung_name(CompareRung rung) noexcept;
 
+/// @c fmt formats a @ref CompareRung as its name, so ``fmt::format("{}", value)`` needs no call to @ref compare_rung_name.
+[[nodiscard]] inline std::string_view format_as(CompareRung value) noexcept {
+    return compare_rung_name(value);
+}
+
 /**
  * @brief Everything @ref compare is allowed to consult.
  *
@@ -509,6 +514,11 @@ enum class CostComponent : std::uint8_t {
 /// @param[in] component The component to name.
 /// @return "Flops", "Traffic" or "Resident".
 [[nodiscard]] EINSUMS_EXPORT std::string_view cost_component_name(CostComponent component) noexcept;
+
+/// @c fmt formats a @ref CostComponent as its name, so ``fmt::format("{}", value)`` needs no call to @ref cost_component_name.
+[[nodiscard]] inline std::string_view format_as(CostComponent value) noexcept {
+    return cost_component_name(value);
+}
 
 /**
  * @brief The symbolic cost of one operation: three polynomials in index-space scales.

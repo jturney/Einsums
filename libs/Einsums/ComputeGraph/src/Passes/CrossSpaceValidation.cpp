@@ -104,7 +104,7 @@ bool CrossSpaceValidation::run(Graph &graph) {
 
     for (auto const &node : graph.nodes()) {
         if (node.kind != OpKind::Einsum) {
-            note_skip("not a contraction node", fmt::format("node {} is a {}", node.id, op_kind_name(node.kind)));
+            note_skip("not a contraction node", fmt::format("node {} is a {}", node.id, node.kind));
             continue;
         }
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();
@@ -164,8 +164,8 @@ bool CrossSpaceValidation::run(Graph &graph) {
 
                 std::string message = fmt::format(
                     "{}: index letter '{}' of node {} ('{}') binds space '{}' on operand {} ('{}') and space '{}' on operand {} ('{}'); {}",
-                    cross_space_severity_name(severity), binding.letter, node.id, node.label, first_name, first.operand, first.tensor_name,
-                    second_name, second.operand, second.tensor_name, verdict);
+                    severity, binding.letter, node.id, node.label, first_name, first.operand, first.tensor_name, second_name,
+                    second.operand, second.tensor_name, verdict);
                 if (rests_on_inferred) {
                     message += "; the verdict rests on an INFERRED annotation and is reported one level weaker for it";
                 }

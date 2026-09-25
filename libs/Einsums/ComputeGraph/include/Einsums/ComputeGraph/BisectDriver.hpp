@@ -96,6 +96,11 @@ enum class APIARY_EXPOSE APIARY_MODULE("graph") BisectMode : std::uint8_t{
 /// @return ``"individual"`` or ``"cumulative"``.
 [[nodiscard]] EINSUMS_EXPORT std::string_view bisect_mode_name(BisectMode mode);
 
+/// @c fmt formats a @ref BisectMode as its name, so ``fmt::format("{}", value)`` needs no call to @ref bisect_mode_name.
+[[nodiscard]] inline std::string_view format_as(BisectMode value) {
+    return bisect_mode_name(value);
+}
+
 /// @brief What one pass did to the numbers.
 struct APIARY_EXPOSE APIARY_MODULE("graph") BisectTrial {
     APIARY_EXPOSE std::string name;  ///< The pass under test.

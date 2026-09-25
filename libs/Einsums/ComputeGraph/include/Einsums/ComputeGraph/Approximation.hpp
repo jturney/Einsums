@@ -76,6 +76,11 @@ enum class APIARY_EXPOSE APIARY_MODULE("graph") ApproximationOrigin : std::uint8
  */
 [[nodiscard]] EINSUMS_EXPORT std::string_view approximation_origin_name(ApproximationOrigin origin) noexcept;
 
+/// @c fmt formats an @ref ApproximationOrigin as its name, so ``fmt::format("{}", value)`` needs no call to @ref approximation_origin_name.
+[[nodiscard]] inline std::string_view format_as(ApproximationOrigin value) noexcept {
+    return approximation_origin_name(value);
+}
+
 /**
  * @brief The @ref ApproximationOrigin spelled @p name, if there is one.
  * @param[in] name A spelling @ref approximation_origin_name produces.
@@ -92,6 +97,11 @@ enum class APIARY_EXPOSE APIARY_MODULE("graph") ApproximationOrigin : std::uint8
  * @versionadded{2.0.0}
  */
 [[nodiscard]] EINSUMS_EXPORT std::string_view approximation_effect_name(ApproximationEffect effect) noexcept;
+
+/// @c fmt formats an @ref ApproximationEffect as its name, so ``fmt::format("{}", value)`` needs no call to @ref approximation_effect_name.
+[[nodiscard]] inline std::string_view format_as(ApproximationEffect value) noexcept {
+    return approximation_effect_name(value);
+}
 
 /**
  * @brief The @ref ApproximationEffect spelled @p name, if there is one.

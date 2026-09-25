@@ -49,7 +49,7 @@ namespace {
 
 /// @ref build_executor's own diagnostic wording for @p kind.
 std::string scalar_context(OpKind kind) {
-    return fmt::format("build_executor({})", op_kind_name(kind));
+    return fmt::format("build_executor({})", kind);
 }
 
 /// Resolve one operand under @ref build_executor's own diagnostic wording.
@@ -189,7 +189,7 @@ std::function<void()> build_mixed_einsum(std::shared_ptr<EinsumParams> const &pa
                     // make_einsum_node reject a complex contraction into a real output. The branch
                     // exists because every combination is instantiated.
                     EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor(Einsum): cannot store a {} contraction in a {} output",
-                                            scalar_type_name(packed_gemm::get_scalar_type<TR>()), scalar_type_name(c.dtype()));
+                                            packed_gemm::get_scalar_type<TR>(), c.dtype());
                 } else {
                     struct Views {
                         Views(::einsums::detail::TensorImpl<TA> const &ai, ::einsums::detail::TensorImpl<TB> const &bi,
@@ -830,8 +830,8 @@ std::vector<OperandAccessor> resolve_members(Graph &graph, std::span<TensorId co
     for (std::size_t i = 0; i < count; ++i) {
         std::size_t const at = first + i * stride;
         if (at >= ids.size()) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): the {} list is shorter than the member count says",
-                                    op_kind_name(kind), role);
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): the {} list is shorter than the member count says", kind,
+                                    role);
         }
         out.push_back(resolve_operand(graph, ids[at], kind, role));
     }
@@ -960,8 +960,8 @@ std::function<void()> build_grouped_elementwise(OpKind kind, packed_gemm::Scalar
     auto const count   = static_cast<std::size_t>(desc.total);
     auto const sources = kind == OpKind::GroupedPermute ? std::size_t{1} : std::size_t{2};
     if (outputs.size() != count || desc.alphas.size() != count || desc.betas.size() != count) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): the descriptor names {} member(s) and the node writes {}",
-                                op_kind_name(kind), count, outputs.size());
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): the descriptor names {} member(s) and the node writes {}", kind,
+                                count, outputs.size());
     }
     std::vector<OperandAccessor> a, b, c;
     a.reserve(count);
@@ -970,8 +970,7 @@ std::function<void()> build_grouped_elementwise(OpKind kind, packed_gemm::Scalar
     std::size_t cursor = 0;
     for (std::size_t i = 0; i < count; ++i) {
         if (cursor + sources > inputs.size()) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): the input list is shorter than the members say",
-                                    op_kind_name(kind));
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): the input list is shorter than the members say", kind);
         }
         a.push_back(resolve_operand(graph, inputs[cursor++], kind, "A"));
         if (sources == 2) {
@@ -1032,14 +1031,12 @@ std::string_view descriptor_name(OpData const &data) {
 
 /// Complain that a kind with a builder entry carries the wrong descriptor.
 [[noreturn]] void wrong_descriptor(OpKind kind, OpData const &data, char const *expected) {
-    EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): expected a {}, found {}", op_kind_name(kind), expected,
-                            descriptor_name(data));
+    EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): expected a {}, found {}", kind, expected, descriptor_name(data));
 }
 
 /// Complain that an operand list is shorter than the kind's convention needs.
 [[noreturn]] void missing_operand(OpKind kind, char const *list, std::size_t needed, std::size_t have) {
-    EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): needs at least {} {}, node lists {}", op_kind_name(kind), needed,
-                            list, have);
+    EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): needs at least {} {}, node lists {}", kind, needed, list, have);
 }
 
 /// @p desc's @c D alternative, or a refusal naming what it holds instead.
@@ -1130,9 +1127,8 @@ bool minor_stride_is_unit(::einsums::detail::TensorImpl<T> const &impl) {
 } // namespace
 
 void OperandAccessor::throw_operand_type_mismatch(packed_gemm::ScalarType held, packed_gemm::ScalarType asked) {
-    EINSUMS_THROW_EXCEPTION(std::logic_error,
-                            "executor: an operand holding {} was read as {}; the executor was built for the wrong element type",
-                            scalar_type_name(held), scalar_type_name(asked));
+    EINSUMS_THROW_EXCEPTION(
+        std::logic_error, "executor: an operand holding {} was read as {}; the executor was built for the wrong element type", held, asked);
 }
 
 OperandAccessor try_resolve_operand(Graph &graph, TensorId id) {
@@ -1285,9 +1281,9 @@ std::string reconstruction_blocker(Node const &node) {
             return {};
         }
         if (node.op_data.holds<TiledElementwiseDescriptor>()) {
-            return fmt::format("{}: tiled variant, whose per-tile kernel has no builder entry", op_kind_name(node.kind));
+            return fmt::format("{}: tiled variant, whose per-tile kernel has no builder entry", node.kind);
         }
-        return fmt::format("{}: expected an ElementwiseBinaryDescriptor, found {}", op_kind_name(node.kind), descriptor_name(node.op_data));
+        return fmt::format("{}: expected an ElementwiseBinaryDescriptor, found {}", node.kind, descriptor_name(node.op_data));
     case OpKind::Einsum:
         return node.op_data.holds<EinsumDescriptor>()
                    ? std::string{}
@@ -1466,7 +1462,7 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
     bool const scalar_destination_ok =
         kind == OpKind::Einsum || kind == OpKind::Dot || kind == OpKind::Trace || kind == OpKind::WriteParam || is_control_flow(kind);
     if (rank == 0 && !scalar_destination_ok) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): rank must be at least 1", op_kind_name(kind));
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "build_executor({}): rank must be at least 1", kind);
     }
 
     switch (kind) {
@@ -1600,7 +1596,7 @@ std::function<void()> build_executor(OpKind kind, packed_gemm::ScalarType dtype,
     EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                             "build_executor: op kind '{}' has no builder entry yet; its executor is still hand-baked at capture, so "
                             "the node cannot be rebuilt from data alone",
-                            op_kind_name(kind));
+                            kind);
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)

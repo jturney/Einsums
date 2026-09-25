@@ -97,8 +97,8 @@ bool TransferInsertion::run(Graph &graph) {
                     _num_transfers++;
                     residency[tid] = Residency::Both;
 
-                    EINSUMS_LOG_INFO("TransferInsertion: H2D for tensor '{}' (id={}) before {} node {}", handle.name, tid,
-                                     op_kind_name(node.kind), node.id);
+                    EINSUMS_LOG_INFO("TransferInsertion: H2D for tensor '{}' (id={}) before {} node {}", handle.name, tid, node.kind,
+                                     node.id);
                 }
             }
 
@@ -119,7 +119,7 @@ bool TransferInsertion::run(Graph &graph) {
                     residency[tid] = Residency::Both;
 
                     EINSUMS_LOG_INFO("TransferInsertion: D2H for tensor '{}' (id={}) after {} node", handle.name, tid,
-                                     op_kind_name(new_nodes[new_nodes.size() - 2].kind));
+                                     new_nodes[new_nodes.size() - 2].kind);
                 }
             }
         } else {

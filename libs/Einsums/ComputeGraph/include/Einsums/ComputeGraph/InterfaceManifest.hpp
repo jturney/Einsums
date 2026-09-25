@@ -48,6 +48,11 @@ enum class ManifestDirection : std::uint8_t {
  */
 [[nodiscard]] EINSUMS_EXPORT std::string_view manifest_direction_name(ManifestDirection direction) noexcept;
 
+/// @c fmt formats a @ref ManifestDirection as its name, so ``fmt::format("{}", value)`` needs no call to @ref manifest_direction_name.
+[[nodiscard]] inline std::string_view format_as(ManifestDirection value) noexcept {
+    return manifest_direction_name(value);
+}
+
 /**
  * @brief The name of an ownership scope, for diagnostics and for the saved form.
  * @param[in] scope The scope to name.
@@ -56,6 +61,11 @@ enum class ManifestDirection : std::uint8_t {
  */
 [[nodiscard]] EINSUMS_EXPORT std::string_view tensor_ownership_name(TensorOwnership scope) noexcept;
 
+/// @c fmt formats a @ref TensorOwnership as its name, so ``fmt::format("{}", value)`` needs no call to @ref tensor_ownership_name.
+[[nodiscard]] inline std::string_view format_as(TensorOwnership value) noexcept {
+    return tensor_ownership_name(value);
+}
+
 /**
  * @brief The name of an element type, for diagnostics and for the saved form.
  * @param[in] dtype The type to name.
@@ -63,6 +73,20 @@ enum class ManifestDirection : std::uint8_t {
  * @versionadded{2.0.0}
  */
 [[nodiscard]] EINSUMS_EXPORT std::string_view scalar_type_name(packed_gemm::ScalarType dtype) noexcept;
+
+EINSUMS_NAMESPACE_END(compute_graph)
+
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
+
+/// @c fmt formats a @ref ScalarType as its name, so ``fmt::format("{}", dtype)`` needs no call to
+/// @ref compute_graph::scalar_type_name. It lives beside that name, which ComputeGraph owns.
+[[nodiscard]] inline std::string_view format_as(ScalarType dtype) noexcept {
+    return compute_graph::scalar_type_name(dtype);
+}
+
+EINSUMS_NAMESPACE_END(packed_gemm)
+
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 /**
  * @brief The @ref ManifestDirection spelled @p name, if there is one.

@@ -289,7 +289,7 @@ void check_read_only_phase(Graph const &graph, OptimizerPass const &pass, std::u
                             "graph's structure (structure_version {} -> {}). Either the pass belongs in a structural phase or "
                             "the node-set change is a bug; a read-only phase is re-run after structural passes, so a rewrite "
                             "here would be applied more than once.",
-                            graph.name(), pass.name(), pass_phase_name(phase), before, graph.structure_version());
+                            graph.name(), pass.name(), phase, before, graph.structure_version());
 }
 
 } // namespace
@@ -612,7 +612,7 @@ std::string PassManager::explain() const {
         // The phase leads each line: a rewrite that is right on one machine and
         // wrong on another is a phase question first, and the label is what says
         // whether a saved graph would have kept this decision or re-derived it.
-        auto const tag = fmt::format("  - [{}] ", pass_phase_name(p->phase()));
+        auto const tag = fmt::format("  - [{}] ", p->phase());
         for (auto const &entry : p->explain()) {
             out += tag;
             out += entry;

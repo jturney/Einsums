@@ -300,6 +300,12 @@ enum class APIARY_EXPOSE APIARY_MODULE("graph") Tristate : std::uint8_t {
     return "Unknown";
 }
 
+// fmt formats a Tristate as its name through this, found by argument-dependent lookup. Left out of the API
+// docs, which document format_as once, on the ComputeGraph page.
+[[nodiscard]] inline std::string_view format_as(Tristate value) noexcept {
+    return tristate_name(value);
+}
+
 /// How a space's axis should be laid out across ranks. Machine policy, never part of @ref IndexSpace.
 enum class DistributionHint : std::uint8_t {
     None,      ///< Undecided. The planner is free to choose.
