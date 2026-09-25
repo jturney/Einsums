@@ -13,6 +13,7 @@
 #include <array>
 #include <complex>
 #include <cstddef>
+#include <span>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -130,6 +131,29 @@ TEMPLATE_TEST_CASE("TensorPermute - a cyclic permutation in every storage order"
     SECTION("column-major to row-major") {
         check_cyclic<TestType>(false, true, 0, 0);
     }
+}
+
+TEMPLATE_TEST_CASE("TensorPermute - an axis map runs the same plan as the index string", "[TensorPermute]", float, double) {
+    // The entry a caller already holding the permutation uses, so nothing encodes it into
+    // characters for HPTT to decode again. C(k, i, j) reads A's axes 2, 0, 1.
+    for (bool const a_row_major : {false, true}) {
+        for (bool const c_row_major : {false, true}) {
+            CAPTURE(a_row_major, c_row_major);
+            Operand<TestType, 3> A({2, 3, 4}, a_row_major);
+            Operand<TestType, 3> C({4, 2, 3}, c_row_major);
+            A.for_each([&](auto const &idx, size_t n) { A.at(idx) = value_for<TestType>(n); });
+
+            std::array<int, 3> const c_to_a{2, 0, 1};
+            tp::detail::permute<false, TestType>(TestType{0}, std::span<int const>{c_to_a}, &C.impl, TestType{1}, A.impl);
+
+            A.for_each([&](auto const &idx, size_t) { CHECK(C.at({idx[2], idx[0], idx[1]}) == A.at(idx)); });
+        }
+    }
+
+    Operand<TestType, 3>     A({2, 3, 4}, false);
+    Operand<TestType, 3>     C({4, 2, 3}, false);
+    std::array<int, 3> const repeated{2, 2, 1};
+    CHECK_THROWS(tp::detail::compile_permute<false, TestType>(TestType{0}, std::span<int const>{repeated}, &C.impl, TestType{1}, A.impl));
 }
 
 TEMPLATE_TEST_CASE("TensorPermute - padded operands", "[TensorPermute]", float, double, std::complex<float>, std::complex<double>) {

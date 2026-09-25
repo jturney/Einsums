@@ -30,6 +30,8 @@
 #include <algorithm>
 #include <cctype>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -40,9 +42,72 @@ EINSUMS_NAMESPACE_BEGIN(tensor_permute)
 
 namespace detail {
 
+/// The plan for C = beta * C + alpha * permute(A), where C's axis @c i is A's axis
+/// ``c_to_a[i]``. Every public form ends here once it knows that permutation; the caller has
+/// already checked that it is one.
+template <bool ConjA, typename T>
+std::shared_ptr<hptt::Transpose<T>> build_permute_plan(T beta, std::span<int const> c_to_a, einsums::detail::TensorImpl<T> *C, T alpha,
+                                                       einsums::detail::TensorImpl<T> const &A, hptt::SelectionMethod method) {
+    // An empty operand has nothing to permute, and HPTT rejects a zero extent. There is no plan.
+    if (A.size() == 0 || C->size() == 0) {
+        return nullptr;
+    }
+
+    // HPTT describes both operands in ONE layout, A's. A C laid out the other way round is the
+    // same buffer read as its transpose: its axes in reverse order, so the permutation is read
+    // from the far end. A row-major A with a C that is neither layout is described column-major,
+    // as it always was.
+    bool const                                    row_major = A.is_row_major() && (C->is_row_major() || C->is_column_major());
+    bool const                                    flip = row_major ? !C->is_row_major() : !(A.is_column_major() && C->is_column_major());
+    std::optional<einsums::detail::TensorImpl<T>> swapped;
+    if (flip) {
+        swapped.emplace(row_major ? C->to_row_major() : C->to_column_major());
+    }
+    einsums::detail::TensorImpl<T> const &C_view = flip ? *swapped : *C;
+
+    std::size_t const   rank = A.rank();
+    BufferVector<int>   perms(rank);
+    std::vector<size_t> size(rank);
+    std::vector<size_t> outerSizeA(rank);
+    std::vector<size_t> offsetA(rank, 0);
+    std::vector<size_t> outerSizeC(rank);
+    std::vector<size_t> offsetC(rank, 0);
+    for (std::size_t i = 0; i < rank; ++i) {
+        perms[i] = c_to_a[flip ? rank - 1 - i : i];
+    }
+
+    // The outer sizes are what each axis's stride says the allocation spans, measured from the
+    // fastest axis: the last in row-major, the first in column-major.
+    size_t const innerStrideA = row_major ? A.stride(-1) : A.stride(0);
+    size_t const innerStrideC = row_major ? C_view.stride(-1) : C_view.stride(0);
+    for (std::size_t i = 0; i < rank; ++i) {
+        size[i] = A.dim(static_cast<int>(i));
+    }
+    if (row_major) {
+        outerSizeA[0] = A.dim(0);
+        outerSizeC[0] = C_view.dim(0);
+        for (int i0 = 1; i0 < static_cast<int>(rank); i0++) {
+            outerSizeA[i0] = A.stride(i0 - 1) / (A.stride(i0) * innerStrideA);
+            outerSizeC[i0] = C_view.stride(i0 - 1) / (C_view.stride(i0) * innerStrideC);
+        }
+    } else {
+        outerSizeA[rank - 1] = A.dim(-1);
+        outerSizeC[rank - 1] = C_view.dim(-1);
+        for (int i0 = 0; i0 < static_cast<int>(rank) - 1; i0++) {
+            outerSizeA[i0] = A.stride(i0 + 1) / (A.stride(i0) * innerStrideA);
+            outerSizeC[i0] = C_view.stride(i0 + 1) / (C_view.stride(i0) * innerStrideC);
+        }
+    }
+
+    auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), static_cast<int>(rank), alpha, A.data(), size.data(), outerSizeA.data(),
+                                                   offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
+                                                   innerStrideC, row_major, method);
+    plan->set_conj_a(ConjA);
+    return plan;
+}
+
 /// The kernel behind compile_permute: each operand's axes named by one character per axis. The
-/// public forms parse a spec into these; ComputeGraph's string dispatch, which already holds the
-/// characters, calls it directly.
+/// public forms parse a spec into these.
 template <bool ConjA = false, typename T>
 std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C_indices, einsums::detail::TensorImpl<T> *C, T alpha,
                                                     std::string const &A_indices, einsums::detail::TensorImpl<T> const &A,
@@ -59,117 +124,34 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::string const &C
         EINSUMS_THROW_EXCEPTION(RankError, "permute: '{}' and '{}' do not name the same axes", C_indices, A_indices);
     }
 
-    // An empty operand has nothing to permute, and HPTT rejects a zero extent. There is no plan.
-    if (A.size() == 0 || C->size() == 0) {
-        return nullptr;
+    std::vector<int> c_to_a(C_indices.size());
+    for (std::size_t i = 0; i < C_indices.size(); ++i) {
+        c_to_a[i] = static_cast<int>(A_indices.find(C_indices[i]));
     }
+    return build_permute_plan<ConjA, T>(beta, c_to_a, C, alpha, A, method);
+}
 
-    // Calculate reversed indices.
-    BufferVector<int>   perms(A.rank());
-    std::vector<size_t> size(A.rank());
-    std::vector<size_t> outerSizeA(A.rank());
-    std::vector<size_t> offsetA(A.rank());
-    std::vector<size_t> outerSizeC(A.rank());
-    std::vector<size_t> offsetC(A.rank());
-
-    if (A.is_row_major() && C->is_row_major()) {
-        size_t innerStrideA = A.stride(-1);
-        size_t innerStrideC = C->stride(-1);
-        size[0]             = A.dim(0);
-        outerSizeA[0]       = A.dim(0);
-        offsetA[0]          = 0;
-        outerSizeC[0]       = C->dim(0);
-        offsetC[0]          = 0;
-        for (int i0 = 1; i0 < A.rank(); i0++) {
-            size[i0]       = A.dim(i0);
-            outerSizeA[i0] = A.stride(i0 - 1) / (A.stride(i0) * innerStrideA);
-            offsetA[i0]    = 0;
-            outerSizeC[i0] = C->stride(i0 - 1) / (C->stride(i0) * innerStrideC);
-            offsetC[i0]    = 0;
-        }
-
-        // perms[i] = position of C's i-th index in A, matching the tuple
-        // overload's find_type_with_position(C_indices, A_indices). The
-        // argument order used to be swapped, producing the INVERSE
-        // permutation - invisible for involutions (self-inverse), wrong for
-        // any cyclic permutation.
-        find_char_with_position(C_indices, A_indices, &perms);
-        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
-                                                       offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
-                                                       innerStrideC, true, method);
-        plan->set_conj_a(ConjA);
-
-        return plan;
-    } else if (A.is_row_major() && C->is_column_major()) {
-        auto   C_swap       = C->to_row_major();
-        size_t innerStrideA = A.stride(-1);
-        size_t innerStrideC = C_swap.stride(-1);
-        size[0]             = A.dim(0);
-        outerSizeA[0]       = A.dim(0);
-        offsetA[0]          = 0;
-        outerSizeC[0]       = C_swap.dim(0);
-        offsetC[0]          = 0;
-        for (int i0 = 1; i0 < A.rank(); i0++) {
-            size[i0]       = A.dim(i0);
-            outerSizeA[i0] = A.stride(i0 - 1) / (A.stride(i0) * innerStrideA);
-            offsetA[i0]    = 0;
-            outerSizeC[i0] = C_swap.stride(i0 - 1) / (C_swap.stride(i0) * innerStrideC);
-            offsetC[i0]    = 0;
-        }
-        find_char_with_position(reverse(C_indices), A_indices, &perms);
-        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
-                                                       offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
-                                                       innerStrideC, true, method);
-        plan->set_conj_a(ConjA);
-
-        return plan;
-    } else if (A.is_column_major() && C->is_column_major()) {
-        size_t innerStrideA      = A.stride(0);
-        size_t innerStrideC      = C->stride(0);
-        size[A.rank() - 1]       = A.dim(-1);
-        outerSizeA[A.rank() - 1] = A.dim(-1);
-        offsetA[A.rank() - 1]    = 0;
-        outerSizeC[A.rank() - 1] = C->dim(-1);
-        offsetC[A.rank() - 1]    = 0;
-        for (int i0 = 0; i0 < A.rank() - 1; i0++) {
-            size[i0]       = A.dim(i0);
-            outerSizeA[i0] = A.stride(i0 + 1) / (A.stride(i0) * innerStrideA);
-            offsetA[i0]    = 0;
-            outerSizeC[i0] = C->stride(i0 + 1) / (C->stride(i0) * innerStrideC);
-            offsetC[i0]    = 0;
-        }
-
-        find_char_with_position(C_indices, A_indices, &perms);
-        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
-                                                       offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
-                                                       innerStrideC, false, method);
-        plan->set_conj_a(ConjA);
-
-        return plan;
-    } else {
-        auto   C_swap            = C->to_column_major();
-        size_t innerStrideA      = A.stride(0);
-        size_t innerStrideC      = C_swap.stride(0);
-        size[A.rank() - 1]       = A.dim(-1);
-        outerSizeA[A.rank() - 1] = A.dim(-1);
-        offsetA[A.rank() - 1]    = 0;
-        outerSizeC[A.rank() - 1] = C_swap.dim(-1);
-        offsetC[A.rank() - 1]    = 0;
-        for (int i0 = 0; i0 < A.rank() - 1; i0++) {
-            size[i0]       = A.dim(i0);
-            outerSizeA[i0] = A.stride(i0 + 1) / (A.stride(i0) * innerStrideA);
-            offsetA[i0]    = 0;
-            outerSizeC[i0] = C_swap.stride(i0 + 1) / (C_swap.stride(i0) * innerStrideC);
-            offsetC[i0]    = 0;
-        }
-        find_char_with_position(reverse(C_indices), A_indices, &perms);
-        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), A.rank(), alpha, A.data(), size.data(), outerSizeA.data(),
-                                                       offsetA.data(), innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(),
-                                                       innerStrideC, false, method);
-        plan->set_conj_a(ConjA);
-
-        return plan;
+/// As the character form, with the permutation given directly: C's axis @c i is A's axis
+/// ``c_to_a[i]``. For a caller that already holds the permutation, which the character form would
+/// only encode for HPTT to decode again.
+template <bool ConjA = false, typename T>
+std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::span<int const> c_to_a, einsums::detail::TensorImpl<T> *C, T alpha,
+                                                    einsums::detail::TensorImpl<T> const &A,
+                                                    hptt::SelectionMethod                 method = hptt::ESTIMATE) {
+    LabeledSection("permute");
+    std::size_t const rank = A.rank();
+    if (c_to_a.size() != rank || C->rank() != rank) {
+        EINSUMS_THROW_EXCEPTION(RankError, "permute: a permutation of {} axes between a rank-{} output and a rank-{} input", c_to_a.size(),
+                                C->rank(), rank);
     }
+    std::vector<bool> used(rank, false);
+    for (int const axis : c_to_a) {
+        if (axis < 0 || static_cast<std::size_t>(axis) >= rank || used[static_cast<std::size_t>(axis)]) {
+            EINSUMS_THROW_EXCEPTION(RankError, "permute: the axis map is not a permutation of {} axes", rank);
+        }
+        used[static_cast<std::size_t>(axis)] = true;
+    }
+    return build_permute_plan<ConjA, T>(beta, c_to_a, C, alpha, A, method);
 }
 
 /// Build and run the plan for C = beta * C + alpha * permute(A), axes named by characters.
@@ -177,6 +159,16 @@ template <bool ConjA = false, typename T>
 void permute(T beta, std::string const &C_indices, einsums::detail::TensorImpl<T> *C, T alpha, std::string const &A_indices,
              einsums::detail::TensorImpl<T> const &A) {
     auto plan = compile_permute<ConjA>(beta, C_indices, C, alpha, A_indices, A);
+    if (plan != nullptr) {
+        plan->execute();
+    }
+}
+
+/// Build and run the plan for C = beta * C + alpha * permute(A), with C's axis @c i being A's
+/// axis ``c_to_a[i]``.
+template <bool ConjA = false, typename T>
+void permute(T beta, std::span<int const> c_to_a, einsums::detail::TensorImpl<T> *C, T alpha, einsums::detail::TensorImpl<T> const &A) {
+    auto plan = compile_permute<ConjA>(beta, c_to_a, C, alpha, A);
     if (plan != nullptr) {
         plan->execute();
     }

@@ -18,6 +18,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
 #include <Einsums/HPTT/Transpose.hpp>
+#include <Einsums/SIMD/RungLadder.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
 #include <cstdio>
@@ -38,67 +39,9 @@ EINSUMS_NAMESPACE_BEGIN(hptt)
                                                                          floatType beta, floatType *B);                                    \
     }
 
-#if defined(EINSUMS_SIMD_HAS_RUNG_NATIVE)
-EINSUMS_HPTT_DECLARE_RUNG_FACTORIES(arch_native)
-#else
-#    if defined(EINSUMS_SIMD_HAS_RUNG_BASELINE)
-EINSUMS_HPTT_DECLARE_RUNG_FACTORIES(arch_baseline)
-#    endif
-#    if defined(EINSUMS_SIMD_HAS_RUNG_V2)
-EINSUMS_HPTT_DECLARE_RUNG_FACTORIES(arch_v2)
-#    endif
-#    if defined(EINSUMS_SIMD_HAS_RUNG_V3)
-EINSUMS_HPTT_DECLARE_RUNG_FACTORIES(arch_v3)
-#    endif
-#    if defined(EINSUMS_SIMD_HAS_RUNG_V4)
-EINSUMS_HPTT_DECLARE_RUNG_FACTORIES(arch_v4)
-#    endif
-#endif
+EINSUMS_SIMD_FOR_EACH_BUILT_RUNG(EINSUMS_HPTT_DECLARE_RUNG_FACTORIES)
 
 #undef EINSUMS_HPTT_DECLARE_RUNG_FACTORIES
-
-namespace {
-
-template <typename floatType, typename Fn>
-Fn select_rung(Fn native, Fn baseline, Fn v2, Fn v3, Fn v4) {
-    if (native != nullptr) {
-        return native;
-    }
-    return einsums::simd::select<Fn>(baseline, v2, v3, v4);
-}
-
-// Resolve the per-rung entry points for one element type. The nullptr slots
-// keep the ladder positions of rungs that were not built.
-#if defined(EINSUMS_SIMD_HAS_RUNG_NATIVE)
-#    define EINSUMS_HPTT_RUNG_ENTRY(ns_fn) &arch_native::ns_fn
-#    define EINSUMS_HPTT_LADDER(ns_fn)     EINSUMS_HPTT_RUNG_ENTRY(ns_fn), nullptr, nullptr, nullptr, nullptr
-#else
-#    if defined(EINSUMS_SIMD_HAS_RUNG_BASELINE)
-#        define EINSUMS_HPTT_BASELINE_ENTRY(ns_fn) &arch_baseline::ns_fn
-#    else
-#        define EINSUMS_HPTT_BASELINE_ENTRY(ns_fn) nullptr
-#    endif
-#    if defined(EINSUMS_SIMD_HAS_RUNG_V2)
-#        define EINSUMS_HPTT_V2_ENTRY(ns_fn) &arch_v2::ns_fn
-#    else
-#        define EINSUMS_HPTT_V2_ENTRY(ns_fn) nullptr
-#    endif
-#    if defined(EINSUMS_SIMD_HAS_RUNG_V3)
-#        define EINSUMS_HPTT_V3_ENTRY(ns_fn) &arch_v3::ns_fn
-#    else
-#        define EINSUMS_HPTT_V3_ENTRY(ns_fn) nullptr
-#    endif
-#    if defined(EINSUMS_SIMD_HAS_RUNG_V4)
-#        define EINSUMS_HPTT_V4_ENTRY(ns_fn) &arch_v4::ns_fn
-#    else
-#        define EINSUMS_HPTT_V4_ENTRY(ns_fn) nullptr
-#    endif
-#    define EINSUMS_HPTT_LADDER(ns_fn)                                                                                                     \
-        nullptr, EINSUMS_HPTT_BASELINE_ENTRY(ns_fn), EINSUMS_HPTT_V2_ENTRY(ns_fn), EINSUMS_HPTT_V3_ENTRY(ns_fn),                           \
-            EINSUMS_HPTT_V4_ENTRY(ns_fn)
-#endif
-
-} // namespace
 
 template <typename floatType>
 std::shared_ptr<Transpose<floatType>>
@@ -109,7 +52,7 @@ Transpose<floatType>::create(size_t const *sizeA, int const *perm, size_t const 
     using Fn = std::shared_ptr<Transpose<floatType>> (*)(
         size_t const *, int const *, size_t const *, size_t const *, size_t const *, size_t const *, size_t const, size_t const, int const,
         floatType const *, floatType const, floatType *, floatType const, SelectionMethod const, int const, int const *, bool const);
-    static Fn const fn = select_rung<floatType, Fn>(EINSUMS_HPTT_LADDER(make_transpose<floatType>));
+    static Fn const fn = einsums::simd::select<Fn>(EINSUMS_SIMD_LADDER(make_transpose<floatType>));
     return fn(sizeA, perm, outerSizeA, outerSizeB, offsetA, offsetB, innerStrideA, innerStrideB, dim, A, alpha, B, beta, selectionMethod,
               numThreads, threadIds, useRowMajor);
 }
@@ -118,7 +61,7 @@ template <typename floatType>
 std::shared_ptr<Transpose<floatType>> Transpose<floatType>::read_from_file(std::FILE *fp, floatType alpha, floatType const *A,
                                                                            floatType beta, floatType *B) {
     using Fn           = std::shared_ptr<Transpose<floatType>> (*)(std::FILE *, floatType, floatType const *, floatType, floatType *);
-    static Fn const fn = select_rung<floatType, Fn>(EINSUMS_HPTT_LADDER(make_transpose_from_file<floatType>));
+    static Fn const fn = einsums::simd::select<Fn>(EINSUMS_SIMD_LADDER(make_transpose_from_file<floatType>));
     return fn(fp, alpha, A, beta, B);
 }
 

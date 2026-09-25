@@ -16,6 +16,7 @@
 
 #include <Einsums/ComputeGraph/Passes/StreamKernel.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/SIMD/RungLadder.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
 #include <complex>
@@ -30,60 +31,14 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
                       int64_t dw);                                                                                                         \
     }
 
-#if defined(EINSUMS_SIMD_HAS_RUNG_NATIVE)
-EINSUMS_STREAM_DECLARE_RUNG_ENTRY(arch_native)
-#endif
-#if defined(EINSUMS_SIMD_HAS_RUNG_BASELINE)
-EINSUMS_STREAM_DECLARE_RUNG_ENTRY(arch_baseline)
-#endif
-#if defined(EINSUMS_SIMD_HAS_RUNG_V2)
-EINSUMS_STREAM_DECLARE_RUNG_ENTRY(arch_v2)
-#endif
-#if defined(EINSUMS_SIMD_HAS_RUNG_V3)
-EINSUMS_STREAM_DECLARE_RUNG_ENTRY(arch_v3)
-#endif
-#if defined(EINSUMS_SIMD_HAS_RUNG_V4)
-EINSUMS_STREAM_DECLARE_RUNG_ENTRY(arch_v4)
-#endif
+EINSUMS_SIMD_FOR_EACH_BUILT_RUNG(EINSUMS_STREAM_DECLARE_RUNG_ENTRY)
 
 #undef EINSUMS_STREAM_DECLARE_RUNG_ENTRY
-
-namespace {
-
-// Ladder slot macros: nullptr keeps the position of rungs that were not built.
-// arch_native (single-TU aarch64/pinned builds) occupies the baseline slot.
-#if defined(EINSUMS_SIMD_HAS_RUNG_NATIVE)
-#    define EINSUMS_STREAM_BASELINE_ENTRY(fn) &arch_native::fn
-#elif defined(EINSUMS_SIMD_HAS_RUNG_BASELINE)
-#    define EINSUMS_STREAM_BASELINE_ENTRY(fn) &arch_baseline::fn
-#else
-#    define EINSUMS_STREAM_BASELINE_ENTRY(fn) nullptr
-#endif
-#if defined(EINSUMS_SIMD_HAS_RUNG_V2)
-#    define EINSUMS_STREAM_V2_ENTRY(fn) &arch_v2::fn
-#else
-#    define EINSUMS_STREAM_V2_ENTRY(fn) nullptr
-#endif
-#if defined(EINSUMS_SIMD_HAS_RUNG_V3)
-#    define EINSUMS_STREAM_V3_ENTRY(fn) &arch_v3::fn
-#else
-#    define EINSUMS_STREAM_V3_ENTRY(fn) nullptr
-#endif
-#if defined(EINSUMS_SIMD_HAS_RUNG_V4)
-#    define EINSUMS_STREAM_V4_ENTRY(fn) &arch_v4::fn
-#else
-#    define EINSUMS_STREAM_V4_ENTRY(fn) nullptr
-#endif
-
-#define EINSUMS_STREAM_LADDER(fn)                                                                                                          \
-    EINSUMS_STREAM_BASELINE_ENTRY(fn), EINSUMS_STREAM_V2_ENTRY(fn), EINSUMS_STREAM_V3_ENTRY(fn), EINSUMS_STREAM_V4_ENTRY(fn)
-
-} // namespace
 
 #define EINSUMS_STREAM_DEFINE_ENTRY(T)                                                                                                     \
     template <>                                                                                                                            \
     EINSUMS_EXPORT StreamInnerFn<T> stream_inner_entry<T>() {                                                                              \
-        static StreamInnerFn<T> const fn = einsums::simd::select<StreamInnerFn<T>>(EINSUMS_STREAM_LADDER(stream_inner<T>));                \
+        static StreamInnerFn<T> const fn = einsums::simd::select<StreamInnerFn<T>>(EINSUMS_SIMD_LADDER(stream_inner<T>));                  \
         return fn;                                                                                                                         \
     }
 
@@ -93,6 +48,5 @@ EINSUMS_STREAM_DEFINE_ENTRY(std::complex<float>)
 EINSUMS_STREAM_DEFINE_ENTRY(std::complex<double>)
 
 #undef EINSUMS_STREAM_DEFINE_ENTRY
-#undef EINSUMS_STREAM_LADDER
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

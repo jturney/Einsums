@@ -915,22 +915,13 @@ void string_permute_impl(ParsedPermuteSpec const &parsed, T beta, einsums::detai
     // Canonically dense tensors take HPTT through the shared plan cache; the
     // scalar loop below exists for strided views only. HPTT computes
     // C = beta*C + alpha*perm(A) natively, so beta/alpha need no pre-pass.
-    // The string overload of compile_permute matches indices character by
-    // character, so multi-character labels are re-encoded onto 'a'..'z'.
     // Contiguity alone is NOT enough: a permute_view spans the whole buffer
     // but presents reordered strides, and the stride-ratio outerSize
     // derivation assumes strides monotone in the layout flag's direction
     // (the same trap detail::strides_follow_layout guards).
     if (rank >= 2 && compute_graph::detail::canonical_dense(*C) && compute_graph::detail::canonical_dense(A)) {
-        std::string a_chars(rank, ' ');
-        std::string c_chars(rank, ' ');
-        for (size_t j = 0; j < rank; j++) {
-            a_chars[j] = static_cast<char>('a' + j);
-        }
-        for (size_t i = 0; i < rank; i++) {
-            c_chars[i] = static_cast<char>('a' + perm[i]);
-        }
-        tensor_permute::detail::permute<false, T>(beta, c_chars, C, alpha, a_chars, A);
+        std::vector<int> const c_to_a(perm.begin(), perm.end());
+        tensor_permute::detail::permute<false, T>(beta, std::span<int const>{c_to_a}, C, alpha, A);
         return;
     }
 

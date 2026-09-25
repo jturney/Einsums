@@ -12,6 +12,7 @@ set(SIMDHeaders
     Einsums/SIMD/Gather.hpp
     Einsums/SIMD/Prefetch.hpp
     Einsums/SIMD/RuntimeFeatures.hpp
+    Einsums/SIMD/RungLadder.hpp
 )
 
 set(SIMDSources RuntimeFeatures.cpp)
