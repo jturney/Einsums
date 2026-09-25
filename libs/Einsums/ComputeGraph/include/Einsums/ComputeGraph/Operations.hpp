@@ -12,6 +12,7 @@
 #include <Einsums/ComputeGraph/Detail/BlasAddressable.hpp>
 #include <Einsums/ComputeGraph/Detail/DenseElementTransform.hpp>
 #include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp>
+#include <Einsums/ComputeGraph/Detail/ErasedOperations.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
@@ -206,30 +207,18 @@ void scale(typename AType::ValueType factor, AType *A) {
         edesc.params = params;
         ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor), std::move(edesc));
     } else {
+        // get_slot admits only in-core dense tensors here, all of which are one TensorImpl.
+        static_assert(detail::ImplBackedTensor<AType>, "cg::scale: a non-tiled operand must be a dense tensor, view or runtime tensor");
+        using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("scale eager");
-            linear_algebra::scale(factor, A);
+            detail::eager_scale<T>(factor, A->impl());
             return;
         }
-
-        LabeledSection("scale capture");
         // The slot is created for its side effect: the executor the builder
         // returns resolves this operand through it, which is what makes the
         // node follow rebind() and redirect_slot().
-        TensorId const a_id = ctx.get_slot(*A).first;
-
-        // The factor is recorded in the tensor's own scalar type rather than
-        // projected onto a double, so a complex scale reads back exactly.
-        ScaleDescriptor desc;
-        desc.factor        = PrefactorScalar{factor};
-        desc.params        = std::make_shared<ElementwiseParams>();
-        desc.params->alpha = desc.factor;
-
-        auto label = fmt::format("scale({}, {})", to_string(desc.factor), A->name());
-
-        ctx.record_built(OpKind::Scale, std::move(label), packed_gemm::get_scalar_type<typename AType::ValueType>(),
-                         detail::tensor_rank(*A), std::move(desc), {}, std::span<TensorId const>{&a_id, 1}, {a_id}, {a_id});
+        detail::capture_scale<T>(ctx, factor, ctx.get_slot(*A).first, A->name(), detail::tensor_rank(*A));
     }
 }
 
@@ -275,20 +264,14 @@ void conj(AType *A) {
         };
         ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
     } else {
+        static_assert(detail::ImplBackedTensor<AType>, "cg::conj: a non-tiled operand must be a dense tensor, view or runtime tensor");
+        using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("conj eager");
-            einsums::detail::impl_conj(A->impl());
+            detail::eager_conj<T>(A->impl());
             return;
         }
-        LabeledSection("conj capture");
-        auto [a_id, a_slot] = ctx.get_slot(*A);
-        auto label          = fmt::format("conj({})", A->name());
-        auto executor       = [a_slot]() {
-            LabeledSection("conj execute");
-            einsums::detail::impl_conj(static_cast<AType *>(a_slot->ptr)->impl());
-        };
-        ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
+        detail::capture_conj<T>(ctx, ctx.get_slot(*A), A->name());
     }
 }
 
@@ -329,6 +312,15 @@ void real(ResultType *out, AType const &A) {
             detail::tiled_real(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
         };
         ctx.record(OpKind::Custom, "real", {a_id}, {r_id}, std::move(executor));
+    } else if constexpr (std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>) {
+        using T = typename AType::ValueType;
+        if (!ctx.is_capturing()) {
+            detail::eager_complex_part<T>(detail::ComplexPart::Real, A.impl(), out->impl());
+            return;
+        }
+        auto const a_ref = ctx.get_slot(A);
+        auto const r_ref = ctx.get_slot(*out);
+        detail::capture_complex_part<T>(ctx, detail::ComplexPart::Real, r_ref, a_ref);
     } else {
         auto compute = [](ResultType *o, AType const *a) {
             if constexpr (IsComplexV<typename AType::ValueType>) {
@@ -384,6 +376,15 @@ void imag(ResultType *out, AType const &A) {
             detail::tiled_imag(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
         };
         ctx.record(OpKind::Custom, "imag", {a_id}, {r_id}, std::move(executor));
+    } else if constexpr (std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>) {
+        using T = typename AType::ValueType;
+        if (!ctx.is_capturing()) {
+            detail::eager_complex_part<T>(detail::ComplexPart::Imag, A.impl(), out->impl());
+            return;
+        }
+        auto const a_ref = ctx.get_slot(A);
+        auto const r_ref = ctx.get_slot(*out);
+        detail::capture_complex_part<T>(ctx, detail::ComplexPart::Imag, r_ref, a_ref);
     } else {
         auto compute = [](ResultType *o, AType const *a) {
             if constexpr (IsComplexV<typename AType::ValueType>) {
@@ -443,6 +444,15 @@ void abs(ResultType *out, AType const &A) {
             detail::tiled_abs(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
         };
         ctx.record(OpKind::Custom, "abs", {a_id}, {r_id}, std::move(executor));
+    } else if constexpr (std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>) {
+        using T = typename AType::ValueType;
+        if (!ctx.is_capturing()) {
+            detail::eager_complex_part<T>(detail::ComplexPart::Abs, A.impl(), out->impl());
+            return;
+        }
+        auto const a_ref = ctx.get_slot(A);
+        auto const r_ref = ctx.get_slot(*out);
+        detail::capture_complex_part<T>(ctx, detail::ComplexPart::Abs, r_ref, a_ref);
     } else {
         auto compute = [](ResultType *o, AType const *a) { einsums::detail::impl_abs(a->impl(), o->impl()); };
         if (!ctx.is_capturing()) {
@@ -524,38 +534,13 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
     } else {
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("permute eager");
-            dispatch::string_permute(parsed, beta, C, alpha, A);
+            detail::eager_permute<T>(parsed, beta, C->impl(), alpha, A.impl());
             return;
         }
-
-        LabeledSection("permute capture");
         // Capture mode with slots; the builder resolves both operands through them.
         TensorId const a_id = ctx.get_slot(A).first;
         TensorId const c_id = ctx.get_slot(*C).first;
-
-        PermuteDescriptor desc;
-        if constexpr (IsComplexV<T>) {
-            desc.alpha = std::complex<double>{static_cast<double>(alpha.real()), static_cast<double>(alpha.imag())};
-            desc.beta  = std::complex<double>{static_cast<double>(beta.real()), static_cast<double>(beta.imag())};
-        } else {
-            desc.alpha = std::complex<double>{static_cast<double>(alpha), 0.0};
-            desc.beta  = std::complex<double>{static_cast<double>(beta), 0.0};
-        }
-        desc.c_indices = parsed.c_indices;
-        desc.a_indices = parsed.a_indices;
-        desc.operators = parsed.operators;
-        // Live scalars in the operands' own type, so a pass that rewrites a
-        // prefactor is obeyed on the next replay. The executor used to bake
-        // copies of these and ignore the descriptor entirely.
-        desc.params        = std::make_shared<ElementwiseParams>();
-        desc.params->alpha = PrefactorScalar{alpha};
-        desc.params->beta  = PrefactorScalar{beta};
-
-        auto label = fmt::format("permute: C[{}] = A[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","));
-
-        ctx.record_built(OpKind::Permute, std::move(label), packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*C), std::move(desc),
-                         std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&c_id, 1}, {a_id}, {c_id});
+        detail::capture_permute<T>(ctx, parsed, beta, alpha, a_id, c_id, detail::tensor_rank(*C));
     }
 }
 
@@ -606,22 +591,17 @@ void string_permute(std::string const &spec, CType *C, AType const &A, typename 
 /// Graph-aware transpose.
 template <TensorConcept CType, TensorConcept AType>
 void transpose(CType *C, AType const &A) {
+    static_assert(detail::ImplBackedTensor<AType> && detail::ImplBackedTensor<CType>,
+                  "cg::transpose: operands must be dense tensors, views or runtime tensors");
+    using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("transpose eager");
-        tensor_permute::transpose(C, A);
+        detail::eager_transpose<T>(C->impl(), A.impl());
         return;
     }
-
-    LabeledSection("transpose capture");
     TensorId const a_id = ctx.get_slot(A).first;
     TensorId const c_id = ctx.get_slot(*C).first;
-
-    // No descriptor, deliberately: a transpose is a fixed permutation with no
-    // scalars, so (kind, dtype, rank, operand ids) is its complete content and
-    // an empty descriptor alternative would record nothing. See build_executor.
-    ctx.record_built(OpKind::Transpose, "transpose", packed_gemm::get_scalar_type<typename AType::ValueType>(), detail::tensor_rank(A),
-                     std::monostate{}, std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&c_id, 1}, {a_id}, {c_id});
+    detail::capture_transpose<T>(ctx, a_id, c_id, detail::tensor_rank(A));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -695,46 +675,15 @@ void block_copy(DstType *dst, SrcType const &src, std::vector<size_t> dst_offset
         }
     }
 
-    auto apply = [dst_offsets, src_offsets, extents, N](DstType *d, SrcType const *s) {
-        using T      = typename DstType::ValueType;
-        size_t total = 1;
-        for (size_t k = 0; k < N; ++k)
-            total *= extents[k];
-
-        std::vector<size_t> idx(N, 0);
-        std::vector<size_t> d_str(N), s_str(N);
-        for (size_t k = 0; k < N; ++k) {
-            d_str[k] = d->stride(k);
-            s_str[k] = s->stride(k);
-        }
-        T       *d_data = d->data();
-        T const *s_data = s->data();
-
-        for (size_t count = 0; count < total; ++count) {
-            size_t d_off = 0, s_off = 0;
-            for (size_t k = 0; k < N; ++k) {
-                d_off += (dst_offsets[k] + idx[k]) * d_str[k];
-                s_off += (src_offsets[k] + idx[k]) * s_str[k];
-            }
-            d_data[d_off] = s_data[s_off];
-            // Axis 0 fastest, correctness-only, not cache-aware.
-            for (size_t k = 0; k < N; ++k) {
-                if (++idx[k] < extents[k])
-                    break;
-                idx[k] = 0;
-            }
-        }
-    };
-
+    using T   = typename DstType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("block_copy eager");
-        apply(dst, &src);
+        detail::eager_block_copy<T>(dst->impl(), src.impl(), dst_offsets, src_offsets, extents);
         return;
     }
-
-    LabeledSection("block_copy capture");
-    detail::record_unary_custom("block_copy", "block_copy execute", dst, src, apply);
+    auto const s_ref = ctx.get_slot(src);
+    auto const d_ref = ctx.get_slot(*dst);
+    detail::capture_block_copy<T>(ctx, d_ref, s_ref, std::move(dst_offsets), std::move(src_offsets), std::move(extents));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -858,39 +807,15 @@ void gather(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> c
         }
     }
 
-    auto apply = [indices, extents, dst_axis, N](DstType *d, SrcType const *s) {
-        using T = typename DstType::ValueType;
-        std::vector<size_t> d_str(N), s_str(N);
-        for (size_t k = 0; k < N; ++k) {
-            // Indexed by SOURCE axis, so the traversal below is unchanged: it
-            // walks the destination linearly through whatever strides it is
-            // handed, and a permutation is just a different set of strides. The
-            // contiguous-run fast path keys on d_str[0] == 1, so it switches
-            // itself off exactly when the permutation breaks that.
-            d_str[k] = d->stride(dst_axis[k]);
-            s_str[k] = s->stride(k);
-        }
-        T       *d_data = d->data();
-        T const *s_data = s->data();
-
-        // The source is the indexed side; the destination is walked linearly -
-        // which is what makes the parallel opt-in sound here: every op call
-        // writes a disjoint destination run no matter what the index lists
-        // hold. scatter and scatter_add stay serial; see the walker's contract.
-        detail::for_each_selection_run(
-            indices, extents, s_str, d_str, [&](size_t s_off, size_t d_off, size_t n) { std::copy_n(s_data + s_off, n, d_data + d_off); },
-            /*parallel=*/true);
-    };
-
+    using T   = typename DstType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("gather eager");
-        apply(dst, &src);
+        detail::eager_gather<T>(dst->impl(), src.impl(), indices, extents, dst_axis);
         return;
     }
-
-    LabeledSection("gather capture");
-    detail::record_unary_custom("gather", "gather execute", dst, src, apply);
+    auto const s_ref = ctx.get_slot(src);
+    auto const d_ref = ctx.get_slot(*dst);
+    detail::capture_gather<T>(ctx, d_ref, s_ref, indices, std::move(extents), std::move(dst_axis));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -978,34 +903,15 @@ void scatter(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> 
         }
     }
 
-    auto apply = [indices, extents, N](DstType *d, SrcType const *s) {
-        using T = typename DstType::ValueType;
-        std::vector<size_t> d_str(N), s_str(N);
-        for (size_t k = 0; k < N; ++k) {
-            d_str[k] = d->stride(k);
-            s_str[k] = s->stride(k);
-        }
-        T       *d_data = d->data();
-        T const *s_data = s->data();
-
-        // The destination is the indexed side here, which is what makes this
-        // the inverse of gather; the source is walked linearly.
-        detail::for_each_selection_run(indices, extents, d_str, s_str,
-                                       [&](size_t d_off, size_t s_off, size_t n) { std::copy_n(s_data + s_off, n, d_data + d_off); });
-    };
-
+    using T   = typename DstType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("scatter eager");
-        apply(dst, &src);
+        detail::eager_scatter<T>(false, dst->impl(), src.impl(), indices, extents);
         return;
     }
-
-    LabeledSection("scatter capture");
-    // dst is BOTH an input and an output: a scatter leaves everything outside
-    // the selection untouched, so whatever wrote those elements has to be
-    // ordered before this node.
-    detail::record_unary_custom("scatter", "scatter execute", dst, src, apply, /*reads_dst=*/true);
+    auto const s_ref = ctx.get_slot(src);
+    auto const d_ref = ctx.get_slot(*dst);
+    detail::capture_scatter<T>(ctx, false, d_ref, s_ref, indices, std::move(extents));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1039,55 +945,20 @@ void sqrt(ResultType *out, AType const &A) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::sqrt: rank mismatch - out rank={}, A rank={}", detail::tensor_rank(*out),
                                 detail::tensor_rank(A));
     }
-    size_t const N = detail::tensor_rank(A);
-    for (size_t k = 0; k < N; ++k) {
+    for (size_t k = 0; k < detail::tensor_rank(A); ++k) {
         if (out->dim(k) != A.dim(k)) {
             EINSUMS_THROW_EXCEPTION(DimensionError, "cg::sqrt: axis {} - out dim {} does not match A dim {}", k, out->dim(k), A.dim(k));
         }
     }
 
-    auto apply = [N](ResultType *o, AType const *a) {
-        size_t total = 1;
-        for (size_t k = 0; k < N; ++k)
-            total *= a->dim(k);
-        if (total == 0)
-            return;
-        std::vector<size_t> idx(N, 0), o_str(N), a_str(N), dims(N);
-        for (size_t k = 0; k < N; ++k) {
-            o_str[k] = o->stride(k);
-            a_str[k] = a->stride(k);
-            dims[k]  = a->dim(k);
-        }
-        T       *o_data = o->data();
-        T const *a_data = a->data();
-        for (size_t count = 0; count < total; ++count) {
-            size_t o_off = 0, a_off = 0;
-            for (size_t k = 0; k < N; ++k) {
-                o_off += idx[k] * o_str[k];
-                a_off += idx[k] * a_str[k];
-            }
-            T const v = a_data[a_off];
-            if (v < T{0}) {
-                EINSUMS_THROW_EXCEPTION(std::domain_error, "cg::sqrt: negative input {}; use abs() first if that is intended",
-                                        static_cast<double>(v));
-            }
-            o_data[o_off] = std::sqrt(v);
-            for (size_t k = 0; k < N; ++k) {
-                if (++idx[k] < dims[k])
-                    break;
-                idx[k] = 0;
-            }
-        }
-    };
-
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("sqrt eager");
-        apply(out, &A);
+        detail::eager_sqrt<T>(A.impl(), out->impl());
         return;
     }
-    LabeledSection("sqrt capture");
-    detail::record_unary_custom("sqrt", "sqrt execute", out, A, apply);
+    auto const a_ref = ctx.get_slot(A);
+    auto const r_ref = ctx.get_slot(*out);
+    detail::capture_sqrt<T>(ctx, r_ref, a_ref);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1144,58 +1015,14 @@ void sum_axes(ResultType *out, AType const &A, std::vector<size_t> axes) {
         }
     }
 
-    auto apply = [N, kept](ResultType *o, AType const *a) {
-        size_t              total = 1;
-        std::vector<size_t> dims(N), a_str(N);
-        for (size_t k = 0; k < N; ++k) {
-            dims[k]  = a->dim(k);
-            a_str[k] = a->stride(k);
-            total *= dims[k];
-        }
-        size_t              out_total = 1;
-        std::vector<size_t> o_str(kept.size());
-        for (size_t k = 0; k < kept.size(); ++k) {
-            o_str[k] = o->stride(k);
-            out_total *= o->dim(k);
-        }
-        T *o_data = o->data();
-        // Assign, not accumulate: zero first so a replay does not add to the
-        // previous execution's result.
-        for (size_t k = 0; k < out_total; ++k) {
-            size_t off = 0, rem = k;
-            for (size_t d = 0; d < kept.size(); ++d) {
-                off += (rem % o->dim(d)) * o_str[d];
-                rem /= o->dim(d);
-            }
-            o_data[off] = T{0};
-        }
-        if (total == 0)
-            return;
-        T const            *a_data = a->data();
-        std::vector<size_t> idx(N, 0);
-        for (size_t count = 0; count < total; ++count) {
-            size_t a_off = 0, o_off = 0;
-            for (size_t k = 0; k < N; ++k)
-                a_off += idx[k] * a_str[k];
-            for (size_t k = 0; k < kept.size(); ++k)
-                o_off += idx[kept[k]] * o_str[k];
-            o_data[o_off] += a_data[a_off];
-            for (size_t k = 0; k < N; ++k) {
-                if (++idx[k] < dims[k])
-                    break;
-                idx[k] = 0;
-            }
-        }
-    };
-
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("sum_axes eager");
-        apply(out, &A);
+        detail::eager_sum_axes<T>(out->impl(), A.impl(), kept);
         return;
     }
-    LabeledSection("sum_axes capture");
-    detail::record_unary_custom("sum_axes", "sum_axes execute", out, A, apply);
+    auto const a_ref = ctx.get_slot(A);
+    auto const o_ref = ctx.get_slot(*out);
+    detail::capture_sum_axes<T>(ctx, o_ref, a_ref, std::move(kept));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1242,56 +1069,14 @@ void reshape(ResultType *out, AType const &A, bool row_major) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "cg::reshape: {} elements cannot be reshaped into {}", a_total, o_total);
     }
 
-    auto apply = [a_rank, o_rank, a_total, row_major](ResultType *o, AType const *a) {
-        if (a_total == 0)
-            return;
-        std::vector<size_t> a_dims(a_rank), a_str(a_rank), o_dims(o_rank), o_str(o_rank);
-        for (size_t k = 0; k < a_rank; ++k) {
-            a_dims[k] = a->dim(k);
-            a_str[k]  = a->stride(k);
-        }
-        for (size_t k = 0; k < o_rank; ++k) {
-            o_dims[k] = o->dim(k);
-            o_str[k]  = o->stride(k);
-        }
-        T       *o_data = o->data();
-        T const *a_data = a->data();
-        // Walk the shared linear index and decompose it into each shape.
-        for (size_t lin = 0; lin < a_total; ++lin) {
-            size_t a_off = 0, o_off = 0, rem = lin;
-            if (row_major) {
-                for (size_t k = a_rank; k-- > 0;) {
-                    a_off += (rem % a_dims[k]) * a_str[k];
-                    rem /= a_dims[k];
-                }
-                rem = lin;
-                for (size_t k = o_rank; k-- > 0;) {
-                    o_off += (rem % o_dims[k]) * o_str[k];
-                    rem /= o_dims[k];
-                }
-            } else {
-                for (size_t k = 0; k < a_rank; ++k) {
-                    a_off += (rem % a_dims[k]) * a_str[k];
-                    rem /= a_dims[k];
-                }
-                rem = lin;
-                for (size_t k = 0; k < o_rank; ++k) {
-                    o_off += (rem % o_dims[k]) * o_str[k];
-                    rem /= o_dims[k];
-                }
-            }
-            o_data[o_off] = a_data[a_off];
-        }
-    };
-
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("reshape eager");
-        apply(out, &A);
+        detail::eager_reshape<T>(out->impl(), A.impl(), row_major);
         return;
     }
-    LabeledSection("reshape capture");
-    detail::record_unary_custom("reshape", "reshape execute", out, A, apply);
+    auto const a_ref = ctx.get_slot(A);
+    auto const o_ref = ctx.get_slot(*out);
+    detail::capture_reshape<T>(ctx, o_ref, a_ref, row_major);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1323,28 +1108,19 @@ void diagonal(ResultType *out, AType const &A) {
     if (detail::tensor_rank(*out) != 1) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::diagonal: out must be rank 1, got rank {}", detail::tensor_rank(*out));
     }
-    size_t const n = std::min(A.dim(0), A.dim(1));
-    if (out->dim(0) != n) {
+    if (size_t const n = std::min(A.dim(0), A.dim(1)); out->dim(0) != n) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "cg::diagonal: out has extent {}, expected {}", out->dim(0), n);
     }
 
-    auto apply = [n](ResultType *o, AType const *a) {
-        using T             = typename ResultType::ValueType;
-        T           *o_data = o->data();
-        T const     *a_data = a->data();
-        size_t const s0 = a->stride(0), s1 = a->stride(1), os = o->stride(0);
-        for (size_t i = 0; i < n; ++i)
-            o_data[i * os] = a_data[i * s0 + i * s1];
-    };
-
+    using T   = typename ResultType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("diagonal eager");
-        apply(out, &A);
+        detail::eager_diagonal<T>(A.impl(), out->impl());
         return;
     }
-    LabeledSection("diagonal capture");
-    detail::record_unary_custom("diagonal", "diagonal execute", out, A, apply);
+    auto const a_ref = ctx.get_slot(A);
+    auto const r_ref = ctx.get_slot(*out);
+    detail::capture_diagonal<T>(ctx, r_ref, a_ref);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1396,35 +1172,15 @@ void scatter_add(DstType *dst, SrcType const &src, std::vector<std::vector<size_
         }
     }
 
-    auto apply = [indices, extents, N](DstType *d, SrcType const *s) {
-        using T = typename DstType::ValueType;
-        std::vector<size_t> d_str(N), s_str(N);
-        for (size_t k = 0; k < N; ++k) {
-            d_str[k] = d->stride(k);
-            s_str[k] = s->stride(k);
-        }
-        T       *d_data = d->data();
-        T const *s_data = s->data();
-
-        // As scatter, but accumulating. A repeated index only collapses into a
-        // run when it repeats the PREVIOUS index plus one, which it cannot, so
-        // the run path never merges two writes to the same element.
-        detail::for_each_selection_run(indices, extents, d_str, s_str, [&](size_t d_off, size_t s_off, size_t n) {
-            for (size_t i = 0; i < n; ++i) {
-                d_data[d_off + i] += s_data[s_off + i];
-            }
-        });
-    };
-
+    using T   = typename DstType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("scatter_add eager");
-        apply(dst, &src);
+        detail::eager_scatter<T>(true, dst->impl(), src.impl(), indices, extents);
         return;
     }
-    LabeledSection("scatter_add capture");
-    // dst is read as well as written: this accumulates onto what is there.
-    detail::record_unary_custom("scatter_add", "scatter_add execute", dst, src, apply, /*reads_dst=*/true);
+    auto const s_ref = ctx.get_slot(src);
+    auto const d_ref = ctx.get_slot(*dst);
+    detail::capture_scatter<T>(ctx, true, d_ref, s_ref, indices, std::move(extents));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1516,29 +1272,13 @@ void element_transform(CType *C, UnaryOperator unary_op) {
 ///         for an op that takes none.
 template <CoreBasicTensorConcept CType>
 void element_transform(CType *C, std::string_view op_name, std::optional<double> param = std::nullopt) {
-    using T = typename CType::ValueType;
-
-    auto kernel = element_ops::global_element_op_registry().kernel<T>(op_name, param);
-
+    using T   = typename CType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("element_transform eager");
-        element_ops::detail::apply_element_op<T>(kernel, &C->impl());
+        detail::eager_element_transform<T>(C->impl(), op_name, param);
         return;
     }
-
-    LabeledSection("element_transform capture");
-    auto [c_id, c_slot] = ctx.get_slot(*C);
-
-    ElementTransformDescriptor desc;
-    desc.op_name = std::string(op_name);
-    desc.param   = param;
-
-    // Both lists name C: the transform reads every element and writes it back,
-    // which is the read-modify-write convention scale and the closure overload
-    // already use.
-    ctx.record_built(OpKind::ElementTransform, "element_transform", packed_gemm::get_scalar_type<T>(), C->impl().rank(), std::move(desc),
-                     std::span<TensorId const>{&c_id, 1}, std::span<TensorId const>{&c_id, 1}, {c_id}, {c_id});
+    detail::capture_element_transform<T>(ctx, ctx.get_slot(*C).first, C->impl().rank(), op_name, param);
 }
 
 /// Python-friendly NAMED element_transform: the registry's kernel, chosen by name.
@@ -1695,31 +1435,13 @@ APIARY_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<std::complex<float>>)
 APIARY_INSTANTIATE_AS("shift", einsums::RuntimeTensorView<std::complex<double>>)
 // clang-format on
 void shift(typename AType::ValueType beta, AType *A) {
-    using T = typename AType::ValueType;
-
-    auto run = [beta](AType *target) {
-        T           *data = target->data();
-        size_t const n    = target->size();
-        for (size_t i = 0; i < n; ++i) {
-            data[i] += beta;
-        }
-    };
-
+    using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("shift eager");
-        run(A);
+        detail::eager_shift<T>(beta, A->impl());
         return;
     }
-
-    LabeledSection("shift capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-    auto label          = fmt::format("shift({})", A->name());
-    auto executor       = [a_slot, run]() {
-        LabeledSection("shift execute");
-        run(static_cast<AType *>(a_slot->ptr));
-    };
-    ctx.record(OpKind::Custom, std::move(label), {a_id}, {a_id}, std::move(executor));
+    detail::capture_shift<T>(ctx, beta, ctx.get_slot(*A), A->name());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1797,57 +1519,17 @@ void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
         // and missed it.
         ctx.record(OpKind::Custom, std::move(label), {x_id, y_id}, {y_id}, std::move(executor), std::move(edesc));
     } else {
+        static_assert(detail::ImplBackedTensor<XType> && detail::ImplBackedTensor<YType>,
+                      "cg::axpy: non-tiled operands must be dense tensors, views or runtime tensors");
+        using T   = typename XType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("axpy eager");
-            linear_algebra::axpy(alpha, X, Y);
+            detail::eager_axpy<T>(alpha, X.impl(), Y->impl());
             return;
         }
-
-        LabeledSection("axpy capture");
         TensorId const x_id = ctx.get_slot(X).first;
         TensorId const y_id = ctx.get_slot(*Y).first;
-
-        using T = typename XType::ValueType;
-
-        // axpy IS an axpby with beta == 1, so it records as one. It used to be
-        // its own OpKind carrying no op_data at all, which made the op opaque:
-        // a pass could see "something accumulates into Y" but not by how much,
-        // so every scalar-aware rewrite (ScaleAbsorption, CSE, ElementWiseFusion,
-        // SymmetrizedAccumulation, ...) gated on OpKind::Axpby and skipped it.
-        // Since `Y += X` is how this operation is spelled in every other
-        // library, the most natural spelling was the one the optimizer could not
-        // see.
-        //
-        // Recording the same kind rather than a parallel one is what makes those
-        // passes work on it, with no per-pass special-casing. The kernel choice
-        // is the executor's, not the kind's: it still calls the BLAS axpy fast
-        // path whenever beta == 1, which is every capture from here.
-        auto params   = std::make_shared<AxpbyParams>();
-        params->alpha = PrefactorScalar{alpha};
-        params->beta  = PrefactorScalar{T{1}};
-
-        auto label = fmt::format("axpy(alpha={}, {}, {})", alpha, X.name(), Y->name());
-
-        AxpbyDescriptor desc;
-        desc.alpha  = params->alpha;
-        desc.beta   = params->beta;
-        desc.params = params;
-
-        // The built executor reads the scalars through the shared params, so
-        // the descriptor is the single source of truth rather than a snapshot
-        // the executor can silently disagree with. A pass that rewrites beta
-        // away from 1 turns this into a genuine axpby, and the executor honors
-        // that rather than ignoring the write.
-        std::array<TensorId, 2> const inputs{x_id, y_id};
-
-        // Y += alpha*X reads its destination unconditionally (beta == 1); list it
-        // as an input so dependency passes see the read (matches gemm's and
-        // direct_product's out-tensor-as-input convention - without it,
-        // LoopInvariantHoisting's reads-its-output guard is blind to the
-        // accumulation and Reorder misses the WAR hazard on Y's old value).
-        ctx.record_built(OpKind::Axpby, std::move(label), packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*Y), std::move(desc),
-                         inputs, std::span<TensorId const>{&y_id, 1}, {x_id, y_id}, {y_id});
+        detail::capture_axpy<T>(ctx, alpha, x_id, y_id, X.name(), Y->name(), detail::tensor_rank(*Y));
     }
 }
 
@@ -1905,41 +1587,17 @@ void axpby(typename XType::ValueType alpha, XType const &X, typename XType::Valu
         axpy(alpha, X, Y);
         return;
     } else {
+        static_assert(detail::ImplBackedTensor<XType> && detail::ImplBackedTensor<YType>,
+                      "cg::axpby: non-tiled operands must be dense tensors, views or runtime tensors");
+        using T   = typename XType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("axpby eager");
-            linear_algebra::axpby(alpha, X, beta, Y);
+            detail::eager_axpby<T>(alpha, X.impl(), beta, Y->impl());
             return;
         }
-
-        LabeledSection("axpby capture");
         TensorId const x_id = ctx.get_slot(X).first;
         TensorId const y_id = ctx.get_slot(*Y).first;
-
-        using T = typename XType::ValueType;
-
-        // Live-mutable scalars shared with the executor (single source of truth:
-        // a pass that folds a scale into this axpby writes beta through params and
-        // the executor honors it on replay). The descriptor keeps the at-capture
-        // snapshot for analysis passes.
-        auto params   = std::make_shared<AxpbyParams>();
-        params->alpha = PrefactorScalar{alpha};
-        params->beta  = PrefactorScalar{beta};
-
-        auto label = fmt::format("axpby(alpha={}, beta={})", alpha, beta);
-
-        AxpbyDescriptor desc;
-        desc.alpha  = params->alpha;
-        desc.beta   = params->beta;
-        desc.params = params;
-
-        // Y = alpha*X + beta*Y reads its destination when beta != 0; same
-        // out-tensor-as-input convention as gemm/direct_product (see axpy).
-        std::vector<TensorId> axpby_inputs =
-            (beta != typename XType::ValueType{0}) ? std::vector<TensorId>{x_id, y_id} : std::vector<TensorId>{x_id};
-
-        ctx.record_built(OpKind::Axpby, std::move(label), packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*Y), std::move(desc),
-                         axpby_inputs, std::span<TensorId const>{&y_id, 1}, axpby_inputs, {y_id});
+        detail::capture_axpby<T>(ctx, alpha, beta, x_id, y_id, detail::tensor_rank(*Y));
     }
 }
 
@@ -2016,38 +1674,41 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C)
                                 detail::tensor_rank(B), detail::tensor_rank(*C));
     }
 
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("gemm eager");
-        linear_algebra::gemm<TransA, TransB>(alpha, A, B, beta, C);
-        return;
-    }
-
-    LabeledSection("gemm capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    auto [c_id, c_slot] = ctx.get_slot(*C);
-
-    auto label = fmt::format("gemm<{},{}>", TransA ? "T" : "N", TransB ? "T" : "N");
-
-    // beta != 0 → the gemm reads C as well as writing it (``C = α·A·B + β·C``);
-    // list C as an input so loop-invariance and scheduling see the read. See the
-    // matching note on the TransA/TransB overload above.
-    std::vector<TensorId> inputs = {a_id, b_id};
-    if (beta != U{}) {
-        inputs.push_back(c_id);
-    }
-
     if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && CoreBasicTensorConcept<CType>) {
-        using ValueT = typename AType::ValueType;
-
-        ctx.record_built(OpKind::Gemm, std::move(label), packed_gemm::get_scalar_type<ValueT>(), 2,
-                         GemmDescriptor{.alpha   = PrefactorScalar{static_cast<ValueT>(alpha)},
-                                        .beta    = PrefactorScalar{static_cast<ValueT>(beta)},
-                                        .trans_a = TransA ? 't' : 'n',
-                                        .trans_b = TransB ? 't' : 'n'},
-                         inputs, std::span<TensorId const>{&c_id, 1}, inputs, {c_id});
+        using T       = typename AType::ValueType;
+        char const ta = TransA ? 't' : 'n', tb = TransB ? 't' : 'n';
+        auto      &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            detail::eager_gemm<T>(ta, tb, static_cast<T>(alpha), A.impl(), nullptr, B.impl(), nullptr, static_cast<T>(beta), C->impl());
+            return;
+        }
+        TensorId const a_id = ctx.get_slot(A).first;
+        TensorId const b_id = ctx.get_slot(B).first;
+        TensorId const c_id = ctx.get_slot(*C).first;
+        detail::capture_gemm<T>(ctx, ta, tb, true, static_cast<T>(alpha), static_cast<T>(beta), beta != U{}, a_id, b_id, c_id);
     } else {
+        // A matrix operand that is not a dense tensor: the typed kernel, and a
+        // closure that resolves the operands through their slots on replay.
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("gemm eager");
+            linear_algebra::gemm<TransA, TransB>(alpha, A, B, beta, C);
+            return;
+        }
+
+        LabeledSection("gemm capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [b_id, b_slot] = ctx.get_slot(B);
+        auto [c_id, c_slot] = ctx.get_slot(*C);
+
+        auto label = fmt::format("gemm<{},{}>", TransA ? "T" : "N", TransB ? "T" : "N");
+
+        // beta != 0 → the gemm reads C as well as writing it; list C as an input.
+        std::vector<TensorId> inputs = {a_id, b_id};
+        if (beta != U{}) {
+            inputs.push_back(c_id);
+        }
+
         auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
             LabeledSection("gemm execute");
             ProfileAnnotate("trans", TransA ? (TransB ? "TT" : "TN") : (TransB ? "NT" : "NN"));
@@ -2124,39 +1785,41 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C,
     }
     char const ta = static_cast<char>(trans_a), tb = static_cast<char>(trans_b);
 
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("gemm eager");
-        linear_algebra::gemm(ta, tb, alpha, A, B, beta, C);
-        return;
-    }
-
-    LabeledSection("gemm capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    auto [c_id, c_slot] = ctx.get_slot(*C);
-
-    auto label = fmt::format("gemm({},{})", static_cast<char>(trans_a), static_cast<char>(trans_b));
-
-    // beta != 0 → reads C as well as writing it; list C as input (see the bool overload's note).
-    std::vector<TensorId> inputs = {a_id, b_id};
-    if (beta != U{}) {
-        inputs.push_back(c_id);
-    }
-
     if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && CoreBasicTensorConcept<CType>) {
-        using ValueT = typename AType::ValueType;
-
-        // The chars go in as given, conjugate transpose included: this is the
-        // overload that exists to reach BLAS 'c', and the descriptor records
-        // chars rather than bools so it can.
-        ctx.record_built(OpKind::Gemm, std::move(label), packed_gemm::get_scalar_type<ValueT>(), 2,
-                         GemmDescriptor{.alpha   = PrefactorScalar{static_cast<ValueT>(alpha)},
-                                        .beta    = PrefactorScalar{static_cast<ValueT>(beta)},
-                                        .trans_a = ta,
-                                        .trans_b = tb},
-                         inputs, std::span<TensorId const>{&c_id, 1}, inputs, {c_id});
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            detail::eager_gemm<T>(ta, tb, static_cast<T>(alpha), A.impl(), detail::symmetry_of(A), B.impl(), detail::symmetry_of(B),
+                                  static_cast<T>(beta), C->impl());
+            return;
+        }
+        TensorId const a_id = ctx.get_slot(A).first;
+        TensorId const b_id = ctx.get_slot(B).first;
+        TensorId const c_id = ctx.get_slot(*C).first;
+        detail::capture_gemm<T>(ctx, ta, tb, false, static_cast<T>(alpha), static_cast<T>(beta), beta != U{}, a_id, b_id, c_id);
     } else {
+        // A matrix operand that is not a dense tensor: the typed kernel, and a
+        // closure that resolves the operands through their slots on replay.
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("gemm eager");
+            linear_algebra::gemm(ta, tb, alpha, A, B, beta, C);
+            return;
+        }
+
+        LabeledSection("gemm capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [b_id, b_slot] = ctx.get_slot(B);
+        auto [c_id, c_slot] = ctx.get_slot(*C);
+
+        auto label = fmt::format("gemm({},{})", ta, tb);
+
+        // beta != 0 → the gemm reads C as well as writing it; list C as an input.
+        std::vector<TensorId> inputs = {a_id, b_id};
+        if (beta != U{}) {
+            inputs.push_back(c_id);
+        }
+
         auto executor = [alpha, a_slot, b_slot, beta, c_slot, ta, tb]() {
             LabeledSection("gemm execute");
             linear_algebra::gemm(ta, tb, alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), beta,
@@ -2227,35 +1890,49 @@ void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y)
                                 detail::tensor_rank(z), detail::tensor_rank(*y));
     }
 
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("gemv eager");
-        linear_algebra::gemv<TransA>(alpha, A, z, beta, y);
-        return;
+    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<XType> && CoreBasicTensorConcept<YType>) {
+        using T        = typename AType::ValueType;
+        char const ta  = TransA ? 't' : 'n';
+        auto      &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            detail::eager_gemv<T>(ta, static_cast<T>(alpha), A.impl(), z.impl(), static_cast<T>(beta), y->impl());
+            return;
+        }
+        auto const a_ref = ctx.get_slot(A);
+        auto const z_ref = ctx.get_slot(z);
+        auto const y_ref = ctx.get_slot(*y);
+        detail::capture_gemv<T>(ctx, ta, true, static_cast<T>(alpha), static_cast<T>(beta), beta != U{}, a_ref, z_ref, y_ref);
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("gemv eager");
+            linear_algebra::gemv<TransA>(alpha, A, z, beta, y);
+            return;
+        }
+
+        LabeledSection("gemv capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [z_id, z_slot] = ctx.get_slot(z);
+        auto [y_id, y_slot] = ctx.get_slot(*y);
+
+        auto label    = fmt::format("gemv<{}>", TransA ? "T" : "N");
+        auto executor = [alpha, a_slot, z_slot, beta, y_slot]() {
+            LabeledSection("gemv execute");
+            ProfileAnnotate("trans", TransA ? "T" : "N");
+            ProfileAnnotate("m", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
+            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(1)));
+            linear_algebra::gemv<TransA>(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<XType const *>(z_slot->ptr), beta,
+                                         static_cast<YType *>(y_slot->ptr));
+        };
+
+        // beta != 0 → gemv reads y as well as writing it; list it as an input so
+        // loop-invariance and scheduling see the read (see the gemm note above).
+        std::vector<TensorId> inputs = {a_id, z_id};
+        if (beta != U{}) {
+            inputs.push_back(y_id);
+        }
+        ctx.record(OpKind::Gemv, std::move(label), std::move(inputs), {y_id}, std::move(executor));
     }
-
-    LabeledSection("gemv capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [z_id, z_slot] = ctx.get_slot(z);
-    auto [y_id, y_slot] = ctx.get_slot(*y);
-
-    auto label    = fmt::format("gemv<{}>", TransA ? "T" : "N");
-    auto executor = [alpha, a_slot, z_slot, beta, y_slot]() {
-        LabeledSection("gemv execute");
-        ProfileAnnotate("trans", TransA ? "T" : "N");
-        ProfileAnnotate("m", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(1)));
-        linear_algebra::gemv<TransA>(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<XType const *>(z_slot->ptr), beta,
-                                     static_cast<YType *>(y_slot->ptr));
-    };
-
-    // beta != 0 → gemv reads y as well as writing it; list it as an input so
-    // loop-invariance and scheduling see the read (see the gemm note above).
-    std::vector<TensorId> inputs = {a_id, z_id};
-    if (beta != U{}) {
-        inputs.push_back(y_id);
-    }
-    ctx.record(OpKind::Gemv, std::move(label), std::move(inputs), {y_id}, std::move(executor));
 }
 
 /// Graph-aware GEMV with a runtime ``Transpose`` op flag (N / T / C).
@@ -2313,30 +1990,16 @@ void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y,
     }
     char const ta = static_cast<char>(trans_a);
 
+    using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("gemv eager");
-        linear_algebra::gemv(ta, alpha, A, z, beta, y);
+        detail::eager_gemv<T>(ta, static_cast<T>(alpha), A.impl(), z.impl(), static_cast<T>(beta), y->impl());
         return;
     }
-
-    LabeledSection("gemv capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [z_id, z_slot] = ctx.get_slot(z);
-    auto [y_id, y_slot] = ctx.get_slot(*y);
-
-    auto label    = fmt::format("gemv({})", static_cast<char>(trans_a));
-    auto executor = [alpha, a_slot, z_slot, beta, y_slot, ta]() {
-        LabeledSection("gemv execute");
-        linear_algebra::gemv(ta, alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<XType const *>(z_slot->ptr), beta,
-                             static_cast<YType *>(y_slot->ptr));
-    };
-
-    std::vector<TensorId> inputs = {a_id, z_id};
-    if (beta != U{}) {
-        inputs.push_back(y_id);
-    }
-    ctx.record(OpKind::Gemv, std::move(label), std::move(inputs), {y_id}, std::move(executor));
+    auto const a_ref = ctx.get_slot(A);
+    auto const z_ref = ctx.get_slot(z);
+    auto const y_ref = ctx.get_slot(*y);
+    detail::capture_gemv<T>(ctx, ta, false, static_cast<T>(alpha), static_cast<T>(beta), beta != U{}, a_ref, z_ref, y_ref);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2398,30 +2061,43 @@ void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType 
                                 detail::tensor_rank(Y), detail::tensor_rank(*A));
     }
 
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("ger eager");
-        linear_algebra::ger(alpha, X, Y, A);
-        return;
+    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<XType> && CoreBasicTensorConcept<YType>) {
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            detail::eager_ger<T>(false, alpha, X.impl(), Y.impl(), A->impl());
+            return;
+        }
+        auto const x_ref = ctx.get_slot(X);
+        auto const y_ref = ctx.get_slot(Y);
+        auto const a_ref = ctx.get_slot(*A);
+        detail::capture_ger<T>(ctx, false, alpha, x_ref, y_ref, a_ref);
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("ger eager");
+            linear_algebra::ger(alpha, X, Y, A);
+            return;
+        }
+
+        LabeledSection("ger capture");
+        auto [x_id, x_slot] = ctx.get_slot(X);
+        auto [y_id, y_slot] = ctx.get_slot(Y);
+        auto [a_id, a_slot] = ctx.get_slot(*A);
+
+        auto executor = [alpha, x_slot, y_slot, a_slot]() {
+            LabeledSection("ger execute");
+            ProfileAnnotate("m", static_cast<int64_t>(static_cast<XType const *>(x_slot->ptr)->dim(0)));
+            ProfileAnnotate("n", static_cast<int64_t>(static_cast<YType const *>(y_slot->ptr)->dim(0)));
+            linear_algebra::ger(alpha, *static_cast<XType const *>(x_slot->ptr), *static_cast<YType const *>(y_slot->ptr),
+                                static_cast<AType *>(a_slot->ptr));
+        };
+
+        // ger always accumulates (``A += α·X·Y^T``), so it reads A as well as
+        // writing it, list A as an input so loop-invariance and scheduling see the
+        // read-modify-write (see the gemm note above).
+        ctx.record(OpKind::Ger, "ger", {x_id, y_id, a_id}, {a_id}, std::move(executor));
     }
-
-    LabeledSection("ger capture");
-    auto [x_id, x_slot] = ctx.get_slot(X);
-    auto [y_id, y_slot] = ctx.get_slot(Y);
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-
-    auto executor = [alpha, x_slot, y_slot, a_slot]() {
-        LabeledSection("ger execute");
-        ProfileAnnotate("m", static_cast<int64_t>(static_cast<XType const *>(x_slot->ptr)->dim(0)));
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<YType const *>(y_slot->ptr)->dim(0)));
-        linear_algebra::ger(alpha, *static_cast<XType const *>(x_slot->ptr), *static_cast<YType const *>(y_slot->ptr),
-                            static_cast<AType *>(a_slot->ptr));
-    };
-
-    // ger always accumulates (``A += α·X·Y^T``), so it reads A as well as
-    // writing it, list A as an input so loop-invariance and scheduling see the
-    // read-modify-write (see the gemm note above).
-    ctx.record(OpKind::Ger, "ger", {x_id, y_id, a_id}, {a_id}, std::move(executor));
 }
 
 /// Graph-aware conjugating rank-1 update (GERC): ``A += alpha * X * Y^H``.
@@ -2458,26 +2134,16 @@ void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType
         EINSUMS_THROW_EXCEPTION(RankError, "cg::gerc requires X/Y rank-1 and A rank-2; got {}, {}, {}.", X.rank(), Y.rank(), A->rank());
     }
 
+    using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("gerc eager");
-        linear_algebra::gerc(alpha, X, Y, A);
+        detail::eager_ger<T>(true, alpha, X.impl(), Y.impl(), A->impl());
         return;
     }
-
-    LabeledSection("gerc capture");
-    auto [x_id, x_slot] = ctx.get_slot(X);
-    auto [y_id, y_slot] = ctx.get_slot(Y);
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-
-    auto executor = [alpha, x_slot, y_slot, a_slot]() {
-        LabeledSection("gerc execute");
-        linear_algebra::gerc(alpha, *static_cast<XType const *>(x_slot->ptr), *static_cast<YType const *>(y_slot->ptr),
-                             static_cast<AType *>(a_slot->ptr));
-    };
-
-    // gerc accumulates into A (``A += α·X·Y^H``); list A as an input for the RMW.
-    ctx.record(OpKind::Ger, "gerc", {x_id, y_id, a_id}, {a_id}, std::move(executor));
+    auto const x_ref = ctx.get_slot(X);
+    auto const y_ref = ctx.get_slot(Y);
+    auto const a_ref = ctx.get_slot(*A);
+    detail::capture_ger<T>(ctx, true, alpha, x_ref, y_ref, a_ref);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2543,32 +2209,36 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
     using ResultT = BiggestTypeT<typename AType::ValueType, typename BType::ValueType>;
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("dot eager");
-        // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
-        blas::SerialVendorScope const serial;
-        *result = linear_algebra::dot(A, B);
-        return;
-    }
 
-    LabeledSection("dot capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    TensorId r_id       = ctx.get_or_register_scalar(result, "dot_result");
-
-    // The builder reaches its operands through the rank-erased TensorImpl and
-    // dispatches on ONE dtype, so it covers the dense same-type case and only
-    // that. A block or disk operand has no single buffer, and a mixed-dtype dot
-    // (this overload's requires clause allows one) has no single dtype to key
-    // on; both keep the capture-baked closure and report as blockers.
+    // The library entries cover the dense same-type case and only that. A block or
+    // disk operand has no single buffer, and a mixed-dtype dot (this overload's
+    // requires clause allows one) has no single dtype to key on; both keep the
+    // typed kernel and a capture-baked closure, and report as blockers.
     if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && std::is_same_v<typename AType::ValueType, ResultT> &&
                   std::is_same_v<typename BType::ValueType, ResultT>) {
-        std::vector<TensorId> const inputs{a_id, b_id};
-
+        if (!ctx.is_capturing()) {
+            *result = detail::eager_dot<ResultT>(A.impl(), B.impl(), false);
+            return;
+        }
+        TensorId const a_id = ctx.get_slot(A).first;
+        TensorId const b_id = ctx.get_slot(B).first;
+        TensorId const r_id = ctx.get_or_register_scalar(result, "dot_result");
         // Rank is keyed on the destination, which is a registered scalar: 0.
-        ctx.record_built(OpKind::Dot, "dot", packed_gemm::get_scalar_type<ResultT>(), 0, DotDescriptor{.conjugated = false}, inputs,
-                         std::span<TensorId const>{&r_id, 1}, inputs, {r_id});
+        detail::capture_dot<ResultT>(ctx, false, a_id, b_id, r_id, 0);
     } else {
+        if (!ctx.is_capturing()) {
+            LabeledSection("dot eager");
+            // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
+            blas::SerialVendorScope const serial;
+            *result = linear_algebra::dot(A, B);
+            return;
+        }
+
+        LabeledSection("dot capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [b_id, b_slot] = ctx.get_slot(B);
+        TensorId r_id       = ctx.get_or_register_scalar(result, "dot_result");
+
         auto executor = [result, a_slot, b_slot]() {
             LabeledSection("dot execute");
             blas::SerialVendorScope const serial;
@@ -2647,35 +2317,26 @@ void dot_python(ResultType *result, AType const &A, BType const &B) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dot: result tensor must have at least one element");
     }
 
-    // Tiled operands compose per-tile dots; dense delegate to linear_algebra.
-    auto compute = [](AType const &a, BType const &b) -> T {
-        // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
-        blas::SerialVendorScope const serial;
-        if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-            return detail::tiled_dot<T>(a, b);
-        } else {
-            return linear_algebra::dot(a, b);
-        }
-    };
-
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("dot_python eager");
-        result->data()[0] = compute(A, B);
-        return;
-    }
-
-    LabeledSection("dot_python capture");
-    // Register the result as a normal tensor slot (not a scalar handle) so
-    // downstream tensor ops (scale, axpy, ...) on the same tensor see the
-    // same slot id, get_or_register_scalar would key by data()[0] and
-    // collide with get_slot(*result), giving rank-0 metadata to the scale.
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    auto [r_id, r_slot] = ctx.get_slot(*result);
-
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-        auto executor = [a_slot, b_slot, r_slot, compute]() {
+        // Tiled operands compose per-tile dots.
+        auto compute = [](AType const &a, BType const &b) -> T {
+            // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
+            blas::SerialVendorScope const serial;
+            return detail::tiled_dot<T>(a, b);
+        };
+
+        if (!ctx.is_capturing()) {
+            LabeledSection("dot_python eager");
+            result->data()[0] = compute(A, B);
+            return;
+        }
+
+        LabeledSection("dot_python capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [b_id, b_slot] = ctx.get_slot(B);
+        auto [r_id, r_slot] = ctx.get_slot(*result);
+        auto executor       = [a_slot, b_slot, r_slot, compute]() {
             LabeledSection("dot_python execute");
             auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
             r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
@@ -2686,13 +2347,18 @@ void dot_python(ResultType *result, AType const &A, BType const &B) {
         td.conjugated = false;
         ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor), std::move(td));
     } else {
-        // Same node the scalar-writing cg::dot records, differing only in what
-        // the destination is: a rank-1 tensor here rather than a bare scalar,
-        // which ScalarAccessor resolves to the same one address either way.
-        std::vector<TensorId> const inputs{a_id, b_id};
-
-        ctx.record_built(OpKind::Dot, "dot", packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result),
-                         DotDescriptor{.conjugated = false}, inputs, std::span<TensorId const>{&r_id, 1}, inputs, {r_id});
+        if (!ctx.is_capturing()) {
+            result->data()[0] = detail::eager_dot<T>(A.impl(), B.impl(), false);
+            return;
+        }
+        // Register the result as a normal tensor slot (not a scalar handle) so
+        // downstream tensor ops (scale, axpy, ...) on the same tensor see the
+        // same slot id; get_or_register_scalar would key by data()[0] and
+        // collide with get_slot(*result), giving rank-0 metadata to the scale.
+        TensorId const a_id = ctx.get_slot(A).first;
+        TensorId const b_id = ctx.get_slot(B).first;
+        TensorId const r_id = ctx.get_slot(*result).first;
+        detail::capture_dot<T>(ctx, false, a_id, b_id, r_id, detail::tensor_rank(*result));
     }
 }
 
@@ -2757,30 +2423,27 @@ void dotc_python(ResultType *result, AType const &A, BType const &B) {
     if (result->size() < 1) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dotc: result tensor must have at least one element");
     }
-    auto compute = [](AType const &a, BType const &b) -> T {
-        // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
-        blas::SerialVendorScope const serial;
-        if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-            return detail::tiled_dotc<T>(a, b);
-        } else {
-            return linear_algebra::true_dot(a, b);
-        }
-    };
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("dotc_python eager");
-        result->data()[0] = compute(A, B);
-        return;
-    }
-
-    LabeledSection("dotc_python capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(B);
-    auto [r_id, r_slot] = ctx.get_slot(*result);
-
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-        auto executor = [a_slot, b_slot, r_slot, compute]() {
+        // Tiled operands compose per-tile dots.
+        auto compute = [](AType const &a, BType const &b) -> T {
+            // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
+            blas::SerialVendorScope const serial;
+            return detail::tiled_dotc<T>(a, b);
+        };
+
+        if (!ctx.is_capturing()) {
+            LabeledSection("dotc_python eager");
+            result->data()[0] = compute(A, B);
+            return;
+        }
+
+        LabeledSection("dotc_python capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [b_id, b_slot] = ctx.get_slot(B);
+        auto [r_id, r_slot] = ctx.get_slot(*result);
+        auto executor       = [a_slot, b_slot, r_slot, compute]() {
             LabeledSection("dotc_python execute");
             auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
             r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
@@ -2790,53 +2453,24 @@ void dotc_python(ResultType *result, AType const &A, BType const &B) {
         td.conjugated = true;
         ctx.record(OpKind::Dot, "dotc", {a_id, b_id}, {r_id}, std::move(executor), std::move(td));
     } else {
-        // The conjugation is the descriptor's one field, and it is the whole
-        // difference from dot_python: the builder picks true_dot over dot.
-        std::vector<TensorId> const inputs{a_id, b_id};
-
-        ctx.record_built(OpKind::Dot, "dotc", packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result),
-                         DotDescriptor{.conjugated = true}, inputs, std::span<TensorId const>{&r_id, 1}, inputs, {r_id});
+        if (!ctx.is_capturing()) {
+            result->data()[0] = detail::eager_dot<T>(A.impl(), B.impl(), true);
+            return;
+        }
+        // Register the result as a normal tensor slot (not a scalar handle) so
+        // downstream tensor ops (scale, axpy, ...) on the same tensor see the
+        // same slot id; get_or_register_scalar would key by data()[0] and
+        // collide with get_slot(*result), giving rank-0 metadata to the scale.
+        TensorId const a_id = ctx.get_slot(A).first;
+        TensorId const b_id = ctx.get_slot(B).first;
+        TensorId const r_id = ctx.get_slot(*result).first;
+        detail::capture_dot<T>(ctx, true, a_id, b_id, r_id, detail::tensor_rank(*result));
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // reductions: sum / max  (write a scalar into result->data()[0])
 // ─────────────────────────────────────────────────────────────────────────────
-
-namespace detail {
-/// Stride-correct fold over every element of a dense tensor or view.
-///
-/// Walks the logical index space with an odometer (multi-index -> offset via
-/// strides), so non-contiguous views (slices, transposes) reduce correctly,
-/// not just contiguous storage. O(size * rank).
-template <typename TensorType, typename Acc, typename Op>
-Acc reduce_elements(TensorType const &A, Acc init, Op op) {
-    using T           = typename TensorType::ValueType;
-    size_t const rank = A.rank();
-    size_t const n    = A.size();
-    T const     *base = A.data();
-    if (base == nullptr || n == 0)
-        return init;
-    std::vector<size_t> dims(rank), strides(rank), idx(rank, 0);
-    for (size_t a = 0; a < rank; ++a) {
-        dims[a]    = A.dim(a);
-        strides[a] = A.stride(a);
-    }
-    Acc acc = init;
-    for (size_t k = 0; k < n; ++k) {
-        size_t off = 0;
-        for (size_t a = 0; a < rank; ++a)
-            off += idx[a] * strides[a];
-        acc = op(acc, base[off]);
-        for (size_t a = rank; a-- > 0;) { // increment the odometer
-            if (++idx[a] < dims[a])
-                break;
-            idx[a] = 0;
-        }
-    }
-    return acc;
-}
-} // namespace detail
 
 /// Graph-aware sum of every element, written into ``result->data()[0]``.
 ///
@@ -2863,20 +2497,14 @@ void sum_python(ResultType *result, AType const &A) {
     if (result->size() < 1)
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::sum: result tensor must have at least one element");
 
-    auto compute = [](AType const &a) -> T { return detail::reduce_elements(a, T{0}, [](T acc, T x) { return acc + x; }); };
-
-    // The reduction writes one element, so it fits the same one-in one-out node
-    // every other elementwise op records.
-    auto apply = [compute](ResultType *r, AType const *a) { r->data()[0] = compute(*a); };
-
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("sum_python eager");
-        apply(result, &A);
+        result->data()[0] = detail::eager_sum<T>(A.impl());
         return;
     }
-    LabeledSection("sum_python capture");
-    detail::record_unary_custom("sum", "sum_python execute", result, A, apply);
+    auto const a_ref = ctx.get_slot(A);
+    auto const r_ref = ctx.get_slot(*result);
+    detail::capture_sum<T>(ctx, r_ref, a_ref);
 }
 
 /// Graph-aware maximum element (real dtypes), written into ``result->data()[0]``.
@@ -2899,27 +2527,14 @@ void max_python(ResultType *result, AType const &A) {
     if (A.size() == 0)
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::max: cannot reduce an empty tensor");
 
-    auto compute = [](AType const &a) -> T {
-        // Propagate NaN like numpy.max: a plain ``x > acc`` comparison is false for
-        // a NaN x, so NaN would be silently dropped, and an all-NaN reduction would
-        // leak the ``lowest()`` seed. Test ``isnan(x)`` so a NaN poisons the
-        // accumulator (and ``acc`` stays NaN thereafter, since ``x > NaN`` is false).
-        return detail::reduce_elements(a, std::numeric_limits<T>::lowest(),
-                                       [](T acc, T x) { return (std::isnan(x) || x > acc) ? x : acc; });
-    };
-
-    // The reduction writes one element, so it fits the same one-in one-out node
-    // every other elementwise op records.
-    auto apply = [compute](ResultType *r, AType const *a) { r->data()[0] = compute(*a); };
-
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("max_python eager");
-        apply(result, &A);
+        result->data()[0] = detail::eager_max<T>(A.impl());
         return;
     }
-    LabeledSection("max_python capture");
-    detail::record_unary_custom("max", "max_python execute", result, A, apply);
+    auto const a_ref = ctx.get_slot(A);
+    auto const r_ref = ctx.get_slot(*result);
+    detail::capture_max<T>(ctx, r_ref, a_ref);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2971,36 +2586,23 @@ APIARY_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTe
 APIARY_INSTANTIATE_AS("direct_product", std::complex<double>, einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>,                                          einsums::RuntimeTensorView<std::complex<double>>)
 // clang-format on
 void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
+    static_assert(detail::ImplBackedTensor<AType> && detail::ImplBackedTensor<BType> && detail::ImplBackedTensor<CType>,
+                  "cg::direct_product: operands must be dense tensors, views or runtime tensors");
+    using E   = typename CType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("direct_product eager");
-        linear_algebra::direct_product(alpha, A, B, beta, C);
+        if constexpr (std::is_same_v<typename AType::ValueType, E> && std::is_same_v<typename BType::ValueType, E>) {
+            detail::eager_direct_product<E>(static_cast<E>(alpha), A.impl(), B.impl(), static_cast<E>(beta), C->impl());
+        } else {
+            linear_algebra::direct_product(alpha, A, B, beta, C);
+        }
         return;
     }
-
-    LabeledSection("direct_product capture");
     TensorId const a_id = ctx.get_slot(A).first;
     TensorId const b_id = ctx.get_slot(B).first;
     TensorId const c_id = ctx.get_slot(*C).first;
-
-    // The scalars used to be baked into the executor with no descriptor at all,
-    // so the node was opaque to every pass that reasons about prefactors.
-    ElementwiseBinaryDescriptor desc;
-    desc.alpha         = PrefactorScalar{alpha};
-    desc.beta          = PrefactorScalar{beta};
-    desc.params        = std::make_shared<ElementwiseParams>();
-    desc.params->alpha = desc.alpha;
-    desc.params->beta  = desc.beta;
-
-    // When beta != 0 the op reads its destination (C = alpha*A*B + beta*C), so C
-    // is an input as well as the output. List it -- otherwise dependency-based
-    // passes (LoopInvariantHoisting, Reorder, ...) don't see the read and may
-    // hoist the accumulation out of a loop or reorder it past another writer of C.
-    // (gemm already does this; matches the out-tensor-as-input convention.)
-    std::vector<TensorId> dp_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, b_id, c_id} : std::vector<TensorId>{a_id, b_id};
-
-    ctx.record_built(OpKind::DirectProduct, "direct_product", packed_gemm::get_scalar_type<typename CType::ValueType>(),
-                     detail::tensor_rank(*C), std::move(desc), dp_inputs, std::span<TensorId const>{&c_id, 1}, dp_inputs, {c_id});
+    detail::capture_elementwise_binary(ctx, OpKind::DirectProduct, PrefactorScalar{alpha}, PrefactorScalar{beta}, beta != T{0}, a_id, b_id,
+                                       c_id, packed_gemm::get_scalar_type<E>(), detail::tensor_rank(*C));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3090,32 +2692,23 @@ void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) 
         ctx.record(OpKind::DirectDivision, std::move(label), std::move(ids), {c_id}, std::move(executor), std::move(edesc));
         return;
     } else {
+        static_assert(detail::ImplBackedTensor<AType> && detail::ImplBackedTensor<BType> && detail::ImplBackedTensor<CType>,
+                      "cg::direct_division: non-tiled operands must be dense tensors, views or runtime tensors");
+        using E   = typename CType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
-            LabeledSection("direct_division eager");
-            linear_algebra::direct_division(alpha, A, B, beta, C);
+            if constexpr (std::is_same_v<typename AType::ValueType, E> && std::is_same_v<typename BType::ValueType, E>) {
+                detail::eager_direct_division<E>(static_cast<E>(alpha), A.impl(), B.impl(), static_cast<E>(beta), C->impl());
+            } else {
+                linear_algebra::direct_division(alpha, A, B, beta, C);
+            }
             return;
         }
-
-        LabeledSection("direct_division capture");
         TensorId const a_id = ctx.get_slot(A).first;
         TensorId const b_id = ctx.get_slot(B).first;
         TensorId const c_id = ctx.get_slot(*C).first;
-
-        // Same descriptor as the dense direct product; the kind distinguishes them.
-        ElementwiseBinaryDescriptor desc;
-        desc.alpha         = PrefactorScalar{alpha};
-        desc.beta          = PrefactorScalar{beta};
-        desc.params        = std::make_shared<ElementwiseParams>();
-        desc.params->alpha = desc.alpha;
-        desc.params->beta  = desc.beta;
-
-        // beta != 0 reads the destination (C = alpha*A/B + beta*C) -- list C as an
-        // input so dependency-based passes see the read (see direct_product).
-        std::vector<TensorId> dd_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, b_id, c_id} : std::vector<TensorId>{a_id, b_id};
-
-        ctx.record_built(OpKind::DirectDivision, "direct_division", packed_gemm::get_scalar_type<typename CType::ValueType>(),
-                         detail::tensor_rank(*C), std::move(desc), dd_inputs, std::span<TensorId const>{&c_id, 1}, dd_inputs, {c_id});
+        detail::capture_elementwise_binary(ctx, OpKind::DirectDivision, PrefactorScalar{alpha}, PrefactorScalar{beta}, beta != T{0}, a_id,
+                                           b_id, c_id, packed_gemm::get_scalar_type<E>(), detail::tensor_rank(*C));
     }
 }
 
@@ -3208,77 +2801,21 @@ void outer_sum(ResultType *result, std::vector<VectorType const *> vectors, std:
             effective_coeffs[k] = static_cast<T>(coefficients[k]);
     }
 
-    // Takes the vector list as a parameter rather than capturing it, so the
-    // executor can hand it the pointers rebound from the live slots while the
-    // eager path hands it the caller's originals.
-    auto apply = [effective_coeffs, N](ResultType *r, std::vector<VectorType const *> const &vecs) {
-        // Dim check (deferred from capture time so view operands can resolve).
-        for (size_t k = 0; k < N; ++k) {
-            if (vecs[k]->dim(0) != r->dim(k)) {
-                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::outer_sum: vector[{}] length ({}) doesn't match result dim {} ({})", k,
-                                        vecs[k]->dim(0), k, r->dim(k));
-            }
-        }
-        size_t const        total = r->size();
-        std::vector<size_t> idx(N, 0);
-        std::vector<size_t> dims(N), strides(N);
-        for (size_t k = 0; k < N; ++k) {
-            dims[k]    = r->dim(k);
-            strides[k] = r->stride(k);
-        }
-        T *out = r->data();
-        for (size_t count = 0; count < total; ++count) {
-            T sum{};
-            for (size_t k = 0; k < N; ++k) {
-                sum += effective_coeffs[k] * vecs[k]->data()[idx[k]];
-            }
-            size_t offset = 0;
-            for (size_t k = 0; k < N; ++k)
-                offset += idx[k] * strides[k];
-            out[offset] = sum;
-            // Increment multi-index (axis 0 fastest, direction is irrelevant for correctness).
-            for (size_t k = 0; k < N; ++k) {
-                if (++idx[k] < dims[k])
-                    break;
-                idx[k] = 0;
-            }
-        }
-    };
-
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("outer_sum eager");
-        apply(result, vectors);
+        std::vector<einsums::detail::TensorImpl<T> const *> impls(N);
+        for (size_t k = 0; k < N; ++k)
+            impls[k] = &vectors[k]->impl();
+        detail::eager_outer_sum<T>(result->impl(), impls, effective_coeffs);
         return;
     }
-
-    LabeledSection("outer_sum capture");
-    std::vector<TensorId> in_ids;
-    in_ids.reserve(N);
-    std::vector<TensorSlot const *> v_slots;
-    v_slots.reserve(N);
+    std::vector<detail::SlotRef> vector_refs;
+    vector_refs.reserve(N);
     for (size_t k = 0; k < N; ++k) {
-        auto [vid, vslot] = ctx.get_slot(*vectors[k]);
-        in_ids.push_back(vid);
-        v_slots.push_back(vslot);
+        vector_refs.push_back(ctx.get_slot(*vectors[k]));
     }
-    auto [r_id, r_slot] = ctx.get_slot(*result);
-
-    auto executor = [v_slots, r_slot, apply, N]() {
-        LabeledSection("outer_sum execute");
-        std::vector<VectorType const *> rebound(N);
-        for (size_t k = 0; k < N; ++k)
-            rebound[k] = static_cast<VectorType const *>(v_slots[k]->ptr);
-        apply(static_cast<ResultType *>(r_slot->ptr), rebound);
-    };
-
-    // The coefficients ride on the node as well as inside the executor, so a pass can read what
-    // this computes. `LaplaceTransform` accepts a denominator its graph writes only when it can
-    // VERIFY the recipe, and one signed coefficient per axis is the whole of the recipe; without
-    // the numbers here they are only inside a closure.
-    OuterSumDescriptor desc;
-    desc.coefficients = coefficients.empty() ? std::vector<double>(N, 1.0) : coefficients;
-    ctx.record(OpKind::Custom, "outer_sum", in_ids, {r_id}, std::move(executor), OpData(std::move(desc)));
+    auto const r_ref = ctx.get_slot(*result);
+    detail::capture_outer_sum<T>(ctx, r_ref, std::move(vector_refs), std::move(effective_coeffs), std::move(coefficients));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3496,7 +3033,6 @@ void batched_gemm(double alpha, std::vector<AType const *> a_list, std::vector<B
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("batched_gemm eager");
         std::vector<void const *> a_vs(count), b_vs(count);
         std::vector<void *>       c_vs(count);
         for (size_t i = 0; i < count; ++i) {
@@ -3504,48 +3040,19 @@ void batched_gemm(double alpha, std::vector<AType const *> a_list, std::vector<B
             b_vs[i] = static_cast<void const *>(b_list[i]->data());
             c_vs[i] = static_cast<void *>(c_list[i]->data());
         }
-        if constexpr (IsComplexV<T>) {
-            detail::run_batched_gemm_complex<T>(d, a_vs, b_vs, c_vs);
-        } else {
-            detail::run_batched_gemm<T>(d, a_vs, b_vs, c_vs);
-        }
+        detail::eager_batched_gemm<T>(d, a_vs, b_vs, c_vs);
         return;
     }
-
-    LabeledSection("batched_gemm capture");
-    detail::BatchedGemmOperands a_ops, b_ops, c_ops;
-    a_ops.reserve(count);
-    b_ops.reserve(count);
-    c_ops.reserve(count);
-    // Node I/O keeps the pass's convention: inputs interleaved A_0, B_0, A_1,
-    // B_1, ... and outputs C_0, C_1, ... in batch order.
-    std::vector<TensorId> inputs;
-    std::vector<TensorId> outputs;
-    inputs.reserve(2 * count);
-    outputs.reserve(count);
+    std::vector<detail::SlotRef> a_refs, b_refs, c_refs;
+    a_refs.reserve(count);
+    b_refs.reserve(count);
+    c_refs.reserve(count);
     for (size_t i = 0; i < count; ++i) {
-        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
-        auto [b_id, b_slot] = ctx.get_slot(*b_list[i]);
-        auto [c_id, c_slot] = ctx.get_slot(*c_list[i]);
-        inputs.push_back(a_id);
-        inputs.push_back(b_id);
-        outputs.push_back(c_id);
-        // Read through the slot, not the captured pointer: rebind() and the
-        // MemoryPlanning arena can both move a tensor's storage.
-        a_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{a_slot}, .offset = 0});
-        b_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{b_slot}, .offset = 0});
-        c_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{c_slot}, .offset = 0});
+        a_refs.push_back(ctx.get_slot(*a_list[i]));
+        b_refs.push_back(ctx.get_slot(*b_list[i]));
+        c_refs.push_back(ctx.get_slot(*c_list[i]));
     }
-    // beta != 0 means gemm_batch reads every destination before writing it, so
-    // the RAW edge from whoever produced each C must survive (bug-1009).
-    if (beta != 0.0) {
-        inputs.insert(inputs.end(), outputs.begin(), outputs.end());
-    }
-
-    auto executor = detail::make_batched_gemm_executor(d, std::move(a_ops), std::move(b_ops), std::move(c_ops));
-    ctx.record(OpKind::BatchedGemm,
-               fmt::format("gemm_batch x{} ({}x{}x{}, trans={}{})", d.batch_count, d.m, d.k, d.n, d.trans_a, d.trans_b), std::move(inputs),
-               std::move(outputs), std::move(executor), d);
+    detail::capture_batched_gemm(ctx, d, beta != 0.0, a_refs, b_refs, c_refs);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3669,7 +3176,6 @@ void batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("batched_gemm_blocked eager");
         std::vector<void const *> a_vs(count), b_vs(count);
         std::vector<void *>       c_vs(count);
         T                        *base = c_base->data();
@@ -3678,50 +3184,20 @@ void batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::
             b_vs[i] = static_cast<void const *>(b_list[i]->data());
             c_vs[i] = static_cast<void *>(base + c_offsets[i]);
         }
-        if constexpr (IsComplexV<T>) {
-            detail::run_batched_gemm_complex<T>(d, a_vs, b_vs, c_vs);
-        } else {
-            detail::run_batched_gemm<T>(d, a_vs, b_vs, c_vs);
-        }
+        detail::eager_batched_gemm<T>(d, a_vs, b_vs, c_vs);
         return;
     }
-
-    LabeledSection("batched_gemm_blocked capture");
-    detail::BatchedGemmOperands a_ops, b_ops, c_ops;
-    a_ops.reserve(count);
-    b_ops.reserve(count);
-    c_ops.reserve(count);
-    std::vector<TensorId> inputs;
-    inputs.reserve(2 * count);
-
     // One slot for the whole destination, against one per member in the list
     // form. That is the point of this overload.
-    auto [c_id, c_slot] = ctx.get_slot(*c_base);
-
+    auto const                   c_ref = ctx.get_slot(*c_base);
+    std::vector<detail::SlotRef> a_refs, b_refs;
+    a_refs.reserve(count);
+    b_refs.reserve(count);
     for (size_t i = 0; i < count; ++i) {
-        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
-        auto [b_id, b_slot] = ctx.get_slot(*b_list[i]);
-        inputs.push_back(a_id);
-        inputs.push_back(b_id);
-        a_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{a_slot}, .offset = 0});
-        b_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{b_slot}, .offset = 0});
-        // Read the base through its slot and offset at execute time: rebind()
-        // and the MemoryPlanning arena can both move the storage after capture.
-        c_ops.push_back(
-            detail::BatchedGemmOperand{.accessor = OperandAccessor{c_slot}, .offset = static_cast<std::ptrdiff_t>(c_offsets[i])});
+        a_refs.push_back(ctx.get_slot(*a_list[i]));
+        b_refs.push_back(ctx.get_slot(*b_list[i]));
     }
-
-    std::vector<TensorId> outputs{c_id};
-    // beta != 0 means gemm_batch reads every destination before writing it, so
-    // the RAW edge from whoever produced c_base must survive (bug-1009).
-    if (beta != 0.0) {
-        inputs.push_back(c_id);
-    }
-
-    auto executor = detail::make_batched_gemm_executor(d, std::move(a_ops), std::move(b_ops), std::move(c_ops));
-    ctx.record(OpKind::BatchedGemm,
-               fmt::format("gemm_batch x{} into blocks ({}x{}x{}, trans={}{})", d.batch_count, d.m, d.k, d.n, d.trans_a, d.trans_b),
-               std::move(inputs), std::move(outputs), std::move(executor), d);
+    detail::capture_batched_gemm_blocked(ctx, d, beta != 0.0, a_refs, b_refs, c_ref, c_offsets);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3970,7 +3446,6 @@ void grouped_batched_gemm(double alpha, std::vector<AType const *> a_list, std::
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("grouped_batched_gemm eager");
         std::vector<void const *> a_vs(count), b_vs(count);
         std::vector<void *>       c_vs(count);
         for (size_t i = 0; i < count; ++i) {
@@ -3978,48 +3453,22 @@ void grouped_batched_gemm(double alpha, std::vector<AType const *> a_list, std::
             b_vs[i] = static_cast<void const *>(b_list[flat[i]]->data());
             c_vs[i] = static_cast<void *>(c_list[flat[i]]->data());
         }
-        detail::run_grouped_batched_gemm<T>(d, a_vs, b_vs, c_vs);
+        detail::eager_grouped_batched_gemm<T>(d, a_vs, b_vs, c_vs);
         return;
     }
-
-    LabeledSection("grouped_batched_gemm capture");
-    detail::BatchedGemmOperands a_ops, b_ops, c_ops;
-    a_ops.reserve(count);
-    b_ops.reserve(count);
-    c_ops.reserve(count);
-    // Node I/O keeps the batched form's convention, inputs interleaved
-    // A_0, B_0, A_1, B_1, ... and outputs C_0, C_1, ..., in the FLATTENED
-    // order, so a group's offset indexes the extractors and the node lists
-    // alike.
-    std::vector<TensorId> inputs;
-    std::vector<TensorId> outputs;
-    inputs.reserve(2 * count);
-    outputs.reserve(count);
+    // In the FLATTENED order, so a group's offset indexes the extractors and the
+    // node lists alike.
+    std::vector<detail::SlotRef> a_refs, b_refs, c_refs;
+    a_refs.reserve(count);
+    b_refs.reserve(count);
+    c_refs.reserve(count);
     for (size_t i = 0; i < count; ++i) {
-        size_t const s      = flat[i];
-        auto [a_id, a_slot] = ctx.get_slot(*a_list[s]);
-        auto [b_id, b_slot] = ctx.get_slot(*b_list[s]);
-        auto [c_id, c_slot] = ctx.get_slot(*c_list[s]);
-        inputs.push_back(a_id);
-        inputs.push_back(b_id);
-        outputs.push_back(c_id);
-        // Read through the slot, not the captured pointer: rebind() and the
-        // MemoryPlanning arena can both move a tensor's storage.
-        a_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{a_slot}, .offset = 0});
-        b_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{b_slot}, .offset = 0});
-        c_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{c_slot}, .offset = 0});
+        size_t const s = flat[i];
+        a_refs.push_back(ctx.get_slot(*a_list[s]));
+        b_refs.push_back(ctx.get_slot(*b_list[s]));
+        c_refs.push_back(ctx.get_slot(*c_list[s]));
     }
-    // beta != 0 means every destination is read before it is written, so the
-    // RAW edge from whoever produced each C must survive (bug-1009).
-    if (beta != 0.0) {
-        inputs.insert(inputs.end(), outputs.begin(), outputs.end());
-    }
-
-    auto executor = detail::make_grouped_batched_gemm_executor(d, std::move(a_ops), std::move(b_ops), std::move(c_ops));
-    ctx.record(
-        OpKind::GroupedBatchedGemm,
-        fmt::format("gemm_batch_grouped x{} in {} shapes (trans={}{})", d.total, d.groups.size(), trans_a ? 'T' : 'N', trans_b ? 'T' : 'N'),
-        std::move(inputs), std::move(outputs), std::move(executor), std::move(d));
+    detail::capture_grouped_batched_gemm(ctx, std::move(d), beta != 0.0, trans_a, trans_b, a_refs, b_refs, c_refs, {});
 }
 
 /// @ref grouped_batched_gemm where the destinations are blocks of existing
@@ -4155,7 +3604,6 @@ void grouped_batched_gemm_blocked(double alpha, std::vector<AType const *> a_lis
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("grouped_batched_gemm_blocked eager");
         std::vector<void const *> a_vs(count), b_vs(count);
         std::vector<void *>       c_vs(count);
         for (size_t i = 0; i < count; ++i) {
@@ -4164,56 +3612,35 @@ void grouped_batched_gemm_blocked(double alpha, std::vector<AType const *> a_lis
             b_vs[i]        = static_cast<void const *>(b_list[s]->data());
             c_vs[i]        = static_cast<void *>(c_bases[s]->data() + c_offsets[s]);
         }
-        detail::run_grouped_batched_gemm<T>(d, a_vs, b_vs, c_vs);
+        detail::eager_grouped_batched_gemm<T>(d, a_vs, b_vs, c_vs);
         return;
     }
 
-    LabeledSection("grouped_batched_gemm_blocked capture");
-    detail::BatchedGemmOperands a_ops, b_ops, c_ops;
-    a_ops.reserve(count);
-    b_ops.reserve(count);
-    c_ops.reserve(count);
-    std::vector<TensorId> inputs;
-    inputs.reserve(2 * count);
-
-    // One slot per DISTINCT base, against one per member in the list form.
-    std::map<CType *, std::pair<TensorId, TensorSlot *>> base_slots;
-    std::vector<TensorId>                                outputs;
+    // One slot per DISTINCT base, registered first, against one per member in the list form.
+    std::map<CType *, detail::SlotRef> base_slots;
+    std::vector<detail::SlotRef>       bases;
     for (size_t i = 0; i < count; ++i) {
         size_t const s = flat[i];
         if (!base_slots.contains(c_bases[s])) {
             auto const entry = ctx.get_slot(*c_bases[s]);
             base_slots.emplace(c_bases[s], entry);
-            outputs.push_back(entry.first);
+            bases.push_back(entry);
         }
     }
-
+    std::vector<detail::SlotRef> a_refs, b_refs, c_refs;
+    std::vector<std::size_t>     member_offsets;
+    a_refs.reserve(count);
+    b_refs.reserve(count);
+    c_refs.reserve(count);
+    member_offsets.reserve(count);
     for (size_t i = 0; i < count; ++i) {
-        size_t const s      = flat[i];
-        auto [a_id, a_slot] = ctx.get_slot(*a_list[s]);
-        auto [b_id, b_slot] = ctx.get_slot(*b_list[s]);
-        inputs.push_back(a_id);
-        inputs.push_back(b_id);
-        a_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{a_slot}, .offset = 0});
-        b_ops.push_back(detail::BatchedGemmOperand{.accessor = OperandAccessor{b_slot}, .offset = 0});
-        // Read the base through its slot and offset at execute time: rebind()
-        // and the MemoryPlanning arena can both move the storage after capture.
-        auto *c_slot = base_slots.at(c_bases[s]).second;
-        c_ops.push_back(
-            detail::BatchedGemmOperand{.accessor = OperandAccessor{c_slot}, .offset = static_cast<std::ptrdiff_t>(c_offsets[s])});
+        size_t const s = flat[i];
+        a_refs.push_back(ctx.get_slot(*a_list[s]));
+        b_refs.push_back(ctx.get_slot(*b_list[s]));
+        c_refs.push_back(base_slots.at(c_bases[s]));
+        member_offsets.push_back(c_offsets[s]);
     }
-
-    // beta != 0 means every destination is read before it is written, so the
-    // RAW edge from whoever produced each base must survive (bug-1009).
-    if (beta != 0.0) {
-        inputs.insert(inputs.end(), outputs.begin(), outputs.end());
-    }
-
-    auto executor = detail::make_grouped_batched_gemm_executor(d, std::move(a_ops), std::move(b_ops), std::move(c_ops));
-    ctx.record(OpKind::GroupedBatchedGemm,
-               fmt::format("gemm_batch_grouped x{} in {} shapes into blocks of {} (trans={}{})", d.total, d.groups.size(), outputs.size(),
-                           trans_a ? 'T' : 'N', trans_b ? 'T' : 'N'),
-               std::move(inputs), std::move(outputs), std::move(executor), std::move(d));
+    detail::capture_grouped_batched_gemm(ctx, std::move(d), beta != 0.0, trans_a, trans_b, a_refs, b_refs, c_refs, bases, member_offsets);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4352,52 +3779,29 @@ void grouped_dot(std::vector<ResultType *> results, std::vector<AType const *> a
         }
     }
 
+    using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("grouped_dot eager");
-        blas::SerialVendorScope const serial;
+        std::vector<einsums::detail::TensorImpl<T> *>       r(count);
+        std::vector<einsums::detail::TensorImpl<T> const *> a(count), b(count);
         for (size_t i = 0; i < count; i++) {
-            results[i]->data()[0] = linear_algebra::dot(*a_list[i], *b_list[i]);
+            r[i] = &results[i]->impl();
+            a[i] = &a_list[i]->impl();
+            b[i] = &b_list[i]->impl();
         }
+        detail::eager_grouped_dot<T>(r, a, b);
         return;
     }
-
-    LabeledSection("grouped_dot capture");
-    // Inputs interleaved A_0, B_0, A_1, B_1, ... and outputs in entry order, so
-    // entry i indexes both. The same convention the batched nodes use.
-    std::vector<TensorId>     inputs, outputs;
-    std::vector<TensorSlot *> r_slots, a_slots, b_slots;
-    inputs.reserve(2 * count);
-    outputs.reserve(count);
-    r_slots.reserve(count);
-    a_slots.reserve(count);
-    b_slots.reserve(count);
+    std::vector<detail::SlotRef> r_refs, a_refs, b_refs;
+    r_refs.reserve(count);
+    a_refs.reserve(count);
+    b_refs.reserve(count);
     for (size_t i = 0; i < count; i++) {
-        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
-        auto [b_id, b_slot] = ctx.get_slot(*b_list[i]);
-        auto [r_id, r_slot] = ctx.get_slot(*results[i]);
-        inputs.push_back(a_id);
-        inputs.push_back(b_id);
-        outputs.push_back(r_id);
-        // Read through the slot, not the captured pointer: rebind() and the
-        // MemoryPlanning arena can both move a tensor's storage.
-        a_slots.push_back(a_slot);
-        b_slots.push_back(b_slot);
-        r_slots.push_back(r_slot);
+        a_refs.push_back(ctx.get_slot(*a_list[i]));
+        b_refs.push_back(ctx.get_slot(*b_list[i]));
+        r_refs.push_back(ctx.get_slot(*results[i]));
     }
-
-    auto executor = [r_slots = std::move(r_slots), a_slots = std::move(a_slots), b_slots = std::move(b_slots)]() {
-        LabeledSection("grouped_dot execute");
-        blas::SerialVendorScope const serial;
-        for (size_t i = 0; i < r_slots.size(); i++) {
-            static_cast<ResultType *>(r_slots[i]->ptr)->data()[0] =
-                linear_algebra::dot(*static_cast<AType const *>(a_slots[i]->ptr), *static_cast<BType const *>(b_slots[i]->ptr));
-        }
-    };
-
-    GroupedDotDescriptor d;
-    d.total = static_cast<int>(count);
-    ctx.record(OpKind::GroupedDot, fmt::format("dot x{}", count), std::move(inputs), std::move(outputs), std::move(executor), std::move(d));
+    detail::capture_grouped_dot<T>(ctx, r_refs, a_refs, b_refs);
 }
 
 /// @brief One node holding many independent AXPBYs:
@@ -4490,52 +3894,23 @@ void grouped_axpby(std::vector<double> alphas, std::vector<XType const *> x_list
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("grouped_axpby eager");
+        std::vector<einsums::detail::TensorImpl<T> const *> x(count);
+        std::vector<einsums::detail::TensorImpl<T> *>       y(count);
         for (size_t i = 0; i < count; i++) {
-            linear_algebra::axpby(a_typed[i], *x_list[i], b_typed[i], y_list[i]);
+            x[i] = &x_list[i]->impl();
+            y[i] = &y_list[i]->impl();
         }
+        detail::eager_grouped_axpby<T>(a_typed, x, b_typed, y);
         return;
     }
-
-    LabeledSection("grouped_axpby capture");
-    std::vector<TensorId>     inputs, outputs;
-    std::vector<TensorSlot *> x_slots, y_slots;
-    inputs.reserve(2 * count);
-    outputs.reserve(count);
-    x_slots.reserve(count);
-    y_slots.reserve(count);
+    std::vector<detail::SlotRef> x_refs, y_refs;
+    x_refs.reserve(count);
+    y_refs.reserve(count);
     for (size_t i = 0; i < count; i++) {
-        auto [x_id, x_slot] = ctx.get_slot(*x_list[i]);
-        auto [y_id, y_slot] = ctx.get_slot(*y_list[i]);
-        inputs.push_back(x_id);
-        // beta != 0 means this entry reads its destination before writing it, so
-        // the RAW edge from whoever produced Y must survive (bug-1009).
-        if (b_typed[i] != T{0}) {
-            inputs.push_back(y_id);
-        }
-        outputs.push_back(y_id);
-        x_slots.push_back(x_slot);
-        y_slots.push_back(y_slot);
+        x_refs.push_back(ctx.get_slot(*x_list[i]));
+        y_refs.push_back(ctx.get_slot(*y_list[i]));
     }
-
-    auto executor = [a_typed, b_typed, x_slots = std::move(x_slots), y_slots = std::move(y_slots)]() {
-        LabeledSection("grouped_axpby execute");
-        for (size_t i = 0; i < x_slots.size(); i++) {
-            linear_algebra::axpby(a_typed[i], *static_cast<XType const *>(x_slots[i]->ptr), b_typed[i],
-                                  static_cast<YType *>(y_slots[i]->ptr));
-        }
-    };
-
-    GroupedAxpbyDescriptor d;
-    d.total = static_cast<int>(count);
-    d.alphas.reserve(count);
-    d.betas.reserve(count);
-    for (size_t i = 0; i < count; i++) {
-        d.alphas.emplace_back(a_typed[i]);
-        d.betas.emplace_back(b_typed[i]);
-    }
-    ctx.record(OpKind::GroupedAxpby, fmt::format("axpby x{}", count), std::move(inputs), std::move(outputs), std::move(executor),
-               std::move(d));
+    detail::capture_grouped_axpby<T>(ctx, std::move(a_typed), std::move(b_typed), x_refs, y_refs);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4646,54 +4021,23 @@ void grouped_permute(std::string const &spec, std::vector<CType *> c_list, std::
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("grouped_permute eager");
-        detail::run_grouped_members(
-            count, [&](size_t i) { dispatch::string_permute<AType, CType>(parsed, c_typed[i], c_list[i], a_typed[i], *a_list[i]); });
+        std::vector<einsums::detail::TensorImpl<T> *>       c(count);
+        std::vector<einsums::detail::TensorImpl<T> const *> a(count);
+        for (size_t i = 0; i < count; i++) {
+            c[i] = &c_list[i]->impl();
+            a[i] = &a_list[i]->impl();
+        }
+        detail::eager_grouped_permute<T>(parsed, c_typed, c, a_typed, a);
         return;
     }
-
-    LabeledSection("grouped_permute capture");
-    std::vector<TensorId>     inputs, outputs;
-    std::vector<TensorSlot *> c_slots, a_slots;
-    inputs.reserve(2 * count);
-    outputs.reserve(count);
-    c_slots.reserve(count);
-    a_slots.reserve(count);
+    std::vector<detail::SlotRef> a_refs, c_refs;
+    a_refs.reserve(count);
+    c_refs.reserve(count);
     for (size_t i = 0; i < count; i++) {
-        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
-        auto [c_id, c_slot] = ctx.get_slot(*c_list[i]);
-        inputs.push_back(a_id);
-        // A non-zero c_pf reads the destination before writing it, so the RAW
-        // edge from whoever produced C must survive.
-        if (c_typed[i] != T{0}) {
-            inputs.push_back(c_id);
-        }
-        outputs.push_back(c_id);
-        a_slots.push_back(a_slot);
-        c_slots.push_back(c_slot);
+        a_refs.push_back(ctx.get_slot(*a_list[i]));
+        c_refs.push_back(ctx.get_slot(*c_list[i]));
     }
-
-    auto executor = [parsed, c_typed, a_typed, c_slots = std::move(c_slots), a_slots = std::move(a_slots)]() {
-        LabeledSection("grouped_permute execute");
-        detail::run_grouped_members(c_slots.size(), [&](size_t i) {
-            dispatch::string_permute<AType, CType>(parsed, c_typed[i], static_cast<CType *>(c_slots[i]->ptr), a_typed[i],
-                                                   *static_cast<AType const *>(a_slots[i]->ptr));
-        });
-    };
-
-    GroupedElementwiseDescriptor d;
-    d.total     = static_cast<int>(count);
-    d.c_indices = parsed.c_indices;
-    d.a_indices = parsed.a_indices;
-    d.alphas.reserve(count);
-    d.betas.reserve(count);
-    for (size_t i = 0; i < count; i++) {
-        d.alphas.emplace_back(a_typed[i]);
-        d.betas.emplace_back(c_typed[i]);
-    }
-    ctx.record(OpKind::GroupedPermute,
-               fmt::format("permute x{}: C[{}] = A[{}]", count, fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ",")),
-               std::move(inputs), std::move(outputs), std::move(executor), std::move(d));
+    detail::capture_grouped_permute<T>(ctx, std::move(parsed), std::move(c_typed), std::move(a_typed), a_refs, c_refs);
 }
 
 namespace detail {
@@ -4705,8 +4049,8 @@ namespace detail {
 /// @p kernel is the single-tensor entry point the member calls, which is what
 /// makes a member's bits the bits the ungrouped emission wrote: the grouped
 /// form adds a loop and nothing else.
-template <typename T, typename AType, typename BType, typename CType, typename Kernel>
-void grouped_binary_elementwise(char const *who, OpKind kind, char const *label, Kernel kernel, std::vector<T> const &alphas,
+template <typename T, typename AType, typename BType, typename CType>
+void grouped_binary_elementwise(char const *who, OpKind kind, char const *label, std::vector<T> const &alphas,
                                 std::vector<AType const *> const &a_list, std::vector<BType const *> const &b_list,
                                 std::vector<T> const &betas, std::vector<CType *> const &c_list) {
     size_t const count = c_list.size();
@@ -4735,49 +4079,26 @@ void grouped_binary_elementwise(char const *who, OpKind kind, char const *label,
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        run_grouped_members(count, [&](size_t i) { kernel(alphas[i], a_list[i], b_list[i], betas[i], c_list[i]); });
+        std::vector<einsums::detail::TensorImpl<T> const *> a(count), b(count);
+        std::vector<einsums::detail::TensorImpl<T> *>       c(count);
+        for (size_t i = 0; i < count; i++) {
+            a[i] = &a_list[i]->impl();
+            b[i] = &b_list[i]->impl();
+            c[i] = &c_list[i]->impl();
+        }
+        eager_grouped_binary<T>(kind, alphas, a, b, betas, c);
         return;
     }
-
-    std::vector<TensorId>     inputs, outputs;
-    std::vector<TensorSlot *> a_slots, b_slots, c_slots;
-    inputs.reserve(3 * count);
-    outputs.reserve(count);
-    a_slots.reserve(count);
-    b_slots.reserve(count);
-    c_slots.reserve(count);
+    std::vector<SlotRef> a_refs, b_refs, c_refs;
+    a_refs.reserve(count);
+    b_refs.reserve(count);
+    c_refs.reserve(count);
     for (size_t i = 0; i < count; i++) {
-        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
-        auto [b_id, b_slot] = ctx.get_slot(*b_list[i]);
-        auto [c_id, c_slot] = ctx.get_slot(*c_list[i]);
-        inputs.push_back(a_id);
-        inputs.push_back(b_id);
-        // A non-zero beta reads the destination before writing it.
-        if (betas[i] != T{0}) {
-            inputs.push_back(c_id);
-        }
-        outputs.push_back(c_id);
-        a_slots.push_back(a_slot);
-        b_slots.push_back(b_slot);
-        c_slots.push_back(c_slot);
+        a_refs.push_back(ctx.get_slot(*a_list[i]));
+        b_refs.push_back(ctx.get_slot(*b_list[i]));
+        c_refs.push_back(ctx.get_slot(*c_list[i]));
     }
-
-    auto executor = [kernel, alphas, betas, a_slots = std::move(a_slots), b_slots = std::move(b_slots), c_slots = std::move(c_slots)]() {
-        run_grouped_members(c_slots.size(), [&](size_t i) {
-            kernel(alphas[i], static_cast<AType const *>(a_slots[i]->ptr), static_cast<BType const *>(b_slots[i]->ptr), betas[i],
-                   static_cast<CType *>(c_slots[i]->ptr));
-        });
-    };
-
-    GroupedElementwiseDescriptor d;
-    d.total = static_cast<int>(count);
-    d.alphas.reserve(count);
-    d.betas.reserve(count);
-    for (size_t i = 0; i < count; i++) {
-        d.alphas.emplace_back(alphas[i]);
-        d.betas.emplace_back(betas[i]);
-    }
-    ctx.record(kind, fmt::format("{} x{}", label, count), std::move(inputs), std::move(outputs), std::move(executor), std::move(d));
+    capture_grouped_binary<T>(ctx, kind, label, alphas, betas, a_refs, b_refs, c_refs);
 }
 
 } // namespace detail
@@ -4836,10 +4157,8 @@ APIARY_INSTANTIATE_AS("grouped_direct_product", std::complex<double>, einsums::R
 void grouped_direct_product(std::vector<T> alphas, std::vector<AType const *> a_list, std::vector<BType const *> b_list,
                             std::vector<T> betas, std::vector<CType *> c_list) {
     LabeledSection("grouped_direct_product");
-    detail::grouped_binary_elementwise<T, AType, BType, CType>(
-        "cg::grouped_direct_product", OpKind::GroupedDirectProduct, "direct_product",
-        [](T alpha, AType const *a, BType const *b, T beta, CType *c) { linear_algebra::direct_product(alpha, *a, *b, beta, c); }, alphas,
-        a_list, b_list, betas, c_list);
+    detail::grouped_binary_elementwise<T, AType, BType, CType>("cg::grouped_direct_product", OpKind::GroupedDirectProduct, "direct_product",
+                                                               alphas, a_list, b_list, betas, c_list);
 }
 
 /// @brief One node holding many independent element-wise quotients:
@@ -4890,105 +4209,13 @@ APIARY_INSTANTIATE_AS("grouped_direct_division", std::complex<double>, einsums::
 void grouped_direct_division(std::vector<T> alphas, std::vector<AType const *> a_list, std::vector<BType const *> b_list,
                              std::vector<T> betas, std::vector<CType *> c_list) {
     LabeledSection("grouped_direct_division");
-    detail::grouped_binary_elementwise<T, AType, BType, CType>(
-        "cg::grouped_direct_division", OpKind::GroupedDirectDivision, "direct_division",
-        [](T alpha, AType const *a, BType const *b, T beta, CType *c) { linear_algebra::direct_division(alpha, *a, *b, beta, c); }, alphas,
-        a_list, b_list, betas, c_list);
+    detail::grouped_binary_elementwise<T, AType, BType, CType>("cg::grouped_direct_division", OpKind::GroupedDirectDivision,
+                                                               "direct_division", alphas, a_list, b_list, betas, c_list);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // grouped_sandwich: q-tiled dressed sandwich accumulations as ONE node
 // ─────────────────────────────────────────────────────────────────────────────
-
-namespace detail {
-
-/// One member of a grouped sandwich: ``C += sum_q B_q S B_q^T`` with the
-/// dressed slice ``B_q = A[q] - P^T M[q]`` built in cache, never in memory.
-///
-/// This is psi4's own shape for the Eq. 76/93 residual term (dlpno/ccsd.cc,
-/// "the T1-dressing ... on the fly, as this intermediate is only used once"),
-/// adapted to a q-fastest layout: slices of ``A`` along the auxiliary axis are
-/// strided here, so a BLOCK of them is transposed into slice-major scratch
-/// sized to stay cache-resident, and the dress plus both sandwich GEMMs run
-/// out of that scratch. ``A`` streams from memory exactly once; the dressed
-/// factor and the half product exist only as one cache-resident slice.
-///
-/// Deterministic by construction: the q blocks and the slices inside them run
-/// in ascending order on one thread, so the accumulation order into ``C`` is a
-/// function of the extents alone. What this DOES change, relative to the pair
-/// of whole-q contractions it replaces, is that ``C`` accumulates per q slice
-/// rather than in one GEMM reduction - the same operand values sum in a
-/// different order, so results agree to accumulation roundoff, not bitwise.
-template <typename T>
-void sandwich_member(T const *A, std::size_t saq, std::size_t saa, std::size_t sab, T const *M, std::size_t smq, std::size_t smk,
-                     std::size_t smb, T const *P, std::size_t ldp, T const *S, std::size_t lds, T *C, std::size_t ldc, std::size_t nq,
-                     std::size_t nk, std::size_t na) {
-    if (nq == 0 || na == 0) {
-        return; // C += nothing: the accumulate form of the zero-extent contract
-    }
-    std::size_t const slice   = na * na;
-    std::size_t const m_slice = nk * na;
-    // Slices per block: enough to amortize the strided gather, small enough
-    // that the staged block plus its M companion stay comfortably inside a
-    // per-core L2 share.
-    std::size_t tq = std::max<std::size_t>(4, (512UL * 1024) / (sizeof(T) * (slice + std::max<std::size_t>(1, m_slice))));
-    tq             = std::min(tq, nq);
-
-    // Plain heap scratch, deliberately not BufferVector: the metered buffer
-    // pool is sized for contraction workspace (4 MiB by default), and a team
-    // of these members would exhaust it. This scratch is bounded at a few
-    // hundred kilobytes per running member by the block sizing above.
-    std::vector<T> bblk(tq * slice);
-    std::vector<T> mblk(std::max<std::size_t>(1, tq * m_slice));
-    std::vector<T> w(slice);
-
-    for (std::size_t q0 = 0; q0 < nq; q0 += tq) {
-        std::size_t const tt = std::min(tq, nq - q0);
-
-        // Stage the A block slice-major. The source walks are contiguous in q
-        // (the fastest axis), so memory is read in order; the scattered writes
-        // land in the cache-resident block.
-        for (std::size_t b = 0; b < na; b++) {
-            for (std::size_t a = 0; a < na; a++) {
-                T const *from = A + q0 * saq + a * saa + b * sab;
-                T       *to   = bblk.data() + a + na * b;
-                for (std::size_t t = 0; t < tt; t++) {
-                    to[t * slice] = from[t * saq];
-                }
-            }
-        }
-        if (nk != 0) {
-            for (std::size_t b = 0; b < na; b++) {
-                for (std::size_t k = 0; k < nk; k++) {
-                    T const *from = M + q0 * smq + k * smk + b * smb;
-                    T       *to   = mblk.data() + k + nk * b;
-                    for (std::size_t t = 0; t < tt; t++) {
-                        to[t * m_slice] = from[t * smq];
-                    }
-                }
-            }
-        }
-
-        for (std::size_t t = 0; t < tt; t++) {
-            T *Bs = bblk.data() + t * slice;
-            // Dress: B_q -= P^T M_q. Skipped when there is nothing to dress
-            // with, which is also what keeps a (1, na) placeholder P legal for
-            // an nk == 0 member.
-            if (nk != 0) {
-                blas::gemm('T', 'N', static_cast<blas::int_t>(na), static_cast<blas::int_t>(na), static_cast<blas::int_t>(nk), T{-1}, P,
-                           static_cast<blas::int_t>(ldp), mblk.data() + t * m_slice, static_cast<blas::int_t>(nk), T{1}, Bs,
-                           static_cast<blas::int_t>(na));
-            }
-            // W = B_q S, then C += W B_q^T.
-            blas::gemm('N', 'N', static_cast<blas::int_t>(na), static_cast<blas::int_t>(na), static_cast<blas::int_t>(na), T{1}, Bs,
-                       static_cast<blas::int_t>(na), S, static_cast<blas::int_t>(lds), T{0}, w.data(), static_cast<blas::int_t>(na));
-            blas::gemm('N', 'T', static_cast<blas::int_t>(na), static_cast<blas::int_t>(na), static_cast<blas::int_t>(na), T{1}, w.data(),
-                       static_cast<blas::int_t>(na), Bs, static_cast<blas::int_t>(na), T{1}, C, static_cast<blas::int_t>(ldc));
-        }
-    }
-}
-
-} // namespace detail
 
 /// @brief Emit one node holding many independent dressed sandwich
 /// accumulations: ``C_i += sum_q B_q S_i B_q^T`` with
@@ -4999,9 +4226,9 @@ void sandwich_member(T const *A, std::size_t saq, std::size_t saa, std::size_t s
 /// an in-place dressing, a half product ``W`` the size of ``A_i``, and a
 /// second contraction reading both - EIGHT full streams of the largest
 /// per-pair data in the iteration where one suffices. Here every member
-/// streams ``A_i`` once and keeps everything else in cache; see
-/// @ref detail::sandwich_member for the tiling and for the accumulation-order
-/// note (results match the naive emission to roundoff, not bitwise).
+/// streams ``A_i`` once and keeps everything else in cache. The q slices are
+/// tiled into cache-resident blocks and accumulated in ascending order on one
+/// thread, so results match the naive emission to roundoff, not bitwise.
 ///
 /// Every member is independent and members are threaded over, each one's
 /// arithmetic serial inside its thread, so replays are deterministic whatever
@@ -5082,228 +4309,34 @@ void grouped_sandwich(std::vector<CType *> c_list, std::vector<AType const *> a_
         }
     }
 
-    auto run_member = [](CType *c, AType const *a, MType const *m, PType const *p, SType const *s) {
-        auto const  &ai = a->impl();
-        auto const  &mi = m->impl();
-        auto const  &pi = p->impl();
-        auto const  &si = s->impl();
-        auto        &ci = c->impl();
-        size_t const nk = mi.dim(1);
-        detail::sandwich_member(ai.data(), ai.stride(0), ai.stride(1), ai.stride(2), mi.data(), mi.stride(0), mi.stride(1), mi.stride(2),
-                                pi.data(), nk != 0 ? pi.stride(1) : 1, si.data(), si.stride(1), ci.data(), ci.stride(1), ai.dim(0), nk,
-                                ai.dim(1));
-    };
-
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("grouped_sandwich eager");
-        // Members are independent (distinct destinations, each accumulated
-        // serially by one thread), and the whole run is one parallel region -
-        // an OpenMP team, never a caller-created thread pool (trap 7). An
-        // exception may not cross the region boundary (that terminates), so
-        // the first one is carried out by hand.
-        detail::run_grouped_members(count, [&](size_t i) { run_member(c_list[i], a_list[i], m_list[i], p_list[i], s_list[i]); });
+        std::vector<einsums::detail::TensorImpl<T> *>       c(count);
+        std::vector<einsums::detail::TensorImpl<T> const *> a(count), m(count), p(count), s(count);
+        for (size_t i = 0; i < count; i++) {
+            c[i] = &c_list[i]->impl();
+            a[i] = &a_list[i]->impl();
+            m[i] = &m_list[i]->impl();
+            p[i] = &p_list[i]->impl();
+            s[i] = &s_list[i]->impl();
+        }
+        detail::eager_grouped_sandwich<T>(c, a, m, p, s);
         return;
     }
-
-    LabeledSection("grouped_sandwich capture");
-    std::vector<TensorId>     inputs, outputs;
-    std::vector<TensorSlot *> c_slots, a_slots, m_slots, p_slots, s_slots;
-    inputs.reserve(5 * count);
-    outputs.reserve(count);
-    c_slots.reserve(count);
-    a_slots.reserve(count);
-    m_slots.reserve(count);
-    p_slots.reserve(count);
-    s_slots.reserve(count);
+    std::vector<detail::SlotRef> c_refs, a_refs, m_refs, p_refs, s_refs;
     for (size_t i = 0; i < count; i++) {
-        auto [a_id, a_slot] = ctx.get_slot(*a_list[i]);
-        auto [m_id, m_slot] = ctx.get_slot(*m_list[i]);
-        auto [p_id, p_slot] = ctx.get_slot(*p_list[i]);
-        auto [s_id, s_slot] = ctx.get_slot(*s_list[i]);
-        auto [c_id, c_slot] = ctx.get_slot(*c_list[i]);
-        inputs.push_back(a_id);
-        inputs.push_back(m_id);
-        inputs.push_back(p_id);
-        inputs.push_back(s_id);
-        // Accumulation reads the destination, so the RAW edge from whoever
-        // produced C must survive - the same rule grouped_axpby records for a
-        // non-zero beta.
-        inputs.push_back(c_id);
-        outputs.push_back(c_id);
-        a_slots.push_back(a_slot);
-        m_slots.push_back(m_slot);
-        p_slots.push_back(p_slot);
-        s_slots.push_back(s_slot);
-        c_slots.push_back(c_slot);
+        a_refs.push_back(ctx.get_slot(*a_list[i]));
+        m_refs.push_back(ctx.get_slot(*m_list[i]));
+        p_refs.push_back(ctx.get_slot(*p_list[i]));
+        s_refs.push_back(ctx.get_slot(*s_list[i]));
+        c_refs.push_back(ctx.get_slot(*c_list[i]));
     }
-
-    auto executor = [run_member, c_slots = std::move(c_slots), a_slots = std::move(a_slots), m_slots = std::move(m_slots),
-                     p_slots = std::move(p_slots), s_slots = std::move(s_slots)]() {
-        LabeledSection("grouped_sandwich execute");
-        detail::run_grouped_members(c_slots.size(), [&](size_t i) {
-            run_member(static_cast<CType *>(c_slots[i]->ptr), static_cast<AType const *>(a_slots[i]->ptr),
-                       static_cast<MType const *>(m_slots[i]->ptr), static_cast<PType const *>(p_slots[i]->ptr),
-                       static_cast<SType const *>(s_slots[i]->ptr));
-        });
-    };
-
-    GroupedSandwichDescriptor d;
-    d.total = static_cast<int>(count);
-    d.nq.reserve(count);
-    d.nk.reserve(count);
-    d.na.reserve(count);
-    for (size_t i = 0; i < count; i++) {
-        d.nq.push_back(static_cast<std::int64_t>(a_list[i]->impl().dim(0)));
-        d.nk.push_back(static_cast<std::int64_t>(m_list[i]->impl().dim(1)));
-        d.na.push_back(static_cast<std::int64_t>(a_list[i]->impl().dim(1)));
-    }
-    ctx.record(OpKind::GroupedSandwich, fmt::format("sandwich x{}", count), std::move(inputs), std::move(outputs), std::move(executor),
-               std::move(d));
+    detail::capture_grouped_sandwich<T>(ctx, c_refs, a_refs, m_refs, p_refs, s_refs);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // grouped_gather_rotate: q-tiled gather plus two-sided rotation as ONE node
 // ─────────────────────────────────────────────────────────────────────────────
-
-namespace detail {
-
-/// One member of a grouped gather-rotate:
-/// ``C[q, a, b] = sum_uv src[Q[q], U[u], U[v]] X[u, a] X[v, b]``, with the
-/// gathered ``(q, u, v)`` block built one cache-resident q tile at a time and
-/// never materialized whole.
-///
-/// The emission this replaces is a gather of the whole ``(Q|u v)`` domain block
-/// followed by two contractions through a half-transformed block of the same
-/// leading extent, which is four full streams of the largest thing the phase
-/// holds where one suffices. Here the source block streams once, and the half
-/// product exists only for the tile in flight.
-///
-/// Constraints, all checked by the caller and relied on here:
-/// - ``src`` is rank 3 and shared by every member; ``Q`` selects its axis 0,
-///   ``U`` selects axes 1 and 2 SYMMETRICALLY (one list, because one ``X``
-///   rotates both).
-/// - ``X`` is ``(nu, nt)`` and column-contiguous, so it is a legal GEMM operand
-///   at ``lda = ldx``.
-/// - ``C`` is ``(nq, nt, nt)`` and ASSIGNED, not accumulated: every element is
-///   written, so the destination may be uninitialized on entry.
-/// - Offsets arrive premultiplied by the source strides, so the staging loop
-///   adds rather than multiplies.
-///
-/// Bitwise reproducible, and independent of the tiling: q indexes no sum, so
-/// each output element is one GEMM's reduction over the FULL ``u`` (then ``v``)
-/// range whatever the tile size. That is a stronger contract than the grouped
-/// sandwich's - there is no accumulation to reassociate - and it is why the
-/// node needs no fixed-order argument. It is not bitwise agreement with the
-/// gather-plus-two-einsums form it replaces, which blocks its reductions
-/// differently; that agreement is to roundoff.
-template <typename T>
-void gather_rotate_member(T const *src, std::size_t sq, std::size_t const *qoff, std::size_t nq, std::size_t const *uoff,
-                          std::size_t const *voff, std::size_t nu, T const *X, std::size_t ldx, std::size_t nt, T *C, std::size_t scq,
-                          std::size_t sca, std::size_t scb) {
-    if (nq == 0 || nt == 0) {
-        return; // nothing to write
-    }
-    if (nu == 0) {
-        // An empty sum, and the operation ASSIGNS, so the zeros are the answer
-        // and have to be written rather than left as whatever was allocated.
-        for (std::size_t b = 0; b < nt; b++) {
-            for (std::size_t a = 0; a < nt; a++) {
-                T *to = C + a * sca + b * scb;
-                for (std::size_t q = 0; q < nq; q++) {
-                    to[q * scq] = T{0};
-                }
-            }
-        }
-        return;
-    }
-
-    std::size_t const slice  = nu * nu;
-    std::size_t const hslice = nt * nu;
-    std::size_t const oslice = nt * nt;
-    // Slices per tile: enough to amortize the gather and to give the first GEMM
-    // a wide right-hand side, small enough that the staged block, the half
-    // product and the result stay inside a per-core L2 share.
-    std::size_t tq = std::max<std::size_t>(4, (512UL * 1024) / (sizeof(T) * (slice + hslice + oslice)));
-    tq             = std::min(tq, nq);
-
-    // Plain heap scratch, deliberately not BufferVector: the metered buffer pool
-    // is sized for contraction workspace, and a team of these members running at
-    // once would exhaust it - and a throw out of the pool inside this node's
-    // OpenMP region is not recoverable.
-    std::vector<T> blk(tq * slice);
-    std::vector<T> half(tq * hslice);
-    std::vector<T> out(tq * oslice);
-
-    for (std::size_t q0 = 0; q0 < nq; q0 += tq) {
-        std::size_t const tt = std::min(tq, nq - q0);
-
-        // Whether this tile's auxiliary selection is one ascending run, which is
-        // the common case: a domain is a sorted list of functions and the shells
-        // behind it are contiguous. A run turns the gather into a strided walk
-        // of the source, which is what the fastest axis wants.
-        bool run = true;
-        for (std::size_t t = 1; run && t < tt; t++) {
-            run = qoff[q0 + t] == qoff[q0] + t * sq;
-        }
-
-        // Stage the tile slice-major, u fastest. The source walks are along the
-        // FASTEST source axis, so memory is read in order; the strided writes
-        // land inside the cache-resident tile. The layout is exactly the
-        // ``(nu) x (nu * tt)`` matrix the first GEMM wants, which is why the
-        // rotation below is one call and not one per slice.
-        for (std::size_t b = 0; b < nu; b++) {
-            for (std::size_t a = 0; a < nu; a++) {
-                T const *from = src + uoff[a] + voff[b];
-                T       *to   = blk.data() + a + nu * b;
-                if (run) {
-                    T const *base = from + qoff[q0];
-                    for (std::size_t t = 0; t < tt; t++) {
-                        to[t * slice] = base[t * sq];
-                    }
-                } else {
-                    for (std::size_t t = 0; t < tt; t++) {
-                        to[t * slice] = from[qoff[q0 + t]];
-                    }
-                }
-            }
-        }
-
-        // half[a, v, t] = sum_u X[u, a] blk[u, v, t]: one GEMM for the whole
-        // tile, because (v, t) is a single merged axis in this layout.
-        blas::gemm('T', 'N', static_cast<blas::int_t>(nt), static_cast<blas::int_t>(nu * tt), static_cast<blas::int_t>(nu), T{1}, X,
-                   static_cast<blas::int_t>(ldx), blk.data(), static_cast<blas::int_t>(nu), T{0}, half.data(),
-                   static_cast<blas::int_t>(nt));
-        // out[a, b, t] = sum_v half[a, v, t] X[v, b]: per slice, because the
-        // contracted index is interior once the tile is laid out this way.
-        for (std::size_t t = 0; t < tt; t++) {
-            blas::gemm('N', 'N', static_cast<blas::int_t>(nt), static_cast<blas::int_t>(nt), static_cast<blas::int_t>(nu), T{1},
-                       half.data() + t * hslice, static_cast<blas::int_t>(nt), X, static_cast<blas::int_t>(ldx), T{0},
-                       out.data() + t * oslice, static_cast<blas::int_t>(nt));
-        }
-
-        // Scatter the tile out. The destination's auxiliary axis is the one
-        // being walked, so a unit q stride - what an owning (nq, nt, nt) store
-        // has - makes every one of these a contiguous run.
-        for (std::size_t b = 0; b < nt; b++) {
-            for (std::size_t a = 0; a < nt; a++) {
-                T const *from = out.data() + a + nt * b;
-                T       *to   = C + q0 * scq + a * sca + b * scb;
-                if (scq == 1) {
-                    for (std::size_t t = 0; t < tt; t++) {
-                        to[t] = from[t * oslice];
-                    }
-                } else {
-                    for (std::size_t t = 0; t < tt; t++) {
-                        to[t * scq] = from[t * oslice];
-                    }
-                }
-            }
-        }
-    }
-}
-
-} // namespace detail
 
 /// @brief Emit one node holding many independent gather-and-rotate blocks:
 /// ``C_i[q, a, b] = sum_uv src[Q_i[q], U_i[u], U_i[v]] X_i[u, a] X_i[v, b]``,
@@ -5314,8 +4347,8 @@ void gather_rotate_member(T const *src, std::size_t sq, std::size_t const *qoff,
 /// followed by two contractions - the gathered block and a half-transformed one
 /// of the same leading extent, both of them the largest tensors the phase ever
 /// holds, streamed four times over where one pass suffices. Here every member
-/// streams its selection of @p src once and keeps the rotation in cache; see
-/// @ref detail::gather_rotate_member for the tiling.
+/// streams its selection of @p src once and keeps the rotation in cache, the
+/// auxiliary axis tiled into cache-resident blocks.
 ///
 /// One source for the whole run, because that is what makes the streaming claim
 /// true: the members are domain-restricted selections of ONE parent, and giving
@@ -5417,82 +4450,24 @@ void grouped_gather_rotate(std::vector<CType *> c_list, SrcType const &src, std:
     // separate.
     detail::require_distinct_destinations(c_list, "cg::grouped_gather_rotate");
 
-    auto run_member = [](CType *c, SrcType const *s, XType const *x, std::vector<size_t> const &qs, std::vector<size_t> const &us) {
-        auto const  &si = s->impl();
-        auto const  &xi = x->impl();
-        auto        &ci = c->impl();
-        size_t const nq = qs.size(), nu = us.size(), nt = xi.dim(1);
-
-        // Strides are read here rather than baked at capture: a slot may point
-        // at a different tensor object on a later replay.
-        size_t const        sq = si.stride(0);
-        std::vector<size_t> qoff(nq), uoff(nu), voff(nu);
-        for (size_t t = 0; t < nq; t++) {
-            qoff[t] = qs[t] * sq;
-        }
-        for (size_t a = 0; a < nu; a++) {
-            uoff[a] = us[a] * si.stride(1);
-            voff[a] = us[a] * si.stride(2);
-        }
-        detail::gather_rotate_member(si.data(), sq, qoff.data(), nq, uoff.data(), voff.data(), nu, xi.data(), nu != 0 ? xi.stride(1) : 1,
-                                     nt, ci.data(), ci.stride(0), ci.stride(1), ci.stride(2));
-    };
-
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        LabeledSection("grouped_gather_rotate eager");
-        // Members are independent (distinct destinations, each assigned by one
-        // thread), and the whole run is one parallel region - an OpenMP team,
-        // never a caller-created thread pool. An exception may not cross the
-        // region boundary (that terminates, and takes a libomp worker with it),
-        // so the first one is carried out by hand.
-        detail::run_grouped_members(count, [&](size_t i) { run_member(c_list[i], &src, x_list[i], q_list[i], u_list[i]); });
+        std::vector<einsums::detail::TensorImpl<T> *>       c(count);
+        std::vector<einsums::detail::TensorImpl<T> const *> x(count);
+        for (size_t i = 0; i < count; i++) {
+            c[i] = &c_list[i]->impl();
+            x[i] = &x_list[i]->impl();
+        }
+        detail::eager_grouped_gather_rotate<T>(c, src.impl(), x, q_list, u_list);
         return;
     }
-
-    LabeledSection("grouped_gather_rotate capture");
-    std::vector<TensorId>     inputs, outputs;
-    std::vector<TensorSlot *> c_slots, x_slots;
-    inputs.reserve(count + 1);
-    outputs.reserve(count);
-    c_slots.reserve(count);
-    x_slots.reserve(count);
-    auto [s_id, s_slot] = ctx.get_slot(src);
-    inputs.push_back(s_id);
+    auto const                   s_ref = ctx.get_slot(src);
+    std::vector<detail::SlotRef> x_refs, c_refs;
     for (size_t i = 0; i < count; i++) {
-        auto [x_id, x_slot] = ctx.get_slot(*x_list[i]);
-        auto [c_id, c_slot] = ctx.get_slot(*c_list[i]);
-        inputs.push_back(x_id);
-        // The destination is ASSIGNED, not accumulated, so it is an output only:
-        // unlike the grouped sandwich there is no read of C to keep an edge for.
-        outputs.push_back(c_id);
-        x_slots.push_back(x_slot);
-        c_slots.push_back(c_slot);
+        x_refs.push_back(ctx.get_slot(*x_list[i]));
+        c_refs.push_back(ctx.get_slot(*c_list[i]));
     }
-
-    // The index lists are copied into the executor rather than referenced: a
-    // captured node outlives the call, and every replay reads them again.
-    auto executor = [run_member, s_slot, c_slots = std::move(c_slots), x_slots = std::move(x_slots), q_list, u_list]() {
-        LabeledSection("grouped_gather_rotate execute");
-        detail::run_grouped_members(c_slots.size(), [&](size_t i) {
-            run_member(static_cast<CType *>(c_slots[i]->ptr), static_cast<SrcType const *>(s_slot->ptr),
-                       static_cast<XType const *>(x_slots[i]->ptr), q_list[i], u_list[i]);
-        });
-    };
-
-    GroupedGatherRotateDescriptor d;
-    d.total      = static_cast<int>(count);
-    d.elem_bytes = static_cast<std::int64_t>(sizeof(T));
-    d.nq.reserve(count);
-    d.nu.reserve(count);
-    d.nt.reserve(count);
-    for (size_t i = 0; i < count; i++) {
-        d.nq.push_back(static_cast<std::int64_t>(q_list[i].size()));
-        d.nu.push_back(static_cast<std::int64_t>(u_list[i].size()));
-        d.nt.push_back(static_cast<std::int64_t>(x_list[i]->impl().dim(1)));
-    }
-    ctx.record(OpKind::GroupedGatherRotate, fmt::format("gather_rotate x{}", count), std::move(inputs), std::move(outputs),
-               std::move(executor), std::move(d));
+    detail::capture_grouped_gather_rotate<T>(ctx, c_refs, s_ref, x_refs, q_list, u_list);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5519,26 +4494,38 @@ auto norm(linear_algebra::Norm norm_type, AType const &A) -> RemoveComplexT<type
 /// Graph-aware norm writing result to a pre-allocated scalar.
 template <TensorConcept AType>
 void norm(RemoveComplexT<typename AType::ValueType> *result, linear_algebra::Norm norm_type, AType const &A) {
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("norm eager");
-        // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
-        blas::SerialVendorScope const serial;
-        *result = linear_algebra::norm(norm_type, A);
-        return;
+    if constexpr (CoreBasicTensorConcept<AType>) {
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            *result = detail::eager_norm<T>(static_cast<char>(norm_type), A.impl());
+            return;
+        }
+        auto const     a_ref = ctx.get_slot(A);
+        TensorId const r_id  = ctx.get_or_register_scalar(result, "norm_result");
+        detail::capture_norm<T>(ctx, static_cast<char>(norm_type), a_ref, r_id, result);
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("norm eager");
+            // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
+            blas::SerialVendorScope const serial;
+            *result = linear_algebra::norm(norm_type, A);
+            return;
+        }
+
+        LabeledSection("norm capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        TensorId r_id       = ctx.get_or_register_scalar(result, "norm_result");
+
+        auto executor = [result, norm_type, a_slot]() {
+            LabeledSection("norm execute");
+            blas::SerialVendorScope const serial;
+            *result = linear_algebra::norm(norm_type, *static_cast<AType const *>(a_slot->ptr));
+        };
+
+        ctx.record(OpKind::Norm, "norm", {a_id}, {r_id}, std::move(executor));
     }
-
-    LabeledSection("norm capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    TensorId r_id       = ctx.get_or_register_scalar(result, "norm_result");
-
-    auto executor = [result, norm_type, a_slot]() {
-        LabeledSection("norm execute");
-        blas::SerialVendorScope const serial;
-        *result = linear_algebra::norm(norm_type, *static_cast<AType const *>(a_slot->ptr));
-    };
-
-    ctx.record(OpKind::Norm, "norm", {a_id}, {r_id}, std::move(executor));
 }
 
 /// Python-friendly graph-aware norm: writes the result into ``result->data()[0]``.
@@ -5590,33 +4577,45 @@ void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::norm: result tensor must have at least one element");
     }
 
-    auto compute = [](linear_algebra::Norm nt, AType const &a) -> R {
-        // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
-        blas::SerialVendorScope const serial;
-        if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-            return detail::tiled_norm<typename AType::ValueType>(nt, a);
-        } else {
-            return linear_algebra::norm(nt, a);
+    if constexpr (!IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            result->data()[0] = detail::eager_norm<T>(static_cast<char>(norm_type), A.impl());
+            return;
         }
-    };
+        auto const a_ref = ctx.get_slot(A);
+        auto const r_ref = ctx.get_slot(*result);
+        detail::capture_norm_into<T>(ctx, static_cast<char>(norm_type), a_ref, r_ref);
+    } else {
+        auto compute = [](linear_algebra::Norm nt, AType const &a) -> R {
+            // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
+            blas::SerialVendorScope const serial;
+            if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+                return detail::tiled_norm<typename AType::ValueType>(nt, a);
+            } else {
+                return linear_algebra::norm(nt, a);
+            }
+        };
 
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("norm_python eager");
-        result->data()[0] = compute(norm_type, A);
-        return;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("norm_python eager");
+            result->data()[0] = compute(norm_type, A);
+            return;
+        }
+
+        LabeledSection("norm_python capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [r_id, r_slot] = ctx.get_slot(*result);
+
+        auto executor = [norm_type, a_slot, r_slot, compute]() {
+            LabeledSection("norm_python execute");
+            auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
+            r_ptr->data()[0] = compute(norm_type, *static_cast<AType const *>(a_slot->ptr));
+        };
+        ctx.record(OpKind::Norm, "norm", {a_id}, {r_id}, std::move(executor));
     }
-
-    LabeledSection("norm_python capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [r_id, r_slot] = ctx.get_slot(*result);
-
-    auto executor = [norm_type, a_slot, r_slot, compute]() {
-        LabeledSection("norm_python execute");
-        auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
-        r_ptr->data()[0] = compute(norm_type, *static_cast<AType const *>(a_slot->ptr));
-    };
-    ctx.record(OpKind::Norm, "norm", {a_id}, {r_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5689,25 +4688,31 @@ void trace(typename AType::ValueType *result, AType const &A) {
     using T = typename AType::ValueType;
 
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("trace eager");
-        if (A.dim(0) != A.dim(1))
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
-        *result = detail::diagonal_sum(A);
-        return;
-    }
-
-    LabeledSection("trace capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    TensorId r_id       = ctx.get_or_register_scalar(result, "trace_result");
 
     // Dense operands only: a block or tiled matrix has no single buffer for the
-    // rank-erased diagonal walk, and keeps the capture-baked closure.
+    // rank-erased diagonal walk, and keeps the typed sum and a capture-baked closure.
     if constexpr (CoreBasicTensorConcept<AType>) {
+        if (!ctx.is_capturing()) {
+            *result = detail::eager_trace<T>(A.impl());
+            return;
+        }
+        TensorId const a_id = ctx.get_slot(A).first;
+        TensorId const r_id = ctx.get_or_register_scalar(result, "trace_result");
         // Rank is keyed on the destination, which is a registered scalar: 0.
-        ctx.record_built(OpKind::Trace, "trace", packed_gemm::get_scalar_type<T>(), 0, TraceDescriptor{},
-                         std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&r_id, 1}, {a_id}, {r_id});
+        detail::capture_trace<T>(ctx, a_id, r_id, 0);
     } else {
+        if (!ctx.is_capturing()) {
+            LabeledSection("trace eager");
+            if (A.dim(0) != A.dim(1))
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
+            *result = detail::diagonal_sum(A);
+            return;
+        }
+
+        LabeledSection("trace capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        TensorId r_id       = ctx.get_or_register_scalar(result, "trace_result");
+
         auto executor = [result, a_slot]() {
             LabeledSection("trace execute");
             auto const &a = *static_cast<AType const *>(a_slot->ptr);
@@ -5772,39 +4777,36 @@ void trace_python(ResultType *result, AType const &A) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
     }
 
-    auto compute = [](AType const &a) -> T {
-        if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-            return detail::tiled_trace<T>(a);
-        } else {
-            return detail::diagonal_sum(a);
-        }
-    };
-
     auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("trace_python eager");
-        result->data()[0] = compute(A);
-        return;
-    }
-
-    LabeledSection("trace_python capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [r_id, r_slot] = ctx.get_slot(*result);
-
     if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-        auto executor = [a_slot, r_slot, compute]() {
+        if (!ctx.is_capturing()) {
+            LabeledSection("trace_python eager");
+            result->data()[0] = detail::tiled_trace<T>(A);
+            return;
+        }
+
+        LabeledSection("trace_python capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [r_id, r_slot] = ctx.get_slot(*result);
+
+        auto executor = [a_slot, r_slot]() {
             LabeledSection("trace_python execute");
             auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
-            r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr));
+            r_ptr->data()[0] = detail::tiled_trace<T>(*static_cast<AType const *>(a_slot->ptr));
         };
 
         ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor));
     } else {
+        if (!ctx.is_capturing()) {
+            result->data()[0] = detail::eager_trace<T>(A.impl());
+            return;
+        }
         // Same node the scalar-writing cg::trace records; the destination is a
         // rank-1 tensor rather than a bare scalar and resolves to one address
         // either way.
-        ctx.record_built(OpKind::Trace, "trace", packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result), TraceDescriptor{},
-                         std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&r_id, 1}, {a_id}, {r_id});
+        TensorId const a_id = ctx.get_slot(A).first;
+        TensorId const r_id = ctx.get_slot(*result).first;
+        detail::capture_trace<T>(ctx, a_id, r_id, detail::tensor_rank(*result));
     }
 }
 
@@ -5961,31 +4963,43 @@ void syev(AType *A, WType *W) {
                                 detail::tensor_rank(*W));
     }
 
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("syev eager");
-        linear_algebra::syev<ComputeEigenvectors>(A, W);
-        return;
+    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<WType>) {
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            detail::eager_syev<T>(ComputeEigenvectors, A->impl(), W->impl());
+            return;
+        }
+        auto const a_ref = ctx.get_slot(*A);
+        auto const w_ref = ctx.get_slot(*W);
+        detail::capture_syev<T>(ctx, ComputeEigenvectors, a_ref, w_ref);
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("syev eager");
+            linear_algebra::syev<ComputeEigenvectors>(A, W);
+            return;
+        }
+
+        LabeledSection("syev capture");
+        auto [a_id, a_slot] = ctx.get_slot(*A);
+        auto [w_id, w_slot] = ctx.get_slot(*W);
+
+        auto executor = [a_slot, w_slot]() {
+            LabeledSection("syev execute");
+            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
+            linear_algebra::syev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
+        };
+
+        // A is BOTH an input and an output: the decomposition overwrites it. Listing it only as
+        // an output would let a reader of the original matrix be ordered after this node, and
+        // listing it only as an input would leave the overwrite unordered against a later writer.
+        //
+        // The descriptor carries the one piece of state a saved file cannot recover from the
+        // operand lists, because it is a template argument rather than a value. See SyevDescriptor.
+        ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor),
+                   OpData(SyevDescriptor{.compute_eigenvectors = ComputeEigenvectors}));
     }
-
-    LabeledSection("syev capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-    auto [w_id, w_slot] = ctx.get_slot(*W);
-
-    auto executor = [a_slot, w_slot]() {
-        LabeledSection("syev execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-        linear_algebra::syev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
-    };
-
-    // A is BOTH an input and an output: the decomposition overwrites it. Listing it only as
-    // an output would let a reader of the original matrix be ordered after this node, and
-    // listing it only as an input would leave the overwrite unordered against a later writer.
-    //
-    // The descriptor carries the one piece of state a saved file cannot recover from the
-    // operand lists, because it is a template argument rather than a value. See SyevDescriptor.
-    ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor),
-               OpData(SyevDescriptor{.compute_eigenvectors = ComputeEigenvectors}));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6061,23 +5075,35 @@ void heev(AType *A, WType *W) {
                                 detail::tensor_rank(*W));
     }
 
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("heev eager");
-        linear_algebra::heev<ComputeEigenvectors>(A, W);
-        return;
+    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<WType>) {
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            detail::eager_syev<T>(ComputeEigenvectors, A->impl(), W->impl());
+            return;
+        }
+        auto const a_ref = ctx.get_slot(*A);
+        auto const w_ref = ctx.get_slot(*W);
+        detail::capture_syev<T>(ctx, ComputeEigenvectors, a_ref, w_ref);
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("heev eager");
+            linear_algebra::heev<ComputeEigenvectors>(A, W);
+            return;
+        }
+
+        LabeledSection("heev capture");
+        auto [a_id, a_slot] = ctx.get_slot(*A);
+        auto [w_id, w_slot] = ctx.get_slot(*W);
+
+        auto executor = [a_slot, w_slot]() {
+            LabeledSection("heev execute");
+            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
+            linear_algebra::heev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
+        };
+        ctx.record(OpKind::Heev, "heev", {a_id}, {a_id, w_id}, std::move(executor));
     }
-
-    LabeledSection("heev capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-    auto [w_id, w_slot] = ctx.get_slot(*W);
-
-    auto executor = [a_slot, w_slot]() {
-        LabeledSection("heev execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-        linear_algebra::heev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
-    };
-    ctx.record(OpKind::Heev, "heev", {a_id}, {a_id, w_id}, std::move(executor));
 }
 
 /// Tiled real-symmetric eigendecomposition: independently diagonalize each
@@ -6198,25 +5224,37 @@ auto gesv(AType *A, BType *B) -> int {
                                 detail::tensor_rank(*B));
     }
 
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("gesv eager");
-        return linear_algebra::gesv(A, B);
+    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType>) {
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            return detail::eager_gesv<T>(A->impl(), B->impl());
+        }
+        auto const a_ref = ctx.get_slot(*A);
+        auto const b_ref = ctx.get_slot(*B);
+        detail::capture_gesv<T>(ctx, a_ref, b_ref);
+        return 0;
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("gesv eager");
+            return linear_algebra::gesv(A, B);
+        }
+
+        LabeledSection("gesv capture");
+        auto [a_id, a_slot] = ctx.get_slot(*A);
+        auto [b_id, b_slot] = ctx.get_slot(*B);
+
+        auto executor = [a_slot, b_slot]() {
+            LabeledSection("gesv execute");
+            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
+            ProfileAnnotate("nrhs", static_cast<int64_t>(static_cast<BType *>(b_slot->ptr)->dim(1)));
+            std::ignore = linear_algebra::gesv(static_cast<AType *>(a_slot->ptr), static_cast<BType *>(b_slot->ptr));
+        };
+        ctx.record(OpKind::Gesv, "gesv", {a_id, b_id}, {a_id, b_id}, std::move(executor));
+
+        return 0;
     }
-
-    LabeledSection("gesv capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-    auto [b_id, b_slot] = ctx.get_slot(*B);
-
-    auto executor = [a_slot, b_slot]() {
-        LabeledSection("gesv execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-        ProfileAnnotate("nrhs", static_cast<int64_t>(static_cast<BType *>(b_slot->ptr)->dim(1)));
-        std::ignore = linear_algebra::gesv(static_cast<AType *>(a_slot->ptr), static_cast<BType *>(b_slot->ptr));
-    };
-    ctx.record(OpKind::Gesv, "gesv", {a_id, b_id}, {a_id, b_id}, std::move(executor));
-
-    return 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6261,25 +5299,35 @@ auto getrf(AType *A, LuPivots *pivots) -> int {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::getrf requires a rank-2 tensor; got rank {}.", detail::tensor_rank(*A));
     }
 
-    auto       &ctx    = CaptureContext::current();
-    auto const &buffer = pivots->buffer();
+    if constexpr (CoreBasicTensorConcept<AType>) {
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            return detail::eager_getrf<T>(A->impl(), *pivots);
+        }
+        detail::capture_getrf<T>(ctx, ctx.get_slot(*A), *pivots);
+        return 0;
+    } else {
+        auto       &ctx    = CaptureContext::current();
+        auto const &buffer = pivots->buffer();
 
-    if (!ctx.is_capturing()) {
-        LabeledSection("getrf eager");
-        return linear_algebra::getrf(A, buffer.get());
+        if (!ctx.is_capturing()) {
+            LabeledSection("getrf eager");
+            return linear_algebra::getrf(A, buffer.get());
+        }
+
+        LabeledSection("getrf capture");
+        auto [a_id, a_slot] = ctx.get_slot(*A);
+
+        auto executor = [a_slot, buffer]() {
+            LabeledSection("getrf execute");
+            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
+            std::ignore = linear_algebra::getrf(static_cast<AType *>(a_slot->ptr), buffer.get());
+        };
+        ctx.record(OpKind::Getrf, "getrf", {a_id}, {a_id}, std::move(executor));
+
+        return 0;
     }
-
-    LabeledSection("getrf capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-
-    auto executor = [a_slot, buffer]() {
-        LabeledSection("getrf execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-        std::ignore = linear_algebra::getrf(static_cast<AType *>(a_slot->ptr), buffer.get());
-    };
-    ctx.record(OpKind::Getrf, "getrf", {a_id}, {a_id}, std::move(executor));
-
-    return 0;
 }
 
 /// Solve ``A * X = B`` in place against a factorization ``getrf`` produced.
@@ -6309,26 +5357,38 @@ auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
                                 detail::tensor_rank(*B));
     }
 
-    auto       &ctx    = CaptureContext::current();
-    auto const &buffer = pivots.buffer();
+    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType>) {
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            return detail::eager_getrs<T>(A.impl(), pivots, B->impl());
+        }
+        auto const a_ref = ctx.get_slot(A);
+        auto const b_ref = ctx.get_slot(*B);
+        detail::capture_getrs<T>(ctx, a_ref, pivots, b_ref);
+        return 0;
+    } else {
+        auto       &ctx    = CaptureContext::current();
+        auto const &buffer = pivots.buffer();
 
-    if (!ctx.is_capturing()) {
-        LabeledSection("getrs eager");
-        return linear_algebra::getrs(A, *buffer, B);
+        if (!ctx.is_capturing()) {
+            LabeledSection("getrs eager");
+            return linear_algebra::getrs(A, *buffer, B);
+        }
+
+        LabeledSection("getrs capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [b_id, b_slot] = ctx.get_slot(*B);
+
+        auto executor = [a_slot, b_slot, buffer]() {
+            LabeledSection("getrs execute");
+            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
+            std::ignore = linear_algebra::getrs(*static_cast<AType const *>(a_slot->ptr), *buffer, static_cast<BType *>(b_slot->ptr));
+        };
+        ctx.record(OpKind::Getrs, "getrs", {a_id, b_id}, {b_id}, std::move(executor));
+
+        return 0;
     }
-
-    LabeledSection("getrs capture");
-    auto [a_id, a_slot] = ctx.get_slot(A);
-    auto [b_id, b_slot] = ctx.get_slot(*B);
-
-    auto executor = [a_slot, b_slot, buffer]() {
-        LabeledSection("getrs execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
-        std::ignore = linear_algebra::getrs(*static_cast<AType const *>(a_slot->ptr), *buffer, static_cast<BType *>(b_slot->ptr));
-    };
-    ctx.record(OpKind::Getrs, "getrs", {a_id, b_id}, {b_id}, std::move(executor));
-
-    return 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6476,22 +5536,32 @@ void invert(AType *A) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::invert requires rank-2 tensor; got rank {}.", detail::tensor_rank(*A));
     }
 
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("invert eager");
-        linear_algebra::invert(A);
-        return;
+    if constexpr (CoreBasicTensorConcept<AType>) {
+        using T   = typename AType::ValueType;
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            detail::eager_invert<T>(A->impl());
+            return;
+        }
+        detail::capture_invert<T>(ctx, ctx.get_slot(*A));
+    } else {
+        auto &ctx = CaptureContext::current();
+        if (!ctx.is_capturing()) {
+            LabeledSection("invert eager");
+            linear_algebra::invert(A);
+            return;
+        }
+
+        LabeledSection("invert capture");
+        auto [a_id, a_slot] = ctx.get_slot(*A);
+
+        auto executor = [a_slot]() {
+            LabeledSection("invert execute");
+            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
+            linear_algebra::invert(static_cast<AType *>(a_slot->ptr));
+        };
+        ctx.record(OpKind::Invert, "invert", {a_id}, {a_id}, std::move(executor));
     }
-
-    LabeledSection("invert capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-
-    auto executor = [a_slot]() {
-        LabeledSection("invert execute");
-        ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-        linear_algebra::invert(static_cast<AType *>(a_slot->ptr));
-    };
-    ctx.record(OpKind::Invert, "invert", {a_id}, {a_id}, std::move(executor));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

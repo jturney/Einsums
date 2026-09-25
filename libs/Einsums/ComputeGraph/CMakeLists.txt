@@ -41,6 +41,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp
     Einsums/ComputeGraph/Detail/DenseElementTransform.hpp
     Einsums/ComputeGraph/Detail/ErasedEinsum.hpp
+    Einsums/ComputeGraph/Detail/ErasedOperations.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp
     Einsums/ComputeGraph/Detail/Json.hpp
     Einsums/ComputeGraph/Detail/MixedPrecision.hpp
@@ -123,6 +124,17 @@ set(ComputeGraphSources
     Executor.cpp
     StringDispatch.cpp
     ErasedEinsum.cpp
+    Operations/Batched.cpp
+    Operations/Blas.cpp
+    Operations/Elementwise.cpp
+    Operations/Grouped.cpp
+    Operations/Lapack.cpp
+    Operations/Permute.cpp
+    Operations/Reductions.cpp
+    Operations/Sandwich.cpp
+    Operations/Selection.cpp
+    Operations/Shape.cpp
+    Operations/Unary.cpp
     ExecutorBuilder.cpp
     ABILayout.cpp
     Graph.cpp
