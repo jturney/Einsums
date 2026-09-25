@@ -108,16 +108,16 @@ bool AntisymmetrizerExpansion::run(Graph &graph) {
         bool                             conj_a = false;
         bool                             conj_b = false;
         {
-            auto const *desc = graph.nodes()[index].op_data.get_if<EinsumDescriptor>();
-            bool const  live = desc->indices != nullptr;
-            base.c_indices   = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
-            base.a_indices   = live ? desc->indices->spec.a_indices : desc->spec.a_indices;
-            base.b_indices   = live ? desc->indices->spec.b_indices : desc->spec.b_indices;
-            operators        = live ? desc->indices->spec.operators : desc->operators;
-            c_pf             = live_c_prefactor(*desc);
-            ab_pf            = live_ab_prefactor(*desc);
-            conj_a           = live_conj_a(*desc);
-            conj_b           = live_conj_b(*desc);
+            auto const *desc  = graph.nodes()[index].op_data.get_if<EinsumDescriptor>();
+            auto const  lists = live_index_lists(*desc);
+            base.c_indices    = lists.c;
+            base.a_indices    = lists.a;
+            base.b_indices    = lists.b;
+            operators         = lists.operators;
+            c_pf              = live_c_prefactor(*desc);
+            ab_pf             = live_ab_prefactor(*desc);
+            conj_a            = live_conj_a(*desc);
+            conj_b            = live_conj_b(*desc);
         }
         base.raw = base.render();
 

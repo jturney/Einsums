@@ -45,29 +45,17 @@ bool InputSlicing::run(Graph &graph) {
     for (size_t idx = 0; idx < nodes.size(); idx++) {
         auto const &node = nodes[idx];
 
-        // Extract output index list and per-input index lists based on node kind
-        std::vector<std::string> const               *c_indices_ptr = nullptr;
-        std::vector<std::vector<std::string> const *> input_indices;
-
-        if (node.kind == OpKind::Einsum) {
-            auto const *desc = node.op_data.get_if<EinsumDescriptor>();
-            if (!desc)
-                continue;
-            c_indices_ptr = &desc->spec.c_indices;
-            input_indices.push_back(&desc->spec.a_indices);
-            if (node.inputs.size() > 1)
-                input_indices.push_back(&desc->spec.b_indices);
-        } else if (node.kind == OpKind::Permute || node.kind == OpKind::Transpose) {
-            auto const *desc = node.op_data.get_if<PermuteDescriptor>();
-            if (!desc || desc->c_indices.empty())
-                continue;
-            c_indices_ptr = &desc->c_indices;
-            input_indices.push_back(&desc->a_indices);
-        } else {
-            // BatchedGemm and other kinds: distributed batched contractions
-            // aren't supported (see docs/gemm_batching.rst); the generic
-            // fallback below would have no index list to reason about.
+        // The output's index list and each input's. Other kinds (BatchedGemm among them:
+        // distributed batched contractions aren't supported, see docs/gemm_batching.rst) carry
+        // no index list to reason about.
+        auto const lists = node_index_lists(node);
+        if (!lists || (node.kind == OpKind::Permute && lists->c->empty())) {
             continue;
+        }
+        std::vector<std::string> const               *c_indices_ptr = lists->c;
+        std::vector<std::vector<std::string> const *> input_indices{lists->a};
+        if (lists->b != nullptr && node.inputs.size() > 1) {
+            input_indices.push_back(lists->b);
         }
 
         // Check each output for a DistributionDescriptor

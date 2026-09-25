@@ -4,10 +4,29 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/PackedGemm/ContractionKey.hpp>
 
+#include <memory>
+#include <string>
 #include <string_view>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
+
+namespace {
+
+/// The link, target and all-index lists a contraction spec derives from its three index lists.
+void derive_index_roles(packed_gemm::ContractionSpec &spec) {
+    ParsedEinsumSpec lists;
+    lists.c_indices     = spec.c_indices;
+    lists.a_indices     = spec.a_indices;
+    lists.b_indices     = spec.b_indices;
+    spec.link_indices   = lists.link_indices();
+    spec.target_indices = lists.target_indices();
+    spec.all_indices    = spec.target_indices;
+    spec.all_indices.insert(spec.all_indices.end(), spec.link_indices.begin(), spec.link_indices.end());
+}
+
+} // namespace
 
 std::optional<SpaceId> EinsumDescriptor::space_for_letter(std::string_view letter) const {
     for (auto const &entry : letter_spaces) {
@@ -32,6 +51,56 @@ bool live_conj_a(EinsumDescriptor const &desc) noexcept {
 
 bool live_conj_b(EinsumDescriptor const &desc) noexcept {
     return desc.params != nullptr ? desc.params->conj_b : desc.conj_b;
+}
+
+EinsumIndexLists live_index_lists(EinsumDescriptor const &desc) noexcept {
+    if (desc.indices != nullptr) {
+        auto const &live = desc.indices->spec;
+        return {
+            .c = live.c_indices, .a = live.a_indices, .b = live.b_indices, .link = desc.indices->link_indices, .operators = live.operators};
+    }
+    return {.c         = desc.spec.c_indices,
+            .a         = desc.spec.a_indices,
+            .b         = desc.spec.b_indices,
+            .link      = desc.spec.link_indices,
+            .operators = desc.operators};
+}
+
+void set_operand_indices(EinsumDescriptor &desc, EinsumOperand operand, std::vector<std::string> indices) {
+    auto slot = [operand](auto &spec) -> std::vector<std::string> & {
+        switch (operand) {
+        case EinsumOperand::C:
+            return spec.c_indices;
+        case EinsumOperand::A:
+            return spec.a_indices;
+        case EinsumOperand::B:
+            return spec.b_indices;
+        }
+        return spec.c_indices;
+    };
+    slot(desc.spec) = indices;
+
+    derive_index_roles(desc.spec);
+
+    if (desc.indices != nullptr) {
+        slot(desc.indices->spec)   = std::move(indices);
+        desc.indices->link_indices = desc.spec.link_indices;
+        desc.indices->spec.raw     = desc.indices->spec.render();
+    }
+}
+
+std::optional<NodeIndexLists> node_index_lists(Node const &node) noexcept {
+    if (node.kind == OpKind::Einsum) {
+        if (auto const *desc = node.op_data.get_if<EinsumDescriptor>(); desc != nullptr) {
+            auto const lists = live_index_lists(*desc);
+            return NodeIndexLists{.c = &lists.c, .a = &lists.a, .b = &lists.b};
+        }
+    } else if (node.kind == OpKind::Permute) {
+        if (auto const *desc = node.op_data.get_if<PermuteDescriptor>(); desc != nullptr) {
+            return NodeIndexLists{.c = &desc->c_indices, .a = &desc->a_indices, .b = nullptr};
+        }
+    }
+    return std::nullopt;
 }
 
 PrefactorScalar const &live_alpha(AxpbyDescriptor const &desc) noexcept {
@@ -171,19 +240,40 @@ namespace detail {
 EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf, bool conj_a,
                                          bool conj_b) {
     EinsumDescriptor desc;
-    desc.c_prefactor         = c_pf;
-    desc.ab_prefactor        = ab_pf;
-    desc.conj_a              = conj_a;
-    desc.conj_b              = conj_b;
-    desc.operators           = parsed.operators;
-    desc.spec.c_indices      = parsed.c_indices;
-    desc.spec.a_indices      = parsed.a_indices;
-    desc.spec.b_indices      = parsed.b_indices;
-    desc.spec.link_indices   = parsed.link_indices();
-    desc.spec.target_indices = parsed.target_indices();
-    desc.spec.all_indices    = desc.spec.target_indices;
-    desc.spec.all_indices.insert(desc.spec.all_indices.end(), desc.spec.link_indices.begin(), desc.spec.link_indices.end());
+    desc.c_prefactor    = c_pf;
+    desc.ab_prefactor   = ab_pf;
+    desc.conj_a         = conj_a;
+    desc.conj_b         = conj_b;
+    desc.operators      = parsed.operators;
+    desc.spec.c_indices = parsed.c_indices;
+    desc.spec.a_indices = parsed.a_indices;
+    desc.spec.b_indices = parsed.b_indices;
+    derive_index_roles(desc.spec);
     return desc;
+}
+
+std::shared_ptr<EinsumParams> make_live_params(EinsumDescriptor const &desc) {
+    return std::make_shared<EinsumParams>(
+        EinsumParams{.c_pf = desc.c_prefactor, .ab_pf = desc.ab_prefactor, .conj_a = desc.conj_a, .conj_b = desc.conj_b});
+}
+
+std::shared_ptr<EinsumIndices> make_live_indices(EinsumDescriptor const &desc, std::string raw) {
+    auto indices            = std::make_shared<EinsumIndices>();
+    indices->spec.c_indices = desc.spec.c_indices;
+    indices->spec.a_indices = desc.spec.a_indices;
+    indices->spec.b_indices = desc.spec.b_indices;
+    indices->spec.operators = desc.operators;
+    indices->spec.conj_a    = desc.conj_a;
+    indices->spec.conj_b    = desc.conj_b;
+    indices->spec.raw       = raw.empty() ? indices->spec.render() : std::move(raw);
+    indices->link_indices   = desc.spec.link_indices;
+    return indices;
+}
+
+void attach_live_state(EinsumDescriptor &desc, std::string raw) {
+    desc.params  = make_live_params(desc);
+    desc.indices = make_live_indices(desc, std::move(raw));
+    desc.site    = std::make_shared<packed_gemm::ContractionSite>();
 }
 
 std::string space_label(SpaceRegistry const *registry, SpaceId id) {

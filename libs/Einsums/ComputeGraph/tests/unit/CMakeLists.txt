@@ -45,6 +45,7 @@ set(ComputeGraphTests
     DistributedIntegration.cpp
     DistributiveFactoring.cpp
     AxpbyDescriptor.cpp
+    EinsumLiveState.cpp
     EinsumSpec.cpp
     ElementOps.cpp
     EscapeAnalysis.cpp

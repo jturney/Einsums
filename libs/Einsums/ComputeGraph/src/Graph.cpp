@@ -140,7 +140,6 @@ void Graph::move_members_from(Graph &&other) noexcept {
     // relation, which is the shape of both alias bugs this module has had.
     _ptr_index             = std::move(other._ptr_index);
     _owned_tensor_ptrs     = std::move(other._owned_tensor_ptrs);
-    _indices_store         = std::move(other._indices_store);
     _device_shadows        = std::move(other._device_shadows);
     _executor              = std::move(other._executor);
     _aliases_linked        = other._aliases_linked;
@@ -148,7 +147,6 @@ void Graph::move_members_from(Graph &&other) noexcept {
     _timing_samples        = std::move(other._timing_samples);
     _timing_report         = std::move(other._timing_report);
     _timing_report_valid   = other._timing_report_valid;
-    _params_store          = std::move(other._params_store);
     _slot_redirects        = std::move(other._slot_redirects);
     _deps_valid            = other._deps_valid;
     _profile_strings       = std::move(other._profile_strings);
@@ -666,17 +664,6 @@ void Graph::resize_intermediate(TensorId id, std::vector<std::size_t> const &dim
 void Graph::clear_bindings() noexcept {
     _bound_operands.clear();
     _ragged_extents.clear();
-}
-
-std::shared_ptr<EinsumIndices> Graph::create_indices(std::vector<std::string> a, std::vector<std::string> b, std::vector<std::string> c,
-                                                     std::vector<std::string> link) {
-    auto idx            = std::make_shared<EinsumIndices>();
-    idx->spec.a_indices = std::move(a);
-    idx->spec.b_indices = std::move(b);
-    idx->spec.c_indices = std::move(c);
-    idx->link_indices   = std::move(link);
-    _indices_store.push_back(idx);
-    return idx;
 }
 
 bool Graph::BoundSpan::overlaps(BoundSpan const &other) const noexcept {

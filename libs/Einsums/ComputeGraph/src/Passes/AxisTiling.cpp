@@ -137,25 +137,14 @@ std::optional<std::vector<SlotRef>> slots_of(Graph const &graph, Node const &nod
 /// Read from the LIVE index state where the node carries one, because a pass that rewrote the
 /// letters wrote them there and the descriptor's own copy is the at-capture snapshot.
 std::optional<std::vector<std::vector<std::string>>> letters_of(Node const &node) {
-    if (node.kind == OpKind::Einsum) {
-        auto const *desc = node.op_data.get_if<EinsumDescriptor>();
-        if (desc == nullptr) {
-            return std::nullopt;
-        }
-        if (desc->indices) {
-            return std::vector<std::vector<std::string>>{desc->indices->spec.c_indices, desc->indices->spec.a_indices,
-                                                         desc->indices->spec.b_indices};
-        }
-        return std::vector<std::vector<std::string>>{desc->spec.c_indices, desc->spec.a_indices, desc->spec.b_indices};
+    auto const lists = node_index_lists(node);
+    if (!lists) {
+        return std::nullopt;
     }
-    if (node.kind == OpKind::Permute) {
-        auto const *desc = node.op_data.get_if<PermuteDescriptor>();
-        if (desc == nullptr) {
-            return std::nullopt;
-        }
-        return std::vector<std::vector<std::string>>{desc->c_indices, desc->a_indices};
+    if (lists->b == nullptr) {
+        return std::vector<std::vector<std::string>>{*lists->c, *lists->a};
     }
-    return std::nullopt;
+    return std::vector<std::vector<std::string>>{*lists->c, *lists->a, *lists->b};
 }
 
 /// The link (summed) letters of a contraction, empty for every other kind.
@@ -167,7 +156,7 @@ std::vector<std::string> link_letters_of(Node const &node) {
     if (desc == nullptr) {
         return {};
     }
-    return desc->indices ? desc->indices->link_indices : desc->spec.link_indices;
+    return live_index_lists(*desc).link;
 }
 
 /// Where a slot's labels live: on the tensor for one the region writes, on the USE for one it
@@ -1265,16 +1254,15 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
 
         switch (op.kind) {
         case OpKind::Einsum: {
-            auto const &desc = op.op_data.get<EinsumDescriptor>();
-            auto const &spec =
-                desc.indices ? desc.indices->spec : ParsedEinsumSpec{desc.spec.c_indices, desc.spec.a_indices, desc.spec.b_indices};
-            auto const c        = surviving(spec.c_indices, op.slots[0].labels);
-            auto const a        = surviving(spec.a_indices, op.slots[1].labels);
-            auto const b        = surviving(spec.b_indices, op.slots[2].labels);
-            auto const alpha    = real_prefactor(live_ab_prefactor(desc));
-            auto const beta     = real_prefactor(live_c_prefactor(desc));
-            auto const as_gemm  = gemm_shape(c, a, b, desc.indices ? desc.indices->link_indices : desc.spec.link_indices);
-            bool       readable = true;
+            auto const &desc     = op.op_data.get<EinsumDescriptor>();
+            auto const  lists    = live_index_lists(desc);
+            auto const  c        = surviving(lists.c, op.slots[0].labels);
+            auto const  a        = surviving(lists.a, op.slots[1].labels);
+            auto const  b        = surviving(lists.b, op.slots[2].labels);
+            auto const  alpha    = real_prefactor(live_ab_prefactor(desc));
+            auto const  beta     = real_prefactor(live_c_prefactor(desc));
+            auto const  as_gemm  = gemm_shape(c, a, b, lists.link);
+            bool        readable = true;
             for (auto const &slot : operand) {
                 for (auto const *view : slot) {
                     readable = readable && gemm_readable(*view);

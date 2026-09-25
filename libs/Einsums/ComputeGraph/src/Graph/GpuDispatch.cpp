@@ -191,10 +191,11 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
     //   c_indices[0] = row index of C, c_indices[1] = col index of C
     //   We need to figure out if A or B is transposed based on where the indices appear.
 
-    auto const &ci = desc.spec.c_indices;    // e.g., ["i", "j"]
-    auto const &ai = desc.spec.a_indices;    // e.g., ["i", "k"]
-    auto const &bi = desc.spec.b_indices;    // e.g., ["k", "j"]
-    auto const &li = desc.spec.link_indices; // e.g., ["k"]
+    auto const  lists = live_index_lists(desc);
+    auto const &ci    = lists.c;    // e.g., ["i", "j"]
+    auto const &ai    = lists.a;    // e.g., ["i", "k"]
+    auto const &bi    = lists.b;    // e.g., ["k", "j"]
+    auto const &li    = lists.link; // e.g., ["k"]
 
     if (ci.size() != 2 || ai.size() != 2 || bi.size() != 2)
         return false;
@@ -268,14 +269,14 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
 
     // Dispatch based on dtype.
     if (ha.dtype == packed_gemm::ScalarType::Float32) {
-        auto alpha = as<float>(desc.ab_prefactor);
-        auto beta  = as<float>(desc.c_prefactor);
+        auto alpha = as<float>(live_ab_prefactor(desc));
+        auto beta  = as<float>(live_c_prefactor(desc));
         gpu::blas::gemm<float>(transa, transb, M, N, K, alpha, static_cast<float const *>(ptr_a), lda, static_cast<float const *>(ptr_b),
                                ldb, beta, static_cast<float *>(ptr_c), ldc);
         return true;
     } else if (ha.dtype == packed_gemm::ScalarType::Float64) {
-        auto alpha = as<double>(desc.ab_prefactor);
-        auto beta  = as<double>(desc.c_prefactor);
+        auto alpha = as<double>(live_ab_prefactor(desc));
+        auto beta  = as<double>(live_c_prefactor(desc));
         gpu::blas::gemm<double>(transa, transb, M, N, K, alpha, static_cast<double const *>(ptr_a), lda, static_cast<double const *>(ptr_b),
                                 ldb, beta, static_cast<double *>(ptr_c), ldc);
         return true;
@@ -336,10 +337,11 @@ bool try_gpu_gemv(EinsumDescriptor const &desc, Node const &node, std::unordered
     if (!ptr_a || !ptr_x || !ptr_y)
         return false;
 
-    auto const &ai = desc.spec.a_indices;
-    auto const &bi = desc.spec.b_indices; // "b" is actually x for GEMV
-    auto const &ci = desc.spec.c_indices; // "c" is actually y for GEMV
-    auto const &li = desc.spec.link_indices;
+    auto const  lists = live_index_lists(desc);
+    auto const &ai    = lists.a;
+    auto const &bi    = lists.b; // "b" is actually x for GEMV
+    auto const &ci    = lists.c; // "c" is actually y for GEMV
+    auto const &li    = lists.link;
 
     if (ci.size() != 1 || li.size() != 1)
         return false;
@@ -368,14 +370,14 @@ bool try_gpu_gemv(EinsumDescriptor const &desc, Node const &node, std::unordered
     }
 
     if (ha.dtype == packed_gemm::ScalarType::Float32) {
-        auto alpha = as<float>(desc.ab_prefactor);
-        auto beta  = as<float>(desc.c_prefactor);
+        auto alpha = as<float>(live_ab_prefactor(desc));
+        auto beta  = as<float>(live_c_prefactor(desc));
         gpu::blas::gemv<float>(trans, M, N, alpha, static_cast<float const *>(ptr_a), lda, static_cast<float const *>(ptr_x), 1, beta,
                                static_cast<float *>(ptr_y), 1);
         return true;
     } else if (ha.dtype == packed_gemm::ScalarType::Float64) {
-        auto alpha = as<double>(desc.ab_prefactor);
-        auto beta  = as<double>(desc.c_prefactor);
+        auto alpha = as<double>(live_ab_prefactor(desc));
+        auto beta  = as<double>(live_c_prefactor(desc));
         gpu::blas::gemv<double>(trans, M, N, alpha, static_cast<double const *>(ptr_a), lda, static_cast<double const *>(ptr_x), 1, beta,
                                 static_cast<double *>(ptr_y), 1);
         return true;

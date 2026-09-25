@@ -546,3 +546,18 @@ TEST_CASE("validate_einsum_spec - permutation operators", "[ComputeGraph][Einsum
     STATIC_REQUIRE_FALSE(validate_einsum_spec("ijab <- P() ikac ; kcjb"));     // empty
     STATIC_REQUIRE_FALSE(validate_einsum_spec("ijab <- conj(P(i/j)) ; kcjb")); // nested
 }
+
+// The passes that reason in GEMM terms each classified a contraction's letters themselves and
+// disagreed on the lone ones; index_role is the one classification they now share.
+TEST_CASE("index_role - every letter plays exactly one part", "[ComputeGraph][EinsumSpec]") {
+    std::vector<std::string> const c{"b", "i", "j"};
+    std::vector<std::string> const a{"b", "i", "k", "p"};
+    std::vector<std::string> const b{"b", "k", "j", "q"};
+    CHECK(index_role("b", c, a, b) == IndexRole::Batch);
+    CHECK(index_role("k", c, a, b) == IndexRole::Link);
+    CHECK(index_role("i", c, a, b) == IndexRole::AFree);
+    CHECK(index_role("j", c, a, b) == IndexRole::BFree);
+    CHECK(index_role("p", c, a, b) == IndexRole::ALone);
+    CHECK(index_role("q", c, a, b) == IndexRole::BLone);
+    CHECK(index_role("z", c, a, b) == IndexRole::OutputOnly);
+}

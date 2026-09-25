@@ -83,8 +83,8 @@ bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t ei
         return false;
 
     // Old subscript: the slot's view of the permute's output.
-    auto &slot_indices = (slot == 0) ? ein_desc->indices->spec.a_indices : ein_desc->indices->spec.b_indices;
-    auto &slot_spec    = (slot == 0) ? ein_desc->spec.a_indices : ein_desc->spec.b_indices;
+    auto const  lists        = live_index_lists(*ein_desc);
+    auto const &slot_indices = (slot == 0) ? lists.a : lists.b;
 
     // Sanity: slot rank must match permute output rank. A mismatch means
     // the graph was built inconsistently; skip defensively.
@@ -110,8 +110,7 @@ bool try_fuse(Graph &graph, std::vector<Node> &nodes, size_t perm_idx, size_t ei
     // Commit: live indices, descriptor snapshot, slot redirect, and
     // graph-level edge. Order doesn't matter, none of these are
     // observed until graph.execute() runs next.
-    slot_indices = new_slot_sub;
-    slot_spec    = new_slot_sub;
+    set_operand_indices(*ein_desc, slot == 0 ? EinsumOperand::A : EinsumOperand::B, std::move(new_slot_sub));
 
     // Durable redirect (not a raw ptr copy) so the einsum keeps following
     // the source tensor if it is rebound after this pass runs.

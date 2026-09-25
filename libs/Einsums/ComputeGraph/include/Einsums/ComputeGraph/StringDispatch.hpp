@@ -364,26 +364,6 @@ void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::stri
     }
 }
 
-/// The contracted indices of a spec: in A and B, not in C. Index lists are tiny (rank-bounded), so
-/// linear scans beat building three sets; the result is sorted to match the set-based order this
-/// code historically produced.
-inline std::vector<std::string> einsum_links(ParsedEinsumSpec const &parsed) {
-    auto const              &a_idx = parsed.a_indices;
-    auto const              &b_idx = parsed.b_indices;
-    auto const              &c_idx = parsed.c_indices;
-    std::vector<std::string> links;
-    for (auto const &idx : a_idx) {
-        bool const in_b = std::find(b_idx.begin(), b_idx.end(), idx) != b_idx.end();
-        bool const in_c = std::find(c_idx.begin(), c_idx.end(), idx) != c_idx.end();
-        bool const seen = std::find(links.begin(), links.end(), idx) != links.end();
-        if (in_b && !in_c && !seen) {
-            links.push_back(idx);
-        }
-    }
-    std::sort(links.begin(), links.end());
-    return links;
-}
-
 /// Zero-extent operands: nothing to contract, but BLAS-style semantics still apply the output
 /// prefactor. An empty C is a pure no-op; an empty input with a non-empty C (zero-extent link or
 /// trace letter) means C = c_pf * C, with c_pf == 0 assigning zero rather than multiplying so stale
@@ -558,7 +538,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // Graph executors pass the links computed once at capture
     // (EinsumIndices::link_indices) so replays don't recompute them; the
     // eager path derives them here.
-    std::vector<std::string> const  links_storage = precomputed_links == nullptr ? einsum_links(parsed) : std::vector<std::string>{};
+    std::vector<std::string> const  links_storage = precomputed_links == nullptr ? parsed.link_indices() : std::vector<std::string>{};
     std::vector<std::string> const &links         = precomputed_links != nullptr ? *precomputed_links : links_storage;
 
     if (einsum_empty_operands(c_pf, C, A, B)) {
@@ -603,9 +583,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     auto const has_lone_summed_index = [&] {
         for (auto const *idx : {&a_idx, &b_idx}) {
             for (auto const &s : *idx) {
-                bool const in_c    = std::find(c_idx.begin(), c_idx.end(), s) != c_idx.end();
-                bool const in_link = std::find(links.begin(), links.end(), s) != links.end();
-                if (!in_c && !in_link) {
+                if (auto const role = index_role(s, c_idx, a_idx, b_idx); role == IndexRole::ALone || role == IndexRole::BLone) {
                     return true;
                 }
             }
@@ -859,7 +837,7 @@ void mixed_string_einsum(ParsedEinsumSpec const &parsed, typename CType::ValueTy
     LabeledSection("cg::einsum (mixed precision): {} <- {} ; {}", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
                    fmt::join(parsed.b_indices, ","));
 
-    std::vector<std::string> const  links_storage = precomputed_links == nullptr ? einsum_links(parsed) : std::vector<std::string>{};
+    std::vector<std::string> const  links_storage = precomputed_links == nullptr ? parsed.link_indices() : std::vector<std::string>{};
     std::vector<std::string> const &links         = precomputed_links != nullptr ? *precomputed_links : links_storage;
 
     if (einsum_empty_operands(c_pf, C, A, B)) {

@@ -265,27 +265,10 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
         node.op_data = spec.descriptor;
 
         if (auto *einsum = node.op_data.get_if<EinsumDescriptor>()) {
-            // The live blocks a captured node carries. Restoring them is not
-            // cosmetic: a loaded graph is optimized after loading, and a pass
-            // that rewrites a prefactor writes through this handle.
-            einsum->params         = graph.create_params(einsum->c_prefactor, einsum->ab_prefactor);
-            einsum->params->conj_a = einsum->conj_a;
-            einsum->params->conj_b = einsum->conj_b;
-            einsum->indices =
-                graph.create_indices(einsum->spec.a_indices, einsum->spec.b_indices, einsum->spec.c_indices, einsum->spec.link_indices);
-            einsum->indices->spec.conj_a = einsum->conj_a;
-            einsum->indices->spec.conj_b = einsum->conj_b;
-            // The operators belong on the LIVE block for the same reason the
-            // conj flags do: build_einsum hands `indices->spec` to the kernel,
-            // and it seeds that block from the descriptor only for a node that
-            // has none. This one was just created here, so a loaded node that
-            // named an operator would otherwise run the bare contraction and
-            // silently drop every term but the first.
-            einsum->indices->spec.operators = einsum->operators;
-            // Regenerated exactly as build_executor regenerates it for a node
-            // with no live block, so a loaded node's diagnostics read the same.
-            einsum->indices->spec.raw = einsum->indices->spec.render();
-            einsum->site              = std::make_shared<packed_gemm::ContractionSite>();
+            // The live blocks a captured node carries, seeded from the loaded snapshot the
+            // way every builder seeds them. Restoring them is not cosmetic: a loaded graph is
+            // optimized after loading, and a pass that rewrites a prefactor writes through them.
+            detail::attach_live_state(*einsum);
             if (einsum->gemm_hint != nullptr) {
                 if (spec.hint_ids.size() != 3) {
                     throw BuildFailure(

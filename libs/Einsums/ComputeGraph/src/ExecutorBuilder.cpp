@@ -239,25 +239,8 @@ std::function<void()> build_einsum(packed_gemm::ScalarType dtype, EinsumDescript
     // through Graph::make_einsum_node), private ones seeded from the snapshot
     // scalars when it does not (the loader case). A private block still runs
     // correctly; it simply is not shared with anything that could rewrite it.
-    std::shared_ptr<EinsumParams> params = desc.params;
-    if (params == nullptr) {
-        params         = std::make_shared<EinsumParams>();
-        params->c_pf   = desc.c_prefactor;
-        params->ab_pf  = desc.ab_prefactor;
-        params->conj_a = desc.conj_a;
-        params->conj_b = desc.conj_b;
-    }
-
-    std::shared_ptr<EinsumIndices> indices = desc.indices;
-    if (indices == nullptr) {
-        indices                 = std::make_shared<EinsumIndices>();
-        indices->spec.a_indices = desc.spec.a_indices;
-        indices->spec.b_indices = desc.spec.b_indices;
-        indices->spec.c_indices = desc.spec.c_indices;
-        indices->spec.operators = desc.operators;
-        indices->spec.raw       = indices->spec.render();
-        indices->link_indices   = desc.spec.link_indices;
-    }
+    std::shared_ptr<EinsumParams> const  params  = desc.params != nullptr ? desc.params : detail::make_live_params(desc);
+    std::shared_ptr<EinsumIndices> const indices = desc.indices != nullptr ? desc.indices : detail::make_live_indices(desc);
 
     // The packed-GEMM memo. One per node, so per-tile nodes from a tiled
     // expansion never share one and a parallel executor needs no

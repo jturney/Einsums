@@ -113,7 +113,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // Conjugated contractions are left untouched: this fold doesn't track
         // conj_a/conj_b through the rewrite, so skip them. They still execute
         // correctly, just unfolded. TODO: make conj-aware if it shows up hot.
-        if (desc->conj_a || desc->conj_b) {
+        if (live_conj_a(*desc) || live_conj_b(*desc)) {
             continue;
         }
         // Unlike DistributiveFactoring we DON'T skip c_pf==0 nodes: in the 2J-K
@@ -127,11 +127,11 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // so complex prefactors fold exactly on complex tensors. Real dtypes
         // are gated in Phase 4 (a nonzero imaginary part cannot land in a
         // real linear combination).
-        auto const &ab_pf = desc->ab_prefactor;
+        auto const &ab_pf = live_ab_prefactor(*desc);
         // c_pf must be exactly 1 (pure accumulate) for all but the first node;
         // record it and enforce in Phase 2.
-        bool const c_is_one  = is_one(desc->c_prefactor);
-        bool const c_is_zero = is_zero(desc->c_prefactor);
+        bool const c_is_one  = is_one(live_c_prefactor(*desc));
+        bool const c_is_zero = is_zero(live_c_prefactor(*desc));
 
         auto const &spec = desc->spec;
 
@@ -338,7 +338,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         bool const complex_dtype = dtype == packed_gemm::ScalarType::Complex64 || dtype == packed_gemm::ScalarType::Complex128;
         if (!complex_dtype) {
             bool const all_real = std::ranges::all_of(members, [](FoldCandidate const &m) { return is_real_valued(m.ab_prefactor); }) &&
-                                  is_real_valued(n0_desc->c_prefactor);
+                                  is_real_valued(live_c_prefactor(*n0_desc));
             if (!all_real) {
                 continue;
             }
@@ -398,7 +398,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         einspec.a_indices                  = n0_desc->spec.a_indices;
         einspec.b_indices                  = n0_desc->spec.b_indices;
         einspec.raw                        = einspec.render();
-        PrefactorScalar const c_pf0        = n0_desc->c_prefactor;
+        PrefactorScalar const c_pf0        = live_c_prefactor(*n0_desc);
         TensorId const        nonshared_id = vg.key.non_shared_id;
         TensorId const        shared_id    = vg.key.shared_id;
         TensorId const        out_id       = vg.key.output_id;

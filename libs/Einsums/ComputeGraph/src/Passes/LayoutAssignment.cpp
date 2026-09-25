@@ -451,33 +451,46 @@ bool LayoutAssignment::run(Graph &graph) {
             }
         }
         if (placeable) {
-            for (auto const &letter : site.captured[RoleA]) {
-                bool const in_b = present[RoleB].count(letter) != 0;
-                bool const in_c = present[RoleC].count(letter) != 0;
-                if (in_b && in_c) {
+            auto const &c = site.captured[RoleC];
+            auto const &a = site.captured[RoleA];
+            auto const &b = site.captured[RoleB];
+            for (auto const &letter : a) {
+                switch (index_role(letter, c, a, b)) {
+                case IndexRole::Batch:
                     site.batch.insert(letter);
-                } else if (in_b) {
+                    break;
+                case IndexRole::Link:
                     site.links.insert(letter);
-                } else if (in_c) {
+                    break;
+                case IndexRole::AFree:
                     site.m_group.insert(letter);
-                } else {
+                    break;
+                case IndexRole::BFree:
+                case IndexRole::ALone:
+                case IndexRole::BLone:
+                case IndexRole::OutputOnly:
                     placeable = false;
+                    break;
                 }
             }
-            for (auto const &letter : site.captured[RoleB]) {
-                bool const in_a = present[RoleA].count(letter) != 0;
-                bool const in_c = present[RoleC].count(letter) != 0;
-                if (in_a) {
-                    continue; // already classified from A's side
-                }
-                if (in_c) {
+            for (auto const &letter : b) {
+                switch (index_role(letter, c, a, b)) {
+                case IndexRole::Batch:
+                case IndexRole::Link:
+                    break; // already classified from A's side
+                case IndexRole::BFree:
                     site.n_group.insert(letter);
-                } else {
+                    break;
+                case IndexRole::AFree:
+                case IndexRole::ALone:
+                case IndexRole::BLone:
+                case IndexRole::OutputOnly:
                     placeable = false;
+                    break;
                 }
             }
-            for (auto const &letter : site.captured[RoleC]) {
-                if (present[RoleA].count(letter) == 0 && present[RoleB].count(letter) == 0) {
+            for (auto const &letter : c) {
+                if (index_role(letter, c, a, b) == IndexRole::OutputOnly) {
                     placeable = false; // an output letter neither operand supplies
                 }
             }
@@ -793,10 +806,9 @@ bool LayoutAssignment::run(Graph &graph) {
         report(2, fmt::format("store '{}' as ({}) instead of ({})", handle->name, fmt::join(dims, ","), fmt::join(was_dims, ",")));
     }
 
-    // The derived lists on the descriptor - `link_indices`, `target_indices`, `all_indices` and
-    // the live `EinsumIndices::link_indices` - are functions of the letter SETS, which a
-    // permutation of an operand's axes leaves alone. So they are correct after this loop without
-    // being touched by it, and rebuilding them would only invite the two spellings to disagree.
+    // set_operand_indices writes the snapshot and the live block together, re-derives the link and
+    // target lists and re-renders the diagnostic text. Those lists are sorted letter SETS, which a
+    // permutation of an operand's axes leaves alone, so re-deriving them changes nothing here.
     for (auto const &site : plan.sites) {
         if (site.kind != SiteKind::Contraction) {
             continue; // a permute's index lists are never rewritten; see the fold below
@@ -808,33 +820,17 @@ bool LayoutAssignment::run(Graph &graph) {
             if (it == plan.assignment.end() || it->second == captured_assignment.at(site.ids[role])) {
                 continue;
             }
-            auto const rewritten = relabel(site.captured[role], it->second);
-            // Both spellings, always. `spec` is the snapshot analysis passes read and `indices`
-            // is what the executor dereferences on the next replay; a rewrite that moved only
-            // one of them would compute one thing and be reported as another.
-            switch (role) {
-            case RoleA:
-                desc->spec.a_indices          = rewritten;
-                desc->indices->spec.a_indices = rewritten;
-                break;
-            case RoleB:
-                desc->spec.b_indices          = rewritten;
-                desc->indices->spec.b_indices = rewritten;
-                break;
-            default:
-                desc->spec.c_indices          = rewritten;
-                desc->indices->spec.c_indices = rewritten;
-                break;
-            }
+            auto rewritten = relabel(site.captured[role], it->second);
+            set_operand_indices(*desc,
+                                role == RoleA   ? EinsumOperand::A
+                                : role == RoleB ? EinsumOperand::B
+                                                : EinsumOperand::C,
+                                std::move(rewritten));
             touched = true;
         }
         if (!touched) {
             continue;
         }
-        // The raw spelling is a display string, but it is the one an execute-time diagnostic
-        // quotes, so it is regenerated in the same form the IR loader writes rather than left
-        // describing the captured axes.
-        desc->indices->spec.raw = desc->indices->spec.render();
         report(2, fmt::format("node {} now reads {}", nodes[site.node].id, desc->indices->spec.raw));
     }
 

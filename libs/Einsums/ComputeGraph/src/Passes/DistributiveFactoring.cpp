@@ -139,21 +139,23 @@ ContractionShape contraction_shape(std::vector<std::string> const &a_idx, std::v
     for (size_t i = 0; i < b_idx.size(); i++) {
         extent[b_idx[i]] = b_dims[i];
     }
-    auto const has = [](std::vector<std::string> const &v, std::string const &x) { return std::ranges::find(v, x) != v.end(); };
     for (auto const &[name, ext] : extent) {
-        bool const in_a = has(a_idx, name);
-        bool const in_b = has(b_idx, name);
-        bool const in_c = has(c_idx, name);
-        if (in_a && in_b && in_c) {
+        switch (index_role(name, c_idx, a_idx, b_idx)) {
+        case IndexRole::Batch:
             s.batch *= ext;
-        } else if (in_a && in_b) {
-            s.k *= ext;
-        } else if (in_a && in_c) {
+            break;
+        case IndexRole::AFree:
             s.m *= ext;
-        } else if (in_b && in_c) {
+            break;
+        case IndexRole::BFree:
             s.n *= ext;
-        } else {
-            s.k *= ext; // summed over but present in one operand only: still reduced
+            break;
+        case IndexRole::Link:
+        case IndexRole::ALone: // summed over but present in one operand only: still reduced
+        case IndexRole::BLone:
+        case IndexRole::OutputOnly:
+            s.k *= ext;
+            break;
         }
     }
     s.ok = true;
@@ -228,7 +230,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (!desc)
             continue;
-        if (desc->conj_a || desc->conj_b)
+        if (live_conj_a(*desc) || live_conj_b(*desc))
             continue; // conjugated contractions aren't factored (conj not threaded through the rewrite)
         if (!einsum_is_uniform(graph, node)) {
             // The shared temporary takes one operand's type, and whether the factored contraction
@@ -236,7 +238,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             note_skip("the contraction's operands hold different element types", node.label);
             continue;
         }
-        if (is_zero(desc->c_prefactor))
+        if (is_zero(live_c_prefactor(*desc)))
             continue;
         if (node.inputs.size() != 2 || node.outputs.size() != 1)
             continue;
@@ -248,10 +250,10 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
 
         // The factoring math below is real-valued; a prefactor with nonzero
         // imaginary part would silently lose it, so skip those nodes.
-        if (!is_real_valued(desc->ab_prefactor)) {
+        if (!is_real_valued(live_ab_prefactor(*desc))) {
             continue;
         }
-        auto const ab_pf_d = as_real<double>(desc->ab_prefactor);
+        auto const ab_pf_d = as_real<double>(live_ab_prefactor(*desc));
 
         // Try first input as shared
         {
@@ -380,7 +382,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             bool unit_accumulate = true;
             for (size_t ci = 1; ci < available.size(); ci++) {
                 auto const *d = nodes[available[ci].node_index].op_data.get_if<EinsumDescriptor>();
-                if (d == nullptr || !is_unit_real(d->c_prefactor)) {
+                if (d == nullptr || !is_unit_real(live_c_prefactor(*d))) {
                     unit_accumulate = false;
                     break;
                 }
@@ -526,7 +528,8 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             }
             auto const &a_dims = vg.key.shared_is_first ? sh_h->second.dims : ref_handle.dims;
             auto const &b_dims = vg.key.shared_is_first ? ref_handle.dims : sh_h->second.dims;
-            auto const  shape  = contraction_shape(fd->spec.a_indices, a_dims, fd->spec.b_indices, b_dims, fd->spec.c_indices);
+            auto const  lists  = live_index_lists(*fd);
+            auto const  shape  = contraction_shape(lists.a, a_dims, lists.b, b_dims, lists.c);
             if (!shape.ok) {
                 continue;
             }
@@ -600,12 +603,13 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         // PackedGemm topology. Only the raw index lists carry over, which is all
         // that changes here: T takes the non-shared operand's place, so the
         // contraction's indices are exactly the ones the members already used.
+        auto const       lists = live_index_lists(*first_desc);
         ParsedEinsumSpec spec;
-        spec.c_indices  = first_desc->spec.c_indices;
-        spec.a_indices  = first_desc->spec.a_indices;
-        spec.b_indices  = first_desc->spec.b_indices;
+        spec.c_indices  = lists.c;
+        spec.a_indices  = lists.a;
+        spec.b_indices  = lists.b;
         spec.raw        = spec.render();
-        auto const c_pf = first_desc->c_prefactor;
+        auto const c_pf = live_c_prefactor(*first_desc);
 
         std::vector<Node> emitted;
         emitted.reserve(available.size() + 2);

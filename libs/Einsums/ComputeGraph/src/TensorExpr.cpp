@@ -955,17 +955,12 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
                 return unexpected(RaiseFailure{.reason = "a contraction's operands hold different element types",
                                                .detail = fmt::format("node '{}'", node->label)});
             }
-            // The LIVE index lists, not the capture snapshot. A pass that rewrote
-            // an index list wrote it through the shared block, and raising the
-            // snapshot would raise the algebra as it was before that pass. The
-            // two are different TYPES rather than two copies of one: the live
-            // block holds a ParsedEinsumSpec and the snapshot a
-            // packed_gemm::ContractionSpec, so the letters are taken from
-            // whichever is present rather than the object.
-            bool const                      live   = desc->indices != nullptr;
-            std::vector<std::string> const &a_list = live ? desc->indices->spec.a_indices : desc->spec.a_indices;
-            std::vector<std::string> const &b_list = live ? desc->indices->spec.b_indices : desc->spec.b_indices;
-            std::vector<std::string> const &c_list = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
+            // The LIVE index lists, not the capture snapshot: raising the snapshot
+            // would raise the algebra as it was before a pass rewrote it.
+            auto const                      lists  = live_index_lists(*desc);
+            std::vector<std::string> const &a_list = lists.a;
+            std::vector<std::string> const &b_list = lists.b;
+            std::vector<std::string> const &c_list = lists.c;
             if (a_list.empty() && b_list.empty()) {
                 return unexpected(
                     RaiseFailure{.reason = "a contraction carries no index lists", .detail = fmt::format("node '{}'", node->label)});

@@ -30,20 +30,6 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
-/// The prefactors a node's executor will actually read.
-///
-/// ``EinsumDescriptor::c_prefactor`` and ``ab_prefactor`` are the at-capture
-/// SNAPSHOTS; the CPU executors read ``params`` on every call and that is what a
-/// pass rewriting scalars (ScaleAbsorption) writes. A chain fold that consulted
-/// the snapshot would carry a value the graph had already replaced.
-PrefactorScalar const &live_c_pf(EinsumDescriptor const &desc) {
-    return desc.params ? desc.params->c_pf : desc.c_prefactor;
-}
-
-PrefactorScalar const &live_ab_pf(EinsumDescriptor const &desc) {
-    return desc.params ? desc.params->ab_pf : desc.ab_prefactor;
-}
-
 /**
  * Analyze an einsum contraction of arbitrary rank and compute the effective
  * GEMM dimensions (M, K, N) that the contraction maps to when flattened.
@@ -64,7 +50,7 @@ bool analyze_contraction(EinsumDescriptor const &desc, Graph const &graph, Node 
         return false;
 
     // Must be a pure multiplication (c_prefactor == 0, i.e., C = ab_pf * A * B)
-    if (!is_zero(live_c_pf(desc)))
+    if (!is_zero(live_c_prefactor(desc)))
         return false;
 
     // A conjugated operand is a value the rebuilt GEMM has nowhere to put: the
@@ -73,7 +59,7 @@ bool analyze_contraction(EinsumDescriptor const &desc, Graph const &graph, Node 
     // different number on a complex tensor. Declined rather than handled,
     // because the transpose flags are what the rebuild reasons in and a
     // conjugate-transpose is a third reading it does not model.
-    if (desc.conj_a || desc.conj_b || (desc.params && (desc.params->conj_a || desc.params->conj_b)))
+    if (live_conj_a(desc) || live_conj_b(desc))
         return false;
 
     // Must have at least one link index (something to contract over)
@@ -162,7 +148,7 @@ std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &g
         // survives here.
         ci.ab_prefactor = PrefactorScalar{double{1}};
         if (auto const *desc = nodes[idx].op_data.get_if<EinsumDescriptor>(); desc != nullptr) {
-            ci.ab_prefactor = live_ab_pf(*desc);
+            ci.ab_prefactor = live_ab_prefactor(*desc);
         }
         return ci;
     };
@@ -256,23 +242,24 @@ std::vector<TensorId> extract_leaves(std::vector<ContractionInfo> const &chain) 
 /// An index shared by both operands (a batch index) is not classifiable as an
 /// A target or a B target, so such a member is declined too.
 bool output_is_canonical(EinsumDescriptor const &desc) {
-    auto const                 &spec = desc.spec;
-    std::set<std::string> const link_set(spec.link_indices.begin(), spec.link_indices.end());
-    std::set<std::string> const a_set(spec.a_indices.begin(), spec.a_indices.end());
-    std::set<std::string> const b_set(spec.b_indices.begin(), spec.b_indices.end());
-
-    bool seen_b_target = false;
-    for (auto const &idx : spec.c_indices) {
-        if (link_set.count(idx) != 0)
-            return false; // a link index in the output is not a plain GEMM
-        bool const in_a = a_set.count(idx) != 0;
-        bool const in_b = b_set.count(idx) != 0;
-        if (in_a == in_b)
-            return false; // shared (batch) or in neither: not classifiable
-        if (in_b) {
+    auto const lists         = live_index_lists(desc);
+    bool       seen_b_target = false;
+    for (auto const &idx : lists.c) {
+        switch (index_role(idx, lists.c, lists.a, lists.b)) {
+        case IndexRole::AFree:
+            if (seen_b_target) {
+                return false; // an A target after a B target: the output is permuted
+            }
+            break;
+        case IndexRole::BFree:
             seen_b_target = true;
-        } else if (seen_b_target) {
-            return false; // an A target after a B target: the output is permuted
+            break;
+        case IndexRole::Batch:
+        case IndexRole::Link:
+        case IndexRole::ALone:
+        case IndexRole::BLone:
+        case IndexRole::OutputOnly:
+            return false; // shared (batch) or in neither operand: not classifiable
         }
     }
     return true;
@@ -310,14 +297,15 @@ std::optional<std::vector<bool>> chain_leaf_orientations(std::vector<Contraction
         if (!output_is_canonical(*desc))
             return std::nullopt;
 
-        auto const &links = desc->spec.link_indices;
-        auto const  b_pl  = link_placement(desc->spec.b_indices, links);
+        auto const  lists = live_index_lists(*desc);
+        auto const &links = lists.link;
+        auto const  b_pl  = link_placement(lists.b, links);
         if (b_pl.split())
             return std::nullopt;
 
         if (m == 0) {
             // Both operands are fresh leaves.
-            auto const a_pl = link_placement(desc->spec.a_indices, links);
+            auto const a_pl = link_placement(lists.a, links);
             if (a_pl.split())
                 return std::nullopt;
             // Prefer the reading that needs no transpose. The same choice is

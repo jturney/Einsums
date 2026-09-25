@@ -3718,42 +3718,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     [[nodiscard]] TensorOwnership scope_for_ptr(void const *ptr) const noexcept;
 
     /**
-     * @brief Create mutable einsum parameters owned by the graph.
-     *
-     * Returns a shared_ptr to EinsumParams that can be captured by executor
-     * lambdas. Updating the params changes the computation on next execute().
-     *
-     * @param[in] c_pf Initial C prefactor.
-     * @param[in] ab_pf Initial AB prefactor; a mixed-precision einsum types it apart from @p c_pf.
-     * @return Shared pointer to the params (stable for graph lifetime).
-     */
-    template <typename TC, typename TAB>
-    std::shared_ptr<EinsumParams> create_params(TC c_pf, TAB ab_pf) {
-        auto params   = std::make_shared<EinsumParams>();
-        params->c_pf  = c_pf;
-        params->ab_pf = ab_pf;
-        _params_store.push_back(params);
-        return params;
-    }
-
-    /**
-     * @brief Create mutable index state for an einsum operation.
-     *
-     * Returns a shared_ptr to EinsumIndices that executor lambdas
-     * capture by shared ownership. Optimization passes (PermuteFusion,
-     * and future rewriters) mutate the indices in place and the
-     * updated contraction takes effect on the next execute().
-     *
-     * @param[in] a Input-A index list.
-     * @param[in] b Input-B index list.
-     * @param[in] c Output (C) index list.
-     * @param[in] link Precomputed link (contracted) indices.
-     * @return Shared pointer to the indices (stable for graph lifetime).
-     */
-    std::shared_ptr<EinsumIndices> create_indices(std::vector<std::string> a, std::vector<std::string> b, std::vector<std::string> c,
-                                                  std::vector<std::string> link);
-
-    /**
      * @brief Update scalar prefactors for an einsum node.
      *
      * Finds the node by NodeId and updates its EinsumParams if it was
@@ -4344,10 +4308,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// what a caller was willing to spend, which is a property of the run rather than of
     /// the graph, and a loaded graph's caller gets to state their own.
     std::optional<std::pair<ApproximationEffect, double>> _accuracy_budget;
-
-    /// Mutable einsum parameters (kept alive by shared_ptr in lambdas + this list).
-    std::vector<std::shared_ptr<EinsumParams>>  _params_store;
-    std::vector<std::shared_ptr<EinsumIndices>> _indices_store;
 };
 
 // Graph's tensor factories are defined outside the class for the same reason as its

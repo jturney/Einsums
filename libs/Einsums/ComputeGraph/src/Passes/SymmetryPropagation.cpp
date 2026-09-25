@@ -128,7 +128,7 @@ bool propagate_self_contraction(Graph &graph, Node const &node, InferGuard const
     auto const &in = graph.tensor(node.inputs[0]);
 
     bool const is_complex = in.dtype == packed_gemm::ScalarType::Complex64 || in.dtype == packed_gemm::ScalarType::Complex128;
-    bool const one_conj   = desc->conj_a ^ desc->conj_b; // XOR: exactly one side conjugated
+    bool const one_conj   = live_conj_a(*desc) ^ live_conj_b(*desc); // XOR: exactly one side conjugated
 
     if (is_complex && one_conj)
         return apply_inferred(graph, node.outputs[0], SymmetryDescriptor::hermitian_pair(0, 1), guard);

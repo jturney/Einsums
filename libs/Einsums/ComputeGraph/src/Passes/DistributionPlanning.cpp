@@ -39,18 +39,23 @@ struct IndexClassification {
 IndexClassification classify_indices(packed_gemm::ContractionSpec const &spec) {
     IndexClassification result;
 
-    std::unordered_set<std::string> const a_set(spec.a_indices.begin(), spec.a_indices.end());
-    std::unordered_set<std::string> const b_set(spec.b_indices.begin(), spec.b_indices.end());
-
     for (auto const &idx : spec.c_indices) {
-        bool const in_a = a_set.count(idx) > 0;
-        bool const in_b = b_set.count(idx) > 0;
-        if (in_a && !in_b)
+        switch (index_role(idx, spec.c_indices, spec.a_indices, spec.b_indices)) {
+        case IndexRole::AFree:
             result.target_a.push_back(idx);
-        else if (!in_a && in_b)
+            break;
+        case IndexRole::BFree:
             result.target_b.push_back(idx);
-        else if (in_a && in_b)
+            break;
+        case IndexRole::Batch:
             result.shared.push_back(idx);
+            break;
+        case IndexRole::Link:
+        case IndexRole::ALone:
+        case IndexRole::BLone:
+        case IndexRole::OutputOnly:
+            break; // a C letter carried by an operand is batch or free
+        }
     }
 
     result.link = spec.link_indices;

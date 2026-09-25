@@ -83,30 +83,6 @@ bool extents_from_letters(std::vector<std::string> const &indices, LetterExtents
     return true;
 }
 
-/// The index lists a node contracts over, when it has any this walk understands.
-struct NodeIndices {
-    std::vector<std::string> const *a{nullptr};
-    std::vector<std::string> const *b{nullptr};
-    std::vector<std::string> const *c{nullptr};
-};
-
-/// The letter lists of @p node, or an empty result for a kind with none.
-NodeIndices node_indices(Node const &node) {
-    if (node.kind == OpKind::Einsum) {
-        if (auto const *desc = node.op_data.get_if<EinsumDescriptor>(); desc != nullptr) {
-            return NodeIndices{.a = &desc->spec.a_indices, .b = &desc->spec.b_indices, .c = &desc->spec.c_indices};
-        }
-        return {};
-    }
-    if (node.kind == OpKind::Permute || node.kind == OpKind::Transpose) {
-        if (auto const *desc = node.op_data.get_if<PermuteDescriptor>(); desc != nullptr) {
-            return NodeIndices{.a = &desc->a_indices, .b = nullptr, .c = &desc->c_indices};
-        }
-        return {};
-    }
-    return {};
-}
-
 /// Whether @p kind writes an output whose extents equal every input's, slot for slot.
 ///
 /// The elementwise products belong here for the same reason the scalings do: the kernel
@@ -648,7 +624,7 @@ void Graph::rederive_owned_extents() {
             continue;
         }
 
-        NodeIndices const indices = node_indices(node);
+        NodeIndexLists const indices = node_index_lists(node).value_or(NodeIndexLists{});
         if (indices.c == nullptr) {
             continue;
         }
@@ -711,7 +687,7 @@ void Graph::validate_node_extents() const {
             continue;
         }
 
-        NodeIndices const indices = node_indices(node);
+        NodeIndexLists const indices = node_index_lists(node).value_or(NodeIndexLists{});
         if (indices.c == nullptr || node.outputs.size() != 1) {
             continue;
         }

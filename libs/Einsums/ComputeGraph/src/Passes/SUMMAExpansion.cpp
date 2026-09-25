@@ -165,10 +165,10 @@ bool SUMMAExpansion::run(Graph &graph) {
         // The panel loop runs "ij <- ik ; kj" and DistributionPlanning lays the blocks out for that
         // pattern, so the node's own indices have to be exactly it. Rank two alone let "ij <- ki ; kj"
         // through, whose A block the kernel then read transposed.
-        bool const  live    = desc->indices != nullptr;
-        auto const &ci      = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
-        auto const &ai      = live ? desc->indices->spec.a_indices : desc->spec.a_indices;
-        auto const &bi      = live ? desc->indices->spec.b_indices : desc->spec.b_indices;
+        auto const  lists   = live_index_lists(*desc);
+        auto const &ci      = lists.c;
+        auto const &ai      = lists.a;
+        auto const &bi      = lists.b;
         bool const  is_gemm = ci.size() == 2 && ai.size() == 2 && bi.size() == 2 && ci[0] == ai[0] && ai[1] == bi[0] && ci[1] == bi[1] &&
                               ci[0] != ci[1] && ci[0] != ai[1] && ci[1] != ai[1];
         if (!is_gemm || !desc->operators.empty()) {

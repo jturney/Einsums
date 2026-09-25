@@ -47,6 +47,7 @@
  */
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -211,6 +212,34 @@ struct LinkPlacement {
                                                           std::vector<std::string> const &link_indices);
 
 /**
+ * @brief What one index letter does in a contraction ``C <- A ; B``.
+ *
+ * Every letter of a contraction plays exactly one of these parts, and the passes that reason in
+ * GEMM terms (batch, M, N, K) differ only in what they do with each. They used to classify the
+ * letters themselves, and differed on the lone letters: one counted them as reduced, one declined.
+ */
+enum class IndexRole : std::uint8_t {
+    Batch,     ///< In A, B and C: the contraction repeats along it.
+    Link,      ///< In A and B, not in C: summed over as a matrix product's K.
+    AFree,     ///< In A and C only: the M side of a matrix product.
+    BFree,     ///< In B and C only: the N side of a matrix product.
+    ALone,     ///< In A only: summed within A before the product.
+    BLone,     ///< In B only: summed within B before the product.
+    OutputOnly ///< In C only. The parser rejects such a spec; listed so the classification is total.
+};
+
+/**
+ * @brief The part @p letter plays in the contraction whose index lists are @p c, @p a and @p b.
+ * @param[in] letter The index letter to classify.
+ * @param[in] c The output's indices.
+ * @param[in] a The first operand's indices.
+ * @param[in] b The second operand's indices.
+ * @return Its role. A letter in none of the lists is reported as @ref IndexRole::OutputOnly.
+ */
+[[nodiscard]] EINSUMS_EXPORT IndexRole index_role(std::string_view letter, std::vector<std::string> const &c,
+                                                  std::vector<std::string> const &a, std::vector<std::string> const &b) noexcept;
+
+/**
  * @brief Parse an einsum specification string.
  *
  * Supports both arrow (`<-`) and NumPy (`->`) notation. Auto-detects
@@ -289,44 +318,29 @@ constexpr bool wrappers_well_formed(std::string_view spec) {
     return depth == 0;
 }
 
+/// The structural check both validators share: every character is one a spec may use, the wrappers
+/// are well formed, there is exactly one arrow, and there are @p semicolons operand separators.
+constexpr bool validate_spec_structure(std::string_view spec, std::size_t semicolons) {
+    if (!wrappers_well_formed(spec)) {
+        return false;
+    }
+    std::size_t arrows = 0;
+    std::size_t semis  = 0;
+    for (std::size_t i = 0; i < spec.size(); ++i) {
+        if (!is_einsum_char(spec[i])) {
+            return false;
+        }
+        std::string_view const rest = spec.substr(i);
+        arrows += (rest.starts_with("<-") || rest.starts_with("->")) ? 1 : 0;
+        semis += spec[i] == ';' ? 1 : 0;
+    }
+    return arrows == 1 && semis == semicolons;
+}
+
 } // namespace detail
 
 constexpr bool validate_einsum_spec(std::string_view spec) {
-    // Check all characters are valid
-    for (char const c : spec) {
-        if (!detail::is_einsum_char(c))
-            return false;
-    }
-
-    if (!detail::wrappers_well_formed(spec))
-        return false;
-
-    // Count arrows
-    int left_arrows  = 0; // <-
-    int right_arrows = 0; // ->
-    for (size_t i = 0; i + 1 < spec.size(); i++) {
-        if (spec[i] == '<' && spec[i + 1] == '-')
-            left_arrows++;
-        if (spec[i] == '-' && spec[i + 1] == '>')
-            right_arrows++;
-    }
-
-    // Exactly one arrow type
-    if (left_arrows + right_arrows != 1)
-        return false;
-
-    // Count semicolons (operand separator)
-    int semicolons = 0;
-    for (char const c : spec) {
-        if (c == ';')
-            semicolons++;
-    }
-
-    // Need exactly one semicolon to separate the two operands
-    if (semicolons != 1)
-        return false;
-
-    return true;
+    return detail::validate_spec_structure(spec, 1);
 }
 
 /**
@@ -433,31 +447,7 @@ struct ParsedPermuteSpec {
  * Checks structural validity: presence of exactly one arrow, no semicolons.
  */
 constexpr bool validate_permute_spec(std::string_view spec) {
-    for (char const c : spec) {
-        if (!detail::is_einsum_char(c))
-            return false;
-    }
-
-    if (!detail::wrappers_well_formed(spec))
-        return false;
-
-    int left_arrows = 0, right_arrows = 0;
-    for (size_t i = 0; i + 1 < spec.size(); i++) {
-        if (spec[i] == '<' && spec[i + 1] == '-')
-            left_arrows++;
-        if (spec[i] == '-' && spec[i + 1] == '>')
-            right_arrows++;
-    }
-    if (left_arrows + right_arrows != 1)
-        return false;
-
-    // Permute has NO semicolon (only one input tensor)
-    for (char const c : spec) {
-        if (c == ';')
-            return false;
-    }
-
-    return true;
+    return detail::validate_spec_structure(spec, 0);
 }
 
 /**

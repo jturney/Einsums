@@ -143,9 +143,9 @@ struct OperatorGroups {
 /// Read the operators and output index list a node carries.
 bool read_operators(Node const &node, std::vector<PermutationOperator> &ops, std::vector<std::string> &c_indices) {
     if (auto const *desc = node.op_data.get_if<EinsumDescriptor>(); desc != nullptr && node.kind == OpKind::Einsum) {
-        bool const live = desc->indices != nullptr;
-        ops             = live ? desc->indices->spec.operators : desc->operators;
-        c_indices       = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
+        auto const lists = live_index_lists(*desc);
+        ops              = lists.operators;
+        c_indices        = lists.c;
     } else if (auto const *pdesc = node.op_data.get_if<PermuteDescriptor>(); pdesc != nullptr && node.kind == OpKind::Permute) {
         ops       = pdesc->operators;
         c_indices = pdesc->c_indices;
@@ -164,10 +164,10 @@ bool read_einsum_indices(Node const &node, std::vector<std::string> &a, std::vec
     if (desc == nullptr) {
         return false;
     }
-    bool const live = desc->indices != nullptr;
-    a               = live ? desc->indices->spec.a_indices : desc->spec.a_indices;
-    b               = live ? desc->indices->spec.b_indices : desc->spec.b_indices;
-    c               = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
+    auto const lists = live_index_lists(*desc);
+    a                = lists.a;
+    b                = lists.b;
+    c                = lists.c;
     return true;
 }
 

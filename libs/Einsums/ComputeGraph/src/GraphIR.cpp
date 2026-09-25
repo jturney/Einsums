@@ -37,11 +37,12 @@
 /// NOT saved, because it is a live-process resource with no meaning in a file:
 ///   every `std::function` on a `TensorHandle`, `_owned_tensors`,
 ///   `_adopted_cleanups`, `_slot_map`, `_ptr_index`, `_device_shadows`,
-///   `_executor`, `_params_store`, `_indices_store`, `_content_mutex`,
+///   `_executor`, `_content_mutex`,
 ///   `_deps` / `_usage` and the version counters that guard them,
-///   `_profile_strings`, `_bound_operands`, `_ragged_extents`, `_scope_maps`.
-///   `_ragged_extents` and `_bound_operands` are bind-time state about the
-///   CALLER's tensors, and a loaded graph is bound afresh.
+///   `_profile_strings`, `_bound_operands`, `_ragged_extents`, `_space_extents`,
+///   `_space_tiles`, `_scope_maps`. `_ragged_extents`, `_bound_operands` and the
+///   two space maps are bind-time state about the CALLER's problem (what each
+///   space measures, how it is partitioned), and a loaded graph is bound afresh.
 ///
 /// `_space_registry` is a non-owning pointer into a registry the caller owns, so
 /// what travels is the space NAMES; a loaded graph resolves them against the

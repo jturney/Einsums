@@ -70,7 +70,7 @@ bool einsum_is_dispatchable(Node const &node, Graph const &graph) {
     }
 
     size_t const n_target = desc->spec.target_indices.size();
-    size_t const n_link   = desc->spec.link_indices.size();
+    size_t const n_link   = live_index_lists(*desc).link.size();
     if (n_link != 1 || (n_target != 1 && n_target != 2)) {
         return false;
     }

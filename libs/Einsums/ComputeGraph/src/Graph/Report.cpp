@@ -129,12 +129,12 @@ void Graph::rebuild_profile_strings() {
         }
 
         if (auto const *desc = node.op_data.get_if<EinsumDescriptor>()) {
-            text("c_prefactor", to_string(desc->c_prefactor));
-            text("ab_prefactor", to_string(desc->ab_prefactor));
-            if (!desc->spec.c_indices.empty()) {
-                text("c_indices", fmt::format("{}", fmt::join(desc->spec.c_indices, ",")));
-                text("a_indices", fmt::format("{}", fmt::join(desc->spec.a_indices, ",")));
-                text("b_indices", fmt::format("{}", fmt::join(desc->spec.b_indices, ",")));
+            text("c_prefactor", to_string(live_c_prefactor(*desc)));
+            text("ab_prefactor", to_string(live_ab_prefactor(*desc)));
+            if (auto const lists = live_index_lists(*desc); !lists.c.empty()) {
+                text("c_indices", fmt::format("{}", fmt::join(lists.c, ",")));
+                text("a_indices", fmt::format("{}", fmt::join(lists.a, ",")));
+                text("b_indices", fmt::format("{}", fmt::join(lists.b, ",")));
             }
         } else if (auto const *sdesc = node.op_data.get_if<ScaleDescriptor>()) {
             entry.reals.emplace_back(profile::intern_string("scale_factor"), as_real<double>(sdesc->factor));
@@ -317,13 +317,14 @@ std::string Graph::to_json() const {
             // GraphNodeData is a viewer-facing snapshot; project complex
             // prefactors to their real part for display. The live value is
             // preserved on the descriptor itself.
-            nd.c_prefactor  = as_real<double>(desc->c_prefactor);
-            nd.ab_prefactor = as_real<double>(desc->ab_prefactor);
-            nd.c_indices    = fmt::format("{}", fmt::join(desc->spec.c_indices, ","));
-            nd.a_indices    = fmt::format("{}", fmt::join(desc->spec.a_indices, ","));
-            nd.b_indices    = fmt::format("{}", fmt::join(desc->spec.b_indices, ","));
-            nd.conj_a       = desc->conj_a;
-            nd.conj_b       = desc->conj_b;
+            auto const lists = live_index_lists(*desc);
+            nd.c_prefactor   = as_real<double>(live_c_prefactor(*desc));
+            nd.ab_prefactor  = as_real<double>(live_ab_prefactor(*desc));
+            nd.c_indices     = fmt::format("{}", fmt::join(lists.c, ","));
+            nd.a_indices     = fmt::format("{}", fmt::join(lists.a, ","));
+            nd.b_indices     = fmt::format("{}", fmt::join(lists.b, ","));
+            nd.conj_a        = live_conj_a(*desc);
+            nd.conj_b        = live_conj_b(*desc);
         } else if (auto const *desc = node.op_data.get_if<ScaleDescriptor>()) {
             // Same viewer-facing projection as the einsum prefactors above.
             nd.scale_factor = as_real<double>(desc->factor);

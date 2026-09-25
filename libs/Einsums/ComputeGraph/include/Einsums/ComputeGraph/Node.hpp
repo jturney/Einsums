@@ -151,9 +151,9 @@ struct EinsumDescriptor {
     /// Live-mutable scalar state shared with the executor lambda, same
     /// pattern as `indices`.
     ///
-    /// CPU executors read prefactors from here on
+    /// Executors read prefactors from here on
     /// every call; `c_prefactor`/`ab_prefactor` above are the at-capture
-    /// snapshots (still read by GPU dispatch). Graph::update_prefactors
+    /// snapshots. Graph::update_prefactors
     /// writes both through this handle so the node stays self-contained
     /// under passes that reorder or remove nodes.
     std::shared_ptr<EinsumParams> params;
@@ -368,6 +368,40 @@ struct ElementwiseBinaryDescriptor {
 /// @param[in] desc The descriptor to read.
 /// @return The live flag, or the snapshot when the node carries no params block.
 [[nodiscard]] EINSUMS_EXPORT bool live_conj_b(EinsumDescriptor const &desc) noexcept;
+
+/// @brief The index lists and operators an einsum will actually run with.
+///
+/// References into the descriptor: the live index block when the node carries one, the snapshot
+/// otherwise. Valid while the descriptor is.
+struct EinsumIndexLists {
+    std::vector<std::string> const         &c;         ///< The output's indices.
+    std::vector<std::string> const         &a;         ///< The first operand's indices.
+    std::vector<std::string> const         &b;         ///< The second operand's indices.
+    std::vector<std::string> const         &link;      ///< The contracted indices (in A and B, not in C).
+    std::vector<PermutationOperator> const &operators; ///< The permutation operators wrapping the term.
+};
+
+/// @brief The index lists an einsum will actually run with.
+/// @param[in] desc The descriptor to read.
+/// @return The live lists, or the snapshot's when the node carries no index block.
+[[nodiscard]] EINSUMS_EXPORT EinsumIndexLists live_index_lists(EinsumDescriptor const &desc) noexcept;
+
+/// @brief Which operand of an einsum an index list belongs to.
+enum class EinsumOperand : std::uint8_t {
+    C, ///< The output.
+    A, ///< The first operand.
+    B  ///< The second operand.
+};
+
+/// @brief Rewrite one operand's index list, live and snapshot together.
+///
+/// A rewriter has to keep the two in step, because analysis passes read the snapshot and the
+/// executor reads the live block. This writes both, re-derives the link and target lists from the
+/// new lists, and re-renders the live block's diagnostic text.
+/// @param[in,out] desc The descriptor to rewrite.
+/// @param[in] operand Which list to replace.
+/// @param[in] indices The new list.
+EINSUMS_EXPORT void set_operand_indices(EinsumDescriptor &desc, EinsumOperand operand, std::vector<std::string> indices);
 
 /// @brief The source prefactor an axpby will actually apply.
 /// @param[in] desc The descriptor to read.
@@ -1176,6 +1210,21 @@ namespace detail {
 EINSUMS_EXPORT EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf,
                                                         bool conj_a = false, bool conj_b = false);
 
+/// The live scalar block an einsum descriptor's snapshot describes: its prefactors and conjugation flags.
+[[nodiscard]] EINSUMS_EXPORT std::shared_ptr<EinsumParams> make_live_params(EinsumDescriptor const &desc);
+
+/// The live index block an einsum descriptor's snapshot describes: its index lists, links, operators
+/// and conjugation flags. @p raw is the spec as written, for diagnostics; it is rendered from the lists
+/// when empty.
+[[nodiscard]] EINSUMS_EXPORT std::shared_ptr<EinsumIndices> make_live_indices(EinsumDescriptor const &desc, std::string raw = {});
+
+/// Give @p desc fresh live params, indices and packed-GEMM site, all seeded from its snapshot.
+///
+/// Every builder of an einsum node goes through this: capture, @ref Graph::make_einsum_node and the
+/// loader. Each used to assemble the blocks itself, and they drifted - one set the conjugation flags on
+/// the index block and the others did not, and the captured ones left the diagnostic text empty.
+EINSUMS_EXPORT void attach_live_state(EinsumDescriptor &desc, std::string raw = {});
+
 /**
  * @brief Name a space for a diagnostic, without trusting the id.
  * @param[in] registry Registry the id is expected to come from. May be null.
@@ -1505,6 +1554,19 @@ struct Node {
     /// 0 = default/compute stream, 1 = transfer stream.
     int stream_id{0};
 };
+
+/// @brief The letter lists of a node that carries any: an einsum's (live) or a permute's.
+struct NodeIndexLists {
+    std::vector<std::string> const *c{nullptr}; ///< The output's indices.
+    std::vector<std::string> const *a{nullptr}; ///< The first input's indices.
+    std::vector<std::string> const *b{nullptr}; ///< The second input's indices; null for a permute.
+};
+
+/// @brief The letter lists of @p node, or an empty result for a kind that has none.
+///
+/// An einsum's lists are the live ones (see @ref live_index_lists). Pointers into the node's
+/// descriptor, valid while it is.
+[[nodiscard]] EINSUMS_EXPORT std::optional<NodeIndexLists> node_index_lists(Node const &node) noexcept;
 
 /// @brief Names of @ref ParamTable entries this node WRITES - the parameter
 ///        analogue of @ref Node::outputs.

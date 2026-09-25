@@ -135,23 +135,10 @@ void capture_string_einsum(CaptureContext &ctx, ParsedEinsumSpec const &parsed, 
     TensorSlot *const b_slot = b.slot;
     TensorSlot *const c_slot = c.slot;
 
-    auto params    = ctx.graph()->create_params(c_pf, ab_pf);
-    params->conj_a = conj_a;
-    params->conj_b = conj_b;
-    auto desc      = detail::build_einsum_descriptor(parsed, params->c_pf, params->ab_pf, params->conj_a, params->conj_b);
-
-    // Runtime-mutable index state. Created once per einsum capture and
-    // shared between the descriptor (for pass introspection / rewrite)
-    // and the executor lambda. Seeded with the parsed indices and the
-    // link set that `detail::build_einsum_descriptor` computes from
-    // them: avoids recomputing link indices on every execute().
-    auto indices = ctx.graph()->create_indices(parsed.a_indices, parsed.b_indices, parsed.c_indices, desc.spec.link_indices);
-    // build_einsum hands `indices->spec` straight to string_einsum, so this is
-    // what makes an un-lowered node compute the operator on replay. The
-    // descriptor's own copy is the snapshot the passes read.
-    indices->spec.operators = parsed.operators;
-    desc.indices            = indices;
-    desc.params             = params;
+    // The descriptor's snapshot, then the live params/indices/site blocks the executor shares with it,
+    // seeded from that snapshot by the one helper every einsum builder uses.
+    auto desc = detail::build_einsum_descriptor(parsed, c_pf, ab_pf, conj_a, conj_b);
+    detail::attach_live_state(desc, parsed.raw);
 
     // Index-space binding (design part 1.3). A space is a property of the SLOT
     // an index occupies, not of the letter globally, so the letters of this one
@@ -309,7 +296,7 @@ void capture_string_einsum(CaptureContext &ctx, ParsedEinsumSpec const &parsed, 
             // Conjugated batched einsums skip this gemm_batch fast path (it only
             // emits 'N'/'T' trans, never conjugation) and fall through to the
             // conj-aware generic string_einsum executor below.
-            if (shape_ok && positions_match && all_contig && (row_mode || col_mode) && !params->conj_a && !params->conj_b) {
+            if (shape_ok && positions_match && all_contig && (row_mode || col_mode) && !desc.params->conj_a && !desc.params->conj_b) {
                 // Non-batch indices in original order: strip the batch positions.
                 // For row_mode they're the LAST 2 positions; for col_mode the FIRST 2.
                 std::vector<std::string> a_rest, b_rest;
@@ -388,8 +375,8 @@ void capture_string_einsum(CaptureContext &ctx, ParsedEinsumSpec const &parsed, 
                         d.ldc     = c_slice_dim(1);
                     }
 
-                    d.alpha          = as<std::complex<double>>(params->ab_pf);
-                    d.beta           = as<std::complex<double>>(params->c_pf);
+                    d.alpha          = as<std::complex<double>>(desc.params->ab_pf);
+                    d.beta           = as<std::complex<double>>(desc.params->c_pf);
                     d.batch_count    = static_cast<int>(flat_batch);
                     d.strided        = true;
                     d.batch_stride_a = static_cast<std::int64_t>(a_slice_dim(0)) * static_cast<std::int64_t>(a_slice_dim(1));
@@ -470,16 +457,6 @@ void capture_string_einsum(CaptureContext &ctx, ParsedEinsumSpec const &parsed, 
     auto label = fmt::format("einsum: C[{}] = A[{}] * B[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
                              fmt::join(parsed.b_indices, ","));
 
-    // This node's packed-GEMM memo, so a replay skips assembling the
-    // contraction spec, the plan-cache key and its stride vectors, and the
-    // lookup itself. Re-validated against the live indices and operand layout
-    // on every call, so a pass rewriting either is honored (see
-    // packed_gemm::ContractionSite). Set on the descriptor BEFORE the executor
-    // is built, because the builder adopts it from there: one site per node,
-    // shared with the executor, is what lets a plan-time pass pin this node's
-    // kernel route where the dispatch will read it.
-    desc.site = std::make_shared<packed_gemm::ContractionSite>();
-
     // The node's operand lists, in the order the builder reads them: A, B from
     // the inputs and C from the outputs. Capture records the two inputs only;
     // the RMW repeat of an accumulating destination is Graph::make_einsum_node's
@@ -511,14 +488,8 @@ void capture_mixed_string_einsum(CaptureContext &ctx, ParsedEinsumSpec const &pa
         TensorId const b_id = b.id;
         TensorId const c_id = c.id;
 
-        auto params    = ctx.graph()->create_params(c_pf, ab_pf);
-        params->conj_a = conj_a;
-        params->conj_b = conj_b;
-        auto desc      = detail::build_einsum_descriptor(parsed, params->c_pf, params->ab_pf, params->conj_a, params->conj_b);
-
-        auto indices = ctx.graph()->create_indices(parsed.a_indices, parsed.b_indices, parsed.c_indices, desc.spec.link_indices);
-        desc.indices = indices;
-        desc.params  = params;
+        auto desc = detail::build_einsum_descriptor(parsed, c_pf, ab_pf, conj_a, conj_b);
+        detail::attach_live_state(desc, parsed.raw);
         desc.letter_spaces =
             detail::bind_einsum_spaces(*ctx.graph(), a_id, b_id, c_id, parsed.a_indices, parsed.b_indices, parsed.c_indices, "cg::einsum");
 

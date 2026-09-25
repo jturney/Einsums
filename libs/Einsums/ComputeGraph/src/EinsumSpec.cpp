@@ -266,6 +266,29 @@ std::vector<std::pair<std::map<std::string, std::string>, double>> expand_one(Pe
     return out;
 }
 
+/// A spec's two sides, split at its one arrow: output is the side the arrow points at.
+struct ArrowSides {
+    std::string_view output;
+    std::string_view inputs;
+};
+
+/// Split @p stripped (whitespace already removed) at its arrow. @p what names the spec kind in the
+/// error ("einsum", "permute") and @p spec is the text as written, for the message.
+expected<ArrowSides, GraphError> split_arrow(std::string_view stripped, std::string_view what, std::string_view spec) {
+    auto const left  = stripped.find("<-");
+    auto const right = stripped.find("->");
+    if (left == std::string_view::npos && right == std::string_view::npos) {
+        return unexpected(GraphError::parse(fmt::format("{} spec '{}': missing '<-' or '->' arrow", what, spec)));
+    }
+    if (left != std::string_view::npos && right != std::string_view::npos) {
+        return unexpected(GraphError::parse(fmt::format("{} spec '{}': contains both '<-' and '->'", what, spec)));
+    }
+    if (left != std::string_view::npos) {
+        return ArrowSides{.output = stripped.substr(0, left), .inputs = stripped.substr(left + 2)};
+    }
+    return ArrowSides{.output = stripped.substr(right + 2), .inputs = stripped.substr(0, right)};
+}
+
 /// The first index label containing a character that is not a letter or digit.
 /// Letters plus digits allow numbered names like "i1"/"i2". A comma-less operand
 /// is char-split, so without this a stray '@' / '$' / '.' silently becomes an
@@ -333,30 +356,12 @@ std::vector<PermutationTerm> expand_permutation_operators(std::vector<std::strin
 
 expected<ParsedEinsumSpec, GraphError> parse_einsum_spec(std::string_view spec) {
     std::string const stripped = strip_whitespace(spec);
-
-    auto left_pos  = stripped.find("<-");
-    auto right_pos = stripped.find("->");
-
-    bool const has_left  = (left_pos != std::string::npos);
-    bool const has_right = (right_pos != std::string::npos);
-
-    if (!has_left && !has_right) {
-        return unexpected(GraphError::parse(fmt::format("einsum spec '{}': missing '<-' or '->' arrow", spec)));
+    auto const        sides    = split_arrow(stripped, "einsum", spec);
+    if (!sides) {
+        return unexpected(sides.error());
     }
-    if (has_left && has_right) {
-        return unexpected(GraphError::parse(fmt::format("einsum spec '{}': contains both '<-' and '->'", spec)));
-    }
-
-    std::string_view output_part;
-    std::string_view inputs_part;
-
-    if (has_left) {
-        output_part = std::string_view(stripped).substr(0, left_pos);
-        inputs_part = std::string_view(stripped).substr(left_pos + 2);
-    } else {
-        inputs_part = std::string_view(stripped).substr(0, right_pos);
-        output_part = std::string_view(stripped).substr(right_pos + 2);
-    }
+    std::string_view const output_part = sides->output;
+    std::string_view       inputs_part = sides->inputs;
 
     // Permutation operators prefix the TERM, so they sit at the head of the
     // input side under either arrow. Strip them BEFORE the operand split and
@@ -472,21 +477,40 @@ std::string ParsedPermuteSpec::render() const {
 }
 
 std::vector<std::string> ParsedEinsumSpec::link_indices() const {
-    std::set<std::string> const a_set(a_indices.begin(), a_indices.end());
-    std::set<std::string> const b_set(b_indices.begin(), b_indices.end());
-    std::set<std::string> const c_set(c_indices.begin(), c_indices.end());
-    std::vector<std::string>    links;
-    for (auto const &idx : a_set) {
-        if (b_set.count(idx) && !c_set.count(idx)) {
+    // Index lists are rank-bounded, so linear scans beat building three sets. Sorted and
+    // duplicate-free, which is what makes the result independent of axis order.
+    auto contains = [](std::vector<std::string> const &list, std::string const &idx) { return std::ranges::find(list, idx) != list.end(); };
+    std::vector<std::string> links;
+    for (auto const &idx : a_indices) {
+        if (contains(b_indices, idx) && !contains(c_indices, idx) && !contains(links, idx)) {
             links.push_back(idx);
         }
     }
+    std::ranges::sort(links);
     return links;
 }
 
 std::vector<std::string> ParsedEinsumSpec::target_indices() const {
     std::set<std::string> c_set(c_indices.begin(), c_indices.end());
     return {c_set.begin(), c_set.end()};
+}
+
+IndexRole index_role(std::string_view letter, std::vector<std::string> const &c, std::vector<std::string> const &a,
+                     std::vector<std::string> const &b) noexcept {
+    auto const in   = [letter](std::vector<std::string> const &list) { return std::ranges::find(list, letter) != list.end(); };
+    bool const in_a = in(a);
+    bool const in_b = in(b);
+    bool const in_c = in(c);
+    if (in_a && in_b) {
+        return in_c ? IndexRole::Batch : IndexRole::Link;
+    }
+    if (in_a) {
+        return in_c ? IndexRole::AFree : IndexRole::ALone;
+    }
+    if (in_b) {
+        return in_c ? IndexRole::BFree : IndexRole::BLone;
+    }
+    return IndexRole::OutputOnly;
 }
 
 LinkPlacement link_placement(std::vector<std::string> const &indices, std::vector<std::string> const &link_indices) {
@@ -517,34 +541,15 @@ LinkPlacement link_placement(std::vector<std::string> const &indices, std::vecto
 expected<ParsedPermuteSpec, GraphError> parse_permute_spec(std::string_view spec) {
     std::string const stripped = strip_whitespace(spec);
 
-    auto left_pos  = stripped.find("<-");
-    auto right_pos = stripped.find("->");
-
-    bool const has_left  = (left_pos != std::string::npos);
-    bool const has_right = (right_pos != std::string::npos);
-
-    if (!has_left && !has_right) {
-        return unexpected(GraphError::parse(fmt::format("permute spec '{}': missing '<-' or '->' arrow", spec)));
+    auto const sides = split_arrow(stripped, "permute", spec);
+    if (!sides) {
+        return unexpected(sides.error());
     }
-    if (has_left && has_right) {
-        return unexpected(GraphError::parse(fmt::format("permute spec '{}': contains both '<-' and '->'", spec)));
-    }
-
-    // Check for semicolons (not allowed in permute)
     if (stripped.find(';') != std::string::npos) {
         return unexpected(GraphError::parse(fmt::format("permute spec '{}': semicolons are not allowed (only one input tensor)", spec)));
     }
-
-    std::string_view output_part;
-    std::string_view input_part;
-
-    if (has_left) {
-        output_part = std::string_view(stripped).substr(0, left_pos);
-        input_part  = std::string_view(stripped).substr(left_pos + 2);
-    } else {
-        input_part  = std::string_view(stripped).substr(0, right_pos);
-        output_part = std::string_view(stripped).substr(right_pos + 2);
-    }
+    std::string_view const output_part = sides->output;
+    std::string_view       input_part  = sides->inputs;
 
     // Operators prefix the term, the same as in an einsum spec. C and A name the
     // same letters here, so there is no ambiguity about which list they permute.

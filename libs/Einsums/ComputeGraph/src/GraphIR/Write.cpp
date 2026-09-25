@@ -309,11 +309,11 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         // is the at-capture snapshot a rewriting pass may have left behind.
         // ``ParsedEinsumSpec::raw`` is deliberately not written: it is a display
         // string the loader regenerates exactly as @ref build_executor does.
-        bool const live = desc.indices != nullptr;
-        out.set("c_indices", to_array(live ? desc.indices->spec.c_indices : desc.spec.c_indices));
-        out.set("a_indices", to_array(live ? desc.indices->spec.a_indices : desc.spec.a_indices));
-        out.set("b_indices", to_array(live ? desc.indices->spec.b_indices : desc.spec.b_indices));
-        out.set("link_indices", to_array(live ? desc.indices->link_indices : desc.spec.link_indices));
+        auto const lists = live_index_lists(desc);
+        out.set("c_indices", to_array(lists.c));
+        out.set("a_indices", to_array(lists.a));
+        out.set("b_indices", to_array(lists.b));
+        out.set("link_indices", to_array(lists.link));
         out.set("target_indices", to_array(desc.spec.target_indices));
         out.set("all_indices", to_array(desc.spec.all_indices));
         out.set("scalar_output", Value{desc.spec.scalar_output});
@@ -325,7 +325,7 @@ Value write_descriptor(Node const &node, Graph const &graph, Graph const &root, 
         // The LIVE operators for the same reason the index lists above are live:
         // ``indices->spec`` is what the executor reads. Written only when there
         // is one, so a graph without operators still writes 1.6.0's bytes.
-        auto const &operators = live ? desc.indices->spec.operators : desc.operators;
+        auto const &operators = lists.operators;
         if (!operators.empty()) {
             out.set("operators", write_permutation_operators(operators));
         }

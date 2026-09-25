@@ -6102,8 +6102,8 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
     auto [b_id, b_slot] = ctx.get_slot(B);
     auto [c_id, c_slot] = ctx.get_slot(*C);
 
-    auto params  = ctx.graph()->create_params(c_pf, ab_pf);
-    auto indices = ctx.graph()->create_indices(parsed.a_indices, parsed.b_indices, parsed.c_indices, std::vector<std::string>{});
+    auto params  = std::make_shared<EinsumParams>(EinsumParams{.c_pf = c_pf, .ab_pf = ab_pf});
+    auto indices = std::make_shared<EinsumIndices>(EinsumIndices{.spec = parsed, .link_indices = {}});
 
     auto label = fmt::format("tiled einsum: C[{}] = A[{}] * B[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","),
                              fmt::join(parsed.b_indices, ","));
@@ -6255,7 +6255,7 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
 /// accumulate (``c_pf=1``) or scale.
 ///
 /// Complex prefactors are fully supported for complex dtypes:
-/// Graph::create_params and the einsum node store PrefactorScalar (a
+/// the einsum node's live params and its descriptor store PrefactorScalar (a
 /// variant covering float/double/complex<float>/complex<double>), so a
 /// complex ``c_pf``/``ab_pf`` round-trips through capture and replay
 /// without narrowing.

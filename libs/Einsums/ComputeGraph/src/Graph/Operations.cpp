@@ -339,19 +339,8 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
 
     // Live state, shared with the executor. Passes mutate these; the executor
     // dereferences them on every call, so a rewrite lands on the next execute.
-    auto params    = std::make_shared<EinsumParams>();
-    params->c_pf   = c_pf;
-    params->ab_pf  = ab_pf;
-    params->conj_a = conj_a;
-    params->conj_b = conj_b;
-
-    auto indices          = std::make_shared<EinsumIndices>();
-    indices->spec         = spec;
-    indices->link_indices = spec.link_indices();
-
-    auto desc    = detail::build_einsum_descriptor(spec, c_pf, ab_pf, conj_a, conj_b);
-    desc.params  = params;
-    desc.indices = indices;
+    auto desc = detail::build_einsum_descriptor(spec, c_pf, ab_pf, conj_a, conj_b);
+    detail::attach_live_state(desc, spec.raw);
 
     // Same derivation the capture path uses, from the operand handles this node was handed. A
     // pass that rebuilds a node must not drop its letter map, and re-deriving it (rather than
@@ -382,15 +371,6 @@ Node Graph::make_einsum_node(TensorId a_id, TensorId b_id, TensorId c_id, Parsed
     // passes cannot see the accumulation ordering (bug-1009).
     node.inputs  = is_zero(c_pf) ? std::vector<TensorId>{a_id, b_id} : std::vector<TensorId>{a_id, b_id, c_id};
     node.outputs = {c_id};
-
-    // This node's packed-GEMM memo (see packed_gemm::ContractionSite). One per
-    // node, so per-tile nodes from a tiled expansion never share one and a
-    // parallel executor needs no synchronization around it. Dtype-agnostic:
-    // the key records the scalar type, so a rebind to another dtype misses.
-    // Set before the executor is built, because the builder adopts it from the
-    // descriptor: that is what lets a plan-time pass pin this node's kernel
-    // route where the dispatch will read it.
-    desc.site = std::make_shared<packed_gemm::ContractionSite>();
 
     // One lowering, shared with capture and with a future loader: the executor
     // is derived from (kind, dtype, rank, descriptor, operand ids) and nothing

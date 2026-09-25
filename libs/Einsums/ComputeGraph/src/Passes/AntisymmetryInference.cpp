@@ -47,10 +47,10 @@ std::optional<OperatorSite> read_operator_site(Node const &node) {
         if (desc == nullptr) {
             return std::nullopt;
         }
-        bool const live = desc->indices != nullptr;
-        site.operators  = live ? desc->indices->spec.operators : desc->operators;
-        site.c_indices  = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
-        site.overwrites = is_zero(live_c_prefactor(*desc));
+        auto const lists = live_index_lists(*desc);
+        site.operators   = lists.operators;
+        site.c_indices   = lists.c;
+        site.overwrites  = is_zero(live_c_prefactor(*desc));
     } else if (node.kind == OpKind::Permute) {
         auto const *desc = node.op_data.get_if<PermuteDescriptor>();
         if (desc == nullptr) {
@@ -311,10 +311,10 @@ bool AntisymmetryInference::run(Graph &graph) {
             auto const *desc = node.op_data.get_if<EinsumDescriptor>();
             if (desc != nullptr) {
                 ++_num_candidates;
-                bool const  live        = desc->indices != nullptr;
-                auto const &a_idx       = live ? desc->indices->spec.a_indices : desc->spec.a_indices;
-                auto const &b_idx       = live ? desc->indices->spec.b_indices : desc->spec.b_indices;
-                auto const &c_idx       = live ? desc->indices->spec.c_indices : desc->spec.c_indices;
+                auto const  lists       = live_index_lists(*desc);
+                auto const &a_idx       = lists.a;
+                auto const &b_idx       = lists.b;
+                auto const &c_idx       = lists.c;
                 contribution.overwrites = is_zero(live_c_prefactor(*desc));
 
                 // C(..p..q..) = sum_links ab * A(..p..q..) * B(...). When ONE
