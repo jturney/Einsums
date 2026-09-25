@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "LifecycleNodes.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
@@ -48,15 +50,12 @@ struct FreePlan {
 // Used for idempotency across repeated pass runs. Label-based because a
 // hoisted Free doesn't carry the (foreign) child tid as an input.
 bool already_has_free_named(std::vector<Node> const &nodes, std::string const &name) {
-    auto const want = fmt::format("free({})", name);
-    return std::ranges::any_of(nodes, [&](Node const &n) { return n.kind == OpKind::Free && n.label == want; });
+    return lifecycle::has_lifecycle_node(nodes, OpKind::Free, name);
 }
 
-// Same idempotency check for the paired Materialize (also label-based: the
-// Materialization pass and this pass both label materialize(<name>)).
+// Same idempotency check for the paired Materialize, which the Materialization pass also emits.
 bool already_has_materialize_named(std::vector<Node> const &nodes, std::string const &name) {
-    auto const want = fmt::format("materialize({})", name);
-    return std::ranges::any_of(nodes, [&](Node const &n) { return n.kind == OpKind::Materialize && n.label == want; });
+    return lifecycle::has_lifecycle_node(nodes, OpKind::Materialize, name);
 }
 
 // One freeable intermediate, paired with the graph whose registry owns it.
@@ -274,45 +273,14 @@ bool FreeInsertion::run(Graph &graph) {
         // the Free / Materialize are ordered against the Loop.
         TensorId const emit_tid = plan.owns_tid ? plan.tid : graph.find_or_register_tensor_ptr(handle);
 
-        Node free_node;
-        free_node.kind  = OpKind::Free;
-        free_node.label = fmt::format("free({})", handle.name);
-        // The tensor is BOTH an input and an output. The input edge orders the
-        // Free after the last writer; the output makes the Free a writer
-        // itself, so the dependency builder's WAR scan orders it after every
-        // prior READER too. With only the input, a concurrent executor sees
-        // the Free as just another reader and can release the buffer while a
-        // real consumer is still reading it (the serial executor was safe only
-        // by node position).
-        free_node.inputs  = {emit_tid};
-        free_node.outputs = {emit_tid};
-
-        // No logging here: this fires once per freed tensor per REPLAY, and
-        // the pass already reports the insertion at verbosity 2 below.
-        free_node.execute = [rel_fn]() {
-            if (rel_fn) {
-                rel_fn();
-            }
-        };
-        free_node.estimated_bytes = bytes;
+        Node free_node = lifecycle::make_free_node(handle, emit_tid);
 
         report(2, fmt::format("insert Free for '{}' ({} bytes) after its last consumer at position {}", handle.name, bytes, plan.position));
         insertions.push_back({.index = plan.position + 1, .node = std::move(free_node)});
         _num_freed++;
 
         if (plan.materialize_before != SIZE_MAX) {
-            Node mat_node;
-            mat_node.kind    = OpKind::Materialize;
-            mat_node.label   = fmt::format("materialize({})", handle.name);
-            mat_node.outputs = {emit_tid}; // WAW edge orders it before the writer.
-
-            mat_node.execute = [mat_fn = handle.materialize_fn]() {
-                // Idempotent: a no-op on the first execute (the eager tensor
-                // is already allocated); reallocates on every replay after
-                // the Free above reclaimed the buffer.
-                mat_fn();
-            };
-            mat_node.estimated_bytes = bytes;
+            Node mat_node = lifecycle::make_materialize_node(handle, emit_tid);
 
             report(2, fmt::format("pair Materialize for eager '{}' before its first writer at position {}", handle.name,
                                   plan.materialize_before));

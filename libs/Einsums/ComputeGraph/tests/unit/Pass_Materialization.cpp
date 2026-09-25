@@ -436,6 +436,8 @@ void plant_materialize(cg::Graph &graph, std::string const &name, cg::TensorId t
     planted.label   = fmt::format("materialize({})", name);
     planted.outputs = {tid};
     planted.execute = []() {};
+    // The descriptor is what names the tensor, as on every lifecycle node the library builds.
+    planted.op_data = cg::AllocDescriptor{.tensor_id = tid, .size_bytes = 0, .tensor_name = name};
 
     std::vector<std::pair<std::size_t, std::vector<cg::Node>>> group;
     group.emplace_back(position, std::vector<cg::Node>{std::move(planted)});

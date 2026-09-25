@@ -116,8 +116,9 @@ struct CapturedOperand {
  *
  * The capture half of ``cg::einsum``: the caller registers each operand with the context, which is
  * what depends on the tensor types, and this builds the descriptor, binds the index spaces, derives
- * the GEMM hint, takes the strided batched-GEMM fast path when the operands allow it, and records
- * the node. Explicitly instantiated in the library for the four element types.
+ * the GEMM hint, and records an einsum node whose executor comes from @ref build_executor (which
+ * picks the strided batched-GEMM route when the operands allow it). Explicitly instantiated in the
+ * library for the four element types.
  */
 template <typename T>
 EINSUMS_EXPORT void capture_string_einsum(CaptureContext &ctx, ParsedEinsumSpec const &parsed, T c_pf, T ab_pf, bool conj_a, bool conj_b,

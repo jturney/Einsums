@@ -108,7 +108,7 @@ def test_constant_folding_rank3_user_owned_tensors_are_not_folded():
     with cg.capture(g):
         einsums.einsum("ijb <- ikb ; kjb", C, A, B)
 
-    assert _count_kind(g, "BatchedGemm") == 1
+    assert _count_kind(g, "Einsum") == 1
 
     pass_inst = cg.ConstantFolding()
     assert not _run(pass_inst, g)

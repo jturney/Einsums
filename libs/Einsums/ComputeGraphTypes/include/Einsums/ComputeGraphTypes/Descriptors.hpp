@@ -102,22 +102,6 @@ struct BatchedGemmDescriptor {
     std::complex<double>              beta{0.0, 0.0};  ///< C prefactor.
     int                               batch_count{0};  ///< Number of GEMMs fused into this call.
     BlasScalar                        scalar{BlasScalar::Double};
-
-    /// Strided-batched mode: when true, the batched executor reads a
-    /// single base pointer per operand from the live slot and computes
-    /// each matrix pointer as `base + i * batch_stride_* * sizeof(T)`.
-    ///
-    /// Matches the layout `cublasDgemmStridedBatched` requires on GPU.
-    /// When false, the executor stores N per-slice extractors (the
-    /// output of the GEMMBatching pass over independent 2D einsums).
-    bool strided{false};
-
-    /// Number of elements between consecutive batch slices of each
-    /// operand. Only meaningful when @ref strided is true; for a 3D
-    /// tensor of shape (B, M, K) with batch at axis 0, this is M*K.
-    std::int64_t batch_stride_a{0};
-    std::int64_t batch_stride_b{0};
-    std::int64_t batch_stride_c{0};
 };
 
 /**

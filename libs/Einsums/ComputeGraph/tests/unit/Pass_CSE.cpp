@@ -718,11 +718,9 @@ TEST_CASE("CSE + DeadNodeElimination composition", "[ComputeGraph][CSE]") {
     (void)modified;
 }
 
-TEST_CASE("CSE - deduplicates rank-3 BatchedGemm nodes (col-major)", "[ComputeGraph][CSE][HigherRank]") {
-    // Two identical rank-3 strided-batched contractions → each captures as
-    // OpKind::BatchedGemm. Exercises the batched_gemm_desc_equal path in
-    // CSE::op_data_equal (added to handle BatchedGemm comparison).
-    // Col-major default + batch-suffix pattern triggers the fast path's col_mode.
+TEST_CASE("CSE - deduplicates rank-3 batched einsum nodes (col-major)", "[ComputeGraph][CSE][HigherRank]") {
+    // Two identical rank-3 strided-batched contractions, each an einsum node
+    // taking the strided-batch route (col-major default, batch suffix).
     auto A = create_random_tensor<double>("A", 3, 5, 4);
     auto B = create_random_tensor<double>("B", 5, 6, 4);
     auto C = create_zero_tensor<double>("C", 3, 6, 4);
@@ -737,7 +735,7 @@ TEST_CASE("CSE - deduplicates rank-3 BatchedGemm nodes (col-major)", "[ComputeGr
 
     size_t batched_before = 0;
     for (auto const &n : graph.nodes())
-        if (n.kind == cg::OpKind::BatchedGemm)
+        if (n.kind == cg::OpKind::Einsum)
             ++batched_before;
     REQUIRE(batched_before == 2);
 
@@ -749,15 +747,15 @@ TEST_CASE("CSE - deduplicates rank-3 BatchedGemm nodes (col-major)", "[ComputeGr
     CHECK(graph.num_nodes() < nodes_before);
     size_t batched_after = 0;
     for (auto const &n : graph.nodes())
-        if (n.kind == cg::OpKind::BatchedGemm)
+        if (n.kind == cg::OpKind::Einsum)
             ++batched_after;
     CHECK(batched_after == 1);
 }
 
-TEST_CASE("CSE - deduplicates rank-3 BatchedGemm nodes (row-major)", "[ComputeGraph][CSE][HigherRank]") {
+TEST_CASE("CSE - deduplicates rank-3 batched einsum nodes (row-major)", "[ComputeGraph][CSE][HigherRank]") {
     // Same contraction, row-major tensors + batch-prefix pattern → triggers
-    // the fast path's row_mode branch. Verifies CSE works across both layout
-    // modes of the strided-batched capture.
+    // the strided-batch route's row-major mode. Verifies CSE works across both
+    // layout modes.
     auto A = create_random_tensor<double>(/*row_major=*/true, "A", 4, 3, 5);
     auto B = create_random_tensor<double>(/*row_major=*/true, "B", 4, 5, 6);
     auto C = create_zero_tensor<double>(/*row_major=*/true, "C", 4, 3, 6);
@@ -781,7 +779,7 @@ TEST_CASE("CSE - deduplicates rank-3 BatchedGemm nodes (row-major)", "[ComputeGr
 
     size_t batched_before = 0;
     for (auto const &n : graph.nodes())
-        if (n.kind == cg::OpKind::BatchedGemm)
+        if (n.kind == cg::OpKind::Einsum)
             ++batched_before;
     REQUIRE(batched_before == 2);
 
@@ -790,7 +788,7 @@ TEST_CASE("CSE - deduplicates rank-3 BatchedGemm nodes (row-major)", "[ComputeGr
     CHECK(modified);
     size_t batched_after = 0;
     for (auto const &n : graph.nodes())
-        if (n.kind == cg::OpKind::BatchedGemm)
+        if (n.kind == cg::OpKind::Einsum)
             ++batched_after;
     CHECK(batched_after == 1);
 }

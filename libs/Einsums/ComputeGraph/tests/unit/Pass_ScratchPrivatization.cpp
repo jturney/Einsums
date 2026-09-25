@@ -138,3 +138,43 @@ TEST_CASE("ScratchPrivatization - reports why it declined", "[ComputeGraph][Scra
         CHECK(only_reason(*pass).find("cannot be rebuilt") != std::string::npos);
     }
 }
+
+// Privatizing a scratch rebuilds the nodes that read it. The permute rebuild used to build its
+// executor from the index lists alone, so a permute carrying P(ij) lost the antisymmetrizer and
+// computed a plain transpose, and it read the capture-time scalars instead of the live ones.
+TEST_CASE("ScratchPrivatization - a rebuilt permute keeps its permutation operator", "[ComputeGraph][ScratchPrivatization]") {
+    Operands  in;
+    cg::Graph graph("privatized_antisymmetrizer");
+    auto     &tmp  = graph.declare_zero_runtime_tensor<double>("tmp", {6, 6}, true);
+    auto     &anti = graph.declare_zero_runtime_tensor<double>("anti", {6, 6}, true);
+    {
+        cg::CaptureGuard const guard(graph);
+        for (auto const &A : in.ops) {
+            cg::einsum("ij <- ik ; kj", 0.0, &tmp, 1.0, A, A);
+            cg::permute("i,j <- P(ij) j,i", 0.0, &anti, 1.0, tmp);
+            cg::axpby(1.0, anti, 1.0, &in.acc);
+        }
+    }
+    auto const pass = run(graph, false);
+    REQUIRE(pass->num_tensors_privatized() >= 1);
+
+    graph.apply<cg::passes::Materialization>();
+    graph.execute();
+
+    // acc = sum_A (P(ij) (A A)^T) = sum_A ((A A)^T - (A A)) elementwise, i.e. (AA)(j,i) - (AA)(i,j).
+    for (size_t i = 0; i < 6; ++i) {
+        for (size_t j = 0; j < 6; ++j) {
+            double expected = 0.0;
+            for (auto const &A : in.ops) {
+                double ij = 0.0;
+                double ji = 0.0;
+                for (size_t k = 0; k < 6; ++k) {
+                    ij += A(std::vector<size_t>{i, k}) * A(std::vector<size_t>{k, j});
+                    ji += A(std::vector<size_t>{j, k}) * A(std::vector<size_t>{k, i});
+                }
+                expected += ji - ij;
+            }
+            REQUIRE(std::abs(in.acc(std::vector<size_t>{i, j}) - expected) < 1e-10);
+        }
+    }
+}

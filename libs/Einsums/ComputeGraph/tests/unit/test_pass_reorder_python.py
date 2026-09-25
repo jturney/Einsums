@@ -113,7 +113,7 @@ def test_reorder_preserves_rank3_batched_gemm_chain_row_major():
 
 
 def test_reorder_preserves_rank3_batched_gemm_dependency_chain():
-    """Col-major batch-suffix → each stage is a BatchedGemm; Reorder must preserve the chain."""
+    """Col-major batch-suffix → each stage takes the strided-batch route; Reorder must preserve the chain."""
     A = einsums.create_random_tensor("A", [3, 3, 4])
     B = einsums.create_random_tensor("B", [3, 3, 4])
     C = einsums.create_zero_tensor("C", [3, 3, 4])
@@ -124,7 +124,7 @@ def test_reorder_preserves_rank3_batched_gemm_dependency_chain():
         einsums.einsum("ijb <- ikb ; kjb", C, A, B)
         einsums.einsum("ijb <- ikb ; kjb", D, C, B)
 
-    assert _count_kind(g, "BatchedGemm") == 2
+    assert _count_kind(g, "Einsum") == 2
 
     _run(cg.Reorder(), g)
     g.execute()

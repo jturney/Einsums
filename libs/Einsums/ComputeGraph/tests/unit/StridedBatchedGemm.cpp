@@ -4,10 +4,11 @@
 //----------------------------------------------------------------------------------------------
 
 /// @file StridedBatchedGemm.cpp
-/// @brief Tests for the capture-time 3D-batch GEMM fast path that emits a
-///        BatchedGemm node in strided mode, the layout
-///        `cublasDgemmStridedBatched` expects on GPU, mapped to `blas::gemm_batch`
-///        with base-plus-stride pointer computation on CPU.
+/// @brief Tests for the strided-batch GEMM route of an einsum node: a batch of
+///        equal matrix products runs as one `blas::gemm_batch` call with
+///        base-plus-stride pointers on CPU, the layout `cublasDgemmStridedBatched`
+///        takes on GPU. The node stays an einsum, so it saves and loads like any
+///        other; the route is chosen when its executor is built.
 ///
 /// The pattern accepted depends on the tensor layout:
 ///   - Column-major (Einsums default): batch at the LAST axis of each operand,
@@ -21,10 +22,14 @@
 /// batch-last) have interleaved batches and fall through to generic einsum.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/GraphIR.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+
+#include <cstring>
+#include <string>
 
 #include <Einsums/Testing.hpp>
 
@@ -32,6 +37,12 @@ using namespace einsums;
 namespace cg = einsums::compute_graph;
 
 namespace {
+
+std::string route() {
+    return std::string{cg::dispatch::last_dispatch_route()};
+}
+
+constexpr char const *kStrided = "strided_batched_gemm";
 
 constexpr double kTol = 1e-10;
 
@@ -50,7 +61,11 @@ void require_close(Tensor<T, R> const &got, Tensor<T, R> const &ref) {
 // Fast-path capture: column-major, batch at last axis (Einsums default)
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("StridedBatchedGemm: col-major 3D ijb;jkb->ikb produces BatchedGemm at capture", "[ComputeGraph][StridedBatchedGemm]") {
+// The route used to be taken at capture by recording a BatchedGemm node, which a
+// graph refuses to save, so capturing "ijb;jkb->ikb" in the default layout made
+// the whole graph unsaveable. The node is now an einsum that picks the route
+// when its executor is built, so the loader reaches the same route.
+TEST_CASE("StridedBatchedGemm: col-major 3D ijb;jkb->ikb stays an einsum, runs batched and saves", "[ComputeGraph][StridedBatchedGemm]") {
     constexpr size_t I = 3, J = 5, K = 2, B = 4;
     auto             A  = create_random_tensor<double>("A", I, J, B);
     auto             Bt = create_random_tensor<double>("B", J, K, B);
@@ -61,20 +76,23 @@ TEST_CASE("StridedBatchedGemm: col-major 3D ijb;jkb->ikb produces BatchedGemm at
         cg::CaptureGuard const guard(graph);
         cg::einsum("ijb;jkb->ikb", &C, A, Bt);
     }
-
-    // Capture should have short-circuited into a single BatchedGemm node,
-    // NOT an Einsum that would fall back to the generic nested-loop path.
     REQUIRE(graph.num_nodes() == 1);
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
+    REQUIRE(graph.nodes()[0].kind == cg::OpKind::Einsum);
 
-    auto const *d = graph.nodes()[0].op_data.get_if<cg::BatchedGemmDescriptor>();
-    REQUIRE(d != nullptr);
-    REQUIRE(d->strided);
-    REQUIRE(std::cmp_equal(d->batch_count, B));
-    REQUIRE(std::cmp_equal(d->batch_stride_a, (I * J)));
-    REQUIRE(std::cmp_equal(d->batch_stride_b, (J * K)));
-    REQUIRE(std::cmp_equal(d->batch_stride_c, (I * K)));
-    REQUIRE(d->scalar == cg::BlasScalar::Double);
+    graph.execute();
+    CHECK(route() == kStrided);
+    auto const expected = Tensor<double, 3>(C);
+
+    auto const text = cg::save_graph_string(graph);
+    REQUIRE(text.has_value());
+    auto loaded = cg::load_graph_string(*text);
+    REQUIRE(loaded.has_value());
+
+    auto C2 = create_zero_tensor<double>("C2", I, K, B);
+    loaded->bind("A", A, "B", Bt, "C", C2);
+    loaded->execute();
+    CHECK(route() == kStrided);
+    require_close(C2, expected);
 }
 
 TEST_CASE("StridedBatchedGemm: col-major result matches slice-by-slice reference", "[ComputeGraph][StridedBatchedGemm]") {
@@ -114,9 +132,10 @@ TEST_CASE("StridedBatchedGemm: col-major result matches slice-by-slice reference
         cg::einsum("ijb;jkb->ikb", &C_cg, A, Bt);
     }
     REQUIRE(graph.num_nodes() == 1);
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
+    REQUIRE(graph.nodes()[0].kind == cg::OpKind::Einsum);
 
     graph.execute();
+    CHECK(route() == kStrided);
     require_close(C_cg, C_ref);
 }
 
@@ -146,11 +165,9 @@ TEST_CASE("StridedBatchedGemm: float precision works", "[ComputeGraph][StridedBa
         cg::einsum("ijb;jkb->ikb", &C_cg, A, Bt);
     }
     REQUIRE(graph.num_nodes() == 1);
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
-    auto const *d = graph.nodes()[0].op_data.get_if<cg::BatchedGemmDescriptor>();
-    REQUIRE(d->scalar == cg::BlasScalar::Float);
 
     graph.execute();
+    CHECK(route() == kStrided);
     float const *g = C_cg.data();
     float const *r = C_ref.data();
     for (size_t i = 0; i < C_cg.size(); i++)
@@ -183,9 +200,34 @@ TEST_CASE("StridedBatchedGemm: nonzero c_prefactor accumulates correctly", "[Com
         cg::CaptureGuard const guard(graph);
         cg::einsum("ijb;jkb->ikb", 0.5, &C, 2.0, A, Bt);
     }
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
     graph.execute();
+    CHECK(route() == kStrided);
     require_close(C, C_ref);
+}
+
+// The capture-time route copied the prefactors into its descriptor, so a later
+// update to the node's live scalars was ignored on replay. The route now reads
+// the live values on every call.
+TEST_CASE("StridedBatchedGemm: an updated prefactor is honored on replay", "[ComputeGraph][StridedBatchedGemm]") {
+    constexpr size_t I = 3, J = 4, K = 2, B = 3;
+    auto             A  = create_random_tensor<double>("A", I, J, B);
+    auto             Bt = create_random_tensor<double>("B", J, K, B);
+    auto             C  = create_zero_tensor<double>("C", I, K, B);
+
+    cg::Graph graph("live_prefactor");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ijb;jkb->ikb", &C, A, Bt);
+    }
+    graph.execute();
+    auto const once = Tensor<double, 3>(C);
+
+    graph.update_prefactors(graph.nodes()[0].id, 0.0, 3.0);
+    graph.execute();
+    CHECK(route() == kStrided);
+    for (size_t n = 0; n < C.size(); ++n) {
+        REQUIRE(std::abs(C.data()[n] - 3.0 * once.data()[n]) < kTol);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -204,8 +246,8 @@ TEST_CASE("StridedBatchedGemm: 3D einsum without batch index falls through to ge
         cg::CaptureGuard const guard(graph);
         cg::einsum("pqr;rs->pqs", &C, T, M);
     }
-    REQUIRE(graph.num_nodes() == 1);
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::Einsum);
+    graph.execute();
+    CHECK(route() != kStrided);
 }
 
 TEST_CASE("StridedBatchedGemm: col-major with batch at front falls through (interleaved)", "[ComputeGraph][StridedBatchedGemm]") {
@@ -222,7 +264,8 @@ TEST_CASE("StridedBatchedGemm: col-major with batch at front falls through (inte
         cg::CaptureGuard const guard(graph);
         cg::einsum("bij;bjk->bik", &C, A, Bt);
     }
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::Einsum); // not BatchedGemm
+    graph.execute();
+    CHECK(route() != kStrided);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -260,12 +303,11 @@ TEST_CASE("StridedBatchedGemm: forcing Target::GPU routes through gpu::blas disp
         cg::einsum("ijb;jkb->ikb", &C, A, Bt);
     }
     REQUIRE(graph.num_nodes() == 1);
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
 
     // Force GPU placement by hand (bypassing the GPUPlacement pass's
     // cost-model decision). The graph's execute() sees target == GPU
-    // and routes through try_gpu_blas_dispatch → try_gpu_batched_gemm
-    // → gpu::blas::gemm_strided_batched<double>.
+    // and routes through try_gpu_blas_dispatch, which plans the einsum
+    // as a strided batch and issues gpu::blas::gemm_strided_batched<double>.
     graph.nodes()[0].target = cg::Target::GPU;
 
     graph.execute();
@@ -309,16 +351,9 @@ TEST_CASE("StridedBatchedGemm: rank-4 with two batch indices (col-major, batches
         cg::einsum("ijab;jkab->ikab", &C, A, Bt);
     }
     REQUIRE(graph.num_nodes() == 1);
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
-
-    auto const *d = graph.nodes()[0].op_data.get_if<cg::BatchedGemmDescriptor>();
-    REQUIRE(d->strided);
-    REQUIRE(std::cmp_equal(d->batch_count, (A_ * B_)));
-    REQUIRE(std::cmp_equal(d->batch_stride_a, (I * J)));
-    REQUIRE(std::cmp_equal(d->batch_stride_b, (J * K)));
-    REQUIRE(std::cmp_equal(d->batch_stride_c, (I * K)));
 
     graph.execute();
+    CHECK(route() == kStrided);
     require_close(C, C_ref);
 }
 
@@ -336,13 +371,10 @@ TEST_CASE("StridedBatchedGemm: rank-5 with three batch indices", "[ComputeGraph]
         cg::einsum("ijabc;jkabc->ikabc", &C, A, Bt);
     }
     REQUIRE(graph.num_nodes() == 1);
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
-
-    auto const *d = graph.nodes()[0].op_data.get_if<cg::BatchedGemmDescriptor>();
-    REQUIRE(std::cmp_equal(d->batch_count, (A_ * B_ * C_)));
 
     // Correctness: compute the same result slice-by-slice.
     graph.execute();
+    CHECK(route() == kStrided);
 
     auto C_ref = create_zero_tensor<double>("C_ref", I, K, A_, B_, C_);
     for (size_t flat = 0; flat < A_ * B_ * C_; flat++) {
@@ -374,7 +406,8 @@ TEST_CASE("StridedBatchedGemm: batch indices at non-matching positions fall thro
         cg::CaptureGuard const guard(graph);
         cg::einsum("ijab;jkba->ikab", &C, A, Bt);
     }
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::Einsum); // fell through
+    graph.execute();
+    CHECK(route() != kStrided);
 }
 
 TEST_CASE("StridedBatchedGemm: replay across multiple execute() calls", "[ComputeGraph][StridedBatchedGemm]") {
@@ -388,9 +421,8 @@ TEST_CASE("StridedBatchedGemm: replay across multiple execute() calls", "[Comput
         cg::CaptureGuard const guard(graph);
         cg::einsum("ijb;jkb->ikb", &C, A, Bt);
     }
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
-
     graph.execute();
+    CHECK(route() == kStrided);
     auto snap = Tensor<double, 3>(C);
 
     C.zero();
@@ -421,8 +453,8 @@ TEST_CASE("StridedBatchedGemm: permuted view with transposed slice falls through
         cg::CaptureGuard const guard(graph);
         cg::einsum("jki <- jli ; lki", 0.0, &C_rt, 1.0, At, B_rt);
     }
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::Einsum); // fell through, not BatchedGemm
     graph.execute();
+    CHECK(route() != kStrided);
 
     for (size_t j = 0; j < J; j++) {
         for (size_t k = 0; k < K; k++) {

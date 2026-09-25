@@ -26,6 +26,8 @@
 #include <utility>
 #include <vector>
 
+#include "LifecycleNodes.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
@@ -401,14 +403,9 @@ TensorId reconstruct_tree(size_t i, size_t j, std::vector<std::vector<size_t>> c
         // and materialize_fn is idempotent if anything downstream adds
         // bookkeeping of its own.
         {
-            auto const &handle = graph.tensor(out_id);
-            Node        mat_node;
-            mat_node.id              = graph.reserve_node_id();
-            mat_node.kind            = OpKind::Materialize;
-            mat_node.label           = fmt::format("materialize({})", handle.name);
-            mat_node.outputs         = {out_id};
-            mat_node.execute         = [mat_fn = handle.materialize_fn]() { mat_fn(); };
-            mat_node.estimated_bytes = out_M * out_N * element_size;
+            auto const &handle   = graph.tensor(out_id);
+            Node        mat_node = lifecycle::make_materialize_node(handle, out_id);
+            mat_node.id          = graph.reserve_node_id();
             new_nodes.push_back(std::move(mat_node));
         }
     }

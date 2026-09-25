@@ -107,7 +107,7 @@ TEST_CASE("ConstantFolding - safe with Pipeline loop body", "[ComputeGraph][Pass
 
 TEST_CASE("ConstantFolding - rank-3 user-owned tensors are not folded", "[ComputeGraph][Passes][HigherRank]") {
     // Strided-batched pattern (col-major default): batch axis at the LAST
-    // position so capture takes the BatchedGemm fast path. Shapes: A(I,K,B),
+    // position, so the einsum takes the strided-batch route. Shapes: A(I,K,B),
     // B(K,J,B), C(I,J,B). All inputs user-owned → nothing folds.
     auto A = create_random_tensor<double>("A", 3, 5, 4);
     auto B = create_random_tensor<double>("B", 5, 6, 4);
@@ -119,7 +119,7 @@ TEST_CASE("ConstantFolding - rank-3 user-owned tensors are not folded", "[Comput
         cg::einsum("ikb;kjb->ijb", &C, A, B);
     }
 
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
+    REQUIRE(graph.nodes()[0].kind == cg::OpKind::Einsum);
 
     auto [modified, pass] = graph.apply<cg::passes::ConstantFolding>();
 

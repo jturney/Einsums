@@ -139,9 +139,9 @@ TEST_CASE("create_default - safe on mixed operations", "[ComputeGraph][PassManag
     }
 }
 
-TEST_CASE("create_default - safe on rank-3 BatchedGemm (row-major)", "[ComputeGraph][PassManager][HigherRank]") {
+TEST_CASE("create_default - safe on rank-3 batched einsum (row-major)", "[ComputeGraph][PassManager][HigherRank]") {
     // Row-major tensors + batch-prefix pattern → row_mode fast path. The
-    // full default pipeline has to stay correct on a BatchedGemm node with
+    // full default pipeline has to stay correct on a batched einsum with
     // the opposite storage order from the col-major case below.
     auto A = create_random_tensor<double>(true, "A", 4, 3, 5);
     auto B = create_random_tensor<double>(true, "B", 4, 5, 6);
@@ -158,7 +158,7 @@ TEST_CASE("create_default - safe on rank-3 BatchedGemm (row-major)", "[ComputeGr
         cg::einsum("bik;bkj->bij", &C, A, B);
     }
 
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
+    REQUIRE(graph.nodes()[0].kind == cg::OpKind::Einsum);
 
     auto pm = cg::PassManager::create_default();
     graph.apply(pm);
@@ -173,8 +173,8 @@ TEST_CASE("create_default - safe on rank-3 BatchedGemm (row-major)", "[ComputeGr
     }
 }
 
-TEST_CASE("create_default - safe on rank-3 BatchedGemm", "[ComputeGraph][PassManager][HigherRank]") {
-    // Col-major batch-suffix pattern → BatchedGemm capture. Verifies the
+TEST_CASE("create_default - safe on rank-3 batched einsum", "[ComputeGraph][PassManager][HigherRank]") {
+    // Col-major batch-suffix pattern → a strided-batched einsum. Verifies the
     // full default pipeline (including GPUPlacement, distribution passes,
     // memory planning) stays correct with a batched node.
     auto A = create_random_tensor<double>("A", 3, 5, 4);
@@ -192,7 +192,7 @@ TEST_CASE("create_default - safe on rank-3 BatchedGemm", "[ComputeGraph][PassMan
         cg::einsum("ikb;kjb->ijb", &C, A, B);
     }
 
-    REQUIRE(graph.nodes()[0].kind == cg::OpKind::BatchedGemm);
+    REQUIRE(graph.nodes()[0].kind == cg::OpKind::Einsum);
 
     auto pm = cg::PassManager::create_default();
     graph.apply(pm);

@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/DescriptorRegistry.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
+#include <Einsums/ComputeGraph/Detail/ImplLayout.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/ElementOps.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
@@ -42,6 +43,8 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include "StridedBatchedEinsum.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -171,6 +174,45 @@ std::function<void()> build_elementwise_binary(OpKind kind, packed_gemm::ScalarT
     });
 }
 
+/// A strided-batch plan together with what it was planned against, and its pointer tables.
+template <typename T>
+struct StridedBatchState {
+    detail::StridedBatchPlan      plan;
+    std::vector<std::string>      c_indices, a_indices, b_indices;
+    detail::OperandGeometry       a, b, c;
+    detail::StridedBatchTables<T> tables;
+
+    /// Whether @p plan is still the right reading of the contraction: the same index lists over
+    /// operands of the same geometry.
+    [[nodiscard]] bool still_applies(ParsedEinsumSpec const &spec, ::einsums::detail::TensorImpl<T> const &ai,
+                                     ::einsums::detail::TensorImpl<T> const &bi, ::einsums::detail::TensorImpl<T> const &ci) const {
+        return spec.c_indices == c_indices && spec.a_indices == a_indices && spec.b_indices == b_indices && spec.operators.empty() &&
+               a.matches(ai) && b.matches(bi) && c.matches(ci);
+    }
+};
+
+/// The strided-batch state for these operands, or null when the contraction is not a strided batch.
+template <typename T>
+std::shared_ptr<StridedBatchState<T>>
+make_strided_batch_state(ParsedEinsumSpec const &spec, std::vector<std::string> const &links, ::einsums::detail::TensorImpl<T> const &a,
+                         ::einsums::detail::TensorImpl<T> const &b, ::einsums::detail::TensorImpl<T> const &c) {
+    if (!spec.operators.empty()) {
+        return nullptr;
+    }
+    auto plan = detail::plan_strided_batch(spec.c_indices, spec.a_indices, spec.b_indices, links, a, b, c);
+    if (!plan) {
+        return nullptr;
+    }
+    return std::make_shared<StridedBatchState<T>>(StridedBatchState<T>{.plan      = *plan,
+                                                                       .c_indices = spec.c_indices,
+                                                                       .a_indices = spec.a_indices,
+                                                                       .b_indices = spec.b_indices,
+                                                                       .a         = detail::OperandGeometry::of(a),
+                                                                       .b         = detail::OperandGeometry::of(b),
+                                                                       .c         = detail::OperandGeometry::of(c),
+                                                                       .tables    = {}});
+}
+
 /**
  * @brief The executor for an einsum whose operands do not all share one element type.
  *
@@ -273,8 +315,22 @@ std::function<void()> build_einsum(packed_gemm::ScalarType dtype, EinsumDescript
         };
         auto views = std::make_shared<Views>(*a.impl<T>(), *b.impl<T>(), *c.impl<T>());
 
-        return [params, indices, site, views, a, b, c]() {
+        // A batch of equal matrix products runs as one gemm_batch call. Planned here from the
+        // operands the node has now, and re-checked on every call against the index lists and
+        // geometry it was planned for, so a rebind or an index rewrite that invalidates it falls
+        // back to the general dispatch rather than running a stale plan.
+        auto batched = make_strided_batch_state(indices->spec, indices->link_indices, *a.impl<T>(), *b.impl<T>(), *c.impl<T>());
+
+        return [params, indices, site, views, batched, a, b, c]() {
             LabeledSection("einsum execute");
+            if (batched != nullptr && !params->conj_a && !params->conj_b &&
+                batched->still_applies(indices->spec, *a.impl<T>(), *b.impl<T>(), *c.impl<T>())) {
+                ProfileAnnotate("dispatch", "strided_batched_gemm");
+                dispatch::last_dispatch_route() = "strided_batched_gemm";
+                detail::run_strided_batch<T>(batched->plan, as<T>(params->ab_pf), as<T>(params->c_pf), a.impl<T>()->data(),
+                                             b.impl<T>()->data(), c.impl<T>()->data(), batched->tables);
+                return;
+            }
             // Re-seat each view on its operand's LIVE impl: aliasing, so writes
             // to C land in the real tensor, and current, so rebind(),
             // Materialization and the MemoryPlanning arena are all honored.
@@ -1050,63 +1106,6 @@ void need(OpKind kind, char const *list, std::span<TensorId const> operands, std
     }
 }
 
-/**
- * @brief Whether @p impl's strides are monotone in its own declared storage order.
- *
- * A permute_view keeps the storage-order FLAG of its parent but presents
- * reordered strides, so ``is_row_major()``/``is_column_major()`` alone cannot
- * prove the canonical layout a GEMM assumes. Found by the large-rank
- * differential fuzzer: a view with the slice axes swapped passed the flag gate
- * and produced wrong results. Extent-1 axes are never traversed, so their
- * (possibly inflated) strides are ignored.
- */
-template <typename T>
-bool layout_matches_flag(::einsums::detail::TensorImpl<T> const &impl) {
-    bool const   row_major = impl.is_row_major();
-    size_t const rank      = impl.rank();
-    size_t       prev      = 0;
-    bool         first     = true;
-    for (size_t n = 0; n < rank; ++n) {
-        size_t const d = row_major ? rank - 1 - n : n;
-        if (impl.dim(d) <= 1) {
-            continue;
-        }
-        size_t const st = impl.stride(d);
-        if (!first && st < prev) {
-            return false;
-        }
-        prev  = st;
-        first = false;
-    }
-    return true;
-}
-
-/**
- * @brief Whether a BLAS call can address @p impl as a matrix at all.
- *
- * A GEMM is handed a base pointer and a leading dimension, so the minor axis has to step by one
- * element. A view that drops a LEADING axis of a three-index tensor leaves a rank-two operand
- * whose minor stride is the parent's next extent: a perfectly good operand for the generic
- * algorithm and not a matrix BLAS can describe. @ref layout_matches_flag does not settle it,
- * because what that checks is strides INCREASING in layout order and ``(6, 36)`` increases.
- *
- * Extent-1 axes are never traversed, so an operand whose every axis holds one element is
- * addressable whatever its strides claim.
- */
-template <typename T>
-bool minor_stride_is_unit(::einsums::detail::TensorImpl<T> const &impl) {
-    bool const   row_major = impl.is_row_major();
-    size_t const rank      = impl.rank();
-    for (size_t n = 0; n < rank; ++n) {
-        size_t const d = row_major ? rank - 1 - n : n;
-        if (impl.dim(d) <= 1) {
-            continue;
-        }
-        return impl.stride(d) == 1;
-    }
-    return true;
-}
-
 } // namespace
 
 void OperandAccessor::throw_operand_type_mismatch(packed_gemm::ScalarType held, packed_gemm::ScalarType asked) {
@@ -1194,10 +1193,10 @@ std::shared_ptr<GemmHint> derive_gemm_hint(packed_gemm::ScalarType dtype, packed
         if (a_impl->rank() != 2 || b_impl->rank() != 2 || c_impl->rank() != 2) {
             return nullptr;
         }
-        if (!layout_matches_flag(*a_impl) || !layout_matches_flag(*b_impl) || !layout_matches_flag(*c_impl)) {
+        if (!detail::strides_follow_layout(*a_impl) || !detail::strides_follow_layout(*b_impl) || !detail::strides_follow_layout(*c_impl)) {
             return nullptr;
         }
-        if (!minor_stride_is_unit(*a_impl) || !minor_stride_is_unit(*b_impl) || !minor_stride_is_unit(*c_impl)) {
+        if (!detail::minor_stride_is_unit(*a_impl) || !detail::minor_stride_is_unit(*b_impl) || !detail::minor_stride_is_unit(*c_impl)) {
             return nullptr;
         }
 

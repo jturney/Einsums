@@ -221,7 +221,8 @@ TODO / future work
   row-major storage, so the col-major-batch-last layout path needs
   attention.
 - **Pointer-array GPU batching**: the GPU path handles strided
-  batches today (what 3D capture emits). The pass-driven pointer-
+  batches today (an einsum that is a strided batch of matrix products, and
+  ``cg::batched_gemm`` in strided form). The pass-driven pointer-
   array batches (from ``GEMMBatching`` over N independent 2D
   einsums) stay on CPU. Extending to GPU needs either
   ``cublasDgemmBatched`` (the pointer-array variant) or per-slice
@@ -239,5 +240,6 @@ See also
   correctness suite exercising all skip paths plus multi-type and
   multi-batch cases.
 - ``libs/Einsums/ComputeGraph/tests/unit/StridedBatchedGemm.cpp``:
-  3D, 4D, and 5D batched-contraction capture and correctness coverage,
-  plus the Target::GPU routing test.
+  3D, 4D, and 5D batched contractions taking the strided-batch route of an
+  einsum node, their correctness and save/load, plus the Target::GPU routing
+  test.

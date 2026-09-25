@@ -197,6 +197,7 @@ set(ComputeGraphSources
     Passes/MemoryPlanning.cpp
     Passes/InputSlicing.cpp
     Passes/IOPrefetch.cpp
+    Passes/LifecycleNodes.cpp
     Passes/Materialization.cpp
     Passes/MultiTermFactorization.cpp
     Passes/PassUtil.cpp

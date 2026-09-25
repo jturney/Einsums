@@ -285,7 +285,7 @@ def test_scale_absorption_in_pipeline_loop():
 
 
 def test_scale_absorption_rank3_batched_gemm():
-    """BatchedGemm with beta=0 overwrites C, so the preceding scale is dead and removed."""
+    """A batched einsum with beta=0 overwrites C, so the preceding scale is dead and removed."""
     A = einsums.create_random_tensor("A", [3, 5, 4])
     B = einsums.create_random_tensor("B", [5, 6, 4])
     C = einsums.create_random_tensor("C", [3, 6, 4])
@@ -298,7 +298,7 @@ def test_scale_absorption_rank3_batched_gemm():
         einsums.einsum("ijb <- ikb ; kjb", C, A, B, c_pf=0.0, ab_pf=1.0)
 
     assert g.num_nodes() == 2
-    assert _count_kind(g, "BatchedGemm") == 1
+    assert _count_kind(g, "Einsum") == 1
 
     pass_inst = cg.ScaleAbsorption()
     assert _run(pass_inst, g)

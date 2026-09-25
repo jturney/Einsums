@@ -90,8 +90,8 @@ TEST_CASE("DeadNodeElimination - keeps intermediate with reader", "[ComputeGraph
     CHECK(pass.num_eliminated() == 0);
 }
 
-TEST_CASE("DeadNodeElimination - rank-3 BatchedGemm intermediate is eliminated", "[ComputeGraph][Passes][HigherRank]") {
-    // Strided-batched pattern → BatchedGemm node whose output nobody reads.
+TEST_CASE("DeadNodeElimination - rank-3 batched einsum intermediate is eliminated", "[ComputeGraph][Passes][HigherRank]") {
+    // Strided-batched einsum whose output nobody reads.
     auto A = create_random_tensor<double>("A", 3, 5, 4);
     auto B = create_random_tensor<double>("B", 5, 6, 4);
 
@@ -103,10 +103,10 @@ TEST_CASE("DeadNodeElimination - rank-3 BatchedGemm intermediate is eliminated",
         cg::einsum("ikb;kjb->ijb", &T, A, B);
     }
 
-    // Verify the fast path actually fired.
+    // The contraction is one einsum node.
     bool has_batched = false;
     for (auto const &n : graph.nodes())
-        if (n.kind == cg::OpKind::BatchedGemm)
+        if (n.kind == cg::OpKind::Einsum)
             has_batched = true;
     REQUIRE(has_batched);
 

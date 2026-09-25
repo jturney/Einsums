@@ -87,7 +87,7 @@ def test_dne_rank3_batched_gemm_intermediate_eliminated():
     with cg.capture(g):
         einsums.einsum("ijb <- ikb ; kjb", T, A, B)
 
-    assert _count_kind(g, "BatchedGemm") >= 1
+    assert _count_kind(g, "Einsum") >= 1
     n_before = g.num_nodes()
 
     pass_inst = cg.DeadNodeElimination()

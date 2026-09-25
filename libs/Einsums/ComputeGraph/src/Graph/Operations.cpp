@@ -444,19 +444,28 @@ Node Graph::make_permute_node(TensorId a_id, TensorId c_id, ParsedPermuteSpec co
     desc.operators = spec.operators;
     desc.params    = params;
 
-    Node node;
-    node.id   = reserve_node_id();
-    node.kind = OpKind::Permute;
-    node.label =
-        label.empty() ? fmt::format("permute({} <- {})", fmt::join(spec.c_indices, ","), fmt::join(spec.a_indices, ",")) : std::move(label);
+    if (label.empty()) {
+        label = fmt::format("permute({} <- {})", fmt::join(spec.c_indices, ","), fmt::join(spec.a_indices, ","));
+    }
     // One input even when beta is nonzero. See the note on the declaration: this
     // matches what capturing a cg::permute produces, and four passes plus
     // build_executor gate on a permute having exactly one input.
-    node.inputs  = {a_id};
-    node.outputs = {c_id};
-    node.op_data = std::move(desc);
-    node.execute = build_executor(OpKind::Permute, dtype, c_h.rank, node.op_data, *this, std::span<TensorId const>{node.inputs},
-                                  std::span<TensorId const>{node.outputs});
+    return make_node(OpKind::Permute, dtype, OpData{std::move(desc)}, {a_id}, {c_id}, std::move(label));
+}
+
+Node Graph::make_node(OpKind kind, packed_gemm::ScalarType dtype, OpData descriptor, std::vector<TensorId> inputs,
+                      std::vector<TensorId> outputs, std::string label) {
+    if (outputs.empty()) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph::make_node: node '{}' ({}) writes nothing", label, kind);
+    }
+    Node node;
+    node.id      = reserve_node_id();
+    node.kind    = kind;
+    node.label   = std::move(label);
+    node.inputs  = std::move(inputs);
+    node.outputs = std::move(outputs);
+    node.op_data = std::move(descriptor);
+    node.execute = build_executor(kind, dtype, tensor(node.outputs.front()).rank, node.op_data, *this, node.inputs, node.outputs);
     return node;
 }
 

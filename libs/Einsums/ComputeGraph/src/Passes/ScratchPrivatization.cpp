@@ -5,6 +5,7 @@
 
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
@@ -112,60 +113,19 @@ void rebuild_node(Graph &graph, Node &nd, TensorId old_id, TensorId new_id) {
         return;
     }
 
-    if (nd.kind == OpKind::Permute) {
-        auto const    *d = nd.op_data.get_if<PermuteDescriptor>();
-        TensorId const a = sub(nd.inputs[0]);
-        TensorId const c = sub(nd.outputs[0]);
-
-        ParsedPermuteSpec pspec;
-        pspec.c_indices = d->c_indices;
-        pspec.a_indices = d->a_indices;
-        pspec.raw       = pspec.render();
-
-        // PrefactorScalar, not the raw complex<double>: `as<T>` narrows to the
-        // element type exactly and throws rather than silently dropping a
-        // non-zero imaginary part into a real permute.
-        PrefactorScalar const alpha{d->alpha};
-        PrefactorScalar const beta{d->beta};
-        auto const            dtype = graph.tensor(c).dtype;
-
-        Graph *g   = &graph;
-        nd.execute = [g, a, c, pspec = std::move(pspec), alpha, beta, dtype]() {
-            detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-                using Impl = ::einsums::detail::TensorImpl<T>;
-                RuntimeTensorView<T> const A{*static_cast<Impl *>(g->tensor(a).impl_fn())};
-                RuntimeTensorView<T>       C{*static_cast<Impl *>(g->tensor(c).impl_fn())};
-                dispatch::string_permute(pspec, as<T>(beta), &C, as<T>(alpha), A);
-            });
-        };
-        nd.inputs  = {a};
-        nd.outputs = {c};
-        return;
-    }
-
-    // Axpby: Y = alpha*X + beta*Y. Keep the SHARED params object so later
-    // scalar rewrites (ScaleAbsorption-style) still reach this executor.
-    auto const    *d      = nd.op_data.get_if<AxpbyDescriptor>();
-    TensorId const x      = sub(nd.inputs[0]);
-    TensorId const y      = sub(nd.outputs[0]);
-    auto           params = d->params;
-    auto const     dtype  = graph.tensor(y).dtype;
-
-    Graph *g   = &graph;
-    nd.execute = [g, x, y, params, dtype]() {
-        detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-            using Impl = ::einsums::detail::TensorImpl<T>;
-            RuntimeTensorView<T> const X{*static_cast<Impl *>(g->tensor(x).impl_fn())};
-            RuntimeTensorView<T>       Y{*static_cast<Impl *>(g->tensor(y).impl_fn())};
-            linear_algebra::axpby(as<T>(params->alpha), X, as<T>(params->beta), &Y);
-        });
-    };
-    // Preserve the RMW convention of the original lists (beta != 0 lists Y as
-    // an input too); only the ids change.
+    // Permute and Axpby: the descriptor already says everything the executor does, its live
+    // params included, so the node keeps it and only the operand ids change. The executor comes
+    // from build_executor, as for a captured node. (A hand-built permute executor used to drop the
+    // permutation operators and read the snapshot scalars.) Only the ids change in the operand
+    // lists, so an accumulating axpby keeps listing Y as an input.
     for (auto &tid : nd.inputs) {
         tid = sub(tid);
     }
-    nd.outputs = {y};
+    for (auto &tid : nd.outputs) {
+        tid = sub(tid);
+    }
+    auto const &out = graph.tensor(nd.outputs.front());
+    nd.execute      = build_executor(nd.kind, out.dtype, out.rank, nd.op_data, graph, nd.inputs, nd.outputs);
 }
 
 /// Declare one clone of @p handle on @p graph: a graph-owned deferred

@@ -116,7 +116,7 @@ TEST_CASE("Reorder - memory-aware: frees large tensor early", "[ComputeGraph][Pa
     graph.execute();
 }
 
-TEST_CASE("Reorder - preserves rank-3 BatchedGemm chain (row-major)", "[ComputeGraph][Passes][HigherRank]") {
+TEST_CASE("Reorder - preserves rank-3 batched einsum chain (row-major)", "[ComputeGraph][Passes][HigherRank]") {
     // Row-major tensors + batch-prefix pattern → row_mode fast path. The
     // chain still needs to execute correctly after Reorder touches it.
     auto A = create_random_tensor<double>(true, "A", 4, 3, 3);
@@ -140,7 +140,7 @@ TEST_CASE("Reorder - preserves rank-3 BatchedGemm chain (row-major)", "[ComputeG
 
     size_t batched = 0;
     for (auto const &n : graph.nodes())
-        if (n.kind == cg::OpKind::BatchedGemm)
+        if (n.kind == cg::OpKind::Einsum)
             ++batched;
     REQUIRE(batched == 2);
 
@@ -157,8 +157,8 @@ TEST_CASE("Reorder - preserves rank-3 BatchedGemm chain (row-major)", "[ComputeG
     }
 }
 
-TEST_CASE("Reorder - preserves rank-3 BatchedGemm dependency chain", "[ComputeGraph][Passes][HigherRank]") {
-    // Col-major batch-suffix pattern so each stage becomes a BatchedGemm.
+TEST_CASE("Reorder - preserves rank-3 batched einsum dependency chain", "[ComputeGraph][Passes][HigherRank]") {
+    // Col-major batch-suffix pattern so each stage takes the strided-batch route.
     // Square-ish shapes keep the chain trivially valid: (I=K=J=3, B=4).
     auto A = create_random_tensor<double>("A", 3, 3, 4);
     auto B = create_random_tensor<double>("B", 3, 3, 4);
@@ -179,10 +179,10 @@ TEST_CASE("Reorder - preserves rank-3 BatchedGemm dependency chain", "[ComputeGr
         cg::einsum("ikb;kjb->ijb", &D, C, B);
     }
 
-    // Verify both stages were captured as BatchedGemm.
+    // Both stages are einsum nodes.
     size_t batched = 0;
     for (auto const &n : graph.nodes())
-        if (n.kind == cg::OpKind::BatchedGemm)
+        if (n.kind == cg::OpKind::Einsum)
             ++batched;
     REQUIRE(batched == 2);
 

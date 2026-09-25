@@ -259,66 +259,21 @@ bool TiledExpansion::run(Graph &graph) {
 
     // One dense in-place scale of a single tile. Used both for a tiled scale and
     // for the output tiles a tiled einsum scales but never accumulates into.
+    // Each emitter builds its node through Graph::make_node (or make_permute_node), the lowering
+    // capture and the loader use, so the tile nodes this pass emits are described by their
+    // descriptors and save, rebuild and rewrite like captured ones. A zero factor needs no special
+    // executor: the scale kernel assigns zero rather than multiplying, so no stale NaN survives.
     auto emit_tile_scale = [&graph](TensorId tid, PrefactorScalar pf, packed_gemm::ScalarType dt, std::string label) {
-        Node sc;
-        sc.id      = graph.reserve_node_id();
-        sc.kind    = OpKind::Scale;
-        sc.label   = std::move(label);
-        sc.inputs  = {tid};
-        sc.outputs = {tid};
-        if (is_zero(pf)) {
-            sc.execute = graph.make_zero_executor(tid);
-        } else {
-            Graph *g   = &graph;
-            sc.execute = [g, tid, pf, dt]() {
-                detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
-                    auto *t = static_cast<GeneralRuntimeTensor<T, std::allocator<T>> *>(g->live_tensor_ptr(tid));
-                    *t *= as<T>(pf);
-                });
-            };
-        }
-        // A ScaleDescriptor now records the factor as a PrefactorScalar, so a
-        // complex prefactor is described exactly rather than being truncated to
-        // its real part (which used to force this node to stay opaque). No live
-        // params: this executor is hand-built above, not builder-built, so
-        // there is nothing shared for a pass to rewrite.
         ScaleDescriptor sd;
-        sd.factor  = pf;
-        sc.op_data = sd;
-        return sc;
+        sd.factor = pf;
+        sd.params = make_elementwise_params(pf);
+        return graph.make_node(OpKind::Scale, dt, OpData{std::move(sd)}, {tid}, {tid}, std::move(label));
     };
 
-    // One dense `c_tile = beta*c_tile + alpha*P(a_tile)` through string_permute
-    // (HPTT). Attaches a real PermuteDescriptor only when the scalars are
-    // representable in its plain doubles, the same honesty rule as the scale.
+    // One dense `c_tile = beta*c_tile + alpha*P(a_tile)`.
     auto emit_tile_permute = [&graph](TensorId at, TensorId ct, ParsedPermuteSpec const &pspec, PrefactorScalar alpha, PrefactorScalar beta,
-                                      packed_gemm::ScalarType dt, std::string label) {
-        Node nd;
-        nd.id    = graph.reserve_node_id();
-        nd.kind  = OpKind::Permute;
-        nd.label = std::move(label);
-        // Same RMW convention as the dense op: beta != 0 reads the destination.
-        nd.inputs  = is_zero(beta) ? std::vector<TensorId>{at} : std::vector<TensorId>{at, ct};
-        nd.outputs = {ct};
-        Graph *g   = &graph;
-        nd.execute = [g, at, ct, pspec, alpha, beta, dt]() {
-            detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
-                using Dense      = GeneralRuntimeTensor<T, std::allocator<T>>;
-                auto const *aptr = static_cast<Dense const *>(g->live_tensor_ptr(at));
-                auto       *cptr = static_cast<Dense *>(g->live_tensor_ptr(ct));
-                dispatch::string_permute(pspec, as<T>(beta), cptr, as<T>(alpha), *aptr);
-            });
-        };
-        if (is_real_valued(alpha) && is_real_valued(beta)) {
-            PermuteDescriptor pd;
-            pd.alpha     = as_real<double>(alpha);
-            pd.beta      = as_real<double>(beta);
-            pd.c_indices = pspec.c_indices;
-            pd.a_indices = pspec.a_indices;
-            nd.op_data   = pd;
-        }
-        return nd;
-    };
+                                      packed_gemm::ScalarType /*dt*/,
+                                      std::string label) { return graph.make_permute_node(at, ct, pspec, alpha, beta, std::move(label)); };
 
     // One dense reduction over per-tile pairs: r[0] = sum_i dot(a_i, b_i),
     // true_dot when conjugated. A single node whose inputs are the PER-TILE
@@ -343,11 +298,11 @@ bool TiledExpansion::run(Graph &graph) {
                 using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
                 T acc{0};
                 for (size_t i = 0; i < as_.size(); ++i) {
-                    auto const *ap = static_cast<Dense const *>(g->tensor(as_[i]).tensor_ptr);
-                    auto const *bp = static_cast<Dense const *>(g->tensor(bs[i]).tensor_ptr);
+                    auto const *ap = static_cast<Dense const *>(g->live_tensor_ptr(as_[i]));
+                    auto const *bp = static_cast<Dense const *>(g->live_tensor_ptr(bs[i]));
                     acc += conj ? linear_algebra::true_dot(*ap, *bp) : linear_algebra::dot(*ap, *bp);
                 }
-                auto *rp      = static_cast<Dense *>(g->tensor(r).tensor_ptr);
+                auto *rp      = static_cast<Dense *>(g->live_tensor_ptr(r));
                 rp->data()[0] = acc;
             });
         };
@@ -357,24 +312,13 @@ bool TiledExpansion::run(Graph &graph) {
     // One dense `c_tile = alpha*(a_tile/b_tile) + beta*c_tile`.
     auto emit_tile_divide = [&graph](TensorId at, TensorId bt, TensorId ct, PrefactorScalar alpha, PrefactorScalar beta,
                                      packed_gemm::ScalarType dt, std::string label) {
-        Node nd;
-        nd.id    = graph.reserve_node_id();
-        nd.kind  = OpKind::DirectDivision;
-        nd.label = std::move(label);
+        ElementwiseBinaryDescriptor desc;
+        desc.alpha  = alpha;
+        desc.beta   = beta;
+        desc.params = make_elementwise_params(alpha, beta);
         // Same RMW convention as the dense op: beta != 0 reads the destination.
-        nd.inputs  = is_zero(beta) ? std::vector<TensorId>{at, bt} : std::vector<TensorId>{at, bt, ct};
-        nd.outputs = {ct};
-        Graph *g   = &graph;
-        nd.execute = [g, at, bt, ct, alpha, beta, dt]() {
-            detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
-                using Dense      = GeneralRuntimeTensor<T, std::allocator<T>>;
-                auto const *aptr = static_cast<Dense const *>(g->live_tensor_ptr(at));
-                auto const *bptr = static_cast<Dense const *>(g->tensor(bt).tensor_ptr);
-                auto       *cptr = static_cast<Dense *>(g->live_tensor_ptr(ct));
-                linear_algebra::direct_division(as<T>(alpha), *aptr, *bptr, as<T>(beta), cptr);
-            });
-        };
-        return nd;
+        auto inputs = is_zero(beta) ? std::vector<TensorId>{at, bt} : std::vector<TensorId>{at, bt, ct};
+        return graph.make_node(OpKind::DirectDivision, dt, OpData{std::move(desc)}, std::move(inputs), {ct}, std::move(label));
     };
 
     // ── Fused elementwise lowering ───────────────────────────────────────────
@@ -455,8 +399,8 @@ bool TiledExpansion::run(Graph &graph) {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
                 for (size_t i = 0; i < xs.size(); ++i) {
-                    auto const *xptr = static_cast<Dense const *>(g->tensor(xs[i]).tensor_ptr);
-                    auto       *yptr = static_cast<Dense *>(g->tensor(ys[i]).tensor_ptr);
+                    auto const *xptr = static_cast<Dense const *>(g->live_tensor_ptr(xs[i]));
+                    auto       *yptr = static_cast<Dense *>(g->live_tensor_ptr(ys[i]));
                     linear_algebra::axpy(as<T>(alpha), *xptr, yptr);
                 }
             });
@@ -482,9 +426,9 @@ bool TiledExpansion::run(Graph &graph) {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
                 for (size_t i = 0; i < as_.size(); ++i) {
-                    auto const *aptr = static_cast<Dense const *>(g->tensor(as_[i]).tensor_ptr);
-                    auto const *bptr = static_cast<Dense const *>(g->tensor(bs[i]).tensor_ptr);
-                    auto       *cptr = static_cast<Dense *>(g->tensor(cs[i]).tensor_ptr);
+                    auto const *aptr = static_cast<Dense const *>(g->live_tensor_ptr(as_[i]));
+                    auto const *bptr = static_cast<Dense const *>(g->live_tensor_ptr(bs[i]));
+                    auto       *cptr = static_cast<Dense *>(g->live_tensor_ptr(cs[i]));
                     linear_algebra::direct_division(as<T>(alpha), *aptr, *bptr, as<T>(beta), cptr);
                 }
             });
@@ -1381,7 +1325,7 @@ bool TiledExpansion::run(Graph &graph) {
             buf->zero();
             T *dest = buf->data();
             for (auto const &w : windows) {
-                T const *tile = static_cast<Dense const *>(gp->tensor(w.id).tensor_ptr)->data();
+                T const *tile = static_cast<Dense const *>(gp->live_tensor_ptr(w.id))->data();
                 for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
                     T       *d = dest + buffer_offset;
                     T const *s = tile + tile_offset;
@@ -1431,7 +1375,7 @@ bool TiledExpansion::run(Graph &graph) {
             T const *source = bc->data();
             for (size_t i = 0; i < dsts.size(); ++i) {
                 auto const &w    = dsts[i];
-                T          *tile = static_cast<Dense *>(gp->tensor(w.id).tensor_ptr)->data();
+                T          *tile = static_cast<Dense *>(gp->live_tensor_ptr(w.id))->data();
                 if (is_zero(pfs[i])) {
                     for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
                         T const *s = source + buffer_offset;

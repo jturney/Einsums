@@ -3,8 +3,6 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/Comm/DistributionDescriptor.hpp>
-#include <Einsums/Comm/Runtime.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/Materialization.hpp>
@@ -20,6 +18,8 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+#include "LifecycleNodes.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -44,40 +44,7 @@ std::vector<Node> build_lifecycle_nodes(TensorHandle &handle, TensorId emit_tid)
     std::vector<Node> out;
 
     // ── Materialize ────────────────────────────────────────────────────
-    {
-        Node mat_node;
-        mat_node.kind    = OpKind::Materialize;
-        mat_node.label   = fmt::format("materialize({})", handle.name);
-        mat_node.outputs = {emit_tid};
-
-        auto       mat_fn      = handle.materialize_fn;
-        auto       resize_fn   = handle.resize_deferred_fn;
-        auto       set_dist_fn = handle.set_distribution_fn;
-        bool const is_dist     = handle.is_distributed && !handle.is_replicated;
-        auto       dist_info   = handle.distribution_info;
-
-        mat_node.execute = [mat_fn, resize_fn, set_dist_fn, is_dist, dist_info]() {
-            if (is_dist && resize_fn && dist_info) {
-                auto      desc       = std::static_pointer_cast<comm::DistributionDescriptor>(dist_info);
-                int const rank       = comm::world_rank();
-                auto      local_dims = desc->local_dims_for(rank);
-                resize_fn(local_dims);
-
-                if (set_dist_fn) {
-                    std::vector<size_t> offsets(desc->dim_to_axis.size());
-                    for (size_t d = 0; d < desc->dim_to_axis.size(); d++) {
-                        auto [start, end] = desc->local_range(d, rank);
-                        offsets[d]        = start;
-                    }
-                    set_dist_fn(desc->global_dims, offsets);
-                }
-            }
-            if (mat_fn) {
-                mat_fn();
-            }
-        };
-        out.push_back(std::move(mat_node));
-    }
+    out.push_back(lifecycle::make_materialize_node(handle, emit_tid));
 
     // ── Initialize (optional) ──────────────────────────────────────────
     if (handle.init_kind != InitKind::None) {
@@ -161,22 +128,12 @@ void collect_deferred(Graph &graph, std::vector<DeferredEntry> &out, std::vector
 
 /// Whether @p graph already holds a Materialize node for the tensor named @p name.
 ///
-/// Cheap and name-keyed, matching what FreeInsertion does for the same question. The pass is
-/// re-runnable (a manager may apply it twice, and the load path applies it to a graph a save
-/// was taken before), so emitting a second lifecycle for a tensor that already has one has to
-/// be impossible rather than merely unlikely.
+/// Name-keyed, matching what FreeInsertion does for the same question. The pass is re-runnable (a
+/// manager may apply it twice, and the load path applies it to a graph a save was taken before), so
+/// emitting a second lifecycle for a tensor that already has one has to be impossible rather than
+/// merely unlikely.
 bool already_materialized_in(Graph const &graph, std::string const &name) {
-    std::string const want = fmt::format("materialize({})", name);
-    return std::ranges::any_of(graph.nodes(), [&want](Node const &node) { return node.kind == OpKind::Materialize && node.label == want; });
-}
-
-/// What a Materialize node's label names, or empty for any other label.
-std::string materialized_name(std::string const &label) {
-    constexpr std::string_view prefix = "materialize(";
-    if (!label.starts_with(prefix) || !label.ends_with(')')) {
-        return {};
-    }
-    return label.substr(prefix.size(), label.size() - prefix.size() - 1);
+    return lifecycle::has_lifecycle_node(graph.nodes(), OpKind::Materialize, name);
 }
 
 /// One graph's contribution to the audit, then every sub-graph's.
@@ -199,7 +156,7 @@ void collect_audit(Graph const &graph, std::map<std::string, std::size_t> &mater
 
     for (auto const &node : graph.nodes()) {
         if (node.kind == OpKind::Materialize) {
-            if (std::string name = materialized_name(node.label); !name.empty()) {
+            if (std::string name{lifecycle::lifecycle_tensor_name(node)}; !name.empty()) {
                 void const *buffer = nullptr;
                 if (!node.outputs.empty()) {
                     if (TensorHandle const *handle = graph.find_tensor(node.outputs.front()); handle != nullptr) {

@@ -562,10 +562,9 @@ TEST_CASE("ScaleAbsorption in Pipeline loop", "[ComputeGraph][Passes][Pipeline]"
     }
 }
 
-TEST_CASE("ScaleAbsorption - rank-3 BatchedGemm", "[ComputeGraph][Passes][HigherRank]") {
-    // The rank-3 einsum hits the strided-batched fast path and captures as
-    // OpKind::BatchedGemm. With beta == 0 it overwrites C, so the preceding
-    // scale is dead and gets removed.
+TEST_CASE("ScaleAbsorption - rank-3 batched einsum", "[ComputeGraph][Passes][HigherRank]") {
+    // The rank-3 einsum takes the strided-batch route. With beta == 0 it
+    // overwrites C, so the preceding scale is dead and gets removed.
     auto A = create_random_tensor<double>("A", 3, 5, 4);
     auto B = create_random_tensor<double>("B", 5, 6, 4);
     auto C = create_random_tensor<double>("C", 3, 6, 4);
@@ -582,7 +581,7 @@ TEST_CASE("ScaleAbsorption - rank-3 BatchedGemm", "[ComputeGraph][Passes][Higher
     }
 
     REQUIRE(graph.num_nodes() == 2);
-    REQUIRE(graph.nodes()[1].kind == cg::OpKind::BatchedGemm);
+    REQUIRE(graph.nodes()[1].kind == cg::OpKind::Einsum);
 
     auto [modified, pass] = graph.apply<cg::passes::ScaleAbsorption>();
 

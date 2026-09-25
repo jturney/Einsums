@@ -3118,6 +3118,26 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
                            std::string label = {});
 
     /**
+     * @brief Build a ready-to-splice node whose executor comes from @ref build_executor.
+     *
+     * What every pass that emits a node needs and used to spell out: reserve the id, attach the
+     * descriptor, and derive the executor from the descriptor and the operand ids, so the node is
+     * exactly what its descriptor says and saves, rebuilds and rewrites like a captured one. The
+     * executor's rank is the first output's.
+     *
+     * @param[in] kind       The node's kind.
+     * @param[in] dtype      The element type the executor runs in.
+     * @param[in] descriptor The node's descriptor; the executor reads its live blocks.
+     * @param[in] inputs     Operand ids read, in the order @ref build_executor expects for @p kind.
+     * @param[in] outputs    Operand ids written; must not be empty.
+     * @param[in] label      Node label.
+     * @return A node with a reserved id, its operands, descriptor and executor set.
+     * @versionadded{2.0.0}
+     */
+    Node make_node(OpKind kind, packed_gemm::ScalarType dtype, OpData descriptor, std::vector<TensorId> inputs,
+                   std::vector<TensorId> outputs, std::string label);
+
+    /**
      * @brief Create an executor lambda that zeros a tensor.
      *
      * @param[in] tensor_id TensorId of the tensor to zero.

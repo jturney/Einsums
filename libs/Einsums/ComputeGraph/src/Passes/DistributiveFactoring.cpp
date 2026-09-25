@@ -618,20 +618,12 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         // stands earlier in the graph.
         if (!reuse_id) {
             // T = 0. Recorded as a Scale by zero, which is what it means, so the
-            // algebraic passes can reason about it; the executor is a true zero-fill
-            // rather than a multiply, so a freshly allocated T holding garbage cannot
-            // turn into a NaN here.
-            {
-                Node nd;
-                nd.id      = graph.reserve_node_id();
-                nd.kind    = OpKind::Scale;
-                nd.label   = fmt::format("zero({})", t_name);
-                nd.inputs  = {t_id};
-                nd.outputs = {t_id};
-                nd.op_data = ScaleDescriptor{.factor = 0.0};
-                nd.execute = graph.make_zero_executor(t_id);
-                emitted.push_back(std::move(nd));
-            }
+            // algebraic passes can reason about it. The scale kernel assigns zero
+            // rather than multiplying by it, so a freshly allocated T holding
+            // garbage cannot turn into a NaN here.
+            emitted.push_back(graph.make_node(OpKind::Scale, ref_handle.dtype,
+                                              OpData{ScaleDescriptor{.factor = 0.0, .params = make_elementwise_params(0.0)}}, {t_id},
+                                              {t_id}, fmt::format("zero({})", t_name)));
 
             // T += ab_i * B_i, carrying each member's own product prefactor, so the
             // combined contraction needs no prefactor of its own.

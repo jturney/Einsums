@@ -91,14 +91,10 @@ std::optional<double> exact_ratio(std::complex<double> a, std::complex<double> b
     return exact_ratio(a.real(), b.real());
 }
 
-/// Every BatchedGemm field except the source prefactor. The strided flag and
-/// its per-operand batch strides are part of the identity: pointer-array and
-/// strided batches have different executor semantics even when the BLAS key
-/// looks identical.
+/// Every BatchedGemm field except the source prefactor.
 bool batched_gemm_shape_equal(BatchedGemmDescriptor const &a, BatchedGemmDescriptor const &b) {
     return a.m == b.m && a.n == b.n && a.k == b.k && a.lda == b.lda && a.ldb == b.ldb && a.ldc == b.ldc && a.trans_a == b.trans_a &&
-           a.trans_b == b.trans_b && a.beta == b.beta && a.batch_count == b.batch_count && a.scalar == b.scalar && a.strided == b.strided &&
-           a.batch_stride_a == b.batch_stride_a && a.batch_stride_b == b.batch_stride_b && a.batch_stride_c == b.batch_stride_c;
+           a.trans_b == b.trans_b && a.beta == b.beta && a.batch_count == b.batch_count && a.scalar == b.scalar;
 }
 
 /// The factor r for which node @p b computes `r` times what node @p a computes,

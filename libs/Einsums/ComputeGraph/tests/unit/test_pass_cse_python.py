@@ -421,12 +421,12 @@ def test_cse_then_dead_node_elimination_composition():
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Rank-3 BatchedGemm de-duplication
+# Rank-3 batched einsum de-duplication
 # ──────────────────────────────────────────────────────────────────────────
 
 
 def test_cse_deduplicates_rank3_batched_gemm_col_major():
-    """Two identical rank-3 batched contractions (col-major) → one BatchedGemm."""
+    """Two identical rank-3 batched contractions (col-major) → one einsum node."""
     A = einsums.create_random_tensor("A", [3, 5, 4])
     B = einsums.create_random_tensor("B", [5, 6, 4])
     C = einsums.create_zero_tensor("C", [3, 6, 4])
@@ -438,25 +438,25 @@ def test_cse_deduplicates_rank3_batched_gemm_col_major():
         einsums.einsum("ijb <- ikb ; kjb", C, A, B)
         einsums.einsum("ijb <- ikb ; kjb", D, A, B)
 
-    assert _count_kind(g, "BatchedGemm") == 2
+    assert _count_kind(g, "Einsum") == 2
     n_before = g.num_nodes()
 
     modified = g.apply(_one_pass(cg.CSE()))
     assert modified
     assert g.num_nodes() < n_before
-    assert _count_kind(g, "BatchedGemm") == 1
+    assert _count_kind(g, "Einsum") == 1
 
 
 @pytest.mark.skip(
     reason="Row-major tensor creation isn't exposed to Python yet. "
            "The C++ counterpart uses `create_random_tensor<T>(/*row_major=*/true, ...)`; "
            "until that flag is bound, batch-prefix patterns over Python-created "
-           "(col-major) tensors don't capture as BatchedGemm."
+           "(col-major) tensors don't take the strided-batch route."
 )
 def test_cse_deduplicates_rank3_batched_gemm_row_major():
-    """Two identical rank-3 batched contractions (row-major batch-prefix) → one BatchedGemm.
+    """Two identical rank-3 batched contractions (row-major batch-prefix) → one einsum node.
 
-    Exercises the row_mode branch of CSE's BatchedGemm descriptor equality.
+    Exercises CSE across the row-major mode of the strided-batch route.
     """
     A = einsums.create_random_tensor("A", [4, 3, 5])
     B = einsums.create_random_tensor("B", [4, 5, 6])
@@ -468,8 +468,8 @@ def test_cse_deduplicates_rank3_batched_gemm_row_major():
         einsums.einsum("bij <- bik ; bkj", C, A, B)
         einsums.einsum("bij <- bik ; bkj", D, A, B)
 
-    assert _count_kind(g, "BatchedGemm") == 2
+    assert _count_kind(g, "Einsum") == 2
 
     modified = g.apply(_one_pass(cg.CSE()))
     assert modified
-    assert _count_kind(g, "BatchedGemm") == 1
+    assert _count_kind(g, "Einsum") == 1

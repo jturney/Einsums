@@ -59,6 +59,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "../StridedBatchedEinsum.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::gpu_dispatch)
 
 /// @see GpuDispatch.hpp for why this exists rather than reading
@@ -501,88 +503,73 @@ bool try_gpu_axpy(Node const &node, std::unordered_map<TensorId, TensorHandle> c
     return false;
 }
 
-/// Try strided-batched GEMM dispatch for OpKind::BatchedGemm nodes.
-/// Only the strided mode is handled here, that's what the 3D-batch
-/// capture path produces. The pointer-array mode (output of the
-/// GEMMBatching pass over N independent 2D einsums) is CPU-only
-/// today; extending it to GPU would require either copying each 2D
-/// tensor onto a contiguous device buffer first or adding a
-/// pointer-array batched GPU wrapper.
-bool try_gpu_batched_gemm(BatchedGemmDescriptor const &desc, Node const &node, std::unordered_map<TensorId, TensorHandle> const &tensors,
-                          DeviceShadowMap &shadows) {
-    if (!desc.strided)
-        return false;
-    if (node.inputs.size() < 2 || node.outputs.empty())
-        return false;
+/// Issue @p plan as one strided-batched GEMM over device pointers, in the einsum's operand order;
+/// the plan says whether BLAS takes them swapped.
+template <typename T>
+void run_gpu_strided_batched(detail::StridedBatchPlan const &plan, T alpha, T beta, void const *ptr_a, void const *ptr_b, void *ptr_c) {
+    auto const        *a        = static_cast<T const *>(plan.swap_ab ? ptr_b : ptr_a);
+    auto const        *b        = static_cast<T const *>(plan.swap_ab ? ptr_a : ptr_b);
+    std::int64_t const stride_a = plan.swap_ab ? plan.stride_b : plan.stride_a;
+    std::int64_t const stride_b = plan.swap_ab ? plan.stride_a : plan.stride_b;
+    gpu::blas::gemm_strided_batched<T>(plan.trans_a, plan.trans_b, plan.m, plan.n, plan.k, alpha, a, plan.lda, stride_a, b, plan.ldb,
+                                       stride_b, beta, static_cast<T *>(ptr_c), plan.ldc, plan.stride_c, plan.batch_count);
+}
 
-    TensorId const a_id = node.inputs[0];
-    TensorId const b_id = node.inputs[1];
-    TensorId const c_id = node.outputs[0];
-
-    auto a_it = tensors.find(a_id);
-    auto b_it = tensors.find(b_id);
-    auto c_it = tensors.find(c_id);
-    if (a_it == tensors.end() || b_it == tensors.end() || c_it == tensors.end())
+/// Try an einsum that is a strided batch of matrix products, planned the way the CPU executor plans
+/// it (see detail::plan_strided_batch) and issued as one strided-batched GEMM. Reads the live index
+/// lists, prefactors and conjugation flags; a conjugated or antisymmetrized contraction has no
+/// gemm_batch form.
+bool try_gpu_strided_einsum(EinsumDescriptor const &desc, Node const &node, std::unordered_map<TensorId, TensorHandle> const &tensors,
+                            DeviceShadowMap &shadows) {
+    auto const lists = live_index_lists(desc);
+    if (live_conj_a(desc) || live_conj_b(desc) || !lists.operators.empty() || node.inputs.size() < 2 || node.outputs.empty()) {
         return false;
-
-    void *ptr_a = resolve_device_ptr(a_it->second, a_id, shadows);
-    void *ptr_b = resolve_device_ptr(b_it->second, b_id, shadows);
-    void *ptr_c = resolve_device_ptr(c_it->second, c_id, shadows);
-    if (!ptr_a || !ptr_b || !ptr_c)
+    }
+    auto const a_it = tensors.find(node.inputs[0]);
+    auto const b_it = tensors.find(node.inputs[1]);
+    auto const c_it = tensors.find(node.outputs[0]);
+    if (a_it == tensors.end() || b_it == tensors.end() || c_it == tensors.end() || !a_it->second.impl_fn || !b_it->second.impl_fn ||
+        !c_it->second.impl_fn || a_it->second.dtype != c_it->second.dtype || b_it->second.dtype != c_it->second.dtype) {
         return false;
+    }
 
-    switch (desc.scalar) {
-    case BlasScalar::Float: {
-        gpu::blas::gemm_strided_batched<float>(
-            desc.trans_a, desc.trans_b, desc.m, desc.n, desc.k, static_cast<float>(desc.alpha.real()), static_cast<float const *>(ptr_a),
-            desc.lda, desc.batch_stride_a, static_cast<float const *>(ptr_b), desc.ldb, desc.batch_stride_b,
-            static_cast<float>(desc.beta.real()), static_cast<float *>(ptr_c), desc.ldc, desc.batch_stride_c, desc.batch_count);
-        return true;
+    void *ptr_a = resolve_device_ptr(a_it->second, node.inputs[0], shadows);
+    void *ptr_b = resolve_device_ptr(b_it->second, node.inputs[1], shadows);
+    void *ptr_c = resolve_device_ptr(c_it->second, node.outputs[0], shadows);
+    if (!ptr_a || !ptr_b || !ptr_c) {
+        return false;
     }
-    case BlasScalar::Double: {
-        gpu::blas::gemm_strided_batched<double>(desc.trans_a, desc.trans_b, desc.m, desc.n, desc.k, desc.alpha.real(),
-                                                static_cast<double const *>(ptr_a), desc.lda, desc.batch_stride_a,
-                                                static_cast<double const *>(ptr_b), desc.ldb, desc.batch_stride_b, desc.beta.real(),
-                                                static_cast<double *>(ptr_c), desc.ldc, desc.batch_stride_c, desc.batch_count);
-        return true;
-    }
-    case BlasScalar::ComplexFloat: {
-        std::complex<float> const alpha{static_cast<float>(desc.alpha.real()), static_cast<float>(desc.alpha.imag())};
-        std::complex<float> const beta{static_cast<float>(desc.beta.real()), static_cast<float>(desc.beta.imag())};
-        gpu::blas::gemm_strided_batched<std::complex<float>>(
-            desc.trans_a, desc.trans_b, desc.m, desc.n, desc.k, alpha, static_cast<std::complex<float> const *>(ptr_a), desc.lda,
-            desc.batch_stride_a, static_cast<std::complex<float> const *>(ptr_b), desc.ldb, desc.batch_stride_b, beta,
-            static_cast<std::complex<float> *>(ptr_c), desc.ldc, desc.batch_stride_c, desc.batch_count);
-        return true;
-    }
-    case BlasScalar::ComplexDouble: {
-        std::complex<double> const alpha = desc.alpha;
-        std::complex<double> const beta  = desc.beta;
-        gpu::blas::gemm_strided_batched<std::complex<double>>(
-            desc.trans_a, desc.trans_b, desc.m, desc.n, desc.k, alpha, static_cast<std::complex<double> const *>(ptr_a), desc.lda,
-            desc.batch_stride_a, static_cast<std::complex<double> const *>(ptr_b), desc.ldb, desc.batch_stride_b, beta,
-            static_cast<std::complex<double> *>(ptr_c), desc.ldc, desc.batch_stride_c, desc.batch_count);
-        return true;
-    }
-    }
-    return false;
+
+    bool dispatched = false;
+    detail::dispatch_scalar_type(c_it->second.dtype, [&]<typename T>(T /*tag*/) {
+        using Impl    = ::einsums::detail::TensorImpl<T>;
+        auto const *a = static_cast<Impl const *>(a_it->second.impl_fn());
+        auto const *b = static_cast<Impl const *>(b_it->second.impl_fn());
+        auto const *c = static_cast<Impl const *>(c_it->second.impl_fn());
+        if (a == nullptr || b == nullptr || c == nullptr) {
+            return;
+        }
+        auto const plan = detail::plan_strided_batch(lists.c, lists.a, lists.b, lists.link, *a, *b, *c);
+        if (!plan) {
+            return;
+        }
+        run_gpu_strided_batched<T>(*plan, as<T>(live_ab_prefactor(desc)), as<T>(live_c_prefactor(desc)), ptr_a, ptr_b, ptr_c);
+        dispatched = true;
+    });
+    return dispatched;
 }
 
 } // namespace
 
 /// Top-level GPU BLAS dispatcher: tries GEMM, GEMV, Scale, Axpy, BatchedGemm.
 bool try_gpu_blas_dispatch(Node const &node, std::unordered_map<TensorId, TensorHandle> const &tensors, DeviceShadowMap &shadows) {
-    // Einsum operations: try GEMM, then GEMV.
+    // Einsum operations: try GEMM, then GEMV, then a strided batch of GEMMs.
     if (auto const *desc = node.op_data.get_if<EinsumDescriptor>()) {
         if (try_gpu_gemm(*desc, node, tensors, shadows))
             return true;
         if (try_gpu_gemv(*desc, node, tensors, shadows))
             return true;
-    }
-
-    // Strided-batched GEMM (3D batch-contiguous einsums captured as BatchedGemm).
-    if (auto const *desc = node.op_data.get_if<BatchedGemmDescriptor>()) {
-        if (try_gpu_batched_gemm(*desc, node, tensors, shadows))
+        if (try_gpu_strided_einsum(*desc, node, tensors, shadows))
             return true;
     }
 

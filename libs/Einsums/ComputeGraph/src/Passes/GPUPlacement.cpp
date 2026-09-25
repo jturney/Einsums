@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph/CostModel.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
@@ -16,6 +17,8 @@
 #include <algorithm>
 #include <functional>
 #include <vector>
+
+#include "../StridedBatchedEinsum.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -62,11 +65,39 @@ bool node_is_dispatchable(Node const &node, Graph const &graph);
 /// executor learned to skip a device-to-host copy whose GPU node fell back -
 /// before that, the stale upload was copied back over the CPU result.
 ///
-/// Keep this in step with try_gpu_gemm / try_gpu_gemv.
+/// Whether @p node is an einsum the device runs as one strided-batched GEMM: the plan the CPU
+/// executor and try_gpu_strided_einsum both make, over the operands as they are now.
+bool einsum_is_strided_batch(EinsumDescriptor const &desc, Node const &node, Graph const &graph) {
+    auto const lists = live_index_lists(desc);
+    if (live_conj_a(desc) || live_conj_b(desc) || !lists.operators.empty() || node.inputs.size() < 2 || node.outputs.empty()) {
+        return false;
+    }
+    auto const &a = graph.tensor(node.inputs[0]);
+    auto const &b = graph.tensor(node.inputs[1]);
+    auto const &c = graph.tensor(node.outputs[0]);
+    if (!a.impl_fn || !b.impl_fn || !c.impl_fn || a.dtype != c.dtype || b.dtype != c.dtype) {
+        return false;
+    }
+    bool batched = false;
+    ::einsums::compute_graph::detail::dispatch_scalar_type(c.dtype, [&]<typename T>(T /*tag*/) {
+        using Impl     = ::einsums::detail::TensorImpl<T>;
+        auto const *ai = static_cast<Impl const *>(a.impl_fn());
+        auto const *bi = static_cast<Impl const *>(b.impl_fn());
+        auto const *ci = static_cast<Impl const *>(c.impl_fn());
+        batched = ai != nullptr && bi != nullptr && ci != nullptr &&
+                  ::einsums::compute_graph::detail::plan_strided_batch(lists.c, lists.a, lists.b, lists.link, *ai, *bi, *ci).has_value();
+    });
+    return batched;
+}
+
+/// Keep this in step with try_gpu_gemm / try_gpu_gemv / try_gpu_strided_einsum.
 bool einsum_is_dispatchable(Node const &node, Graph const &graph) {
     auto const *desc = node.op_data.get_if<EinsumDescriptor>();
     if (desc == nullptr) {
         return false;
+    }
+    if (einsum_is_strided_batch(*desc, node, graph)) {
+        return true;
     }
 
     size_t const n_target = desc->spec.target_indices.size();
@@ -97,7 +128,7 @@ bool einsum_is_dispatchable(Node const &node, Graph const &graph) {
 /// strided-batched GEMM path takes complex - try_gpu_gemm, try_gpu_gemv,
 /// try_gpu_scale and try_gpu_axpy all return false for anything but
 /// Float32/Float64.
-bool backend_supports_dtype(packed_gemm::ScalarType dtype, OpKind kind) {
+bool backend_supports_dtype(packed_gemm::ScalarType dtype, bool strided_batch) {
     if constexpr (gpu::has_mps) {
         return dtype == packed_gemm::ScalarType::Float32;
     }
@@ -107,7 +138,7 @@ bool backend_supports_dtype(packed_gemm::ScalarType dtype, OpKind kind) {
     }
     // Complex reaches the device only through gemm_strided_batched.
     if (dtype == packed_gemm::ScalarType::Complex64 || dtype == packed_gemm::ScalarType::Complex128) {
-        return kind == OpKind::BatchedGemm;
+        return strided_batch;
     }
     return false;
 }
@@ -117,11 +148,8 @@ bool node_is_dispatchable(Node const &node, Graph const &graph) {
     if (node.op_data.holds<EinsumDescriptor>()) {
         return einsum_is_dispatchable(node, graph);
     }
-    // BatchedGemm -> try_gpu_batched_gemm, strided form only; the pointer-array
-    // form is explicitly CPU-only.
-    if (auto const *bd = node.op_data.get_if<BatchedGemmDescriptor>()) {
-        return bd->strided;
-    }
+    // A BatchedGemm node is the pointer-array form GEMMBatching and cg::batched_gemm emit, which
+    // is CPU-only; a strided batch is an einsum and is judged above.
     // Scale -> try_gpu_scale, Axpby -> try_gpu_axpy. Both are real-scalar only,
     // which the dtype gate also enforces.
     if (node.kind == OpKind::Scale && node.op_data.holds<ScaleDescriptor>()) {
@@ -135,15 +163,10 @@ bool node_is_dispatchable(Node const &node, Graph const &graph) {
 
 /// Check if all tensors involved in a node are supported by the GPU backend.
 bool node_dtypes_supported(Node const &node, Graph const &graph) {
-    for (auto tid : node.inputs) {
-        if (!backend_supports_dtype(graph.tensor(tid).dtype, node.kind))
-            return false;
-    }
-    for (auto tid : node.outputs) {
-        if (!backend_supports_dtype(graph.tensor(tid).dtype, node.kind))
-            return false;
-    }
-    return true;
+    auto const *einsum        = node.op_data.get_if<EinsumDescriptor>();
+    bool const  strided_batch = einsum != nullptr && einsum_is_strided_batch(*einsum, node, graph);
+    auto const  supported     = [&](TensorId tid) { return backend_supports_dtype(graph.tensor(tid).dtype, strided_batch); };
+    return std::ranges::all_of(node.inputs, supported) && std::ranges::all_of(node.outputs, supported);
 }
 
 /// True when any tensor the node touches is tile-wise sparse.

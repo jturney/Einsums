@@ -14,6 +14,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "LifecycleNodes.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
@@ -193,15 +195,10 @@ void apply_merge(Graph &graph, MergePlan const &plan, size_t &num_merged) {
 
     // dst's Alloc/Materialize (now rewritten to src) duplicate src's own
     // lifecycle; drop the duplicates that originally belonged to dst. After
-    // the rewrite they are indistinguishable by id, so match by label.
+    // the rewrite they are indistinguishable by id, so match by the tensor
+    // their descriptor names.
     auto const &dst_name = graph.tensor(plan.dst).name;
-    std::erase_if(nodes, [&](Node const &n) {
-        if (n.kind != OpKind::Alloc && n.kind != OpKind::Materialize && n.kind != OpKind::Free) {
-            return false;
-        }
-        return n.label == fmt::format("alloc({})", dst_name) || n.label == fmt::format("materialize({})", dst_name) ||
-               n.label == fmt::format("free({})", dst_name);
-    });
+    std::erase_if(nodes, [&](Node const &n) { return lifecycle::lifecycle_tensor_name(n) == dst_name; });
 
     graph.redirect_slot(plan.dst, plan.src);
     graph.mark_sorted(); // order-preserving rewrite; position-keyed deps are stale

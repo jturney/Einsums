@@ -152,8 +152,8 @@ TEST_CASE("LoopInvariantHoisting - all nodes invariant", "[ComputeGraph][Passes]
     CHECK(pass.num_hoisted() == 2);
 }
 
-TEST_CASE("LoopInvariantHoisting - rank-3 BatchedGemm hoists", "[ComputeGraph][Passes][HigherRank]") {
-    // Col-major batch-suffix pattern → BatchedGemm node that's invariant.
+TEST_CASE("LoopInvariantHoisting - rank-3 batched einsum hoists", "[ComputeGraph][Passes][HigherRank]") {
+    // Col-major batch-suffix pattern → a strided-batched einsum that's invariant.
     auto A = create_random_tensor<double>("A", 3, 5, 4);
     auto B = create_random_tensor<double>("B", 5, 6, 4);
     auto C = create_zero_tensor<double>("C", 3, 6, 4);
@@ -168,7 +168,7 @@ TEST_CASE("LoopInvariantHoisting - rank-3 BatchedGemm hoists", "[ComputeGraph][P
         cg::scale(0.9, &D);                   // not invariant, writes D
     }
 
-    // Confirm the einsum is actually captured as BatchedGemm inside the body.
+    // Confirm the einsum is captured inside the body.
     auto const *loop_desc = [&]() -> cg::LoopDescriptor const * {
         for (auto const &n : graph.nodes())
             if (auto const *d = n.op_data.get_if<cg::LoopDescriptor>())
@@ -178,7 +178,7 @@ TEST_CASE("LoopInvariantHoisting - rank-3 BatchedGemm hoists", "[ComputeGraph][P
     REQUIRE(loop_desc != nullptr);
     bool body_has_batched = false;
     for (auto const &n : loop_desc->body->nodes())
-        if (n.kind == cg::OpKind::BatchedGemm)
+        if (n.kind == cg::OpKind::Einsum)
             body_has_batched = true;
     REQUIRE(body_has_batched);
 
