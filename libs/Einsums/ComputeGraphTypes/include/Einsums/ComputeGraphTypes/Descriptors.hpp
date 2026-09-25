@@ -12,6 +12,7 @@
 #include <complex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -87,18 +88,20 @@ constexpr BlasScalar blas_scalar_of() {
  * order; this descriptor carries the shared BLAS parameters.
  */
 struct BatchedGemmDescriptor {
-    int                  m{0};            ///< Rows of each C (and A if trans_a == 'N').
-    int                  n{0};            ///< Cols of each C (and B if trans_b == 'N').
-    int                  k{0};            ///< Link dimension.
-    int                  lda{0};          ///< Leading dim of each A (row-major stride).
-    int                  ldb{0};          ///< Leading dim of each B.
-    int                  ldc{0};          ///< Leading dim of each C.
-    char                 trans_a{'N'};    ///< BLAS transpose flag for A ('N' or 'T').
-    char                 trans_b{'N'};    ///< BLAS transpose flag for B.
-    std::complex<double> alpha{1.0, 0.0}; ///< A*B prefactor (full complex; imag part used for complex tensors).
-    std::complex<double> beta{0.0, 0.0};  ///< C prefactor.
-    int                  batch_count{0};  ///< Number of GEMMs fused into this call.
-    BlasScalar           scalar{BlasScalar::Double};
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "BatchedGemmDescriptor";
+    int                               m{0};            ///< Rows of each C (and A if trans_a == 'N').
+    int                               n{0};            ///< Cols of each C (and B if trans_b == 'N').
+    int                               k{0};            ///< Link dimension.
+    int                               lda{0};          ///< Leading dim of each A (row-major stride).
+    int                               ldb{0};          ///< Leading dim of each B.
+    int                               ldc{0};          ///< Leading dim of each C.
+    char                              trans_a{'N'};    ///< BLAS transpose flag for A ('N' or 'T').
+    char                              trans_b{'N'};    ///< BLAS transpose flag for B.
+    std::complex<double>              alpha{1.0, 0.0}; ///< A*B prefactor (full complex; imag part used for complex tensors).
+    std::complex<double>              beta{0.0, 0.0};  ///< C prefactor.
+    int                               batch_count{0};  ///< Number of GEMMs fused into this call.
+    BlasScalar                        scalar{BlasScalar::Double};
 
     /// Strided-batched mode: when true, the batched executor reads a
     /// single base pointer per operand from the live slot and computes
@@ -162,9 +165,11 @@ struct GemmGroup {
  * `einsums:graph:profile-groups`.
  */
 struct GroupedBatchedGemmDescriptor {
-    std::vector<GemmGroup> groups;   ///< One entry per shape class, in operand order.
-    int                    total{0}; ///< Sum of every group's count.
-    BlasScalar             scalar{BlasScalar::Double};
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GroupedBatchedGemmDescriptor";
+    std::vector<GemmGroup>            groups;   ///< One entry per shape class, in operand order.
+    int                               total{0}; ///< Sum of every group's count.
+    BlasScalar                        scalar{BlasScalar::Double};
 
     /// Human-readable name per group, parallel to @ref groups. Shape-derived
     /// when the capture API grouped the batch itself.
@@ -190,9 +195,11 @@ struct GroupedBatchedGemmDescriptor {
  * The actual allocation is managed by the graph (via ``owned_tensors_``).
  */
 struct AllocDescriptor {
-    TensorId    tensor_id{0};  ///< Which tensor this alloc/free refers to
-    size_t      size_bytes{0}; ///< Size of the allocation in bytes
-    std::string tensor_name;   ///< Name for debugging
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "AllocDescriptor";
+    TensorId                          tensor_id{0};  ///< Which tensor this alloc/free refers to
+    size_t                            size_bytes{0}; ///< Size of the allocation in bytes
+    std::string                       tensor_name;   ///< Name for debugging
 };
 
 /**
@@ -202,8 +209,10 @@ struct AllocDescriptor {
  * The executor lambda performs the actual gpu::memcpy_* call.
  */
 struct TransferDescriptor {
-    TensorId tensor_id{0};  ///< Which tensor is being transferred
-    size_t   size_bytes{0}; ///< Number of bytes to transfer
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "TransferDescriptor";
+    TensorId                          tensor_id{0};  ///< Which tensor is being transferred
+    size_t                            size_bytes{0}; ///< Number of bytes to transfer
 };
 
 /**
@@ -212,29 +221,35 @@ struct TransferDescriptor {
  * Stores the file path and dataset name for tensor serialization.
  */
 struct DiskIODescriptor {
-    std::string file_path;    ///< Path to the file (HDF5, binary, etc.)
-    std::string dataset_name; ///< Dataset/key name within the file
-    TensorId    tensor_id{0}; ///< Which tensor is being read/written
-    size_t      size_bytes{0};
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "DiskIODescriptor";
+    std::string                       file_path;    ///< Path to the file (HDF5, binary, etc.)
+    std::string                       dataset_name; ///< Dataset/key name within the file
+    TensorId                          tensor_id{0}; ///< Which tensor is being read/written
+    size_t                            size_bytes{0};
 };
 
 /**
  * @brief Metadata for Initialize nodes (zero fill, random fill, disk load).
  */
 struct InitializeDescriptor {
-    TensorId    tensor_id{0};
-    InitKind    kind{InitKind::Zero};
-    std::string source_path; ///< File path for FromDisk initialization
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "InitializeDescriptor";
+    TensorId                          tensor_id{0};
+    InitKind                          kind{InitKind::Zero};
+    std::string                       source_path; ///< File path for FromDisk initialization
 };
 
 /**
  * @brief Metadata for distributed communication nodes (Allreduce, Broadcast, etc.).
  */
 struct CommDescriptor {
-    TensorId tensor_id{0};    ///< Tensor being communicated
-    size_t   size_bytes{0};   ///< Size of the data in bytes
-    int      root{0};         ///< Root rank (for Broadcast/Scatter)
-    bool     use_nccl{false}; ///< True if tensor is GPU-resident and NCCL available
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "CommDescriptor";
+    TensorId                          tensor_id{0};    ///< Tensor being communicated
+    size_t                            size_bytes{0};   ///< Size of the data in bytes
+    int                               root{0};         ///< Root rank (for Broadcast/Scatter)
+    bool                              use_nccl{false}; ///< True if tensor is GPU-resident and NCCL available
 };
 
 /**
@@ -255,6 +270,8 @@ struct CommDescriptor {
  * nothing about the recorded node needs to know the registry exists.
  */
 struct ElementTransformDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "ElementTransformDescriptor";
     /// Name of the kernel in the process's element-op registry.
     std::string op_name;
 

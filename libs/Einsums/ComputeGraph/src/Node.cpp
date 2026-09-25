@@ -5,85 +5,9 @@
 
 #include <Einsums/ComputeGraph/Node.hpp>
 
-#include <array>
 #include <string_view>
-#include <type_traits>
-#include <utility>
-#include <variant>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
-
-/// One name per @ref OpData alternative, in the variant's own declaration order.
-///
-/// Indexed by ``index()`` rather than matched by a chain of
-/// ``holds_alternative``: the chain silently answered "descriptor alternative
-/// #N" for every alternative nobody had added to it, which was most of them,
-/// and adding one to the variant left it that way with nothing complaining. The
-/// static_assert below is what complains now, at compile time.
-constexpr auto kDescriptorNames = std::to_array<std::string_view>({
-    "no descriptor",
-    "EinsumDescriptor",
-    "ScaleDescriptor",
-    "PermuteDescriptor",
-    "ConditionalDescriptor",
-    "LoopDescriptor",
-    "AllocDescriptor",
-    "TransferDescriptor",
-    "DiskIODescriptor",
-    "CommDescriptor",
-    "InitializeDescriptor",
-    "BatchedGemmDescriptor",
-    "GroupedBatchedGemmDescriptor",
-    "ViewDescriptor",
-    "WriteParamDescriptor",
-    "AxpbyDescriptor",
-    "GroupedDotDescriptor",
-    "GroupedAxpbyDescriptor",
-    "GroupedElementwiseDescriptor",
-    "GroupedSandwichDescriptor",
-    "GroupedGatherRotateDescriptor",
-    "TiledEinsumDescriptor",
-    "TiledElementwiseDescriptor",
-    "TiledPermuteDescriptor",
-    "TiledDotDescriptor",
-    "ElementwiseBinaryDescriptor",
-    "DotDescriptor",
-    "TraceDescriptor",
-    "GemmDescriptor",
-    "ElementTransformDescriptor",
-    "SetupDescriptor",
-    "SyevDescriptor",
-    "LaplaceQuadratureDescriptor",
-    "OuterSumDescriptor",
-});
-
-std::string_view OpData::name() const noexcept {
-    static_assert(kDescriptorNames.size() == std::variant_size_v<Storage>,
-                  "OpData gained or lost an alternative: add or remove its name in kDescriptorNames, in the variant's own order");
-    // The table is POSITIONAL, so a name in the wrong slot names the wrong
-    // descriptor and the size check above would not notice. These pin the slots
-    // the diagnostics are written against, at compile time.
-    constexpr auto index_of = []<typename D>(std::type_identity<D>) {
-        return []<std::size_t... I>(std::index_sequence<I...>) {
-            constexpr std::array<bool, sizeof...(I)> match{std::is_same_v<D, std::variant_alternative_t<I, Storage>>...};
-            for (std::size_t i = 0; i < match.size(); ++i) {
-                if (match[i]) {
-                    return i;
-                }
-            }
-            return match.size();
-        }(std::make_index_sequence<std::variant_size_v<Storage>>{});
-    };
-    static_assert(kDescriptorNames[index_of(std::type_identity<std::monostate>{})] == "no descriptor");
-    static_assert(kDescriptorNames[index_of(std::type_identity<EinsumDescriptor>{})] == "EinsumDescriptor");
-    static_assert(kDescriptorNames[index_of(std::type_identity<ScaleDescriptor>{})] == "ScaleDescriptor");
-    static_assert(kDescriptorNames[index_of(std::type_identity<AxpbyDescriptor>{})] == "AxpbyDescriptor");
-    static_assert(kDescriptorNames[index_of(std::type_identity<GemmDescriptor>{})] == "GemmDescriptor");
-    static_assert(kDescriptorNames[index_of(std::type_identity<SyevDescriptor>{})] == "SyevDescriptor");
-    static_assert(kDescriptorNames[index_of(std::type_identity<LaplaceQuadratureDescriptor>{})] == "LaplaceQuadratureDescriptor");
-    static_assert(kDescriptorNames[index_of(std::type_identity<OuterSumDescriptor>{})] == "OuterSumDescriptor");
-    return kDescriptorNames[_storage.index()];
-}
 
 std::optional<SpaceId> EinsumDescriptor::space_for_letter(std::string_view letter) const {
     for (auto const &entry : letter_spaces) {

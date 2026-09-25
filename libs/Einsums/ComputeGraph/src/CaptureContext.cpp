@@ -49,9 +49,8 @@ void CaptureContext::end_capture() {
     register_graph(g);
 }
 
-template <OpDataOrAlternative D>
 void CaptureContext::record(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs,
-                            std::function<void()> executor, D op_data) {
+                            std::function<void()> executor, OpData op_data) {
     if (!_capturing || !_graph) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext::record called outside of capture");
     }
@@ -67,17 +66,15 @@ void CaptureContext::record(OpKind kind, std::string label, std::vector<TensorId
     _graph->add_node(std::move(node));
 }
 
-template <OpDataOrAlternative D>
-void CaptureContext::record_built(OpKind kind, std::string label, packed_gemm::ScalarType dtype, std::size_t rank, D op_data,
+void CaptureContext::record_built(OpKind kind, std::string label, packed_gemm::ScalarType dtype, std::size_t rank, OpData op_data,
                                   std::span<TensorId const> build_inputs, std::span<TensorId const> build_outputs,
                                   std::vector<TensorId> inputs, std::vector<TensorId> outputs) {
     if (!_capturing || !_graph) {
         EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext::record_built called outside of capture");
     }
 
-    OpData data(std::move(op_data));
-    auto   executor = build_executor(kind, dtype, rank, data, *_graph, build_inputs, build_outputs);
-    record(kind, std::move(label), std::move(inputs), std::move(outputs), std::move(executor), std::move(data));
+    auto executor = build_executor(kind, dtype, rank, op_data, *_graph, build_inputs, build_outputs);
+    record(kind, std::move(label), std::move(inputs), std::move(outputs), std::move(executor), std::move(op_data));
 }
 
 void CaptureContext::record_async(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs,
@@ -99,60 +96,6 @@ void CaptureContext::record_async(OpKind kind, std::string label, std::vector<Te
 
     _graph->add_node(std::move(node));
 }
-
-// Every alternative of OpData, in its order. The count check below fails the
-// build when an alternative is added to OpData and not here.
-#define EINSUMS_OP_DATA_ALTERNATIVES(X)                                                                                                    \
-    X(std::monostate)                                                                                                                      \
-    X(EinsumDescriptor)                                                                                                                    \
-    X(ScaleDescriptor)                                                                                                                     \
-    X(PermuteDescriptor)                                                                                                                   \
-    X(ConditionalDescriptor)                                                                                                               \
-    X(LoopDescriptor)                                                                                                                      \
-    X(AllocDescriptor)                                                                                                                     \
-    X(TransferDescriptor)                                                                                                                  \
-    X(DiskIODescriptor)                                                                                                                    \
-    X(CommDescriptor)                                                                                                                      \
-    X(InitializeDescriptor)                                                                                                                \
-    X(BatchedGemmDescriptor)                                                                                                               \
-    X(GroupedBatchedGemmDescriptor)                                                                                                        \
-    X(ViewDescriptor)                                                                                                                      \
-    X(WriteParamDescriptor)                                                                                                                \
-    X(AxpbyDescriptor)                                                                                                                     \
-    X(GroupedDotDescriptor)                                                                                                                \
-    X(GroupedAxpbyDescriptor)                                                                                                              \
-    X(GroupedElementwiseDescriptor)                                                                                                        \
-    X(GroupedSandwichDescriptor)                                                                                                           \
-    X(GroupedGatherRotateDescriptor)                                                                                                       \
-    X(TiledEinsumDescriptor)                                                                                                               \
-    X(TiledElementwiseDescriptor)                                                                                                          \
-    X(TiledPermuteDescriptor)                                                                                                              \
-    X(TiledDotDescriptor)                                                                                                                  \
-    X(ElementwiseBinaryDescriptor)                                                                                                         \
-    X(DotDescriptor)                                                                                                                       \
-    X(TraceDescriptor)                                                                                                                     \
-    X(GemmDescriptor)                                                                                                                      \
-    X(ElementTransformDescriptor)                                                                                                          \
-    X(SetupDescriptor)                                                                                                                     \
-    X(SyevDescriptor)                                                                                                                      \
-    X(LaplaceQuadratureDescriptor)                                                                                                         \
-    X(OuterSumDescriptor)
-
-#define EINSUMS_COUNT_ONE(D) +1
-static_assert(0 EINSUMS_OP_DATA_ALTERNATIVES(EINSUMS_COUNT_ONE) == OpData::alternative_count,
-              "EINSUMS_OP_DATA_ALTERNATIVES must list every OpData alternative");
-#undef EINSUMS_COUNT_ONE
-
-#define EINSUMS_RECORD(D)                                                                                                                  \
-    template EINSUMS_EXPORT void CaptureContext::record<D>(OpKind, std::string, std::vector<TensorId>, std::vector<TensorId>,              \
-                                                           std::function<void()>, D);                                                      \
-    template EINSUMS_EXPORT void CaptureContext::record_built<D>(OpKind, std::string, packed_gemm::ScalarType, std::size_t, D,             \
-                                                                 std::span<TensorId const>, std::span<TensorId const>,                     \
-                                                                 std::vector<TensorId>, std::vector<TensorId>);
-EINSUMS_OP_DATA_ALTERNATIVES(EINSUMS_RECORD)
-EINSUMS_RECORD(OpData)
-#undef EINSUMS_RECORD
-#undef EINSUMS_OP_DATA_ALTERNATIVES
 
 #define EINSUMS_CAPTURE_SLOT(...)                                                                                                          \
     template EINSUMS_EXPORT TensorId CaptureContext::get_or_register<__VA_ARGS__>(__VA_ARGS__ const &);                                    \

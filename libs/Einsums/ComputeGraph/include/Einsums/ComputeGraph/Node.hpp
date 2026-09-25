@@ -19,6 +19,7 @@
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 
 #include <algorithm>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -113,11 +114,13 @@ struct GemmHint {
  * @see packed_gemm::ContractionSpec for the contraction topology format
  */
 struct EinsumDescriptor {
-    packed_gemm::ContractionSpec spec;                    ///< Contraction topology: index lists, link/target classification
-    PrefactorScalar              c_prefactor{double{0}};  ///< C prefactor (snapshot of EinsumParams::c_pf at capture time)
-    PrefactorScalar              ab_prefactor{double{1}}; ///< AB prefactor (snapshot of EinsumParams::ab_pf at capture time)
-    bool                         conj_a{false};           ///< Whether to conjugate A (for complex types)
-    bool                         conj_b{false};           ///< Whether to conjugate B (for complex types)
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "EinsumDescriptor";
+    packed_gemm::ContractionSpec      spec;                    ///< Contraction topology: index lists, link/target classification
+    PrefactorScalar                   c_prefactor{double{0}};  ///< C prefactor (snapshot of EinsumParams::c_pf at capture time)
+    PrefactorScalar                   ab_prefactor{double{1}}; ///< AB prefactor (snapshot of EinsumParams::ab_pf at capture time)
+    bool                              conj_a{false};           ///< Whether to conjugate A (for complex types)
+    bool                              conj_b{false};           ///< Whether to conjugate B (for complex types)
 
     /// Permutation (antisymmetrizer) operators this contraction is wrapped in,
     /// as the spec wrote them. Empty for every contraction that names none.
@@ -229,9 +232,11 @@ using AxpbyParams = ElementwiseParams;
 /// Metadata for Axpby nodes (Y = alpha*X + beta*Y). Prefactors are type-erased
 /// (PrefactorScalar) so complex axpby folds exactly, matching EinsumDescriptor.
 struct AxpbyDescriptor {
-    PrefactorScalar              alpha{double{1}}; ///< alpha snapshot (at-capture value)
-    PrefactorScalar              beta{double{0}};  ///< beta snapshot (at-capture value)
-    std::shared_ptr<AxpbyParams> params;           ///< live values the executor reads each call
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "AxpbyDescriptor";
+    PrefactorScalar                   alpha{double{1}}; ///< alpha snapshot (at-capture value)
+    PrefactorScalar                   beta{double{0}};  ///< beta snapshot (at-capture value)
+    std::shared_ptr<AxpbyParams>      params;           ///< live values the executor reads each call
 };
 
 /**
@@ -251,6 +256,8 @@ struct AxpbyDescriptor {
  * @ref build_executor; readers must gate on it.
  */
 struct ScaleDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view  descriptor_name = "ScaleDescriptor";
     PrefactorScalar                    factor{double{1}}; ///< The scaling factor (at-capture snapshot).
     std::shared_ptr<ElementwiseParams> params;            ///< Live value the executor reads each call (@ref ElementwiseParams::alpha).
 };
@@ -274,6 +281,8 @@ struct ScaleDescriptor {
  * replays.
  */
 struct PermuteDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view  descriptor_name = "PermuteDescriptor";
     std::complex<double>               alpha{1.0, 0.0}; ///< Prefactor for the source tensor (at-capture snapshot).
     std::complex<double>               beta{0.0, 0.0};  ///< Prefactor for the destination tensor (0 = overwrite).
     std::vector<std::string>           c_indices;       ///< Output index names (e.g., {"j","i"}).
@@ -307,6 +316,8 @@ struct PermuteDescriptor {
  * @ref Graph::serializability_report names it.
  */
 struct ElementwiseBinaryDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view  descriptor_name = "ElementwiseBinaryDescriptor";
     PrefactorScalar                    alpha{double{1}}; ///< Prefactor on the A-op-B product (at-capture snapshot).
     PrefactorScalar                    beta{double{0}};  ///< Prefactor on the destination (0 = overwrite).
     std::shared_ptr<ElementwiseParams> params;           ///< Live scalars the executor reads each call.
@@ -438,7 +449,9 @@ live_or_private_params(std::shared_ptr<ElementwiseParams> const &declared, Prefa
  * alternative, or ask @ref reconstruction_blocker.
  */
 struct DotDescriptor {
-    bool conjugated{false}; ///< true for ``dotc`` (sum conj(A)*B), false for the bilinear ``dot``.
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "DotDescriptor";
+    bool                              conjugated{false}; ///< true for ``dotc`` (sum conj(A)*B), false for the bilinear ``dot``.
 };
 
 /**
@@ -456,7 +469,10 @@ struct DotDescriptor {
  * makes in reverse for @ref OpKind::Transpose, where the alternative that would
  * be recorded already exists and would say something false.
  */
-struct TraceDescriptor {};
+struct TraceDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "TraceDescriptor";
+};
 
 /**
  * @brief Metadata for the @ref OpKind::Custom node ``cg::outer_sum`` records:
@@ -471,7 +487,9 @@ struct TraceDescriptor {};
  * trust a verification is supposed to replace.
  */
 struct OuterSumDescriptor {
-    std::vector<double> coefficients; ///< One per axis of the destination, in axis order.
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "OuterSumDescriptor";
+    std::vector<double>               coefficients; ///< One per axis of the destination, in axis order.
 };
 
 /**
@@ -495,10 +513,12 @@ struct OuterSumDescriptor {
  * again.
  */
 struct GemmDescriptor {
-    PrefactorScalar alpha{double{1}}; ///< Prefactor on the matrix product (at-capture snapshot).
-    PrefactorScalar beta{double{0}};  ///< Prefactor on the destination (0 = overwrite).
-    char            trans_a{'n'};     ///< BLAS transpose character for A: 'n', 't' or 'c'.
-    char            trans_b{'n'};     ///< BLAS transpose character for B: 'n', 't' or 'c'.
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GemmDescriptor";
+    PrefactorScalar                   alpha{double{1}}; ///< Prefactor on the matrix product (at-capture snapshot).
+    PrefactorScalar                   beta{double{0}};  ///< Prefactor on the destination (0 = overwrite).
+    char                              trans_a{'n'};     ///< BLAS transpose character for A: 'n', 't' or 'c'.
+    char                              trans_b{'n'};     ///< BLAS transpose character for B: 'n', 't' or 'c'.
 };
 
 /**
@@ -528,6 +548,8 @@ struct GemmDescriptor {
  * @versionadded{2.0.0}
  */
 struct SyevDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "SyevDescriptor";
     /// Whether the eigenvectors are written into ``A`` (LAPACK ``jobz='v'``) or
     /// only the eigenvalues are computed (``jobz='n'``).
     bool compute_eigenvectors{true};
@@ -546,7 +568,9 @@ struct SyevDescriptor {
  * and the outputs in entry order, so entry `i` indexes both.
  */
 struct GroupedDotDescriptor {
-    int total{0}; ///< How many dot products the node holds.
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GroupedDotDescriptor";
+    int                               total{0}; ///< How many dot products the node holds.
 };
 
 /**
@@ -560,9 +584,11 @@ struct GroupedDotDescriptor {
  * need the pass to know which entry, which no pass does yet.
  */
 struct GroupedAxpbyDescriptor {
-    int                          total{0}; ///< How many axpby operations the node holds.
-    std::vector<PrefactorScalar> alphas;   ///< Per-entry alpha, in entry order.
-    std::vector<PrefactorScalar> betas;    ///< Per-entry beta, in entry order.
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GroupedAxpbyDescriptor";
+    int                               total{0}; ///< How many axpby operations the node holds.
+    std::vector<PrefactorScalar>      alphas;   ///< Per-entry alpha, in entry order.
+    std::vector<PrefactorScalar>      betas;    ///< Per-entry beta, in entry order.
 };
 
 /**
@@ -586,9 +612,11 @@ struct GroupedAxpbyDescriptor {
  * outputs in member order.
  */
 struct GroupedElementwiseDescriptor {
-    int                          total{0}; ///< How many members the node holds.
-    std::vector<PrefactorScalar> alphas;   ///< Per-member prefactor on the sources.
-    std::vector<PrefactorScalar> betas;    ///< Per-member prefactor on the destination.
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GroupedElementwiseDescriptor";
+    int                               total{0}; ///< How many members the node holds.
+    std::vector<PrefactorScalar>      alphas;   ///< Per-member prefactor on the sources.
+    std::vector<PrefactorScalar>      betas;    ///< Per-member prefactor on the destination.
 
     /// @ref OpKind::GroupedPermute only: the one permutation every member runs
     /// under, as @ref PermuteDescriptor spells it. Empty for the grouped
@@ -620,10 +648,12 @@ struct GroupedElementwiseDescriptor {
  * A_0, M_0, P_0, S_0, A_1, ... and the outputs in entry order.
  */
 struct GroupedSandwichDescriptor {
-    int                       total{0}; ///< How many sandwich accumulations the node holds.
-    std::vector<std::int64_t> nq;       ///< Per-entry auxiliary extent.
-    std::vector<std::int64_t> nk;       ///< Per-entry dressing (LMO) extent.
-    std::vector<std::int64_t> na;       ///< Per-entry PNO extent.
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GroupedSandwichDescriptor";
+    int                               total{0}; ///< How many sandwich accumulations the node holds.
+    std::vector<std::int64_t>         nq;       ///< Per-entry auxiliary extent.
+    std::vector<std::int64_t>         nk;       ///< Per-entry dressing (LMO) extent.
+    std::vector<std::int64_t>         na;       ///< Per-entry PNO extent.
 };
 
 /**
@@ -645,11 +675,13 @@ struct GroupedSandwichDescriptor {
  * transforms as inputs, and the destinations in entry order as outputs.
  */
 struct GroupedGatherRotateDescriptor {
-    int                       total{0};      ///< How many gather-rotate blocks the node holds.
-    std::vector<std::int64_t> nq;            ///< Per-entry auxiliary extent.
-    std::vector<std::int64_t> nu;            ///< Per-entry source (PAO) extent.
-    std::vector<std::int64_t> nt;            ///< Per-entry rotated (TNO/PNO) extent.
-    std::int64_t              elem_bytes{0}; ///< Size of one element, for the streaming term.
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "GroupedGatherRotateDescriptor";
+    int                               total{0};      ///< How many gather-rotate blocks the node holds.
+    std::vector<std::int64_t>         nq;            ///< Per-entry auxiliary extent.
+    std::vector<std::int64_t>         nu;            ///< Per-entry source (PAO) extent.
+    std::vector<std::int64_t>         nt;            ///< Per-entry rotated (TNO/PNO) extent.
+    std::int64_t                      elem_bytes{0}; ///< Size of one element, for the streaming term.
 };
 
 /**
@@ -672,6 +704,8 @@ struct GroupedGatherRotateDescriptor {
  * from the tensor handles.
  */
 struct TiledEinsumDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "TiledEinsumDescriptor";
     /// Live index lists, shared with the executor: a pass that rewrites these
     /// changes what the next ``graph.execute()`` contracts.
     std::shared_ptr<EinsumIndices> indices;
@@ -695,10 +729,12 @@ struct TiledEinsumDescriptor {
  * executor, exactly as the dense permute capture stores them.
  */
 struct TiledPermuteDescriptor {
-    std::vector<std::string> c_indices;        ///< Output index names
-    std::vector<std::string> a_indices;        ///< Input index names
-    PrefactorScalar          alpha{double{1}}; ///< Source prefactor
-    PrefactorScalar          beta{double{0}};  ///< Destination prefactor (0 = overwrite)
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "TiledPermuteDescriptor";
+    std::vector<std::string>          c_indices;        ///< Output index names
+    std::vector<std::string>          a_indices;        ///< Input index names
+    PrefactorScalar                   alpha{double{1}}; ///< Source prefactor
+    PrefactorScalar                   beta{double{0}};  ///< Destination prefactor (0 = overwrite)
 };
 
 /**
@@ -711,7 +747,9 @@ struct TiledPermuteDescriptor {
  * single reduction over PER-TILE ids, freeing the whole-tensor ids entirely.
  */
 struct TiledDotDescriptor {
-    bool conjugated{false}; ///< true for dotc (sum conj(A)*B), false for dot
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "TiledDotDescriptor";
+    bool                              conjugated{false}; ///< true for dotc (sum conj(A)*B), false for dot
 };
 
 /// Which elementwise operation a @ref TiledElementwiseDescriptor describes.
@@ -745,7 +783,9 @@ using TiledElementwiseParams = ElementwiseParams;
  * and B, writes C, and additionally reads C when ``beta != 0``.
  */
 struct TiledElementwiseDescriptor {
-    TiledElementwiseOp op{TiledElementwiseOp::Scale};
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "TiledElementwiseDescriptor";
+    TiledElementwiseOp                op{TiledElementwiseOp::Scale};
     /// Live scalar, shared with the executor: a pass that rewrites this changes
     /// what the next ``graph.execute()`` computes.
     std::shared_ptr<TiledElementwiseParams> params;
@@ -770,9 +810,11 @@ struct TiledElementwiseDescriptor {
  * @endcode
  */
 struct ConditionalDescriptor {
-    PredExpr               predicate;   ///< Evaluated at runtime to select branch
-    std::shared_ptr<Graph> then_branch; ///< Executed if the predicate is true
-    std::shared_ptr<Graph> else_branch; ///< Executed if the predicate is false (may be empty)
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "ConditionalDescriptor";
+    PredExpr                          predicate;   ///< Evaluated at runtime to select branch
+    std::shared_ptr<Graph>            then_branch; ///< Executed if the predicate is true
+    std::shared_ptr<Graph>            else_branch; ///< Executed if the predicate is false (may be empty)
 };
 
 /**
@@ -804,8 +846,10 @@ struct LoopState {
  * @endcode
  */
 struct LoopDescriptor {
-    std::shared_ptr<Graph> body;                 ///< Subgraph to execute each iteration
-    size_t                 max_iterations{1000}; ///< Safety limit
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "LoopDescriptor";
+    std::shared_ptr<Graph>            body;                 ///< Subgraph to execute each iteration
+    size_t                            max_iterations{1000}; ///< Safety limit
 
     /// After each iteration: true = continue, false = stop. A default-constructed
     /// @ref PredExpr is an unconditional true, which is what an absent condition
@@ -870,8 +914,10 @@ struct SetupState {
  * @see SetupState
  */
 struct SetupDescriptor {
-    std::shared_ptr<Graph>      body;  ///< The subgraph computed once per bound problem.
-    std::shared_ptr<SetupState> state; ///< Live state shared with the executor.
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "SetupDescriptor";
+    std::shared_ptr<Graph>            body;  ///< The subgraph computed once per bound problem.
+    std::shared_ptr<SetupState>       state; ///< Live state shared with the executor.
 
     /// @brief Whether the body has run since the last bind.
     /// @return True when the outputs on hand are current; false on a node carrying no state.
@@ -897,6 +943,8 @@ struct SetupDescriptor {
  * @versionadded{2.0.0}
  */
 struct LaplaceQuadratureDescriptor {
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "LaplaceQuadratureDescriptor";
     /// The relative accuracy the rule was built for. Fixes where the grid is truncated, and
     /// therefore what @ref points buys.
     double epsilon{1.0e-6};
@@ -945,9 +993,11 @@ struct ViewAxis {
  * Einsums TensorView, rebinding the output handle's data/strides/dims.
  */
 struct ViewDescriptor {
-    TensorId              parent_id{0};   ///< The tensor being sliced.
-    std::vector<ViewAxis> axes;           ///< One entry per parent-tensor axis.
-    size_t                result_rank{0}; ///< parent.rank - count(Drop). Cached for passes.
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "ViewDescriptor";
+    TensorId                          parent_id{0};   ///< The tensor being sliced.
+    std::vector<ViewAxis>             axes;           ///< One entry per parent-tensor axis.
+    size_t                            result_rank{0}; ///< parent.rank - count(Drop). Cached for passes.
     /// Axis permutation: result axis ``i`` reads parent axis ``permutation[i]``
     /// (and ``axes[i]`` slices that parent axis). Empty == identity (no
     /// transpose). Used to express ``.T`` / transpose-via-view as a
@@ -1074,7 +1124,9 @@ static_assert(param_source_type<std::int64_t>() == ParamSourceType::Int64,
  * parameter are correctly ordered.
  */
 struct WriteParamDescriptor {
-    std::string name; ///< Parameter name to write.
+    /// The descriptor's name: its identity inside an @ref OpData and in a saved graph.
+    static constexpr std::string_view descriptor_name = "WriteParamDescriptor";
+    std::string                       name; ///< Parameter name to write.
 
     /// Scalar tensor to read (0 when using @ref source_expr).
     ///
@@ -1187,120 +1239,144 @@ build_letter_spaces(std::span<LetterSpaceOperand const> operands, SpaceRegistry 
 } // namespace detail
 
 /**
+ * @brief A type @ref OpData can hold: a copyable struct naming itself with a
+ *        ``static constexpr std::string_view descriptor_name``.
+ *
+ * The name is the descriptor's identity, both inside an @ref OpData and in a
+ * saved graph, so it must be unique; by convention it is the type's own name.
+ * Nothing else is required, so a descriptor may be declared anywhere, including
+ * outside this library.
+ */
+template <typename D>
+concept NodeDescriptor = std::copy_constructible<D> && std::is_class_v<D> && requires {
+    { D::descriptor_name } -> std::convertible_to<std::string_view>;
+};
+
+namespace detail {
+/// The type-erased interface behind an @ref OpData: one owned descriptor, copied and named.
+struct OpDataConcept {
+    virtual ~OpDataConcept()                                                   = default;
+    [[nodiscard]] virtual std::unique_ptr<OpDataConcept> clone() const         = 0;
+    [[nodiscard]] virtual std::string_view               name() const noexcept = 0;
+};
+
+/// The @ref OpDataConcept holding a @p D.
+template <typename D>
+struct OpDataModel final : OpDataConcept {
+    explicit OpDataModel(D d) : value(std::move(d)) {}
+    [[nodiscard]] std::unique_ptr<OpDataConcept> clone() const override { return std::make_unique<OpDataModel>(value); }
+    [[nodiscard]] std::string_view               name() const noexcept override { return D::descriptor_name; }
+    D                                            value;
+};
+} // namespace detail
+
+/**
  * @brief A node's operation-specific descriptor, or none.
  *
  * Each Node stores an OpData that may hold the metadata an optimization pass or
  * @ref build_executor reads: an @ref EinsumDescriptor, a @ref ScaleDescriptor and
  * so on. A node with no special metadata holds nothing (@ref empty).
  *
- * Callers reach the descriptor only through this interface - @ref get_if,
- * @ref holds, @ref get and @ref name - never through the storage behind it, so
- * that storage is free to change. It is a closed ``std::variant`` today; a
- * representation whose set of descriptors can grow outside this header (for
- * example a descriptor a foreign tensor backend defines) replaces it here
- * without touching a call site.
- *
- * New alternatives are APPENDED, never inserted. The position is not a
- * serialized property - the round-trip IR writes descriptors by NAME, precisely
- * so adding one in the middle cannot silently reinterpret an old file - but
- * keeping the order append-only costs nothing. A new alternative also needs its
- * name in the table behind @ref name (src/Node.cpp), which a static_assert there
- * enforces.
+ * The set of descriptors is open: any @ref NodeDescriptor can be held, however
+ * it was declared, which is what lets a tensor backend outside this library
+ * describe operations of its own. The descriptor is owned by value - copying an
+ * OpData copies it, and a pass that edits it through @ref get_if edits this
+ * node's copy - and identified by its @c descriptor_name, which is also how a
+ * saved graph names it. Comparing names rather than types is what keeps
+ * identity correct across shared libraries.
  */
 class EINSUMS_EXPORT OpData {
-    using Storage =
-        std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, PermuteDescriptor, ConditionalDescriptor, LoopDescriptor,
-                     AllocDescriptor, TransferDescriptor, DiskIODescriptor, CommDescriptor, InitializeDescriptor, BatchedGemmDescriptor,
-                     GroupedBatchedGemmDescriptor, ViewDescriptor, WriteParamDescriptor, AxpbyDescriptor, GroupedDotDescriptor,
-                     GroupedAxpbyDescriptor, GroupedElementwiseDescriptor, GroupedSandwichDescriptor, GroupedGatherRotateDescriptor,
-                     TiledEinsumDescriptor, TiledElementwiseDescriptor, TiledPermuteDescriptor, TiledDotDescriptor,
-                     ElementwiseBinaryDescriptor, DotDescriptor, TraceDescriptor, GemmDescriptor, ElementTransformDescriptor,
-                     SetupDescriptor, SyevDescriptor, LaplaceQuadratureDescriptor, OuterSumDescriptor>;
-
-    template <typename D, typename Variant>
-    struct IsAlternative : std::false_type {};
-
-    template <typename D, typename... Ts>
-    struct IsAlternative<D, std::variant<Ts...>> : std::bool_constant<(std::is_same_v<D, Ts> || ...)> {};
-
-  public:
-    /// Whether @p D is a descriptor an OpData can hold (std::monostate included).
     template <typename D>
-    [[nodiscard]] static consteval bool can_hold() {
-        return IsAlternative<D, Storage>::value;
+    [[nodiscard]] D *find() const noexcept {
+        if constexpr (std::is_same_v<D, std::monostate>) {
+            return nullptr;
+        } else {
+            if (_model != nullptr && _model->name() == std::string_view{D::descriptor_name}) {
+                return &static_cast<detail::OpDataModel<D> *>(_model.get())->value;
+            }
+            return nullptr;
+        }
     }
 
-    /// How many descriptor types an OpData can hold, std::monostate included.
-    static constexpr std::size_t alternative_count = std::variant_size_v<Storage>;
-
+  public:
     /// No descriptor.
     OpData() noexcept = default;
 
-    /// Hold @p descriptor. Implicit, so a descriptor converts wherever an OpData is expected.
-    template <typename D>
-        requires(can_hold<std::remove_cvref_t<D>>())
-    OpData(D &&descriptor) : _storage(std::forward<D>(descriptor)) {} // NOLINT(google-explicit-constructor)
+    /// No descriptor, spelled as the monostate the variant-based OpData held.
+    OpData(std::monostate) noexcept {} // NOLINT(google-explicit-constructor)
 
-    /// Replace the held descriptor with @p descriptor.
+    /// Hold a copy of @p descriptor. Implicit, so a descriptor converts wherever an OpData is expected.
     template <typename D>
-        requires(can_hold<std::remove_cvref_t<D>>())
-    OpData &operator=(D &&descriptor) {
-        _storage = std::forward<D>(descriptor);
+        requires(!std::is_same_v<std::remove_cvref_t<D>, OpData>) && NodeDescriptor<std::remove_cvref_t<D>>
+    OpData(D &&descriptor) // NOLINT(google-explicit-constructor)
+        : _model(std::make_unique<detail::OpDataModel<std::remove_cvref_t<D>>>(std::forward<D>(descriptor))) {}
+
+    OpData(OpData const &other) : _model(other._model != nullptr ? other._model->clone() : nullptr) {}
+    OpData(OpData &&) noexcept = default;
+    OpData &operator=(OpData const &other) {
+        if (this != &other) {
+            _model = other._model != nullptr ? other._model->clone() : nullptr;
+        }
         return *this;
     }
+    OpData &operator=(OpData &&) noexcept = default;
+    ~OpData()                             = default;
 
     /// The held descriptor if it is a @p D, else null.
     template <typename D>
     [[nodiscard]] D *get_if() noexcept {
-        return std::get_if<D>(&_storage);
+        return find<D>();
     }
 
     /// The held descriptor if it is a @p D, else null.
     template <typename D>
     [[nodiscard]] D const *get_if() const noexcept {
-        return std::get_if<D>(&_storage);
+        return find<D>();
     }
 
-    /// Whether the held descriptor is a @p D.
+    /// Whether the held descriptor is a @p D; for @c std::monostate, whether none is held.
     template <typename D>
     [[nodiscard]] bool holds() const noexcept {
-        return std::holds_alternative<D>(_storage);
+        if constexpr (std::is_same_v<D, std::monostate>) {
+            return empty();
+        } else {
+            return find<D>() != nullptr;
+        }
     }
 
     /// The held descriptor, which must be a @p D.
-    /// @throws std::bad_variant_access when it is not.
+    /// @throws std::bad_variant_access when it is not, as the variant-based OpData did.
     template <typename D>
     [[nodiscard]] D &get() {
-        return std::get<D>(_storage);
+        if (D *d = find<D>()) {
+            return *d;
+        }
+        throw std::bad_variant_access{};
     }
 
     /// The held descriptor, which must be a @p D.
-    /// @throws std::bad_variant_access when it is not.
+    /// @throws std::bad_variant_access when it is not, as the variant-based OpData did.
     template <typename D>
     [[nodiscard]] D const &get() const {
-        return std::get<D>(_storage);
+        if (D const *d = find<D>()) {
+            return *d;
+        }
+        throw std::bad_variant_access{};
     }
 
     /// Whether @p other holds a descriptor of the same type as this one (both empty included).
-    [[nodiscard]] bool same_type_as(OpData const &other) const noexcept { return _storage.index() == other._storage.index(); }
+    [[nodiscard]] bool same_type_as(OpData const &other) const noexcept { return name() == other.name(); }
 
     /// Whether no descriptor is held.
-    [[nodiscard]] bool empty() const noexcept { return holds<std::monostate>(); }
+    [[nodiscard]] bool empty() const noexcept { return _model == nullptr; }
 
-    /// The held descriptor's type name, for diagnostics: ``"EinsumDescriptor"``, or
-    /// ``"no descriptor"`` when @ref empty.
-    [[nodiscard]] std::string_view name() const noexcept;
+    /// The held descriptor's @c descriptor_name, for diagnostics and serialization:
+    /// ``"EinsumDescriptor"``, or ``"no descriptor"`` when @ref empty.
+    [[nodiscard]] std::string_view name() const noexcept { return _model != nullptr ? _model->name() : std::string_view{"no descriptor"}; }
 
   private:
-    Storage _storage;
+    std::unique_ptr<detail::OpDataConcept> _model;
 };
-
-/// A type @ref CaptureContext::record accepts as a node's descriptor: one of the
-/// descriptors an @ref OpData holds, or @ref OpData itself. The library
-/// instantiates record once for each of them, so anything else would fail to
-/// link; this makes it fail to compile instead.
-template <typename D>
-concept OpDataOrAlternative = std::is_same_v<D, OpData> || OpData::can_hold<D>();
 
 /**
  * @brief A single operation node in the computation graph.

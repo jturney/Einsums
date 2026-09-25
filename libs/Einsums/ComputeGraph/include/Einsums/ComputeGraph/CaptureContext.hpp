@@ -87,12 +87,9 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * Creates a Node with the given parameters and adds it to the current graph.
      * Called internally by the graph-aware operation wrappers.
      *
-     * Compiled once, in the library: the descriptor is a template parameter only
-     * so that the caller never builds an @ref OpData, whose move and destroy
-     * instantiate libc++'s visitation tables over every alternative. It is
-     * explicitly instantiated for each alternative and for @ref OpData itself.
+     * Compiled once, in the library. A descriptor passed as @p op_data converts to
+     * an @ref OpData at the call.
      *
-     * @tparam D The descriptor type: an alternative of @ref OpData, or @ref OpData.
      * @param[in] kind The operation kind (for optimization pass pattern matching).
      * @param[in] label Human-readable label for profiling output.
      * @param[in] inputs TensorIds of tensors read by this operation.
@@ -101,9 +98,8 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * @param[in] op_data Optional operation-specific metadata (EinsumDescriptor, etc.).
      * @throws std::logic_error If called outside of a capture context.
      */
-    template <OpDataOrAlternative D = std::monostate>
     void record(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs, std::function<void()> executor,
-                D op_data = {});
+                OpData op_data = {});
 
     /**
      * @brief Record a node whose executor @ref build_executor derives from its descriptor.
@@ -113,8 +109,8 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * resolves and what the node lists can differ: an accumulating operation reads
      * its destination, so the node lists it as an input while the builder does not.
      *
-     * @tparam D The descriptor type, as for @ref record; @c std::monostate for an
-     *           operation whose kind, dtype, rank and operands are its whole content.
+     * @p op_data may be empty, for an operation whose kind, dtype, rank and
+     * operands are its whole content.
      * @param[in] kind The operation kind.
      * @param[in] label Human-readable label for profiling output.
      * @param[in] dtype Element type the executor is built for.
@@ -126,8 +122,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * @param[in] outputs TensorIds the node writes.
      * @throws std::logic_error If called outside of a capture context.
      */
-    template <OpDataOrAlternative D>
-    void record_built(OpKind kind, std::string label, packed_gemm::ScalarType dtype, std::size_t rank, D op_data,
+    void record_built(OpKind kind, std::string label, packed_gemm::ScalarType dtype, std::size_t rank, OpData op_data,
                       std::span<TensorId const> build_inputs, std::span<TensorId const> build_outputs, std::vector<TensorId> inputs,
                       std::vector<TensorId> outputs);
 
