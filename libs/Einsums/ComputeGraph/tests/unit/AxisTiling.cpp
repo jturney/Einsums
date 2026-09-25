@@ -320,6 +320,58 @@ TEST_CASE("AxisTiling replays the same energy from the loop it emits", "[Compute
     CHECK(problem.energy.data()[0] == Catch::Approx(tiled));
 }
 
+TEST_CASE("AxisTiling keeps a contraction's permutation operator", "[ComputeGraph][Pass][AxisTiling]") {
+    // Defends the member contractions the pass emits. It re-rendered each one's spec from the
+    // index lists and conjugation flags alone, so an operator the contraction carried was not in
+    // the text it captured, and a tiled P(ab) contraction summed one term instead of two.
+    //
+    // Returns the energy and, when tiled, the pass that decided.
+    auto const run = [](std::string const &spec, bool tiled) {
+        Problem                                 problem;
+        std::vector<std::size_t> const          shape{nocc, nvir, nocc, nvir};
+        cg::Graph                               graph(tiled ? "operator tiled" : "operator untiled");
+        std::shared_ptr<cg::passes::AxisTiling> tiling;
+        {
+            auto                  &integral    = graph.scratch_runtime<double>("K", shape);
+            auto                  &amplitude   = graph.scratch_runtime<double>("T", shape);
+            auto                  &combination = graph.scratch_runtime<double>("Kbar", shape);
+            cg::CaptureGuard const guard(graph);
+            cg::einsum(cg::EinsumFormatString(spec), &integral, problem.fitted, problem.fitted);
+            cg::direct_product(1.0, integral, problem.denominator, 0.0, &amplitude);
+            cg::axpby(2.0, integral, 0.0, &combination);
+            cg::dot_python(&problem.energy, combination, amplitude);
+        }
+        if (tiled) {
+            tiling = decide(graph, 400);
+        }
+        auto manager = cg::PassManager::create_default();
+        graph.apply(manager);
+        problem.energy.data()[0] = 0.0;
+        graph.execute();
+        return std::pair{problem.energy.data()[0], tiling};
+    };
+    auto const agrees = [](double tiled, double reference) {
+        INFO("untiled " << reference << " against tiled " << tiled);
+        REQUIRE(reference != 0.0);
+        CHECK(std::abs(tiled - reference) <= cg::tier_bound(cg::PassTier::ReAssociating, 1e-16) * std::abs(reference) + 1e-14);
+    };
+
+    SECTION("an operator on axes the pass does not slice travels with each member") {
+        std::string const spec         = "i,a,j,b <- P(ab) Q,i,a ; Q,j,b";
+        auto const [reference, unused] = run(spec, false);
+        auto const [tiled, tiling]     = run(spec, true);
+        REQUIRE(tiling->num_tiled() == 1);
+        agrees(tiled, reference);
+    }
+    SECTION("an operator on the axes it would slice keeps them whole, with the reason") {
+        std::string const spec         = "i,a,j,b <- P(ij) Q,i,a ; Q,j,b";
+        auto const [reference, unused] = run(spec, false);
+        auto const [tiled, tiling]     = run(spec, true);
+        CHECK(declined_because(*tiling, "a permutation operator exchanges one of the candidate's sliced axes"));
+        agrees(tiled, reference);
+    }
+}
+
 TEST_CASE("AxisTiling emits a loop whose body declares the slice, not the slab", "[ComputeGraph][Pass][AxisTiling]") {
     Problem   problem;
     cg::Graph graph("mp2 tiled");

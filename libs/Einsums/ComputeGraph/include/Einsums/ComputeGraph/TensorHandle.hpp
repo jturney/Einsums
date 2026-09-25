@@ -222,7 +222,7 @@ inline bool strided_byte_span(void const *data, std::span<std::size_t const> dim
  */
 template <typename D>
 concept GraphCapturableTensor =
-    CoreBasicTensorConcept<D> || (IsIncoreTensorV<std::remove_cvref_t<D>> && IsTiledTensorV<std::remove_cvref_t<D>> && requires(D t) {
+    CoreBasicTensorConcept<D> || (IsIncoreTensorV<std::remove_cvref_t<D>> && TiledTensorConcept<D> && requires(D t) {
         t.data();
         t.stride(0);
         t.strides();

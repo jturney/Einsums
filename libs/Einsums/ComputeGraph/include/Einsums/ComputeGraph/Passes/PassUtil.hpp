@@ -296,12 +296,12 @@ inline void hash_range(std::size_t &h, Range const &range) {
             return true;
         }
         for (auto const out : other.outputs) {
-            if (writes.count(out) != 0 || reads.count(out) != 0) {
+            if (writes.contains(out) || reads.contains(out)) {
                 return true;
             }
         }
         for (auto const in : other.inputs) {
-            if (writes.count(in) != 0) {
+            if (writes.contains(in)) {
                 return true;
             }
         }

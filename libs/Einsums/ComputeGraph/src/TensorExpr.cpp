@@ -361,7 +361,7 @@ std::vector<Region> form_regions(Graph const &graph, EscapeAnalysis const &escap
                 region.inputs.push_back(tid);
                 continue;
             }
-            if (pinned_by_family.count(tid) == 0 && escapes.classify(tid, members) == Escape::Dissolvable) {
+            if (!pinned_by_family.contains(tid) && escapes.classify(tid, members) == Escape::Dissolvable) {
                 region.internal.push_back(tid);
             } else {
                 region.outputs.push_back(tid);

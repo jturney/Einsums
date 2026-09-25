@@ -518,7 +518,7 @@ LinkPlacement link_placement(std::vector<std::string> const &indices, std::vecto
 
     size_t nlink = 0;
     for (auto const &idx : indices) {
-        if (link_set.count(idx) != 0) {
+        if (link_set.contains(idx)) {
             nlink++;
         }
     }
@@ -527,7 +527,7 @@ LinkPlacement link_placement(std::vector<std::string> const &indices, std::vecto
     placement.prefix = true;
     placement.suffix = true;
     for (size_t pos = 0; pos < indices.size(); pos++) {
-        bool const is_link = link_set.count(indices[pos]) != 0;
+        bool const is_link = link_set.contains(indices[pos]);
         if ((pos < nlink) != is_link) {
             placement.prefix = false;
         }

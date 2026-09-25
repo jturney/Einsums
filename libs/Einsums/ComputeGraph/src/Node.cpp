@@ -97,11 +97,11 @@ std::optional<NodeIndexLists> node_index_lists(Node const &node) noexcept {
     if (node.kind == OpKind::Einsum) {
         if (auto const *desc = node.op_data.get_if<EinsumDescriptor>(); desc != nullptr) {
             auto const lists = live_index_lists(*desc);
-            return NodeIndexLists{.c = &lists.c, .a = &lists.a, .b = &lists.b};
+            return NodeIndexLists{.c = &lists.c, .a = &lists.a, .b = &lists.b, .operators = &lists.operators};
         }
     } else if (node.kind == OpKind::Permute) {
         if (auto const *desc = node.op_data.get_if<PermuteDescriptor>(); desc != nullptr) {
-            return NodeIndexLists{.c = &desc->c_indices, .a = &desc->a_indices, .b = nullptr};
+            return NodeIndexLists{.c = &desc->c_indices, .a = &desc->a_indices, .b = nullptr, .operators = &desc->operators};
         }
     }
     return std::nullopt;

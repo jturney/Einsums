@@ -703,7 +703,7 @@ bool ContractionPlanning::run(Graph &graph) {
                 // a DAG rather than a chain; decline it.
                 if (!interior_observable) {
                     for (auto const leaf : leaves) {
-                        if (interior.count(leaf) != 0) {
+                        if (interior.contains(leaf)) {
                             interior_observable = true;
                             break;
                         }
@@ -744,7 +744,7 @@ bool ContractionPlanning::run(Graph &graph) {
                     });
                     for (auto const tid : interior) {
                         auto const *handle = graph.find_tensor(tid);
-                        if (handle != nullptr && below.count(handle->name) != 0) {
+                        if (handle != nullptr && below.contains(handle->name)) {
                             interior_observable = true;
                             break;
                         }

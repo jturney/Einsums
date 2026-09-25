@@ -142,8 +142,8 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
                 // lists. Without it, an input mutated only inside a conditional
                 // would look invariant and the consumer would be wrongly
                 // hoisted out of the loop.
-                bool const written_in_body = body_writes.count(tid) > 0 || escapes.subtree_writer_count(tid) > 0;
-                bool const from_hoisted    = hoisted_outputs.count(tid) > 0;
+                bool const written_in_body = body_writes.contains(tid) || escapes.subtree_writer_count(tid) > 0;
+                bool const from_hoisted    = hoisted_outputs.contains(tid);
                 if (written_in_body && !from_hoisted) {
                     all_inputs_invariant = false;
                     break;

@@ -147,6 +147,20 @@ std::optional<std::vector<std::vector<std::string>>> letters_of(Node const &node
     return std::vector<std::vector<std::string>>{*lists->c, *lists->a, *lists->b};
 }
 
+/// The letters a node's permutation operators name. An axis one of them names cannot be sliced:
+/// the operator sums over its permutations, and at one slice of an exchanged axis the body would
+/// need the slice it is not at.
+std::vector<std::string> operator_letters_of(Node const &node) {
+    std::vector<std::string> out;
+    if (auto const lists = node_index_lists(node); lists && lists->operators != nullptr) {
+        for (auto const &op : *lists->operators) {
+            auto const letters = op.letters();
+            out.insert(out.end(), letters.begin(), letters.end());
+        }
+    }
+    return out;
+}
+
 /// The link (summed) letters of a contraction, empty for every other kind.
 std::vector<std::string> link_letters_of(Node const &node) {
     if (node.kind != OpKind::Einsum) {
@@ -252,15 +266,25 @@ std::function<std::int64_t()> slice_bound(std::shared_ptr<TileCursor> cursor, st
     };
 }
 
-/// The canonical spelling of a contraction's index lists, which is what the capture entry point
-/// parses back into the same lists.
+/// The permutation operators a spec applies, each followed by a space, in the prefix position
+/// the arrow form takes them in.
+std::string operator_prefix(std::vector<PermutationOperator> const &operators) {
+    std::string out;
+    for (auto const &op : operators) {
+        out += op.render() + " ";
+    }
+    return out;
+}
+
+/// The canonical spelling of a contraction, which is what the capture entry point parses back
+/// into the same lists, conjugation flags and operators.
 std::string einsum_spec_text(std::vector<std::string> const &a, std::vector<std::string> const &b, std::vector<std::string> const &c,
-                             bool conj_a, bool conj_b) {
+                             bool conj_a, bool conj_b, std::vector<PermutationOperator> const &operators) {
     auto side = [](std::vector<std::string> const &indices, bool conjugated) {
         std::string const joined = fmt::format("{}", fmt::join(indices, ","));
         return conjugated ? fmt::format("conj({})", joined) : joined;
     };
-    return fmt::format("{} ; {} -> {}", side(a, conj_a), side(b, conj_b), fmt::format("{}", fmt::join(c, ",")));
+    return fmt::format("{} <- {}{} ; {}", fmt::join(c, ","), operator_prefix(operators), side(a, conj_a), side(b, conj_b));
 }
 
 /// Unify two label vectors position by position, failing on a genuine disagreement.
@@ -518,6 +542,14 @@ Labelling RegionAnalysis::propagate(std::vector<std::size_t> const &seed_positio
                             out.reason   = conflict;
                             return out;
                         }
+                    }
+                }
+                for (auto const &letter : operator_letters_of(node)) {
+                    if (by_letter.contains(letter)) {
+                        out.feasible = false;
+                        out.reason = "a permutation operator exchanges one of the candidate's sliced axes, so the body would need a slice "
+                                     "it is not at";
+                        return out;
                     }
                 }
                 // Slicing a summed letter would cut the contraction in half and cost a
@@ -1268,12 +1300,13 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
                     readable = readable && gemm_readable(*view);
                 }
             }
+            // A GEMM computes the one term; an operator's other terms need the per-member path.
             if (chunked && readable && as_gemm.has_value() && alpha.has_value() && beta.has_value() && !live_conj_a(desc) &&
-                !live_conj_b(desc)) {
+                !live_conj_b(desc) && lists.operators.empty()) {
                 grouped_batched_gemm(*alpha, sources(1), sources(2), *beta, operand[0], as_gemm->trans_a, as_gemm->trans_b);
                 break;
             }
-            auto const text = einsum_spec_text(a, b, c, live_conj_a(desc), live_conj_b(desc));
+            auto const text = einsum_spec_text(a, b, c, live_conj_a(desc), live_conj_b(desc), lists.operators);
             for (std::size_t member = 0; member < depth; ++member) {
                 einsum(EinsumFormatString(text), as<T>(live_c_prefactor(desc)), operand[0][member], as<T>(live_ab_prefactor(desc)),
                        *operand[1][member], *operand[2][member]);
@@ -1287,11 +1320,11 @@ void emit_body(Graph &parent, Graph &body, Plan const &plan) {
             // and the snapshot only stands in for a node that has none.
             PrefactorScalar const alpha = desc.params ? desc.params->alpha : PrefactorScalar{desc.alpha};
             PrefactorScalar const beta  = desc.params ? desc.params->beta : PrefactorScalar{desc.beta};
-            auto const            text  = fmt::format("{} <- {}", fmt::join(surviving(desc.c_indices, op.slots[0].labels), ","),
-                                                      fmt::join(surviving(desc.a_indices, op.slots[1].labels), ","));
-            auto const            re_a  = real_prefactor(alpha);
-            auto const            re_c  = real_prefactor(beta);
-            if (chunked && re_a.has_value() && re_c.has_value()) {
+            auto const text = fmt::format("{} <- {}{}", fmt::join(surviving(desc.c_indices, op.slots[0].labels), ","),
+                                          operator_prefix(desc.operators), fmt::join(surviving(desc.a_indices, op.slots[1].labels), ","));
+            auto const re_a = real_prefactor(alpha);
+            auto const re_c = real_prefactor(beta);
+            if (chunked && re_a.has_value() && re_c.has_value() && desc.operators.empty()) {
                 grouped_permute(text, operand[0], sources(1), std::vector<double>(depth, *re_c), std::vector<double>(depth, *re_a));
                 break;
             }

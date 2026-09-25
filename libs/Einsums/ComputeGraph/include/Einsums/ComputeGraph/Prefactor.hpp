@@ -21,10 +21,10 @@
 
 #include <fmt/format.h>
 
+#include <bit>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -119,36 +119,18 @@ T as_real(PrefactorScalar const &v) {
 /// Hash a PrefactorScalar by its raw bits (per alternative). Stable across
 /// runs and discriminates between alternatives via the variant index.
 inline std::size_t hash(PrefactorScalar const &v) {
-    std::size_t h = v.index();
+    std::size_t h   = v.index();
+    auto const  mix = [&h]<typename Real>(Real part) {
+        using Bits = std::conditional_t<sizeof(Real) == sizeof(std::uint32_t), std::uint32_t, std::uint64_t>;
+        h ^= std::hash<Bits>{}(std::bit_cast<Bits>(part)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    };
     std::visit(
-        [&h](auto x) {
-            using U = decltype(x);
-            if constexpr (std::is_arithmetic_v<U>) {
-                if constexpr (sizeof(U) == sizeof(std::uint32_t)) {
-                    std::uint32_t bits;
-                    std::memcpy(&bits, &x, sizeof(bits));
-                    h ^= std::hash<std::uint32_t>{}(bits) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                } else {
-                    std::uint64_t bits;
-                    std::memcpy(&bits, &x, sizeof(bits));
-                    h ^= std::hash<std::uint64_t>{}(bits) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                }
+        [&mix](auto x) {
+            if constexpr (std::is_arithmetic_v<decltype(x)>) {
+                mix(x);
             } else {
-                auto re = x.real();
-                auto im = x.imag();
-                if constexpr (sizeof(re) == sizeof(std::uint32_t)) {
-                    std::uint32_t rb, ib;
-                    std::memcpy(&rb, &re, sizeof(rb));
-                    std::memcpy(&ib, &im, sizeof(ib));
-                    h ^= std::hash<std::uint32_t>{}(rb) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                    h ^= std::hash<std::uint32_t>{}(ib) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                } else {
-                    std::uint64_t rb, ib;
-                    std::memcpy(&rb, &re, sizeof(rb));
-                    std::memcpy(&ib, &im, sizeof(ib));
-                    h ^= std::hash<std::uint64_t>{}(rb) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                    h ^= std::hash<std::uint64_t>{}(ib) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                }
+                mix(x.real());
+                mix(x.imag());
             }
         },
         v);

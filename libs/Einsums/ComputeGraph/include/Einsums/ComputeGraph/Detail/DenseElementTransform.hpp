@@ -29,10 +29,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
  * like an owning tensor.
  */
 template <CoreTensorConcept CType, typename UnaryOperator>
-    requires requires {
-        requires BasicTensorConcept<CType>;
-        requires RankTensorConcept<CType>;
-    }
+    requires BasicTensorConcept<CType> && RankTensorConcept<CType>
 void dense_element_transform(CType *C, UnaryOperator unary_op) {
     LabeledSection0();
     using T               = typename CType::ValueType;

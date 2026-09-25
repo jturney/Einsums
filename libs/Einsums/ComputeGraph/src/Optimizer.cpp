@@ -172,10 +172,6 @@ std::set<std::string> parse_disabled_passes() {
     return disabled;
 }
 
-} // namespace
-
-namespace {
-
 /// Node-position hazard guard. Position is program order in this IR: the hazard
 /// scan in topological_sort treats a read that appears before a write as a
 /// legitimate WAR, so a pass that appends or moves a WRITER past a surviving
@@ -196,7 +192,7 @@ std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> observed_writes(G
     std::unordered_set<TensorId>                                   written;
     for (auto const &node : graph.nodes()) {
         for (auto const tid : node.inputs) {
-            seen[node.id][tid] = written.count(graph.resolve_alias(tid)) != 0;
+            seen[node.id][tid] = written.contains(graph.resolve_alias(tid));
         }
         for (auto const tid : node.outputs) {
             written.insert(graph.resolve_alias(tid));
@@ -341,7 +337,7 @@ bool PassManager::run(Graph &graph) {
         if (auto const hit = _switches.find(pass_name); hit != _switches.end()) {
             return !hit->second;
         }
-        return from_option.count(pass_name) != 0;
+        return from_option.contains(pass_name);
     };
 
     // Every name either source mentions, so one that matches no pass in this
@@ -415,8 +411,7 @@ bool PassManager::run(Graph &graph) {
             // Sub-graph recursion is intentionally skipped here, we only
             // want to *measure* the top-level effect, not mutate
             // descendants (we don't snapshot them).
-            auto       saved_nodes  = graph.nodes();
-            bool const saved_sorted = true; // will be re-sorted anyway
+            auto saved_nodes = graph.nodes();
 
             bool const modified = pass->run(graph);
             auto       t1       = std::chrono::high_resolution_clock::now();

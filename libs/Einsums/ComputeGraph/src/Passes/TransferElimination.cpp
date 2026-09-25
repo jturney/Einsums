@@ -184,7 +184,7 @@ bool TransferElimination::run(Graph &graph) {
             for (auto tid : node.outputs) {
                 residency[tid] = Residency::Device;
                 // GPU output is now on device.
-                if (device_resident.find(tid) == device_resident.end()) {
+                if (!device_resident.contains(tid)) {
                     size_t const bytes   = graph.tensor(tid).total_bytes();
                     device_resident[tid] = bytes;
                     gpu_used += bytes;

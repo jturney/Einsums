@@ -128,20 +128,20 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
             bool all_outputs_dead = true;
             for (auto raw_tid : node.outputs) {
                 TensorId const tid             = graph.resolve_alias(raw_tid);
-                bool const     is_intermediate = intermediate_tensors.count(tid) > 0;
-                bool const     is_consumed     = consumed_tensors.count(tid) > 0;
+                bool const     is_intermediate = intermediate_tensors.contains(tid);
+                bool const     is_consumed     = consumed_tensors.contains(tid);
 
                 bool used_by_subgraph = false;
                 bool used_externally  = false;
                 if (auto const *handle = graph.find_tensor(tid); handle != nullptr && handle->tensor_ptr != nullptr) {
-                    used_by_subgraph = subtree_referenced.count(handle->tensor_ptr) > 0;
+                    used_by_subgraph = subtree_referenced.contains(handle->tensor_ptr);
                     // Any reference from an enclosing graph (a parent node after
                     // this control-flow child, or a sibling loop body) keeps this
                     // output live. Conservative on purpose: a body tensor read
                     // only by an outside consumer must not have its producer
                     // eliminated, that would leave the reader observing unwritten
                     // storage.
-                    used_externally = external_refs.count(handle->tensor_ptr) > 0;
+                    used_externally = external_refs.contains(handle->tensor_ptr);
                 }
 
                 if (!is_intermediate || is_consumed || used_by_subgraph || used_externally) {

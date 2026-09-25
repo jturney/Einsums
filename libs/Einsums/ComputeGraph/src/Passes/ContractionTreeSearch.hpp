@@ -310,7 +310,7 @@ inline TreePlan solve_tree(std::vector<Factor> const &factors, std::vector<ExprI
         }
         std::set<std::string> kept;
         for (auto const &letter : inside) {
-            if (outside.count(letter) != 0) {
+            if (outside.contains(letter)) {
                 kept.insert(letter);
             }
         }

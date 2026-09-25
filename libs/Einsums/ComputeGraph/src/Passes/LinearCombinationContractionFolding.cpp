@@ -212,7 +212,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
                       fmt::format("{} members into tensor {}", cands.size(), key.output_id));
             continue;
         }
-        if (tensors.find(key.non_shared_id) == tensors.end()) {
+        if (!tensors.contains(key.non_shared_id)) {
             continue;
         }
         valid.push_back({.key = key, .candidates = std::move(cands)});

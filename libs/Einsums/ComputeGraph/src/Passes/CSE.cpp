@@ -399,7 +399,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
             bool duplicate_user_visible = false;
             for (auto out : nodes[j].outputs) {
                 auto const *p = ptr_of(out);
-                if (p == nullptr || ctx.intermediate_buffers.count(p) == 0) {
+                if (p == nullptr || !ctx.intermediate_buffers.contains(p)) {
                     duplicate_user_visible = true;
                     break;
                 }
@@ -412,7 +412,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
             if (!duplicate_user_visible && is_subgraph) {
                 for (auto out : nodes[i].outputs) {
                     auto const *p = ptr_of(out);
-                    if (p == nullptr || ctx.intermediate_buffers.count(p) == 0) {
+                    if (p == nullptr || !ctx.intermediate_buffers.contains(p)) {
                         duplicate_user_visible = true;
                         break;
                     }
@@ -467,14 +467,14 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
             // sub-graph touches (see subgraph_touched above).
             bool subgraph_reachable = false;
             for (auto out : nodes[i].outputs) {
-                if (auto const *p = ptr_of(out); p != nullptr && subgraph_touched.count(p) > 0) {
+                if (auto const *p = ptr_of(out); p != nullptr && subgraph_touched.contains(p)) {
                     subgraph_reachable = true;
                     break;
                 }
             }
             if (!subgraph_reachable) {
                 for (auto out : nodes[j].outputs) {
-                    if (auto const *p = ptr_of(out); p != nullptr && subgraph_touched.count(p) > 0) {
+                    if (auto const *p = ptr_of(out); p != nullptr && subgraph_touched.contains(p)) {
                         subgraph_reachable = true;
                         break;
                     }
@@ -499,7 +499,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
                     continue;
                 for (auto out : nodes[k].outputs) {
                     auto const *p = ptr_of(out);
-                    if (p != nullptr && input_ptrs.count(p) > 0) {
+                    if (p != nullptr && input_ptrs.contains(p)) {
                         inputs_stable = false;
                         break;
                     }

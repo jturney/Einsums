@@ -72,12 +72,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::dispatch)
  * now decided by the strides rather than by the spec.
  */
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
-    requires requires {
-        requires detail::EinsumElement<typename AType::ValueType>;
-        requires detail::EinsumElement<typename BType::ValueType>;
-        requires detail::EinsumElement<typename CType::ValueType>;
-        requires detail::storable_v<detail::PromoteT<typename AType::ValueType, typename BType::ValueType>, typename CType::ValueType>;
-    }
+    requires detail::EinsumElement<typename AType::ValueType> && detail::EinsumElement<typename BType::ValueType> &&
+             detail::EinsumElement<typename CType::ValueType> &&
+             detail::storable_v<detail::PromoteT<typename AType::ValueType, typename BType::ValueType>, typename CType::ValueType>
 void generic_string_einsum(ParsedEinsumSpec const &parsed, std::vector<std::string> const &links, typename CType::ValueType c_pf, CType *C,
                            detail::PromoteT<typename AType::ValueType, typename BType::ValueType> ab_pf, AType const &A, BType const &B,
                            bool conj_a = false, bool conj_b = false) {
@@ -457,11 +454,9 @@ void reject_output_alias(ParsedEinsumSpec const &parsed, CType const &C, AType c
  * through @ref erased_string_einsum, which is what code holding typed tensors calls.
  */
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
-    requires requires {
-        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
-        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
-        requires !HasCompileTimeRank<AType> && !HasCompileTimeRank<BType> && !HasCompileTimeRank<CType>;
-    }
+    requires std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename CType::ValueType> &&
+             (!HasCompileTimeRank<AType> && !HasCompileTimeRank<BType> && !HasCompileTimeRank<CType>)
 void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf,
                    AType const &A, BType const &B, bool conj_a = false, bool conj_b = false,
                    std::vector<std::string> const *precomputed_links = nullptr, packed_gemm::ContractionSite *pg_site = nullptr) {
@@ -768,21 +763,8 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             built.a_indices    = a_idx;
             built.b_indices    = b_idx;
             built.link_indices = links;
-
-            // Unique C indices in C's own order (PackedGemm's target space is
-            // ordered, so a sorted set is the wrong shape). Index lists are
-            // rank-bounded, so the linear scan beats a std::set - which is
-            // what this used to build, on top of a sorted-unique vector that
-            // was discarded unused a line later.
-            built.target_indices.reserve(c_idx.size());
-            for (auto const &t : c_idx) {
-                if (std::find(built.target_indices.begin(), built.target_indices.end(), t) == built.target_indices.end()) {
-                    built.target_indices.push_back(t);
-                }
-            }
-            built.all_indices = built.target_indices;
-            for (auto const &l : built.link_indices)
-                built.all_indices.push_back(l);
+            // The target and all-index lists are left empty: try_packed_gemm derives both in C's
+            // own order, which is the order its target space needs.
             built.conj_a = conj_a; // PackedGemm conjugates during packing/transpose (native, no copy)
             built.conj_b = conj_b;
         }
@@ -817,13 +799,10 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
  * @throws std::invalid_argument for a spec with permutation operators, or for output aliasing.
  */
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
-    requires requires {
-        requires detail::EinsumElement<typename AType::ValueType>;
-        requires detail::EinsumElement<typename BType::ValueType>;
-        requires detail::EinsumElement<typename CType::ValueType>;
-        requires !(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
-                   std::is_same_v<typename AType::ValueType, typename CType::ValueType>);
-    }
+    requires detail::EinsumElement<typename AType::ValueType> && detail::EinsumElement<typename BType::ValueType> &&
+             detail::EinsumElement<typename CType::ValueType> &&
+             (!(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+                std::is_same_v<typename AType::ValueType, typename CType::ValueType>))
 void mixed_string_einsum(ParsedEinsumSpec const &parsed, typename CType::ValueType c_pf, CType *C,
                          detail::PromoteT<typename AType::ValueType, typename BType::ValueType> ab_pf, AType const &A, BType const &B,
                          bool conj_a = false, bool conj_b = false, std::vector<std::string> const *precomputed_links = nullptr) {

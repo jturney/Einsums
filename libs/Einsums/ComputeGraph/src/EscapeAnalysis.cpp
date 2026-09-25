@@ -131,7 +131,7 @@ bool EscapeAnalysis::touched_by_subtree(TensorId id) const {
     if (handle->tensor_ptr == nullptr) {
         return false;
     }
-    return _subtree_ptrs.count(handle->tensor_ptr) != 0;
+    return _subtree_ptrs.contains(handle->tensor_ptr);
 }
 
 bool EscapeAnalysis::stable(TensorId id) const {
@@ -157,7 +157,7 @@ Escape EscapeAnalysis::classify(TensorId id, std::unordered_set<NodeId> const &r
         if (hit == map.end()) {
             return false;
         }
-        return std::ranges::any_of(hit->second, [&region](NodeId nid) { return region.count(nid) == 0; });
+        return std::ranges::any_of(hit->second, [&region](NodeId nid) { return !region.contains(nid); });
     };
 
     auto const root = _graph->resolve_alias(id);

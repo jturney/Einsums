@@ -1552,6 +1552,9 @@ struct NodeIndexLists {
     std::vector<std::string> const *c{nullptr}; ///< The output's indices.
     std::vector<std::string> const *a{nullptr}; ///< The first input's indices.
     std::vector<std::string> const *b{nullptr}; ///< The second input's indices; null for a permute.
+    /// The permutation operators applied to the result. A rewrite that re-states the node must
+    /// carry them, and one that slices an axis they name must not slice it.
+    std::vector<PermutationOperator> const *operators{nullptr};
 };
 
 /// @brief The letter lists of @p node, or an empty result for a kind that has none.

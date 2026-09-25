@@ -81,17 +81,17 @@ comm::DistributionDescriptor build_descriptor(std::vector<std::string> const &te
 
     for (size_t d = 0; d < tensor_indices.size(); d++) {
         auto const &idx = tensor_indices[d];
-        if (target_a_set.count(idx) > 0) {
+        if (target_a_set.contains(idx)) {
             desc.dim_to_axis[d] = comm::GridAxis::Row;
-        } else if (target_b_set.count(idx) > 0) {
+        } else if (target_b_set.contains(idx)) {
             desc.dim_to_axis[d] = comm::GridAxis::Col;
-        } else if (shared_set.count(idx) > 0) {
+        } else if (shared_set.contains(idx)) {
             // Shared (batch) indices appear in all three tensors and are independent.
             // Distribute along whichever axis has fewer dims so far for balance.
             int const row_count = static_cast<int>(std::count(desc.dim_to_axis.begin(), desc.dim_to_axis.end(), comm::GridAxis::Row));
             int const col_count = static_cast<int>(std::count(desc.dim_to_axis.begin(), desc.dim_to_axis.end(), comm::GridAxis::Col));
             desc.dim_to_axis[d] = (row_count <= col_count) ? comm::GridAxis::Row : comm::GridAxis::Col;
-        } else if (summa && link_set.count(idx) > 0) {
+        } else if (summa && link_set.contains(idx)) {
             // SUMMA: link indices distributed across the grid too.
             if (role == "A") {
                 desc.dim_to_axis[d] = comm::GridAxis::Col;
@@ -279,7 +279,7 @@ bool DistributionPlanning::run(Graph &graph) {
                 // The tensor's dim d has index name tensor_indices[d].
                 // In the other einsum, the same dim d has index name other_tensor_indices[d].
                 // If that index is a link index there, we can't distribute this dim.
-                if (other_link.count(other_tensor_indices[d]) > 0) {
+                if (other_link.contains(other_tensor_indices[d])) {
                     EINSUMS_LOG_INFO("DistributionPlanning: '{}' dim {} ({}) conflicts — link index '{}' in another einsum, downgrading to "
                                      "None",
                                      handle.name, d, tensor_indices[d], other_tensor_indices[d]);

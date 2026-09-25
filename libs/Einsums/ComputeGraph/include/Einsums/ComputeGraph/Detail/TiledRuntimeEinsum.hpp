@@ -20,8 +20,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 /// True when any of the three operand types is a tiled tensor.
 template <typename AType, typename BType, typename CType>
-inline constexpr bool any_tiled_v =
-    IsTiledTensorV<std::remove_cvref_t<AType>> || IsTiledTensorV<std::remove_cvref_t<BType>> || IsTiledTensorV<std::remove_cvref_t<CType>>;
+inline constexpr bool any_tiled_v = TiledTensorConcept<AType> || TiledTensorConcept<BType> || TiledTensorConcept<CType>;
 
 /**
  * @brief Tiled einsum: compose dense per-tile contractions over a tile grid.

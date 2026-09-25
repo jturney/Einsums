@@ -175,7 +175,7 @@ std::optional<std::vector<ExprStatement>> emit_tree(EmitRequest const &request) 
         std::set<std::string>  seen;
         for (search::Factor const *operand : {&*left, &*right}) {
             for (auto const &index : operand->indices) {
-                if (outside.count(index.letter) != 0 && seen.insert(index.letter).second) {
+                if (outside.contains(index.letter) && seen.insert(index.letter).second) {
                     axes.push_back(index);
                 }
             }

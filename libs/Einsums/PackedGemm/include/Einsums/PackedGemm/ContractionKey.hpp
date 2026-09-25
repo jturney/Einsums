@@ -68,11 +68,7 @@ struct ContractionSpec {
     bool                     conj_b{false};
     bool                     scalar_output{false}; ///< true when sizeof...(CIndices) == 0
 
-    bool operator==(ContractionSpec const &o) const {
-        return c_indices == o.c_indices && a_indices == o.a_indices && b_indices == o.b_indices && all_indices == o.all_indices &&
-               link_indices == o.link_indices && target_indices == o.target_indices && scalar_type == o.scalar_type && conj_a == o.conj_a &&
-               conj_b == o.conj_b && scalar_output == o.scalar_output;
-    }
+    bool operator==(ContractionSpec const &) const = default;
 };
 
 /// @brief Per-tensor metadata stored in the contraction key for cache lookup.

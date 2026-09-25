@@ -806,7 +806,7 @@ RuntimeTensorView<typename std::remove_cvref_t<ParentT>::ValueType> &permute_vie
 ///           einsums.einsum("ij <- ik ; kj", c, a, B, c_pf=0.0, ab_pf=1.0)
 /// @endcode
 template <typename ParentT>
-    requires IsTiledTensorV<std::remove_cvref_t<ParentT>>
+    requires TiledTensorConcept<ParentT>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("graph")

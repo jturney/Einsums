@@ -103,7 +103,7 @@ AxisOrder order_reading(std::vector<std::string> const &captured, std::vector<st
 std::vector<std::string> subsequence(std::vector<std::string> const &indices, std::unordered_set<std::string> const &group) {
     std::vector<std::string> out;
     for (auto const &letter : indices) {
-        if (group.count(letter) != 0) {
+        if (group.contains(letter)) {
             out.push_back(letter);
         }
     }
@@ -183,7 +183,7 @@ Reading read_as(std::vector<std::string> const &indices, std::unordered_set<std:
 
     std::size_t const head = indices.size() - reading.batch.size();
     for (std::size_t pos = 0; pos < indices.size(); pos++) {
-        if ((batch.count(indices[pos]) != 0) != (pos >= head)) {
+        if ((batch.contains(indices[pos])) != (pos >= head)) {
             return reading; // a batched letter is not in the trailing block
         }
     }
@@ -531,7 +531,7 @@ bool LayoutAssignment::run(Graph &graph) {
 
     // ── Decide which tensors may move ──────────────────────────────────────────────────────
     auto eligible = [&](TensorId id) -> bool {
-        if (pinned.count(id) != 0) {
+        if (pinned.contains(id)) {
             return false;
         }
         TensorHandle const *handle = graph.find_tensor(id);
@@ -566,7 +566,7 @@ bool LayoutAssignment::run(Graph &graph) {
     for (auto const &site : plan.sites) {
         for (std::size_t role = 0; role < RoleCount; role++) {
             TensorId const id = site.ids[role];
-            if (plan.assignment.count(id) != 0 || !eligible(id)) {
+            if (plan.assignment.contains(id) || !eligible(id)) {
                 continue;
             }
             plan.assignment.emplace(id, identity_order(site.rank[role]));
@@ -579,13 +579,13 @@ bool LayoutAssignment::run(Graph &graph) {
     std::ranges::sort(plan.order);
     for (std::size_t s = 0; s < plan.sites.size(); s++) {
         for (std::size_t role = 0; role < RoleCount; role++) {
-            if (plan.assignment.count(plan.sites[s].ids[role]) != 0) {
+            if (plan.assignment.contains(plan.sites[s].ids[role])) {
                 plan.uses[plan.sites[s].ids[role]].push_back(s);
             }
         }
         // A permute whose copy the eligibility rules pinned keeps making its copy whatever this
         // pass decides, so it is priced as one and never deleted.
-        plan.sites[s].foldable = plan.sites[s].kind == SiteKind::Permutation && plan.assignment.count(plan.sites[s].ids[RoleC]) != 0;
+        plan.sites[s].foldable = plan.sites[s].kind == SiteKind::Permutation && plan.assignment.contains(plan.sites[s].ids[RoleC]);
     }
 
     // ── Search ─────────────────────────────────────────────────────────────────────────────

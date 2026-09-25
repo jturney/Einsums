@@ -361,7 +361,7 @@ class ElementOpRegistry {
      */
     [[nodiscard]] bool contains(std::string_view name) const {
         std::scoped_lock const guard(_mutex);
-        return _entries.find(name) != _entries.end();
+        return _entries.contains(name);
     }
 
     /**

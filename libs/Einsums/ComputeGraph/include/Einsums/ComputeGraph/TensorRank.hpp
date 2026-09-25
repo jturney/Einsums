@@ -32,6 +32,16 @@ concept RuntimeRankTensorConcept = BasicTensorConcept<T> && (!HasCompileTimeRank
     { t.rank() } -> std::convertible_to<std::size_t>;
 };
 
+/// A dense in-core tensor or a tiled one: the two operand families most cg:: operations accept.
+template <typename T>
+concept DenseOrTiled = CoreBasicTensorConcept<T> || TiledTensorConcept<T>;
+
+/// What cg::permute accepts: two tensors of one element type, each any tensor or a tiled one.
+template <typename AType, typename CType>
+concept PermuteOperands =
+    std::is_same_v<typename AType::ValueType, typename CType::ValueType> && (BasicTensorConcept<AType> || TiledTensorConcept<AType>) &&
+    (BasicTensorConcept<CType> || TiledTensorConcept<CType>);
+
 namespace detail {
 
 // Return the rank of a tensor, sourced at compile time when the tensor

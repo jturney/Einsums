@@ -217,7 +217,7 @@ APIARY_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("scale", einsums::TiledRuntimeTensor<std::complex<double>>)
 // clang-format on
 void scale(typename AType::ValueType factor, AType *A) {
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+    if constexpr (TiledTensorConcept<AType>) {
         // Tiled: scale every populated tile. Eager, or an opaque Custom node
         // (the einsum-rewriting passes don't apply to a tiled per-tile op).
         using T   = typename AType::ValueType;
@@ -284,7 +284,7 @@ APIARY_INSTANTIATE_AS("conj", einsums::TiledRuntimeTensor<std::complex<float>>)
 APIARY_INSTANTIATE_AS("conj", einsums::TiledRuntimeTensor<std::complex<double>>)
 // clang-format on
 void conj(AType *A) {
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+    if constexpr (TiledTensorConcept<AType>) {
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
@@ -328,7 +328,7 @@ void complex_part_op(ResultType *out, AType const &A) {
     constexpr std::array<char const *, 3> execute{"real execute", "imag execute", "abs execute"};
 
     auto &ctx = CaptureContext::current();
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+    if constexpr (TiledTensorConcept<AType>) {
         auto const kernel = [](AType const &a, ResultType *o) {
             if constexpr (Part == ComplexPart::Real) {
                 tiled_real(a, o);
@@ -394,10 +394,7 @@ void complex_part_op(ResultType *out, AType const &A) {
 /// For real ``A`` it is a copy, since Re(x) == x, matching numpy ``.real``. Dense
 /// or tiled.
 template <typename ResultType, typename AType>
-    requires requires {
-        requires(CoreBasicTensorConcept<ResultType> || IsTiledTensorV<std::remove_cvref_t<ResultType>>);
-        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
-    }
+    requires DenseOrTiled<ResultType> && DenseOrTiled<AType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -420,10 +417,7 @@ void real(ResultType *out, AType const &A) {
 /// ``out``. For real ``A`` it is zeros, since Im(x) == 0, matching numpy
 /// ``.imag``. Dense or tiled.
 template <typename ResultType, typename AType>
-    requires requires {
-        requires(CoreBasicTensorConcept<ResultType> || IsTiledTensorV<std::remove_cvref_t<ResultType>>);
-        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
-    }
+    requires DenseOrTiled<ResultType> && DenseOrTiled<AType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -445,10 +439,7 @@ void imag(ResultType *out, AType const &A) {
 /// Graph-aware magnitude: ``out := |A|``. Real or complex ``A`` produces real
 /// ``out``. Dense or tiled.
 template <typename ResultType, typename AType>
-    requires requires {
-        requires(CoreBasicTensorConcept<ResultType> || IsTiledTensorV<std::remove_cvref_t<ResultType>>);
-        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
-    }
+    requires DenseOrTiled<ResultType> && DenseOrTiled<AType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -481,11 +472,7 @@ void abs(ResultType *out, AType const &A) {
 /// cg::permute("mu,nu <- nu,mu", 0.0, &C, 1.0, A);  // multi-char indices
 /// @endcode
 template <typename AType, typename CType>
-    requires requires {
-        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
-        requires(BasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
-        requires(BasicTensorConcept<CType> || IsTiledTensorV<std::remove_cvref_t<CType>>);
-    }
+    requires PermuteOperands<AType, CType>
 void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C, typename AType::ValueType alpha, AType const &A) {
     using T = typename AType::ValueType;
 
@@ -495,8 +482,8 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
     }
     auto &parsed = parse_result.value();
 
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>> || IsTiledTensorV<std::remove_cvref_t<CType>>) {
-        static_assert(IsTiledTensorV<std::remove_cvref_t<AType>> && IsTiledTensorV<std::remove_cvref_t<CType>>,
+    if constexpr (TiledTensorConcept<AType> || TiledTensorConcept<CType>) {
+        static_assert(TiledTensorConcept<AType> && TiledTensorConcept<CType>,
                       "cg::permute with a tiled operand requires both A and C to be TiledRuntimeTensor");
         // The tiled kernel and TiledPermuteDescriptor carry no operator, so a
         // spec that names one would be silently DROPPED and the permute would
@@ -550,11 +537,7 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
 
 /// String-based permute with default prefactors (beta=0, alpha=1): C = permute(A).
 template <typename AType, typename CType>
-    requires requires {
-        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
-        requires(BasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
-        requires(BasicTensorConcept<CType> || IsTiledTensorV<std::remove_cvref_t<CType>>);
-    }
+    requires PermuteOperands<AType, CType>
 void permute(PermuteFormatString spec, CType *C, AType const &A) {
     using T = typename AType::ValueType;
     permute(spec, T{0}, C, T{1}, A);
@@ -567,11 +550,7 @@ void permute(PermuteFormatString spec, CType *C, AType const &A) {
 /// ``C = c_pf * C + a_pf * permute(A)`` according to ``spec``. ``c_pf`` defaults to 0 and
 /// ``a_pf`` to 1, i.e. ``C = permute(A)``.
 template <typename AType, typename CType>
-    requires requires {
-        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
-        requires(BasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
-        requires(BasicTensorConcept<CType> || IsTiledTensorV<std::remove_cvref_t<CType>>);
-    }
+    requires PermuteOperands<AType, CType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_INSTANTIATE_AS("permute", einsums::GeneralRuntimeTensor<float, std::allocator<float>>, einsums::GeneralRuntimeTensor<float, std::allocator<float>>)
@@ -1182,11 +1161,7 @@ void scatter_add(DstType *dst, SrcType const &src, std::vector<std::vector<size_
 /// below is the saveable spelling, and the constraint here is what keeps a
 /// string from being deduced as a "unary operator".
 template <CoreTensorConcept CType, typename UnaryOperator>
-    requires requires {
-        requires BasicTensorConcept<CType>;
-        requires RankTensorConcept<CType>;
-        requires !std::convertible_to<UnaryOperator, std::string_view>;
-    }
+    requires BasicTensorConcept<CType> && RankTensorConcept<CType> && (!std::convertible_to<UnaryOperator, std::string_view>)
 void element_transform(CType *C, UnaryOperator unary_op) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -1311,7 +1286,7 @@ void element_transform_named_python(TensorType *C, std::string const &op_name) {
 /// causing thread contention, which is fine for the small unary maps typical of
 /// SCF/MP2 (eigenvalues, denominators).
 template <typename TensorType>
-    requires(CoreBasicTensorConcept<TensorType> || IsTiledTensorV<std::remove_cvref_t<TensorType>>)
+    requires DenseOrTiled<TensorType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -1363,7 +1338,7 @@ void element_transform_python(TensorType *C, std::function<typename TensorType::
     // Apply across the whole tensor: one call for dense, once per (materialized)
     // tile for tiled. Absent tiles are zero and left untouched.
     auto run = [apply](TensorType *target) {
-        if constexpr (IsTiledTensorV<std::remove_cvref_t<TensorType>>) {
+        if constexpr (TiledTensorConcept<TensorType>) {
             for (auto &kv : target->tiles()) {
                 kv.second.materialize();
                 apply(&kv.second);
@@ -1473,8 +1448,8 @@ APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<float>>, 
 APIARY_INSTANTIATE_AS("axpy", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
 // clang-format on
 void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<XType>> || IsTiledTensorV<std::remove_cvref_t<YType>>) {
-        static_assert(IsTiledTensorV<std::remove_cvref_t<XType>> && IsTiledTensorV<std::remove_cvref_t<YType>>,
+    if constexpr (TiledTensorConcept<XType> || TiledTensorConcept<YType>) {
+        static_assert(TiledTensorConcept<XType> && TiledTensorConcept<YType>,
                       "cg::axpy with a tiled operand requires both X and Y to be TiledRuntimeTensor");
         using T   = typename XType::ValueType;
         auto &ctx = CaptureContext::current();
@@ -1560,8 +1535,8 @@ APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<std::complex<float>>,
 APIARY_INSTANTIATE_AS("axpby", einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
 // clang-format on
 void axpby(typename XType::ValueType alpha, XType const &X, typename XType::ValueType beta, YType *Y) {
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<XType>> || IsTiledTensorV<std::remove_cvref_t<YType>>) {
-        static_assert(IsTiledTensorV<std::remove_cvref_t<XType>> && IsTiledTensorV<std::remove_cvref_t<YType>>,
+    if constexpr (TiledTensorConcept<XType> || TiledTensorConcept<YType>) {
+        static_assert(TiledTensorConcept<XType> && TiledTensorConcept<YType>,
                       "cg::axpby with a tiled operand requires both X and Y to be TiledRuntimeTensor");
         // Y = alpha*X + beta*Y decomposes into the two tiled primitives the
         // graph already executes, captures, and lowers (TiledExpansion):
@@ -1604,10 +1579,7 @@ void axpby(typename XType::ValueType alpha, XType const &X, typename XType::Valu
 /// their parents so writes through C-view land in the parent and the
 /// optimization passes see the dependency via ``TensorHandle::aliases``.
 template <bool TransA, bool TransB, MatrixOperand AType, MatrixOperand BType, MatrixOperand CType, typename U>
-    requires requires {
-        requires std::convertible_to<U, typename AType::ValueType>;
-        requires SameUnderlying<AType, BType, CType>;
-    }
+    requires std::convertible_to<U, typename AType::ValueType> && SameUnderlying<AType, BType, CType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -1684,10 +1656,7 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C)
 /// to reach this one. Defaults are ``Transpose::N`` so an untransposed call is
 /// unambiguous.
 template <RuntimeRankTensorConcept AType, RuntimeRankTensorConcept BType, RuntimeRankTensorConcept CType, typename U>
-    requires requires {
-        requires std::convertible_to<U, typename AType::ValueType>;
-        requires SameUnderlying<AType, BType, CType>;
-    }
+    requires std::convertible_to<U, typename AType::ValueType> && SameUnderlying<AType, BType, CType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -2017,10 +1986,7 @@ void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <TensorConcept AType, TensorConcept BType>
-    requires requires {
-        requires SameRank<AType, BType>;
-        requires InSamePlace<AType, BType>;
-    }
+    requires SameRank<AType, BType> && InSamePlace<AType, BType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -2067,10 +2033,7 @@ auto dot(AType const &A, BType const &B) -> BiggestTypeT<typename AType::ValueTy
 /// Unlike dot(A, B) which throws during capture, this overload records the
 /// operation into the graph and can be used with distributed tensors.
 template <TensorConcept AType, TensorConcept BType>
-    requires requires {
-        requires SameRank<AType, BType>;
-        requires InSamePlace<AType, BType>;
-    }
+    requires SameRank<AType, BType> && InSamePlace<AType, BType>
 void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *result, AType const &A, BType const &B) {
     using ResultT = BiggestTypeT<typename AType::ValueType, typename BType::ValueType>;
 
@@ -2127,7 +2090,7 @@ void dot_into(ResultType *result, AType const &A, BType const &B) {
     }
 
     auto &ctx = CaptureContext::current();
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+    if constexpr (TiledTensorConcept<AType>) {
         // Tiled operands compose per-tile dots.
         auto compute = [](AType const &a, BType const &b) -> T {
             // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
@@ -2179,12 +2142,8 @@ void dot_into(ResultType *result, AType const &A, BType const &B) {
 /// touched) tensor that gives Python users a graph-native scalar handle, so
 /// SCF energy patterns like ``e = ½ Σ D · (H+F)`` can be captured.
 template <CoreBasicTensorConcept ResultType, typename AType, typename BType>
-    requires requires {
-        requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>;
-        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
-        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
-        requires(CoreBasicTensorConcept<BType> || IsTiledTensorV<std::remove_cvref_t<BType>>);
-    }
+    requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename BType::ValueType> && DenseOrTiled<AType> && DenseOrTiled<BType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -2245,12 +2204,8 @@ void dot_python(ResultType *result, AType const &A, BType const &B) {
 /// dtypes this coincides with ``dot``. Backed by ``true_dot``, which uses BLAS
 /// dotc on the contiguous complex path.
 template <CoreBasicTensorConcept ResultType, typename AType, typename BType>
-    requires requires {
-        requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>;
-        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
-        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
-        requires(CoreBasicTensorConcept<BType> || IsTiledTensorV<std::remove_cvref_t<BType>>);
-    }
+    requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename BType::ValueType> && DenseOrTiled<AType> && DenseOrTiled<BType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -2490,10 +2445,8 @@ APIARY_INSTANTIATE_AS("direct_division", std::complex<float>, einsums::TiledRunt
 APIARY_INSTANTIATE_AS("direct_division", std::complex<double>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
 // clang-format on
 void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) {
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>> || IsTiledTensorV<std::remove_cvref_t<BType>> ||
-                  IsTiledTensorV<std::remove_cvref_t<CType>>) {
-        static_assert(IsTiledTensorV<std::remove_cvref_t<AType>> && IsTiledTensorV<std::remove_cvref_t<BType>> &&
-                          IsTiledTensorV<std::remove_cvref_t<CType>>,
+    if constexpr (TiledTensorConcept<AType> || TiledTensorConcept<BType> || TiledTensorConcept<CType>) {
+        static_assert(TiledTensorConcept<AType> && TiledTensorConcept<BType> && TiledTensorConcept<CType>,
                       "cg::direct_division with a tiled operand requires all of A, B, C to be TiledRuntimeTensor");
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
@@ -3488,10 +3441,8 @@ void grouped_batched_gemm_blocked(double alpha, std::vector<AType const *> a_lis
 ///                and B must agree on rank and shape, as `dot` requires; the
 ///                entries need not agree with each other.
 template <CoreBasicTensorConcept ResultType, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType>
-    requires requires {
-        requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>;
-        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
-    }
+    requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename BType::ValueType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -3863,11 +3814,8 @@ void grouped_binary_elementwise(char const *who, OpKind kind, char const *label,
 ///
 /// Outside capture this executes immediately, so the same call works eagerly.
 template <typename T, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
-    requires requires {
-        requires std::is_same_v<typename AType::ValueType, T>;
-        requires std::is_same_v<typename BType::ValueType, T>;
-        requires std::is_same_v<typename CType::ValueType, T>;
-    }
+    requires std::is_same_v<typename AType::ValueType, T> && std::is_same_v<typename BType::ValueType, T> &&
+             std::is_same_v<typename CType::ValueType, T>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -3915,11 +3863,8 @@ void grouped_direct_product(std::vector<T> alphas, std::vector<AType const *> a_
 ///
 /// Outside capture this executes immediately, so the same call works eagerly.
 template <typename T, CoreBasicTensorConcept AType, CoreBasicTensorConcept BType, CoreBasicTensorConcept CType>
-    requires requires {
-        requires std::is_same_v<typename AType::ValueType, T>;
-        requires std::is_same_v<typename BType::ValueType, T>;
-        requires std::is_same_v<typename CType::ValueType, T>;
-    }
+    requires std::is_same_v<typename AType::ValueType, T> && std::is_same_v<typename BType::ValueType, T> &&
+             std::is_same_v<typename CType::ValueType, T>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -4259,10 +4204,7 @@ void norm(RemoveComplexT<typename AType::ValueType> *result, linear_algebra::Nor
 /// requires a ``double`` result tensor). Use ``Norm::ONE``, ``Norm::TWO``,
 /// ``Norm::INFINITY_``, ``Norm::FROBENIUS``, etc.
 template <CoreBasicTensorConcept ResultType, typename AType>
-    requires requires {
-        requires std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>;
-        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
-    }
+    requires std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>> && DenseOrTiled<AType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -4302,7 +4244,7 @@ void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::norm: result tensor must have at least one element");
     }
 
-    if constexpr (!IsTiledTensorV<std::remove_cvref_t<AType>>) {
+    if constexpr (!TiledTensorConcept<AType>) {
         using T   = typename AType::ValueType;
         auto &ctx = CaptureContext::current();
         if (!ctx.is_capturing()) {
@@ -4316,7 +4258,7 @@ void norm_python(ResultType *result, linear_algebra::Norm norm_type, AType const
         auto compute = [](linear_algebra::Norm nt, AType const &a) -> R {
             // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
             blas::SerialVendorScope const serial;
-            if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+            if constexpr (TiledTensorConcept<AType>) {
                 return detail::tiled_norm<typename AType::ValueType>(nt, a);
             } else {
                 return linear_algebra::norm(nt, a);
@@ -4422,10 +4364,7 @@ void trace(typename AType::ValueType *result, AType const &A) {
 /// Python-friendly graph-aware trace: writes the diagonal sum into
 /// ``result->data()[0]``. Runtime-rank input must be a square rank-2 tensor.
 template <CoreBasicTensorConcept ResultType, typename AType>
-    requires requires {
-        requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType>;
-        requires(CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>);
-    }
+    requires std::is_same_v<typename ResultType::ValueType, typename AType::ValueType> && DenseOrTiled<AType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -4472,7 +4411,7 @@ void trace_python(ResultType *result, AType const &A) {
     }
 
     auto &ctx = CaptureContext::current();
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+    if constexpr (TiledTensorConcept<AType>) {
         if (!ctx.is_capturing()) {
             LabeledSection("trace_python eager");
             result->data()[0] = detail::tiled_trace<T>(A);
@@ -4509,10 +4448,7 @@ void trace_python(ResultType *result, AType const &A) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 template <bool TransA, bool TransB, RuntimeRankTensorConcept AType, RuntimeRankTensorConcept BType, RuntimeRankTensorConcept CType>
-    requires requires {
-        requires InSamePlace<AType, BType, CType>;
-        requires SameUnderlying<AType, BType, CType>;
-    }
+    requires InSamePlace<AType, BType, CType> && SameUnderlying<AType, BType, CType>
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -4592,10 +4528,7 @@ void symm_gemm(AType const &A, BType const &B, CType *C, bool conjugate = false)
 // for legacy C++ callers; the runtime-rank form above is what the Python
 // bindings target.
 template <bool TransA, bool TransB, MatrixConcept AType, MatrixConcept BType, MatrixConcept CType>
-    requires requires {
-        requires InSamePlace<AType, BType, CType>;
-        requires SameUnderlying<AType, BType, CType>;
-    }
+    requires InSamePlace<AType, BType, CType> && SameUnderlying<AType, BType, CType>
 void symm_gemm(AType const &A, BType const &B, CType *C) {
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
@@ -4809,8 +4742,7 @@ void heev(AType *A, WType *W) {
 /// inner syev<true>() dispatches accordingly.
 template <typename AType, typename WType>
     requires(std::is_same_v<typename AType::ValueType, typename WType::ValueType> && !IsComplexV<typename AType::ValueType> &&
-             (CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>) &&
-             (CoreBasicTensorConcept<WType> || IsTiledTensorV<std::remove_cvref_t<WType>>))
+             DenseOrTiled<AType> && DenseOrTiled<WType>)
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -4827,9 +4759,8 @@ void syev_python(AType *A, WType *W) {
 /// syev_python for why this wrapper exists.
 template <typename AType, typename WType>
     requires(IsComplexV<typename AType::ValueType> &&
-             std::is_same_v<typename WType::ValueType, RemoveComplexT<typename AType::ValueType>> &&
-             (CoreBasicTensorConcept<AType> || IsTiledTensorV<std::remove_cvref_t<AType>>) &&
-             (CoreBasicTensorConcept<WType> || IsTiledTensorV<std::remove_cvref_t<WType>>))
+             std::is_same_v<typename WType::ValueType, RemoveComplexT<typename AType::ValueType>> && DenseOrTiled<AType> &&
+             DenseOrTiled<WType>)
 // clang-format off
 APIARY_EXPOSE
 APIARY_MODULE("linalg")
@@ -5574,11 +5505,8 @@ ParsedEinsumSpec prepare_einsum(EinsumFormatString const &spec, AType const &A, 
  * @param[in] B Second input tensor.
  */
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
-    requires requires {
-        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
-        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
-        requires !detail::any_tiled_v<AType, BType, CType>;
-    }
+    requires std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename CType::ValueType> && (!detail::any_tiled_v<AType, BType, CType>)
 void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
             BType const &B, bool conj_a = false, bool conj_b = false) {
     using T = typename AType::ValueType;
@@ -5613,18 +5541,15 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
  * for it.
  */
 template <TiledTensorConcept AType, TiledTensorConcept BType, TiledTensorConcept CType>
-    requires requires {
-        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
-        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
-    }
+    requires std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename CType::ValueType>
 void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, typename AType::ValueType ab_pf, AType const &A,
             BType const &B, bool conj_a = false, bool conj_b = false) {
     using T = typename AType::ValueType;
     if (conj_a || conj_b) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::einsum: conjugation (conj_a/conj_b) is not yet supported for tiled operands");
     }
-    static_assert(IsTiledTensorV<std::remove_cvref_t<AType>> && IsTiledTensorV<std::remove_cvref_t<BType>> &&
-                      IsTiledTensorV<std::remove_cvref_t<CType>>,
+    static_assert(TiledTensorConcept<AType> && TiledTensorConcept<BType> && TiledTensorConcept<CType>,
                   "cg::einsum with a tiled operand currently requires all of A, B, C to be TiledRuntimeTensor "
                   "(mixed tiled/dense is not supported yet)");
 
@@ -5698,10 +5623,8 @@ void einsum(EinsumFormatString spec, typename AType::ValueType c_pf, CType *C, t
  * @endcode
  */
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
-    requires requires {
-        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
-        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
-    }
+    requires std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename CType::ValueType>
 void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
     using T = typename AType::ValueType;
     einsum(spec, T{0}, C, T{1}, A, B);
@@ -5709,10 +5632,8 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
 
 /// Default-prefactor tiled einsum (delegates to the tiled prefactor overload).
 template <TiledTensorConcept AType, TiledTensorConcept BType, TiledTensorConcept CType>
-    requires requires {
-        requires std::is_same_v<typename AType::ValueType, typename BType::ValueType>;
-        requires std::is_same_v<typename AType::ValueType, typename CType::ValueType>;
-    }
+    requires std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+             std::is_same_v<typename AType::ValueType, typename CType::ValueType>
 void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
     using T = typename AType::ValueType;
     einsum(spec, T{0}, C, T{1}, A, B);
@@ -5741,14 +5662,11 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
  * @versionadded{2.0.0}
  */
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
-    requires requires {
-        requires detail::EinsumElement<typename AType::ValueType>;
-        requires detail::EinsumElement<typename BType::ValueType>;
-        requires detail::EinsumElement<typename CType::ValueType>;
-        requires !(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
-                   std::is_same_v<typename AType::ValueType, typename CType::ValueType>);
-        requires !detail::any_tiled_v<AType, BType, CType>;
-    }
+    requires detail::EinsumElement<typename AType::ValueType> && detail::EinsumElement<typename BType::ValueType> &&
+             detail::EinsumElement<typename CType::ValueType> &&
+             (!(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+                std::is_same_v<typename AType::ValueType, typename CType::ValueType>)) &&
+             (!detail::any_tiled_v<AType, BType, CType>)
 void einsum(EinsumFormatString spec, typename CType::ValueType c_pf, CType *C,
             detail::PromoteT<typename AType::ValueType, typename BType::ValueType> ab_pf, AType const &A, BType const &B,
             bool conj_a = false, bool conj_b = false) {
@@ -5787,14 +5705,11 @@ void einsum(EinsumFormatString spec, typename CType::ValueType c_pf, CType *C,
 ///
 /// @versionadded{2.0.0}
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
-    requires requires {
-        requires detail::EinsumElement<typename AType::ValueType>;
-        requires detail::EinsumElement<typename BType::ValueType>;
-        requires detail::EinsumElement<typename CType::ValueType>;
-        requires !(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
-                   std::is_same_v<typename AType::ValueType, typename CType::ValueType>);
-        requires !detail::any_tiled_v<AType, BType, CType>;
-    }
+    requires detail::EinsumElement<typename AType::ValueType> && detail::EinsumElement<typename BType::ValueType> &&
+             detail::EinsumElement<typename CType::ValueType> &&
+             (!(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
+                std::is_same_v<typename AType::ValueType, typename CType::ValueType>)) &&
+             (!detail::any_tiled_v<AType, BType, CType>)
 void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
     using TR = detail::PromoteT<typename AType::ValueType, typename BType::ValueType>;
     einsum(spec, typename CType::ValueType{0}, C, TR{1}, A, B);

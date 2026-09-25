@@ -312,7 +312,7 @@ std::optional<std::pair<PairKey, PairSite>> describe_pair(Term const &term, std:
     std::set<std::string> seen;
     for (Factor const *factor : {&a, &b}) {
         for (auto const &index : factor->indices) {
-            if (outside.count(index.letter) == 0 || !seen.insert(index.letter).second) {
+            if (!outside.contains(index.letter) || !seen.insert(index.letter).second) {
                 continue;
             }
             result.push_back(index);
@@ -477,7 +477,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     std::set<ValueKey>           dissolvable;
     for (auto const &statement : expr.statements) {
         auto const key = value_key(statement);
-        if (std::ranges::all_of(key, [&internal](TensorId id) { return internal.count(id) != 0; })) {
+        if (std::ranges::all_of(key, [&internal](TensorId id) { return internal.contains(id); })) {
             dissolvable.insert(key);
         }
     }
@@ -514,7 +514,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     auto foldable = [&](std::size_t s) -> bool {
         auto const &statement = expr.statements[s];
         auto const  target    = value_key(statement);
-        if (dissolvable.count(target) == 0) {
+        if (!dissolvable.contains(target)) {
             return false;
         }
         auto const own = writer.find(target);
@@ -628,7 +628,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         if (it == writer.end() || it->second >= expr.statements.size() || it->second >= root) {
             return std::nullopt;
         }
-        if (absorbers[it->second].count(root) == 0 || retained_for.count({it->second, root}) != 0) {
+        if (absorbers[it->second].count(root) == 0 || retained_for.contains({it->second, root})) {
             return std::nullopt;
         }
         return it->second;
@@ -943,7 +943,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             }
         }
         for (auto const &[definition, sites] : dissolved_into) {
-            if (retained[definition] != 0 || still_read.count(expr.statements[definition].target) == 0) {
+            if (retained[definition] != 0 || !still_read.contains(expr.statements[definition].target)) {
                 continue;
             }
             retained[definition] = 1;
@@ -1016,7 +1016,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     SymbolicCost                    captured;
     std::unordered_set<std::size_t> priced;
     for (std::size_t t = 0; t < terms.size(); t++) {
-        if (!terms[t].searchable || folded.count(t) != 0) {
+        if (!terms[t].searchable || folded.contains(t)) {
             continue;
         }
         for (auto const &step : terms[t].steps) {
@@ -1120,7 +1120,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         auto const hit = renamed_from.find(letter);
         return hit == renamed_from.end() ? letter : hit->second;
     };
-    auto is_member_letter = [&](std::string const &letter) { return member_letters.count(origin_letter(letter)) != 0; };
+    auto is_member_letter = [&](std::string const &letter) { return member_letters.contains(origin_letter(letter)); };
     auto per_member       = [&](std::string const &letter) -> std::vector<std::size_t> const       *{
         auto const hit = ragged_members.find(origin_letter(letter));
         return hit == ragged_members.end() ? nullptr : &hit->second;
@@ -1476,7 +1476,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             std::vector<TreePlan> trial_plans(trial.size());
             bool                  solved = true;
             for (std::size_t t = 0; t < trial.size() && solved; t++) {
-                if (!trial[t].searchable || folded.count(t) != 0) {
+                if (!trial[t].searchable || folded.contains(t)) {
                     continue;
                 }
                 trial_plans[t] = solve_tree(trial[t].factors, trial[t].output, table, ctx);
@@ -1645,13 +1645,13 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         std::set<std::string> const in_right(right.begin(), right.end());
         std::size_t                 link = 0;
         for (auto const &letter : left) {
-            link += in_right.count(letter) != 0 && std::ranges::find(out, letter) == out.end() ? 1 : 0;
+            link += in_right.contains(letter) && std::ranges::find(out, letter) == out.end() ? 1 : 0;
         }
         // Either assignment of the two free axes to the two operands: the lowering reads the
         // roles off the letters and reverses the pair where it has to, so a search that settled
         // on the other order is a matrix product all the same.
         return link == 1 &&
-               ((in_left.count(out[0]) != 0 && in_right.count(out[1]) != 0) || (in_right.count(out[0]) != 0 && in_left.count(out[1]) != 0));
+               ((in_left.contains(out[0]) && in_right.contains(out[1])) || (in_right.contains(out[0]) && in_left.contains(out[1])));
     };
 
     // The shared intermediates come first, in commit order, which is also dependency order: a
@@ -1670,7 +1670,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     bool ok = ok_to_emit;
     for (std::size_t t = 0; t < terms.size() && ok; t++) {
         auto const &statement = expr.statements[terms[t].statement];
-        if (folded.count(t) != 0) {
+        if (folded.contains(t)) {
             continue; // its value now lives inside a consumer
         }
         if (!terms[t].searchable || !plans[t].ok) {
@@ -1715,7 +1715,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             std::set<std::string>  seen;
             for (Factor const *operand : {&*left, &*right}) {
                 for (auto const &index : operand->indices) {
-                    if (outside.count(index.letter) != 0 && seen.insert(index.letter).second) {
+                    if (outside.contains(index.letter) && seen.insert(index.letter).second) {
                         axes.push_back(index);
                     }
                 }

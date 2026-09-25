@@ -19,6 +19,7 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
@@ -29,20 +30,6 @@
 #include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
-
-template <typename T>
-struct RealOf {
-    using type = T;
-};
-template <typename T>
-struct RealOf<std::complex<T>> {
-    using type = T;
-};
-
-template <typename T>
-inline constexpr bool is_complex_v = false;
-template <typename T>
-inline constexpr bool is_complex_v<std::complex<T>> = true;
 
 /// The element types an einsum may use.
 template <typename T>
@@ -55,12 +42,12 @@ concept EinsumElement = std::is_same_v<T, float> || std::is_same_v<T, double> ||
 template <EinsumElement TA, EinsumElement TB>
 struct Promote {
   private:
-    using RealA = typename RealOf<TA>::type;
-    using RealB = typename RealOf<TB>::type;
+    using RealA = RemoveComplexT<TA>;
+    using RealB = RemoveComplexT<TB>;
     using Real  = std::conditional_t<(sizeof(RealA) >= sizeof(RealB)), RealA, RealB>;
 
   public:
-    using type = std::conditional_t<is_complex_v<TA> || is_complex_v<TB>, std::complex<Real>, Real>;
+    using type = std::conditional_t<IsComplexV<TA> || IsComplexV<TB>, std::complex<Real>, Real>;
 };
 
 template <EinsumElement TA, EinsumElement TB>
@@ -69,7 +56,7 @@ using PromoteT = typename Promote<TA, TB>::type;
 /// Whether a value of type @p From can be stored in @p To without losing its imaginary part.
 /// Precision may narrow; a complex value may not become real.
 template <EinsumElement From, EinsumElement To>
-inline constexpr bool storable_v = !is_complex_v<From> || is_complex_v<To>;
+inline constexpr bool storable_v = !IsComplexV<From> || IsComplexV<To>;
 
 constexpr bool is_complex(packed_gemm::ScalarType t) {
     return t == packed_gemm::ScalarType::Complex64 || t == packed_gemm::ScalarType::Complex128;
