@@ -32,30 +32,17 @@
 #include <vector>
 
 #include "ContractionTreeSearch.hpp"
+#include "ExprHelpers.hpp"
 #include "LaplaceRewrite.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
-/// The letters of an index list, in order.
-std::vector<std::string> letters_of(std::vector<ExprIndex> const &indices) {
-    std::vector<std::string> out;
-    out.reserve(indices.size());
-    for (auto const &index : indices) {
-        out.push_back(index.letter);
-    }
-    return out;
-}
-
-bool contains(std::vector<std::string> const &haystack, std::string const &needle) {
-    return std::ranges::find(haystack, needle) != haystack.end();
-}
-
 /// Append @p from's letters to @p into, skipping ones already there.
 void merge_letters(std::vector<std::string> &into, std::vector<std::string> const &from) {
     for (auto const &letter : from) {
-        if (!contains(into, letter)) {
+        if (!expr::contains(into, letter)) {
             into.push_back(letter);
         }
     }
@@ -115,36 +102,11 @@ bool written_anywhere(Graph const &graph, TensorId id) {
     return false;
 }
 
-/// A letter not already in @p used, seeded from @p wanted.
-std::string fresh_letter(std::vector<std::string> const &used, std::string const &wanted) {
-    if (!contains(used, wanted)) {
-        return wanted;
-    }
-    for (int suffix = 1;; ++suffix) {
-        std::string candidate = fmt::format("{}{}", wanted, suffix);
-        if (!contains(used, candidate)) {
-            return candidate;
-        }
-    }
-}
-
 /// One factor, renamed into the letters the consuming contraction uses.
 struct RenamedFactor {
     std::vector<ExprIndex>   indices;
     std::vector<std::string> letters;
 };
-
-/// Declare a graph-owned deferred intermediate of the given shape.
-///
-/// Deferred rather than eager, and runtime-rank rather than typed, for the two reasons every
-/// pass-created tensor has both: the memory passes can only manage storage they are allowed to
-/// place, and a later bind can only move an extent whose storage has not been committed.
-TensorId declare_scratch(Graph &graph, std::string name, packed_gemm::ScalarType dtype, std::vector<std::size_t> const &dims) {
-    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> TensorId {
-        auto &tensor = graph.declare_runtime_tensor<T>(std::move(name), dims, /*intermediate=*/true);
-        return graph.live_tensor_id_by_ptr(&tensor, {});
-    });
-}
 
 /// What the tree emitter needs to build one product's statements.
 struct EmitRequest {
@@ -184,13 +146,7 @@ std::optional<std::vector<ExprStatement>> emit_tree(EmitRequest const &request) 
     TensorExpr                 &expr          = *request.expr;
 
     auto make_leaf = [&](TensorId id, std::vector<ExprIndex> indices) {
-        ExprTerm            leaf;
-        TensorHandle const *held = request.graph->find_tensor(id);
-        leaf.kind                = TermKind::Leaf;
-        leaf.tensor              = id;
-        leaf.name                = held != nullptr ? held->name : std::string{};
-        leaf.indices             = std::move(indices);
-        return expr.add(std::move(leaf));
+        return expr::add_leaf(expr, *request.graph, id, std::move(indices));
     };
 
     std::function<std::optional<search::Factor>(Mask)> build = [&](Mask mask) -> std::optional<search::Factor> {
@@ -268,18 +224,10 @@ std::optional<std::vector<ExprStatement>> emit_tree(EmitRequest const &request) 
             }
         }
 
-        ExprTerm value;
-        value.kind    = TermKind::Contraction;
-        value.indices = root ? request.root_indices : axes;
-        value.operands.assign({make_leaf(left->tensor, left->indices), make_leaf(right->tensor, right->indices)});
-        value.operand_indices.assign({left->indices, right->indices});
-        value.conjugate.assign({left->conjugate, right->conjugate});
-        value.factor = root ? request.root_factor : PrefactorScalar{double{1}};
-        // Priced the way a raised term is, so the region's before-and-after compares like with
-        // like. An emitted term with no cost reads as free, and the report then offers a
-        // rewrite to nothing as evidence that the search was worth making.
-        value.cost = search::contraction_cost(search::letters_of(left->indices), search::letters_of(right->indices),
-                                              search::letters_of(value.indices), *request.table);
+        ExprTerm value = search::contraction_term(
+            {.term = make_leaf(left->tensor, left->indices), .indices = left->indices, .conjugate = left->conjugate},
+            {.term = make_leaf(right->tensor, right->indices), .indices = right->indices, .conjugate = right->conjugate},
+            root ? request.root_indices : axes, root ? request.root_factor : PrefactorScalar{double{1}}, *request.table);
 
         ExprStatement statement;
         statement.target           = target;
@@ -290,7 +238,7 @@ std::optional<std::vector<ExprStatement>> emit_tree(EmitRequest const &request) 
         statement.origin           = request.origin;
         statement.origin_kind      = OpKind::Einsum;
         statement.origin_label =
-            fmt::format("{}: {}[{}]", request.provider, target_name, fmt::join(letters_of(statement.target_indices), ","));
+            fmt::format("{}: {}[{}]", request.provider, target_name, fmt::join(expr::letter_list(statement.target_indices), ","));
         emitted.push_back(std::move(statement));
         return search::Factor{.tensor = target, .indices = root ? request.root_indices : axes, .conjugate = false};
     };
@@ -551,9 +499,9 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         // Every letter this statement already uses, so a provider's new ones cannot collide.
         // Widened once the cone is flattened, with the letters the dissolved definitions summed
         // over.
-        std::vector<std::string> used = letters_of(tagged_index);
-        merge_letters(used, letters_of(other_index));
-        merge_letters(used, letters_of(statement.target_indices));
+        std::vector<std::string> used = expr::letter_list(tagged_index);
+        merge_letters(used, expr::letter_list(other_index));
+        merge_letters(used, expr::letter_list(statement.target_indices));
 
         // ── The cone the tagged operand sits in ───────────────────────────────────────
         //
@@ -693,7 +641,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             .tensor = tagged_id, .indices = tagged_index, .conjugate = !term.conjugate.empty() && term.conjugate[tagged_slot]});
         leaves.insert(leaves.end(), outer_pieces.begin(), outer_pieces.end());
         for (auto const &leaf : leaves) {
-            merge_letters(used, letters_of(leaf.indices));
+            merge_letters(used, expr::letter_list(leaf.indices));
         }
 
         /// One tagged tensor of the cone, with every plan its providers offered for it.
@@ -886,7 +834,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                         if (rename.contains(factor.letters[axis])) {
                             continue;
                         }
-                        std::string fresh = fresh_letter(taken, factor.letters[axis]);
+                        std::string fresh = expr::fresh_letter(taken, factor.letters[axis]);
                         taken.push_back(fresh);
                         rename.emplace(factor.letters[axis], fresh);
                         if (axis < factor.spaces.size() && !factor.spaces[axis].empty()) {
@@ -1031,15 +979,17 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                 auto const              &renamed = candidate.subs[0].factors;
                 std::vector<std::string> shared;
                 for (auto const &index : tagged_index) {
-                    if (contains(letters_of(other_index), index.letter)) {
+                    if (expr::contains(expr::letter_list(other_index), index.letter)) {
                         shared.push_back(index.letter);
                     }
                 }
                 auto const carries_all = [&shared](RenamedFactor const &factor) {
-                    return std::ranges::all_of(shared, [&factor](std::string const &letter) { return contains(factor.letters, letter); });
+                    return std::ranges::all_of(shared,
+                                               [&factor](std::string const &letter) { return expr::contains(factor.letters, letter); });
                 };
                 auto const carries_none = [&shared](RenamedFactor const &factor) {
-                    return std::ranges::none_of(shared, [&factor](std::string const &letter) { return contains(factor.letters, letter); });
+                    return std::ranges::none_of(shared,
+                                                [&factor](std::string const &letter) { return expr::contains(factor.letters, letter); });
                 };
                 bool separated = false;
                 if (!shared.empty()) {
@@ -1059,10 +1009,10 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
             // emit a contraction whose operands cannot make its output.
             std::vector<std::string> reachable;
             for (auto const &piece : candidate.pieces) {
-                merge_letters(reachable, letters_of(piece.indices));
+                merge_letters(reachable, expr::letter_list(piece.indices));
             }
-            if (!std::ranges::all_of(letters_of(statement.target_indices),
-                                     [&reachable](std::string const &letter) { return contains(reachable, letter); })) {
+            if (!std::ranges::all_of(expr::letter_list(statement.target_indices),
+                                     [&reachable](std::string const &letter) { return expr::contains(reachable, letter); })) {
                 note_skip("the decomposed form cannot produce the target's indices", fmt::format("on '{}'", tagged_name));
                 continue;
             }
@@ -1251,8 +1201,8 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
                     factor_ids[which][factor] = found->second;
                     continue;
                 }
-                factor_ids[which][factor] = declare_scratch(graph, fmt::format("{}_{}", plan.provider, factor_name),
-                                                            plan.factors[factor].dtype, plan.factors[factor].dims);
+                factor_ids[which][factor] = expr::declare_scratch(graph, fmt::format("{}_{}", plan.provider, factor_name),
+                                                                  plan.factors[factor].dtype, plan.factors[factor].dims);
                 declared.emplace_back(factor_name, factor_ids[which][factor]);
             }
             _fits.emplace(fit_key, factor_ids[which]);
@@ -1333,7 +1283,7 @@ bool FactorizationPass::rewrite(Graph &graph, Region const &region, TensorExpr &
         request.root_factor    = term.factor;
         request.origin         = statement.origin;
         request.make           = [&graph](std::string const &name, packed_gemm::ScalarType dtype, std::vector<std::size_t> const &dims) {
-            return declare_scratch(graph, name, dtype, dims);
+            return expr::declare_scratch(graph, name, dtype, dims);
         };
 
         auto emitted = emit_tree(request);
@@ -1489,8 +1439,8 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
     ComparisonContext ctx;
     ctx.registry = &graph.space_registry();
 
-    std::vector<std::string> used = letters_of(tagged_index);
-    merge_letters(used, letters_of(statement.target_indices));
+    std::vector<std::string> used = expr::letter_list(tagged_index);
+    merge_letters(used, expr::letter_list(statement.target_indices));
 
     // The invented-id space a trial names its tensors in. Far above anything a graph assigns,
     // so a trial expression can be priced without a declaration being made for a rewrite that
@@ -1546,7 +1496,7 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
                 if (rename.contains(factor.letters[axis])) {
                     continue;
                 }
-                std::string fresh = fresh_letter(taken, factor.letters[axis]);
+                std::string fresh = expr::fresh_letter(taken, factor.letters[axis]);
                 taken.push_back(fresh);
                 rename.emplace(factor.letters[axis], fresh);
                 if (axis < factor.spaces.size() && !factor.spaces[axis].empty()) {
@@ -1746,8 +1696,8 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
             factor_ids[which] = found->second;
             continue;
         }
-        factor_ids[which] = declare_scratch(graph, fmt::format("{}_{}", best->plan.provider, factor_name), best->plan.factors[which].dtype,
-                                            best->plan.factors[which].dims);
+        factor_ids[which] = expr::declare_scratch(graph, fmt::format("{}_{}", best->plan.provider, factor_name),
+                                                  best->plan.factors[which].dtype, best->plan.factors[which].dims);
         declared.emplace_back(factor_name, factor_ids[which]);
     }
     for (std::size_t which = 0; which < count; ++which) {
@@ -1755,7 +1705,7 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
     }
 
     auto const declare = [&graph](std::string const &name, packed_gemm::ScalarType dtype, std::vector<std::size_t> const &dims) {
-        return declare_scratch(graph, name, dtype, dims);
+        return expr::declare_scratch(graph, name, dtype, dims);
     };
     std::vector<std::size_t> numerator_dims;
     for (auto const &index : tagged_index) {

@@ -36,10 +36,7 @@ struct FoldKey {
     TensorId                 non_shared_id;
     std::vector<std::string> non_shared_sorted; // canonicalizes the permutation class
 
-    bool operator==(FoldKey const &o) const {
-        return output_id == o.output_id && c_indices == o.c_indices && shared_id == o.shared_id && shared_is_first == o.shared_is_first &&
-               shared_indices == o.shared_indices && non_shared_id == o.non_shared_id && non_shared_sorted == o.non_shared_sorted;
-    }
+    bool operator==(FoldKey const &) const = default;
 
     /// A total order over every field, so two distinct keys always compare
     /// unequal in one direction or the other. Used only to break a tie in the

@@ -146,7 +146,7 @@ bool GEMMBatching::run(Graph &graph) {
                                  group.size(), key.m, key.k, key.n, gemm_us, _max_gemm_us);
                 note_skip("each GEMM in the group is already large enough to run better as its own parallel node",
                           fmt::format("group of {} at level {}", group.size(), lvl));
-                report(2, fmt::format("skip group of {} GEMMs (~{:.1f}us each > {:.0f}us gate) — better as parallel nodes", group.size(),
+                report(2, fmt::format("skip group of {} GEMMs (~{:.1f}us each > {:.0f}us gate): better as parallel nodes", group.size(),
                                       gemm_us, _max_gemm_us));
                 continue;
             }
@@ -182,7 +182,7 @@ bool GEMMBatching::run(Graph &graph) {
                              lvl, key.m, key.k, key.n);
             note_skip("group members' operand strides differ, so one batched call cannot address them",
                       fmt::format("group of {} at level {}", group.size(), lvl));
-            report(3, fmt::format("skip group of {} einsums at level {} ({}x{}x{}) — mismatched strides", group.size(), lvl, key.m, key.k,
+            report(3, fmt::format("skip group of {} einsums at level {} ({}x{}x{}): mismatched strides", group.size(), lvl, key.m, key.k,
                                   key.n));
             continue;
         }
@@ -213,7 +213,7 @@ bool GEMMBatching::run(Graph &graph) {
                                  group.size(), lvl);
                 note_skip("a node between the group members reads or writes one of their operands",
                           fmt::format("group of {} at level {}", group.size(), lvl));
-                report(3, fmt::format("skip group of {} einsums at level {} — interfering node between members", group.size(), lvl));
+                report(3, fmt::format("skip group of {} einsums at level {}: interfering node between members", group.size(), lvl));
                 continue;
             }
         }

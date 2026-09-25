@@ -24,19 +24,11 @@
 #include <variant>
 #include <vector>
 
+#include "ExprHelpers.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
-
-/// The letters of an index list, without their spaces.
-std::vector<std::string> letters_of(std::vector<ExprIndex> const &indices) {
-    std::vector<std::string> out;
-    out.reserve(indices.size());
-    for (auto const &index : indices) {
-        out.push_back(index.letter);
-    }
-    return out;
-}
 
 std::size_t count_letter(std::vector<ExprIndex> const &indices, std::string const &letter) {
     return static_cast<std::size_t>(std::ranges::count_if(indices, [&letter](ExprIndex const &i) { return i.letter == letter; }));
@@ -44,8 +36,8 @@ std::size_t count_letter(std::vector<ExprIndex> const &indices, std::string cons
 
 /// Whether two index lists name the same letters, in any order.
 bool same_letter_set(std::vector<ExprIndex> const &lhs, std::vector<ExprIndex> const &rhs) {
-    auto a = letters_of(lhs);
-    auto b = letters_of(rhs);
+    auto a = expr::letter_list(lhs);
+    auto b = expr::letter_list(rhs);
     std::ranges::sort(a);
     std::ranges::sort(b);
     return a == b;
@@ -53,25 +45,7 @@ bool same_letter_set(std::vector<ExprIndex> const &lhs, std::vector<ExprIndex> c
 
 /// Whether two index lists are equal letter for letter, in order.
 bool same_letters_in_order(std::vector<ExprIndex> const &lhs, std::vector<ExprIndex> const &rhs) {
-    return letters_of(lhs) == letters_of(rhs);
-}
-
-/// A prefactor as the ``std::complex<double>`` a @ref PermuteDescriptor snapshot holds.
-///
-/// The descriptor keeps its at-capture scalars in that one type while a @ref PrefactorScalar is
-/// a variant over the four, so the widening happens here rather than at each assignment. Exact
-/// for every arm: a float and a double both land in a double, and the complex arms are already
-/// this shape.
-std::complex<double> as_complex(PrefactorScalar const &value) {
-    return std::visit(
-        []<typename T>(T const &scalar) -> std::complex<double> {
-            if constexpr (IsComplexV<T>) {
-                return {static_cast<double>(scalar.real()), static_cast<double>(scalar.imag())};
-            } else {
-                return {static_cast<double>(scalar), 0.0};
-            }
-        },
-        value);
+    return expr::letter_list(lhs) == expr::letter_list(rhs);
 }
 
 /// The rename a delta operand encodes: which of its two letters is contracted away and which
@@ -472,10 +446,10 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 // Still has to be produced. A permute carries the reordering and both prefactors,
                 // which is exactly what is left once the delta is gone.
                 PermuteDescriptor permute;
-                permute.a_indices = letters_of(renamed);
-                permute.c_indices = letters_of(statement.target_indices);
-                permute.alpha     = as_complex(term.factor);
-                permute.beta      = as_complex(statement.target_prefactor);
+                permute.a_indices = expr::letter_list(renamed);
+                permute.c_indices = expr::letter_list(statement.target_indices);
+                permute.alpha     = as<std::complex<double>>(term.factor);
+                permute.beta      = as<std::complex<double>>(statement.target_prefactor);
 
                 ExprTerm replacement;
                 replacement.kind         = TermKind::Elementwise;
@@ -489,8 +463,8 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 replacement.operand_indices.push_back(renamed);
 
                 statement.value        = expr.add(std::move(replacement));
-                statement.origin_label = fmt::format("permute: C[{}] = A[{}]", fmt::join(letters_of(statement.target_indices), ","),
-                                                     fmt::join(letters_of(renamed), ","));
+                statement.origin_label = fmt::format("permute: C[{}] = A[{}]", fmt::join(expr::letter_list(statement.target_indices), ","),
+                                                     fmt::join(expr::letter_list(renamed), ","));
                 report(2, fmt::format("'{}' keeps a permute of '{}'; its target is not dissolvable", statement.target_name, source_name));
             }
 

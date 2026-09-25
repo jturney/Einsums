@@ -24,6 +24,8 @@
 #include <utility>
 #include <vector>
 
+#include "NamedViews.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 ThcFactorization::ThcFactorization(std::string tag, RuntimeTensorView<double> three_index,
@@ -55,16 +57,6 @@ ThcFactorization::ThcFactorization(std::string tag, RuntimeTensorView<double> th
                        drop_threshold, std::move(name)) {
 }
 
-namespace {
-/// A view of @p tensor carrying its name, which the implicit conversion drops.
-template <typename TensorType>
-RuntimeTensorView<double> named_view(TensorType const &tensor) {
-    RuntimeTensorView<double> view{tensor};
-    view.set_name(tensor.name());
-    return view;
-}
-} // namespace
-
 ThcFactorization::ThcFactorization(std::string tag, RuntimeTensor<double> const &three_index, RuntimeTensor<double> const &collocation,
                                    double bound, double drop_threshold, std::string name)
     : ThcFactorization(std::move(tag), RuntimeTensorView<double>{three_index}, RuntimeTensorView<double>{collocation}, bound,
@@ -73,7 +65,8 @@ ThcFactorization::ThcFactorization(std::string tag, RuntimeTensor<double> const 
 
 ThcFactorization::ThcFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &collocation,
                                    double bound, double drop_threshold, std::string name)
-    : ThcFactorization(std::move(tag), named_view(three_index), named_view(collocation), bound, drop_threshold, std::move(name)) {
+    : ThcFactorization(std::move(tag), detail::named_view(three_index), detail::named_view(collocation), bound, drop_threshold,
+                       std::move(name)) {
 }
 
 namespace {
@@ -88,20 +81,6 @@ std::vector<RuntimeTensorView<double>> views_of(std::vector<RuntimeTensor<double
         out.emplace_back(*matrix);
     }
     return out;
-}
-/// @p view under a name of its own, for a fit that reads the tensor the caller TAGGED.
-///
-/// A fitting is captured, so whatever it reads becomes an interface tensor of the transformed
-/// graph, bound by name at every later bind. When the fit reads a tensor the caller's own algebra
-/// also holds, that is TWO interface tensors over one buffer: the pass and the fitting each hold
-/// their own handle for it, and a manifest that binds by name refuses two entries sharing one.
-/// Naming the fitting's copy is what makes the pair expressible, and it says what it is: a caller
-/// rebinding the graph supplies the same tensor under both names, and both handles are repointed.
-/// Without it a grid-fitted graph whose fit reads its own tagged tensor could not be saved at all.
-RuntimeTensorView<double> fit_input_view(RuntimeTensorView<double> view) {
-    std::string const stem = view.name();
-    view.set_name(fmt::format("{}@fit", stem.empty() ? std::string{"tagged"} : stem));
-    return view;
 }
 
 } // namespace
@@ -121,21 +100,21 @@ std::shared_ptr<ThcFactorization> ThcFactorization::for_amplitude(std::string ta
     // `propose` reads it as the mode rather than as a missing argument.
     auto provider = std::make_shared<ThcFactorization>(std::move(tag), RuntimeTensorView<double>{}, std::move(collocations), bound,
                                                        drop_threshold, std::move(name));
-    provider->_amplitude.emplace(fit_input_view(std::move(amplitude)));
+    provider->_amplitude.emplace(detail::fit_input_view(std::move(amplitude)));
     return provider;
 }
 
 std::shared_ptr<ThcFactorization> ThcFactorization::for_amplitude(std::string tag, RuntimeTensor<double> const &amplitude,
                                                                   std::vector<RuntimeTensor<double> const *> collocations, double bound,
                                                                   double drop_threshold, std::string name) {
-    return for_amplitude(std::move(tag), named_view(amplitude), views_of(collocations), bound, drop_threshold, std::move(name));
+    return for_amplitude(std::move(tag), detail::named_view(amplitude), views_of(collocations), bound, drop_threshold, std::move(name));
 }
 
 std::shared_ptr<ThcFactorization> ThcFactorization::for_three_index(std::string tag, RuntimeTensorView<double> three_index,
                                                                     std::vector<RuntimeTensorView<double>> collocations, double bound,
                                                                     double drop_threshold, std::string name) {
-    auto provider = std::make_shared<ThcFactorization>(std::move(tag), fit_input_view(std::move(three_index)), std::move(collocations),
-                                                       bound, drop_threshold, std::move(name));
+    auto provider               = std::make_shared<ThcFactorization>(std::move(tag), detail::fit_input_view(std::move(three_index)),
+                                                                     std::move(collocations), bound, drop_threshold, std::move(name));
     provider->_fits_three_index = true;
     return provider;
 }
@@ -143,7 +122,7 @@ std::shared_ptr<ThcFactorization> ThcFactorization::for_three_index(std::string 
 std::shared_ptr<ThcFactorization> ThcFactorization::for_three_index(std::string tag, RuntimeTensor<double> const &three_index,
                                                                     std::vector<RuntimeTensor<double> const *> collocations, double bound,
                                                                     double drop_threshold, std::string name) {
-    return for_three_index(std::move(tag), named_view(three_index), views_of(collocations), bound, drop_threshold, std::move(name));
+    return for_three_index(std::move(tag), detail::named_view(three_index), views_of(collocations), bound, drop_threshold, std::move(name));
 }
 
 void ThcFactorization::report_residual_into(RuntimeTensorView<double> residual, RuntimeTensorView<double> reference) {
@@ -152,11 +131,11 @@ void ThcFactorization::report_residual_into(RuntimeTensorView<double> residual, 
 }
 
 void ThcFactorization::report_residual_into(RuntimeTensor<double> const &residual, RuntimeTensor<double> const &reference) {
-    report_residual_into(named_view(residual), named_view(reference));
+    report_residual_into(detail::named_view(residual), detail::named_view(reference));
 }
 
 void ThcFactorization::report_residual_into(Tensor<double, 1> const &residual, Tensor<double, 1> const &reference) {
-    report_residual_into(named_view(residual), named_view(reference));
+    report_residual_into(detail::named_view(residual), detail::named_view(reference));
 }
 
 double ThcFactorization::epsilon() const {

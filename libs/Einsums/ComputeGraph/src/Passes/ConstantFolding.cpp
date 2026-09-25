@@ -3,12 +3,14 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/ConstantFolding.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
 
+#include <algorithm>
 #include <unordered_set>
 #include <vector>
 
@@ -34,28 +36,14 @@ bool ConstantFolding::run(Graph &graph) {
         return false;
     }
 
-    // Every tensor some node WRITES A VALUE INTO.
+    // Every tensor some node writes a value into, through any alias of its buffer.
     //
-    // Lifecycle nodes are skipped, and skipping them is what makes this pass
-    // able to fire at all. An eagerly created graph-owned tensor gets an Alloc
-    // node whose output is that tensor, so counting Alloc as a writer made
-    // every such tensor non-constant, and a deferred one has no Alloc but is
-    // not materialized, which the guard further down rejects. Between them the
-    // two creation paths left no tensor this pass could ever call constant,
-    // which is why nothing in the tree had ever been observed to fold.
-    //
-    // `is_lifecycle` already says this is the rule: it documents its members as
-    // producing no value of their own and says passes resolving readers and
-    // writers skip them. This one was hand-rolling the set instead.
-    std::unordered_set<TensorId> written_tensors;
-    for (auto const &node : nodes) {
-        if (is_lifecycle(node.kind)) {
-            continue;
-        }
-        for (auto tid : node.outputs) {
-            written_tensors.insert(tid);
-        }
-    }
+    // Lifecycle nodes are not writers, and skipping them is what makes this pass able to fire at
+    // all: an eagerly created graph-owned tensor gets an Alloc node whose output is that tensor,
+    // so counting Alloc made every such tensor non-constant. EscapeAnalysis counts value writers
+    // only, and it counts them per buffer: a tensor written only through a view of it was once
+    // taken for constant here, and a later reader was folded before the write it depended on.
+    auto const writers = EscapeAnalysis::over(graph);
 
     // A node is foldable if ALL its inputs are NOT written by any node
     // (i.e., they are external constants) AND it's not a control flow node.
@@ -68,7 +56,7 @@ bool ConstantFolding::run(Graph &graph) {
     // (is_intermediate=false) are NOT assumed constant because they may change
     // between loop iterations or between successive execute() calls.
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (written_tensors.find(tid) == written_tensors.end() && handle.is_intermediate) {
+        if (writers.writer_count(tid) == 0 && handle.is_intermediate) {
             constant_tensors.insert(tid);
         }
     }
@@ -87,17 +75,7 @@ bool ConstantFolding::run(Graph &graph) {
             auto const *handle = graph.find_tensor(tid);
             return handle != nullptr && handle->alloc_state == AllocState::Materialized;
         };
-        for (auto tid : node.inputs) {
-            if (!materialized(tid)) {
-                return false;
-            }
-        }
-        for (auto tid : node.outputs) {
-            if (!materialized(tid)) {
-                return false;
-            }
-        }
-        return true;
+        return std::ranges::all_of(node.inputs, materialized) && std::ranges::all_of(node.outputs, materialized);
     };
 
     std::vector<bool> folded(nodes.size(), false);
@@ -107,11 +85,7 @@ bool ConstantFolding::run(Graph &graph) {
 
         // Skip control flow, memory management, I/O, communication, allocation, and user-defined nodes.
         // These have side effects and should never be folded.
-        if (is_control_flow(node.kind) || node.kind == OpKind::Alloc || node.kind == OpKind::Free || node.kind == OpKind::DiskRead ||
-            node.kind == OpKind::DiskWrite || node.kind == OpKind::Custom || node.kind == OpKind::HostToDevice ||
-            node.kind == OpKind::DeviceToHost || node.kind == OpKind::Allreduce || node.kind == OpKind::Broadcast ||
-            node.kind == OpKind::Allgather || node.kind == OpKind::Scatter || node.kind == OpKind::Barrier ||
-            node.kind == OpKind::Materialize || node.kind == OpKind::Initialize) {
+        if (is_infrastructure(node.kind) || is_lifecycle(node.kind) || node.kind == OpKind::Custom) {
             continue;
         }
 
@@ -128,16 +102,7 @@ bool ConstantFolding::run(Graph &graph) {
             continue;
         }
 
-        // Check if all inputs are constant
-        bool all_inputs_constant = true;
-        for (auto tid : node.inputs) {
-            if (constant_tensors.find(tid) == constant_tensors.end()) {
-                all_inputs_constant = false;
-                break;
-            }
-        }
-
-        if (!all_inputs_constant) {
+        if (!std::ranges::all_of(node.inputs, [&](TensorId tid) { return constant_tensors.contains(tid); })) {
             continue;
         }
 
@@ -148,7 +113,7 @@ bool ConstantFolding::run(Graph &graph) {
 
         // This node's inputs are all constant, execute it now and replace with no-op
         EINSUMS_LOG_INFO("ConstantFolding: folding node {} ({})", node.id, node.label);
-        report(2, fmt::format("fold node {} ({}) — all inputs constant, evaluated at compile time", node.id, node.label));
+        report(2, fmt::format("fold node {} ({}): all inputs constant, evaluated at compile time", node.id, node.label));
         node.execute();
 
         // Replace executor with no-op

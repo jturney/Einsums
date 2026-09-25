@@ -754,7 +754,7 @@ bool ContractionPlanning::run(Graph &graph) {
                     EINSUMS_LOG_INFO("ContractionPlanning: chain of {} contractions — analysis only (interior output is user-visible or "
                                      "read outside the chain; restructuring would elide an observable write)",
                                      n);
-                    this->report(3, fmt::format("skip chain of {} — interior output is observable", n));
+                    this->report(3, fmt::format("skip chain of {}: interior output is observable", n));
                     scan_reports.push_back(std::move(report));
                     continue;
                 }

@@ -20,6 +20,8 @@
 #include <utility>
 #include <vector>
 
+#include "NamedViews.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
 MetricFitFactorization::MetricFitFactorization(std::string tag, RuntimeTensorView<double> three_index, RuntimeTensorView<double> metric,
@@ -34,16 +36,6 @@ MetricFitFactorization::MetricFitFactorization(std::string tag, RuntimeTensorVie
     }
 }
 
-namespace {
-/// A view of @p tensor carrying its name, which the implicit conversion drops.
-template <typename TensorType>
-RuntimeTensorView<double> named_view(TensorType const &tensor) {
-    RuntimeTensorView<double> view{tensor};
-    view.set_name(tensor.name());
-    return view;
-}
-} // namespace
-
 MetricFitFactorization::MetricFitFactorization(std::string tag, RuntimeTensor<double> const &three_index,
                                                RuntimeTensor<double> const &metric, double bound, double drop_threshold, std::string name)
     : MetricFitFactorization(std::move(tag), RuntimeTensorView<double>{three_index}, RuntimeTensorView<double>{metric}, bound,
@@ -52,7 +44,8 @@ MetricFitFactorization::MetricFitFactorization(std::string tag, RuntimeTensor<do
 
 MetricFitFactorization::MetricFitFactorization(std::string tag, Tensor<double, 3> const &three_index, Tensor<double, 2> const &metric,
                                                double bound, double drop_threshold, std::string name)
-    : MetricFitFactorization(std::move(tag), named_view(three_index), named_view(metric), bound, drop_threshold, std::move(name)) {
+    : MetricFitFactorization(std::move(tag), detail::named_view(three_index), detail::named_view(metric), bound, drop_threshold,
+                             std::move(name)) {
 }
 
 std::string MetricFitFactorization::dropped_param_name(std::string const &provider, std::string const &tensor) {

@@ -149,6 +149,17 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") SpaceTiling {
 class PassManager; // Forward declaration
 class OptimizerPass;
 enum class OptLevel : std::uint8_t; // Optimizer.hpp
+
+/**
+ * @brief Run @p pass on @p graph and, when the pass opts into sub-graph recursion, on every
+ *        descendant loop body and branch.
+ *
+ * The one recursion driver: PassManager and Graph::apply both go through it, so a pass reaches
+ * the same graphs however it is applied.
+ *
+ * @return Whether any invocation modified its graph.
+ */
+EINSUMS_EXPORT bool run_pass_tree(OptimizerPass &pass, Graph &graph);
 struct ParsedEinsumSpec;
 
 /**
@@ -1492,6 +1503,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * Creates the pass, runs it, and returns a pair of (modified, pass).
      * Useful for single-pass application and retrieving analysis results.
+     * A pass that opts into sub-graph recursion reaches loop bodies and
+     * branches exactly as it does inside a PassManager (see @ref run_pass_tree).
      *
      * @tparam PassType The pass class.
      * @return Pair of (was_modified, pass_instance).
@@ -1507,7 +1520,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     std::pair<bool, PassType> apply(Args &&...args) {
         std::scoped_lock const lock(_content_mutex);
         PassType               pass{std::forward<Args>(args)...};
-        bool                   modified = pass.run(*this);
+        bool                   modified = run_pass_tree(pass, *this);
         assign_node_ids();
         for_each_descendant(std::function<void(Graph &)>{[](Graph &sub) { sub.assign_node_ids(); }});
         return {modified, std::move(pass)};

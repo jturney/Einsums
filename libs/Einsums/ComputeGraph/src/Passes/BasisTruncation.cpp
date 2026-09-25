@@ -29,17 +29,11 @@
 #include <utility>
 #include <vector>
 
+#include "../NamedViews.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
-
-/// A view of @p tensor carrying its name, which the implicit conversion drops.
-template <typename TensorType>
-RuntimeTensorView<double> named_view(TensorType const &tensor) {
-    RuntimeTensorView<double> view{tensor};
-    view.set_name(tensor.name());
-    return view;
-}
 
 /// @p view under the name the PROJECTION reads it by.
 ///
@@ -191,13 +185,13 @@ void BasisTruncation::set_amplitudes(RuntimeTensor<double> const &amplitudes) {
                                 "occupied axes and its two virtual axes to agree",
                                 amplitudes.dim(0), amplitudes.dim(1), amplitudes.dim(2), amplitudes.dim(3));
     }
-    _amplitudes.emplace(named_view(amplitudes));
+    _amplitudes.emplace(compute_graph::detail::named_view(amplitudes));
 }
 
 void BasisTruncation::set_amplitudes(Tensor<double, 4> const &amplitudes) {
     RuntimeTensor<double> const runtime{amplitudes};
     set_amplitudes(runtime);
-    _amplitudes.emplace(named_view(amplitudes));
+    _amplitudes.emplace(compute_graph::detail::named_view(amplitudes));
 }
 
 void BasisTruncation::set_fock(RuntimeTensor<double> const &fock) {
@@ -205,13 +199,13 @@ void BasisTruncation::set_fock(RuntimeTensor<double> const &fock) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "BasisTruncation::set_fock: the Fock block must be a square rank-2 tensor over the space being truncated");
     }
-    _fock.emplace(named_view(fock));
+    _fock.emplace(compute_graph::detail::named_view(fock));
 }
 
 void BasisTruncation::set_fock(Tensor<double, 2> const &fock) {
     RuntimeTensor<double> const runtime{fock};
     set_fock(runtime);
-    _fock.emplace(named_view(fock));
+    _fock.emplace(compute_graph::detail::named_view(fock));
 }
 
 void BasisTruncation::set_occupied_energies(RuntimeTensor<double> const &energies) {
@@ -225,13 +219,13 @@ void BasisTruncation::set_occupied_energies(RuntimeTensor<double> const &energie
                                 "BasisTruncation::set_occupied_energies: {} energies against amplitudes with {} occupied function(s)",
                                 energies.dim(0), _amplitudes->dim(0));
     }
-    _occupied.emplace(named_view(energies));
+    _occupied.emplace(compute_graph::detail::named_view(energies));
 }
 
 void BasisTruncation::set_occupied_energies(Tensor<double, 1> const &energies) {
     RuntimeTensor<double> const runtime{energies};
     set_occupied_energies(runtime);
-    _occupied.emplace(named_view(energies));
+    _occupied.emplace(compute_graph::detail::named_view(energies));
 }
 
 void BasisTruncation::set_occupation(double occupation) {

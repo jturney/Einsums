@@ -236,8 +236,6 @@ void process(Graph &graph, size_t &num_candidates, size_t &num_merged) {
                          graph.tensor(plan->dst).total_bytes());
         apply_merge(graph, *plan, num_merged);
     }
-
-    graph.for_each_subgraph([&](Graph &sub) { process(sub, num_candidates, num_merged); });
 }
 
 } // namespace

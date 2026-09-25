@@ -28,10 +28,7 @@ struct FactorKey {
     bool                     shared_is_first;
     std::vector<std::string> non_shared_indices;
 
-    bool operator==(FactorKey const &o) const {
-        return output_id == o.output_id && shared_input_id == o.shared_input_id && shared_is_first == o.shared_is_first &&
-               non_shared_indices == o.non_shared_indices;
-    }
+    bool operator==(FactorKey const &) const = default;
 };
 
 struct FactorKeyHash {
@@ -185,28 +182,11 @@ void DistributiveFactoring::reset_stats() {
     _num_groups       = 0;
     _num_eliminated   = 0;
     _num_unprofitable = 0;
+    _groups.clear();
 }
 
 bool DistributiveFactoring::run(Graph &graph) {
-    // Own the recursion (like LoopInvariantHoisting): reset the counters once
-    // here at the root, then descend ourselves. If we instead opted into
-    // PassManager auto-recursion, run() would be re-invoked per subgraph and
-    // reset the top-level tally each time. recurse_into_subgraphs()
-    // returns false so the PassManager does not double-walk.
-    _groups.clear();
-    return run_recursive(graph);
-}
-
-bool DistributiveFactoring::run_recursive(Graph &graph) {
-    bool modified = factor_one_level(graph);
-    // Factor loop bodies and conditional branches too; counters accumulate
-    // across the whole tree (no per-level reset).
-    graph.for_each_subgraph([&](Graph &sub) {
-        if (run_recursive(sub)) {
-            modified = true;
-        }
-    });
-    return modified;
+    return factor_one_level(graph);
 }
 
 bool DistributiveFactoring::factor_one_level(Graph &graph) {

@@ -25,9 +25,10 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include "AntisymmetryRules.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -53,7 +54,7 @@ std::optional<OperatorProducer> read_producer(Node const &node) {
         out.source     = node.inputs[0];
         out.operators  = desc->operators;
         out.c_indices  = desc->c_indices;
-        out.overwrites = desc->params != nullptr ? is_zero(desc->params->beta) : desc->beta == std::complex<double>{0.0, 0.0};
+        out.overwrites = pure_overwrite(node);
     } else {
         // Only the permute form is folded. An einsum's operator wraps a
         // CONTRACTION, so repointing the consumer at "the source" would mean
@@ -70,41 +71,6 @@ std::optional<OperatorProducer> read_producer(Node const &node) {
     return out;
 }
 
-/// The antisymmetry the identity requires of the OTHER operand.
-///
-/// Built exactly as @ref AntisymmetryInference builds what it tags, so the
-/// containment test below compares like with like. That is a deliberate
-/// narrowness: two descriptors can state the same group through different
-/// generators, and this accepts only the spelling the inference pass produces.
-/// The cost is declining a fact it could have used; the alternative is closing
-/// generator sets under composition to compare groups, which is a much larger
-/// claim to get right for a rewrite that changes the answer when it is wrong.
-std::optional<SymmetryDescriptor> required_antisymmetry(OperatorProducer const &producer) {
-    SymmetryDescriptor desc;
-
-    for (auto const &op : producer.operators) {
-        std::vector<int> axes;
-        for (auto const &letter : op.letters()) {
-            auto const first = std::ranges::find(producer.c_indices, letter);
-            if (first == producer.c_indices.end() || std::count(producer.c_indices.begin(), producer.c_indices.end(), letter) != 1) {
-                return std::nullopt;
-            }
-            axes.push_back(static_cast<int>(first - producer.c_indices.begin()));
-        }
-        std::ranges::sort(axes);
-        if (axes.size() < 2 || axes.back() >= kMaxSymmetryRank) {
-            return std::nullopt;
-        }
-        for (std::size_t k = 0; k + 1 < axes.size(); ++k) {
-            desc.add(SymmetryOp::swap(axes[k], axes[k + 1], -1));
-        }
-    }
-    if (desc.empty()) {
-        return std::nullopt;
-    }
-    return desc;
-}
-
 /// The facts DETECTION established: a hint on a tensor nothing in the graph
 /// writes.
 ///
@@ -113,29 +79,15 @@ std::optional<SymmetryDescriptor> required_antisymmetry(OperatorProducer const &
 /// its premise descended from, and the conservative set is both simpler and the
 /// right thing to re-check: if any detected fact stops holding, some rewrite
 /// justified by it may be invalid, and this pass cannot see which.
-std::vector<std::pair<TensorId, SymmetryDescriptor>> detected_leaves(Graph const &graph) {
-    std::unordered_set<TensorId> written;
-    for (auto const &node : graph.nodes()) {
-        if (is_lifecycle(node.kind)) {
-            continue;
-        }
-        for (auto const out : node.outputs) {
-            written.insert(graph.resolve_alias(out));
-        }
-    }
-
+std::vector<std::pair<TensorId, SymmetryDescriptor>> detected_leaves(EscapeAnalysis const &writers) {
     std::vector<std::pair<TensorId, SymmetryDescriptor>> leaves;
-    for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (written.contains(graph.resolve_alias(tid)) || handle.symmetry_hint == nullptr || !handle.impl_fn) {
+    for (auto const &[tid, handle] : writers.graph().tensors_map()) {
+        if (writers.writer_count(tid) != 0 || handle.symmetry_hint == nullptr || !handle.impl_fn) {
             continue;
         }
         leaves.emplace_back(tid, *handle.symmetry_hint);
     }
     return leaves;
-}
-
-bool contains_all(SymmetryDescriptor const &have, SymmetryDescriptor const &need) {
-    return std::ranges::all_of(need.ops, [&](SymmetryOp const &op) { return std::ranges::find(have.ops, op) != have.ops.end(); });
 }
 
 } // namespace
@@ -218,7 +170,7 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
                 continue;
             }
 
-            auto const need = required_antisymmetry(*producer);
+            auto const need = antisymmetry::full_antisymmetry(producer->operators, producer->c_indices);
             if (!need.has_value()) {
                 note_skip("the operator's letters do not each name one addressable axis", fmt::format("dot #{}", dot.id));
                 continue;
@@ -229,7 +181,7 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
                 note_skip("the other operand carries no antisymmetry, so the terms do not collapse", fmt::format("dot #{}", dot.id));
                 continue;
             }
-            if (!contains_all(*other_handle->symmetry_hint, *need)) {
+            if (!antisymmetry::contains_all(*other_handle->symmetry_hint, *need)) {
                 note_skip("the other operand's antisymmetry does not cover every axis the operator permutes",
                           fmt::format("dot #{}", dot.id));
                 continue;
@@ -324,7 +276,7 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
     //
     // At position zero, because a guard behind the work it guards has already
     // let the wrong answer be computed. add_setup_at exists for this reason.
-    if (auto leaves = detected_leaves(graph); !leaves.empty()) {
+    if (auto leaves = detected_leaves(EscapeAnalysis::over(graph)); !leaves.empty()) {
         Graph &body  = graph.add_setup_at("antisymmetry premise guard", 0);
         Graph *owner = &graph;
 

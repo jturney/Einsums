@@ -38,6 +38,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes::search)
@@ -219,17 +220,6 @@ inline SymbolicCost add_cost(SymbolicCost const &lhs, SymbolicCost const &rhs) {
     return SymbolicCost{.flops = lhs.flops + rhs.flops, .traffic = lhs.traffic + rhs.traffic, .resident = lhs.resident + rhs.resident};
 }
 
-/// @brief The distinct letters of one factor.
-/// @param[in] factor The factor.
-/// @return Its letters, deduplicated.
-inline std::set<std::string> letters_of(Factor const &factor) {
-    std::set<std::string> out;
-    for (auto const &index : factor.indices) {
-        out.insert(index.letter);
-    }
-    return out;
-}
-
 /// @brief The distinct letters of an index list.
 /// @param[in] indices The list.
 /// @return Its letters, deduplicated.
@@ -239,6 +229,38 @@ inline std::set<std::string> letters_of(std::vector<ExprIndex> const &indices) {
         out.insert(index.letter);
     }
     return out;
+}
+
+/// @brief The distinct letters of one factor.
+/// @param[in] factor The factor.
+/// @return Its letters, deduplicated.
+inline std::set<std::string> letters_of(Factor const &factor) {
+    return letters_of(factor.indices);
+}
+
+/// @brief One operand of a binary contraction term.
+struct TermOperand {
+    TermId                 term;             ///< the operand's own term
+    std::vector<ExprIndex> indices;          ///< how the contraction reads it
+    bool                   conjugate{false}; ///< whether it is read conjugated
+};
+
+/// @brief A binary contraction term over @p lhs and @p rhs into @p out.
+///
+/// Priced the way a raised term is, so a region's before-and-after compares like with like. An
+/// emitted term with no cost reads as free, and a report then offers a rewrite to nothing as
+/// evidence that the search was worth making.
+inline ExprTerm contraction_term(TermOperand lhs, TermOperand rhs, std::vector<ExprIndex> out, PrefactorScalar factor,
+                                 LetterTable const &table) {
+    ExprTerm term;
+    term.kind            = TermKind::Contraction;
+    term.cost            = contraction_cost(letters_of(lhs.indices), letters_of(rhs.indices), letters_of(out), table);
+    term.indices         = std::move(out);
+    term.operands        = {lhs.term, rhs.term};
+    term.operand_indices = {std::move(lhs.indices), std::move(rhs.indices)};
+    term.conjugate       = {lhs.conjugate, rhs.conjugate};
+    term.factor          = factor;
+    return term;
 }
 
 /// @brief The result of the subset program over one product.

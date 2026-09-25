@@ -176,36 +176,6 @@ std::set<std::string> parse_disabled_passes() {
 
 namespace {
 
-/// Run a single pass on @p graph and, when the pass opts in via
-/// ``recurse_into_subgraphs()``, on every descendant loop body /
-/// conditional branch in post-order (children before re-running on parent
-/// is not required, passes either rewrite a level in isolation or hoist
-/// from children into the parent in a single ``run()`` call on the
-/// parent). Returns ``true`` if any invocation of @p pass modified its
-/// graph.
-bool run_pass_recursive(OptimizerPass &pass, Graph &graph) {
-    bool modified = pass.run(graph);
-    if (pass.recurse_into_subgraphs()) {
-        // The children are COLLECTED before any of them is run, and that is load-bearing rather
-        // than tidy. A pass whose effect on a body lands in the parent -- a region rewrite
-        // hoisting a setup out of a loop is the case that forced this -- inserts a node into the
-        // very vector `for_each_subgraph` is walking, and a visitor called from inside that walk
-        // would then be holding an invalidated iterator. The pointers survive the insertion
-        // because a body is held by shared_ptr from its descriptor, so a snapshot of them is
-        // exactly as valid after the parent's node vector reallocates as before it. A sub-graph
-        // the pass itself creates is not visited this apply, which is the right answer as well:
-        // the setup a rewrite just emitted is not a region for the same rewrite to raise.
-        std::vector<Graph *> children;
-        graph.for_each_subgraph([&children](Graph &sub) { children.push_back(&sub); });
-        for (Graph *sub : children) {
-            if (run_pass_recursive(pass, *sub)) {
-                modified = true;
-            }
-        }
-    }
-    return modified;
-}
-
 /// Node-position hazard guard. Position is program order in this IR: the hazard
 /// scan in topological_sort treats a read that appears before a write as a
 /// legitimate WAR, so a pass that appends or moves a WRITER past a surviving
@@ -329,6 +299,36 @@ PassManager &PassManager::enable(std::string pass_name) {
     return *this;
 }
 
+/// Run a single pass on @p graph and, when the pass opts in via
+/// ``recurse_into_subgraphs()``, on every descendant loop body /
+/// conditional branch in post-order (children before re-running on parent
+/// is not required, passes either rewrite a level in isolation or hoist
+/// from children into the parent in a single ``run()`` call on the
+/// parent). Returns ``true`` if any invocation of @p pass modified its
+/// graph.
+bool run_pass_tree(OptimizerPass &pass, Graph &graph) {
+    bool modified = pass.run(graph);
+    if (pass.recurse_into_subgraphs()) {
+        // The children are COLLECTED before any of them is run, and that is load-bearing rather
+        // than tidy. A pass whose effect on a body lands in the parent -- a region rewrite
+        // hoisting a setup out of a loop is the case that forced this -- inserts a node into the
+        // very vector `for_each_subgraph` is walking, and a visitor called from inside that walk
+        // would then be holding an invalidated iterator. The pointers survive the insertion
+        // because a body is held by shared_ptr from its descriptor, so a snapshot of them is
+        // exactly as valid after the parent's node vector reallocates as before it. A sub-graph
+        // the pass itself creates is not visited this apply, which is the right answer as well:
+        // the setup a rewrite just emitted is not a region for the same rewrite to raise.
+        std::vector<Graph *> children;
+        graph.for_each_subgraph([&children](Graph &sub) { children.push_back(&sub); });
+        for (Graph *sub : children) {
+            if (run_pass_tree(pass, *sub)) {
+                modified = true;
+            }
+        }
+    }
+    return modified;
+}
+
 bool PassManager::run(Graph &graph) {
     LabeledSection("PassManager::run({})", graph.name());
 
@@ -434,7 +434,7 @@ bool PassManager::run(Graph &graph) {
         } else {
             auto const baseline         = observed_writes(graph);
             auto const structure_before = graph.structure_version();
-            bool const modified         = run_pass_recursive(*pass, graph);
+            bool const modified         = run_pass_tree(*pass, graph);
             settle_node_ids(graph, pass->name());
             auto   t1 = std::chrono::high_resolution_clock::now();
             double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -502,7 +502,7 @@ bool PassManager::run(Graph &graph) {
             }
             LabeledSection("reanalyze:{}", pass->name());
             auto const structure_before = graph.structure_version();
-            run_pass_recursive(*pass, graph);
+            run_pass_tree(*pass, graph);
             check_read_only_phase(graph, *pass, structure_before);
             EINSUMS_LOG_INFO("PassManager: re-ran analysis pass '{}' after a structural change", pass->name());
             if (_verbosity >= 1) {

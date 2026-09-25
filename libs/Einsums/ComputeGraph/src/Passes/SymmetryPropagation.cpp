@@ -21,28 +21,27 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
-/// Soundness context for an inference run on one graph. A symmetry tag is
-/// only ever a *guarantee* about the tensor's final contents, so we infer
-/// it only when nothing can invalidate it after the producing op:
-///   - the tensor has exactly one writer in this graph (no later overwrite
-///     could destroy the inferred structure), and
-///   - the tensor isn't referenced by a child sub-graph (a nested loop /
-///     conditional body could write it without this graph's node list
-///     showing it, a Loop node doesn't list its body's writes).
-/// Without these guards a stale tag could claim symmetry the data no longer
-/// has. They make the pass strictly conservative and therefore safe to
-/// recurse into loop bodies.
-/// Both conditions in one call: exactly one value-writer in this graph, and no
-/// descendant sub-graph touching the buffer. Shared with LoopInvariantHoisting
-/// and the region framework rather than counted a second time here, because
-/// three derivations of one relation disagreeing in the corner nobody tested is
-/// this module's signature bug.
-using InferGuard = EscapeAnalysis;
+// Soundness context for an inference run on one graph. A symmetry tag is
+// only ever a *guarantee* about the tensor's final contents, so we infer
+// it only when nothing can invalidate it after the producing op:
+//   - the tensor has exactly one writer in this graph (no later overwrite
+//     could destroy the inferred structure), and
+//   - the tensor isn't referenced by a child sub-graph (a nested loop /
+//     conditional body could write it without this graph's node list
+//     showing it, a Loop node doesn't list its body's writes).
+// Without these guards a stale tag could claim symmetry the data no longer
+// has. They make the pass strictly conservative and therefore safe to
+// recurse into loop bodies.
+// EscapeAnalysis::stable answers both in one call: exactly one value-writer in this graph, and no
+// descendant sub-graph touching the buffer. Shared with LoopInvariantHoisting
+// and the region framework rather than counted a second time here, because
+// three derivations of one relation disagreeing in the corner nobody tested is
+// this module's signature bug.
 
 /// Try to push an inferred descriptor to a graph-owned tensor handle.
 /// Returns true if the descriptor was applied (either taking on a new value
 /// or overwriting ``nullptr`` on the backing tensor).
-bool apply_inferred(Graph &graph, TensorId out_tid, SymmetryDescriptor desc, InferGuard const &guard) {
+bool apply_inferred(Graph &graph, TensorId out_tid, SymmetryDescriptor desc, EscapeAnalysis const &guard) {
     auto &handle = graph.tensor(out_tid);
     if (!handle.is_intermediate)
         return false; // Never mutate user-owned tensor state.
@@ -61,7 +60,7 @@ bool apply_inferred(Graph &graph, TensorId out_tid, SymmetryDescriptor desc, Inf
 
 /// Rule: ``C = α·A``, Scale preserves its input's symmetry. Detects
 /// ``OpKind::Scale`` nodes and copies the descriptor from input to output.
-bool propagate_scale(Graph &graph, Node const &node, InferGuard const &guard) {
+bool propagate_scale(Graph &graph, Node const &node, EscapeAnalysis const &guard) {
     if (node.kind != OpKind::Scale)
         return false;
     if (node.inputs.size() != 1 || node.outputs.size() != 1)
@@ -76,7 +75,7 @@ bool propagate_scale(Graph &graph, Node const &node, InferGuard const &guard) {
 /// Rule: ``C = α·A + β·B`` (or simple sum), if A and B carry identical
 /// descriptors, C inherits them. Applies to
 /// OpKind::Axpby when the descriptors match exactly.
-bool propagate_linear_combination(Graph &graph, Node const &node, InferGuard const &guard) {
+bool propagate_linear_combination(Graph &graph, Node const &node, EscapeAnalysis const &guard) {
     if (node.kind != OpKind::Axpby)
         return false;
     if (node.inputs.size() < 2 || node.outputs.size() != 1)
@@ -107,7 +106,7 @@ bool propagate_linear_combination(Graph &graph, Node const &node, InferGuard con
 /// We only need the scalar type from the EinsumDescriptor to pick between
 /// the symmetric and Hermitian output tag; that information is on the
 /// underlying tensor's descriptor, which we read from the handle.
-bool propagate_self_contraction(Graph &graph, Node const &node, InferGuard const &guard) {
+bool propagate_self_contraction(Graph &graph, Node const &node, EscapeAnalysis const &guard) {
     if (node.kind != OpKind::Einsum)
         return false;
     if (node.inputs.size() != 2 || node.outputs.size() != 1)
@@ -140,7 +139,7 @@ bool propagate_self_contraction(Graph &graph, Node const &node, InferGuard const
 /// preserving) and the swap permute (``{j,i}``, for a symmetric tensor the
 /// output equals the input). Beta must be zero (pure overwrite); otherwise
 /// we can't reason about what C was before the add.
-bool propagate_permute(Graph &graph, Node const &node, InferGuard const &guard) {
+bool propagate_permute(Graph &graph, Node const &node, EscapeAnalysis const &guard) {
     if (node.kind != OpKind::Permute && node.kind != OpKind::Transpose)
         return false;
     if (node.inputs.size() != 1 || node.outputs.size() != 1)
@@ -196,7 +195,7 @@ bool SymmetryPropagation::run(Graph &graph) {
     // output but don't write a *value* that could invalidate an inferred
     // symmetry; a freshly created or zeroed tensor is then filled by exactly one
     // real op. The shared analysis excludes them for the same reason.
-    auto const guard = InferGuard::over(graph);
+    auto const guard = EscapeAnalysis::over(graph);
 
     for (auto const &node : nodes) {
         if (propagate_scale(graph, node, guard))

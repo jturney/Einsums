@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "ContractionTreeSearch.hpp"
+#include "ExprHelpers.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -44,6 +45,7 @@ namespace {
 /// chain a provider's factors leave behind.
 using search::add_cost;
 using search::contraction_cost;
+using search::contraction_term;
 using search::Factor;
 using search::letters_of;
 using search::LetterTable;
@@ -1142,10 +1144,7 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             if (dims.empty()) {
                 return std::nullopt;
             }
-            TensorId const id = detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-                auto &tensor = graph.declare_runtime_tensor<T>(fmt::format("{}_m{}", stem, member), dims, /*intermediate=*/true);
-                return graph.find_tensor_id_by_ptr(&tensor);
-            });
+            TensorId const id = expr::declare_scratch(graph, fmt::format("{}_m{}", stem, member), dtype, dims);
             if (id == 0) {
                 return std::nullopt;
             }
@@ -1235,10 +1234,8 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             }
             shared_members = std::move(*declared);
         }
-        TensorId const shared_id = left.ragged() ? TensorId{} : detail::dispatch_scalar_type(model->dtype, [&]<typename T>(T /*tag*/) {
-            auto &tensor = graph.declare_runtime_tensor<T>(fmt::format("mtf_shared{}", shared.size()), dims, /*intermediate=*/true);
-            return graph.find_tensor_id_by_ptr(&tensor);
-        });
+        TensorId const shared_id =
+            left.ragged() ? TensorId{} : expr::declare_scratch(graph, fmt::format("mtf_shared{}", shared.size()), model->dtype, dims);
         if (!left.ragged() && shared_id == 0) {
             return false;
         }
@@ -1598,21 +1595,9 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     auto emit_contraction = [&](Factor const &a, Factor const &b, TensorId target, std::vector<TensorId> const &targets,
                                 std::string const &target_name, std::vector<ExprIndex> const &target_indices,
                                 PrefactorScalar target_prefactor, PrefactorScalar factor, std::string const &label) {
-        ExprTerm term;
-        term.kind            = TermKind::Contraction;
-        term.indices         = target_indices;
-        term.operands        = {leaf_for(a, {}), leaf_for(b, {})};
-        term.operand_indices = {a.indices, b.indices};
-        term.conjugate       = {a.conjugate, b.conjugate};
-        term.factor          = factor;
-        // Priced the way a raised term is, so the region's before-and-after compares like with
-        // like. An emitted term with no cost reads as free, and the report then offers a rewrite
-        // to nothing as evidence that the search was worth making.
-        std::set<std::string> out_letters;
-        for (auto const &index : target_indices) {
-            out_letters.insert(index.letter);
-        }
-        term.cost = contraction_cost(letters_of(a), letters_of(b), out_letters, emit_table);
+        ExprTerm term =
+            contraction_term({.term = leaf_for(a, {}), .indices = a.indices, .conjugate = a.conjugate},
+                             {.term = leaf_for(b, {}), .indices = b.indices, .conjugate = b.conjugate}, target_indices, factor, emit_table);
 
         ExprStatement statement;
         statement.target           = target;
@@ -1622,10 +1607,8 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         statement.target_indices   = target_indices;
         statement.target_prefactor = target_prefactor;
         statement.value            = expr.add(std::move(term));
-        std::size_t free_axes      = 0;
-        for (auto const &index : target_indices) {
-            free_axes += is_member_letter(index.letter) ? 0 : 1;
-        }
+        auto const free_axes =
+            std::ranges::count_if(target_indices, [&](ExprIndex const &index) { return !is_member_letter(index.letter); });
         statement.origin_kind  = targets.empty() ? OpKind::Einsum : (free_axes == 0 ? OpKind::GroupedDot : OpKind::GroupedBatchedGemm);
         statement.origin_label = label;
         emitted.push_back(std::move(statement));
@@ -1784,16 +1767,12 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
                                  fmt::format("mtf grouped t{}", scratch_index));
                 return Factor{.tensor = TensorId{}, .indices = axes, .conjugate = false, .members = std::move(*declared)};
             }
-            TensorId const scratch = detail::dispatch_scalar_type(model->dtype, [&]<typename T>(T /*tag*/) {
-                // Named after the graph it is declared in. This pass descends into loop bodies,
-                // so one program holds one of these counters per graph and two graphs would
-                // otherwise declare two different tensors under one name; the storage auditor
-                // keys its duplicate check on the name and reads that as one tensor allocated
-                // twice.
-                auto &tensor = graph.declare_runtime_tensor<T>(fmt::format("{}_mtf_t{}", scratch_stem, scratch_index++), dims,
-                                                               /*intermediate=*/true);
-                return graph.find_tensor_id_by_ptr(&tensor);
-            });
+            // Named after the graph it is declared in. This pass descends into loop bodies, so one
+            // program holds one of these counters per graph and two graphs would otherwise declare
+            // two different tensors under one name; the storage auditor keys its duplicate check on
+            // the name and reads that as one tensor allocated twice.
+            TensorId const scratch =
+                expr::declare_scratch(graph, fmt::format("{}_mtf_t{}", scratch_stem, scratch_index++), model->dtype, dims);
             if (scratch == 0) {
                 return std::nullopt;
             }

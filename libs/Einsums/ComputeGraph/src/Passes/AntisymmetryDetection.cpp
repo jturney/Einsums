@@ -5,6 +5,7 @@
 
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/AntisymmetryDetection.hpp>
@@ -21,53 +22,13 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_set>
 #include <vector>
+
+#include "AntisymmetryRules.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
-
-/// The generators one operator makes worth testing, and the shape they address.
-struct Candidate {
-    SymmetryDescriptor       within;     ///< antisymmetry inside each group
-    SymmetryDescriptor       invariance; ///< invariance under the terms the operator sums
-    std::vector<std::size_t> dims;       ///< extents a tensor must match to be addressed
-};
-
-/// Map an operator's letters onto the output's axis positions.
-std::optional<std::vector<std::vector<int>>> axis_groups(PermutationOperator const &op, std::vector<std::string> const &c_indices) {
-    std::vector<std::vector<int>> groups;
-    for (auto const &group : op.groups) {
-        std::vector<int> axes;
-        for (auto const &letter : group) {
-            auto const first = std::ranges::find(c_indices, letter);
-            if (first == c_indices.end() || std::count(c_indices.begin(), c_indices.end(), letter) != 1) {
-                return std::nullopt;
-            }
-            auto const position = static_cast<int>(first - c_indices.begin());
-            if (position >= kMaxSymmetryRank) {
-                return std::nullopt;
-            }
-            axes.push_back(position);
-        }
-        std::ranges::sort(axes);
-        groups.push_back(std::move(axes));
-    }
-    return groups;
-}
-
-/// Antisymmetry WITHIN each group, which is what a coset operator's operand has
-/// to carry before the operator's output carries anything.
-SymmetryDescriptor within_group_antisymmetry(std::vector<std::vector<int>> const &groups) {
-    SymmetryDescriptor desc;
-    for (auto const &axes : groups) {
-        for (std::size_t k = 0; k + 1 < axes.size(); ++k) {
-            desc.add(SymmetryOp::swap(axes[k], axes[k + 1], -1));
-        }
-    }
-    return desc;
-}
 
 /// INVARIANCE under the axes an operator permutes, which is what a divisor needs
 /// before the quotient keeps a numerator's antisymmetry.
@@ -92,9 +53,7 @@ SymmetryDescriptor operator_invariance(std::vector<std::vector<int>> const &grou
     std::ranges::sort(axes);
 
     SymmetryDescriptor desc;
-    for (std::size_t k = 0; k + 1 < axes.size(); ++k) {
-        desc.add(SymmetryOp::swap(axes[k], axes[k + 1], +1));
-    }
+    antisymmetry::add_adjacent_swaps(desc, axes, +1);
     return desc;
 }
 
@@ -171,16 +130,6 @@ bool read_einsum_indices(Node const &node, std::vector<std::string> &a, std::vec
     return true;
 }
 
-/// Where a letter sits in a list, when it sits there exactly once.
-std::optional<int> sole_position(std::vector<std::string> const &list, std::string const &letter) {
-    if (std::count(list.begin(), list.end(), letter) != 1) {
-        return std::nullopt;
-    }
-    auto const first = std::ranges::find(list, letter);
-    auto const at    = static_cast<int>(first - list.begin());
-    return at < kMaxSymmetryRank ? std::optional<int>{at} : std::nullopt;
-}
-
 } // namespace
 
 bool AntisymmetryDetection::run(Graph &graph) {
@@ -190,15 +139,7 @@ bool AntisymmetryDetection::run(Graph &graph) {
     // false of the value the graph will compute into it. Only tensors NOTHING
     // writes are candidates: those are the bound inputs, and what is in them now
     // is what the arithmetic will read.
-    std::unordered_set<TensorId> written;
-    for (auto const &node : graph.nodes()) {
-        if (is_lifecycle(node.kind)) {
-            continue;
-        }
-        for (auto const out : node.outputs) {
-            written.insert(graph.resolve_alias(out));
-        }
-    }
+    auto const writers = EscapeAnalysis::over(graph);
 
     // Candidate generators, per tensor. Two sources feed this, and keeping them
     // in one map is what lets the probe loop below stay single and the dedup be
@@ -206,7 +147,7 @@ bool AntisymmetryDetection::run(Graph &graph) {
     std::map<TensorId, std::vector<SymmetryOp>> wanted;
     auto const                                  want = [&](TensorId id, SymmetryOp const &op) {
         TensorId const resolved = graph.resolve_alias(id);
-        if (written.contains(resolved)) {
+        if (writers.writer_count(resolved) != 0) {
             return;
         }
         auto &ops = wanted[resolved];
@@ -224,8 +165,6 @@ bool AntisymmetryDetection::run(Graph &graph) {
         SymmetryDescriptor       within;
         SymmetryDescriptor       invariance;
         std::vector<std::size_t> dims;
-        Shape(SymmetryDescriptor w, SymmetryDescriptor i, std::vector<std::size_t> d)
-            : within(std::move(w)), invariance(std::move(i)), dims(std::move(d)) {}
     };
     std::vector<Shape> shapes;
 
@@ -243,7 +182,7 @@ bool AntisymmetryDetection::run(Graph &graph) {
             continue;
         }
         for (auto const &op : ops) {
-            auto groups = axis_groups(op, c_indices);
+            auto groups = antisymmetry::axis_groups(op, c_indices);
             if (!groups.has_value()) {
                 continue;
             }
@@ -256,7 +195,8 @@ bool AntisymmetryDetection::run(Graph &graph) {
             // that graph is a couple of thousand cached slices. Walking the
             // product of the two cost 27 ms of candidate collection before a
             // single byte of data was read.
-            shapes.emplace_back(within_group_antisymmetry(*groups), operator_invariance(*groups), out_handle->dims);
+            shapes.push_back(Shape{
+                .within = antisymmetry::within_groups(*groups), .invariance = operator_invariance(*groups), .dims = out_handle->dims});
         }
     }
 
@@ -322,24 +262,11 @@ bool AntisymmetryDetection::run(Graph &graph) {
                     for (std::size_t y = x + 1; y < group.size(); ++y) {
                         std::string const &p = group[x];
                         std::string const &q = group[y];
-                        if (!sole_position(c_idx, p).has_value() || !sole_position(c_idx, q).has_value()) {
+                        if (!antisymmetry::sole_position(c_idx, p).has_value() || !antisymmetry::sole_position(c_idx, q).has_value()) {
                             continue;
                         }
-                        // Exactly one operand may carry BOTH, and the other must
-                        // carry neither, or swapping them is not a swap of that
-                        // operand's slots alone.
-                        for (int which = 0; which < 2; ++which) {
-                            auto const &carrier = which == 0 ? a_idx : b_idx;
-                            auto const &other   = which == 0 ? b_idx : a_idx;
-                            auto const  at_p    = sole_position(carrier, p);
-                            auto const  at_q    = sole_position(carrier, q);
-                            if (!at_p.has_value() || !at_q.has_value()) {
-                                continue;
-                            }
-                            if (std::ranges::find(other, p) != other.end() || std::ranges::find(other, q) != other.end()) {
-                                continue;
-                            }
-                            want(node.inputs[static_cast<std::size_t>(which)], SymmetryOp::swap(*at_p, *at_q, -1));
+                        if (auto const carrier = antisymmetry::sole_carrier(a_idx, b_idx, p, q)) {
+                            want(node.inputs[carrier->operand], SymmetryOp::swap(carrier->at_p, carrier->at_q, -1));
                         }
                     }
                 }

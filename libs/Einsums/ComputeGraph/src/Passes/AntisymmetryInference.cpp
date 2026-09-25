@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include "AntisymmetryRules.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
@@ -50,7 +52,7 @@ std::optional<OperatorSite> read_operator_site(Node const &node) {
         auto const lists = live_index_lists(*desc);
         site.operators   = lists.operators;
         site.c_indices   = lists.c;
-        site.overwrites  = is_zero(live_c_prefactor(*desc));
+        site.overwrites  = pure_overwrite(node);
     } else if (node.kind == OpKind::Permute) {
         auto const *desc = node.op_data.get_if<PermuteDescriptor>();
         if (desc == nullptr) {
@@ -58,7 +60,7 @@ std::optional<OperatorSite> read_operator_site(Node const &node) {
         }
         site.operators  = desc->operators;
         site.c_indices  = desc->c_indices;
-        site.overwrites = desc->params != nullptr ? is_zero(desc->params->beta) : desc->beta == std::complex<double>{0.0, 0.0};
+        site.overwrites = pure_overwrite(node);
         // A permute applies its operator to a NAMED tensor, so the conditional
         // arm has something whose antisymmetry it can ask about. An einsum's
         // operator wraps a contraction, whose result is never a tensor until it
@@ -91,92 +93,6 @@ bool all_groups_singleton(std::vector<PermutationOperator> const &operators) {
         }
     }
     return true;
-}
-
-/// Generators stating that the axes an operator names are fully antisymmetric.
-///
-/// Adjacent transpositions of those axes, in axis order, which generate the
-/// symmetric group on them. Returns nothing when a letter does not name exactly
-/// one axis, which the spec parser already rejects and which would otherwise
-/// leave the permutation ambiguous.
-std::optional<SymmetryDescriptor> antisymmetry_of(OperatorSite const &site) {
-    SymmetryDescriptor desc;
-
-    for (auto const &op : site.operators) {
-        std::vector<int> axes;
-        for (auto const &letter : op.letters()) {
-            auto const first = std::ranges::find(site.c_indices, letter);
-            if (first == site.c_indices.end()) {
-                return std::nullopt;
-            }
-            auto const position = static_cast<int>(first - site.c_indices.begin());
-            if (std::count(site.c_indices.begin(), site.c_indices.end(), letter) != 1) {
-                return std::nullopt;
-            }
-            axes.push_back(position);
-        }
-        std::ranges::sort(axes);
-        if (axes.size() < 2 || axes.back() >= kMaxSymmetryRank) {
-            return std::nullopt;
-        }
-        for (std::size_t k = 0; k + 1 < axes.size(); ++k) {
-            desc.add(SymmetryOp::swap(axes[k], axes[k + 1], -1));
-        }
-    }
-
-    if (desc.empty()) {
-        return std::nullopt;
-    }
-    return desc;
-}
-
-/// The antisymmetry a coset operator's operand must ALREADY carry before the
-/// operator's output carries any.
-///
-/// Empty for a singleton partition, which asks nothing of its operand: that is
-/// the unconditional arm, and an empty requirement is trivially met.
-std::optional<SymmetryDescriptor> within_group_requirement(OperatorSite const &site) {
-    SymmetryDescriptor desc;
-    for (auto const &op : site.operators) {
-        for (auto const &group : op.groups) {
-            std::vector<int> axes;
-            for (auto const &letter : group) {
-                auto const first = std::ranges::find(site.c_indices, letter);
-                if (first == site.c_indices.end() || std::count(site.c_indices.begin(), site.c_indices.end(), letter) != 1) {
-                    return std::nullopt;
-                }
-                auto const position = static_cast<int>(first - site.c_indices.begin());
-                if (position >= kMaxSymmetryRank) {
-                    return std::nullopt;
-                }
-                axes.push_back(position);
-            }
-            std::ranges::sort(axes);
-            for (std::size_t k = 0; k + 1 < axes.size(); ++k) {
-                desc.add(SymmetryOp::swap(axes[k], axes[k + 1], -1));
-            }
-        }
-    }
-    return desc;
-}
-
-bool contains_all(SymmetryDescriptor const &have, SymmetryDescriptor const &need) {
-    return std::ranges::all_of(need.ops, [&](SymmetryOp const &op) { return std::ranges::find(have.ops, op) != have.ops.end(); });
-}
-
-/// Where a letter sits in a list, when it sits there exactly once.
-///
-/// "Exactly once" is not fussiness. A letter appearing twice in an operand is a
-/// DIAGONAL access, and swapping two output axes then does not correspond to
-/// swapping two of that operand's slots, so the rule below would be reasoning
-/// about a permutation the contraction does not perform.
-std::optional<int> sole_position(std::vector<std::string> const &list, std::string const &letter) {
-    if (std::count(list.begin(), list.end(), letter) != 1) {
-        return std::nullopt;
-    }
-    auto const first = std::ranges::find(list, letter);
-    auto const at    = static_cast<int>(first - list.begin());
-    return at < kMaxSymmetryRank ? std::optional<int>{at} : std::nullopt;
 }
 
 /// The same permutation as @p op, asserted as an INVARIANCE rather than whatever
@@ -248,20 +164,7 @@ bool AntisymmetryInference::run(Graph &graph) {
         return handle != nullptr ? handle->symmetry_hint.get() : nullptr;
     };
 
-    // Every non-lifecycle write each tensor receives, in program order. A
-    // tensor's contents are settled by ALL of them, not by the last one, which
-    // is what the single-writer guard could not express: an accumulated
-    // intermediate is exactly the shape a residual builds and it has no single
-    // settling node.
-    std::map<TensorId, std::vector<std::size_t>> writers;
-    for (std::size_t i = 0; i < nodes_view.size(); ++i) {
-        if (is_lifecycle(nodes_view[i].kind)) {
-            continue;
-        }
-        for (auto const out : nodes_view[i].outputs) {
-            writers[graph.resolve_alias(out)].push_back(i);
-        }
-    }
+    auto writers = value_writes_by_buffer(graph);
 
     std::map<std::size_t, Contribution>                   per_node;
     std::map<TensorId, std::vector<Contribution const *>> collected;
@@ -278,8 +181,8 @@ bool AntisymmetryInference::run(Graph &graph) {
         if (auto const site = read_operator_site(node); site.has_value()) {
             ++_num_candidates;
             contribution.overwrites = site->overwrites;
-            auto const desc         = antisymmetry_of(*site);
-            auto const requirement  = within_group_requirement(*site);
+            auto const desc         = antisymmetry::full_antisymmetry(site->operators, site->c_indices);
+            auto const requirement  = antisymmetry::within_groups(site->operators, site->c_indices);
             if (desc.has_value() && requirement.has_value()) {
                 if (requirement->empty()) {
                     // Unconditional arm: every group is a singleton, so the
@@ -293,7 +196,7 @@ bool AntisymmetryInference::run(Graph &graph) {
                     // group the result is fully antisymmetric on the operator's
                     // letters.
                     auto const *operand = hint_of(site->operand);
-                    if (operand != nullptr && contains_all(*operand, *requirement)) {
+                    if (operand != nullptr && antisymmetry::contains_all(*operand, *requirement)) {
                         contribution.generators = *desc;
                         contribution.understood = true;
                     } else {
@@ -324,27 +227,19 @@ bool AntisymmetryInference::run(Graph &graph) {
                 // other operand is untouched, so the addend negates.
                 for (std::size_t x = 0; x + 1 < c_idx.size(); ++x) {
                     for (std::size_t y = x + 1; y < c_idx.size(); ++y) {
-                        auto const out_p = sole_position(c_idx, c_idx[x]);
-                        auto const out_q = sole_position(c_idx, c_idx[y]);
+                        auto const out_p = antisymmetry::sole_position(c_idx, c_idx[x]);
+                        auto const out_q = antisymmetry::sole_position(c_idx, c_idx[y]);
                         if (!out_p.has_value() || !out_q.has_value()) {
                             continue;
                         }
-                        for (int which = 0; which < 2; ++which) {
-                            auto const &carrier = which == 0 ? a_idx : b_idx;
-                            auto const &other   = which == 0 ? b_idx : a_idx;
-                            auto const  at_p    = sole_position(carrier, c_idx[x]);
-                            auto const  at_q    = sole_position(carrier, c_idx[y]);
-                            if (!at_p.has_value() || !at_q.has_value()) {
-                                continue;
-                            }
-                            if (std::ranges::find(other, c_idx[x]) != other.end() || std::ranges::find(other, c_idx[y]) != other.end()) {
-                                continue;
-                            }
-                            auto const *hint = hint_of(node.inputs[static_cast<std::size_t>(which)]);
-                            if (hint != nullptr && std::ranges::find(hint->ops, SymmetryOp::swap(*at_p, *at_q, -1)) != hint->ops.end()) {
-                                contribution.generators.add(SymmetryOp::swap(*out_p, *out_q, -1));
-                                break;
-                            }
+                        auto const carrier = antisymmetry::sole_carrier(a_idx, b_idx, c_idx[x], c_idx[y]);
+                        if (!carrier.has_value()) {
+                            continue;
+                        }
+                        auto const *hint = hint_of(node.inputs[carrier->operand]);
+                        if (hint != nullptr &&
+                            std::ranges::find(hint->ops, SymmetryOp::swap(carrier->at_p, carrier->at_q, -1)) != hint->ops.end()) {
+                            contribution.generators.add(SymmetryOp::swap(*out_p, *out_q, -1));
                         }
                     }
                 }
@@ -453,7 +348,7 @@ bool AntisymmetryInference::run(Graph &graph) {
             }
             continue;
         }
-        if (handle->symmetry_hint != nullptr && contains_all(*handle->symmetry_hint, settled)) {
+        if (handle->symmetry_hint != nullptr && antisymmetry::contains_all(*handle->symmetry_hint, settled)) {
             continue;
         }
 

@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/PermuteFusion.hpp>
 #include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -30,15 +31,8 @@ bool can_fuse(PermuteDescriptor const &p) {
     bool const pure_scalars = p.params != nullptr ? is_one(p.params->alpha) && is_zero(p.params->beta) : p.alpha == 1.0 && p.beta == 0.0;
     if (!pure_scalars || !p.operators.empty())
         return false;
-    if (p.a_indices.size() != p.c_indices.size())
-        return false;
-    // c_indices must be a permutation of a_indices: same multiset and no duplicates.
-    // Duplicates in c_indices would make the inverse map ambiguous.
-    auto sorted_a = p.a_indices;
-    auto sorted_c = p.c_indices;
-    std::ranges::sort(sorted_a);
-    std::ranges::sort(sorted_c);
-    return sorted_a == sorted_c && std::ranges::adjacent_find(sorted_c) == sorted_c.end();
+    // Duplicates would make the inverse map ambiguous.
+    return permutation_of(p.a_indices, p.c_indices).has_value();
 }
 
 /// Rewrite an einsum slot's subscript to absorb a preceding permute.

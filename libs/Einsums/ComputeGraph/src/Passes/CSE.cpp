@@ -153,54 +153,6 @@ std::optional<double> op_data_ratio(OpData const &a, OpData const &b) {
     return std::nullopt;
 }
 
-// ── Moving the factor onto the readers ──────────────────────────────────────
-
-/// Can @p nd absorb a real scalar into its read of @p tensor?
-///
-/// Only ops whose executor takes the factor from LIVE shared params qualify: an
-/// einsum's ab_pf and an axpby's alpha. Permute and BatchedGemm bake their
-/// scalars into the executor closure, so editing their descriptor would leave
-/// the closure applying the old value - the same rule ScaleAbsorption follows.
-///
-/// The tensor must be exactly one operand and must not be the destination:
-/// reading it twice would need r squared, and a destination read is an
-/// accumulation the factor does not distribute over.
-bool foldable_reader(Node const &nd, TensorId tensor) {
-    if (std::ranges::find(nd.outputs, tensor) != nd.outputs.end()) {
-        return false;
-    }
-    if (std::ranges::count(nd.inputs, tensor) != 1) {
-        return false;
-    }
-    if (nd.kind == OpKind::Einsum) {
-        auto const *d = nd.op_data.get_if<EinsumDescriptor>();
-        return d != nullptr && d->params != nullptr;
-    }
-    if (nd.kind == OpKind::Axpby) {
-        auto const *d = nd.op_data.get_if<AxpbyDescriptor>();
-        return d != nullptr && d->params != nullptr;
-    }
-    return false;
-}
-
-/// Multiply @p nd's read of its operand by @p r. Caller guarantees
-/// @ref foldable_reader. Writes the live params the executor reads and the
-/// snapshot beside them, so later analysis sees the same value.
-void fold_reader(Node &nd, double r) {
-    if (auto *d = nd.op_data.get_if<EinsumDescriptor>()) {
-        d->params->ab_pf = scale_prefactor(d->params->ab_pf, r);
-        d->ab_prefactor  = d->params->ab_pf;
-        return;
-    }
-    auto *d          = nd.op_data.get_if<AxpbyDescriptor>();
-    d->params->alpha = scale_prefactor(d->params->alpha, r);
-    d->alpha         = d->params->alpha;
-}
-
-} // namespace
-
-namespace {
-
 /// What a merge inside one graph of the tree needs to know about the rest of it.
 ///
 /// CSE declines the pass manager's auto-recursion and walks the tree itself
@@ -575,7 +527,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
                         continue;
                     if (std::ranges::find(nodes[k].inputs, dup_out) == nodes[k].inputs.end())
                         continue;
-                    if (!foldable_reader(nodes[k], dup_out)) {
+                    if (fold_site(nodes[k], dup_out) != FoldSite::Operand) {
                         all_foldable = false;
                         break;
                     }
@@ -586,7 +538,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
             }
 
             for (size_t const k : folds) {
-                fold_reader(nodes[k], *ratio);
+                apply_fold(nodes[k], FoldSite::Operand, *ratio);
             }
 
             // Equivalent! Redirect j's outputs to i's outputs.
@@ -616,11 +568,11 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
 
             if (*ratio == 1.0) {
                 EINSUMS_LOG_INFO("CSE: eliminated node {} (duplicate of node {})", nodes[j].id, nodes[i].id);
-                report(2, fmt::format("eliminate node {} '{}' — duplicate of node {}", nodes[j].id, nodes[j].label, nodes[i].id));
+                report(2, fmt::format("eliminate node {} '{}': duplicate of node {}", nodes[j].id, nodes[j].label, nodes[i].id));
             } else {
                 EINSUMS_LOG_INFO("CSE: eliminated node {} ({}x node {}, factor folded into {} reader(s))", nodes[j].id, *ratio, nodes[i].id,
                                  folds.size());
-                report(2, fmt::format("eliminate node {} '{}' — {}x node {}, factor folded into {} reader(s)", nodes[j].id, nodes[j].label,
+                report(2, fmt::format("eliminate node {} '{}': {}x node {}, factor folded into {} reader(s)", nodes[j].id, nodes[j].label,
                                       *ratio, nodes[i].id, folds.size()));
             }
             break; // j is gone; nothing later in this bucket can match it

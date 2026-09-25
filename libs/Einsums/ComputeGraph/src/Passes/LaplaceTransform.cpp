@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "ContractionTreeSearch.hpp"
+#include "ExprHelpers.hpp"
 #include "LaplaceRewrite.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -38,33 +39,6 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 namespace {
 
 constexpr std::string_view kTag = "laplace_denominator";
-
-/// The letters of an index list, in order.
-std::vector<std::string> letters_of(std::vector<ExprIndex> const &indices) {
-    std::vector<std::string> out;
-    out.reserve(indices.size());
-    for (auto const &index : indices) {
-        out.push_back(index.letter);
-    }
-    return out;
-}
-
-bool contains(std::vector<std::string> const &haystack, std::string const &needle) {
-    return std::ranges::find(haystack, needle) != haystack.end();
-}
-
-/// A letter nothing in @p used spells, seeded from @p wanted.
-std::string fresh_letter(std::vector<std::string> const &used, std::string const &wanted) {
-    if (!contains(used, wanted)) {
-        return wanted;
-    }
-    for (int suffix = 1;; ++suffix) {
-        std::string candidate = fmt::format("{}{}", wanted, suffix);
-        if (!contains(used, candidate)) {
-            return candidate;
-        }
-    }
-}
 
 /// The name of the reciprocal in the element-op registry, which is the only element operation a
 /// verified denominator chain may end in.
@@ -181,18 +155,6 @@ WriterVerdict classify_writers(Graph const &graph, TensorId id, std::vector<std:
 /// Whether @p dtype is one this pass can represent an exponential in.
 bool is_real_dtype(packed_gemm::ScalarType dtype) {
     return dtype == packed_gemm::ScalarType::Float32 || dtype == packed_gemm::ScalarType::Float64;
-}
-
-/// Declare a graph-owned deferred intermediate of the given shape.
-///
-/// Deferred and runtime-rank for the two reasons every pass-created tensor is both: the memory
-/// passes can only manage storage they are allowed to place, and a later bind can only move an
-/// extent whose storage has not been committed.
-TensorId declare_scratch(Graph &graph, std::string name, packed_gemm::ScalarType dtype, std::vector<std::size_t> const &dims) {
-    return detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) -> TensorId {
-        auto &tensor = graph.declare_runtime_tensor<T>(std::move(name), dims, /*intermediate=*/true);
-        return graph.live_tensor_id_by_ptr(&tensor, {});
-    });
 }
 
 /// The product of two real prefactors.
@@ -756,14 +718,14 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             std::vector<ExprIndex> const a_indices      = formation.operand_indices[0];
             std::vector<ExprIndex> const b_indices      = formation.operand_indices[1];
 
-            std::vector<std::string> used = letters_of(target_indices);
-            for (auto const &letter : letters_of(a_indices)) {
-                if (!contains(used, letter)) {
+            std::vector<std::string> used = expr::letter_list(target_indices);
+            for (auto const &letter : expr::letter_list(a_indices)) {
+                if (!expr::contains(used, letter)) {
                     used.push_back(letter);
                 }
             }
-            for (auto const &letter : letters_of(b_indices)) {
-                if (!contains(used, letter)) {
+            for (auto const &letter : expr::letter_list(b_indices)) {
+                if (!expr::contains(used, letter)) {
                     used.push_back(letter);
                 }
             }
@@ -790,7 +752,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
                 quadrature_space = graph.space_registry().register_space(
                     make_index_space(std::string(kQuadratureSpace), "lt", static_cast<double>(count)));
             }
-            ExprIndex const quadrature{.letter = fresh_letter(used, "laplace_t"), .space = quadrature_space};
+            ExprIndex const quadrature{.letter = expr::fresh_letter(used, "laplace_t"), .space = quadrature_space};
 
             // Every letter of everything about to be emitted, with its extent, so the terms
             // this rewrite builds carry a cost. A term with none reads as free, and a region
@@ -838,13 +800,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             }
 
             auto make_leaf = [&expr, &graph](TensorId id, std::vector<ExprIndex> indices) {
-                ExprTerm            leaf;
-                TensorHandle const *held = graph.find_tensor(id);
-                leaf.kind                = TermKind::Leaf;
-                leaf.tensor              = id;
-                leaf.name                = held != nullptr ? held->name : std::string{};
-                leaf.indices             = std::move(indices);
-                return expr.add(std::move(leaf));
+                return expr::add_leaf(expr, graph, id, std::move(indices));
             };
 
             // Which operand of the numerator carries each axis of the denominator. Every axis
@@ -861,7 +817,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
 
             for (std::size_t axis = 0; axis < target_indices.size(); ++axis) {
                 std::string const &letter = target_indices[axis].letter;
-                Side              *side   = contains(letters_of(a_indices), letter) ? &side_a : &side_b;
+                Side              *side   = expr::contains(expr::letter_list(a_indices), letter) ? &side_a : &side_b;
 
                 std::vector<ExprIndex> scaled_indices;
                 scaled_indices.push_back(quadrature);
@@ -901,19 +857,14 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
                 std::string const scaled_name = fmt::format("LaplaceTransform.{}.scaled{}", name, scalings.size());
                 TensorId const    scaled      = make(scaled_name, denominator_dtype, dims);
 
-                ExprTerm term;
-                term.kind    = TermKind::Contraction;
-                term.indices = scaled_indices;
-                term.operands.assign({side->leaf, make_leaf(exponentials[axis], {quadrature, target_indices[axis]})});
-                term.operand_indices.assign({side->indices, {quadrature, target_indices[axis]}});
                 // The numerator's conjugation rides on the FIRST scaling of that operand and
                 // nowhere else, so an operand scaled twice is not conjugated twice.
                 bool const conjugate = !side->scaled && !formation.conjugate.empty() && formation.conjugate[side == &side_a ? 0 : 1];
-                term.conjugate.assign({conjugate, false});
-                term.factor = PrefactorScalar{double{1}};
-                term.cost =
-                    search::contraction_cost(search::letters_of(side->indices), search::letters_of({quadrature, target_indices[axis]}),
-                                             search::letters_of(scaled_indices), table);
+                std::vector<ExprIndex> const exponential_indices{quadrature, target_indices[axis]};
+                ExprTerm                     term =
+                    search::contraction_term({.term = side->leaf, .indices = side->indices, .conjugate = conjugate},
+                                             {.term = make_leaf(exponentials[axis], exponential_indices), .indices = exponential_indices},
+                                             scaled_indices, PrefactorScalar{double{1}}, table);
 
                 ExprStatement statement;
                 statement.target           = scaled;
@@ -924,8 +875,8 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
                 statement.origin           = numerator.origin;
                 statement.origin_kind      = OpKind::Einsum;
                 statement.origin_label     = fmt::format("LaplaceTransform: {}[{}] = {}[{}] ; exp{}", statement.target_name,
-                                                         fmt::join(letters_of(scaled_indices), ","), expr.at(side->leaf).name,
-                                                         fmt::join(letters_of(side->indices), ","), axis);
+                                                         fmt::join(expr::letter_list(scaled_indices), ","), expr.at(side->leaf).name,
+                                                         fmt::join(expr::letter_list(side->indices), ","), axis);
                 scalings.push_back(std::move(statement));
 
                 side->leaf    = make_leaf(scaled, scaled_indices);
@@ -935,16 +886,14 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
 
             // The contraction the numerator always was, now summing over the quadrature index
             // as well as over whatever it summed over before.
-            ExprTerm combined;
-            combined.kind    = TermKind::Contraction;
-            combined.indices = target_indices;
-            combined.operands.assign({side_a.leaf, side_b.leaf});
-            combined.operand_indices.assign({side_a.indices, side_b.indices});
-            combined.conjugate.assign({!side_a.scaled && !formation.conjugate.empty() && formation.conjugate[0],
-                                       !side_b.scaled && !formation.conjugate.empty() && formation.conjugate[1]});
-            combined.factor = multiply_real(live_alpha(*scalars), formation.factor);
-            combined.cost   = search::contraction_cost(search::letters_of(side_a.indices), search::letters_of(side_b.indices),
-                                                       search::letters_of(target_indices), table);
+            ExprTerm combined =
+                search::contraction_term({.term      = side_a.leaf,
+                                          .indices   = side_a.indices,
+                                          .conjugate = !side_a.scaled && !formation.conjugate.empty() && formation.conjugate[0]},
+                                         {.term      = side_b.leaf,
+                                          .indices   = side_b.indices,
+                                          .conjugate = !side_b.scaled && !formation.conjugate.empty() && formation.conjugate[1]},
+                                         target_indices, multiply_real(live_alpha(*scalars), formation.factor), table);
 
             ExprStatement final_statement;
             final_statement.target           = apply.target;
@@ -955,7 +904,7 @@ std::vector<RewriteOutcome> rewrite_denominators(Graph &graph, std::vector<Tenso
             final_statement.origin           = apply.origin;
             final_statement.origin_kind      = OpKind::Einsum;
             final_statement.origin_label     = fmt::format("LaplaceTransform: {}[{}] over {} quadrature point(s)", apply.target_name,
-                                                           fmt::join(letters_of(target_indices), ","), count);
+                                                           fmt::join(expr::letter_list(target_indices), ","), count);
 
             // Splice: the scalings and the contraction take the direct product's place, and the
             // numerator's own statement goes unless something else reads it. Erasing first and
@@ -1034,7 +983,7 @@ bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &e
     options.points  = _points;
     options.energy  = [this](std::string const &wanted) { return energy(wanted); };
     options.declare = [&graph](std::string const &tensor_name, packed_gemm::ScalarType dtype, std::vector<std::size_t> const &dims) {
-        return declare_scratch(graph, tensor_name, dtype, dims);
+        return expr::declare_scratch(graph, tensor_name, dtype, dims);
     };
 
     // The accuracy statement, taken before the splice of the denominator it is about. A refusal

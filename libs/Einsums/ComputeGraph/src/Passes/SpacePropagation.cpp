@@ -27,23 +27,22 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 namespace {
 
-/// Soundness context for one inference run on one graph, the same rule
-/// SymmetryPropagation uses. An annotation is a claim about what a tensor's
-/// axes range over for the whole life of the graph, so we make it only when
-/// nothing can contradict it after the producing op:
-///   - the tensor has exactly one writer in this graph (a second writer could
-///     bind the slots to something else entirely), and
-///   - the tensor isn't referenced by a child sub-graph (a nested loop /
-///     conditional body writes without this graph's node list showing it, a
-///     Loop node doesn't list its body's writes).
-/// The guards make the pass strictly conservative and therefore safe to
-/// recurse into loop bodies.
-/// Both conditions in one call: exactly one value-writer in this graph, and no
-/// descendant sub-graph touching the buffer. Shared with SymmetryPropagation,
-/// LoopInvariantHoisting and the region framework rather than counted a fourth
-/// time here, because several derivations of one relation disagreeing in the
-/// corner nobody tested is this module's signature bug.
-using InferGuard = EscapeAnalysis;
+// Every inference below goes through EscapeAnalysis::stable, the soundness rule for one run on one graph, the same rule
+// SymmetryPropagation uses. An annotation is a claim about what a tensor's
+// axes range over for the whole life of the graph, so we make it only when
+// nothing can contradict it after the producing op:
+//   - the tensor has exactly one writer in this graph (a second writer could
+//     bind the slots to something else entirely), and
+//   - the tensor isn't referenced by a child sub-graph (a nested loop /
+//     conditional body writes without this graph's node list showing it, a
+//     Loop node doesn't list its body's writes).
+// The guards make the pass strictly conservative and therefore safe to
+// recurse into loop bodies.
+// EscapeAnalysis::stable answers both in one call: exactly one value-writer in this graph, and no
+// descendant sub-graph touching the buffer. Shared with SymmetryPropagation,
+// LoopInvariantHoisting and the region framework rather than counted a fourth
+// time here, because several derivations of one relation disagreeing in the
+// corner nobody tested is this module's signature bug.
 
 /// What one rule did with one node. A rule declines far more often than it
 /// fires, and the interesting declines (operands that disagree about a letter)
@@ -62,7 +61,7 @@ RuleResult declined(std::string reason, std::string detail) {
 
 /// Try to write an inferred annotation onto a graph-owned tensor handle.
 /// Returns true when the handle took on a new annotation.
-bool apply_inferred(Graph &graph, TensorId out_tid, std::vector<SpaceId> spaces, InferGuard const &guard) {
+bool apply_inferred(Graph &graph, TensorId out_tid, std::vector<SpaceId> spaces, EscapeAnalysis const &guard) {
     if (spaces.empty()) {
         return false; // Nothing resolved, and a partial annotation is never written.
     }
@@ -122,7 +121,7 @@ bool bind_operand(std::vector<std::string> const &indices, std::vector<SpaceId> 
 /// propagation rather than a replay of capture. The output's own annotation is
 /// deliberately not part of the map, so a declaration constrains nothing and an
 /// earlier guess cannot conflict with its own refinement.
-RuleResult propagate_einsum(Graph &graph, Node const &node, InferGuard const &guard) {
+RuleResult propagate_einsum(Graph &graph, Node const &node, EscapeAnalysis const &guard) {
     if (node.kind != OpKind::Einsum) {
         return {};
     }
@@ -154,7 +153,7 @@ RuleResult propagate_einsum(Graph &graph, Node const &node, InferGuard const &gu
 
 /// Rule: ``C = α·A``. Scaling changes values, never what an axis ranges over,
 /// so the output's slots are the input's slots.
-RuleResult propagate_scale(Graph &graph, Node const &node, InferGuard const &guard) {
+RuleResult propagate_scale(Graph &graph, Node const &node, EscapeAnalysis const &guard) {
     if (node.kind != OpKind::Scale) {
         return {};
     }
@@ -174,7 +173,7 @@ RuleResult propagate_scale(Graph &graph, Node const &node, InferGuard const &gua
 /// there is no restriction on rank and none on beta: a space is a property of
 /// an axis, not of the values in it, so accumulating onto a destination cannot
 /// change what its axes range over.
-RuleResult propagate_permute(Graph &graph, Node const &node, InferGuard const &guard) {
+RuleResult propagate_permute(Graph &graph, Node const &node, EscapeAnalysis const &guard) {
     if (node.kind != OpKind::Permute && node.kind != OpKind::Transpose) {
         return {};
     }
@@ -207,7 +206,7 @@ RuleResult propagate_permute(Graph &graph, Node const &node, InferGuard const &g
 /// annotated inputs agree on, slot by slot. Inputs that disagree are a
 /// cross-space bug in the source program; the pass declines and counts it, and
 /// leaves the diagnosis to a validation pass.
-RuleResult propagate_linear_combination(Graph &graph, Node const &node, InferGuard const &guard) {
+RuleResult propagate_linear_combination(Graph &graph, Node const &node, EscapeAnalysis const &guard) {
     if (node.kind != OpKind::Axpby) {
         return {};
     }
@@ -255,7 +254,7 @@ bool SpacePropagation::run(Graph &graph) {
 
     // The soundness guard for this graph: writer counts plus the buffers child
     // sub-graphs reference.
-    InferGuard const guard = EscapeAnalysis::over(graph);
+    EscapeAnalysis const guard = EscapeAnalysis::over(graph);
 
     // One sweep in topological order is a fixpoint for forward propagation: a
     // node is visited after every node that writes its inputs, so an

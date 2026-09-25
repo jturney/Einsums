@@ -75,16 +75,7 @@ bool AntisymmetrizerLinearity::run(Graph &graph) {
     auto const  guard          = EscapeAnalysis::over(graph);
     std::size_t original_count = graph.nodes().size();
 
-    // Non-lifecycle writes per tensor, in program order.
-    std::map<TensorId, std::vector<std::size_t>> writers;
-    for (std::size_t i = 0; i < original_count; ++i) {
-        if (is_lifecycle(graph.nodes()[i].kind)) {
-            continue;
-        }
-        for (auto const out : graph.nodes()[i].outputs) {
-            writers[graph.resolve_alias(out)].push_back(i);
-        }
-    }
+    auto writers = value_writes_by_buffer(graph);
 
     struct Site {
         TensorId        destination{0};

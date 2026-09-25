@@ -97,6 +97,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
+    /// Each loop body and branch is merged on its own level.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+
     APIARY_EXPOSE APIARY_GETTER("num_candidates") [[nodiscard]] size_t num_candidates() const { return _num_candidates; }
 
     /// Number of output buffers merged into dying inputs in the last run.

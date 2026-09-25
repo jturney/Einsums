@@ -275,6 +275,12 @@ TEST_CASE("Recursion policy - safe local-rewrite passes opt in", "[ComputeGraph]
     CHECK(cg::passes::RegionIdentity{}.recurse_into_subgraphs());
     CHECK(cg::passes::MultiTermFactorization{}.recurse_into_subgraphs());
     CHECK(cg::passes::DeltaElimination{}.recurse_into_subgraphs());
+
+    // DistributiveFactoring and InplaceOptimization rewrite each level on its own and used to walk
+    // their children by hand, because a per-graph run() once reset the tally. PassManager now
+    // resets a pass's counters once per apply, so they recurse through the one driver.
+    CHECK(cg::passes::DistributiveFactoring{}.recurse_into_subgraphs());
+    CHECK(cg::passes::InplaceOptimization{}.recurse_into_subgraphs());
 }
 
 TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[ComputeGraph][Recursion][Policy]") {
@@ -284,14 +290,9 @@ TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[Com
     CHECK_FALSE(cg::passes::FreeInsertion{}.recurse_into_subgraphs());
     CHECK_FALSE(cg::passes::GPUPlacement{}.recurse_into_subgraphs()); // shared-budget walk
     CHECK_FALSE(cg::passes::IOPrefetch{}.recurse_into_subgraphs());   // own walk + hoist out of loops
-    // DistributiveFactoring manages its own descent (like LoopInvariantHoisting):
-    // run() resets its counters once at the root and recurses itself. Auto-
-    // recursion would re-run run() per sub-graph and clobber the top-level tally.
-    CHECK_FALSE(cg::passes::DistributiveFactoring{}.recurse_into_subgraphs());
     // Analysis passes aggregate across sub-graphs inside run() rather than
     // being re-run per sub-graph (which would clobber their counters).
     CHECK_FALSE(cg::passes::MemoryPlanning{}.recurse_into_subgraphs());
-    CHECK_FALSE(cg::passes::InplaceOptimization{}.recurse_into_subgraphs());
     CHECK_FALSE(cg::passes::GPUDiagnostics{}.recurse_into_subgraphs());
     // CSE stays opt-out: it has a soundness gap on the mutable-tensor reuse a
     // loop body exhibits, it merges nodes writing distinct, later-mutated

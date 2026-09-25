@@ -8,6 +8,20 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
+std::map<TensorId, std::vector<std::size_t>> value_writes_by_buffer(Graph const &graph) {
+    std::map<TensorId, std::vector<std::size_t>> writes;
+    auto const                                  &nodes = graph.nodes();
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        if (is_lifecycle(nodes[i].kind)) {
+            continue;
+        }
+        for (auto const out : nodes[i].outputs) {
+            writes[graph.resolve_alias(out)].push_back(i);
+        }
+    }
+    return writes;
+}
+
 bool einsum_is_uniform(Graph const &graph, Node const &node) {
     if (node.kind != OpKind::Einsum || node.inputs.size() < 2 || node.outputs.empty()) {
         return true;

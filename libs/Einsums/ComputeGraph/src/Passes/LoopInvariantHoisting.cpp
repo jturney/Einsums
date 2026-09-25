@@ -129,18 +129,7 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             // covers the always-accumulating ops and nonzero-prefactor einsum/
             // permute/gemm; the explicit input==output scan catches any other op
             // that lists the same tensor as both an input and an output.
-            bool self_modifying = reads_destination(bnode);
-            for (auto out_tid : bnode.outputs) {
-                if (self_modifying)
-                    break;
-                for (auto in_tid : bnode.inputs) {
-                    if (out_tid == in_tid) {
-                        self_modifying = true;
-                        break;
-                    }
-                }
-            }
-            if (self_modifying)
+            if (reads_destination(bnode) || std::ranges::find_first_of(bnode.outputs, bnode.inputs) != bnode.outputs.end())
                 continue;
 
             bool all_inputs_invariant = true;

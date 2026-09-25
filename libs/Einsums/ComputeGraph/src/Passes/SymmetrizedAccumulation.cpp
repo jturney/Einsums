@@ -29,26 +29,12 @@ namespace {
 // twice is the identity. Requires distinct labels (a repeated label is a
 // diagonal, not this pattern). "jiba <- ijab" -> perm [1,0,3,2], an involution.
 bool is_involution(std::vector<std::string> const &a, std::vector<std::string> const &c) {
-    if (a.empty() || a.size() != c.size()) {
+    auto const perm = permutation_of(a, c);
+    if (a.empty() || !perm.has_value()) {
         return false;
     }
-    for (size_t i = 0; i < a.size(); ++i) {
-        for (size_t j = i + 1; j < a.size(); ++j) {
-            if (a[i] == a[j]) {
-                return false; // repeated label: ill-defined permutation
-            }
-        }
-    }
-    std::vector<size_t> perm(c.size());
-    for (size_t k = 0; k < c.size(); ++k) {
-        auto it = std::find(a.begin(), a.end(), c[k]);
-        if (it == a.end()) {
-            return false; // c is not a permutation of a
-        }
-        perm[k] = static_cast<size_t>(it - a.begin());
-    }
-    for (size_t k = 0; k < perm.size(); ++k) {
-        if (perm[perm[k]] != k) {
+    for (std::size_t k = 0; k < perm->size(); ++k) {
+        if ((*perm)[(*perm)[k]] != k) {
             return false;
         }
     }

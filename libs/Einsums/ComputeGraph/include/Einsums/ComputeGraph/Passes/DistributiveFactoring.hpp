@@ -190,11 +190,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     void reset_stats() override;
 
-    /// Manages its own descent (like LoopInvariantHoisting): run() resets the
-    /// counters once at the root and recurses into loop bodies / conditional
-    /// branches itself. Opting into PassManager auto-recursion would re-invoke
-    /// run() per body and reset (clobber) the top-level tally each time.
-    [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
+    /// Factors loop bodies and conditional branches too; the counters accumulate
+    /// across the whole tree.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 
     /// Groups declined because the axpy chain would cost more than the
     /// contractions it saves. A bandwidth-bound contraction over large operands
@@ -218,12 +216,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::vector<FactoringGroup> const &groups() const { return _groups; }
 
   private:
-    /// Recurse into loop bodies / conditional branches after factoring the
-    /// current level. Counters accumulate across the whole tree (no reset).
-    bool run_recursive(Graph &graph);
-
     /// Factor one graph in isolation (no descent). Returns true if it rewrote
-    /// anything. Called by run_recursive per graph in the subgraph tree.
+    /// anything.
     bool factor_one_level(Graph &graph);
 
     size_t                      _num_groups{0};

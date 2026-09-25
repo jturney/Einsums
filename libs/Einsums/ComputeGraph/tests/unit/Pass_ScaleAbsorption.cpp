@@ -24,7 +24,7 @@ using namespace einsums;
 namespace cg = einsums::compute_graph;
 
 // Every in-tree writer of a prefactor keeps the descriptor SNAPSHOT and the shared params block
-// in step -- ScaleAbsorption::apply_fold, CSE::fold_reader, ElementWiseFusion and
+// in step -- apply_fold (ScaleAbsorption and CSE), ElementWiseFusion and
 // Graph::update_prefactors all write both, and each says so. These cases pin what happens when
 // that discipline is not followed, which is the reason the ``live_*`` accessors exist: a reader
 // that goes through them is correct on the value the EXECUTOR will use, without depending on

@@ -25,35 +25,13 @@
 #include <utility>
 #include <vector>
 
+#include "NamedViews.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
-
-namespace {
-
-/// A view of @p tensor carrying its name, which the implicit conversion drops.
-template <typename TensorType>
-RuntimeTensorView<double> named_view(TensorType const &tensor) {
-    RuntimeTensorView<double> view{tensor};
-    view.set_name(tensor.name());
-    return view;
-}
-
-/// @p view under a name of its own, for a fit that reads the tensor the caller TAGGED.
-///
-/// A fitting is captured, so whatever it reads becomes an interface tensor of the transformed
-/// graph. When the fit reads a tensor the caller's own algebra also holds, the pass and the
-/// fitting each hold their own handle for it; naming the fitting's copy is what says so, and a
-/// caller rebinding the graph supplies the same tensor under both names.
-RuntimeTensorView<double> fit_input_view(RuntimeTensorView<double> view) {
-    std::string const stem = view.name();
-    view.set_name(fmt::format("{}@fit", stem.empty() ? std::string{"tagged"} : stem));
-    return view;
-}
-
-} // namespace
 
 NaturalAuxiliaryFactorization::NaturalAuxiliaryFactorization(std::string tag, RuntimeTensorView<double> three_index, double threshold,
                                                              std::string name)
-    : _tag(std::move(tag)), _name(std::move(name)), _three_index(fit_input_view(std::move(three_index))), _threshold(threshold) {
+    : _tag(std::move(tag)), _name(std::move(name)), _three_index(detail::fit_input_view(std::move(three_index))), _threshold(threshold) {
     if (!std::isfinite(threshold) || threshold < 0.0) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument,
                                 "NaturalAuxiliaryFactorization: the relative threshold must be finite and not negative; got {}. Zero means "
@@ -71,20 +49,20 @@ NaturalAuxiliaryFactorization::NaturalAuxiliaryFactorization(std::string tag, Ru
 
 NaturalAuxiliaryFactorization::NaturalAuxiliaryFactorization(std::string tag, RuntimeTensor<double> const &three_index, double threshold,
                                                              std::string name)
-    : NaturalAuxiliaryFactorization(std::move(tag), named_view(three_index), threshold, std::move(name)) {
+    : NaturalAuxiliaryFactorization(std::move(tag), detail::named_view(three_index), threshold, std::move(name)) {
 }
 
 NaturalAuxiliaryFactorization::NaturalAuxiliaryFactorization(std::string tag, Tensor<double, 3> const &three_index, double threshold,
                                                              std::string name)
-    : NaturalAuxiliaryFactorization(std::move(tag), named_view(three_index), threshold, std::move(name)) {
+    : NaturalAuxiliaryFactorization(std::move(tag), detail::named_view(three_index), threshold, std::move(name)) {
 }
 
 void NaturalAuxiliaryFactorization::report_dropped_into(RuntimeTensor<double> const &dropped) {
-    _dropped_report.emplace(named_view(dropped));
+    _dropped_report.emplace(detail::named_view(dropped));
 }
 
 void NaturalAuxiliaryFactorization::report_dropped_into(Tensor<double, 1> const &dropped) {
-    _dropped_report.emplace(named_view(dropped));
+    _dropped_report.emplace(detail::named_view(dropped));
 }
 
 double NaturalAuxiliaryFactorization::threshold() const {

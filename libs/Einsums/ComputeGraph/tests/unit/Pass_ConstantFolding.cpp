@@ -52,6 +52,46 @@ TEST_CASE("ConstantFolding - written intermediate is not constant", "[ComputeGra
     CHECK_FALSE(modified);
 }
 
+TEST_CASE("ConstantFolding - an intermediate written through a view is not constant", "[ComputeGraph][Passes]") {
+    // Defends the writer test against aliases. The written set was keyed on each node's own
+    // output ids, so an intermediate written only through a view of it looked unwritten, and a
+    // later reader was folded at pass time, baking in the buffer as it was before the write.
+    auto X = create_random_tensor<double>("X", 3, 3);
+    auto C = create_zero_tensor<double>("C", 3, 3);
+
+    cg::Graph graph("cf_view_write");
+    auto     &T = graph.create_zero_tensor<double, 2>("T", 3, 3);
+    auto     &B = graph.create_zero_tensor<double, 2>("B", 3, 3);
+    for (size_t ii = 0; ii < 3; ii++) {
+        for (size_t jj = 0; jj < 3; jj++) {
+            B(ii, jj) = 1.0 + static_cast<double>(ii) - 0.5 * static_cast<double>(jj);
+        }
+    }
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &slice = cg::view<double, 2>(T, cg::ViewAxis::full(), cg::ViewAxis::full());
+        cg::axpy(1.0, X, &slice); // T += X, through the view
+        cg::einsum("ik;kj->ij", &C, T, B);
+    }
+
+    graph.apply<cg::passes::ConstantFolding>();
+    graph.execute();
+
+    auto B_copy = create_zero_tensor<double>("Bc", 3, 3);
+    for (size_t ii = 0; ii < 3; ii++) {
+        for (size_t jj = 0; jj < 3; jj++) {
+            B_copy(ii, jj) = B(ii, jj);
+        }
+    }
+    auto C_ref = create_zero_tensor<double>("C_ref", 3, 3);
+    reference_einsum("ij <- ik ; kj", &C_ref, X, B_copy);
+    for (size_t ii = 0; ii < 3; ii++) {
+        for (size_t jj = 0; jj < 3; jj++) {
+            REQUIRE_THAT(C(ii, jj), Catch::Matchers::WithinAbs(C_ref(ii, jj), 1e-12));
+        }
+    }
+}
+
 TEST_CASE("ConstantFolding - empty graph", "[ComputeGraph][Passes]") {
     cg::Graph graph("cf_empty");
 
