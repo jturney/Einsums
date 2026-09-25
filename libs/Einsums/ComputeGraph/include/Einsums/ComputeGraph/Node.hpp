@@ -1355,6 +1355,21 @@ using OpData = std::variant<std::monostate, EinsumDescriptor, ScaleDescriptor, P
                             TiledDotDescriptor, ElementwiseBinaryDescriptor, DotDescriptor, TraceDescriptor, GemmDescriptor,
                             ElementTransformDescriptor, SetupDescriptor, SyevDescriptor, LaplaceQuadratureDescriptor, OuterSumDescriptor>;
 
+namespace detail {
+template <typename D, typename Variant>
+struct IsVariantAlternative : std::false_type {};
+
+template <typename D, typename... Ts>
+struct IsVariantAlternative<D, std::variant<Ts...>> : std::bool_constant<(std::is_same_v<D, Ts> || ...)> {};
+} // namespace detail
+
+/// A type @ref CaptureContext::record accepts as a node's descriptor: one of
+/// @ref OpData's alternatives, or @ref OpData itself. The library instantiates
+/// record once for each of them, so anything else would fail to link; this
+/// makes it fail to compile instead.
+template <typename D>
+concept OpDataOrAlternative = std::is_same_v<D, OpData> || detail::IsVariantAlternative<D, OpData>::value;
+
 /**
  * @brief A single operation node in the computation graph.
  *

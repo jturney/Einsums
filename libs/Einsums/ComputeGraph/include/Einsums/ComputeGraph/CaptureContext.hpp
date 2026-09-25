@@ -11,10 +11,14 @@
 #include <Einsums/ComputeGraph/TensorSlot.hpp>
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <cstddef>
 #include <functional>
+#include <span>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -82,7 +86,12 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * Creates a Node with the given parameters and adds it to the current graph.
      * Called internally by the graph-aware operation wrappers.
      *
-     * @tparam F Callable type for the executor (typically a lambda).
+     * Compiled once, in the library: the descriptor is a template parameter only
+     * so that the caller never builds an @ref OpData, whose move and destroy
+     * instantiate libc++'s visitation tables over every alternative. It is
+     * explicitly instantiated for each alternative and for @ref OpData itself.
+     *
+     * @tparam D The descriptor type: an alternative of @ref OpData, or @ref OpData.
      * @param[in] kind The operation kind (for optimization pass pattern matching).
      * @param[in] label Human-readable label for profiling output.
      * @param[in] inputs TensorIds of tensors read by this operation.
@@ -91,23 +100,35 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * @param[in] op_data Optional operation-specific metadata (EinsumDescriptor, etc.).
      * @throws std::logic_error If called outside of a capture context.
      */
-    template <typename F>
-    void record(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs, F &&executor,
-                OpData op_data = std::monostate{}) {
-        if (!_capturing || !_graph) {
-            EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext::record called outside of capture");
-        }
+    template <OpDataOrAlternative D = std::monostate>
+    void record(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs, std::function<void()> executor,
+                D op_data = {});
 
-        Node node;
-        node.kind    = kind;
-        node.label   = std::move(label);
-        node.execute = std::forward<F>(executor);
-        node.inputs  = std::move(inputs);
-        node.outputs = std::move(outputs);
-        node.op_data = std::move(op_data);
-
-        _graph->add_node(std::move(node));
-    }
+    /**
+     * @brief Record a node whose executor @ref build_executor derives from its descriptor.
+     *
+     * Builds the descriptor into an @ref OpData, asks @ref build_executor for the
+     * executor, and records the node, all in the library. What @ref build_executor
+     * resolves and what the node lists can differ: an accumulating operation reads
+     * its destination, so the node lists it as an input while the builder does not.
+     *
+     * @tparam D The descriptor type, as for @ref record; @c std::monostate for an
+     *           operation whose kind, dtype, rank and operands are its whole content.
+     * @param[in] kind The operation kind.
+     * @param[in] label Human-readable label for profiling output.
+     * @param[in] dtype Element type the executor is built for.
+     * @param[in] rank Rank the executor is keyed on.
+     * @param[in] op_data The operation's descriptor.
+     * @param[in] build_inputs Input ids handed to @ref build_executor, in capture order.
+     * @param[in] build_outputs Output ids handed to @ref build_executor, in capture order.
+     * @param[in] inputs TensorIds the node reads.
+     * @param[in] outputs TensorIds the node writes.
+     * @throws std::logic_error If called outside of a capture context.
+     */
+    template <OpDataOrAlternative D>
+    void record_built(OpKind kind, std::string label, packed_gemm::ScalarType dtype, std::size_t rank, D op_data,
+                      std::span<TensorId const> build_inputs, std::span<TensorId const> build_outputs, std::vector<TensorId> inputs,
+                      std::vector<TensorId> outputs);
 
     /**
      * @brief Record a node with asynchronous start/finish phases.
@@ -124,25 +145,9 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * @param async_finish  Lambda that waits for the async operation to complete.
      * @param op_data       Operation-specific metadata.
      */
-    template <typename F, typename StartFn, typename FinishFn>
-    void record_async(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs, F &&executor,
-                      StartFn &&async_start_fn, FinishFn &&async_finish_fn, OpData op_data = std::monostate{}) {
-        if (!_capturing || !_graph) {
-            EINSUMS_THROW_EXCEPTION(std::logic_error, "CaptureContext::record_async called outside of capture");
-        }
-
-        Node node;
-        node.kind         = kind;
-        node.label        = std::move(label);
-        node.execute      = std::forward<F>(executor);
-        node.async_start  = std::forward<StartFn>(async_start_fn);
-        node.async_finish = std::forward<FinishFn>(async_finish_fn);
-        node.inputs       = std::move(inputs);
-        node.outputs      = std::move(outputs);
-        node.op_data      = std::move(op_data);
-
-        _graph->add_node(std::move(node));
-    }
+    void record_async(OpKind kind, std::string label, std::vector<TensorId> inputs, std::vector<TensorId> outputs,
+                      std::function<void()> executor, std::function<void()> async_start, std::function<void()> async_finish,
+                      DiskIODescriptor op_data);
 
     /**
      * @brief Look up or create a TensorId for a given tensor.

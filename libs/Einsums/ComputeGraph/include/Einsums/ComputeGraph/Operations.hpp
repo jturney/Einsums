@@ -228,11 +228,8 @@ void scale(typename AType::ValueType factor, AType *A) {
 
         auto label = fmt::format("scale({}, {})", to_string(desc.factor), A->name());
 
-        OpData op_data(std::move(desc));
-        auto   executor = build_executor(OpKind::Scale, packed_gemm::get_scalar_type<typename AType::ValueType>(), detail::tensor_rank(*A),
-                                         op_data, *ctx.graph(), {}, std::span<TensorId const>{&a_id, 1});
-
-        ctx.record(OpKind::Scale, std::move(label), {a_id}, {a_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::Scale, std::move(label), packed_gemm::get_scalar_type<typename AType::ValueType>(),
+                         detail::tensor_rank(*A), std::move(desc), {}, std::span<TensorId const>{&a_id, 1}, {a_id}, {a_id});
     }
 }
 
@@ -557,11 +554,8 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
 
         auto label = fmt::format("permute: C[{}] = A[{}]", fmt::join(parsed.c_indices, ","), fmt::join(parsed.a_indices, ","));
 
-        OpData op_data(std::move(desc));
-        auto   executor = build_executor(OpKind::Permute, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*C), op_data, *ctx.graph(),
-                                         std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&c_id, 1});
-
-        ctx.record(OpKind::Permute, std::move(label), {a_id}, {c_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::Permute, std::move(label), packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*C), std::move(desc),
+                         std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&c_id, 1}, {a_id}, {c_id});
     }
 }
 
@@ -626,10 +620,8 @@ void transpose(CType *C, AType const &A) {
     // No descriptor, deliberately: a transpose is a fixed permutation with no
     // scalars, so (kind, dtype, rank, operand ids) is its complete content and
     // an empty descriptor alternative would record nothing. See build_executor.
-    auto executor = build_executor(OpKind::Transpose, packed_gemm::get_scalar_type<typename AType::ValueType>(), detail::tensor_rank(A),
-                                   OpData{}, *ctx.graph(), std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&c_id, 1});
-
-    ctx.record(OpKind::Transpose, "transpose", {a_id}, {c_id}, std::move(executor));
+    ctx.record_built(OpKind::Transpose, "transpose", packed_gemm::get_scalar_type<typename AType::ValueType>(), detail::tensor_rank(A),
+                     std::monostate{}, std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&c_id, 1}, {a_id}, {c_id});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1542,14 +1534,11 @@ void element_transform(CType *C, std::string_view op_name, std::optional<double>
     desc.op_name = std::string(op_name);
     desc.param   = param;
 
-    OpData op_data(std::move(desc));
-    auto   executor = build_executor(OpKind::ElementTransform, packed_gemm::get_scalar_type<T>(), C->impl().rank(), op_data, *ctx.graph(),
-                                     std::span<TensorId const>{&c_id, 1}, std::span<TensorId const>{&c_id, 1});
-
     // Both lists name C: the transform reads every element and writes it back,
     // which is the read-modify-write convention scale and the closure overload
     // already use.
-    ctx.record(OpKind::ElementTransform, "element_transform", {c_id}, {c_id}, std::move(executor), std::move(op_data));
+    ctx.record_built(OpKind::ElementTransform, "element_transform", packed_gemm::get_scalar_type<T>(), C->impl().rank(), std::move(desc),
+                     std::span<TensorId const>{&c_id, 1}, std::span<TensorId const>{&c_id, 1}, {c_id}, {c_id});
 }
 
 /// Python-friendly NAMED element_transform: the registry's kernel, chosen by name.
@@ -1851,16 +1840,14 @@ void axpy(typename XType::ValueType alpha, XType const &X, YType *Y) {
         // away from 1 turns this into a genuine axpby, and the executor honors
         // that rather than ignoring the write.
         std::array<TensorId, 2> const inputs{x_id, y_id};
-        OpData                        op_data(std::move(desc));
-        auto executor = build_executor(OpKind::Axpby, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*Y), op_data, *ctx.graph(),
-                                       inputs, std::span<TensorId const>{&y_id, 1});
 
         // Y += alpha*X reads its destination unconditionally (beta == 1); list it
         // as an input so dependency passes see the read (matches gemm's and
         // direct_product's out-tensor-as-input convention - without it,
         // LoopInvariantHoisting's reads-its-output guard is blind to the
         // accumulation and Reorder misses the WAR hazard on Y's old value).
-        ctx.record(OpKind::Axpby, std::move(label), {x_id, y_id}, {y_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::Axpby, std::move(label), packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*Y), std::move(desc),
+                         inputs, std::span<TensorId const>{&y_id, 1}, {x_id, y_id}, {y_id});
     }
 }
 
@@ -1951,11 +1938,8 @@ void axpby(typename XType::ValueType alpha, XType const &X, typename XType::Valu
         std::vector<TensorId> axpby_inputs =
             (beta != typename XType::ValueType{0}) ? std::vector<TensorId>{x_id, y_id} : std::vector<TensorId>{x_id};
 
-        OpData op_data(std::move(desc));
-        auto   executor = build_executor(OpKind::Axpby, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*Y), op_data, *ctx.graph(),
-                                         axpby_inputs, std::span<TensorId const>{&y_id, 1});
-
-        ctx.record(OpKind::Axpby, std::move(label), std::move(axpby_inputs), {y_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::Axpby, std::move(label), packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*Y), std::move(desc),
+                         axpby_inputs, std::span<TensorId const>{&y_id, 1}, axpby_inputs, {y_id});
     }
 }
 
@@ -2057,14 +2041,12 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C)
     if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && CoreBasicTensorConcept<CType>) {
         using ValueT = typename AType::ValueType;
 
-        OpData op_data(GemmDescriptor{.alpha   = PrefactorScalar{static_cast<ValueT>(alpha)},
-                                      .beta    = PrefactorScalar{static_cast<ValueT>(beta)},
-                                      .trans_a = TransA ? 't' : 'n',
-                                      .trans_b = TransB ? 't' : 'n'});
-        auto   executor = build_executor(OpKind::Gemm, packed_gemm::get_scalar_type<ValueT>(), 2, op_data, *ctx.graph(), inputs,
-                                         std::span<TensorId const>{&c_id, 1});
-
-        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::Gemm, std::move(label), packed_gemm::get_scalar_type<ValueT>(), 2,
+                         GemmDescriptor{.alpha   = PrefactorScalar{static_cast<ValueT>(alpha)},
+                                        .beta    = PrefactorScalar{static_cast<ValueT>(beta)},
+                                        .trans_a = TransA ? 't' : 'n',
+                                        .trans_b = TransB ? 't' : 'n'},
+                         inputs, std::span<TensorId const>{&c_id, 1}, inputs, {c_id});
     } else {
         auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
             LabeledSection("gemm execute");
@@ -2168,14 +2150,12 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C,
         // The chars go in as given, conjugate transpose included: this is the
         // overload that exists to reach BLAS 'c', and the descriptor records
         // chars rather than bools so it can.
-        OpData op_data(GemmDescriptor{.alpha   = PrefactorScalar{static_cast<ValueT>(alpha)},
-                                      .beta    = PrefactorScalar{static_cast<ValueT>(beta)},
-                                      .trans_a = ta,
-                                      .trans_b = tb});
-        auto   executor = build_executor(OpKind::Gemm, packed_gemm::get_scalar_type<ValueT>(), 2, op_data, *ctx.graph(), inputs,
-                                         std::span<TensorId const>{&c_id, 1});
-
-        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::Gemm, std::move(label), packed_gemm::get_scalar_type<ValueT>(), 2,
+                         GemmDescriptor{.alpha   = PrefactorScalar{static_cast<ValueT>(alpha)},
+                                        .beta    = PrefactorScalar{static_cast<ValueT>(beta)},
+                                        .trans_a = ta,
+                                        .trans_b = tb},
+                         inputs, std::span<TensorId const>{&c_id, 1}, inputs, {c_id});
     } else {
         auto executor = [alpha, a_slot, b_slot, beta, c_slot, ta, tb]() {
             LabeledSection("gemm execute");
@@ -2585,12 +2565,9 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
                   std::is_same_v<typename BType::ValueType, ResultT>) {
         std::vector<TensorId> const inputs{a_id, b_id};
 
-        OpData op_data(DotDescriptor{.conjugated = false});
         // Rank is keyed on the destination, which is a registered scalar: 0.
-        auto executor = build_executor(OpKind::Dot, packed_gemm::get_scalar_type<ResultT>(), 0, op_data, *ctx.graph(), inputs,
-                                       std::span<TensorId const>{&r_id, 1});
-
-        ctx.record(OpKind::Dot, "dot", inputs, {r_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::Dot, "dot", packed_gemm::get_scalar_type<ResultT>(), 0, DotDescriptor{.conjugated = false}, inputs,
+                         std::span<TensorId const>{&r_id, 1}, inputs, {r_id});
     } else {
         auto executor = [result, a_slot, b_slot]() {
             LabeledSection("dot execute");
@@ -2714,11 +2691,8 @@ void dot_python(ResultType *result, AType const &A, BType const &B) {
         // which ScalarAccessor resolves to the same one address either way.
         std::vector<TensorId> const inputs{a_id, b_id};
 
-        OpData op_data(DotDescriptor{.conjugated = false});
-        auto executor = build_executor(OpKind::Dot, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result), op_data, *ctx.graph(),
-                                       inputs, std::span<TensorId const>{&r_id, 1});
-
-        ctx.record(OpKind::Dot, "dot", inputs, {r_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::Dot, "dot", packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result),
+                         DotDescriptor{.conjugated = false}, inputs, std::span<TensorId const>{&r_id, 1}, inputs, {r_id});
     }
 }
 
@@ -2820,11 +2794,8 @@ void dotc_python(ResultType *result, AType const &A, BType const &B) {
         // difference from dot_python: the builder picks true_dot over dot.
         std::vector<TensorId> const inputs{a_id, b_id};
 
-        OpData op_data(DotDescriptor{.conjugated = true});
-        auto executor = build_executor(OpKind::Dot, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result), op_data, *ctx.graph(),
-                                       inputs, std::span<TensorId const>{&r_id, 1});
-
-        ctx.record(OpKind::Dot, "dotc", inputs, {r_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::Dot, "dotc", packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result),
+                         DotDescriptor{.conjugated = true}, inputs, std::span<TensorId const>{&r_id, 1}, inputs, {r_id});
     }
 }
 
@@ -3028,11 +2999,8 @@ void direct_product(T alpha, AType const &A, BType const &B, T beta, CType *C) {
     // (gemm already does this; matches the out-tensor-as-input convention.)
     std::vector<TensorId> dp_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, b_id, c_id} : std::vector<TensorId>{a_id, b_id};
 
-    OpData op_data(std::move(desc));
-    auto   executor = build_executor(OpKind::DirectProduct, packed_gemm::get_scalar_type<typename CType::ValueType>(),
-                                     detail::tensor_rank(*C), op_data, *ctx.graph(), dp_inputs, std::span<TensorId const>{&c_id, 1});
-
-    ctx.record(OpKind::DirectProduct, "direct_product", std::move(dp_inputs), {c_id}, std::move(executor), std::move(op_data));
+    ctx.record_built(OpKind::DirectProduct, "direct_product", packed_gemm::get_scalar_type<typename CType::ValueType>(),
+                     detail::tensor_rank(*C), std::move(desc), dp_inputs, std::span<TensorId const>{&c_id, 1}, dp_inputs, {c_id});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3146,11 +3114,8 @@ void direct_division(T alpha, AType const &A, BType const &B, T beta, CType *C) 
         // input so dependency-based passes see the read (see direct_product).
         std::vector<TensorId> dd_inputs = (beta != T{0}) ? std::vector<TensorId>{a_id, b_id, c_id} : std::vector<TensorId>{a_id, b_id};
 
-        OpData op_data(std::move(desc));
-        auto   executor = build_executor(OpKind::DirectDivision, packed_gemm::get_scalar_type<typename CType::ValueType>(),
-                                         detail::tensor_rank(*C), op_data, *ctx.graph(), dd_inputs, std::span<TensorId const>{&c_id, 1});
-
-        ctx.record(OpKind::DirectDivision, "direct_division", std::move(dd_inputs), {c_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::DirectDivision, "direct_division", packed_gemm::get_scalar_type<typename CType::ValueType>(),
+                         detail::tensor_rank(*C), std::move(desc), dd_inputs, std::span<TensorId const>{&c_id, 1}, dd_inputs, {c_id});
     }
 }
 
@@ -5739,12 +5704,9 @@ void trace(typename AType::ValueType *result, AType const &A) {
     // Dense operands only: a block or tiled matrix has no single buffer for the
     // rank-erased diagonal walk, and keeps the capture-baked closure.
     if constexpr (CoreBasicTensorConcept<AType>) {
-        OpData op_data(TraceDescriptor{});
         // Rank is keyed on the destination, which is a registered scalar: 0.
-        auto executor = build_executor(OpKind::Trace, packed_gemm::get_scalar_type<T>(), 0, op_data, *ctx.graph(),
-                                       std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&r_id, 1});
-
-        ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::Trace, "trace", packed_gemm::get_scalar_type<T>(), 0, TraceDescriptor{},
+                         std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&r_id, 1}, {a_id}, {r_id});
     } else {
         auto executor = [result, a_slot]() {
             LabeledSection("trace execute");
@@ -5841,11 +5803,8 @@ void trace_python(ResultType *result, AType const &A) {
         // Same node the scalar-writing cg::trace records; the destination is a
         // rank-1 tensor rather than a bare scalar and resolves to one address
         // either way.
-        OpData op_data(TraceDescriptor{});
-        auto   executor = build_executor(OpKind::Trace, packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result), op_data,
-                                         *ctx.graph(), std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&r_id, 1});
-
-        ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor), std::move(op_data));
+        ctx.record_built(OpKind::Trace, "trace", packed_gemm::get_scalar_type<T>(), detail::tensor_rank(*result), TraceDescriptor{},
+                         std::span<TensorId const>{&a_id, 1}, std::span<TensorId const>{&r_id, 1}, {a_id}, {r_id});
     }
 }
 
