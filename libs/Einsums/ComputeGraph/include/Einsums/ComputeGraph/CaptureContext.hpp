@@ -14,6 +14,7 @@
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/Python/Annotations.hpp>
 
+#include <complex>
 #include <cstddef>
 #include <functional>
 #include <span>
@@ -201,59 +202,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * @return The tensor's TensorId in the current graph.
      */
     template <GraphCapturableTensor TensorType>
-    TensorId get_or_register(TensorType const &tensor) {
-        void *ptr = const_cast<void *>(static_cast<void const *>(&tensor));
-
-        // Both caches below are keyed by address, and an address does not
-        // identify a tensor across a capture that frees them: a destroyed
-        // wrapper's address is immediately reusable, so a tensor allocated on
-        // top of a dead one would inherit its TensorId and every node referring
-        // to it would silently operate on the wrong operand. The liveness token
-        // tells the two apart. (Callers used to dodge this by keeping every
-        // captured temporary alive for the whole capture; operand adoption
-        // removed the reason to, which is what exposed it.)
-        std::weak_ptr<void> const token = detail::liveness_token_of(tensor);
-
-        // Check capture-local cache first
-        auto it = _ptr_to_id.find(ptr);
-        if (it != _ptr_to_id.end()) {
-            if (detail::same_tensor(it->second.token, token)) {
-                return it->second.id;
-            }
-            _ptr_to_id.erase(it);
-        }
-
-        // Already registered with the graph (e.g. from create_tensor())? This
-        // was a linear scan of the tensor table, which made a capture quadratic
-        // in the number of distinct operands.
-        if (TensorId const tid = _graph->find_tensor_id_by_ptr(ptr); tid != 0) {
-            auto const *existing = _graph->find_tensor(tid);
-            if (existing != nullptr && detail::same_tensor(existing->caller_token, token)) {
-                _ptr_to_id[ptr] = {.id = tid, .token = token};
-                return tid;
-            }
-        }
-
-        // New tensor *to this graph*, register it. Inside a loop body or
-        // conditional branch this is also the path a parent-registered tensor
-        // takes: it gets a fresh default handle, deliberately dropping the
-        // parent's metadata. See the contract note above before "fixing" this.
-        //
-        // The handle's lambdas are baked over the graph's stand-in, not the
-        // caller's wrapper, so impl_fn / swap_data / the validator all reach an
-        // object the graph keeps alive. ``tensor_ptr`` still names the caller's
-        // tensor: it is the handle's identity, compared against user-held
-        // addresses all over the passes.
-        using Clean         = std::remove_cvref_t<TensorType>;
-        auto  owner         = _graph->adopt_operand(tensor);
-        auto &bound         = owner ? *static_cast<Clean *>(owner.get()) : const_cast<Clean &>(tensor);
-        auto  handle        = make_handle(bound, 0, ptr);
-        handle.owner        = std::move(owner);
-        handle.caller_token = token;
-        TensorId const id   = _graph->register_tensor(std::move(handle));
-        _ptr_to_id[ptr]     = {.id = id, .token = token};
-        return id;
-    }
+    TensorId get_or_register(TensorType const &tensor);
 
     /**
      * @brief Look up or create a TensorId for a scalar value.
@@ -292,13 +241,7 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
      * @return Pair of (TensorId, TensorSlot pointer).
      */
     template <GraphCapturableTensor TensorType>
-    std::pair<TensorId, TensorSlot *> get_slot(TensorType const &tensor) {
-        TensorId id = get_or_register(tensor);
-        // get_or_create_slot re-points the slot at the handle's stand-in when
-        // there is one, so passing the caller's tensor here is only how the
-        // slot gets its name/rank/dims.
-        return {id, _graph->get_or_create_slot(tensor, id)};
-    }
+    std::pair<TensorId, TensorSlot *> get_slot(TensorType const &tensor);
 
     /// Get-or-create a TensorSlot for an already-registered tensor.
     ///
@@ -332,6 +275,104 @@ class EINSUMS_EXPORT APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_N
     bool                                 _capturing{false};
     std::unordered_map<void *, CachedId> _ptr_to_id; ///< Maps tensor address → TensorId for deduplication
 };
+
+// get_or_register and get_slot are defined outside the class so that they are
+// not implicitly inline: an explicit instantiation declaration suppresses the
+// instantiation of a non-inline function only. Each builds a TensorHandle for
+// its tensor type (make_handle's closures, operand adoption, the slot), which
+// cost a caller about 0.7 s of compile per tensor type; the common dense types
+// below are instantiated once, in the library, and every other type still
+// instantiates here.
+template <GraphCapturableTensor TensorType>
+TensorId CaptureContext::get_or_register(TensorType const &tensor) {
+    void *ptr = const_cast<void *>(static_cast<void const *>(&tensor));
+
+    // Both caches below are keyed by address, and an address does not
+    // identify a tensor across a capture that frees them: a destroyed
+    // wrapper's address is immediately reusable, so a tensor allocated on
+    // top of a dead one would inherit its TensorId and every node referring
+    // to it would silently operate on the wrong operand. The liveness token
+    // tells the two apart. (Callers used to dodge this by keeping every
+    // captured temporary alive for the whole capture; operand adoption
+    // removed the reason to, which is what exposed it.)
+    std::weak_ptr<void> const token = detail::liveness_token_of(tensor);
+
+    // Check capture-local cache first
+    auto it = _ptr_to_id.find(ptr);
+    if (it != _ptr_to_id.end()) {
+        if (detail::same_tensor(it->second.token, token)) {
+            return it->second.id;
+        }
+        _ptr_to_id.erase(it);
+    }
+
+    // Already registered with the graph (e.g. from create_tensor())? This
+    // was a linear scan of the tensor table, which made a capture quadratic
+    // in the number of distinct operands.
+    if (TensorId const tid = _graph->find_tensor_id_by_ptr(ptr); tid != 0) {
+        auto const *existing = _graph->find_tensor(tid);
+        if (existing != nullptr && detail::same_tensor(existing->caller_token, token)) {
+            _ptr_to_id[ptr] = {.id = tid, .token = token};
+            return tid;
+        }
+    }
+
+    // New tensor *to this graph*, register it. Inside a loop body or
+    // conditional branch this is also the path a parent-registered tensor
+    // takes: it gets a fresh default handle, deliberately dropping the
+    // parent's metadata. See the contract note above before "fixing" this.
+    //
+    // The handle's lambdas are baked over the graph's stand-in, not the
+    // caller's wrapper, so impl_fn / swap_data / the validator all reach an
+    // object the graph keeps alive. ``tensor_ptr`` still names the caller's
+    // tensor: it is the handle's identity, compared against user-held
+    // addresses all over the passes.
+    using Clean         = std::remove_cvref_t<TensorType>;
+    auto  owner         = _graph->adopt_operand(tensor);
+    auto &bound         = owner ? *static_cast<Clean *>(owner.get()) : const_cast<Clean &>(tensor);
+    auto  handle        = make_handle(bound, 0, ptr);
+    handle.owner        = std::move(owner);
+    handle.caller_token = token;
+    TensorId const id   = _graph->register_tensor(std::move(handle));
+    _ptr_to_id[ptr]     = {.id = id, .token = token};
+    return id;
+}
+
+template <GraphCapturableTensor TensorType>
+std::pair<TensorId, TensorSlot *> CaptureContext::get_slot(TensorType const &tensor) {
+    TensorId id = get_or_register(tensor);
+    // get_or_create_slot re-points the slot at the handle's stand-in when
+    // there is one, so passing the caller's tensor here is only how the
+    // slot gets its name/rank/dims.
+    return {id, _graph->get_or_create_slot(tensor, id)};
+}
+
+/// The tensor types whose @ref CaptureContext::get_or_register and
+/// @ref CaptureContext::get_slot the library compiles: dense tensors and views
+/// of rank 1 to 4 and the runtime-rank tensor and view, over the four element
+/// types. @p X is applied to each type.
+#define EINSUMS_CAPTURE_SLOT_TYPES_FOR(X, T)                                                                                               \
+    X(::einsums::Tensor<T, 1>)                                                                                                             \
+    X(::einsums::Tensor<T, 2>)                                                                                                             \
+    X(::einsums::Tensor<T, 3>)                                                                                                             \
+    X(::einsums::Tensor<T, 4>)                                                                                                             \
+    X(::einsums::TensorView<T, 1>)                                                                                                         \
+    X(::einsums::TensorView<T, 2>)                                                                                                         \
+    X(::einsums::TensorView<T, 3>)                                                                                                         \
+    X(::einsums::TensorView<T, 4>)                                                                                                         \
+    X(::einsums::RuntimeTensor<T>)                                                                                                         \
+    X(::einsums::RuntimeTensorView<T>)
+#define EINSUMS_CAPTURE_SLOT_TYPES(X)                                                                                                      \
+    EINSUMS_CAPTURE_SLOT_TYPES_FOR(X, float)                                                                                               \
+    EINSUMS_CAPTURE_SLOT_TYPES_FOR(X, double)                                                                                              \
+    EINSUMS_CAPTURE_SLOT_TYPES_FOR(X, std::complex<float>)                                                                                 \
+    EINSUMS_CAPTURE_SLOT_TYPES_FOR(X, std::complex<double>)
+
+#define EINSUMS_EXTERN_CAPTURE_SLOT(...)                                                                                                   \
+    extern template EINSUMS_EXPORT TensorId CaptureContext::get_or_register<__VA_ARGS__>(__VA_ARGS__ const &);                             \
+    extern template EINSUMS_EXPORT std::pair<TensorId, TensorSlot *> CaptureContext::get_slot<__VA_ARGS__>(__VA_ARGS__ const &);
+EINSUMS_CAPTURE_SLOT_TYPES(EINSUMS_EXTERN_CAPTURE_SLOT)
+#undef EINSUMS_EXTERN_CAPTURE_SLOT
 
 /**
  * @brief RAII guard for graph capture.

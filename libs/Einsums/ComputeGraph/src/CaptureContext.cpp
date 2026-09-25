@@ -154,4 +154,10 @@ EINSUMS_RECORD(OpData)
 #undef EINSUMS_RECORD
 #undef EINSUMS_OP_DATA_ALTERNATIVES
 
+#define EINSUMS_CAPTURE_SLOT(...)                                                                                                          \
+    template EINSUMS_EXPORT TensorId CaptureContext::get_or_register<__VA_ARGS__>(__VA_ARGS__ const &);                                    \
+    template EINSUMS_EXPORT std::pair<TensorId, TensorSlot *> CaptureContext::get_slot<__VA_ARGS__>(__VA_ARGS__ const &);
+EINSUMS_CAPTURE_SLOT_TYPES(EINSUMS_CAPTURE_SLOT)
+#undef EINSUMS_CAPTURE_SLOT
+
 EINSUMS_NAMESPACE_END(compute_graph)
