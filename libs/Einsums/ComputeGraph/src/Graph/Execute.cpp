@@ -570,7 +570,7 @@ bool Graph::apply(PassManager &pm) {
     // outer one does.
     link_alias_storage();
     for_each_descendant([](Graph &sub) { sub.link_alias_storage(); });
-    std::scoped_lock const lock(*_content_mutex);
+    std::scoped_lock const lock(_content_mutex);
     bool const             modified = pm.run(*this);
     if (modified) {
         _executed = false;

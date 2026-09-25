@@ -349,7 +349,7 @@ TEST_CASE("Approximation - a move carries the records and the budget", "[Compute
     graph.set_accuracy_budget(cg::ApproximationEffect::NormRelative, 1e-3);
 
     // `load_graph` returns a Graph BY VALUE, so every load goes through this path; a member
-    // missing from move_members_from is silently dropped by all of them.
+    // a move dropped would be silently lost by all of them.
     cg::Graph const moved = std::move(graph);
     REQUIRE(moved.approximations().size() == 1);
     REQUIRE(moved.accuracy_budget_value() == Catch::Approx(1e-3));

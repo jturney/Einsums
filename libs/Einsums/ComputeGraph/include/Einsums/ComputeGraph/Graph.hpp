@@ -152,6 +152,446 @@ enum class OptLevel : std::uint8_t; // Optimizer.hpp
 struct ParsedEinsumSpec;
 
 /**
+ * @brief Per-node timing entry.
+ */
+struct NodeTiming {
+    NodeId      id;
+    std::string label;
+    OpKind      kind;
+    double      duration_ms{0.0}; ///< Wall-clock time in milliseconds
+    unsigned    width{0};         ///< Width it ran at; 0 if unplaced. @see NodeTimingSample::width
+};
+
+/**
+ * @brief One raw timing sample, as a replay records it.
+ *
+ * Deliberately label-free: a replay writes one of these per node, and the
+ * label is recoverable from the node id, so copying a label string per
+ * node per replay was pure waste in an SCF/CC loop that replays the same
+ * graph hundreds of times. @ref Graph::timing_report attaches the labels once,
+ * only if anyone asks for the report.
+ */
+struct NodeTimingSample {
+    NodeId id;
+    OpKind kind;
+    double duration_ms{0.0}; ///< Wall-clock time in milliseconds
+
+    /// Thread width the node ACTUALLY ran at, or 0 when the executor did
+    /// not place it at a chosen width.
+    ///
+    /// A duration is only meaningful beside the width that produced it.
+    /// ThreadPlanning consumes a measurement as the node's SERIAL time, so
+    /// without this a node the previous plan widened reports t(w) as t(1),
+    /// looks cheaper than it is by its own speedup, drops under the fork
+    /// floor and gets narrowed - the planner punishing exactly the nodes
+    /// its last plan widened, and the harder the wider they ran.
+    ///
+    /// Recorded rather than read back off the node because the node's
+    /// thread_width says what was PLANNED, not what happened: a stale plan
+    /// reaches the dataflow executor with widths_active false and every
+    /// node runs unwrapped with its thread_width still set. Inferring from
+    /// the node would then correct a measurement that needed no correcting.
+    unsigned width{0};
+};
+
+class Graph;
+
+namespace detail {
+
+/// A recursive mutex that stays with its object. Moving the object hands the destination a
+/// fresh, unlocked mutex and leaves the source its own: the lock guards one object's contents,
+/// and a mutex another thread may hold must never travel.
+class ContentMutex {
+  public:
+    ContentMutex() = default;
+    ContentMutex(ContentMutex &&) noexcept {}
+    ContentMutex &operator=(ContentMutex &&) noexcept { return *this; }
+    ContentMutex(ContentMutex const &)            = delete;
+    ContentMutex &operator=(ContentMutex const &) = delete;
+    ~ContentMutex()                               = default;
+
+    void lock() { _mutex.lock(); }
+    void unlock() { _mutex.unlock(); }
+    bool try_lock() { return _mutex.try_lock(); }
+
+  private:
+    std::recursive_mutex _mutex;
+};
+
+/// Cleanup callbacks, each run exactly once, newest first. A move leaves the source empty, and
+/// assigning over a stack runs what it held first, so no callback is dropped or run twice.
+class CleanupStack {
+  public:
+    CleanupStack() = default;
+    CleanupStack(CleanupStack &&other) noexcept : _callbacks(std::exchange(other._callbacks, {})) {}
+    CleanupStack &operator=(CleanupStack &&other) noexcept {
+        if (this != &other) {
+            run();
+            _callbacks = std::exchange(other._callbacks, {});
+        }
+        return *this;
+    }
+    CleanupStack(CleanupStack const &)            = delete;
+    CleanupStack &operator=(CleanupStack const &) = delete;
+    ~CleanupStack() { run(); }
+
+    void push(std::function<void()> callback) { _callbacks.push_back(std::move(callback)); }
+
+    /// Run every callback, newest first, and forget them.
+    void run() noexcept {
+        while (!_callbacks.empty()) {
+            auto callback = std::move(_callbacks.back());
+            _callbacks.pop_back();
+            if (callback) {
+                callback();
+            }
+        }
+    }
+
+  private:
+    std::vector<std::function<void()>> _callbacks;
+};
+
+/// Everything a @ref Graph holds.
+///
+/// Graph derives from this so that moving one is the defaulted move of its members plus the
+/// one step no member can take for itself: handing over the registry entry that names the
+/// graph by address. A member added here therefore travels with every move with nothing to keep
+/// in step, and the only question it raises is the one `GraphIR.cpp` asks, whether it is
+/// structure that a saved file carries.
+///
+/// The declaration order is the destruction order, reversed, as it was when these were
+/// Graph's own members.
+struct GraphState {
+    GraphState()                                  = default;
+    GraphState(GraphState &&) noexcept            = default;
+    GraphState &operator=(GraphState &&) noexcept = default;
+    GraphState(GraphState const &)                = delete;
+    GraphState &operator=(GraphState const &)     = delete;
+    ~GraphState()                                 = default;
+
+    /// Half-open byte span of a bound operand's storage; a null @ref lo means the
+    /// operand offered none.
+    ///
+    /// A span rather than a base address, because two DISJOINT slices of one buffer
+    /// have distinct base addresses and must still bind without complaint, while two
+    /// OVERLAPPING ones share no address at all when neither starts where the other
+    /// does. Comparing base pointers answers the second case wrong, and answering it
+    /// wrong is how a bind loses the hazard edges between two slots.
+    struct BoundSpan {
+        char const *lo{nullptr}; ///< First byte, or null when there is no span.
+        char const *hi{nullptr}; ///< One past the last byte.
+
+        /// Whether the two spans share a byte. False whenever either is absent:
+        /// an operand with no address cannot be shown to alias anything.
+        [[nodiscard]] bool overlaps(BoundSpan const &other) const noexcept;
+
+        /// Number of bytes the two spans share, for the diagnostic.
+        [[nodiscard]] std::size_t overlap_bytes(BoundSpan const &other) const noexcept;
+    };
+
+    /**
+     * @brief What one @ref bind call's first walk worked out about the symbols.
+     *
+     * Values only, no storage identities: the second walk repoints, this one decides
+     * whether it may.
+     */
+    struct DimSolution {
+        /// Symbol name to the extent this bind solved it at.
+        std::unordered_map<std::string, std::size_t> values;
+        /// Symbol name to the manifest slot that first supplied its extent, so a
+        /// disagreement can name both sides rather than only the loser.
+        std::unordered_map<std::string, std::string> witness;
+        /// True when at least one bound entry declares a symbolic or ragged axis.
+        bool any_symbolic{false};
+        /// True when some bound extent differs from the one the graph holds. Everything
+        /// expensive below this is gated on it, so the ordinary same-shape bind - a replay
+        /// loop's - pays for one comparison per axis and nothing else.
+        bool extents_changed{false};
+    };
+
+    /// One slot handed to @ref bind_add, held until @ref bind_commit runs the transaction.
+    /// The two steps are stored type-erased because the pairs are heterogeneous and the
+    /// commit has to walk them twice, once to solve and once to repoint.
+    ///
+    /// The steps take the graph as an argument rather than capturing it, so a pending bind
+    /// stays valid when the graph it was added to is moved before the commit.
+    struct PendingBind {
+        std::string                                                                  name;
+        std::function<void(Graph &, InterfaceManifest const &, DimSolution &)>       collect;
+        std::function<void(Graph &, InterfaceManifest const &, DimSolution const &)> apply;
+    };
+
+    std::vector<PendingBind> _pending_binds;
+
+    std::string                                _name;
+    std::string                                _pipeline_name;   ///< Parent pipeline name (empty if standalone)
+    std::string                                _workspace_name;  ///< Parent workspace name (empty if none)
+    std::string                                _stage_name;      ///< Stage name within pipeline
+    std::string                                _stage_type;      ///< "graph" or "loop"
+    int                                        _stage_index{-1}; ///< Order within pipeline
+    std::vector<Node>                          _nodes;
+    std::unordered_map<TensorId, TensorHandle> _tensors;
+
+    /// Ownership-scope tables published by a declaring Workspace or Pipeline.
+    /// Shared, so a declaration made after this graph was created still reaches it.
+    /// @see add_scope_map
+    std::vector<TensorScopeMapPtr> _scope_maps;
+
+    /// Manifest slots @ref bind has supplied storage for, and the byte span each was
+    /// given. Keyed by TensorId, not by name: @ref rebind renames the handle after
+    /// the tensor it now points at, so a name is not stable across the very
+    /// operation this records. The span is empty when the operand offered no address
+    /// (a deferred shell, a tile-wise sparse tensor), which still counts as bound and
+    /// simply cannot participate in the aliasing check.
+    std::unordered_map<TensorId, BoundSpan> _bound_operands;
+
+    /// Manifest-declared alias relations: child entry id -> the entry whose storage it
+    /// is part of.
+    ///
+    /// Kept beside the handles rather than only on them because a declaration is an
+    /// INPUT to alias discovery, not an output: it is the only relation that survives
+    /// a save (no address, no ``View`` node), so it has to be reapplied by every
+    /// linking pass and must not be lost to @ref clear_alias_links.
+    /// @see declare_alias
+    std::unordered_map<TensorId, TensorId> _declared_aliases;
+
+    /// Interface names pinned by @ref bind, by TensorId.
+    ///
+    /// A manifest name is the contract, and a contract that renamed itself every
+    /// time a caller bound different storage to it would be unusable: the second
+    /// ``bind("t2", ...)`` of a replay loop would report "no such interface tensor"
+    /// because the first one renamed the slot after the tensor it was handed.
+    /// @ref rebind's rename is right for the handle (which names a tensor) and wrong
+    /// for the interface (which names a slot), so the interface keeps its own record.
+    std::unordered_map<TensorId, std::string> _interface_names;
+
+    /// Ties established by @ref annotate_dims and @ref annotate_spaces between a dim
+    /// symbol and the index space its axes range over.
+    ///
+    /// Graph-level rather than per-handle, because the property worth enforcing is a
+    /// GLOBAL one: one symbol standing for two different spaces in two places is a
+    /// contradiction no single handle can see.
+    /// @see symbol_spaces
+    std::unordered_map<std::string, SpaceId> _symbol_spaces;
+
+    /// What each space measures on the problem currently annotated, learned from
+    /// @ref annotate_spaces. The bool is "still uniform": two annotated axes over one space
+    /// that disagree set it false and the extent stops being usable, which is a ragged family
+    /// rather than a mistake.
+    std::unordered_map<SpaceId, std::pair<std::size_t, bool>> _space_extents;
+
+    /// The canonical partition of each space, from @ref pin_space_tiling. The bool mirrors
+    /// @ref _space_extents: two disagreeing statements leave the space with no usable tiling.
+    std::unordered_map<SpaceId, std::pair<std::vector<int>, bool>> _space_tiles;
+
+    /// Per-instance extent tables @ref bind_ragged_extents has accepted, in supply order.
+    /// Cleared by @ref clear_bindings with the rest of the bind state.
+    std::vector<RaggedExtentTable> _ragged_extents;
+
+    /// Gate-flag arrays this graph can name, sorted by name.
+    ///
+    /// A vector rather than a map because the order is part of what a saved file
+    /// records and a hash is taken over: a map's iteration order is not a
+    /// property of the graph.
+    /// @see name_gate_flags
+    std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> _named_gate_flags;
+
+    /// Registry the @ref SpaceId values on this graph's handles were issued by. Null means the
+    /// process-global one, which is what @ref space_registry substitutes; a non-owning pointer
+    /// because a registry is a long-lived object the caller owns, and because Graph stays
+    /// movable.
+    SpaceRegistry *_space_registry{nullptr};
+    NodeId         _next_node_id{0};
+    // Starts at 1: id 0 is reserved as the "no tensor" / "no alias" sentinel
+    // (TensorHandle::aliases defaults to 0 and the codebase tests `aliases == 0`
+    // for "not a view"). If a real tensor could be id 0, a view of it would have
+    // aliases == 0 and silently fail to resolve to its parent in the scheduler.
+    TensorId _next_tensor_id{1};
+
+    /// Registration-time byte spans, for the containment search in
+    /// link_alias_storage. ``TensorHandle::data_ptr`` is a registration-time
+    /// snapshot that nothing refreshes, so these stay valid for the life of the
+    /// handle and the search need not recompute an extent per candidate.
+    /// False once a tensor has been registered since the last link pass.
+    bool _aliases_linked{true};
+
+    /// ``TensorHandle::tensor_ptr`` to id. Capture asks "is this object already
+    /// registered?" for every operand, which was a linear scan of the tensor
+    /// table and so quadratic over a capture; a DLPNO-MP2 graph registers ~13k
+    /// tensors.
+    ///
+    /// LAST registration wins - @ref register_tensor uses ``insert_or_assign``, because an
+    /// address freed during a capture can be reused by a different tensor and the index has to
+    /// name the tensor that lives there NOW. That is also what makes it the right thing for
+    /// every by-address lookup to go through: a scan of @ref _tensors, which is what these
+    /// lookups used to be, returns whichever equal-keyed handle it happens to reach first, so
+    /// two handles naming one address made the answer depend on the hash order.
+    ///
+    /// ``rebind_impl`` maintains it too, for the same reason: a repoint moves a handle's
+    /// ``tensor_ptr``, and an index that did not follow went on naming storage a bound graph
+    /// no longer uses while reporting the storage it was rebound to as unregistered.
+    std::unordered_map<void const *, TensorId> _ptr_index;
+
+    bool _sorted{false};
+
+    /// Whether _deps matches the current node order. Distinct from _sorted:
+    /// mark_sorted() vouches for the order without rebuilding _deps, so
+    /// topological_sort() can skip the Kahn pass but must refresh the lists.
+    bool _deps_valid{false};
+
+    /// Pre-interned profiler payloads for one node: the zone name plus every
+    /// annotation whose value is invariant across replays. Built once per
+    /// graph mutation instead of fmt::format-ing per node per execute() -
+    /// for an SCF/CC loop that replays the graph hundreds of times, the
+    /// formatting dominated the serial replay overhead.
+    ///
+    /// The ids are string-table ids, not strings: interning a key and a value
+    /// per annotation per node per replay took the table's lock several times
+    /// per node, which is what made a profiled replay several times the cost
+    /// of an unprofiled one. Ids are stable for the life of the process (the
+    /// table only grows), so caching them here is safe across enable/disable.
+    /// @c zone is kept because the Tracy backend wants the characters.
+    struct NodeProfileStrings {
+        NodeId                                     node_id{0}; ///< owner, checked against the node at replay
+        std::string                                zone;       ///< "graph:<name>/<label>"
+        uint32_t                                   zone_id{0}; ///< interned @c zone
+        std::vector<std::pair<uint32_t, uint32_t>> texts;      ///< invariant string annotations (key id, value id)
+        std::vector<std::pair<uint32_t, int64_t>>  numbers;    ///< invariant integer annotations
+        std::vector<std::pair<uint32_t, double>>   reals;      ///< invariant floating-point annotations
+    };
+
+    /// Parallel to _nodes (position i describes node i), which is what lets
+    /// the replay loop index straight in instead of hashing a NodeId per node.
+    /// @c node_id is checked against the node anyway, so an UNdeclared
+    /// mutation degrades to a bare label rather than mislabelling a zone.
+    ///
+    /// Invalidated wherever the node list or annotated metadata changes:
+    /// add_node, mark_sorted (the declared-mutation contract - passes rewrite
+    /// labels/descriptors), rebind (tensor names), and update_prefactors.
+    /// Only built when something is recording; a run with the profiler off
+    /// never formats or interns any of it.
+    std::vector<NodeProfileStrings> _profile_strings;
+    bool                            _profile_strings_valid{false};
+    std::string                     _exec_zone_name;
+    uint32_t                        _exec_zone_id{0};
+
+    /// Threads the node widths were planned for; 0 = never recorded.
+    /// @see planned_thread_count
+    std::uint16_t _planned_thread_count{0};
+
+    /// Where a cold thread plan is in its measured trial. @see plan_threads
+    enum class ThreadPlanTrial : std::uint8_t {
+        None,      ///< No decision pending: the widths on the nodes are final.
+        Armed,     ///< Cold model plan is live; the re-plan fires after the next replay.
+        Candidate, ///< The re-planned widths are live and this replay is timing them.
+        Incumbent, ///< The cold widths are back and this replay is timing them.
+    };
+
+    /// Every planned width and admission priority in the graph tree, in walk
+    /// order: this graph's nodes, then each container body's, recursively.
+    using ThreadPlanSnapshot = std::vector<std::pair<std::uint16_t, std::int64_t>>;
+
+    ThreadPlanTrial    _plan_trial{ThreadPlanTrial::None};
+    ThreadPlanSnapshot _plan_incumbent;         ///< The cold model plan, held during the trial.
+    ThreadPlanSnapshot _plan_candidate;         ///< The timings re-plan, held during the trial.
+    double             _plan_candidate_ms{0.0}; ///< Wall clock of the candidate's replay.
+
+    /// Mutation counter for cached analyses. Bumped at every
+    /// mutation-declaration point; UsageAnalysis caches against it.
+    std::uint64_t _analysis_version{0};
+    /// Node-set counter for the pass phase rule. @see structure_version
+    std::uint64_t _structure_version{0};
+
+    /// Structural-algebraic passes that rewrote this graph, in the order they did. @see note_structural_pass
+    std::vector<std::string> _structural_passes;
+    /// Version _usage was built at (UINT64_MAX = never built).
+    std::uint64_t  _usage_version{std::numeric_limits<std::uint64_t>::max()};
+    UsageAnalysis  _usage;
+    bool           _executed{false}; ///< True after first successful execute (caching)
+    DependencyInfo _deps;            ///< Populated by topological_sort()
+
+    /// Serializes structural reads/writes of _nodes / _tensors / _timing_report
+    /// so the profiler server thread's to_json() cannot observe a torn or
+    /// half-moved node vector while the owning thread mutates the graph. Locked
+    /// by to_json (reader) and by the mutating entry points: add_node,
+    /// register_tensor, topological_sort, erase_nodes, insert_node_groups,
+    /// record_node_timings, and the pass runners apply(). Recursive because a
+    /// locked pass runner calls the also-locked primitives. Each graph keeps its
+    /// own across a move (see @ref ContentMutex).
+    mutable ContentMutex _content_mutex;
+
+    /// Type-erased storage for graph-owned tensors (from create_tensor()).
+    /// Each entry uses a typed deleter captured at creation time.
+    std::vector<std::unique_ptr<void, void (*)(void *)>> _owned_tensors;
+
+    /// Addresses of the wrappers in @ref _owned_tensors, for the "do I already
+    /// own this one?" test in @ref adopt_operand.
+    std::unordered_set<void const *> _owned_tensor_ptrs;
+
+    /// Captured cleanup callbacks from ``adopt()``, invoked in
+    /// reverse-insertion order when the graph is destroyed or assigned over.
+    /// Used by capture-time helpers (``cg::view``) that allocate auxiliary
+    /// state on the heap.
+    CleanupStack _adopted_cleanups;
+
+    /// Runtime parameter table. ``View`` executors and the @c WriteParam
+    /// node read/write through this. Pipeline plumbs its own table down
+    /// at stage construction; standalone graphs get a default empty table.
+    std::shared_ptr<ParamTable> _params{std::make_shared<ParamTable>()};
+
+    /// Tensor slots for rebindable tensor references (TensorId → TensorSlot).
+    std::unordered_map<TensorId, std::unique_ptr<TensorSlot>> _slot_map;
+
+    /// Whether every slot pointer has been checked since the last change to
+    /// the slot table. The check catches cross-pipeline tensor misuse before
+    /// it segfaults, but nothing can invalidate a pointer between two replays
+    /// of an unchanged graph, so walking the whole map per replay only taxed
+    /// iterative workloads. Cleared wherever a slot is created, rebound,
+    /// redirected, or handed to a pass.
+    bool _slots_validated{false};
+
+    /// Summary of the last optimize() run (see explain()).
+    std::string _last_optimize_report;
+
+    /// Durable slot redirects recorded by redirect_slot(): key resolves to
+    /// value's buffer. Chains are collapsed at insert, so values are always
+    /// terminal ids. rebind() re-applies these so redirected slots follow.
+    std::unordered_map<TensorId, TensorId> _slot_redirects;
+
+    /// Device shadow allocations for GPU execution.
+    /// Persists across execute() calls so shadows can be reused.
+    DeviceShadowMap _device_shadows;
+
+    /// Per-node timing from last execute() call, as recorded (no labels).
+    std::vector<NodeTimingSample> _timing_samples;
+
+    /// Labelled view of _timing_samples, materialized on demand by
+    /// timing_report(). Mutable so the const accessor can fill it.
+    mutable std::vector<NodeTiming> _timing_report;
+    mutable bool                    _timing_report_valid{true};
+
+    /// Executor plain execute() delegates to (see set_executor); nullptr means
+    /// the built-in sequential path. Loop bodies replay through this.
+    std::shared_ptr<Executor> _executor;
+
+    /// The problem identity a caller declared, or empty when none was.
+    /// @see set_setup_key
+    std::string _setup_key;
+
+    /// Every lossy rewrite applied to this graph, in order. Saved with the structure.
+    /// @see note_approximation
+    std::vector<ApproximationRecord> _approximations;
+
+    /// The cap lossy passes compose against, or unset for no cap. NOT saved: a budget is
+    /// what a caller was willing to spend, which is a property of the run rather than of
+    /// the graph, and a loaded graph's caller gets to state their own.
+    std::optional<std::pair<ApproximationEffect, double>> _accuracy_budget;
+};
+
+} // namespace detail
+
+/**
  * @brief A directed acyclic graph (DAG) of tensor operations.
  *
  * The Graph class is the central container for the computation graph. It stores
@@ -199,7 +639,7 @@ struct ParsedEinsumSpec;
  * @see Pipeline for multi-stage workflows with loops
  * @see OptimizerPass for graph optimization
  */
-class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT Graph {
+class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_EXPORT Graph : private detail::GraphState {
   public:
     /**
      * @brief Construct an empty graph.
@@ -1065,7 +1505,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// cost-model pass can be priced against an explicit profile.
     template <typename PassType, typename... Args>
     std::pair<bool, PassType> apply(Args &&...args) {
-        std::scoped_lock const lock(*_content_mutex);
+        std::scoped_lock const lock(_content_mutex);
         PassType               pass{std::forward<Args>(args)...};
         bool                   modified = pass.run(*this);
         assign_node_ids();
@@ -1084,49 +1524,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @throws std::runtime_error If a shape mismatch is detected.
      */
     void validate_shapes_at_capture() const;
-
-    /**
-     * @brief Per-node timing entry.
-     */
-    struct NodeTiming {
-        NodeId      id;
-        std::string label;
-        OpKind      kind;
-        double      duration_ms{0.0}; ///< Wall-clock time in milliseconds
-        unsigned    width{0};         ///< Width it ran at; 0 if unplaced. @see NodeTimingSample::width
-    };
-
-    /**
-     * @brief One raw timing sample, as a replay records it.
-     *
-     * Deliberately label-free: a replay writes one of these per node, and the
-     * label is recoverable from the node id, so copying a label string per
-     * node per replay was pure waste in an SCF/CC loop that replays the same
-     * graph hundreds of times. @ref timing_report() attaches the labels once,
-     * only if anyone asks for the report.
-     */
-    struct NodeTimingSample {
-        NodeId id;
-        OpKind kind;
-        double duration_ms{0.0}; ///< Wall-clock time in milliseconds
-
-        /// Thread width the node ACTUALLY ran at, or 0 when the executor did
-        /// not place it at a chosen width.
-        ///
-        /// A duration is only meaningful beside the width that produced it.
-        /// ThreadPlanning consumes a measurement as the node's SERIAL time, so
-        /// without this a node the previous plan widened reports t(w) as t(1),
-        /// looks cheaper than it is by its own speedup, drops under the fork
-        /// floor and gets narrowed - the planner punishing exactly the nodes
-        /// its last plan widened, and the harder the wider they ran.
-        ///
-        /// Recorded rather than read back off the node because the node's
-        /// thread_width says what was PLANNED, not what happened: a stale plan
-        /// reaches the dataflow executor with widths_active false and every
-        /// node runs unwrapped with its thread_width still set. Inferring from
-        /// the node would then correct a measurement that needed no correcting.
-        unsigned width{0};
-    };
 
     /**
      * @brief Print a timing report from the last execute() call.
@@ -3720,11 +4117,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     void update_prefactors(NodeId node_id, PrefactorScalar c_pf, PrefactorScalar ab_pf);
 
   private:
-    /// Move every member from @p other into `this`. Shared by the move
-    /// constructor and move assignment so a newly added member cannot be
-    /// forgotten in one of the two. Does not touch the global graph registry;
-    /// callers handle unregister/register around it.
-    void move_members_from(Graph &&other) noexcept;
+    /// Run the adopted cleanups and leave the registry: what the destructor does, and what move
+    /// assignment does to the contents it replaces.
+    void release() noexcept;
 
     /// Invalidate everything derived from the node list's positions: the dependency lists, the
     /// cached profiler payloads, the validated slot pointers and the position-keyed analyses, and
@@ -3736,26 +4131,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// head of both linking passes, because a declaration is an INPUT to the
     /// derivation and has to survive a relink that starts from a cleared state.
     void apply_declared_aliases();
-
-    /// Half-open byte span of a bound operand's storage; a null @ref lo means the
-    /// operand offered none.
-    ///
-    /// A span rather than a base address, because two DISJOINT slices of one buffer
-    /// have distinct base addresses and must still bind without complaint, while two
-    /// OVERLAPPING ones share no address at all when neither starts where the other
-    /// does. Comparing base pointers answers the second case wrong, and answering it
-    /// wrong is how a bind loses the hazard edges between two slots.
-    struct BoundSpan {
-        char const *lo{nullptr}; ///< First byte, or null when there is no span.
-        char const *hi{nullptr}; ///< One past the last byte.
-
-        /// Whether the two spans share a byte. False whenever either is absent:
-        /// an operand with no address cannot be shown to alias anything.
-        [[nodiscard]] bool overlaps(BoundSpan const &other) const noexcept;
-
-        /// Number of bytes the two spans share, for the diagnostic.
-        [[nodiscard]] std::size_t overlap_bytes(BoundSpan const &other) const noexcept;
-    };
 
     // ── rebind() internals ──────────────────────────────────────────────────
 
@@ -3842,37 +4217,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// @ref link_alias_storage reasons about containment with.
     template <GraphCapturableTensor TensorType>
     [[nodiscard]] static BoundSpan bind_storage_span(TensorType const &tensor);
-
-    /**
-     * @brief What one @ref bind call's first walk worked out about the symbols.
-     *
-     * Values only, no storage identities: the second walk repoints, this one decides
-     * whether it may.
-     */
-    struct DimSolution {
-        /// Symbol name to the extent this bind solved it at.
-        std::unordered_map<std::string, std::size_t> values;
-        /// Symbol name to the manifest slot that first supplied its extent, so a
-        /// disagreement can name both sides rather than only the loser.
-        std::unordered_map<std::string, std::string> witness;
-        /// True when at least one bound entry declares a symbolic or ragged axis.
-        bool any_symbolic{false};
-        /// True when some bound extent differs from the one the graph holds. Everything
-        /// expensive below this is gated on it, so the ordinary same-shape bind - a replay
-        /// loop's - pays for one comparison per axis and nothing else.
-        bool extents_changed{false};
-    };
-
-    /// One slot handed to @ref bind_add, held until @ref bind_commit runs the transaction.
-    /// The two steps are stored type-erased because the pairs are heterogeneous and the
-    /// commit has to walk them twice, once to solve and once to repoint.
-    struct PendingBind {
-        std::string                                                         name;
-        std::function<void(InterfaceManifest const &, DimSolution &)>       collect;
-        std::function<void(InterfaceManifest const &, DimSolution const &)> apply;
-    };
-
-    std::vector<PendingBind> _pending_binds;
 
     /// Read @p entry's symbolic axes off @p dims into @p solution, checking each symbol
     /// against whatever an earlier slot in the same bind solved it at.
@@ -3972,67 +4316,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     template <GraphCapturableTensor TensorType>
     void bind_one(InterfaceManifest const &contract, DimSolution const &solution, std::string const &name, TensorType &tensor);
 
-    std::string                                _name;
-    std::string                                _pipeline_name;   ///< Parent pipeline name (empty if standalone)
-    std::string                                _workspace_name;  ///< Parent workspace name (empty if none)
-    std::string                                _stage_name;      ///< Stage name within pipeline
-    std::string                                _stage_type;      ///< "graph" or "loop"
-    int                                        _stage_index{-1}; ///< Order within pipeline
-    std::vector<Node>                          _nodes;
-    std::unordered_map<TensorId, TensorHandle> _tensors;
-
-    /// Ownership-scope tables published by a declaring Workspace or Pipeline.
-    /// Shared, so a declaration made after this graph was created still reaches it.
-    /// @see add_scope_map
-    std::vector<TensorScopeMapPtr> _scope_maps;
-
-    /// Manifest slots @ref bind has supplied storage for, and the byte span each was
-    /// given. Keyed by TensorId, not by name: @ref rebind renames the handle after
-    /// the tensor it now points at, so a name is not stable across the very
-    /// operation this records. The span is empty when the operand offered no address
-    /// (a deferred shell, a tile-wise sparse tensor), which still counts as bound and
-    /// simply cannot participate in the aliasing check.
-    std::unordered_map<TensorId, BoundSpan> _bound_operands;
-
-    /// Manifest-declared alias relations: child entry id -> the entry whose storage it
-    /// is part of.
-    ///
-    /// Kept beside the handles rather than only on them because a declaration is an
-    /// INPUT to alias discovery, not an output: it is the only relation that survives
-    /// a save (no address, no ``View`` node), so it has to be reapplied by every
-    /// linking pass and must not be lost to @ref clear_alias_links.
-    /// @see declare_alias
-    std::unordered_map<TensorId, TensorId> _declared_aliases;
-
-    /// Interface names pinned by @ref bind, by TensorId.
-    ///
-    /// A manifest name is the contract, and a contract that renamed itself every
-    /// time a caller bound different storage to it would be unusable: the second
-    /// ``bind("t2", ...)`` of a replay loop would report "no such interface tensor"
-    /// because the first one renamed the slot after the tensor it was handed.
-    /// @ref rebind's rename is right for the handle (which names a tensor) and wrong
-    /// for the interface (which names a slot), so the interface keeps its own record.
-    std::unordered_map<TensorId, std::string> _interface_names;
-
-    /// Ties established by @ref annotate_dims and @ref annotate_spaces between a dim
-    /// symbol and the index space its axes range over.
-    ///
-    /// Graph-level rather than per-handle, because the property worth enforcing is a
-    /// GLOBAL one: one symbol standing for two different spaces in two places is a
-    /// contradiction no single handle can see.
-    /// @see symbol_spaces
-    std::unordered_map<std::string, SpaceId> _symbol_spaces;
-
-    /// What each space measures on the problem currently annotated, learned from
-    /// @ref annotate_spaces. The bool is "still uniform": two annotated axes over one space
-    /// that disagree set it false and the extent stops being usable, which is a ragged family
-    /// rather than a mistake.
-    std::unordered_map<SpaceId, std::pair<std::size_t, bool>> _space_extents;
-
-    /// The canonical partition of each space, from @ref pin_space_tiling. The bool mirrors
-    /// @ref _space_extents: two disagreeing statements leave the space with no usable tiling.
-    std::unordered_map<SpaceId, std::pair<std::vector<int>, bool>> _space_tiles;
-
     /// One space-typed TILED shape, resolved against @ref _space_tiles.
     struct ResolvedTiledShape {
         std::vector<std::vector<int>> tile_sizes;
@@ -4074,118 +4357,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// @param[in] handle The freshly annotated handle.
     void learn_space_extents(TensorHandle const &handle);
 
-    /// Per-instance extent tables @ref bind_ragged_extents has accepted, in supply order.
-    /// Cleared by @ref clear_bindings with the rest of the bind state.
-    std::vector<RaggedExtentTable> _ragged_extents;
-
-    /// Gate-flag arrays this graph can name, sorted by name.
-    ///
-    /// A vector rather than a map because the order is part of what a saved file
-    /// records and a hash is taken over: a map's iteration order is not a
-    /// property of the graph.
-    /// @see name_gate_flags
-    std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> _named_gate_flags;
-
-    /// Registry the @ref SpaceId values on this graph's handles were issued by. Null means the
-    /// process-global one, which is what @ref space_registry substitutes; a non-owning pointer
-    /// because a registry is a long-lived object the caller owns, and because Graph stays
-    /// movable.
-    SpaceRegistry *_space_registry{nullptr};
-    NodeId         _next_node_id{0};
-    // Starts at 1: id 0 is reserved as the "no tensor" / "no alias" sentinel
-    // (TensorHandle::aliases defaults to 0 and the codebase tests `aliases == 0`
-    // for "not a view"). If a real tensor could be id 0, a view of it would have
-    // aliases == 0 and silently fail to resolve to its parent in the scheduler.
-    TensorId _next_tensor_id{1};
-
-    /// Registration-time byte spans, for the containment search in
-    /// link_alias_storage. ``TensorHandle::data_ptr`` is a registration-time
-    /// snapshot that nothing refreshes, so these stay valid for the life of the
-    /// handle and the search need not recompute an extent per candidate.
-    /// False once a tensor has been registered since the last link pass.
-    bool _aliases_linked{true};
-
-    /// ``TensorHandle::tensor_ptr`` to id. Capture asks "is this object already
-    /// registered?" for every operand, which was a linear scan of the tensor
-    /// table and so quadratic over a capture; a DLPNO-MP2 graph registers ~13k
-    /// tensors.
-    ///
-    /// LAST registration wins - @ref register_tensor uses ``insert_or_assign``, because an
-    /// address freed during a capture can be reused by a different tensor and the index has to
-    /// name the tensor that lives there NOW. That is also what makes it the right thing for
-    /// every by-address lookup to go through: a scan of @ref _tensors, which is what these
-    /// lookups used to be, returns whichever equal-keyed handle it happens to reach first, so
-    /// two handles naming one address made the answer depend on the hash order.
-    ///
-    /// ``rebind_impl`` maintains it too, for the same reason: a repoint moves a handle's
-    /// ``tensor_ptr``, and an index that did not follow went on naming storage a bound graph
-    /// no longer uses while reporting the storage it was rebound to as unregistered.
-    std::unordered_map<void const *, TensorId> _ptr_index;
-
-    bool _sorted{false};
-
-    /// Whether _deps matches the current node order. Distinct from _sorted:
-    /// mark_sorted() vouches for the order without rebuilding _deps, so
-    /// topological_sort() can skip the Kahn pass but must refresh the lists.
-    bool _deps_valid{false};
-
-    /// Pre-interned profiler payloads for one node: the zone name plus every
-    /// annotation whose value is invariant across replays. Built once per
-    /// graph mutation instead of fmt::format-ing per node per execute() -
-    /// for an SCF/CC loop that replays the graph hundreds of times, the
-    /// formatting dominated the serial replay overhead.
-    ///
-    /// The ids are string-table ids, not strings: interning a key and a value
-    /// per annotation per node per replay took the table's lock several times
-    /// per node, which is what made a profiled replay several times the cost
-    /// of an unprofiled one. Ids are stable for the life of the process (the
-    /// table only grows), so caching them here is safe across enable/disable.
-    /// @c zone is kept because the Tracy backend wants the characters.
-    struct NodeProfileStrings {
-        NodeId                                     node_id{0}; ///< owner, checked against the node at replay
-        std::string                                zone;       ///< "graph:<name>/<label>"
-        uint32_t                                   zone_id{0}; ///< interned @c zone
-        std::vector<std::pair<uint32_t, uint32_t>> texts;      ///< invariant string annotations (key id, value id)
-        std::vector<std::pair<uint32_t, int64_t>>  numbers;    ///< invariant integer annotations
-        std::vector<std::pair<uint32_t, double>>   reals;      ///< invariant floating-point annotations
-    };
-
-    /// Parallel to _nodes (position i describes node i), which is what lets
-    /// the replay loop index straight in instead of hashing a NodeId per node.
-    /// @c node_id is checked against the node anyway, so an UNdeclared
-    /// mutation degrades to a bare label rather than mislabelling a zone.
-    ///
-    /// Invalidated wherever the node list or annotated metadata changes:
-    /// add_node, mark_sorted (the declared-mutation contract - passes rewrite
-    /// labels/descriptors), rebind (tensor names), and update_prefactors.
-    /// Only built when something is recording; a run with the profiler off
-    /// never formats or interns any of it.
-    std::vector<NodeProfileStrings> _profile_strings;
-    bool                            _profile_strings_valid{false};
-    std::string                     _exec_zone_name;
-    uint32_t                        _exec_zone_id{0};
-
-    /// Threads the node widths were planned for; 0 = never recorded.
-    /// @see planned_thread_count
-    std::uint16_t _planned_thread_count{0};
-
-    /// Where a cold thread plan is in its measured trial. @see plan_threads
-    enum class ThreadPlanTrial : std::uint8_t {
-        None,      ///< No decision pending: the widths on the nodes are final.
-        Armed,     ///< Cold model plan is live; the re-plan fires after the next replay.
-        Candidate, ///< The re-planned widths are live and this replay is timing them.
-        Incumbent, ///< The cold widths are back and this replay is timing them.
-    };
-
-    /// Every planned width and admission priority in the graph tree, in walk
-    /// order: this graph's nodes, then each container body's, recursively.
-    using ThreadPlanSnapshot = std::vector<std::pair<std::uint16_t, std::int64_t>>;
-
-    ThreadPlanTrial    _plan_trial{ThreadPlanTrial::None};
-    ThreadPlanSnapshot _plan_incumbent;         ///< The cold model plan, held during the trial.
-    ThreadPlanSnapshot _plan_candidate;         ///< The timings re-plan, held during the trial.
-    double             _plan_candidate_ms{0.0}; ///< Wall clock of the candidate's replay.
-
     /// Run the width planner for @p threads threads. Shared by
     /// @ref plan_threads and the trial re-plan, neither of which may arm.
     bool run_thread_planner(unsigned threads);
@@ -4193,18 +4364,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Advance the thread-plan trial, if one is open. Called at the end of a
     /// completed replay with that replay's wall-clock time. @see plan_threads
     void finish_replay_thread_plan(double replay_ms);
-
-    /// Mutation counter for cached analyses. Bumped at every
-    /// mutation-declaration point; UsageAnalysis caches against it.
-    std::uint64_t _analysis_version{0};
-    /// Node-set counter for the pass phase rule. @see structure_version
-    std::uint64_t _structure_version{0};
-
-    /// Structural-algebraic passes that rewrote this graph, in the order they did. @see note_structural_pass
-    std::vector<std::string> _structural_passes;
-    /// Version _usage was built at (UINT64_MAX = never built).
-    std::uint64_t _usage_version{std::numeric_limits<std::uint64_t>::max()};
-    UsageAnalysis _usage;
 
     /// Rebuild _profile_strings for the current node list.
     void rebuild_profile_strings();
@@ -4224,86 +4383,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// rebuild_deps (successor/predecessor lists); defined in Graph/Schedule.cpp
     /// because both instantiations live there.
     template <typename F>
-    void           for_each_hazard_edge(EffectiveIoCache &cache, F &&emit);
-    bool           _executed{false}; ///< True after first successful execute (caching)
-    DependencyInfo _deps;            ///< Populated by topological_sort()
-
-    /// Serializes structural reads/writes of _nodes / _tensors / _timing_report
-    /// so the profiler server thread's to_json() cannot observe a torn or
-    /// half-moved node vector while the owning thread mutates the graph. Locked
-    /// by to_json (reader) and by the mutating entry points -- add_node,
-    /// register_tensor, topological_sort, erase_nodes, insert_node_groups,
-    /// record_node_timings, and the pass runners apply(). RECURSIVE because a
-    /// locked pass runner calls the also-locked primitives. A unique_ptr because
-    /// Graph must stay movable (a mutex is not) and each Graph keeps its OWN
-    /// mutex across moves -- move_members_from never transfers it.
-    mutable std::unique_ptr<std::recursive_mutex> _content_mutex = std::make_unique<std::recursive_mutex>();
-
-    /// Type-erased storage for graph-owned tensors (from create_tensor()).
-    /// Each entry uses a typed deleter captured at creation time.
-    std::vector<std::unique_ptr<void, void (*)(void *)>> _owned_tensors;
-
-    /// Addresses of the wrappers in @ref _owned_tensors, for the "do I already
-    /// own this one?" test in @ref adopt_operand.
-    std::unordered_set<void const *> _owned_tensor_ptrs;
-
-    /// Captured cleanup callbacks from ``adopt()``, invoked in
-    /// reverse-insertion order at graph destruction. Used by capture-time
-    /// helpers (``cg::view``) that allocate auxiliary state on the heap.
-    std::vector<std::function<void()>> _adopted_cleanups;
-
-    /// Runtime parameter table. ``View`` executors and the @c WriteParam
-    /// node read/write through this. Pipeline plumbs its own table down
-    /// at stage construction; standalone graphs get a default empty table.
-    std::shared_ptr<ParamTable> _params{std::make_shared<ParamTable>()};
-
-    /// Tensor slots for rebindable tensor references (TensorId → TensorSlot).
-    std::unordered_map<TensorId, std::unique_ptr<TensorSlot>> _slot_map;
-
-    /// Whether every slot pointer has been checked since the last change to
-    /// the slot table. The check catches cross-pipeline tensor misuse before
-    /// it segfaults, but nothing can invalidate a pointer between two replays
-    /// of an unchanged graph, so walking the whole map per replay only taxed
-    /// iterative workloads. Cleared wherever a slot is created, rebound,
-    /// redirected, or handed to a pass.
-    bool _slots_validated{false};
-
-    /// Summary of the last optimize() run (see explain()).
-    std::string _last_optimize_report;
-
-    /// Durable slot redirects recorded by redirect_slot(): key resolves to
-    /// value's buffer. Chains are collapsed at insert, so values are always
-    /// terminal ids. rebind() re-applies these so redirected slots follow.
-    std::unordered_map<TensorId, TensorId> _slot_redirects;
-
-    /// Device shadow allocations for GPU execution.
-    /// Persists across execute() calls so shadows can be reused.
-    DeviceShadowMap _device_shadows;
-
-    /// Per-node timing from last execute() call, as recorded (no labels).
-    std::vector<NodeTimingSample> _timing_samples;
-
-    /// Labelled view of _timing_samples, materialized on demand by
-    /// timing_report(). Mutable so the const accessor can fill it.
-    mutable std::vector<NodeTiming> _timing_report;
-    mutable bool                    _timing_report_valid{true};
-
-    /// Executor plain execute() delegates to (see set_executor); nullptr means
-    /// the built-in sequential path. Loop bodies replay through this.
-    std::shared_ptr<Executor> _executor;
-
-    /// The problem identity a caller declared, or empty when none was.
-    /// @see set_setup_key
-    std::string _setup_key;
-
-    /// Every lossy rewrite applied to this graph, in order. Saved with the structure.
-    /// @see note_approximation
-    std::vector<ApproximationRecord> _approximations;
-
-    /// The cap lossy passes compose against, or unset for no cap. NOT saved: a budget is
-    /// what a caller was willing to spend, which is a property of the run rather than of
-    /// the graph, and a loaded graph's caller gets to state their own.
-    std::optional<std::pair<ApproximationEffect, double>> _accuracy_budget;
+    void for_each_hazard_edge(EffectiveIoCache &cache, F &&emit);
 };
 
 // Graph's tensor factories are defined outside the class for the same reason as its
@@ -4827,10 +4907,10 @@ auto Graph::registered_id_or_throw(TensorType const &tensor, std::string_view wh
 template <GraphCapturableTensor TensorType>
 auto Graph::make_pending_bind(std::string const &name, TensorType &tensor) -> PendingBind {
     return PendingBind{.name    = name,
-                       .collect = [this, name, &tensor](InterfaceManifest const &contract,
-                                                        DimSolution &solution) { bind_collect_one(contract, solution, name, tensor); },
-                       .apply   = [this, name, &tensor](InterfaceManifest const &contract,
-                                                        DimSolution const       &solution) { bind_one(contract, solution, name, tensor); }};
+                       .collect = [name, &tensor](Graph &graph, InterfaceManifest const &contract,
+                                                  DimSolution &solution) { graph.bind_collect_one(contract, solution, name, tensor); },
+                       .apply   = [name, &tensor](Graph &graph, InterfaceManifest const &contract,
+                                                  DimSolution const &solution) { graph.bind_one(contract, solution, name, tensor); }};
 }
 template <GraphCapturableTensor TensorType>
 auto Graph::bind_collect_one(InterfaceManifest const &contract, DimSolution &solution, std::string const &name, TensorType &tensor)
@@ -4964,12 +5044,24 @@ void register_graph(Graph *graph);
 /**
  * @brief Unregister a graph from the profiler.
  *
- * Called automatically by ~Graph() and by move operations. Normally not
+ * Called automatically by ~Graph() and by move assignment. Normally not
  * needed by user code.
  *
  * @param[in] graph Pointer previously passed to register_graph().
  */
 void unregister_graph(Graph *graph);
+
+/**
+ * @brief Point the registry entry for @p from at @p to, for a graph that moved.
+ *
+ * Unlike an unregister followed by a register, nothing is cached for @p from, whose contents
+ * now live in @p to, and a graph captured but never executed stays listed. A no-op when @p from
+ * is not registered.
+ *
+ * @param[in] from The graph's address before the move.
+ * @param[in] to   Its address after.
+ */
+void transfer_graph_registration(Graph const *from, Graph *to);
 
 /**
  * @brief Get JSON describing all registered compute graphs.

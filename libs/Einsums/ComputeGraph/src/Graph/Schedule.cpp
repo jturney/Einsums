@@ -797,7 +797,7 @@ bool Graph::plan_threads(bool freeze) {
     // replay and the planner has measurements instead of a model.
     bool have_timings = false;
     {
-        std::scoped_lock const lock(*_content_mutex);
+        std::scoped_lock const lock(_content_mutex);
         have_timings = !_timing_samples.empty();
     }
 
@@ -944,7 +944,7 @@ std::vector<size_t> Graph::schedule_level_sizes() {
 }
 
 void Graph::topological_sort() {
-    std::scoped_lock const lock(*_content_mutex);
+    std::scoped_lock const lock(_content_mutex);
     assign_node_ids();
     // Defense in depth: a pass that mutates the node list without declaring
     // it (mark_sorted / add_node) leaves stale flags. A count mismatch is the

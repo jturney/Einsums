@@ -68,7 +68,7 @@ double timed_ms(F &&work) {
 void execute_all_timed(Graph &graph) {
     auto &nodes = graph.nodes();
 
-    std::vector<Graph::NodeTimingSample> samples;
+    std::vector<NodeTimingSample> samples;
     samples.reserve(nodes.size());
     for (auto &node : nodes) {
         samples.push_back({.id = node.id, .kind = node.kind, .duration_ms = timed_ms([&node] { execute_node(node); })});
@@ -156,7 +156,7 @@ void OpenMPExecutor::execute(Graph &graph) {
         }
     }
 
-    std::vector<Graph::NodeTimingSample> samples;
+    std::vector<NodeTimingSample> samples;
     samples.reserve(n);
     for (size_t i = 0; i < n; i++) {
         if (node_ms[i] >= 0.0) {
@@ -768,8 +768,8 @@ void DataflowExecutor::execute(Graph &graph) {
 
     // Serial merge in deterministic node order (the mutex-per-node this
     // replaces produced completion order, which was nondeterministic anyway).
-    auto                                &nodes = graph.nodes();
-    std::vector<Graph::NodeTimingSample> samples;
+    auto                         &nodes = graph.nodes();
+    std::vector<NodeTimingSample> samples;
     samples.reserve(n);
     for (size_t i = 0; i < n; i++) {
         if (s.node_ms[i].ms >= 0.0) {

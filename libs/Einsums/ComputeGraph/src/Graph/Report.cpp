@@ -51,7 +51,7 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
-std::vector<Graph::NodeTiming> const &Graph::timing_report() const {
+std::vector<NodeTiming> const &Graph::timing_report() const {
     if (_timing_report_valid) {
         return _timing_report;
     }
@@ -258,7 +258,7 @@ void Graph::print_summary(std::ostream &os) const {
 // ── JSON serialization ─────────────────────────────────────────────────────
 
 std::string Graph::to_json() const {
-    std::scoped_lock const lock(*_content_mutex);
+    std::scoped_lock const lock(_content_mutex);
     // Build a ComputeGraphData struct from internal state, then serialize it.
     // This is cleaner than manual JSON string building and uses the shared types
     // that the viewer also understands.
@@ -527,6 +527,13 @@ bool graph_json_cache_wanted() {
 #endif
 }
 } // namespace
+
+void transfer_graph_registration(Graph const *from, Graph *to) {
+    std::scoped_lock const lock(g_registry_mutex);
+    if (auto it = std::ranges::find(g_registered_graphs, from); it != g_registered_graphs.end()) {
+        *it = to;
+    }
+}
 
 void unregister_graph(Graph *graph) {
     std::scoped_lock const lock(g_registry_mutex);

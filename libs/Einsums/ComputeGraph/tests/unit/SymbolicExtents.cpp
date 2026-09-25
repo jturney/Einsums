@@ -551,6 +551,44 @@ TEST_CASE("Symbolic extents - a RUNTIME-RANK deferred intermediate resizes at bi
     REQUIRE_NOTHROW(graph.execute());
 }
 
+TEST_CASE("Symbolic extents - an open bind survives a move of its graph", "[ComputeGraph][Manifest][Symbolic][Bind][Move]") {
+    // Defends the pending-bind list across a move. The move used to leave the list behind, so a
+    // commit on the moved-to graph bound nothing, and each pending step captured the graph it
+    // was added to, which a move would have left dangling.
+    cg::SpaceRegistry registry;
+    auto const        occ  = registry.register_space(cg::IndexSpace{.name = "mv_occ", .scale_symbol = "o", .dim_symbol = "no"});
+    auto const        virt = registry.register_space(cg::IndexSpace{.name = "mv_virt", .scale_symbol = "v", .dim_symbol = "nv"});
+
+    RuntimeTensor<double> amp("amp", std::vector<std::size_t>{4, 6});
+    RuntimeTensor<double> out("out", std::vector<std::size_t>{4, 4});
+
+    cg::Graph graph("bind_across_move");
+    graph.set_space_registry(registry);
+    graph.annotate_spaces(amp, {occ, virt});
+    graph.annotate_dims(amp, {"no", "nv"});
+    graph.annotate_spaces(out, {occ, occ});
+    graph.annotate_dims(out, {"no", "no"});
+    auto &tmp = graph.declare_zero_runtime_tensor<double>("tmp", {cg::SpaceDim{occ}, cg::SpaceDim{virt}}, true);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ia;ia->ia", &tmp, amp, amp);
+        cg::einsum("ia;ja->ij", &out, tmp, amp);
+    }
+
+    RuntimeTensor<double> amp2("amp2", std::vector<std::size_t>{3, 5});
+    RuntimeTensor<double> out2("out2", std::vector<std::size_t>{3, 3});
+
+    graph.bind_begin();
+    graph.bind_add("amp", amp2);
+    graph.bind_add("out", out2);
+
+    cg::Graph moved(std::move(graph));
+    REQUIRE_NOTHROW(moved.bind_commit());
+
+    CHECK(tmp.dim(0) == 3);
+    CHECK(tmp.dim(1) == 5);
+}
+
 TEST_CASE("Symbolic extents - bind_begin/add/commit is one transaction", "[ComputeGraph][Manifest][Symbolic][Bind]") {
     // The spelling a caller without variadics has to use. A dim symbol constrains ACROSS
     // slots, so binding one slot at a time solves the second against an interface the first

@@ -63,6 +63,29 @@ TEST_CASE("Graph registry - live graphs are exported", "[ComputeGraph][registry]
     REQUIRE(cg::registered_graphs_json().find("registry_live_graph") != std::string::npos);
 }
 
+TEST_CASE("Graph registry - a moved graph stays listed before its first execute", "[ComputeGraph][registry][Move]") {
+    // Capture registers a graph, not only its first execute. The move constructor used to
+    // re-register the new address only for a graph that had executed, so a graph captured and
+    // then moved dropped out of the list until it ran.
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+
+    cg::Graph graph("registry_moved_graph");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+    REQUIRE(cg::registered_graphs_json().find("registry_moved_graph") != std::string::npos);
+
+    cg::Graph moved(std::move(graph));
+    CHECK(cg::registered_graphs_json().find("registry_moved_graph") != std::string::npos);
+
+    cg::Graph assigned("registry_assigned_target");
+    assigned = std::move(moved);
+    CHECK(cg::registered_graphs_json().find("registry_moved_graph") != std::string::npos);
+}
+
 TEST_CASE("Graph registry - dead graphs are not serialized when nobody collects", "[ComputeGraph][registry]") {
     // The default state of a test process: profiling enabled but no
     // profiler-save configured and no viewer attached. A dying graph must NOT

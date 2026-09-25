@@ -21,7 +21,7 @@
 /// differ only in what they do with the problem list: `load_graph` reports the
 /// first, `validate_graph_ir` reports all of them.
 ///
-/// @par The member walk (see also Graph::move_members_from)
+/// @par The member walk (every member of detail::GraphState)
 /// Saved, because it is structure:
 ///   `_name`, `_nodes` (kind, label, inputs, outputs, descriptor), `_tensors`
 ///   (name, dtype, rank, dims, dim symbols, spaces, intermediate flag, scope,
@@ -37,7 +37,7 @@
 /// NOT saved, because it is a live-process resource with no meaning in a file:
 ///   every `std::function` on a `TensorHandle`, `_owned_tensors`,
 ///   `_adopted_cleanups`, `_slot_map`, `_ptr_index`, `_device_shadows`,
-///   `_executor`, `_content_mutex`,
+///   `_executor`, `_content_mutex`, `_pending_binds`,
 ///   `_deps` / `_usage` and the version counters that guard them,
 ///   `_profile_strings`, `_bound_operands`, `_ragged_extents`, `_space_extents`,
 ///   `_space_tiles`, `_scope_maps`. `_ragged_extents`, `_bound_operands` and the

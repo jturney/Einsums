@@ -11,10 +11,9 @@
 /// table; what it offers is the operations that keep those three consistent with
 /// each other.
 ///
-/// @ref Graph::move_members_from is the "don't forget a member" discipline: a
-/// new member added to the class has to be handled there, and whether it also
-/// travels in a saved file is written down in `GraphIR.cpp`. The two comments
-/// point at each other on purpose.
+/// Graph's data lives in @ref detail::GraphState, whose defaulted moves carry
+/// every member, so a new one needs no move code. Whether it also travels in a
+/// saved file is a separate question, answered member by member in `GraphIR.cpp`.
 ///
 /// The rest of the implementation, by subject:
 ///   - `Graph/Alias.cpp`         which tensors are views onto which
@@ -61,137 +60,43 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
-Graph::Graph(std::string name) : _name(std::move(name)) {
+Graph::Graph(std::string name) {
+    _name = std::move(name);
 }
 
 Graph::~Graph() {
-    // Run cleanups in reverse order so later-adopted objects (which may
-    // depend on earlier ones) tear down first.
-    while (!_adopted_cleanups.empty()) {
-        auto fn = std::move(_adopted_cleanups.back());
-        _adopted_cleanups.pop_back();
-        if (fn)
-            fn();
-    }
+    release();
+}
+
+void Graph::release() noexcept {
+    // Cleanups first, newest first, while everything they might reach is still alive: later-
+    // adopted objects may depend on earlier ones.
+    _adopted_cleanups.run();
     unregister_graph(this);
 }
 
 void Graph::adopt(std::function<void()> deleter) {
-    if (deleter)
-        _adopted_cleanups.push_back(std::move(deleter));
-}
-
-/// @note This function and ``GraphIR.cpp``'s member walk are the two places a
-///       newly added Graph member has to be considered, and they ask different
-///       questions of it. Here the question is "does the member travel with a
-///       move", and the answer is yes for everything that is not a fresh
-///       per-object resource (the content mutex). There the question is "is the
-///       member STRUCTURE, and therefore part of what a saved file carries and a
-///       content hash covers", and the answer is deliberately no for most of it:
-///       thread widths, admission priorities, stream ids, timings, estimated
-///       flops and bytes, and the planned thread count are all tuning artifacts
-///       of one machine, which is the structure/tuning rule made concrete.
-///       ``GraphIR.cpp`` states the verdict member by member; keep the two in
-///       step when adding one.
-void Graph::move_members_from(Graph &&other) noexcept {
-    _name             = std::move(other._name);
-    _space_registry   = other._space_registry;
-    _pipeline_name    = std::move(other._pipeline_name);
-    _workspace_name   = std::move(other._workspace_name);
-    _stage_name       = std::move(other._stage_name);
-    _stage_type       = std::move(other._stage_type);
-    _stage_index      = other._stage_index;
-    _nodes            = std::move(other._nodes);
-    _tensors          = std::move(other._tensors);
-    _next_node_id     = other._next_node_id;
-    _next_tensor_id   = other._next_tensor_id;
-    _sorted           = other._sorted;
-    _executed         = other._executed;
-    _deps             = std::move(other._deps);
-    _owned_tensors    = std::move(other._owned_tensors);
-    _adopted_cleanups = std::move(other._adopted_cleanups);
-    _params           = std::move(other._params);
-    _scope_maps       = std::move(other._scope_maps);
-    _bound_operands   = std::move(other._bound_operands);
-    _declared_aliases = std::move(other._declared_aliases);
-    _interface_names  = std::move(other._interface_names);
-    _symbol_spaces    = std::move(other._symbol_spaces);
-    _space_extents    = std::move(other._space_extents);
-    _space_tiles      = std::move(other._space_tiles);
-    _ragged_extents   = std::move(other._ragged_extents);
-    _named_gate_flags = std::move(other._named_gate_flags);
-    _slot_map         = std::move(other._slot_map);
-    // Seven members that used to be dropped by a move. Each is state a moved-to
-    // graph genuinely needs, and the omission was latent only because nothing
-    // moved a graph and then used it: `load_graph` returns one by value, so
-    // every load exercises this path.
-    //
-    // `_aliases_linked` is the sharpest of them. Its default is TRUE, meaning
-    // "the relation is up to date", so a graph moved out of a state that needed
-    // relinking arrived claiming it did not - a silently incomplete alias
-    // relation, which is the shape of both alias bugs this module has had.
-    _ptr_index             = std::move(other._ptr_index);
-    _owned_tensor_ptrs     = std::move(other._owned_tensor_ptrs);
-    _device_shadows        = std::move(other._device_shadows);
-    _executor              = std::move(other._executor);
-    _aliases_linked        = other._aliases_linked;
-    _slots_validated       = other._slots_validated;
-    _timing_samples        = std::move(other._timing_samples);
-    _timing_report         = std::move(other._timing_report);
-    _timing_report_valid   = other._timing_report_valid;
-    _slot_redirects        = std::move(other._slot_redirects);
-    _deps_valid            = other._deps_valid;
-    _profile_strings       = std::move(other._profile_strings);
-    _profile_strings_valid = other._profile_strings_valid;
-    _exec_zone_name        = std::move(other._exec_zone_name);
-    _exec_zone_id          = other._exec_zone_id;
-    _last_optimize_report  = std::move(other._last_optimize_report);
-    _analysis_version      = other._analysis_version;
-    _structure_version     = other._structure_version;
-    _structural_passes     = std::move(other._structural_passes);
-    _setup_key             = std::move(other._setup_key);
-    _approximations        = std::move(other._approximations);
-    _accuracy_budget       = other._accuracy_budget;
-    _usage_version         = other._usage_version;
-    _usage                 = std::move(other._usage);
-    // The widths themselves ride along inside _nodes, so the count they were
-    // planned for has to travel with them or the staleness check compares
-    // against a zero and lets a foreign plan run.
-    _planned_thread_count = other._planned_thread_count;
-    _plan_trial           = other._plan_trial;
-    _plan_incumbent       = std::move(other._plan_incumbent);
-    _plan_candidate       = std::move(other._plan_candidate);
-    _plan_candidate_ms    = other._plan_candidate_ms;
-}
-
-Graph::Graph(Graph &&other) noexcept {
-    move_members_from(std::move(other));
-    // Invalidate moved-from so its destructor doesn't unregister
-    other._executed = false;
-    // Transfer registration from old address to new
-    unregister_graph(&other);
-    if (_executed) {
-        register_graph(this);
+    if (deleter) {
+        _adopted_cleanups.push(std::move(deleter));
     }
+}
+
+Graph::Graph(Graph &&other) noexcept : detail::GraphState(std::move(other)) {
+    transfer_graph_registration(&other, this);
 }
 
 Graph &Graph::operator=(Graph &&other) noexcept {
     if (this != &other) {
-        unregister_graph(this);
-        move_members_from(std::move(other));
-
-        // Invalidate moved-from so its destructor doesn't unregister
-        other._executed = false;
-        unregister_graph(&other);
-        if (_executed) {
-            register_graph(this);
-        }
+        // What this graph held dies here, exactly as it would in the destructor.
+        release();
+        detail::GraphState::operator=(std::move(other));
+        transfer_graph_registration(&other, this);
     }
     return *this;
 }
 
 NodeId Graph::add_node(Node node) {
-    std::scoped_lock const lock(*_content_mutex);
+    std::scoped_lock const lock(_content_mutex);
     node.id         = _next_node_id++;
     NodeId const id = node.id;
     _nodes.push_back(std::move(node));
@@ -210,7 +115,7 @@ void Graph::note_node_edit() noexcept {
 }
 
 size_t Graph::erase_nodes(std::vector<bool> const &remove) {
-    std::scoped_lock const lock(*_content_mutex);
+    std::scoped_lock const lock(_content_mutex);
     std::vector<Node>      filtered;
     filtered.reserve(_nodes.size());
     size_t removed = 0;
@@ -232,7 +137,7 @@ size_t Graph::erase_nodes(std::vector<bool> const &remove) {
 }
 
 void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<Node>>> groups) {
-    std::scoped_lock const lock(*_content_mutex);
+    std::scoped_lock const lock(_content_mutex);
     // Splice in descending position order so an earlier insertion doesn't shift
     // the indices of later ones (positions are given in the original numbering).
     //
@@ -282,7 +187,7 @@ size_t Graph::replace_nodes(std::vector<bool> const &remove, std::vector<std::pa
 }
 
 TensorId Graph::register_tensor(TensorHandle handle) {
-    std::scoped_lock const lock(*_content_mutex);
+    std::scoped_lock const lock(_content_mutex);
     TensorId               id = _next_tensor_id++;
     handle.id                 = id;
     // A tensor another scope declared arrives here as a fresh, default handle
@@ -525,7 +430,7 @@ void *Graph::live_tensor_ptr(TensorId id) const noexcept {
 }
 
 void Graph::record_node_timings(std::vector<NodeTimingSample> &&samples) {
-    std::scoped_lock const lock(*_content_mutex);
+    std::scoped_lock const lock(_content_mutex);
     if (_timing_samples.empty()) {
         _timing_samples = std::move(samples);
     } else {
@@ -671,11 +576,11 @@ void Graph::clear_bindings() noexcept {
     _ragged_extents.clear();
 }
 
-bool Graph::BoundSpan::overlaps(BoundSpan const &other) const noexcept {
+bool detail::GraphState::BoundSpan::overlaps(BoundSpan const &other) const noexcept {
     return lo != nullptr && other.lo != nullptr && lo < other.hi && other.lo < hi;
 }
 
-std::size_t Graph::BoundSpan::overlap_bytes(BoundSpan const &other) const noexcept {
+std::size_t detail::GraphState::BoundSpan::overlap_bytes(BoundSpan const &other) const noexcept {
     if (!overlaps(other)) {
         return 0;
     }
@@ -705,11 +610,11 @@ void Graph::run_bind(std::vector<PendingBind> const &pending) {
 
     DimSolution solution;
     for (auto const &slot : pending) {
-        slot.collect(contract, solution);
+        slot.collect(*this, contract, solution);
     }
     prepare_bind_solution(solution);
     for (auto const &slot : pending) {
-        slot.apply(contract, solution);
+        slot.apply(*this, contract, solution);
     }
     finish_bind_solution(solution);
 }

@@ -139,7 +139,7 @@ void Graph::add_scope_map(TensorScopeMapPtr map) {
     if (!map) {
         return;
     }
-    std::scoped_lock const lock(*_content_mutex);
+    std::scoped_lock const lock(_content_mutex);
     if (std::ranges::find(_scope_maps, map) != _scope_maps.end()) {
         return;
     }

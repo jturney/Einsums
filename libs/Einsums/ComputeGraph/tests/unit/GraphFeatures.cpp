@@ -199,6 +199,28 @@ TEST_CASE("Graph - move assignment", "[ComputeGraph][Move]") {
     }
 }
 
+TEST_CASE("Graph - move assignment runs the replaced graph's cleanups once", "[ComputeGraph][Move]") {
+    // Defends adopted cleanups across move assignment. The assignment used to overwrite the
+    // target's cleanup list without running it, so whatever the target had adopted leaked.
+    int target_ran = 0;
+    int source_ran = 0;
+
+    cg::Graph target("target");
+    target.adopt([&target_ran] { ++target_ran; });
+    cg::Graph source("source");
+    source.adopt([&source_ran] { ++source_ran; });
+
+    target = std::move(source);
+    CHECK(target_ran == 1); // the replaced contents died here
+    CHECK(source_ran == 0); // the source's cleanups travelled with its contents
+
+    {
+        cg::Graph const sink(std::move(target));
+    }
+    CHECK(source_ran == 1); // and ran once, where those contents died
+    CHECK(target_ran == 1);
+}
+
 TEST_CASE("Graph - execute empty graph", "[ComputeGraph]") {
     cg::Graph graph("empty");
     // Should not crash
@@ -985,11 +1007,13 @@ TEST_CASE("explain - a pass that did nothing stays silent", "[ComputeGraph][Opti
 // ═══════════════════════════════════════════════════════════════════════════════
 // Every member survives a move
 //
-// Graph::move_members_from enumerates the members by hand, and every load goes
-// through it: load_graph returns a Graph by value. A member missing from that
-// list is dropped in silence, which is how seven of them once were, and the
-// sharpest of those defaulted to TRUE ("the alias relation is up to date"), so a
-// graph moved out of a state that needed relinking arrived claiming it did not.
+// Every load goes through a move: load_graph returns a Graph by value. When the
+// move enumerated the members by hand, a member missing from that list was
+// dropped in silence, which is how seven of them once were, and the sharpest of
+// those defaulted to TRUE ("the alias relation is up to date"), so a graph moved
+// out of a state that needed relinking arrived claiming it did not. The members
+// now live in detail::GraphState and move by default; this guards that they
+// keep doing so.
 //
 // A test naming one feature at a time would be a list to keep in step with the
 // member list, which is the failure this is about. So this builds a graph that
