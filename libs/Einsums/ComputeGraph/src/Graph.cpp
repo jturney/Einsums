@@ -476,3 +476,297 @@ void Graph::for_each_subgraph(std::function<void(Graph const &)> const &visitor)
 }
 
 EINSUMS_NAMESPACE_END(compute_graph)
+
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
+
+SpaceTiling tiles(std::vector<int> sizes) {
+    SpaceTiling axis{SpaceId{}};
+    axis.tile_sizes = std::move(sizes);
+    return axis;
+}
+
+TensorId Graph::find_tensor_id_by_ptr(void const *ptr) const noexcept {
+    auto const it = _ptr_index.find(ptr);
+    return it == _ptr_index.end() ? TensorId{0} : it->second;
+}
+
+TensorId Graph::live_tensor_id_by_ptr(void const *ptr, std::weak_ptr<void> const &token) const noexcept {
+    TensorId const id = find_tensor_id_by_ptr(ptr);
+    if (id == 0) {
+        return 0;
+    }
+    TensorHandle const *handle = find_tensor(id);
+    if (handle == nullptr || !detail::same_tensor(handle->caller_token, token)) {
+        return 0;
+    }
+    return id;
+}
+
+void *Graph::live_tensor_ptr(TensorId id) const noexcept {
+    auto const *handle = find_tensor(id);
+    if (handle == nullptr) {
+        return nullptr;
+    }
+    return handle->live_ptr();
+}
+
+void Graph::record_node_timing(NodeId id, OpKind kind, double duration_ms, unsigned width) {
+    std::scoped_lock const lock(*_content_mutex);
+    _timing_samples.push_back({.id = id, .kind = kind, .duration_ms = duration_ms, .width = width});
+    _timing_report_valid = false;
+}
+
+void Graph::record_node_timing(NodeId id, std::string const & /*label*/, OpKind kind, double duration_ms) {
+    record_node_timing(id, kind, duration_ms);
+}
+
+void Graph::record_node_timings(std::vector<NodeTimingSample> &&samples) {
+    std::scoped_lock const lock(*_content_mutex);
+    if (_timing_samples.empty()) {
+        _timing_samples = std::move(samples);
+    } else {
+        _timing_samples.insert(_timing_samples.end(), samples.begin(), samples.end());
+    }
+    _timing_report_valid = false;
+}
+
+void Graph::clear_timing_report() {
+    _timing_samples.clear();
+    _timing_report.clear();
+    _timing_report_valid = true;
+}
+
+std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> const &Graph::named_gate_flags() const noexcept {
+    return _named_gate_flags;
+}
+
+TensorId Graph::resolve_alias(TensorId id) const {
+    for (size_t hops = 0; hops <= _tensors.size(); ++hops) {
+        auto it = _tensors.find(id);
+        if (it == _tensors.end() || it->second.aliases == 0) {
+            return id;
+        }
+        id = it->second.aliases;
+    }
+    EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                            "Graph '{}': alias chain from tensor {} exceeds the tensor count ({}), which means a "
+                            "cycle in the alias links; the hazard scan cannot order accesses to it",
+                            _name, id, _tensors.size());
+}
+
+void Graph::mark_sorted() {
+    _sorted   = true;
+    _executed = false;
+    // The caller vouches for the node ORDER, but node positions changed,
+    // so the position-keyed _deps lists must be rebuilt on next demand.
+    _deps_valid = false;
+    // Passes also rewrite labels/descriptors; refresh cached profiler
+    // payloads on next execute.
+    _profile_strings_valid = false;
+    // ... and slot pointers (arena slices, CSE redirects).
+    _slots_validated = false;
+    // Position-keyed analyses (UsageAnalysis) are stale too.
+    _analysis_version++;
+}
+
+double Graph::accuracy_budget_value() const noexcept {
+    return _accuracy_budget.has_value() ? _accuracy_budget->second : -1.0;
+}
+
+unsigned Graph::planned_thread_count() const {
+    return _planned_thread_count;
+}
+
+bool Graph::thread_replan_armed() const {
+    return _plan_trial != ThreadPlanTrial::None;
+}
+
+void Graph::free_tensor(TensorId id, std::string name, size_t size_bytes) {
+    AllocDescriptor desc;
+    desc.tensor_id   = id;
+    desc.size_bytes  = size_bytes;
+    desc.tensor_name = std::move(name);
+
+    Node node;
+    ProfileMemFree(size_bytes);
+
+    node.kind    = OpKind::Free;
+    node.label   = fmt::format("free({})", desc.tensor_name);
+    node.execute = []() {}; // No-op: graph still owns the memory
+    node.inputs  = {id};
+    node.op_data = std::move(desc);
+
+    add_node(std::move(node));
+}
+
+TensorSlot *Graph::find_slot(TensorId id) {
+    auto it = _slot_map.find(id);
+    return it != _slot_map.end() ? it->second.get() : nullptr;
+}
+
+void Graph::redirect_slot(TensorId from, TensorId to) {
+    // Collapse chains so every recorded redirect points at a terminal id.
+    for (auto it = _slot_redirects.find(to); it != _slot_redirects.end(); it = _slot_redirects.find(to)) {
+        to = it->second;
+    }
+    if (from == to) {
+        return;
+    }
+    if (TensorHandle const *fh = find_tensor(from), *th = find_tensor(to);
+        fh != nullptr && th != nullptr && fh->dtype != packed_gemm::ScalarType::Unknown && th->dtype != packed_gemm::ScalarType::Unknown &&
+        fh->dtype != th->dtype) {
+        EINSUMS_THROW_EXCEPTION(
+            std::logic_error, "Graph '{}': cannot redirect tensor {} to tensor {}, which holds a different element type", _name, from, to);
+    }
+    TensorSlot const *to_slot   = find_slot(to);
+    TensorSlot       *from_slot = find_slot(from);
+    if (to_slot == nullptr || from_slot == nullptr) {
+        return;
+    }
+    // The geometry accessor travels with the pointer. @p from's own
+    // accessor was baked for @p from's static type, and the object behind
+    // the redirect is @p to's, so keeping the old one would decode a
+    // different type's layout.
+    from_slot->ptr        = to_slot->ptr;
+    from_slot->impl_of    = to_slot->impl_of;
+    from_slot->resync_of  = to_slot->resync_of;
+    _slot_redirects[from] = to;
+    _slots_validated      = false;
+    // Anything already redirected to `from` now follows the same terminal.
+    for (auto &[f, t] : _slot_redirects) {
+        if (t == from) {
+            t = to;
+            if (auto *fs = find_slot(f)) {
+                fs->ptr       = to_slot->ptr;
+                fs->impl_of   = to_slot->impl_of;
+                fs->resync_of = to_slot->resync_of;
+            }
+        }
+    }
+}
+
+void Graph::bind_commit() {
+    // The slots are taken off the graph BEFORE the transaction runs, which is what
+    // clears the pending list whatever happens: a refused transaction must not leak
+    // into the next one.
+    run_bind(std::exchange(_pending_binds, {}));
+}
+
+void Graph::rederive_intermediate_extents() {
+    rederive_owned_extents();
+    validate_node_extents();
+}
+
+void Graph::resize_intermediate(TensorId id, std::vector<std::size_t> const &dims, std::string_view producer) {
+    resize_derived_extent(id, dims, producer);
+}
+
+void Graph::clear_bindings() noexcept {
+    _bound_operands.clear();
+    _ragged_extents.clear();
+}
+
+std::shared_ptr<EinsumIndices> Graph::create_indices(std::vector<std::string> a, std::vector<std::string> b, std::vector<std::string> c,
+                                                     std::vector<std::string> link) {
+    auto idx            = std::make_shared<EinsumIndices>();
+    idx->spec.a_indices = std::move(a);
+    idx->spec.b_indices = std::move(b);
+    idx->spec.c_indices = std::move(c);
+    idx->link_indices   = std::move(link);
+    _indices_store.push_back(idx);
+    return idx;
+}
+
+bool Graph::BoundSpan::overlaps(BoundSpan const &other) const noexcept {
+    return lo != nullptr && other.lo != nullptr && lo < other.hi && other.lo < hi;
+}
+
+std::size_t Graph::BoundSpan::overlap_bytes(BoundSpan const &other) const noexcept {
+    if (!overlaps(other)) {
+        return 0;
+    }
+    return static_cast<std::size_t>(std::min(hi, other.hi) - std::max(lo, other.lo));
+}
+
+void Graph::add_alloc_node(TensorId id, std::string const &name, size_t size_bytes) {
+    AllocDescriptor desc;
+    desc.tensor_id   = id;
+    desc.size_bytes  = size_bytes;
+    desc.tensor_name = name;
+
+    Node node;
+    ProfileMemAlloc(desc.size_bytes);
+
+    node.kind    = OpKind::Alloc;
+    node.label   = fmt::format("alloc({})", name);
+    node.execute = []() {};
+    node.outputs = {id};
+    node.op_data = std::move(desc);
+
+    add_node(std::move(node));
+}
+
+void Graph::run_bind(std::vector<PendingBind> const &pending) {
+    InterfaceManifest const contract = manifest();
+
+    DimSolution solution;
+    for (auto const &slot : pending) {
+        slot.collect(contract, solution);
+    }
+    prepare_bind_solution(solution);
+    for (auto const &slot : pending) {
+        slot.apply(contract, solution);
+    }
+    finish_bind_solution(solution);
+}
+
+EINSUMS_NAMESPACE_END(compute_graph)
+
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
+namespace detail {
+
+std::vector<std::pair<std::string, SpaceId>> bind_einsum_spaces(Graph &graph, TensorId a_id, TensorId b_id, TensorId c_id,
+                                                                std::vector<std::string> const &a_indices,
+                                                                std::vector<std::string> const &b_indices,
+                                                                std::vector<std::string> const &c_indices, std::string_view context) {
+    TensorHandle const *a = graph.find_tensor(a_id);
+    TensorHandle const *b = graph.find_tensor(b_id);
+    TensorHandle const *c = graph.find_tensor(c_id);
+
+    std::array<LetterSpaceOperand, 3> const operands{
+        LetterSpaceOperand{.label = "A", .indices = &a_indices, .spaces = a != nullptr ? &a->spaces : nullptr},
+        LetterSpaceOperand{.label = "B", .indices = &b_indices, .spaces = b != nullptr ? &b->spaces : nullptr},
+        LetterSpaceOperand{.label = "C", .indices = &c_indices, .spaces = c != nullptr ? &c->spaces : nullptr},
+    };
+
+    auto letters = build_letter_spaces(std::span<LetterSpaceOperand const>{operands}, &graph.space_registry(), context);
+
+    if (auto *output = graph.find_tensor(c_id); output != nullptr && output->is_intermediate && output->spaces.empty()) {
+        auto inferred = spaces_from_letters(c_indices, letters);
+        if (inferred.size() == output->rank) {
+            output->spaces          = std::move(inferred);
+            output->spaces_inferred = true;
+        }
+    }
+
+    return letters;
+}
+
+} // namespace detail
+EINSUMS_NAMESPACE_END(compute_graph)
+
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
+
+#define EINSUMS_INSTANTIATE_GRAPH_TENSOR_MEMBERS(...) EINSUMS_GRAPH_TENSOR_MEMBERS(template EINSUMS_EXPORT, __VA_ARGS__)
+EINSUMS_CG_COMMON_TENSOR_TYPES(EINSUMS_INSTANTIATE_GRAPH_TENSOR_MEMBERS)
+#undef EINSUMS_INSTANTIATE_GRAPH_TENSOR_MEMBERS
+
+EINSUMS_NAMESPACE_END(compute_graph)
+
+EINSUMS_NAMESPACE_BEGIN(compute_graph)
+
+#define EINSUMS_INSTANTIATE_GRAPH_ELEMENT_MEMBERS(T) EINSUMS_GRAPH_ELEMENT_MEMBERS(template EINSUMS_EXPORT, T)
+EINSUMS_CG_ELEMENT_TYPES(EINSUMS_INSTANTIATE_GRAPH_ELEMENT_MEMBERS)
+#undef EINSUMS_INSTANTIATE_GRAPH_ELEMENT_MEMBERS
+
+EINSUMS_NAMESPACE_END(compute_graph)

@@ -38,6 +38,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/GraphIR.hpp
     Einsums/ComputeGraph/InterfaceManifest.hpp
     Einsums/ComputeGraph/LuPivots.hpp
+    Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp
     Einsums/ComputeGraph/Detail/DenseElementTransform.hpp
     Einsums/ComputeGraph/Detail/ErasedEinsum.hpp
     Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp

@@ -192,14 +192,7 @@ struct EinsumDescriptor {
      * @param[in] letter The index letter to look up.
      * @return The bound space, or an empty optional when the letter carries no annotation.
      */
-    [[nodiscard]] std::optional<SpaceId> space_for_letter(std::string_view letter) const {
-        for (auto const &entry : letter_spaces) {
-            if (entry.first == letter) {
-                return entry.second;
-            }
-        }
-        return std::nullopt;
-    }
+    [[nodiscard]] EINSUMS_EXPORT std::optional<SpaceId> space_for_letter(std::string_view letter) const;
 };
 
 /// Live-mutable scalars for every kind whose operation is ``dst = alpha*<source> + beta*dst``,
@@ -348,58 +341,42 @@ struct ElementwiseBinaryDescriptor {
 /// @brief The destination prefactor an einsum will actually apply.
 /// @param[in] desc The descriptor to read.
 /// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] inline PrefactorScalar const &live_c_prefactor(EinsumDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->c_pf : desc.c_prefactor;
-}
+[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_c_prefactor(EinsumDescriptor const &desc) noexcept;
 
 /// @brief The product prefactor an einsum will actually apply.
 /// @param[in] desc The descriptor to read.
 /// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] inline PrefactorScalar const &live_ab_prefactor(EinsumDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->ab_pf : desc.ab_prefactor;
-}
+[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_ab_prefactor(EinsumDescriptor const &desc) noexcept;
 
 /// @brief Whether an einsum will actually conjugate its first operand.
 /// @param[in] desc The descriptor to read.
 /// @return The live flag, or the snapshot when the node carries no params block.
-[[nodiscard]] inline bool live_conj_a(EinsumDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->conj_a : desc.conj_a;
-}
+[[nodiscard]] EINSUMS_EXPORT bool live_conj_a(EinsumDescriptor const &desc) noexcept;
 
 /// @brief Whether an einsum will actually conjugate its second operand.
 /// @param[in] desc The descriptor to read.
 /// @return The live flag, or the snapshot when the node carries no params block.
-[[nodiscard]] inline bool live_conj_b(EinsumDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->conj_b : desc.conj_b;
-}
+[[nodiscard]] EINSUMS_EXPORT bool live_conj_b(EinsumDescriptor const &desc) noexcept;
 
 /// @brief The source prefactor an axpby will actually apply.
 /// @param[in] desc The descriptor to read.
 /// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] inline PrefactorScalar const &live_alpha(AxpbyDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->alpha : desc.alpha;
-}
+[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_alpha(AxpbyDescriptor const &desc) noexcept;
 
 /// @brief The destination prefactor an axpby will actually apply.
 /// @param[in] desc The descriptor to read.
 /// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] inline PrefactorScalar const &live_beta(AxpbyDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->beta : desc.beta;
-}
+[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_beta(AxpbyDescriptor const &desc) noexcept;
 
 /// @brief The source prefactor a direct product / division will actually apply.
 /// @param[in] desc The descriptor to read.
 /// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] inline PrefactorScalar const &live_alpha(ElementwiseBinaryDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->alpha : desc.alpha;
-}
+[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_alpha(ElementwiseBinaryDescriptor const &desc) noexcept;
 
 /// @brief The destination prefactor a direct product / division will actually apply.
 /// @param[in] desc The descriptor to read.
 /// @return The live value, or the snapshot when the node carries no params block.
-[[nodiscard]] inline PrefactorScalar const &live_beta(ElementwiseBinaryDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->beta : desc.beta;
-}
+[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_beta(ElementwiseBinaryDescriptor const &desc) noexcept;
 
 /// @brief The factor a scale will actually apply.
 /// @param[in] desc The descriptor to read.
@@ -407,9 +384,7 @@ struct ElementwiseBinaryDescriptor {
 ///
 /// A scale uses @ref ElementwiseParams::alpha only; its ``beta`` is meaningless for an in-place
 /// multiply and is never read.
-[[nodiscard]] inline PrefactorScalar const &live_factor(ScaleDescriptor const &desc) noexcept {
-    return desc.params != nullptr ? desc.params->alpha : desc.factor;
-}
+[[nodiscard]] EINSUMS_EXPORT PrefactorScalar const &live_factor(ScaleDescriptor const &desc) noexcept;
 
 /**
  * @brief A fresh scalar block holding @p alpha and @p beta.
@@ -424,13 +399,8 @@ struct ElementwiseBinaryDescriptor {
  * possible because @ref AxpbyParams and @ref ElementwiseParams are one type.
  * @versionadded{2.0.0}
  */
-[[nodiscard]] inline std::shared_ptr<ElementwiseParams> make_elementwise_params(PrefactorScalar const &alpha,
-                                                                                PrefactorScalar const &beta = PrefactorScalar{double{0}}) {
-    auto params   = std::make_shared<ElementwiseParams>();
-    params->alpha = alpha;
-    params->beta  = beta;
-    return params;
-}
+[[nodiscard]] EINSUMS_EXPORT std::shared_ptr<ElementwiseParams>
+make_elementwise_params(PrefactorScalar const &alpha, PrefactorScalar const &beta = PrefactorScalar{double{0}});
 
 /**
  * @brief The live scalar block a node carries, or a private one seeded from its snapshots.
@@ -446,13 +416,8 @@ struct ElementwiseBinaryDescriptor {
  * it.
  * @versionadded{2.0.0}
  */
-[[nodiscard]] inline std::shared_ptr<ElementwiseParams> live_or_private_params(std::shared_ptr<ElementwiseParams> const &declared,
-                                                                               PrefactorScalar const &alpha, PrefactorScalar const &beta) {
-    if (declared != nullptr) {
-        return declared;
-    }
-    return make_elementwise_params(alpha, beta);
-}
+[[nodiscard]] EINSUMS_EXPORT std::shared_ptr<ElementwiseParams>
+live_or_private_params(std::shared_ptr<ElementwiseParams> const &declared, PrefactorScalar const &alpha, PrefactorScalar const &beta);
 
 /// @}
 
@@ -1040,41 +1005,7 @@ enum class ParamSourceType : std::uint8_t {
  * say something platform-dependent about a type that is not.
  * @versionadded{2.0.0}
  */
-[[nodiscard]] inline std::string_view param_source_type_name(ParamSourceType type) noexcept {
-    switch (type) {
-    case ParamSourceType::Bool:
-        return "bool";
-    case ParamSourceType::Char:
-        return "char";
-    case ParamSourceType::SChar:
-        return "signed char";
-    case ParamSourceType::UChar:
-        return "unsigned char";
-    case ParamSourceType::Short:
-        return "short";
-    case ParamSourceType::UShort:
-        return "unsigned short";
-    case ParamSourceType::Int:
-        return "int";
-    case ParamSourceType::UInt:
-        return "unsigned int";
-    case ParamSourceType::Long:
-        return "long";
-    case ParamSourceType::ULong:
-        return "unsigned long";
-    case ParamSourceType::LongLong:
-        return "long long";
-    case ParamSourceType::ULongLong:
-        return "unsigned long long";
-    case ParamSourceType::Float:
-        return "float";
-    case ParamSourceType::Double:
-        return "double";
-    case ParamSourceType::LongDouble:
-        return "long double";
-    }
-    return "int";
-}
+[[nodiscard]] EINSUMS_EXPORT std::string_view param_source_type_name(ParamSourceType type) noexcept;
 
 /**
  * @brief The @ref ParamSourceType spelled @p name, if there is one.
@@ -1082,17 +1013,7 @@ enum class ParamSourceType : std::uint8_t {
  * @return The enumerator, or an empty optional when nothing is spelled that way.
  * @versionadded{2.0.0}
  */
-[[nodiscard]] inline std::optional<ParamSourceType> param_source_type_from_name(std::string_view name) noexcept {
-    for (auto const type : {ParamSourceType::Bool, ParamSourceType::Char, ParamSourceType::SChar, ParamSourceType::UChar,
-                            ParamSourceType::Short, ParamSourceType::UShort, ParamSourceType::Int, ParamSourceType::UInt,
-                            ParamSourceType::Long, ParamSourceType::ULong, ParamSourceType::LongLong, ParamSourceType::ULongLong,
-                            ParamSourceType::Float, ParamSourceType::Double, ParamSourceType::LongDouble}) {
-        if (param_source_type_name(type) == name) {
-            return type;
-        }
-    }
-    return std::nullopt;
-}
+[[nodiscard]] EINSUMS_EXPORT std::optional<ParamSourceType> param_source_type_from_name(std::string_view name) noexcept;
 
 /**
  * @brief The @ref ParamSourceType naming @p T.
@@ -1195,23 +1116,8 @@ namespace detail {
 /// the live @c params / @c indices handles or the gemm hint; callers that need a
 /// self-contained node should use @ref Graph::make_einsum_node instead of
 /// assembling those by hand.
-inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf,
-                                                bool conj_a = false, bool conj_b = false) {
-    EinsumDescriptor desc;
-    desc.c_prefactor         = c_pf;
-    desc.ab_prefactor        = ab_pf;
-    desc.conj_a              = conj_a;
-    desc.conj_b              = conj_b;
-    desc.operators           = parsed.operators;
-    desc.spec.c_indices      = parsed.c_indices;
-    desc.spec.a_indices      = parsed.a_indices;
-    desc.spec.b_indices      = parsed.b_indices;
-    desc.spec.link_indices   = parsed.link_indices();
-    desc.spec.target_indices = parsed.target_indices();
-    desc.spec.all_indices    = desc.spec.target_indices;
-    desc.spec.all_indices.insert(desc.spec.all_indices.end(), desc.spec.link_indices.begin(), desc.spec.link_indices.end());
-    return desc;
-}
+EINSUMS_EXPORT EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, PrefactorScalar c_pf, PrefactorScalar ab_pf,
+                                                        bool conj_a = false, bool conj_b = false);
 
 /**
  * @brief Name a space for a diagnostic, without trusting the id.
@@ -1222,12 +1128,7 @@ inline EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, 
  * An id that does not resolve is a caller error the conflict message still has to be able to
  * print, so this never throws and never leaves the reader with nothing to go on.
  */
-[[nodiscard]] inline std::string space_label(SpaceRegistry const *registry, SpaceId id) {
-    if (registry != nullptr && id.valid() && id.value() < registry->size()) {
-        return registry->space(id).name;
-    }
-    return "#" + std::to_string(id.value());
-}
+[[nodiscard]] EINSUMS_EXPORT std::string space_label(SpaceRegistry const *registry, SpaceId id);
 
 /**
  * @brief One operand's contribution to a contraction's letter-to-space map.
@@ -1267,43 +1168,8 @@ struct LetterSpaceOperand {
  * produces, since annotation is validated against the tensor's rank) contributes only the slots
  * it covers.
  */
-[[nodiscard]] inline std::vector<std::pair<std::string, SpaceId>>
-build_letter_spaces(std::span<LetterSpaceOperand const> operands, SpaceRegistry const *registry, std::string_view context) {
-    std::vector<std::pair<std::string, SpaceId>> bound;
-    std::vector<char const *>                    origin; // parallel to `bound`: operand each entry came from
-
-    for (auto const &operand : operands) {
-        if (operand.indices == nullptr || operand.spaces == nullptr || operand.spaces->empty()) {
-            continue;
-        }
-        std::size_t const slots = std::min(operand.indices->size(), operand.spaces->size());
-        for (std::size_t slot = 0; slot < slots; ++slot) {
-            SpaceId const id = (*operand.spaces)[slot];
-            if (!id.valid()) {
-                continue; // a partially annotated tensor: this axis simply says nothing
-            }
-            std::string const &letter = (*operand.indices)[slot];
-
-            auto const existing = std::ranges::find_if(bound, [&letter](auto const &e) { return e.first == letter; });
-            if (existing == bound.end()) {
-                bound.emplace_back(letter, id);
-                origin.push_back(operand.label);
-                continue;
-            }
-            if (existing->second != id) {
-                std::size_t const at = static_cast<std::size_t>(existing - bound.begin());
-                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                        "{}: index letter '{}' binds space '{}' on operand {} and space '{}' on operand {} within one "
-                                        "contraction; a letter ranges over exactly one space per contraction",
-                                        context, letter, space_label(registry, existing->second), origin[at], space_label(registry, id),
-                                        operand.label);
-            }
-        }
-    }
-
-    std::ranges::sort(bound, [](auto const &lhs, auto const &rhs) { return lhs.first < rhs.first; });
-    return bound;
-}
+[[nodiscard]] EINSUMS_EXPORT std::vector<std::pair<std::string, SpaceId>>
+build_letter_spaces(std::span<LetterSpaceOperand const> operands, SpaceRegistry const *registry, std::string_view context);
 
 /**
  * @brief Derive an output tensor's per-slot annotation from a contraction's letter map.
@@ -1315,22 +1181,8 @@ build_letter_spaces(std::span<LetterSpaceOperand const> operands, SpaceRegistry 
  * deliberately partial one, and the point of inferring here is that the result is as trustworthy
  * as a declaration.
  */
-[[nodiscard]] inline std::vector<SpaceId> spaces_from_letters(std::vector<std::string> const                     &c_indices,
-                                                              std::vector<std::pair<std::string, SpaceId>> const &letter_spaces) {
-    if (c_indices.empty() || letter_spaces.empty()) {
-        return {};
-    }
-    std::vector<SpaceId> out;
-    out.reserve(c_indices.size());
-    for (auto const &letter : c_indices) {
-        auto const found = std::ranges::find_if(letter_spaces, [&letter](auto const &e) { return e.first == letter; });
-        if (found == letter_spaces.end()) {
-            return {};
-        }
-        out.push_back(found->second);
-    }
-    return out;
-}
+[[nodiscard]] EINSUMS_EXPORT std::vector<SpaceId> spaces_from_letters(std::vector<std::string> const                     &c_indices,
+                                                                      std::vector<std::pair<std::string, SpaceId>> const &letter_spaces);
 
 } // namespace detail
 
@@ -1502,12 +1354,7 @@ struct Node {
 /// tensor operands at all - which reads to an unguarded pass as "no inputs,
 /// therefore unconditionally movable". Schedulers pair this with
 /// @ref param_reads to order parameter writes against their consumers.
-[[nodiscard]] inline std::vector<std::string> param_writes(Node const &node) {
-    if (auto const *wd = std::get_if<WriteParamDescriptor>(&node.op_data)) {
-        return {wd->name};
-    }
-    return {};
-}
+[[nodiscard]] EINSUMS_EXPORT std::vector<std::string> param_writes(Node const &node);
 
 /// @brief Names of @ref ParamTable entries this node READS - the analogue of
 ///        @ref Node::inputs.
@@ -1523,32 +1370,7 @@ struct Node {
 /// at all", which is what hoisting and folding need. A @ref PredExpr::FlagTest
 /// names nothing either, by construction: its array rides outside the dataflow
 /// exactly as @ref LuPivots does.
-[[nodiscard]] inline std::vector<std::string> param_reads(Node const &node) {
-    std::vector<std::string> names;
-    auto const               add = [&names](BoundExpr const &bound) {
-        if (bound.is_param()) {
-            names.push_back(bound.param_name());
-        }
-    };
-
-    if (auto const *vd = std::get_if<ViewDescriptor>(&node.op_data)) {
-        for (auto const &ax : vd->axes) {
-            add(ax.lo);
-            if (ax.kind == ViewAxis::Kind::Range) {
-                add(ax.hi);
-            }
-        }
-    } else if (auto const *cd = std::get_if<ConditionalDescriptor>(&node.op_data)) {
-        cd->predicate.collect_param_names(names);
-    } else if (auto const *ld = std::get_if<LoopDescriptor>(&node.op_data)) {
-        ld->condition.collect_param_names(names);
-    } else if (auto const *wd = std::get_if<WriteParamDescriptor>(&node.op_data)) {
-        if (wd->source_expr.has_value()) {
-            add(*wd->source_expr);
-        }
-    }
-    return names;
-}
+[[nodiscard]] EINSUMS_EXPORT std::vector<std::string> param_reads(Node const &node);
 
 /// @brief True when a @c View's slice is resolved from runtime state (a named
 ///        parameter or a callback) rather than from literals.
@@ -1558,17 +1380,7 @@ struct Node {
 /// the result - constant folding, loop-invariant hoisting - must refuse it: the
 /// parent input they inspect is genuinely invariant, and the part that moves is
 /// not expressed as dataflow at all.
-[[nodiscard]] inline bool has_runtime_view_bounds(Node const &node) {
-    if (node.kind != OpKind::View) {
-        return false;
-    }
-    auto const *vd = std::get_if<ViewDescriptor>(&node.op_data);
-    if (vd == nullptr) {
-        return true; // no descriptor to inspect: assume the slice moves
-    }
-    return std::ranges::any_of(
-        vd->axes, [](ViewAxis const &ax) { return !ax.lo.is_const() || (ax.kind == ViewAxis::Kind::Range && !ax.hi.is_const()); });
-}
+[[nodiscard]] EINSUMS_EXPORT bool has_runtime_view_bounds(Node const &node);
 
 /**
  * @brief Visit the graphs one node CONTAINS: a loop's body, a conditional's two branches,

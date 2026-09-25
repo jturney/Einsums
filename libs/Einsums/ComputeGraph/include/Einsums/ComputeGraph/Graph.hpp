@@ -9,6 +9,7 @@
 #include <Einsums/Comm/Collectives.hpp>
 #include <Einsums/ComputeGraph/Approximation.hpp>
 #include <Einsums/ComputeGraph/BoundExpr.hpp>
+#include <Einsums/ComputeGraph/Detail/CommonTensorTypes.hpp>
 #include <Einsums/ComputeGraph/DeviceShadowMap.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/Error.hpp>
@@ -129,11 +130,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") SpaceTiling {
  * so it gets no space and no dim symbol and a bind may not move it.
  * @versionadded{2.0.0}
  */
-[[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") inline SpaceTiling tiles(std::vector<int> sizes) {
-    SpaceTiling axis{SpaceId{}};
-    axis.tile_sizes = std::move(sizes);
-    return axis;
-}
+[[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") EINSUMS_EXPORT SpaceTiling tiles(std::vector<int> sizes);
 
 /**
  * @brief An axis whose size is a number and whose meaning is nothing.
@@ -425,10 +422,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     TensorId find_or_register_tensor_ptr(TensorHandle const &handle);
 
     /// The id registered for @p ptr, or 0 if there is none.
-    [[nodiscard]] TensorId find_tensor_id_by_ptr(void const *ptr) const noexcept {
-        auto const it = _ptr_index.find(ptr);
-        return it == _ptr_index.end() ? TensorId{0} : it->second;
-    }
+    [[nodiscard]] TensorId find_tensor_id_by_ptr(void const *ptr) const noexcept;
 
     /**
      * @brief The handle of the tensor that lives at @p ptr NOW, or null when none is registered there.
@@ -477,17 +471,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * top of a dead one would inherit its @ref TensorId. Every by-object lookup on this class
      * goes through here rather than through @ref find_tensor_id_by_ptr for that reason.
      */
-    [[nodiscard]] TensorId live_tensor_id_by_ptr(void const *ptr, std::weak_ptr<void> const &token) const noexcept {
-        TensorId const id = find_tensor_id_by_ptr(ptr);
-        if (id == 0) {
-            return 0;
-        }
-        TensorHandle const *handle = find_tensor(id);
-        if (handle == nullptr || !detail::same_tensor(handle->caller_token, token)) {
-            return 0;
-        }
-        return id;
-    }
+    [[nodiscard]] TensorId live_tensor_id_by_ptr(void const *ptr, std::weak_ptr<void> const &token) const noexcept;
 
     // ── Index spaces ────────────────────────────────────────────────────────
 
@@ -578,9 +562,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
-    void annotate_spaces(TensorType const &tensor, std::vector<SpaceId> spaces) {
-        annotate_spaces(register_operand(tensor), std::move(spaces));
-    }
+    void annotate_spaces(TensorType const &tensor, std::vector<SpaceId> spaces);
 
     /**
      * @brief The index spaces annotated on a registered tensor's axes.
@@ -618,9 +600,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("tensor_spaces", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
-    [[nodiscard]] std::vector<SpaceId> const &tensor_spaces(TensorType const &tensor) const {
-        return tensor_spaces(registered_id_or_throw(tensor, "index spaces"));
-    }
+    [[nodiscard]] std::vector<SpaceId> const &tensor_spaces(TensorType const &tensor) const;
 
     // ── Provenance ──────────────────────────────────────────────────────────
 
@@ -672,9 +652,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
-    void annotate_tag(TensorType const &tensor, ProvenanceTag tag) {
-        annotate_tag(register_operand(tensor), std::move(tag));
-    }
+    void annotate_tag(TensorType const &tensor, ProvenanceTag tag);
 
     /**
      * @brief What a registered tensor is declared to be.
@@ -712,9 +690,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("tensor_tag", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
-    [[nodiscard]] ProvenanceTag const &tensor_tag(TensorType const &tensor) const {
-        return tensor_tag(registered_id_or_throw(tensor, "provenance tag"));
-    }
+    [[nodiscard]] ProvenanceTag const &tensor_tag(TensorType const &tensor) const;
 
     // ── Space-typed dimensions (prototype) ──────────────────────────────────
 
@@ -842,9 +818,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_dims", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
-    void annotate_dims(TensorType const &tensor, std::vector<std::string> symbols) {
-        annotate_dims(register_operand(tensor), std::move(symbols));
-    }
+    void annotate_dims(TensorType const &tensor, std::vector<std::string> symbols);
 
     /**
      * @brief Declare one axis ragged over an index space.
@@ -896,9 +870,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("annotate_ragged_dim", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
-    void annotate_ragged_dim(TensorType const &tensor, std::size_t axis, std::string_view space_name) {
-        annotate_ragged_dim(register_operand(tensor), axis, space_name);
-    }
+    void annotate_ragged_dim(TensorType const &tensor, std::size_t axis, std::string_view space_name);
 
     /**
      * @brief The symbolic extent declaration on a registered tensor's axes.
@@ -936,9 +908,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::TiledRuntimeTensor<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("tensor_dim_symbols", TensorType = einsums::TiledRuntimeTensor<std::complex<double>>)
     // clang-format on
-    [[nodiscard]] std::vector<std::string> const &tensor_dim_symbols(TensorType const &tensor) const {
-        return tensor_dim_symbols(registered_id_or_throw(tensor, "dim symbols"));
-    }
+    [[nodiscard]] std::vector<std::string> const &tensor_dim_symbols(TensorType const &tensor) const;
 
     /**
      * @brief Every ``(symbol, space)`` tie this graph's annotations have established.
@@ -970,13 +940,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return The stand-in when capture adopted one, otherwise the registered
      *         pointer. Null if no tensor with that id exists.
      */
-    [[nodiscard]] void *live_tensor_ptr(TensorId id) const noexcept {
-        auto const *handle = find_tensor(id);
-        if (handle == nullptr) {
-            return nullptr;
-        }
-        return handle->live_ptr();
-    }
+    [[nodiscard]] void *live_tensor_ptr(TensorId id) const noexcept;
 
     /**
      * @brief Execute all nodes in topological order.
@@ -1178,36 +1142,18 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * before merging should prefer @ref record_node_timings(), which takes the
      * content mutex once for the batch instead of once per node.
      */
-    void record_node_timing(NodeId id, OpKind kind, double duration_ms, unsigned width = 0) {
-        std::scoped_lock const lock(*_content_mutex);
-        _timing_samples.push_back({.id = id, .kind = kind, .duration_ms = duration_ms, .width = width});
-        _timing_report_valid = false;
-    }
+    void record_node_timing(NodeId id, OpKind kind, double duration_ms, unsigned width = 0);
 
     /// Label-carrying form kept for executors written against the older
     /// signature. The label is ignored: @ref timing_report() resolves it from
     /// the node list.
-    void record_node_timing(NodeId id, std::string const & /*label*/, OpKind kind, double duration_ms) {
-        record_node_timing(id, kind, duration_ms);
-    }
+    void record_node_timing(NodeId id, std::string const & /*label*/, OpKind kind, double duration_ms);
 
     /// Append a whole run's samples under a single lock acquisition.
-    void record_node_timings(std::vector<NodeTimingSample> &&samples) {
-        std::scoped_lock const lock(*_content_mutex);
-        if (_timing_samples.empty()) {
-            _timing_samples = std::move(samples);
-        } else {
-            _timing_samples.insert(_timing_samples.end(), samples.begin(), samples.end());
-        }
-        _timing_report_valid = false;
-    }
+    void record_node_timings(std::vector<NodeTimingSample> &&samples);
 
     /// Clear timing data (called at the start of execute()).
-    void clear_timing_report() {
-        _timing_samples.clear();
-        _timing_report.clear();
-        _timing_report_valid = true;
-    }
+    void clear_timing_report();
 
     /**
      * @brief Sort nodes in topological order based on data dependencies.
@@ -1395,9 +1341,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *         enumerating what a loaded graph expects to be told.
      * @versionadded{2.0.0}
      */
-    [[nodiscard]] std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> const &named_gate_flags() const noexcept {
-        return _named_gate_flags;
-    }
+    [[nodiscard]] std::vector<std::pair<std::string, std::shared_ptr<std::vector<std::uint8_t>>>> const &named_gate_flags() const noexcept;
 
     /**
      * @brief The name @p buffer was registered under.
@@ -1692,19 +1636,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Chains stay short in practice: ``link_alias_storage`` path-compresses
     /// to the root, so only genuinely nested views (a view of a view of a
     /// view) walk more than one hop.
-    [[nodiscard]] TensorId resolve_alias(TensorId id) const {
-        for (size_t hops = 0; hops <= _tensors.size(); ++hops) {
-            auto it = _tensors.find(id);
-            if (it == _tensors.end() || it->second.aliases == 0) {
-                return id;
-            }
-            id = it->second.aliases;
-        }
-        EINSUMS_THROW_EXCEPTION(std::runtime_error,
-                                "Graph '{}': alias chain from tensor {} exceeds the tensor count ({}), which means a "
-                                "cycle in the alias links; the hazard scan cannot order accesses to it",
-                                _name, id, _tensors.size());
-    }
+    [[nodiscard]] TensorId resolve_alias(TensorId id) const;
 
     /// Access dependency info (populated by topological_sort()).
     [[nodiscard]] DependencyInfo const &dependencies() const { return _deps; }
@@ -1766,20 +1698,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Called by optimization passes that produce a valid topological ordering
      * (e.g., Reorder) to prevent execute() from re-sorting.
      */
-    void mark_sorted() {
-        _sorted   = true;
-        _executed = false;
-        // The caller vouches for the node ORDER, but node positions changed,
-        // so the position-keyed _deps lists must be rebuilt on next demand.
-        _deps_valid = false;
-        // Passes also rewrite labels/descriptors; refresh cached profiler
-        // payloads on next execute.
-        _profile_strings_valid = false;
-        // ... and slot pointers (arena slices, CSE redirects).
-        _slots_validated = false;
-        // Position-keyed analyses (UsageAnalysis) are stale too.
-        _analysis_version++;
-    }
+    void mark_sorted();
 
     /**
      * @brief Cached reader/writer/liveness index for the current node order.
@@ -2008,9 +1927,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return The cap, or a negative number when no budget is set.
      * @versionadded{2.0.0}
      */
-    APIARY_EXPOSE APIARY_GETTER("accuracy_budget_value") [[nodiscard]] double accuracy_budget_value() const noexcept {
-        return _accuracy_budget.has_value() ? _accuracy_budget->second : -1.0;
-    }
+    APIARY_EXPOSE APIARY_GETTER("accuracy_budget_value") [[nodiscard]] double accuracy_budget_value() const noexcept;
 
     /**
      * @brief Threads the per-node widths on this graph were planned against.
@@ -2025,9 +1942,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * graph looks like; those are honored as they are found. Deliberately not
      * serialized with the graph, for the same reason the widths are not.
      */
-    APIARY_EXPOSE APIARY_GETTER("planned_thread_count") [[nodiscard]] unsigned planned_thread_count() const {
-        return _planned_thread_count;
-    }
+    APIARY_EXPOSE APIARY_GETTER("planned_thread_count") [[nodiscard]] unsigned planned_thread_count() const;
 
     /// Record the thread count the current widths were planned for.
     /// @see planned_thread_count
@@ -2086,9 +2001,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// Whether the thread plan is still inside its measured trial window: a
     /// re-plan is waiting for the next completed replay, or the trial replays
     /// are still being timed. False once the widths are final. @see plan_threads
-    APIARY_EXPOSE APIARY_GETTER("thread_replan_armed") [[nodiscard]] bool thread_replan_armed() const {
-        return _plan_trial != ThreadPlanTrial::None;
-    }
+    APIARY_EXPOSE APIARY_GETTER("thread_replan_armed") [[nodiscard]] bool thread_replan_armed() const;
 
     /**
      * @brief Add a conditional (if-then-else) node to the graph.
@@ -2403,23 +2316,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] name Tensor name for debugging.
      * @param[in] size_bytes Size of the tensor in bytes.
      */
-    void free_tensor(TensorId id, std::string name = "", size_t size_bytes = 0) {
-        AllocDescriptor desc;
-        desc.tensor_id   = id;
-        desc.size_bytes  = size_bytes;
-        desc.tensor_name = std::move(name);
-
-        Node node;
-        ProfileMemFree(size_bytes);
-
-        node.kind    = OpKind::Free;
-        node.label   = fmt::format("free({})", desc.tensor_name);
-        node.execute = []() {}; // No-op: graph still owns the memory
-        node.inputs  = {id};
-        node.op_data = std::move(desc);
-
-        add_node(std::move(node));
-    }
+    void free_tensor(TensorId id, std::string name = "", size_t size_bytes = 0);
 
     /**
      * @brief Create a tensor owned by the graph.
@@ -2507,22 +2404,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("create_tensor", T = std::complex<double>,
                                  Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
-    create_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = true) {
-        using TensorType = GeneralRuntimeTensor<T, Alloc>;
-        auto *ptr        = own_tensor<TensorType>(name, std::move(dims));
-
-        // ``intermediate`` controls DeadNodeElimination: a graph-owned
-        // intermediate with no in-graph consumer is prunable, but a
-        // user-visible result (one a caller holds a Python handle to and reads
-        // after execute, e.g. the numpy-ergonomics operators' outputs) must
-        // be kept even when nothing downstream in the graph reads it.
-        auto handle            = make_handle(*ptr, 0);
-        handle.is_intermediate = intermediate;
-        auto id                = register_tensor(std::move(handle));
-
-        add_alloc_node(id, name, ptr->size() * sizeof(T));
-        return *ptr;
-    }
+    create_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = true);
 
     /// Runtime-rank analog of create_zero_tensor().
     template <typename T, typename Alloc = std::allocator<T>>
@@ -2531,11 +2413,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor", T = std::complex<double>,
                                  Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
-    create_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = true) {
-        auto &t = create_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);
-        t.zero();
-        return t;
-    }
+    create_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = true);
 
     /**
      * @brief Declare storage from a braced list of extents; see the note on why this overload exists.
@@ -2566,9 +2444,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     template <typename T, typename Alloc = std::allocator<T>>
     GeneralRuntimeTensor<T, Alloc> &create_zero_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims,
-                                                               bool intermediate = true) {
-        return create_zero_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate);
-    }
+                                                               bool intermediate = true);
 
     /**
      * @brief Create an eagerly allocated graph-owned tensor shaped in index spaces.
@@ -2605,13 +2481,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("create_zero_tensor_over", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
     // clang-format on
     GeneralRuntimeTensor<T, Alloc> &create_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
-                                                               bool intermediate = true) {
-        auto  resolved = resolve_space_shape(shape, name, /*need_symbols=*/false);
-        auto &t        = create_zero_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
-        resolved.symbols.clear();
-        apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
-        return t;
-    }
+                                                               bool intermediate = true);
 
     /**
      * @brief Declare a graph-owned runtime-rank tensor with DEFERRED allocation.
@@ -2631,21 +2501,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_tensor", T = std::complex<double>,
                                  Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
-    declare_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = false) {
-        using TensorType = GeneralRuntimeTensor<T, Alloc>;
-        auto *ptr        = own_tensor<TensorType>(typename TensorType::DeferredAlloc{}, name, std::move(dims));
-
-        auto handle            = make_deferred_handle(ptr);
-        handle.is_intermediate = intermediate;
-        // Without this a bind CANNOT move this tensor's extents, whatever its dim symbols
-        // say: resize_derived_extent requires the hook as well as the deferred state, so a
-        // runtime-rank intermediate that lacked it was refused with a message blaming the
-        // storage. The static-rank declare_tensor has always installed one.
-        handle.resize_deferred_fn = [ptr](std::vector<size_t> const &new_dims) { ptr->resize_deferred(new_dims); };
-        register_tensor(std::move(handle));
-        // No Alloc node, MaterializationPass inserts Materialize + Initialize.
-        return *ptr;
-    }
+    declare_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = false);
 
     /**
      * @brief Declare a deferred runtime-rank tensor from a braced list of extents.
@@ -2676,9 +2532,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     template <typename T, typename Alloc = std::allocator<T>>
     GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims,
-                                                           bool intermediate = false) {
-        return declare_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate);
-    }
+                                                           bool intermediate = false);
 
     /**
      * @brief Declare a deferred graph-owned tensor whose shape is stated in index spaces.
@@ -2729,12 +2583,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor_over", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
     // clang-format on
     GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
-                                                                bool intermediate = false) {
-        auto const resolved = resolve_space_shape(shape, name);
-        auto      &t        = declare_zero_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
-        apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
-        return t;
-    }
+                                                                bool intermediate = false);
 
     /**
      * @brief The un-zeroed counterpart of the space-shaped @ref declare_zero_runtime_tensor.
@@ -2755,13 +2604,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("declare_tensor_over", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_tensor_over", T = std::complex<double>, Alloc = std::allocator<std::complex<double>>)
     // clang-format on
-    GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape,
-                                                           bool intermediate = false) {
-        auto const resolved = resolve_space_shape(shape, name);
-        auto      &t        = declare_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
-        apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
-        return t;
-    }
+    GeneralRuntimeTensor<T, Alloc> &declare_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape, bool intermediate = false);
 
     /// Runtime-rank analog of declare_zero_tensor() (graph-owned, deferred, zeroed
     /// at materialize time).
@@ -2771,14 +2614,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tensor", T = std::complex<double>,
                                  Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
-    declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = false) {
-        auto &t = declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);
-        if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
-            handle->init_kind = InitKind::Zero;
-        }
-        t.set_pending_init(PendingInit::Zero);
-        return t;
-    }
+    declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate = false);
 
     /**
      * @brief Declare a deferred, zeroed runtime-rank tensor from a braced list of extents.
@@ -2809,9 +2645,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     template <typename T, typename Alloc = std::allocator<T>>
     GeneralRuntimeTensor<T, Alloc> &declare_zero_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims,
-                                                                bool intermediate = false) {
-        return declare_zero_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate);
-    }
+                                                                bool intermediate = false);
 
     /// Tiled analog of declare_zero_runtime_tensor(): a graph-owned
     /// TiledRuntimeTensor shell over @p tile_sizes with DEFERRED lifecycle.
@@ -2834,19 +2668,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = double)
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = std::complex<float>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor", T = std::complex<double>) TiledRuntimeTensor<T> &
-    declare_zero_tiled_tensor(std::string name, std::vector<std::vector<int>> tile_sizes, bool intermediate = false) {
-        using TensorType = TiledRuntimeTensor<T>;
-        auto *ptr        = own_tensor<TensorType>(std::move(name), std::move(tile_sizes));
-
-        // An empty shell reads as vacuously materialized, which is one of the two things
-        // make_deferred_handle is here to override.
-        auto handle            = make_deferred_handle(ptr);
-        handle.is_intermediate = intermediate;
-        handle.init_kind       = InitKind::Zero;
-        register_tensor(std::move(handle));
-        // No Alloc node, MaterializationPass inserts Materialize + Initialize.
-        return *ptr;
-    }
+    declare_zero_tiled_tensor(std::string name, std::vector<std::vector<int>> tile_sizes, bool intermediate = false);
 
     /**
      * @brief Declare a deferred graph-owned TILED tensor whose shape is stated in index spaces.
@@ -2896,16 +2718,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor_over", T = std::complex<float>)
     APIARY_INSTANTIATE_MEMBER_AS("declare_zero_tiled_tensor_over", T = std::complex<double>)
     // clang-format on
-    TiledRuntimeTensor<T> &declare_zero_tiled_tensor(std::string name, std::vector<SpaceTiling> const &shape, bool intermediate = false) {
-        auto const         resolved = resolve_tiled_shape(shape, name);
-        auto              &t        = declare_zero_tiled_tensor<T>(std::move(name), resolved.tile_sizes, intermediate);
-        ResolvedSpaceShape carried;
-        carried.spaces    = resolved.spaces;
-        carried.symbols   = resolved.symbols;
-        carried.any_space = resolved.any_space;
-        apply_space_shape(find_tensor_id_by_ptr(&t), carried);
-        return t;
-    }
+    TiledRuntimeTensor<T> &declare_zero_tiled_tensor(std::string name, std::vector<SpaceTiling> const &shape, bool intermediate = false);
 
     // ── Deferred tensor declaration ─────────────────────────────────────────
 
@@ -3028,9 +2841,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("scratch", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("scratch", T = std::complex<double>,
                                  Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc>                                                                            &
-    scratch_runtime(std::string name, std::vector<size_t> dims) {
-        return declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), /*intermediate=*/true);
-    }
+    scratch_runtime(std::string name, std::vector<size_t> dims);
 
     /// Runtime-rank zero-initialized scratch.
     template <typename T, typename Alloc = std::allocator<T>>
@@ -3039,9 +2850,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = std::complex<float>, Alloc = std::allocator<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("scratch_zero", T = std::complex<double>,
                                  Alloc = std::allocator<std::complex<double>>) GeneralRuntimeTensor<T, Alloc> &
-    scratch_zero_runtime(std::string name, std::vector<size_t> dims) {
-        return declare_zero_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), /*intermediate=*/true);
-    }
+    scratch_zero_runtime(std::string name, std::vector<size_t> dims);
 
     /**
      * @brief Declare a tensor with a user-provided fill function.
@@ -3335,10 +3144,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * Returns nullptr if no slot exists for this TensorId.
      * Used by optimization passes to redirect captured lambdas to new tensors.
      */
-    TensorSlot *find_slot(TensorId id) {
-        auto it = _slot_map.find(id);
-        return it != _slot_map.end() ? it->second.get() : nullptr;
-    }
+    TensorSlot *find_slot(TensorId id);
 
     /**
      * @brief Redirect a tensor's executor slot to another tensor's buffer.
@@ -3374,47 +3180,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @throws std::logic_error if both tensors' element types are recorded and
      *         differ. A pass that asks for it has a bug.
      */
-    void redirect_slot(TensorId from, TensorId to) {
-        // Collapse chains so every recorded redirect points at a terminal id.
-        for (auto it = _slot_redirects.find(to); it != _slot_redirects.end(); it = _slot_redirects.find(to)) {
-            to = it->second;
-        }
-        if (from == to) {
-            return;
-        }
-        if (TensorHandle const *fh = find_tensor(from), *th = find_tensor(to);
-            fh != nullptr && th != nullptr && fh->dtype != packed_gemm::ScalarType::Unknown &&
-            th->dtype != packed_gemm::ScalarType::Unknown && fh->dtype != th->dtype) {
-            EINSUMS_THROW_EXCEPTION(std::logic_error,
-                                    "Graph '{}': cannot redirect tensor {} to tensor {}, which holds a different element type", _name, from,
-                                    to);
-        }
-        TensorSlot const *to_slot   = find_slot(to);
-        TensorSlot       *from_slot = find_slot(from);
-        if (to_slot == nullptr || from_slot == nullptr) {
-            return;
-        }
-        // The geometry accessor travels with the pointer. @p from's own
-        // accessor was baked for @p from's static type, and the object behind
-        // the redirect is @p to's, so keeping the old one would decode a
-        // different type's layout.
-        from_slot->ptr        = to_slot->ptr;
-        from_slot->impl_of    = to_slot->impl_of;
-        from_slot->resync_of  = to_slot->resync_of;
-        _slot_redirects[from] = to;
-        _slots_validated      = false;
-        // Anything already redirected to `from` now follows the same terminal.
-        for (auto &[f, t] : _slot_redirects) {
-            if (t == from) {
-                t = to;
-                if (auto *fs = find_slot(f)) {
-                    fs->ptr       = to_slot->ptr;
-                    fs->impl_of   = to_slot->impl_of;
-                    fs->resync_of = to_slot->resync_of;
-                }
-            }
-        }
-    }
+    void redirect_slot(TensorId from, TensorId to);
 
     // ── Operand ownership ───────────────────────────────────────────────────
 
@@ -3468,38 +3234,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *         allocation and nothing per node afterwards.
      */
     template <GraphCapturableTensor TensorType>
-    std::shared_ptr<void> adopt_operand(TensorType const &tensor) {
-        using Clean = std::remove_cvref_t<TensorType>;
-
-        if constexpr (!requires(Clean const &t) { t.shallow_alias(); }) {
-            return {};
-        } else {
-            if (_owned_tensor_ptrs.contains(static_cast<void const *>(&tensor))) {
-                return {};
-            }
-            if constexpr (requires(Clean const &t) { t.is_materialized(); }) {
-                if (!tensor.is_materialized()) {
-                    return {};
-                }
-            }
-            // make_shared, not shared_ptr(new ...): one allocation for the
-            // object and its control block rather than two. Capture allocates
-            // one of these per distinct operand, so the difference shows up in
-            // BenchmarkGraphOverhead.
-            //
-            // Built through the tagged constructor, never from the prvalue
-            // shallow_alias() returns: these types have no move constructor, so
-            // make_shared would bind that prvalue to the COPY constructor and
-            // hand back a deep copy that shares nothing. See
-            // einsums::detail::SharedStorageTag. Views own no storage, so their
-            // plain copy already aliases.
-            if constexpr (requires { Clean(::einsums::detail::SharedStorageTag{}, tensor); }) {
-                return std::make_shared<Clean>(::einsums::detail::SharedStorageTag{}, tensor);
-            } else {
-                return std::make_shared<Clean>(tensor);
-            }
-        }
-    }
+    std::shared_ptr<void> adopt_operand(TensorType const &tensor);
 
     /**
      * @brief The id this graph uses for @p tensor, registering it if it has never seen it.
@@ -3524,24 +3259,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * otherwise inherit its id, and metadata set here would land on the wrong handle.
      */
     template <GraphCapturableTensor TensorType>
-    TensorId register_operand(TensorType const &tensor) {
-        void *ptr = const_cast<void *>(static_cast<void const *>(&tensor));
-
-        std::weak_ptr<void> const token = detail::liveness_token_of(tensor);
-
-        if (TensorId const existing = live_tensor_id_by_ptr(ptr, token); existing != 0) {
-            return existing;
-        }
-
-        using Clean = std::remove_cvref_t<TensorType>;
-        auto  owner = adopt_operand(tensor);
-        auto &bound = owner ? *static_cast<Clean *>(owner.get()) : const_cast<Clean &>(tensor);
-
-        auto handle         = make_handle(bound, 0, ptr);
-        handle.owner        = std::move(owner);
-        handle.caller_token = token;
-        return register_tensor(std::move(handle));
-    }
+    TensorId register_operand(TensorType const &tensor);
 
     // ── Rebind support ──────────────────────────────────────────────────────
 
@@ -3557,37 +3275,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return Pointer to the slot (stable for the lifetime of the graph).
      */
     template <GraphCapturableTensor TensorType>
-    TensorSlot *get_or_create_slot(TensorType const &tensor, TensorId tensor_id) {
-        auto it = _slot_map.find(tensor_id);
-        if (it != _slot_map.end()) {
-            return it->second.get();
-        }
-        auto slot          = std::make_unique<TensorSlot>();
-        slot->ptr          = const_cast<void *>(static_cast<void const *>(&tensor));
-        slot->impl_of      = slot_impl_accessor<TensorType>();
-        slot->resync_of    = slot_resync_accessor<TensorType>();
-        slot->tensor_id    = tensor_id;
-        slot->name         = tensor.name();
-        slot->rank         = detail::tensor_rank(tensor);
-        slot->element_size = sizeof(typename std::remove_cvref_t<TensorType>::ValueType);
-        slot->dims.resize(slot->rank);
-        for (size_t d = 0; d < slot->rank; d++) {
-            slot->dims[d] = tensor.dim(d);
-        }
-        // If capture adopted a stand-in for this operand, the handle owns it and
-        // the slot must point at it and share that ownership: the slot outlives
-        // the caller's wrapper, and pointing at a wrapper that may be destroyed
-        // is exactly what operand adoption exists to avoid.
-        if (auto const *handle = find_tensor(tensor_id); handle != nullptr && handle->owner) {
-            slot->ptr   = handle->owner.get();
-            slot->owner = handle->owner;
-        }
-
-        auto *raw            = slot.get();
-        _slot_map[tensor_id] = std::move(slot);
-        _slots_validated     = false;
-        return raw;
-    }
+    TensorSlot *get_or_create_slot(TensorType const &tensor, TensorId tensor_id);
 
     /**
      * @brief Rebind a tensor slot to point to a different tensor.
@@ -3616,9 +3304,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *       different things on purpose.
      */
     template <GraphCapturableTensor TensorType>
-    void rebind(TensorId id, TensorType &new_tensor) {
-        rebind_impl(id, new_tensor, /*allow_extent_change=*/false);
-    }
+    void rebind(TensorId id, TensorType &new_tensor);
 
     /**
      * @brief Rebind a tensor by matching the old tensor's pointer.
@@ -3637,43 +3323,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @endcode
      */
     template <GraphCapturableTensor TensorType>
-    void rebind(TensorType const &old_tensor, TensorType &new_tensor) {
-        void *old_ptr = const_cast<void *>(static_cast<void const *>(&old_tensor));
-
-        // Find the slot and TensorId for old_tensor. After a pass redirect
-        // (CSE, PermuteFusion) several slots share one pointer; prefer the
-        // surviving tensor's id so redirected followers propagate, rather
-        // than whichever duplicate the map yields first.
-        bool     have_fallback = false;
-        TensorId fallback{};
-        for (auto &[id, slot] : _slot_map) {
-            if (slot->ptr == old_ptr) {
-                if (!_slot_redirects.contains(id)) {
-                    rebind(id, new_tensor);
-                    return;
-                }
-                if (!have_fallback) {
-                    fallback      = id;
-                    have_fallback = true;
-                }
-            }
-        }
-        if (have_fallback) {
-            rebind(fallback, new_tensor);
-            return;
-        }
-
-        // Also check the tensor table in case no slot exists yet (tensor registered but never
-        // captured via slot).
-        if (TensorId const id = find_tensor_id_by_ptr(old_ptr); id != 0) {
-            // Create a slot for this tensor so rebind(TensorId, ...) works
-            get_or_create_slot(old_tensor, id);
-            rebind(id, new_tensor);
-            return;
-        }
-
-        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no tensor matching '{}' found for rebind", _name, old_tensor.name());
-    }
+    void rebind(TensorType const &old_tensor, TensorType &new_tensor);
 
     // ── Interface manifest and manifest-driven binding ──────────────────────
 
@@ -3837,21 +3487,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::RuntimeTensorView<std::complex<float>>)
     APIARY_INSTANTIATE_MEMBER_AS("bind_add", TensorType = einsums::RuntimeTensorView<std::complex<double>>)
     // clang-format on
-    void bind_add(std::string const &name, TensorType &tensor) {
-        _pending_binds.push_back(make_pending_bind(name, tensor));
-    }
+    void bind_add(std::string const &name, TensorType &tensor);
 
     /**
      * @brief Finish the bind opened by @ref bind_begin, as one transaction.
      * @throws std::invalid_argument As @ref bind does, with nothing repointed.
      * @versionadded{2.0.0}
      */
-    APIARY_EXPOSE void bind_commit() {
-        // The slots are taken off the graph BEFORE the transaction runs, which is what
-        // clears the pending list whatever happens: a refused transaction must not leak
-        // into the next one.
-        run_bind(std::exchange(_pending_binds, {}));
-    }
+    APIARY_EXPOSE void bind_commit();
 
     /**
      * @brief Bind ONE named slot, the spelling a binding can carry.
@@ -3980,10 +3623,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *         when a node's operands no longer agree on an extent.
      * @versionadded{2.0.0}
      */
-    void rederive_intermediate_extents() {
-        rederive_owned_extents();
-        validate_node_extents();
-    }
+    void rederive_intermediate_extents();
 
     /**
      * @brief Give one graph-owned intermediate a new shape, or say why it cannot have one.
@@ -4003,9 +3643,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *         lists, for this one tensor.
      * @versionadded{2.0.0}
      */
-    void resize_intermediate(TensorId id, std::vector<std::size_t> const &dims, std::string_view producer) {
-        resize_derived_extent(id, dims, producer);
-    }
+    void resize_intermediate(TensorId id, std::vector<std::size_t> const &dims, std::string_view producer);
 
     /**
      * @brief Every ragged extent table @ref bind_ragged_extents has accepted.
@@ -4049,10 +3687,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * @versionadded{2.0.0}
      */
-    void clear_bindings() noexcept {
-        _bound_operands.clear();
-        _ragged_extents.clear();
-    }
+    void clear_bindings() noexcept;
 
     /**
      * @brief Attach a scope table published by a declaring @ref Workspace or @ref Pipeline.
@@ -4116,15 +3751,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @return Shared pointer to the indices (stable for graph lifetime).
      */
     std::shared_ptr<EinsumIndices> create_indices(std::vector<std::string> a, std::vector<std::string> b, std::vector<std::string> c,
-                                                  std::vector<std::string> link) {
-        auto idx            = std::make_shared<EinsumIndices>();
-        idx->spec.a_indices = std::move(a);
-        idx->spec.b_indices = std::move(b);
-        idx->spec.c_indices = std::move(c);
-        idx->link_indices   = std::move(link);
-        _indices_store.push_back(idx);
-        return idx;
-    }
+                                                  std::vector<std::string> link);
 
     /**
      * @brief Update scalar prefactors for an einsum node.
@@ -4164,17 +3791,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
         /// Whether the two spans share a byte. False whenever either is absent:
         /// an operand with no address cannot be shown to alias anything.
-        [[nodiscard]] bool overlaps(BoundSpan const &other) const noexcept {
-            return lo != nullptr && other.lo != nullptr && lo < other.hi && other.lo < hi;
-        }
+        [[nodiscard]] bool overlaps(BoundSpan const &other) const noexcept;
 
         /// Number of bytes the two spans share, for the diagnostic.
-        [[nodiscard]] std::size_t overlap_bytes(BoundSpan const &other) const noexcept {
-            if (!overlaps(other)) {
-                return 0;
-            }
-            return static_cast<std::size_t>(std::min(hi, other.hi) - std::max(lo, other.lo));
-        }
+        [[nodiscard]] std::size_t overlap_bytes(BoundSpan const &other) const noexcept;
     };
 
     // ── rebind() internals ──────────────────────────────────────────────────
@@ -4195,153 +3815,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *            false only in the recursion, so one repoint is not applied twice.
      */
     template <GraphCapturableTensor TensorType>
-    void rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_change, bool descend = true) {
-        auto it = _slot_map.find(id);
-        if (it == _slot_map.end()) {
-            EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no slot for tensor id {}", _name, id);
-        }
-        auto *slot = it->second.get();
-        // What this slot named BEFORE the repoint, which is how a sub-graph's slot for the
-        // same operand is recognised.
-        //
-        // The HANDLE's address, not the slot's, and the difference is the whole of a bug
-        // this used to have. Capture ADOPTS an operand, so a slot points at a graph-owned
-        // stand-in rather than at the caller's tensor, and a parent and a body that captured
-        // the same operand hold two DIFFERENT stand-ins for it. Comparing stand-in addresses
-        // therefore never matched across the boundary, and a rebind of a graph with a body
-        // repointed the parent while the body went on writing through the storage it had
-        // adopted. The handle records the caller's own address, which is the identity both
-        // sides agree on.
-        void *const old_ptr = [&]() -> void * {
-            TensorHandle const *handle = find_tensor(id);
-            return handle != nullptr && handle->tensor_ptr != nullptr ? handle->tensor_ptr : slot->ptr;
-        }();
-
-        // Validate rank, read from the type when it carries ::Rank,
-        // otherwise from the live runtime-rank tensor. Rank is never relaxed:
-        // a symbol renames an extent, it does not add or remove an axis.
-        std::size_t const new_rank = detail::tensor_rank(new_tensor);
-        if (new_rank != slot->rank) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': rebind tensor '{}': rank mismatch ({} vs {})", _name, slot->name,
-                                    new_rank, slot->rank);
-        }
-
-        std::vector<std::size_t> new_dims(new_rank);
-        std::vector<std::size_t> new_strides(new_rank);
-        for (std::size_t d = 0; d < new_rank; d++) {
-            new_dims[d]    = new_tensor.dim(d);
-            new_strides[d] = new_tensor.stride(d);
-        }
-
-        // Validate dimensions
-        if (!allow_extent_change) {
-            for (size_t d = 0; d < slot->rank; d++) {
-                if (new_dims[d] != slot->dims[d]) {
-                    EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': rebind tensor '{}': dim {} mismatch ({} vs {})", _name,
-                                            slot->name, d, new_dims[d], slot->dims[d]);
-                }
-            }
-        }
-
-        slot->ptr       = const_cast<void *>(static_cast<void const *>(&new_tensor));
-        slot->impl_of   = slot_impl_accessor<TensorType>();
-        slot->resync_of = slot_resync_accessor<TensorType>();
-        slot->name      = new_tensor.name();
-        slot->dims      = new_dims;
-
-        // Tensor names feed the cached profiler annotations.
-        _profile_strings_valid = false;
-        // A fresh pointer has not been through the slot check yet.
-        _slots_validated = false;
-
-        // An explicit rebind of a merged-away tensor overrides its pass
-        // redirect; otherwise a later rebind of the survivor would stomp it.
-        _slot_redirects.erase(id);
-
-        // Slots that a pass redirected to this tensor (CSE duplicates,
-        // fused permute outputs) must follow the new buffer.
-        for (auto const &[f, t] : _slot_redirects) {
-            if (t == id) {
-                if (auto *fs = find_slot(f)) {
-                    fs->ptr       = slot->ptr;
-                    fs->impl_of   = slot->impl_of;
-                    fs->resync_of = slot->resync_of;
-                }
-            }
-        }
-
-        // Update the TensorHandle too
-        auto th_it = _tensors.find(id);
-        if (th_it != _tensors.end()) {
-            // The pointer index is keyed on ``tensor_ptr``, so a repoint has to move this
-            // handle's entry with it: leaving it behind makes the index answer about the
-            // storage the graph was captured over and report the storage it was just
-            // rebound to as unregistered, and every by-address lookup on this class reads
-            // that index. The old key is dropped only while it still names THIS id -
-            // register_tensor's last-registration-wins rule (see @ref _ptr_index) means an
-            // address freed during a capture may already have been reassigned to another
-            // tensor, and that later registration is the one that must survive.
-            if (void *const previous_ptr = th_it->second.tensor_ptr; previous_ptr != nullptr) {
-                if (auto const stale = _ptr_index.find(previous_ptr); stale != _ptr_index.end() && stale->second == id) {
-                    _ptr_index.erase(stale);
-                }
-            }
-            th_it->second.tensor_ptr = slot->ptr;
-            if (th_it->second.tensor_ptr != nullptr) {
-                _ptr_index.insert_or_assign(th_it->second.tensor_ptr, id);
-            }
-            // The token is the LIFETIME of whatever ``tensor_ptr`` names, so it moves with
-            // the pointer or the pair describes a tensor that never existed: the new
-            // object's address paired with the previous object's lifetime. Every by-object
-            // lookup checks the two together (see live_tensor_id_by_ptr), so a handle left
-            // holding the old token disowns the tensor it was just rebound to.
-            th_it->second.caller_token = detail::liveness_token_of(new_tensor);
-            // ``impl_fn`` was baked over the OLD tensor object, so leaving it
-            // alone hands every pass-built executor that reads through it (see
-            // ``make_einsum_node``) a rebound node's PREVIOUS storage. It is
-            // rebuilt here for the same reason the slot's accessor is.
-            if constexpr (requires(std::remove_cvref_t<TensorType> &t) { t.impl(); }) {
-                auto *bound           = &new_tensor;
-                th_it->second.impl_fn = [bound]() -> void * { return static_cast<void *>(&bound->impl()); };
-            }
-            th_it->second.name      = new_tensor.name();
-            th_it->second.name_hash = std::hash<std::string>{}(new_tensor.name());
-            th_it->second.validator = [&new_tensor, hash = th_it->second.name_hash]() -> bool {
-                try {
-                    return std::hash<std::string>{}(new_tensor.name()) == hash;
-                } catch (...) {
-                    return false;
-                }
-            };
-
-            // Geometry snapshots. The alias relation, the manifest, and every
-            // extent check read these, and nothing else refreshed them.
-            void *new_data = nullptr;
-            if constexpr (requires { new_tensor.is_materialized(); }) {
-                if (new_tensor.is_materialized()) {
-                    new_data = const_cast<void *>(static_cast<void const *>(new_tensor.data()));
-                }
-            } else {
-                new_data = const_cast<void *>(static_cast<void const *>(new_tensor.data()));
-            }
-            note_rebind_geometry(th_it->second, new_data, new_dims, new_strides);
-        }
-
-        // Rebind is a mutation-declaration point (see analysis_version), which
-        // until now it only claimed to be.
-        _analysis_version++;
-
-        if (descend) {
-            rebind_subgraphs(old_ptr, new_tensor, allow_extent_change);
-            // Repointing a slot changes what a setup body would read, so whatever it
-            // computed is about the previous problem. Placed on the top-level arm only
-            // (`descend` is false in the recursion) so one rebind invalidates once, and
-            // here rather than in `bind` so a plain `rebind` is covered by the same rule:
-            // the graph cannot tell which entry point moved the storage, and neither can
-            // the factors that were computed from it.
-            invalidate_setup();
-        }
-    }
+    void rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_change, bool descend = true);
 
     /**
      * @brief Repoint every sub-graph slot that names @p old_ptr at @p new_tensor.
@@ -4365,31 +3839,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     template <GraphCapturableTensor TensorType>
     // NOLINTNEXTLINE(misc-no-recursion): control-flow bodies nest, so the walk over them does too.
-    void rebind_subgraphs(void *old_ptr, TensorType &new_tensor, bool allow_extent_change) {
-        if (old_ptr == nullptr || old_ptr == static_cast<void const *>(&new_tensor)) {
-            return;
-        }
-        // NOLINTNEXTLINE(misc-no-recursion): see above.
-        for_each_subgraph([&](Graph &sub) {
-            std::vector<TensorId> matches;
-            for (auto const &[id, slot] : sub._slot_map) {
-                if (slot == nullptr) {
-                    continue;
-                }
-                // Identity is the caller's address, held by the handle; see the note in
-                // rebind_impl for why the slot's own pointer is the wrong thing to compare.
-                TensorHandle const *handle = sub.find_tensor(id);
-                void const         *ident  = handle != nullptr && handle->tensor_ptr != nullptr ? handle->tensor_ptr : slot->ptr;
-                if (ident == old_ptr) {
-                    matches.push_back(id);
-                }
-            }
-            for (auto const id : matches) {
-                sub.rebind_impl(id, new_tensor, allow_extent_change, /*descend=*/false);
-            }
-            sub.rebind_subgraphs(old_ptr, new_tensor, allow_extent_change);
-        });
-    }
+    void rebind_subgraphs(void *old_ptr, TensorType &new_tensor, bool allow_extent_change);
 
     /// Write the refreshed geometry onto @p handle and drop whatever the move
     /// invalidated: the derived alias link when the address or the extents moved,
@@ -4431,31 +3881,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// extent). Uses @ref detail::strided_byte_span, the same computation
     /// @ref link_alias_storage reasons about containment with.
     template <GraphCapturableTensor TensorType>
-    [[nodiscard]] static BoundSpan bind_storage_span(TensorType const &tensor) {
-        if constexpr (requires { tensor.is_materialized(); }) {
-            if (!tensor.is_materialized()) {
-                return {};
-            }
-        }
-        if constexpr (requires { tensor.is_tiled_tensor(); }) {
-            if (tensor.is_tiled_tensor()) {
-                return {}; // no single buffer to span
-            }
-        }
-        std::size_t const        rank = detail::tensor_rank(tensor);
-        std::vector<std::size_t> dims(rank);
-        std::vector<std::size_t> strides(rank);
-        for (std::size_t d = 0; d < rank; ++d) {
-            dims[d]    = tensor.dim(d);
-            strides[d] = tensor.stride(d);
-        }
-        BoundSpan span;
-        if (!detail::strided_byte_span(static_cast<void const *>(tensor.data()), dims, strides,
-                                       sizeof(typename std::remove_cvref_t<TensorType>::ValueType), span.lo, span.hi)) {
-            return {};
-        }
-        return span;
-    }
+    [[nodiscard]] static BoundSpan bind_storage_span(TensorType const &tensor);
 
     /**
      * @brief What one @ref bind call's first walk worked out about the symbols.
@@ -4526,14 +3952,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// The shared prologue of the by-object metadata readers, which are const and register
     /// nothing: a tensor the graph has never seen has no handle to carry an annotation.
     template <GraphCapturableTensor TensorType>
-    [[nodiscard]] TensorId registered_id_or_throw(TensorType const &tensor, std::string_view what) const {
-        TensorId const id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), detail::liveness_token_of(tensor));
-        if (id == 0) {
-            EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': tensor '{}' is not registered, so it carries no {}", _name,
-                                    tensor.name(), what);
-        }
-        return id;
-    }
+    [[nodiscard]] TensorId registered_id_or_throw(TensorType const &tensor, std::string_view what) const;
 
     /// @brief Heap-allocate a tensor the graph owns and destroys.
     /// @tparam TensorType The tensor type to construct.
@@ -4559,23 +3978,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     ///
     /// The node executes nothing: the storage exists before the graph runs. It is a marker,
     /// and @ref free_tensor's is the matching one at the other end.
-    void add_alloc_node(TensorId id, std::string const &name, size_t size_bytes) {
-        AllocDescriptor desc;
-        desc.tensor_id   = id;
-        desc.size_bytes  = size_bytes;
-        desc.tensor_name = name;
-
-        Node node;
-        ProfileMemAlloc(desc.size_bytes);
-
-        node.kind    = OpKind::Alloc;
-        node.label   = fmt::format("alloc({})", name);
-        node.execute = []() {};
-        node.outputs = {id};
-        node.op_data = std::move(desc);
-
-        add_node(std::move(node));
-    }
+    void add_alloc_node(TensorId id, std::string const &name, size_t size_bytes);
 
     /// @brief Run one bind transaction over already type-erased slots.
     /// @param[in] pending The slots, applied left to right.
@@ -4586,29 +3989,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// new problem. Both spellings of the operation are this - the variadic @ref bind, which
     /// type-erases its pack here, and the @ref bind_begin / @ref bind_add / @ref bind_commit
     /// transaction, whose list is already in this form.
-    void run_bind(std::vector<PendingBind> const &pending) {
-        InterfaceManifest const contract = manifest();
-
-        DimSolution solution;
-        for (auto const &slot : pending) {
-            slot.collect(contract, solution);
-        }
-        prepare_bind_solution(solution);
-        for (auto const &slot : pending) {
-            slot.apply(contract, solution);
-        }
-        finish_bind_solution(solution);
-    }
+    void run_bind(std::vector<PendingBind> const &pending);
 
     /// One ``(name, tensor)`` pair, type-erased into the two steps a bind runs over it.
     template <GraphCapturableTensor TensorType>
-    [[nodiscard]] PendingBind make_pending_bind(std::string const &name, TensorType &tensor) {
-        return PendingBind{.name    = name,
-                           .collect = [this, name, &tensor](InterfaceManifest const &contract,
-                                                            DimSolution &solution) { bind_collect_one(contract, solution, name, tensor); },
-                           .apply   = [this, name, &tensor](InterfaceManifest const &contract,
-                                                            DimSolution const &solution) { bind_one(contract, solution, name, tensor); }};
-    }
+    [[nodiscard]] PendingBind make_pending_bind(std::string const &name, TensorType &tensor);
 
     /// Walk a @ref bind pack once, turning each ``(name, tensor)`` pair into a @ref PendingBind.
     template <GraphCapturableTensor TensorType, typename... Rest>
@@ -4621,59 +4006,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
 
     /// First walk: validate the shape of one pair and feed its symbols to the solver.
     template <GraphCapturableTensor TensorType>
-    void bind_collect_one(InterfaceManifest const &contract, DimSolution &solution, std::string const &name, TensorType &tensor) {
-        using Clean = std::remove_cvref_t<TensorType>;
-
-        ManifestEntry const &entry = lookup_manifest_entry(contract, name);
-
-        std::size_t const        incoming_rank = detail::tensor_rank(tensor);
-        std::vector<std::size_t> incoming_dims(incoming_rank);
-        for (std::size_t d = 0; d < incoming_rank; ++d) {
-            incoming_dims[d] = tensor.dim(d);
-        }
-        validate_bind_shape(entry, packed_gemm::get_scalar_type<typename Clean::ValueType>(), incoming_rank, incoming_dims);
-        solve_bind_dims(solution, entry, incoming_dims);
-
-        // Space annotations live on handles, so only a tensor this graph already
-        // knows can carry one; anything else is unannotated and skipped.
-        if (TensorId const incoming_id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), detail::liveness_token_of(tensor));
-            incoming_id != 0) {
-            validate_bind_spaces(entry, tensor_spaces(incoming_id));
-        }
-    }
+    void bind_collect_one(InterfaceManifest const &contract, DimSolution &solution, std::string const &name, TensorType &tensor);
 
     /// Second walk: repoint one ``(name, tensor)`` pair. See @ref bind for the contract.
     template <GraphCapturableTensor TensorType>
-    void bind_one(InterfaceManifest const &contract, DimSolution const &solution, std::string const &name, TensorType &tensor) {
-        ManifestEntry const &entry = lookup_manifest_entry(contract, name);
-
-        note_bound_operand(contract, entry, bind_storage_span(tensor));
-
-        // A manifest entry that capture never gave a slot (registered as an operand
-        // but never reached by an op that builds one) still has to be rebindable;
-        // mint the slot from the incoming tensor, whose shape this already validated.
-        if (find_slot(entry.id) == nullptr) {
-            get_or_create_slot(tensor, entry.id);
-        }
-        // The controlled relaxation, and its whole reach: an entry that declares no
-        // symbol is repointed under exactly the public rebind's exact-extent rule.
-        bool const relax = solution.extents_changed && !entry.dim_symbols.empty();
-        rebind_impl(entry.id, tensor, relax);
-        // Every handle the slot folded, repointed with it. One name is one slot even when more
-        // than one capture identity stands behind it, and a fit whose handle was left pointing
-        // at the tensor the graph was captured with would read last problem's numbers while
-        // everything else read this one's. See ManifestEntry::also for what is folded and what
-        // is still refused.
-        for (TensorId const other : entry.also) {
-            // A folded handle is often one effective-IO minted for a body's buffer and never
-            // gave a slot, exactly as an entry capture never reached; mint it the same way.
-            if (find_slot(other) == nullptr) {
-                get_or_create_slot(tensor, other);
-            }
-            rebind_impl(other, tensor, relax);
-            _interface_names.insert_or_assign(other, entry.name);
-        }
-    }
+    void bind_one(InterfaceManifest const &contract, DimSolution const &solution, std::string const &name, TensorType &tensor);
 
     std::string                                _name;
     std::string                                _pipeline_name;   ///< Parent pipeline name (empty if standalone)
@@ -5013,6 +4350,627 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     std::vector<std::shared_ptr<EinsumIndices>> _indices_store;
 };
 
+// Graph's tensor factories are defined outside the class for the same reason as its
+// per-tensor-type members below: the library compiles them once for
+// EINSUMS_CG_ELEMENT_TYPES with the default allocator, and any other element type
+// or allocator instantiates them here.
+template <typename T, typename Alloc>
+auto Graph::create_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate) -> GeneralRuntimeTensor<T, Alloc> & {
+    using TensorType = GeneralRuntimeTensor<T, Alloc>;
+    auto *ptr        = own_tensor<TensorType>(name, std::move(dims));
+
+    // ``intermediate`` controls DeadNodeElimination: a graph-owned
+    // intermediate with no in-graph consumer is prunable, but a
+    // user-visible result (one a caller holds a Python handle to and reads
+    // after execute, e.g. the numpy-ergonomics operators' outputs) must
+    // be kept even when nothing downstream in the graph reads it.
+    auto handle            = make_handle(*ptr, 0);
+    handle.is_intermediate = intermediate;
+    auto id                = register_tensor(std::move(handle));
+
+    add_alloc_node(id, name, ptr->size() * sizeof(T));
+    return *ptr;
+}
+template <typename T, typename Alloc>
+auto Graph::create_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate) -> GeneralRuntimeTensor<T, Alloc> & {
+    auto &t = create_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);
+    t.zero();
+    return t;
+}
+template <typename T, typename Alloc>
+auto Graph::create_zero_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims, bool intermediate)
+    -> GeneralRuntimeTensor<T, Alloc> & {
+    return create_zero_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate);
+}
+template <typename T, typename Alloc>
+auto Graph::create_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape, bool intermediate)
+    -> GeneralRuntimeTensor<T, Alloc> & {
+    auto  resolved = resolve_space_shape(shape, name, /*need_symbols=*/false);
+    auto &t        = create_zero_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
+    resolved.symbols.clear();
+    apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
+    return t;
+}
+template <typename T, typename Alloc>
+auto Graph::declare_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate) -> GeneralRuntimeTensor<T, Alloc> & {
+    using TensorType = GeneralRuntimeTensor<T, Alloc>;
+    auto *ptr        = own_tensor<TensorType>(typename TensorType::DeferredAlloc{}, name, std::move(dims));
+
+    auto handle            = make_deferred_handle(ptr);
+    handle.is_intermediate = intermediate;
+    // Without this a bind CANNOT move this tensor's extents, whatever its dim symbols
+    // say: resize_derived_extent requires the hook as well as the deferred state, so a
+    // runtime-rank intermediate that lacked it was refused with a message blaming the
+    // storage. The static-rank declare_tensor has always installed one.
+    handle.resize_deferred_fn = [ptr](std::vector<size_t> const &new_dims) { ptr->resize_deferred(new_dims); };
+    register_tensor(std::move(handle));
+    // No Alloc node, MaterializationPass inserts Materialize + Initialize.
+    return *ptr;
+}
+template <typename T, typename Alloc>
+auto Graph::declare_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims, bool intermediate)
+    -> GeneralRuntimeTensor<T, Alloc> & {
+    return declare_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate);
+}
+template <typename T, typename Alloc>
+auto Graph::declare_zero_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape, bool intermediate)
+    -> GeneralRuntimeTensor<T, Alloc> & {
+    auto const resolved = resolve_space_shape(shape, name);
+    auto      &t        = declare_zero_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
+    apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
+    return t;
+}
+template <typename T, typename Alloc>
+auto Graph::declare_runtime_tensor(std::string name, std::vector<SpaceDim> const &shape, bool intermediate)
+    -> GeneralRuntimeTensor<T, Alloc> & {
+    auto const resolved = resolve_space_shape(shape, name);
+    auto      &t        = declare_runtime_tensor<T, Alloc>(std::move(name), resolved.dims, intermediate);
+    apply_space_shape(find_tensor_id_by_ptr(&t), resolved);
+    return t;
+}
+template <typename T, typename Alloc>
+auto Graph::declare_zero_runtime_tensor(std::string name, std::vector<size_t> dims, bool intermediate) -> GeneralRuntimeTensor<T, Alloc> & {
+    auto &t = declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), intermediate);
+    if (auto *handle = find_tensor_by_ptr(&t); handle != nullptr) {
+        handle->init_kind = InitKind::Zero;
+    }
+    t.set_pending_init(PendingInit::Zero);
+    return t;
+}
+template <typename T, typename Alloc>
+auto Graph::declare_zero_runtime_tensor(std::string name, std::initializer_list<std::size_t> dims, bool intermediate)
+    -> GeneralRuntimeTensor<T, Alloc> & {
+    return declare_zero_runtime_tensor<T, Alloc>(std::move(name), std::vector<std::size_t>(dims), intermediate);
+}
+template <typename T>
+auto Graph::declare_zero_tiled_tensor(std::string name, std::vector<std::vector<int>> tile_sizes, bool intermediate)
+    -> TiledRuntimeTensor<T> & {
+    using TensorType = TiledRuntimeTensor<T>;
+    auto *ptr        = own_tensor<TensorType>(std::move(name), std::move(tile_sizes));
+
+    // An empty shell reads as vacuously materialized, which is one of the two things
+    // make_deferred_handle is here to override.
+    auto handle            = make_deferred_handle(ptr);
+    handle.is_intermediate = intermediate;
+    handle.init_kind       = InitKind::Zero;
+    register_tensor(std::move(handle));
+    // No Alloc node, MaterializationPass inserts Materialize + Initialize.
+    return *ptr;
+}
+template <typename T>
+auto Graph::declare_zero_tiled_tensor(std::string name, std::vector<SpaceTiling> const &shape, bool intermediate)
+    -> TiledRuntimeTensor<T> & {
+    auto const         resolved = resolve_tiled_shape(shape, name);
+    auto              &t        = declare_zero_tiled_tensor<T>(std::move(name), resolved.tile_sizes, intermediate);
+    ResolvedSpaceShape carried;
+    carried.spaces    = resolved.spaces;
+    carried.symbols   = resolved.symbols;
+    carried.any_space = resolved.any_space;
+    apply_space_shape(find_tensor_id_by_ptr(&t), carried);
+    return t;
+}
+template <typename T, typename Alloc>
+auto Graph::scratch_runtime(std::string name, std::vector<size_t> dims) -> GeneralRuntimeTensor<T, Alloc> & {
+    return declare_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), /*intermediate=*/true);
+}
+template <typename T, typename Alloc>
+auto Graph::scratch_zero_runtime(std::string name, std::vector<size_t> dims) -> GeneralRuntimeTensor<T, Alloc> & {
+    return declare_zero_runtime_tensor<T, Alloc>(std::move(name), std::move(dims), /*intermediate=*/true);
+}
+
+#define EINSUMS_GRAPH_ELEMENT_MEMBERS(PREFIX, T)                                                                                           \
+    PREFIX auto Graph::create_runtime_tensor<T, std::allocator<T>>(std::string name, std::vector<size_t> dims, bool intermediate)          \
+        -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
+    PREFIX auto Graph::create_zero_runtime_tensor<T, std::allocator<T>>(std::string name, std::vector<size_t> dims, bool intermediate)     \
+        -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
+    PREFIX auto Graph::create_zero_runtime_tensor<T, std::allocator<T>>(                                                                   \
+        std::string name, std::initializer_list<std::size_t> dims, bool intermediate) -> GeneralRuntimeTensor<T, std::allocator<T>> &;     \
+    PREFIX auto Graph::create_zero_runtime_tensor<T, std::allocator<T>>(                                                                   \
+        std::string name, std::vector<SpaceDim> const &shape, bool intermediate) -> GeneralRuntimeTensor<T, std::allocator<T>> &;          \
+    PREFIX auto Graph::declare_runtime_tensor<T, std::allocator<T>>(std::string name, std::vector<size_t> dims, bool intermediate)         \
+        -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
+    PREFIX auto Graph::declare_runtime_tensor<T, std::allocator<T>>(std::string name, std::initializer_list<std::size_t> dims,             \
+                                                                    bool intermediate) -> GeneralRuntimeTensor<T, std::allocator<T>> &;    \
+    PREFIX auto Graph::declare_zero_runtime_tensor<T, std::allocator<T>>(                                                                  \
+        std::string name, std::vector<SpaceDim> const &shape, bool intermediate) -> GeneralRuntimeTensor<T, std::allocator<T>> &;          \
+    PREFIX auto Graph::declare_runtime_tensor<T, std::allocator<T>>(std::string name, std::vector<SpaceDim> const &shape,                  \
+                                                                    bool intermediate) -> GeneralRuntimeTensor<T, std::allocator<T>> &;    \
+    PREFIX auto Graph::declare_zero_runtime_tensor<T, std::allocator<T>>(std::string name, std::vector<size_t> dims, bool intermediate)    \
+        -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
+    PREFIX auto Graph::declare_zero_runtime_tensor<T, std::allocator<T>>(                                                                  \
+        std::string name, std::initializer_list<std::size_t> dims, bool intermediate) -> GeneralRuntimeTensor<T, std::allocator<T>> &;     \
+    PREFIX auto Graph::declare_zero_tiled_tensor<T>(std::string name, std::vector<std::vector<int>> tile_sizes, bool intermediate)         \
+        -> TiledRuntimeTensor<T> &;                                                                                                        \
+    PREFIX auto Graph::declare_zero_tiled_tensor<T>(std::string name, std::vector<SpaceTiling> const &shape, bool intermediate)            \
+        -> TiledRuntimeTensor<T> &;                                                                                                        \
+    PREFIX auto Graph::scratch_runtime<T, std::allocator<T>>(std::string name, std::vector<size_t> dims)                                   \
+        -> GeneralRuntimeTensor<T, std::allocator<T>> &;                                                                                   \
+    PREFIX auto Graph::scratch_zero_runtime<T, std::allocator<T>>(std::string name, std::vector<size_t> dims)                              \
+        -> GeneralRuntimeTensor<T, std::allocator<T>> &;
+#define EINSUMS_EXTERN_GRAPH_ELEMENT_MEMBERS(T) EINSUMS_GRAPH_ELEMENT_MEMBERS(extern template EINSUMS_EXPORT, T)
+EINSUMS_CG_ELEMENT_TYPES(EINSUMS_EXTERN_GRAPH_ELEMENT_MEMBERS)
+#undef EINSUMS_EXTERN_GRAPH_ELEMENT_MEMBERS
+
+// Graph's per-tensor-type members are defined outside the class, so they are not
+// implicitly inline and an explicit instantiation declaration can suppress them:
+// the library compiles them once for EINSUMS_CG_COMMON_TENSOR_TYPES, and any other
+// tensor type instantiates them here.
+template <GraphCapturableTensor TensorType>
+auto Graph::annotate_spaces(TensorType const &tensor, std::vector<SpaceId> spaces) -> void {
+    annotate_spaces(register_operand(tensor), std::move(spaces));
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::tensor_spaces(TensorType const &tensor) const -> std::vector<SpaceId> const & {
+    return tensor_spaces(registered_id_or_throw(tensor, "index spaces"));
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::annotate_tag(TensorType const &tensor, ProvenanceTag tag) -> void {
+    annotate_tag(register_operand(tensor), std::move(tag));
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::tensor_tag(TensorType const &tensor) const -> ProvenanceTag const & {
+    return tensor_tag(registered_id_or_throw(tensor, "provenance tag"));
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::annotate_dims(TensorType const &tensor, std::vector<std::string> symbols) -> void {
+    annotate_dims(register_operand(tensor), std::move(symbols));
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::annotate_ragged_dim(TensorType const &tensor, std::size_t axis, std::string_view space_name) -> void {
+    annotate_ragged_dim(register_operand(tensor), axis, space_name);
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::tensor_dim_symbols(TensorType const &tensor) const -> std::vector<std::string> const & {
+    return tensor_dim_symbols(registered_id_or_throw(tensor, "dim symbols"));
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::adopt_operand(TensorType const &tensor) -> std::shared_ptr<void> {
+    using Clean = std::remove_cvref_t<TensorType>;
+
+    if constexpr (!requires(Clean const &t) { t.shallow_alias(); }) {
+        return {};
+    } else {
+        if (_owned_tensor_ptrs.contains(static_cast<void const *>(&tensor))) {
+            return {};
+        }
+        if constexpr (requires(Clean const &t) { t.is_materialized(); }) {
+            if (!tensor.is_materialized()) {
+                return {};
+            }
+        }
+        // make_shared, not shared_ptr(new ...): one allocation for the
+        // object and its control block rather than two. Capture allocates
+        // one of these per distinct operand, so the difference shows up in
+        // BenchmarkGraphOverhead.
+        //
+        // Built through the tagged constructor, never from the prvalue
+        // shallow_alias() returns: these types have no move constructor, so
+        // make_shared would bind that prvalue to the COPY constructor and
+        // hand back a deep copy that shares nothing. See
+        // einsums::detail::SharedStorageTag. Views own no storage, so their
+        // plain copy already aliases.
+        if constexpr (requires { Clean(::einsums::detail::SharedStorageTag{}, tensor); }) {
+            return std::make_shared<Clean>(::einsums::detail::SharedStorageTag{}, tensor);
+        } else {
+            return std::make_shared<Clean>(tensor);
+        }
+    }
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::register_operand(TensorType const &tensor) -> TensorId {
+    void *ptr = const_cast<void *>(static_cast<void const *>(&tensor));
+
+    std::weak_ptr<void> const token = detail::liveness_token_of(tensor);
+
+    if (TensorId const existing = live_tensor_id_by_ptr(ptr, token); existing != 0) {
+        return existing;
+    }
+
+    using Clean = std::remove_cvref_t<TensorType>;
+    auto  owner = adopt_operand(tensor);
+    auto &bound = owner ? *static_cast<Clean *>(owner.get()) : const_cast<Clean &>(tensor);
+
+    auto handle         = make_handle(bound, 0, ptr);
+    handle.owner        = std::move(owner);
+    handle.caller_token = token;
+    return register_tensor(std::move(handle));
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::get_or_create_slot(TensorType const &tensor, TensorId tensor_id) -> TensorSlot * {
+    auto it = _slot_map.find(tensor_id);
+    if (it != _slot_map.end()) {
+        return it->second.get();
+    }
+    auto slot          = std::make_unique<TensorSlot>();
+    slot->ptr          = const_cast<void *>(static_cast<void const *>(&tensor));
+    slot->impl_of      = slot_impl_accessor<TensorType>();
+    slot->resync_of    = slot_resync_accessor<TensorType>();
+    slot->tensor_id    = tensor_id;
+    slot->name         = tensor.name();
+    slot->rank         = detail::tensor_rank(tensor);
+    slot->element_size = sizeof(typename std::remove_cvref_t<TensorType>::ValueType);
+    slot->dims.resize(slot->rank);
+    for (size_t d = 0; d < slot->rank; d++) {
+        slot->dims[d] = tensor.dim(d);
+    }
+    // If capture adopted a stand-in for this operand, the handle owns it and
+    // the slot must point at it and share that ownership: the slot outlives
+    // the caller's wrapper, and pointing at a wrapper that may be destroyed
+    // is exactly what operand adoption exists to avoid.
+    if (auto const *handle = find_tensor(tensor_id); handle != nullptr && handle->owner) {
+        slot->ptr   = handle->owner.get();
+        slot->owner = handle->owner;
+    }
+
+    auto *raw            = slot.get();
+    _slot_map[tensor_id] = std::move(slot);
+    _slots_validated     = false;
+    return raw;
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::rebind(TensorId id, TensorType &new_tensor) -> void {
+    rebind_impl(id, new_tensor, /*allow_extent_change=*/false);
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::rebind(TensorType const &old_tensor, TensorType &new_tensor) -> void {
+    void *old_ptr = const_cast<void *>(static_cast<void const *>(&old_tensor));
+
+    // Find the slot and TensorId for old_tensor. After a pass redirect
+    // (CSE, PermuteFusion) several slots share one pointer; prefer the
+    // surviving tensor's id so redirected followers propagate, rather
+    // than whichever duplicate the map yields first.
+    bool     have_fallback = false;
+    TensorId fallback{};
+    for (auto &[id, slot] : _slot_map) {
+        if (slot->ptr == old_ptr) {
+            if (!_slot_redirects.contains(id)) {
+                rebind(id, new_tensor);
+                return;
+            }
+            if (!have_fallback) {
+                fallback      = id;
+                have_fallback = true;
+            }
+        }
+    }
+    if (have_fallback) {
+        rebind(fallback, new_tensor);
+        return;
+    }
+
+    // Also check the tensor table in case no slot exists yet (tensor registered but never
+    // captured via slot).
+    if (TensorId const id = find_tensor_id_by_ptr(old_ptr); id != 0) {
+        // Create a slot for this tensor so rebind(TensorId, ...) works
+        get_or_create_slot(old_tensor, id);
+        rebind(id, new_tensor);
+        return;
+    }
+
+    EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no tensor matching '{}' found for rebind", _name, old_tensor.name());
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::bind_add(std::string const &name, TensorType &tensor) -> void {
+    _pending_binds.push_back(make_pending_bind(name, tensor));
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::rebind_impl(TensorId id, TensorType &new_tensor, bool allow_extent_change, bool descend) -> void {
+    auto it = _slot_map.find(id);
+    if (it == _slot_map.end()) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': no slot for tensor id {}", _name, id);
+    }
+    auto *slot = it->second.get();
+    // What this slot named BEFORE the repoint, which is how a sub-graph's slot for the
+    // same operand is recognised.
+    //
+    // The HANDLE's address, not the slot's, and the difference is the whole of a bug
+    // this used to have. Capture ADOPTS an operand, so a slot points at a graph-owned
+    // stand-in rather than at the caller's tensor, and a parent and a body that captured
+    // the same operand hold two DIFFERENT stand-ins for it. Comparing stand-in addresses
+    // therefore never matched across the boundary, and a rebind of a graph with a body
+    // repointed the parent while the body went on writing through the storage it had
+    // adopted. The handle records the caller's own address, which is the identity both
+    // sides agree on.
+    void *const old_ptr = [&]() -> void * {
+        TensorHandle const *handle = find_tensor(id);
+        return handle != nullptr && handle->tensor_ptr != nullptr ? handle->tensor_ptr : slot->ptr;
+    }();
+
+    // Validate rank, read from the type when it carries ::Rank,
+    // otherwise from the live runtime-rank tensor. Rank is never relaxed:
+    // a symbol renames an extent, it does not add or remove an axis.
+    std::size_t const new_rank = detail::tensor_rank(new_tensor);
+    if (new_rank != slot->rank) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': rebind tensor '{}': rank mismatch ({} vs {})", _name, slot->name,
+                                new_rank, slot->rank);
+    }
+
+    std::vector<std::size_t> new_dims(new_rank);
+    std::vector<std::size_t> new_strides(new_rank);
+    for (std::size_t d = 0; d < new_rank; d++) {
+        new_dims[d]    = new_tensor.dim(d);
+        new_strides[d] = new_tensor.stride(d);
+    }
+
+    // Validate dimensions
+    if (!allow_extent_change) {
+        for (size_t d = 0; d < slot->rank; d++) {
+            if (new_dims[d] != slot->dims[d]) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': rebind tensor '{}': dim {} mismatch ({} vs {})", _name,
+                                        slot->name, d, new_dims[d], slot->dims[d]);
+            }
+        }
+    }
+
+    slot->ptr       = const_cast<void *>(static_cast<void const *>(&new_tensor));
+    slot->impl_of   = slot_impl_accessor<TensorType>();
+    slot->resync_of = slot_resync_accessor<TensorType>();
+    slot->name      = new_tensor.name();
+    slot->dims      = new_dims;
+
+    // Tensor names feed the cached profiler annotations.
+    _profile_strings_valid = false;
+    // A fresh pointer has not been through the slot check yet.
+    _slots_validated = false;
+
+    // An explicit rebind of a merged-away tensor overrides its pass
+    // redirect; otherwise a later rebind of the survivor would stomp it.
+    _slot_redirects.erase(id);
+
+    // Slots that a pass redirected to this tensor (CSE duplicates,
+    // fused permute outputs) must follow the new buffer.
+    for (auto const &[f, t] : _slot_redirects) {
+        if (t == id) {
+            if (auto *fs = find_slot(f)) {
+                fs->ptr       = slot->ptr;
+                fs->impl_of   = slot->impl_of;
+                fs->resync_of = slot->resync_of;
+            }
+        }
+    }
+
+    // Update the TensorHandle too
+    auto th_it = _tensors.find(id);
+    if (th_it != _tensors.end()) {
+        // The pointer index is keyed on ``tensor_ptr``, so a repoint has to move this
+        // handle's entry with it: leaving it behind makes the index answer about the
+        // storage the graph was captured over and report the storage it was just
+        // rebound to as unregistered, and every by-address lookup on this class reads
+        // that index. The old key is dropped only while it still names THIS id -
+        // register_tensor's last-registration-wins rule (see @ref _ptr_index) means an
+        // address freed during a capture may already have been reassigned to another
+        // tensor, and that later registration is the one that must survive.
+        if (void *const previous_ptr = th_it->second.tensor_ptr; previous_ptr != nullptr) {
+            if (auto const stale = _ptr_index.find(previous_ptr); stale != _ptr_index.end() && stale->second == id) {
+                _ptr_index.erase(stale);
+            }
+        }
+        th_it->second.tensor_ptr = slot->ptr;
+        if (th_it->second.tensor_ptr != nullptr) {
+            _ptr_index.insert_or_assign(th_it->second.tensor_ptr, id);
+        }
+        // The token is the LIFETIME of whatever ``tensor_ptr`` names, so it moves with
+        // the pointer or the pair describes a tensor that never existed: the new
+        // object's address paired with the previous object's lifetime. Every by-object
+        // lookup checks the two together (see live_tensor_id_by_ptr), so a handle left
+        // holding the old token disowns the tensor it was just rebound to.
+        th_it->second.caller_token = detail::liveness_token_of(new_tensor);
+        // ``impl_fn`` was baked over the OLD tensor object, so leaving it
+        // alone hands every pass-built executor that reads through it (see
+        // ``make_einsum_node``) a rebound node's PREVIOUS storage. It is
+        // rebuilt here for the same reason the slot's accessor is.
+        if constexpr (requires(std::remove_cvref_t<TensorType> &t) { t.impl(); }) {
+            auto *bound           = &new_tensor;
+            th_it->second.impl_fn = [bound]() -> void * { return static_cast<void *>(&bound->impl()); };
+        }
+        th_it->second.name      = new_tensor.name();
+        th_it->second.name_hash = std::hash<std::string>{}(new_tensor.name());
+        th_it->second.validator = [&new_tensor, hash = th_it->second.name_hash]() -> bool {
+            try {
+                return std::hash<std::string>{}(new_tensor.name()) == hash;
+            } catch (...) {
+                return false;
+            }
+        };
+
+        // Geometry snapshots. The alias relation, the manifest, and every
+        // extent check read these, and nothing else refreshed them.
+        void *new_data = nullptr;
+        if constexpr (requires { new_tensor.is_materialized(); }) {
+            if (new_tensor.is_materialized()) {
+                new_data = const_cast<void *>(static_cast<void const *>(new_tensor.data()));
+            }
+        } else {
+            new_data = const_cast<void *>(static_cast<void const *>(new_tensor.data()));
+        }
+        note_rebind_geometry(th_it->second, new_data, new_dims, new_strides);
+    }
+
+    // Rebind is a mutation-declaration point (see analysis_version), which
+    // until now it only claimed to be.
+    _analysis_version++;
+
+    if (descend) {
+        rebind_subgraphs(old_ptr, new_tensor, allow_extent_change);
+        // Repointing a slot changes what a setup body would read, so whatever it
+        // computed is about the previous problem. Placed on the top-level arm only
+        // (`descend` is false in the recursion) so one rebind invalidates once, and
+        // here rather than in `bind` so a plain `rebind` is covered by the same rule:
+        // the graph cannot tell which entry point moved the storage, and neither can
+        // the factors that were computed from it.
+        invalidate_setup();
+    }
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::rebind_subgraphs(void *old_ptr, TensorType &new_tensor, bool allow_extent_change) -> void {
+    if (old_ptr == nullptr || old_ptr == static_cast<void const *>(&new_tensor)) {
+        return;
+    }
+    // NOLINTNEXTLINE(misc-no-recursion): see above.
+    for_each_subgraph([&](Graph &sub) {
+        std::vector<TensorId> matches;
+        for (auto const &[id, slot] : sub._slot_map) {
+            if (slot == nullptr) {
+                continue;
+            }
+            // Identity is the caller's address, held by the handle; see the note in
+            // rebind_impl for why the slot's own pointer is the wrong thing to compare.
+            TensorHandle const *handle = sub.find_tensor(id);
+            void const         *ident  = handle != nullptr && handle->tensor_ptr != nullptr ? handle->tensor_ptr : slot->ptr;
+            if (ident == old_ptr) {
+                matches.push_back(id);
+            }
+        }
+        for (auto const id : matches) {
+            sub.rebind_impl(id, new_tensor, allow_extent_change, /*descend=*/false);
+        }
+        sub.rebind_subgraphs(old_ptr, new_tensor, allow_extent_change);
+    });
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::bind_storage_span(TensorType const &tensor) -> BoundSpan {
+    if constexpr (requires { tensor.is_materialized(); }) {
+        if (!tensor.is_materialized()) {
+            return {};
+        }
+    }
+    if constexpr (requires { tensor.is_tiled_tensor(); }) {
+        if (tensor.is_tiled_tensor()) {
+            return {}; // no single buffer to span
+        }
+    }
+    std::size_t const        rank = detail::tensor_rank(tensor);
+    std::vector<std::size_t> dims(rank);
+    std::vector<std::size_t> strides(rank);
+    for (std::size_t d = 0; d < rank; ++d) {
+        dims[d]    = tensor.dim(d);
+        strides[d] = tensor.stride(d);
+    }
+    BoundSpan span;
+    if (!detail::strided_byte_span(static_cast<void const *>(tensor.data()), dims, strides,
+                                   sizeof(typename std::remove_cvref_t<TensorType>::ValueType), span.lo, span.hi)) {
+        return {};
+    }
+    return span;
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::registered_id_or_throw(TensorType const &tensor, std::string_view what) const -> TensorId {
+    TensorId const id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), detail::liveness_token_of(tensor));
+    if (id == 0) {
+        EINSUMS_THROW_EXCEPTION(std::out_of_range, "Graph '{}': tensor '{}' is not registered, so it carries no {}", _name, tensor.name(),
+                                what);
+    }
+    return id;
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::make_pending_bind(std::string const &name, TensorType &tensor) -> PendingBind {
+    return PendingBind{.name    = name,
+                       .collect = [this, name, &tensor](InterfaceManifest const &contract,
+                                                        DimSolution &solution) { bind_collect_one(contract, solution, name, tensor); },
+                       .apply   = [this, name, &tensor](InterfaceManifest const &contract,
+                                                        DimSolution const       &solution) { bind_one(contract, solution, name, tensor); }};
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::bind_collect_one(InterfaceManifest const &contract, DimSolution &solution, std::string const &name, TensorType &tensor)
+    -> void {
+    using Clean = std::remove_cvref_t<TensorType>;
+
+    ManifestEntry const &entry = lookup_manifest_entry(contract, name);
+
+    std::size_t const        incoming_rank = detail::tensor_rank(tensor);
+    std::vector<std::size_t> incoming_dims(incoming_rank);
+    for (std::size_t d = 0; d < incoming_rank; ++d) {
+        incoming_dims[d] = tensor.dim(d);
+    }
+    validate_bind_shape(entry, packed_gemm::get_scalar_type<typename Clean::ValueType>(), incoming_rank, incoming_dims);
+    solve_bind_dims(solution, entry, incoming_dims);
+
+    // Space annotations live on handles, so only a tensor this graph already
+    // knows can carry one; anything else is unannotated and skipped.
+    if (TensorId const incoming_id = live_tensor_id_by_ptr(static_cast<void const *>(&tensor), detail::liveness_token_of(tensor));
+        incoming_id != 0) {
+        validate_bind_spaces(entry, tensor_spaces(incoming_id));
+    }
+}
+template <GraphCapturableTensor TensorType>
+auto Graph::bind_one(InterfaceManifest const &contract, DimSolution const &solution, std::string const &name, TensorType &tensor) -> void {
+    ManifestEntry const &entry = lookup_manifest_entry(contract, name);
+
+    note_bound_operand(contract, entry, bind_storage_span(tensor));
+
+    // A manifest entry that capture never gave a slot (registered as an operand
+    // but never reached by an op that builds one) still has to be rebindable;
+    // mint the slot from the incoming tensor, whose shape this already validated.
+    if (find_slot(entry.id) == nullptr) {
+        get_or_create_slot(tensor, entry.id);
+    }
+    // The controlled relaxation, and its whole reach: an entry that declares no
+    // symbol is repointed under exactly the public rebind's exact-extent rule.
+    bool const relax = solution.extents_changed && !entry.dim_symbols.empty();
+    rebind_impl(entry.id, tensor, relax);
+    // Every handle the slot folded, repointed with it. One name is one slot even when more
+    // than one capture identity stands behind it, and a fit whose handle was left pointing
+    // at the tensor the graph was captured with would read last problem's numbers while
+    // everything else read this one's. See ManifestEntry::also for what is folded and what
+    // is still refused.
+    for (TensorId const other : entry.also) {
+        // A folded handle is often one effective-IO minted for a body's buffer and never
+        // gave a slot, exactly as an entry capture never reached; mint it the same way.
+        if (find_slot(other) == nullptr) {
+            get_or_create_slot(tensor, other);
+        }
+        rebind_impl(other, tensor, relax);
+        _interface_names.insert_or_assign(other, entry.name);
+    }
+}
+
+#define EINSUMS_GRAPH_TENSOR_MEMBERS(PREFIX, ...)                                                                                          \
+    PREFIX auto Graph::annotate_spaces<__VA_ARGS__>(__VA_ARGS__ const &tensor, std::vector<SpaceId> spaces) -> void;                       \
+    PREFIX auto Graph::tensor_spaces<__VA_ARGS__>(__VA_ARGS__ const &tensor) const -> std::vector<SpaceId> const &;                        \
+    PREFIX auto Graph::annotate_tag<__VA_ARGS__>(__VA_ARGS__ const &tensor, ProvenanceTag tag) -> void;                                    \
+    PREFIX auto Graph::tensor_tag<__VA_ARGS__>(__VA_ARGS__ const &tensor) const -> ProvenanceTag const &;                                  \
+    PREFIX auto Graph::annotate_dims<__VA_ARGS__>(__VA_ARGS__ const &tensor, std::vector<std::string> symbols) -> void;                    \
+    PREFIX auto Graph::annotate_ragged_dim<__VA_ARGS__>(__VA_ARGS__ const &tensor, std::size_t axis, std::string_view space_name) -> void; \
+    PREFIX auto Graph::tensor_dim_symbols<__VA_ARGS__>(__VA_ARGS__ const &tensor) const -> std::vector<std::string> const &;               \
+    PREFIX auto Graph::adopt_operand<__VA_ARGS__>(__VA_ARGS__ const &tensor) -> std::shared_ptr<void>;                                     \
+    PREFIX auto Graph::register_operand<__VA_ARGS__>(__VA_ARGS__ const &tensor) -> TensorId;                                               \
+    PREFIX auto Graph::get_or_create_slot<__VA_ARGS__>(__VA_ARGS__ const &tensor, TensorId tensor_id) -> TensorSlot *;                     \
+    PREFIX auto Graph::rebind<__VA_ARGS__>(TensorId id, __VA_ARGS__ & new_tensor) -> void;                                                 \
+    PREFIX auto Graph::rebind<__VA_ARGS__>(__VA_ARGS__ const &old_tensor, __VA_ARGS__ &new_tensor) -> void;                                \
+    PREFIX auto Graph::bind_add<__VA_ARGS__>(std::string const &name, __VA_ARGS__ &tensor) -> void;                                        \
+    PREFIX auto Graph::rebind_impl<__VA_ARGS__>(TensorId id, __VA_ARGS__ & new_tensor, bool allow_extent_change, bool descend) -> void;    \
+    PREFIX auto Graph::rebind_subgraphs<__VA_ARGS__>(void *old_ptr, __VA_ARGS__ &new_tensor, bool allow_extent_change) -> void;            \
+    PREFIX auto Graph::bind_storage_span<__VA_ARGS__>(__VA_ARGS__ const &tensor) -> BoundSpan;                                             \
+    PREFIX auto Graph::registered_id_or_throw<__VA_ARGS__>(__VA_ARGS__ const &tensor, std::string_view what) const -> TensorId;            \
+    PREFIX auto Graph::make_pending_bind<__VA_ARGS__>(std::string const &name, __VA_ARGS__ &tensor) -> PendingBind;                        \
+    PREFIX auto Graph::bind_collect_one<__VA_ARGS__>(InterfaceManifest const &contract, DimSolution &solution, std::string const &name,    \
+                                                     __VA_ARGS__ &tensor) -> void;                                                         \
+    PREFIX auto Graph::bind_one<__VA_ARGS__>(InterfaceManifest const &contract, DimSolution const &solution, std::string const &name,      \
+                                             __VA_ARGS__ &tensor) -> void;
+#define EINSUMS_EXTERN_GRAPH_TENSOR_MEMBERS(...) EINSUMS_GRAPH_TENSOR_MEMBERS(extern template EINSUMS_EXPORT, __VA_ARGS__)
+EINSUMS_CG_COMMON_TENSOR_TYPES(EINSUMS_EXTERN_GRAPH_TENSOR_MEMBERS)
+#undef EINSUMS_EXTERN_GRAPH_TENSOR_MEMBERS
+
 namespace detail {
 
 /**
@@ -5042,31 +5000,9 @@ namespace detail {
  * Such a write is marked @ref TensorHandle::spaces_inferred, so a later declaration replaces it and
  * a validation pass can tell a derived annotation from one the user stands behind.
  */
-[[nodiscard]] inline std::vector<std::pair<std::string, SpaceId>>
+[[nodiscard]] EINSUMS_EXPORT std::vector<std::pair<std::string, SpaceId>>
 bind_einsum_spaces(Graph &graph, TensorId a_id, TensorId b_id, TensorId c_id, std::vector<std::string> const &a_indices,
-                   std::vector<std::string> const &b_indices, std::vector<std::string> const &c_indices, std::string_view context) {
-    TensorHandle const *a = graph.find_tensor(a_id);
-    TensorHandle const *b = graph.find_tensor(b_id);
-    TensorHandle const *c = graph.find_tensor(c_id);
-
-    std::array<LetterSpaceOperand, 3> const operands{
-        LetterSpaceOperand{.label = "A", .indices = &a_indices, .spaces = a != nullptr ? &a->spaces : nullptr},
-        LetterSpaceOperand{.label = "B", .indices = &b_indices, .spaces = b != nullptr ? &b->spaces : nullptr},
-        LetterSpaceOperand{.label = "C", .indices = &c_indices, .spaces = c != nullptr ? &c->spaces : nullptr},
-    };
-
-    auto letters = build_letter_spaces(std::span<LetterSpaceOperand const>{operands}, &graph.space_registry(), context);
-
-    if (auto *output = graph.find_tensor(c_id); output != nullptr && output->is_intermediate && output->spaces.empty()) {
-        auto inferred = spaces_from_letters(c_indices, letters);
-        if (inferred.size() == output->rank) {
-            output->spaces          = std::move(inferred);
-            output->spaces_inferred = true;
-        }
-    }
-
-    return letters;
-}
+                   std::vector<std::string> const &b_indices, std::vector<std::string> const &c_indices, std::string_view context);
 
 } // namespace detail
 

@@ -347,31 +347,10 @@ std::pair<TensorId, TensorSlot *> CaptureContext::get_slot(TensorType const &ten
     return {id, _graph->get_or_create_slot(tensor, id)};
 }
 
-/// The tensor types whose @ref CaptureContext::get_or_register and
-/// @ref CaptureContext::get_slot the library compiles: dense tensors and views
-/// of rank 1 to 4 and the runtime-rank tensor and view, over the four element
-/// types. @p X is applied to each type.
-#define EINSUMS_CAPTURE_SLOT_TYPES_FOR(X, T)                                                                                               \
-    X(::einsums::Tensor<T, 1>)                                                                                                             \
-    X(::einsums::Tensor<T, 2>)                                                                                                             \
-    X(::einsums::Tensor<T, 3>)                                                                                                             \
-    X(::einsums::Tensor<T, 4>)                                                                                                             \
-    X(::einsums::TensorView<T, 1>)                                                                                                         \
-    X(::einsums::TensorView<T, 2>)                                                                                                         \
-    X(::einsums::TensorView<T, 3>)                                                                                                         \
-    X(::einsums::TensorView<T, 4>)                                                                                                         \
-    X(::einsums::RuntimeTensor<T>)                                                                                                         \
-    X(::einsums::RuntimeTensorView<T>)
-#define EINSUMS_CAPTURE_SLOT_TYPES(X)                                                                                                      \
-    EINSUMS_CAPTURE_SLOT_TYPES_FOR(X, float)                                                                                               \
-    EINSUMS_CAPTURE_SLOT_TYPES_FOR(X, double)                                                                                              \
-    EINSUMS_CAPTURE_SLOT_TYPES_FOR(X, std::complex<float>)                                                                                 \
-    EINSUMS_CAPTURE_SLOT_TYPES_FOR(X, std::complex<double>)
-
 #define EINSUMS_EXTERN_CAPTURE_SLOT(...)                                                                                                   \
     extern template EINSUMS_EXPORT TensorId CaptureContext::get_or_register<__VA_ARGS__>(__VA_ARGS__ const &);                             \
     extern template EINSUMS_EXPORT std::pair<TensorId, TensorSlot *> CaptureContext::get_slot<__VA_ARGS__>(__VA_ARGS__ const &);
-EINSUMS_CAPTURE_SLOT_TYPES(EINSUMS_EXTERN_CAPTURE_SLOT)
+EINSUMS_CG_COMMON_TENSOR_TYPES(EINSUMS_EXTERN_CAPTURE_SLOT)
 #undef EINSUMS_EXTERN_CAPTURE_SLOT
 
 /**
