@@ -165,18 +165,18 @@ void tiled_direct_division(T alpha, TiledRuntimeTensor<T> const &A, TiledRuntime
 
 // ── Scalar reductions ────────────────────────────────────────────────────────
 
-/// Tiled dot: sum over shared tiles of the dense per-tile dot (non-conjugated,
-/// matching linear_algebra::dot). X and Y must share a tile grid; a tile present
-/// in only one operand contributes nothing.
-template <typename T>
+/// Tiled dot: sum over shared tiles of the dense per-tile dot, conjugating A's elements when
+/// @p Conj (``true_dot``, so for real T the two coincide, exactly as the dense pair does). X and Y
+/// must share a tile grid; a tile present in only one operand contributes nothing.
+template <bool Conj, typename T>
 T tiled_dot(TiledRuntimeTensor<T> const &A, TiledRuntimeTensor<T> const &B) {
     if (A.tile_sizes() != B.tile_sizes()) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dot (tiled): operands must share the same tile grid");
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::{} (tiled): operands must share the same tile grid", Conj ? "dotc" : "dot");
     }
     T acc{0};
     for (auto const &kv : A.tiles()) {
         if (B.has_tile(kv.first)) {
-            acc += linear_algebra::dot(kv.second, B.tile(kv.first));
+            acc += Conj ? linear_algebra::true_dot(kv.second, B.tile(kv.first)) : linear_algebra::dot(kv.second, B.tile(kv.first));
         }
     }
     return acc;
@@ -243,23 +243,6 @@ void tiled_permute(ParsedPermuteSpec const &parsed, T beta, TiledRuntimeTensor<T
         c_tile.materialize();
         dispatch::string_permute(parsed, T{1}, &c_tile, alpha, kv.second);
     }
-}
-
-/// Tiled conjugated dot `sum conj(A) * B`: per-tile ``true_dot`` over shared
-/// tiles, matching @ref tiled_dot's grid and sparsity rules. For real T this
-/// coincides with tiled_dot, exactly as the dense pair does.
-template <typename T>
-T tiled_dotc(TiledRuntimeTensor<T> const &A, TiledRuntimeTensor<T> const &B) {
-    if (A.tile_sizes() != B.tile_sizes()) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dotc (tiled): operands must share the same tile grid");
-    }
-    T acc{0};
-    for (auto const &kv : A.tiles()) {
-        if (B.has_tile(kv.first)) {
-            acc += linear_algebra::true_dot(kv.second, B.tile(kv.first));
-        }
-    }
-    return acc;
 }
 
 /// Tiled trace: sum the diagonals of the diagonal tiles. Requires a rank-2

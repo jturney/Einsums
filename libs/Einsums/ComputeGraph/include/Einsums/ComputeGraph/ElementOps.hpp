@@ -92,6 +92,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <typeindex>
 #include <typeinfo>
@@ -288,55 +289,30 @@ class ElementOpRegistry {
         // callable disagree ends up with no arm at all and is reported below by
         // the same check that catches a kernel that does not compile for a
         // dtype its domain requires.
-        if constexpr (std::is_invocable_r_v<float, Kernel const &, float>) {
-            if (!entry.sig.parameterized) {
-                entry.f32 = kernel;
+        auto const install = [&]<typename T>(T /*tag*/) {
+            auto &arms = std::get<Arms<T>>(entry.arms);
+            if constexpr (std::is_invocable_r_v<T, Kernel const &, T>) {
+                if (!entry.sig.parameterized) {
+                    arms.unary = kernel;
+                }
             }
-        }
-        if constexpr (std::is_invocable_r_v<double, Kernel const &, double>) {
-            if (!entry.sig.parameterized) {
-                entry.f64 = kernel;
+            if constexpr (std::is_invocable_r_v<T, Kernel const &, T, double>) {
+                if (entry.sig.parameterized) {
+                    arms.param = kernel;
+                }
             }
-        }
-        if constexpr (std::is_invocable_r_v<std::complex<float>, Kernel const &, std::complex<float>>) {
-            if (!entry.sig.parameterized) {
-                entry.c64 = kernel;
-            }
-        }
-        if constexpr (std::is_invocable_r_v<std::complex<double>, Kernel const &, std::complex<double>>) {
-            if (!entry.sig.parameterized) {
-                entry.c128 = kernel;
-            }
-        }
-        if constexpr (std::is_invocable_r_v<float, Kernel const &, float, double>) {
-            if (entry.sig.parameterized) {
-                entry.f32p = kernel;
-            }
-        }
-        if constexpr (std::is_invocable_r_v<double, Kernel const &, double, double>) {
-            if (entry.sig.parameterized) {
-                entry.f64p = kernel;
-            }
-        }
-        if constexpr (std::is_invocable_r_v<std::complex<float>, Kernel const &, std::complex<float>, double>) {
-            if (entry.sig.parameterized) {
-                entry.c64p = kernel;
-            }
-        }
-        if constexpr (std::is_invocable_r_v<std::complex<double>, Kernel const &, std::complex<double>, double>) {
-            if (entry.sig.parameterized) {
-                entry.c128p = kernel;
-            }
-        }
+        };
+        install(float{});
+        install(double{});
+        install(std::complex<float>{});
+        install(std::complex<double>{});
 
         // The declared domain is a MASK as well as a promise: an op declared
         // real-only stays real-only even when its kernel happens to compile for
         // complex, because the declaration is what a saved graph carries.
         if (entry.sig.domain == ElementOpDomain::RealOnly) {
-            entry.c64   = nullptr;
-            entry.c128  = nullptr;
-            entry.c64p  = nullptr;
-            entry.c128p = nullptr;
+            std::get<Arms<std::complex<float>>>(entry.arms)  = {};
+            std::get<Arms<std::complex<double>>>(entry.arms) = {};
         }
 
         // The shape mismatch is reported as itself rather than as a missing
@@ -359,11 +335,11 @@ class ElementOpRegistry {
                                     name);
         }
 
-        require_arm(name, entry.has_arm<float>(), "float");
-        require_arm(name, entry.has_arm<double>(), "double");
+        require_arm(name, entry.has_arm<float>(), element_type_name<float>());
+        require_arm(name, entry.has_arm<double>(), element_type_name<double>());
         if (entry.sig.domain == ElementOpDomain::AllDtypes) {
-            require_arm(name, entry.has_arm<std::complex<float>>(), "complex<float>");
-            require_arm(name, entry.has_arm<std::complex<double>>(), "complex<double>");
+            require_arm(name, entry.has_arm<std::complex<float>>(), element_type_name<std::complex<float>>());
+            require_arm(name, entry.has_arm<std::complex<double>>(), element_type_name<std::complex<double>>());
         }
 
         std::scoped_lock const guard(_mutex);
@@ -422,21 +398,11 @@ class ElementOpRegistry {
         std::scoped_lock const guard(_mutex);
         Entry const           &entry = find_locked(name);
 
-        char const *dtype = nullptr;
-        if constexpr (std::is_same_v<T, float>) {
-            dtype = "float";
-        } else if constexpr (std::is_same_v<T, double>) {
-            dtype = "double";
-        } else if constexpr (std::is_same_v<T, std::complex<float>>) {
-            dtype = "complex<float>";
-        } else {
-            static_assert(std::is_same_v<T, std::complex<double>>, "element_ops: unsupported element type");
-            dtype = "complex<double>";
-        }
         if (!entry.has_arm<T>()) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "element_ops: op '{}' is not defined for {}", name, dtype);
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "element_ops: op '{}' is not defined for {}", name, element_type_name<T>());
         }
 
+        auto const &arms = std::get<Arms<T>>(entry.arms);
         if (!entry.sig.parameterized) {
             // A number handed to an op that has nowhere to put it is a caller
             // error rather than something to ignore: silently dropping it would
@@ -445,28 +411,11 @@ class ElementOpRegistry {
                 EINSUMS_THROW_EXCEPTION(std::invalid_argument, "element_ops: op '{}' takes no parameter, and one was supplied ({})", name,
                                         *param);
             }
-            if constexpr (std::is_same_v<T, float>) {
-                return entry.f32;
-            } else if constexpr (std::is_same_v<T, double>) {
-                return entry.f64;
-            } else if constexpr (std::is_same_v<T, std::complex<float>>) {
-                return entry.c64;
-            } else {
-                return entry.c128;
-            }
+            return arms.unary;
         }
 
         double const value = param.value_or(entry.sig.default_param);
-        auto const   bind  = [value](auto const &kernel) { return std::function<T(T)>{[kernel, value](T x) { return kernel(x, value); }}; };
-        if constexpr (std::is_same_v<T, float>) {
-            return bind(entry.f32p);
-        } else if constexpr (std::is_same_v<T, double>) {
-            return bind(entry.f64p);
-        } else if constexpr (std::is_same_v<T, std::complex<float>>) {
-            return bind(entry.c64p);
-        } else {
-            return bind(entry.c128p);
-        }
+        return std::function<T(T)>{[kernel = arms.param, value](T x) { return kernel(x, value); }};
     }
 
     /**
@@ -490,6 +439,28 @@ class ElementOpRegistry {
     }
 
   private:
+    /// One element type's kernel, as a plain map or as a map taking the op's parameter.
+    template <typename T>
+    struct Arms {
+        std::function<T(T)>         unary;
+        std::function<T(T, double)> param;
+    };
+
+    /// The element type's name, as the diagnostics spell it.
+    template <typename T>
+    static constexpr char const *element_type_name() {
+        if constexpr (std::is_same_v<T, float>) {
+            return "float";
+        } else if constexpr (std::is_same_v<T, double>) {
+            return "double";
+        } else if constexpr (std::is_same_v<T, std::complex<float>>) {
+            return "complex<float>";
+        } else {
+            static_assert(std::is_same_v<T, std::complex<double>>, "element_ops: unsupported element type");
+            return "complex<double>";
+        }
+    }
+
     struct Entry {
         /// Named ``sig``, not ``signature``: the class already has a public
         /// @ref signature accessor, and the two collide in one scope when the
@@ -498,34 +469,18 @@ class ElementOpRegistry {
         /// The registered callable's C++ type; see the identity note on the class.
         std::type_index content{typeid(void)};
 
-        std::function<float(float)>                               f32;
-        std::function<double(double)>                             f64;
-        std::function<std::complex<float>(std::complex<float>)>   c64;
-        std::function<std::complex<double>(std::complex<double>)> c128;
-
-        /// The same four arms for a PARAMETERIZED op. Exactly one of the two
-        /// sets is populated, chosen by @ref ElementOpSignature::parameterized,
-        /// so a lookup never has to decide which one an entry meant.
-        std::function<float(float, double)>                               f32p;
-        std::function<double(double, double)>                             f64p;
-        std::function<std::complex<float>(std::complex<float>, double)>   c64p;
-        std::function<std::complex<double>(std::complex<double>, double)> c128p;
+        /// The installed kernels, one pair per element type. Exactly one of each pair is populated,
+        /// chosen by @ref ElementOpSignature::parameterized, so a lookup never has to decide which
+        /// one an entry meant.
+        std::tuple<Arms<float>, Arms<double>, Arms<std::complex<float>>, Arms<std::complex<double>>> arms;
 
         /// @brief Whether this entry has a kernel for @p T, in whichever shape it declared.
         /// @tparam T One of the four BLAS element types.
         /// @return True when the arm is installed.
         template <typename T>
         [[nodiscard]] bool has_arm() const noexcept {
-            if constexpr (std::is_same_v<T, float>) {
-                return sig.parameterized ? static_cast<bool>(f32p) : static_cast<bool>(f32);
-            } else if constexpr (std::is_same_v<T, double>) {
-                return sig.parameterized ? static_cast<bool>(f64p) : static_cast<bool>(f64);
-            } else if constexpr (std::is_same_v<T, std::complex<float>>) {
-                return sig.parameterized ? static_cast<bool>(c64p) : static_cast<bool>(c64);
-            } else {
-                static_assert(std::is_same_v<T, std::complex<double>>, "element_ops: unsupported element type");
-                return sig.parameterized ? static_cast<bool>(c128p) : static_cast<bool>(c128);
-            }
+            auto const &a = std::get<Arms<T>>(arms);
+            return sig.parameterized ? static_cast<bool>(a.param) : static_cast<bool>(a.unary);
         }
     };
 

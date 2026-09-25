@@ -16,70 +16,36 @@
 #include <stdexcept>
 #include <vector>
 
+#include "Record.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
-template <typename T>
-using Impl = einsums::detail::TensorImpl<T>;
-
 namespace {
-/// A one-in one-out Custom node that re-reads both operands through their slots on every run, so
-/// the node follows rebind() and the memory planner moving a tensor's storage.
-template <typename T, typename Fn>
-void record_unary(CaptureContext &ctx, char const *name, char const *execute_label, SlotRef dst, SlotRef src, Fn apply) {
-    constexpr auto        dtype = packed_gemm::get_scalar_type<T>();
-    OperandAccessor const d_access(dst.second, dtype);
-    OperandAccessor const s_access(src.second, dtype);
-    auto                  executor = [d_access, s_access, apply, execute_label]() {
-        LabeledSection(execute_label);
-        apply(*d_access.impl<T>(), *s_access.impl<T>());
-    };
-    ctx.record(OpKind::Custom, name, {src.first}, {dst.first}, std::move(executor));
-}
 
 template <typename T>
 void run_sum_axes(Impl<T> &o, Impl<T> const &a, std::vector<size_t> const &kept) {
-    size_t const        N     = a.rank();
-    size_t              total = 1;
+    size_t const        N = a.rank();
     std::vector<size_t> dims(N), a_str(N);
     for (size_t k = 0; k < N; ++k) {
         dims[k]  = a.dim(k);
         a_str[k] = a.stride(k);
-        total *= dims[k];
     }
-    size_t              out_total = 1;
-    std::vector<size_t> o_str(kept.size());
+    std::vector<size_t> o_dims(kept.size()), o_str(kept.size());
     for (size_t k = 0; k < kept.size(); ++k) {
-        o_str[k] = o.stride(k);
-        out_total *= o.dim(k);
+        o_dims[k] = o.dim(k);
+        o_str[k]  = o.stride(k);
     }
     T *o_data = o.data();
     // Assign, not accumulate: zero first so a replay does not add to the
     // previous execution's result.
-    for (size_t k = 0; k < out_total; ++k) {
-        size_t off = 0, rem = k;
-        for (size_t d = 0; d < kept.size(); ++d) {
-            off += (rem % o.dim(d)) * o_str[d];
-            rem /= o.dim(d);
-        }
-        o_data[off] = T{0};
-    }
-    if (total == 0)
-        return;
-    T const            *a_data = a.data();
-    std::vector<size_t> idx(N, 0);
-    for (size_t count = 0; count < total; ++count) {
-        size_t a_off = 0, o_off = 0;
-        for (size_t k = 0; k < N; ++k)
-            a_off += idx[k] * a_str[k];
+    for_each_index(o_dims, [&](std::vector<size_t> const &idx) { o_data[offset_of(idx, o_str)] = T{0}; });
+    T const *a_data = a.data();
+    for_each_index(dims, [&](std::vector<size_t> const &idx) {
+        size_t o_off = 0;
         for (size_t k = 0; k < kept.size(); ++k)
             o_off += idx[kept[k]] * o_str[k];
-        o_data[o_off] += a_data[a_off];
-        for (size_t k = 0; k < N; ++k) {
-            if (++idx[k] < dims[k])
-                break;
-            idx[k] = 0;
-        }
-    }
+        o_data[o_off] += a_data[offset_of(idx, a_str)];
+    });
 }
 
 template <typename T>
@@ -139,30 +105,21 @@ void run_outer_sum(Impl<T> &r, std::vector<Impl<T> const *> const &vecs, std::ve
                                     vecs[k]->dim(0), k, r.dim(k));
         }
     }
-    size_t const        total = r.size();
-    std::vector<size_t> idx(N, 0);
     std::vector<size_t> dims(N), strides(N);
     for (size_t k = 0; k < N; ++k) {
         dims[k]    = r.dim(k);
         strides[k] = r.stride(k);
     }
     T *out = r.data();
-    for (size_t count = 0; count < total; ++count) {
+    for_each_index(dims, [&](std::vector<size_t> const &idx) {
         T sum{};
+        // Each vector through its own stride: a row of a column-major matrix is a vector whose
+        // elements are a matrix height apart, and reading it as contiguous took the wrong ones.
         for (size_t k = 0; k < N; ++k) {
-            sum += coeffs[k] * vecs[k]->data()[idx[k]];
+            sum += coeffs[k] * vecs[k]->data()[idx[k] * vecs[k]->stride(0)];
         }
-        size_t offset = 0;
-        for (size_t k = 0; k < N; ++k)
-            offset += idx[k] * strides[k];
-        out[offset] = sum;
-        // Increment multi-index (axis 0 fastest, direction is irrelevant for correctness).
-        for (size_t k = 0; k < N; ++k) {
-            if (++idx[k] < dims[k])
-                break;
-            idx[k] = 0;
-        }
-    }
+        out[offset_of(idx, strides)] = sum;
+    });
 }
 } // namespace
 
@@ -175,8 +132,8 @@ void eager_sum_axes(Impl<T> &out, Impl<T> const &A, std::vector<size_t> const &k
 template <typename T>
 void capture_sum_axes(CaptureContext &ctx, SlotRef out, SlotRef a, std::vector<size_t> kept) {
     LabeledSection("sum_axes capture");
-    record_unary<T>(ctx, "sum_axes", "sum_axes execute", out, a,
-                    [kept = std::move(kept)](Impl<T> &o, Impl<T> const &src) { run_sum_axes<T>(o, src, kept); });
+    record_unary<T, T>(ctx, "sum_axes", "sum_axes execute", out, a,
+                       [kept = std::move(kept)](Impl<T> &o, Impl<T> const &src) { run_sum_axes<T>(o, src, kept); });
 }
 
 template <typename T>
@@ -188,8 +145,8 @@ void eager_reshape(Impl<T> &out, Impl<T> const &A, bool row_major) {
 template <typename T>
 void capture_reshape(CaptureContext &ctx, SlotRef out, SlotRef a, bool row_major) {
     LabeledSection("reshape capture");
-    record_unary<T>(ctx, "reshape", "reshape execute", out, a,
-                    [row_major](Impl<T> &o, Impl<T> const &src) { run_reshape<T>(o, src, row_major); });
+    record_unary<T, T>(ctx, "reshape", "reshape execute", out, a,
+                       [row_major](Impl<T> &o, Impl<T> const &src) { run_reshape<T>(o, src, row_major); });
 }
 
 template <typename T>
@@ -242,10 +199,7 @@ void capture_outer_sum(CaptureContext &ctx, SlotRef result, std::vector<SlotRef>
     template EINSUMS_EXPORT void eager_outer_sum<T>(Impl<T> &, std::vector<Impl<T> const *> const &, std::vector<T> const &);              \
     template EINSUMS_EXPORT void capture_outer_sum<T>(CaptureContext &, SlotRef, std::vector<SlotRef>, std::vector<T>, std::vector<double>);
 
-EINSUMS_SHAPE_OPERATIONS(float)
-EINSUMS_SHAPE_OPERATIONS(double)
-EINSUMS_SHAPE_OPERATIONS(std::complex<float>)
-EINSUMS_SHAPE_OPERATIONS(std::complex<double>)
+EINSUMS_CG_ELEMENT_TYPES(EINSUMS_SHAPE_OPERATIONS)
 #undef EINSUMS_SHAPE_OPERATIONS
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

@@ -16,40 +16,16 @@
 #include <complex>
 #include <vector>
 
+#include "Record.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
-template <typename T>
-using Impl = einsums::detail::TensorImpl<T>;
-
 namespace {
-/// A one-in one-out Custom node that re-reads both operands through their slots on every run, so
-/// the node follows rebind() and the memory planner moving a tensor's storage.
-template <typename T, typename Fn>
-void record_copy(CaptureContext &ctx, char const *name, char const *execute_label, SlotRef dst, SlotRef src, Fn apply,
-                 bool reads_dst = false) {
-    constexpr auto        dtype = packed_gemm::get_scalar_type<T>();
-    OperandAccessor const d_access(dst.second, dtype);
-    OperandAccessor const s_access(src.second, dtype);
-    auto                  executor = [d_access, s_access, apply, execute_label]() {
-        LabeledSection(execute_label);
-        apply(*d_access.impl<T>(), *s_access.impl<T>());
-    };
-    std::vector<TensorId> inputs{src.first};
-    if (reads_dst) {
-        inputs.push_back(dst.first);
-    }
-    ctx.record(OpKind::Custom, name, std::move(inputs), {dst.first}, std::move(executor));
-}
 
 template <typename T>
 void run_block_copy(Impl<T> &d, Impl<T> const &s, std::vector<size_t> const &dst_offsets, std::vector<size_t> const &src_offsets,
                     std::vector<size_t> const &extents) {
-    size_t const N     = extents.size();
-    size_t       total = 1;
-    for (size_t k = 0; k < N; ++k)
-        total *= extents[k];
-
-    std::vector<size_t> idx(N, 0);
+    size_t const        N = extents.size();
     std::vector<size_t> d_str(N), s_str(N);
     for (size_t k = 0; k < N; ++k) {
         d_str[k] = d.stride(k);
@@ -57,21 +33,15 @@ void run_block_copy(Impl<T> &d, Impl<T> const &s, std::vector<size_t> const &dst
     }
     T       *d_data = d.data();
     T const *s_data = s.data();
-
-    for (size_t count = 0; count < total; ++count) {
+    // Axis 0 fastest, correctness-only, not cache-aware.
+    for_each_index(extents, [&](std::vector<size_t> const &idx) {
         size_t d_off = 0, s_off = 0;
         for (size_t k = 0; k < N; ++k) {
             d_off += (dst_offsets[k] + idx[k]) * d_str[k];
             s_off += (src_offsets[k] + idx[k]) * s_str[k];
         }
         d_data[d_off] = s_data[s_off];
-        // Axis 0 fastest, correctness-only, not cache-aware.
-        for (size_t k = 0; k < N; ++k) {
-            if (++idx[k] < extents[k])
-                break;
-            idx[k] = 0;
-        }
-    }
+    });
 }
 
 template <typename T>
@@ -141,9 +111,9 @@ template <typename T>
 void capture_block_copy(CaptureContext &ctx, SlotRef dst, SlotRef src, std::vector<size_t> dst_offsets, std::vector<size_t> src_offsets,
                         std::vector<size_t> extents) {
     LabeledSection("block_copy capture");
-    record_copy<T>(ctx, "block_copy", "block_copy execute", dst, src,
-                   [dst_offsets = std::move(dst_offsets), src_offsets = std::move(src_offsets), extents = std::move(extents)](
-                       Impl<T> &d, Impl<T> const &s) { run_block_copy<T>(d, s, dst_offsets, src_offsets, extents); });
+    record_unary<T, T>(ctx, "block_copy", "block_copy execute", dst, src,
+                       [dst_offsets = std::move(dst_offsets), src_offsets = std::move(src_offsets), extents = std::move(extents)](
+                           Impl<T> &d, Impl<T> const &s) { run_block_copy<T>(d, s, dst_offsets, src_offsets, extents); });
 }
 
 template <typename T>
@@ -157,9 +127,9 @@ template <typename T>
 void capture_gather(CaptureContext &ctx, SlotRef dst, SlotRef src, std::vector<std::vector<size_t>> indices, std::vector<size_t> extents,
                     std::vector<size_t> dst_axis) {
     LabeledSection("gather capture");
-    record_copy<T>(ctx, "gather", "gather execute", dst, src,
-                   [indices = std::move(indices), extents = std::move(extents),
-                    dst_axis = std::move(dst_axis)](Impl<T> &d, Impl<T> const &s) { run_gather<T>(d, s, indices, extents, dst_axis); });
+    record_unary<T, T>(ctx, "gather", "gather execute", dst, src,
+                       [indices = std::move(indices), extents = std::move(extents),
+                        dst_axis = std::move(dst_axis)](Impl<T> &d, Impl<T> const &s) { run_gather<T>(d, s, indices, extents, dst_axis); });
 }
 
 template <typename T>
@@ -176,7 +146,7 @@ void capture_scatter(CaptureContext &ctx, bool accumulate, SlotRef dst, SlotRef 
     // dst is BOTH an input and an output: a scatter leaves everything outside
     // the selection untouched, so whatever wrote those elements has to be
     // ordered before this node; a scatter_add accumulates onto what is there.
-    record_copy<T>(
+    record_unary<T, T>(
         ctx, accumulate ? "scatter_add" : "scatter", accumulate ? "scatter_add execute" : "scatter execute", dst, src,
         [accumulate, indices = std::move(indices), extents = std::move(extents)](Impl<T> &d, Impl<T> const &s) {
             run_scatter<T>(accumulate, d, s, indices, extents);
@@ -198,10 +168,7 @@ void capture_scatter(CaptureContext &ctx, bool accumulate, SlotRef dst, SlotRef 
     template EINSUMS_EXPORT void capture_scatter<T>(CaptureContext &, bool, SlotRef, SlotRef, std::vector<std::vector<size_t>>,            \
                                                     std::vector<size_t>);
 
-EINSUMS_SELECTION_OPERATIONS(float)
-EINSUMS_SELECTION_OPERATIONS(double)
-EINSUMS_SELECTION_OPERATIONS(std::complex<float>)
-EINSUMS_SELECTION_OPERATIONS(std::complex<double>)
+EINSUMS_CG_ELEMENT_TYPES(EINSUMS_SELECTION_OPERATIONS)
 #undef EINSUMS_SELECTION_OPERATIONS
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

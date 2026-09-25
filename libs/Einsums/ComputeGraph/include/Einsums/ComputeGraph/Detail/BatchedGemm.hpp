@@ -6,6 +6,7 @@
 #pragma once
 
 #include <Einsums/BLAS.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -35,8 +36,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
  * storage between executions.
  */
 
-/// @{
-/// Type the erased pointers and dispatch the matching `blas::gemm_batch`.
+/// Type the erased pointers and dispatch the matching `blas::gemm_batch`, carrying the descriptor's
+/// full complex prefactors for a complex @p T.
 template <typename T>
 void run_batched_gemm(BatchedGemmDescriptor const &d, std::vector<void const *> const &a_vs, std::vector<void const *> const &b_vs,
                       std::vector<void *> const &c_vs) {
@@ -48,31 +49,9 @@ void run_batched_gemm(BatchedGemmDescriptor const &d, std::vector<void const *> 
         b_arr[i] = static_cast<T const *>(b_vs[i]);
         c_arr[i] = static_cast<T *>(c_vs[i]);
     }
-    blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, static_cast<T>(d.alpha.real()), a_arr.data(), d.lda, b_arr.data(), d.ldb,
-                        static_cast<T>(d.beta.real()), c_arr.data(), d.ldc, d.batch_count);
+    blas::gemm_batch<T>(d.trans_a, d.trans_b, d.m, d.n, d.k, narrow_prefactor<T>(d.alpha), a_arr.data(), d.lda, b_arr.data(), d.ldb,
+                        narrow_prefactor<T>(d.beta), c_arr.data(), d.ldc, d.batch_count);
 }
-
-/// The descriptor carries the full complex prefactor; preserve both parts, a
-/// complex prefactor such as a phase factor must not be truncated to its real
-/// part.
-template <typename Complex>
-void run_batched_gemm_complex(BatchedGemmDescriptor const &d, std::vector<void const *> const &a_vs, std::vector<void const *> const &b_vs,
-                              std::vector<void *> const &c_vs) {
-    using T = typename Complex::value_type;
-    std::vector<Complex const *> a_arr(d.batch_count);
-    std::vector<Complex const *> b_arr(d.batch_count);
-    std::vector<Complex *>       c_arr(d.batch_count);
-    for (int i = 0; i < d.batch_count; ++i) {
-        a_arr[i] = static_cast<Complex const *>(a_vs[i]);
-        b_arr[i] = static_cast<Complex const *>(b_vs[i]);
-        c_arr[i] = static_cast<Complex *>(c_vs[i]);
-    }
-    Complex const alpha{static_cast<T>(d.alpha.real()), static_cast<T>(d.alpha.imag())};
-    Complex const beta{static_cast<T>(d.beta.real()), static_cast<T>(d.beta.imag())};
-    blas::gemm_batch<Complex>(d.trans_a, d.trans_b, d.m, d.n, d.k, alpha, a_arr.data(), d.lda, b_arr.data(), d.ldb, beta, c_arr.data(),
-                              d.ldc, d.batch_count);
-}
-/// @}
 
 /**
  * @brief One batch member's operand: where to read it from, and how far in.
@@ -177,24 +156,9 @@ void extract_and_run(BatchedGemmDescriptor const &d, BatchedGemmOperands const &
 inline std::function<void()> make_batched_gemm_executor(BatchedGemmDescriptor d, BatchedGemmOperands a_ops, BatchedGemmOperands b_ops,
                                                         BatchedGemmOperands c_ops) {
     return [d, a_ops = std::move(a_ops), b_ops = std::move(b_ops), c_ops = std::move(c_ops)]() {
-        switch (d.scalar) {
-        case BlasScalar::Float:
-            extract_and_run<float>(d, a_ops, b_ops, c_ops, static_cast<float>(d.alpha.real()), static_cast<float>(d.beta.real()));
-            break;
-        case BlasScalar::Double:
-            extract_and_run<double>(d, a_ops, b_ops, c_ops, d.alpha.real(), d.beta.real());
-            break;
-        // The descriptor carries the full complex prefactor; preserve both
-        // parts, a phase factor must not be truncated to its real part.
-        case BlasScalar::ComplexFloat:
-            extract_and_run<std::complex<float>>(
-                d, a_ops, b_ops, c_ops, std::complex<float>{static_cast<float>(d.alpha.real()), static_cast<float>(d.alpha.imag())},
-                std::complex<float>{static_cast<float>(d.beta.real()), static_cast<float>(d.beta.imag())});
-            break;
-        case BlasScalar::ComplexDouble:
-            extract_and_run<std::complex<double>>(d, a_ops, b_ops, c_ops, d.alpha, d.beta);
-            break;
-        }
+        dispatch_blas_scalar(d.scalar, [&]<typename T>(T /*tag*/) {
+            extract_and_run<T>(d, a_ops, b_ops, c_ops, narrow_prefactor<T>(d.alpha), narrow_prefactor<T>(d.beta));
+        });
     };
 }
 

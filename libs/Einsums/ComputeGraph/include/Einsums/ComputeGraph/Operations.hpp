@@ -8,13 +8,10 @@
 #include <Einsums/BLAS.hpp>
 #include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/ComputeGraph/CaptureContext.hpp>
-#include <Einsums/ComputeGraph/Detail/BatchedGemm.hpp>
 #include <Einsums/ComputeGraph/Detail/BlasAddressable.hpp>
 #include <Einsums/ComputeGraph/Detail/DenseElementTransform.hpp>
 #include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/ErasedOperations.hpp>
-#include <Einsums/ComputeGraph/Detail/GroupedBatchedGemm.hpp>
-#include <Einsums/ComputeGraph/Detail/GroupedMembers.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/TiledRuntimeElementwise.hpp>
 #include <Einsums/ComputeGraph/Diis.hpp>
@@ -31,7 +28,6 @@
 #include <Einsums/Profile.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/TaskPool/TaskPool.hpp>
-#include <Einsums/TensorPermute/Permute.hpp>
 
 #include <fmt/format.h>
 
@@ -44,6 +40,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -138,6 +135,36 @@ void record_unary_custom(char const *name, char const *execute_label, DstType *d
         inputs.push_back(d_id);
     }
     ctx.record(OpKind::Custom, name, std::move(inputs), {d_id}, std::move(executor));
+}
+
+/// The live impl of every tensor in @p list, in order: const for a list of const tensors.
+template <typename List>
+auto impls_of(List const &list) {
+    using ImplType = std::remove_reference_t<decltype(list[0]->impl())>;
+    std::vector<ImplType *> out;
+    out.reserve(list.size());
+    for (auto *tensor : list) {
+        out.push_back(&tensor->impl());
+    }
+    return out;
+}
+
+/// The slot of every tensor in @p lists, member by member: for each member, one slot per list, in
+/// argument order. The interleaving is the registration order (and so the id numbering) the capture
+/// sites always had. @p order, when not empty, permutes which member comes next.
+template <typename... Lists>
+auto slot_lists(CaptureContext &ctx, std::size_t count, std::span<std::size_t const> order, Lists const &...lists)
+    -> std::array<std::vector<SlotRef>, sizeof...(Lists)> {
+    std::array<std::vector<SlotRef>, sizeof...(Lists)> out;
+    for (auto &refs : out) {
+        refs.reserve(count);
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+        std::size_t const member = order.empty() ? i : order[i];
+        std::size_t       list   = 0;
+        ((out[list++].push_back(ctx.get_slot(*lists[member]))), ...);
+    }
+    return out;
 }
 } // namespace detail
 
@@ -285,6 +312,84 @@ void conj(AType *A) {
     }
 }
 
+namespace detail {
+
+/// ``out := Re(A)``, ``Im(A)`` or ``|A|``: the one body behind cg::real, cg::imag and cg::abs,
+/// which differ only in @p Part. Tiled operands run the tiled kernel; dense operands of one element
+/// type go through the library entry; the rest (a real output of a real input) run the TensorImpl
+/// kernel directly.
+template <ComplexPart Part, typename ResultType, typename AType>
+void complex_part_op(ResultType *out, AType const &A) {
+    constexpr auto index = static_cast<std::size_t>(Part);
+    // Per part, so each instantiation keeps a profiling zone of its own under its own name.
+    constexpr std::array<char const *, 3> name{"real", "imag", "abs"};
+    constexpr std::array<char const *, 3> eager{"real eager", "imag eager", "abs eager"};
+    constexpr std::array<char const *, 3> capture{"real capture", "imag capture", "abs capture"};
+    constexpr std::array<char const *, 3> execute{"real execute", "imag execute", "abs execute"};
+
+    auto &ctx = CaptureContext::current();
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        auto const kernel = [](AType const &a, ResultType *o) {
+            if constexpr (Part == ComplexPart::Real) {
+                tiled_real(a, o);
+            } else if constexpr (Part == ComplexPart::Imag) {
+                tiled_imag(a, o);
+            } else {
+                tiled_abs(a, o);
+            }
+        };
+        if (!ctx.is_capturing()) {
+            LabeledSection(eager[index]);
+            kernel(A, out);
+            return;
+        }
+        LabeledSection(capture[index]);
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [r_id, r_slot] = ctx.get_slot(*out);
+        auto executor       = [a_slot, r_slot, kernel]() {
+            kernel(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
+        };
+        ctx.record(OpKind::Custom, name[index], {a_id}, {r_id}, std::move(executor));
+    } else if constexpr (std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>) {
+        using T = typename AType::ValueType;
+        if (!ctx.is_capturing()) {
+            eager_complex_part<T>(Part, A.impl(), out->impl());
+            return;
+        }
+        auto const a_ref = ctx.get_slot(A);
+        auto const r_ref = ctx.get_slot(*out);
+        capture_complex_part<T>(ctx, Part, r_ref, a_ref);
+    } else {
+        auto compute = [](ResultType *o, AType const *a) {
+            if constexpr (Part == ComplexPart::Abs) {
+                einsums::detail::impl_abs(a->impl(), o->impl());
+            } else if constexpr (IsComplexV<typename AType::ValueType>) {
+                if constexpr (Part == ComplexPart::Real) {
+                    einsums::detail::impl_real(a->impl(), o->impl());
+                } else {
+                    einsums::detail::impl_imag(a->impl(), o->impl());
+                }
+            } else if constexpr (Part == ComplexPart::Real) {
+                einsums::detail::impl_copy(a->impl(), o->impl()); // Re(x) == x for real x
+            } else {
+                // Im(x) == 0 for real x: copy then scale by zero, which assigns zero rather than
+                // reading the uninitialized output.
+                einsums::detail::impl_copy(a->impl(), o->impl());
+                einsums::detail::impl_scal(typename ResultType::ValueType{0}, o->impl());
+            }
+        };
+        if (!ctx.is_capturing()) {
+            LabeledSection(eager[index]);
+            compute(out, &A);
+            return;
+        }
+        LabeledSection(capture[index]);
+        record_unary_custom(name[index], execute[index], out, A, compute);
+    }
+}
+
+} // namespace detail
+
 /// Graph-aware real part: ``out := Re(A)``. Complex ``A`` produces real ``out``.
 /// For real ``A`` it is a copy, since Re(x) == x, matching numpy ``.real``. Dense
 /// or tiled.
@@ -308,45 +413,7 @@ APIARY_INSTANTIATE_AS("real", einsums::TiledRuntimeTensor<float>,  einsums::Tile
 APIARY_INSTANTIATE_AS("real", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<std::complex<double>>)
 // clang-format on
 void real(ResultType *out, AType const &A) {
-    auto &ctx = CaptureContext::current();
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-        if (!ctx.is_capturing()) {
-            LabeledSection("real eager");
-            detail::tiled_real(A, out);
-            return;
-        }
-        LabeledSection("real capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [r_id, r_slot] = ctx.get_slot(*out);
-        auto executor       = [a_slot, r_slot]() {
-            detail::tiled_real(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
-        };
-        ctx.record(OpKind::Custom, "real", {a_id}, {r_id}, std::move(executor));
-    } else if constexpr (std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>) {
-        using T = typename AType::ValueType;
-        if (!ctx.is_capturing()) {
-            detail::eager_complex_part<T>(detail::ComplexPart::Real, A.impl(), out->impl());
-            return;
-        }
-        auto const a_ref = ctx.get_slot(A);
-        auto const r_ref = ctx.get_slot(*out);
-        detail::capture_complex_part<T>(ctx, detail::ComplexPart::Real, r_ref, a_ref);
-    } else {
-        auto compute = [](ResultType *o, AType const *a) {
-            if constexpr (IsComplexV<typename AType::ValueType>) {
-                einsums::detail::impl_real(a->impl(), o->impl());
-            } else {
-                einsums::detail::impl_copy(a->impl(), o->impl()); // Re(x) == x for real x
-            }
-        };
-        if (!ctx.is_capturing()) {
-            LabeledSection("real eager");
-            compute(out, &A);
-            return;
-        }
-        LabeledSection("real capture");
-        detail::record_unary_custom("real", "real execute", out, A, compute);
-    }
+    detail::complex_part_op<detail::ComplexPart::Real>(out, A);
 }
 
 /// Graph-aware imaginary part: ``out := Im(A)``. Complex ``A`` produces real
@@ -372,48 +439,7 @@ APIARY_INSTANTIATE_AS("imag", einsums::TiledRuntimeTensor<float>,  einsums::Tile
 APIARY_INSTANTIATE_AS("imag", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<std::complex<double>>)
 // clang-format on
 void imag(ResultType *out, AType const &A) {
-    auto &ctx = CaptureContext::current();
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-        if (!ctx.is_capturing()) {
-            LabeledSection("imag eager");
-            detail::tiled_imag(A, out);
-            return;
-        }
-        LabeledSection("imag capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [r_id, r_slot] = ctx.get_slot(*out);
-        auto executor       = [a_slot, r_slot]() {
-            detail::tiled_imag(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
-        };
-        ctx.record(OpKind::Custom, "imag", {a_id}, {r_id}, std::move(executor));
-    } else if constexpr (std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>) {
-        using T = typename AType::ValueType;
-        if (!ctx.is_capturing()) {
-            detail::eager_complex_part<T>(detail::ComplexPart::Imag, A.impl(), out->impl());
-            return;
-        }
-        auto const a_ref = ctx.get_slot(A);
-        auto const r_ref = ctx.get_slot(*out);
-        detail::capture_complex_part<T>(ctx, detail::ComplexPart::Imag, r_ref, a_ref);
-    } else {
-        auto compute = [](ResultType *o, AType const *a) {
-            if constexpr (IsComplexV<typename AType::ValueType>) {
-                einsums::detail::impl_imag(a->impl(), o->impl());
-            } else {
-                // Im(x) == 0 for real x: copy then scale by zero (avoids reading
-                // uninitialized output the way a bare scal(0) would).
-                einsums::detail::impl_copy(a->impl(), o->impl());
-                einsums::detail::impl_scal(typename ResultType::ValueType{0}, o->impl());
-            }
-        };
-        if (!ctx.is_capturing()) {
-            LabeledSection("imag eager");
-            compute(out, &A);
-            return;
-        }
-        LabeledSection("imag capture");
-        detail::record_unary_custom("imag", "imag execute", out, A, compute);
-    }
+    detail::complex_part_op<detail::ComplexPart::Imag>(out, A);
 }
 
 /// Graph-aware magnitude: ``out := |A|``. Real or complex ``A`` produces real
@@ -440,39 +466,7 @@ APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<float>,  einsums::Tiled
 APIARY_INSTANTIATE_AS("abs", einsums::TiledRuntimeTensor<double>, einsums::TiledRuntimeTensor<std::complex<double>>)
 // clang-format on
 void abs(ResultType *out, AType const &A) {
-    auto &ctx = CaptureContext::current();
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-        if (!ctx.is_capturing()) {
-            LabeledSection("abs eager");
-            detail::tiled_abs(A, out);
-            return;
-        }
-        LabeledSection("abs capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [r_id, r_slot] = ctx.get_slot(*out);
-        auto executor       = [a_slot, r_slot]() {
-            detail::tiled_abs(*static_cast<AType const *>(a_slot->ptr), static_cast<ResultType *>(r_slot->ptr));
-        };
-        ctx.record(OpKind::Custom, "abs", {a_id}, {r_id}, std::move(executor));
-    } else if constexpr (std::is_same_v<typename ResultType::ValueType, RemoveComplexT<typename AType::ValueType>>) {
-        using T = typename AType::ValueType;
-        if (!ctx.is_capturing()) {
-            detail::eager_complex_part<T>(detail::ComplexPart::Abs, A.impl(), out->impl());
-            return;
-        }
-        auto const a_ref = ctx.get_slot(A);
-        auto const r_ref = ctx.get_slot(*out);
-        detail::capture_complex_part<T>(ctx, detail::ComplexPart::Abs, r_ref, a_ref);
-    } else {
-        auto compute = [](ResultType *o, AType const *a) { einsums::detail::impl_abs(a->impl(), o->impl()); };
-        if (!ctx.is_capturing()) {
-            LabeledSection("abs eager");
-            compute(out, &A);
-            return;
-        }
-        LabeledSection("abs capture");
-        detail::record_unary_custom("abs", "abs execute", out, A, compute);
-    }
+    detail::complex_part_op<detail::ComplexPart::Abs>(out, A);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -832,6 +826,63 @@ void gather(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> c
 // scatter: index-list placement, the inverse of gather
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace detail {
+
+/// The one body behind cg::scatter and cg::scatter_add: ``dst[indices] = src`` (or ``+=`` when
+/// @p Accumulate). A plain scatter rejects a repeated index, because two writes to one element make
+/// the result depend on iteration order; an accumulating one sums them, which is what it is for.
+template <bool Accumulate, typename DstType, typename SrcType>
+void scatter_into(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices) {
+    constexpr char const *who = Accumulate ? "cg::scatter_add" : "cg::scatter";
+    size_t const          N   = indices.size();
+    if (N == 0) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: indices must be non-empty", who);
+    }
+    size_t const dst_rank = tensor_rank(*dst);
+    size_t const src_rank = tensor_rank(src);
+    if (dst_rank != N || src_rank != N) {
+        EINSUMS_THROW_EXCEPTION(RankError, "{}: rank mismatch - dst rank={}, src rank={}, indices.size()={}", who, dst_rank, src_rank, N);
+    }
+
+    std::vector<size_t> extents(N);
+    for (size_t k = 0; k < N; ++k) {
+        extents[k] = indices[k].size();
+        if (src.dim(k) != extents[k]) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: src axis {} has extent {}, but {} indices were given", who, k, src.dim(k),
+                                    extents[k]);
+        }
+        for (size_t p : indices[k]) {
+            if (p >= dst->dim(k)) {
+                EINSUMS_THROW_EXCEPTION(std::out_of_range, "{}: index {} on axis {} is out of range for dst dim {}", who, p, k,
+                                        dst->dim(k));
+            }
+        }
+        if constexpr (!Accumulate) {
+            // O(n log n) once at record time, not per element.
+            std::vector<size_t> sorted(indices[k]);
+            std::ranges::sort(sorted);
+            if (auto const dup = std::ranges::adjacent_find(sorted); dup != sorted.end()) {
+                EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                        "{}: index {} is repeated on axis {}; two writes would target the same element and the "
+                                        "result would depend on iteration order",
+                                        who, *dup, k);
+            }
+        }
+    }
+
+    using T   = typename DstType::ValueType;
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        eager_scatter<T>(Accumulate, dst->impl(), src.impl(), indices, extents);
+        return;
+    }
+    auto const s_ref = ctx.get_slot(src);
+    auto const d_ref = ctx.get_slot(*dst);
+    capture_scatter<T>(ctx, Accumulate, d_ref, s_ref, indices, std::move(extents));
+}
+
+} // namespace detail
+
 /// Write @p src into an arbitrary index selection of @p dst.
 ///
 /// The inverse of @ref gather, with the index lists naming positions in the
@@ -877,51 +928,7 @@ APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<float>>
 APIARY_INSTANTIATE_AS("scatter", einsums::RuntimeTensorView<std::complex<double>>,                                    einsums::RuntimeTensorView<std::complex<double>>)
 // clang-format on
 void scatter(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices) {
-    size_t const N = indices.size();
-    if (N == 0) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::scatter: indices must be non-empty");
-    }
-    size_t const dst_rank = detail::tensor_rank(*dst);
-    size_t const src_rank = detail::tensor_rank(src);
-    if (dst_rank != N || src_rank != N) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::scatter: rank mismatch - dst rank={}, src rank={}, indices.size()={}", dst_rank, src_rank,
-                                N);
-    }
-
-    std::vector<size_t> extents(N);
-    for (size_t k = 0; k < N; ++k) {
-        extents[k] = indices[k].size();
-        if (src.dim(k) != extents[k]) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::scatter: src axis {} has extent {}, but {} indices were given", k,
-                                    src.dim(k), extents[k]);
-        }
-        for (size_t p : indices[k]) {
-            if (p >= dst->dim(k)) {
-                EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::scatter: index {} on axis {} is out of range for dst dim {}", p, k,
-                                        dst->dim(k));
-            }
-        }
-        // O(n log n) once at record time, not per element.
-        std::vector<size_t> sorted(indices[k]);
-        std::sort(sorted.begin(), sorted.end());
-        auto dup = std::adjacent_find(sorted.begin(), sorted.end());
-        if (dup != sorted.end()) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument,
-                                    "cg::scatter: index {} is repeated on axis {}; two writes would target the same element and the "
-                                    "result would depend on iteration order",
-                                    *dup, k);
-        }
-    }
-
-    using T   = typename DstType::ValueType;
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        detail::eager_scatter<T>(false, dst->impl(), src.impl(), indices, extents);
-        return;
-    }
-    auto const s_ref = ctx.get_slot(src);
-    auto const d_ref = ctx.get_slot(*dst);
-    detail::capture_scatter<T>(ctx, false, d_ref, s_ref, indices, std::move(extents));
+    detail::scatter_into<false>(dst, src, indices);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1159,38 +1166,7 @@ APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<
 APIARY_INSTANTIATE_AS("scatter_add", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::RuntimeTensorView<std::complex<double>>)
 // clang-format on
 void scatter_add(DstType *dst, SrcType const &src, std::vector<std::vector<size_t>> const &indices) {
-    size_t const N = indices.size();
-    if (N == 0) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::scatter_add: indices must be non-empty");
-    }
-    if (detail::tensor_rank(*dst) != N || detail::tensor_rank(src) != N) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::scatter_add: rank mismatch - dst rank={}, src rank={}, indices.size()={}",
-                                detail::tensor_rank(*dst), detail::tensor_rank(src), N);
-    }
-    std::vector<size_t> extents(N);
-    for (size_t k = 0; k < N; ++k) {
-        extents[k] = indices[k].size();
-        if (src.dim(k) != extents[k]) {
-            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::scatter_add: src axis {} has extent {}, but {} indices were given", k,
-                                    src.dim(k), extents[k]);
-        }
-        for (size_t p : indices[k]) {
-            if (p >= dst->dim(k)) {
-                EINSUMS_THROW_EXCEPTION(std::out_of_range, "cg::scatter_add: index {} on axis {} is out of range for dst dim {}", p, k,
-                                        dst->dim(k));
-            }
-        }
-    }
-
-    using T   = typename DstType::ValueType;
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        detail::eager_scatter<T>(true, dst->impl(), src.impl(), indices, extents);
-        return;
-    }
-    auto const s_ref = ctx.get_slot(src);
-    auto const d_ref = ctx.get_slot(*dst);
-    detail::capture_scatter<T>(ctx, true, d_ref, s_ref, indices, std::move(extents));
+    detail::scatter_into<true>(dst, src, indices);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1684,54 +1660,19 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C)
                                 detail::tensor_rank(B), detail::tensor_rank(*C));
     }
 
-    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && CoreBasicTensorConcept<CType>) {
-        using T       = typename AType::ValueType;
-        char const ta = TransA ? 't' : 'n', tb = TransB ? 't' : 'n';
-        auto      &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            detail::eager_gemm<T>(ta, tb, static_cast<T>(alpha), A.impl(), nullptr, B.impl(), nullptr, static_cast<T>(beta), C->impl());
-            return;
-        }
-        TensorId const a_id = ctx.get_slot(A).first;
-        TensorId const b_id = ctx.get_slot(B).first;
-        TensorId const c_id = ctx.get_slot(*C).first;
-        detail::capture_gemm<T>(ctx, ta, tb, true, static_cast<T>(alpha), static_cast<T>(beta), beta != U{}, a_id, b_id, c_id);
-    } else {
-        // A matrix operand that is not a dense tensor: the typed kernel, and a
-        // closure that resolves the operands through their slots on replay.
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            LabeledSection("gemm eager");
-            linear_algebra::gemm<TransA, TransB>(alpha, A, B, beta, C);
-            return;
-        }
-
-        LabeledSection("gemm capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [b_id, b_slot] = ctx.get_slot(B);
-        auto [c_id, c_slot] = ctx.get_slot(*C);
-
-        auto label = fmt::format("gemm<{},{}>", TransA ? "T" : "N", TransB ? "T" : "N");
-
-        // beta != 0 → the gemm reads C as well as writing it; list C as an input.
-        std::vector<TensorId> inputs = {a_id, b_id};
-        if (beta != U{}) {
-            inputs.push_back(c_id);
-        }
-
-        auto executor = [alpha, a_slot, b_slot, beta, c_slot]() {
-            LabeledSection("gemm execute");
-            ProfileAnnotate("trans", TransA ? (TransB ? "TT" : "TN") : (TransB ? "NT" : "NN"));
-            ProfileAnnotate("m", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->dim(0)));
-            ProfileAnnotate("n", static_cast<int64_t>(static_cast<CType *>(c_slot->ptr)->dim(1)));
-            ProfileAnnotate("k", static_cast<int64_t>(TransA ? static_cast<AType const *>(a_slot->ptr)->dim(0)
-                                                             : static_cast<AType const *>(a_slot->ptr)->dim(1)));
-            linear_algebra::gemm<TransA, TransB>(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr),
-                                                 beta, static_cast<CType *>(c_slot->ptr));
-        };
-
-        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor));
+    static_assert(CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && CoreBasicTensorConcept<CType>,
+                  "the dense-operand path is the only one; non-dense operands cannot be captured");
+    using T       = typename AType::ValueType;
+    char const ta = TransA ? 't' : 'n', tb = TransB ? 't' : 'n';
+    auto      &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        detail::eager_gemm<T>(ta, tb, static_cast<T>(alpha), A.impl(), nullptr, B.impl(), nullptr, static_cast<T>(beta), C->impl());
+        return;
     }
+    TensorId const a_id = ctx.get_slot(A).first;
+    TensorId const b_id = ctx.get_slot(B).first;
+    TensorId const c_id = ctx.get_slot(*C).first;
+    detail::capture_gemm<T>(ctx, ta, tb, true, static_cast<T>(alpha), static_cast<T>(beta), beta != U{}, a_id, b_id, c_id);
 }
 
 /// Graph-aware GEMM with runtime ``Transpose`` op flags (N / T / C).
@@ -1795,49 +1736,19 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C,
     }
     char const ta = static_cast<char>(trans_a), tb = static_cast<char>(trans_b);
 
-    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && CoreBasicTensorConcept<CType>) {
-        using T   = typename AType::ValueType;
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            detail::eager_gemm<T>(ta, tb, static_cast<T>(alpha), A.impl(), detail::symmetry_of(A), B.impl(), detail::symmetry_of(B),
-                                  static_cast<T>(beta), C->impl());
-            return;
-        }
-        TensorId const a_id = ctx.get_slot(A).first;
-        TensorId const b_id = ctx.get_slot(B).first;
-        TensorId const c_id = ctx.get_slot(*C).first;
-        detail::capture_gemm<T>(ctx, ta, tb, false, static_cast<T>(alpha), static_cast<T>(beta), beta != U{}, a_id, b_id, c_id);
-    } else {
-        // A matrix operand that is not a dense tensor: the typed kernel, and a
-        // closure that resolves the operands through their slots on replay.
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            LabeledSection("gemm eager");
-            linear_algebra::gemm(ta, tb, alpha, A, B, beta, C);
-            return;
-        }
-
-        LabeledSection("gemm capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [b_id, b_slot] = ctx.get_slot(B);
-        auto [c_id, c_slot] = ctx.get_slot(*C);
-
-        auto label = fmt::format("gemm({},{})", ta, tb);
-
-        // beta != 0 → the gemm reads C as well as writing it; list C as an input.
-        std::vector<TensorId> inputs = {a_id, b_id};
-        if (beta != U{}) {
-            inputs.push_back(c_id);
-        }
-
-        auto executor = [alpha, a_slot, b_slot, beta, c_slot, ta, tb]() {
-            LabeledSection("gemm execute");
-            linear_algebra::gemm(ta, tb, alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr), beta,
-                                 static_cast<CType *>(c_slot->ptr));
-        };
-
-        ctx.record(OpKind::Gemm, std::move(label), std::move(inputs), {c_id}, std::move(executor));
+    static_assert(CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType> && CoreBasicTensorConcept<CType>,
+                  "the dense-operand path is the only one; non-dense operands cannot be captured");
+    using T   = typename AType::ValueType;
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        detail::eager_gemm<T>(ta, tb, static_cast<T>(alpha), A.impl(), detail::symmetry_of(A), B.impl(), detail::symmetry_of(B),
+                              static_cast<T>(beta), C->impl());
+        return;
     }
+    TensorId const a_id = ctx.get_slot(A).first;
+    TensorId const b_id = ctx.get_slot(B).first;
+    TensorId const c_id = ctx.get_slot(*C).first;
+    detail::capture_gemm<T>(ctx, ta, tb, false, static_cast<T>(alpha), static_cast<T>(beta), beta != U{}, a_id, b_id, c_id);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1900,49 +1811,19 @@ void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y)
                                 detail::tensor_rank(z), detail::tensor_rank(*y));
     }
 
-    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<XType> && CoreBasicTensorConcept<YType>) {
-        using T        = typename AType::ValueType;
-        char const ta  = TransA ? 't' : 'n';
-        auto      &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            detail::eager_gemv<T>(ta, static_cast<T>(alpha), A.impl(), z.impl(), static_cast<T>(beta), y->impl());
-            return;
-        }
-        auto const a_ref = ctx.get_slot(A);
-        auto const z_ref = ctx.get_slot(z);
-        auto const y_ref = ctx.get_slot(*y);
-        detail::capture_gemv<T>(ctx, ta, true, static_cast<T>(alpha), static_cast<T>(beta), beta != U{}, a_ref, z_ref, y_ref);
-    } else {
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            LabeledSection("gemv eager");
-            linear_algebra::gemv<TransA>(alpha, A, z, beta, y);
-            return;
-        }
-
-        LabeledSection("gemv capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [z_id, z_slot] = ctx.get_slot(z);
-        auto [y_id, y_slot] = ctx.get_slot(*y);
-
-        auto label    = fmt::format("gemv<{}>", TransA ? "T" : "N");
-        auto executor = [alpha, a_slot, z_slot, beta, y_slot]() {
-            LabeledSection("gemv execute");
-            ProfileAnnotate("trans", TransA ? "T" : "N");
-            ProfileAnnotate("m", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
-            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(1)));
-            linear_algebra::gemv<TransA>(alpha, *static_cast<AType const *>(a_slot->ptr), *static_cast<XType const *>(z_slot->ptr), beta,
-                                         static_cast<YType *>(y_slot->ptr));
-        };
-
-        // beta != 0 → gemv reads y as well as writing it; list it as an input so
-        // loop-invariance and scheduling see the read (see the gemm note above).
-        std::vector<TensorId> inputs = {a_id, z_id};
-        if (beta != U{}) {
-            inputs.push_back(y_id);
-        }
-        ctx.record(OpKind::Gemv, std::move(label), std::move(inputs), {y_id}, std::move(executor));
+    static_assert(CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<XType> && CoreBasicTensorConcept<YType>,
+                  "the dense-operand path is the only one; non-dense operands cannot be captured");
+    using T        = typename AType::ValueType;
+    char const ta  = TransA ? 't' : 'n';
+    auto      &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        detail::eager_gemv<T>(ta, static_cast<T>(alpha), A.impl(), z.impl(), static_cast<T>(beta), y->impl());
+        return;
     }
+    auto const a_ref = ctx.get_slot(A);
+    auto const z_ref = ctx.get_slot(z);
+    auto const y_ref = ctx.get_slot(*y);
+    detail::capture_gemv<T>(ctx, ta, true, static_cast<T>(alpha), static_cast<T>(beta), beta != U{}, a_ref, z_ref, y_ref);
 }
 
 /// Graph-aware GEMV with a runtime ``Transpose`` op flag (N / T / C).
@@ -2071,43 +1952,18 @@ void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType 
                                 detail::tensor_rank(Y), detail::tensor_rank(*A));
     }
 
-    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<XType> && CoreBasicTensorConcept<YType>) {
-        using T   = typename AType::ValueType;
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            detail::eager_ger<T>(false, alpha, X.impl(), Y.impl(), A->impl());
-            return;
-        }
-        auto const x_ref = ctx.get_slot(X);
-        auto const y_ref = ctx.get_slot(Y);
-        auto const a_ref = ctx.get_slot(*A);
-        detail::capture_ger<T>(ctx, false, alpha, x_ref, y_ref, a_ref);
-    } else {
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            LabeledSection("ger eager");
-            linear_algebra::ger(alpha, X, Y, A);
-            return;
-        }
-
-        LabeledSection("ger capture");
-        auto [x_id, x_slot] = ctx.get_slot(X);
-        auto [y_id, y_slot] = ctx.get_slot(Y);
-        auto [a_id, a_slot] = ctx.get_slot(*A);
-
-        auto executor = [alpha, x_slot, y_slot, a_slot]() {
-            LabeledSection("ger execute");
-            ProfileAnnotate("m", static_cast<int64_t>(static_cast<XType const *>(x_slot->ptr)->dim(0)));
-            ProfileAnnotate("n", static_cast<int64_t>(static_cast<YType const *>(y_slot->ptr)->dim(0)));
-            linear_algebra::ger(alpha, *static_cast<XType const *>(x_slot->ptr), *static_cast<YType const *>(y_slot->ptr),
-                                static_cast<AType *>(a_slot->ptr));
-        };
-
-        // ger always accumulates (``A += α·X·Y^T``), so it reads A as well as
-        // writing it, list A as an input so loop-invariance and scheduling see the
-        // read-modify-write (see the gemm note above).
-        ctx.record(OpKind::Ger, "ger", {x_id, y_id, a_id}, {a_id}, std::move(executor));
+    static_assert(CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<XType> && CoreBasicTensorConcept<YType>,
+                  "the dense-operand path is the only one; non-dense operands cannot be captured");
+    using T   = typename AType::ValueType;
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        detail::eager_ger<T>(false, alpha, X.impl(), Y.impl(), A->impl());
+        return;
     }
+    auto const x_ref = ctx.get_slot(X);
+    auto const y_ref = ctx.get_slot(Y);
+    auto const a_ref = ctx.get_slot(*A);
+    detail::capture_ger<T>(ctx, false, alpha, x_ref, y_ref, a_ref);
 }
 
 /// Graph-aware conjugating rank-1 update (GERC): ``A += alpha * X * Y^H``.
@@ -2259,6 +2115,64 @@ void dot(BiggestTypeT<typename AType::ValueType, typename BType::ValueType> *res
     }
 }
 
+namespace detail {
+
+/// ``result := sum_i A_i * B_i``, or ``sum_i conj(A_i) * B_i`` when @p Conj: the one body behind
+/// cg::dot and cg::dotc (the python-facing, result-into-tensor forms).
+template <bool Conj, typename ResultType, typename AType, typename BType>
+void dot_into(ResultType *result, AType const &A, BType const &B) {
+    using T = typename AType::ValueType;
+    if (result->size() < 1) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::{}: result tensor must have at least one element", Conj ? "dotc" : "dot");
+    }
+
+    auto &ctx = CaptureContext::current();
+    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
+        // Tiled operands compose per-tile dots.
+        auto compute = [](AType const &a, BType const &b) -> T {
+            // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
+            blas::SerialVendorScope const serial;
+            return tiled_dot<Conj, T>(a, b);
+        };
+
+        if (!ctx.is_capturing()) {
+            LabeledSection(Conj ? "dotc_python eager" : "dot_python eager");
+            result->data()[0] = compute(A, B);
+            return;
+        }
+
+        LabeledSection(Conj ? "dotc_python capture" : "dot_python capture");
+        auto [a_id, a_slot] = ctx.get_slot(A);
+        auto [b_id, b_slot] = ctx.get_slot(B);
+        auto [r_id, r_slot] = ctx.get_slot(*result);
+        auto executor       = [a_slot, b_slot, r_slot, compute]() {
+            LabeledSection(Conj ? "dotc_python execute" : "dot_python execute");
+            auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
+            r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
+        };
+        // The descriptor lets TiledExpansion lower this node onto per-tile
+        // ids instead of stranding its whole-tensor tiled operands.
+        TiledDotDescriptor td;
+        td.conjugated = Conj;
+        ctx.record(OpKind::Dot, Conj ? "dotc" : "dot", {a_id, b_id}, {r_id}, std::move(executor), std::move(td));
+    } else {
+        if (!ctx.is_capturing()) {
+            result->data()[0] = eager_dot<T>(A.impl(), B.impl(), Conj);
+            return;
+        }
+        // Register the result as a normal tensor slot (not a scalar handle) so
+        // downstream tensor ops (scale, axpy, ...) on the same tensor see the
+        // same slot id; get_or_register_scalar would key by data()[0] and
+        // collide with get_slot(*result), giving rank-0 metadata to the scale.
+        TensorId const a_id = ctx.get_slot(A).first;
+        TensorId const b_id = ctx.get_slot(B).first;
+        TensorId const r_id = ctx.get_slot(*result).first;
+        capture_dot<T>(ctx, Conj, a_id, b_id, r_id, tensor_rank(*result));
+    }
+}
+
+} // namespace detail
+
 /// Python-friendly graph-aware dot: writes the result into ``result->data()[0]``.
 ///
 /// ``result`` is a pre-allocated rank-1 (or higher, but only element 0 is
@@ -2322,54 +2236,7 @@ APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<float>, 
 APIARY_INSTANTIATE_AS("dot", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
 // clang-format on
 void dot_python(ResultType *result, AType const &A, BType const &B) {
-    using T = typename AType::ValueType;
-    if (result->size() < 1) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dot: result tensor must have at least one element");
-    }
-
-    auto &ctx = CaptureContext::current();
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-        // Tiled operands compose per-tile dots.
-        auto compute = [](AType const &a, BType const &b) -> T {
-            // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
-            blas::SerialVendorScope const serial;
-            return detail::tiled_dot<T>(a, b);
-        };
-
-        if (!ctx.is_capturing()) {
-            LabeledSection("dot_python eager");
-            result->data()[0] = compute(A, B);
-            return;
-        }
-
-        LabeledSection("dot_python capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [b_id, b_slot] = ctx.get_slot(B);
-        auto [r_id, r_slot] = ctx.get_slot(*result);
-        auto executor       = [a_slot, b_slot, r_slot, compute]() {
-            LabeledSection("dot_python execute");
-            auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
-            r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
-        };
-        // The descriptor lets TiledExpansion lower this node onto per-tile
-        // ids instead of stranding its whole-tensor tiled operands.
-        TiledDotDescriptor td;
-        td.conjugated = false;
-        ctx.record(OpKind::Dot, "dot", {a_id, b_id}, {r_id}, std::move(executor), std::move(td));
-    } else {
-        if (!ctx.is_capturing()) {
-            result->data()[0] = detail::eager_dot<T>(A.impl(), B.impl(), false);
-            return;
-        }
-        // Register the result as a normal tensor slot (not a scalar handle) so
-        // downstream tensor ops (scale, axpy, ...) on the same tensor see the
-        // same slot id; get_or_register_scalar would key by data()[0] and
-        // collide with get_slot(*result), giving rank-0 metadata to the scale.
-        TensorId const a_id = ctx.get_slot(A).first;
-        TensorId const b_id = ctx.get_slot(B).first;
-        TensorId const r_id = ctx.get_slot(*result).first;
-        detail::capture_dot<T>(ctx, false, a_id, b_id, r_id, detail::tensor_rank(*result));
-    }
+    detail::dot_into<false>(result, A, B);
 }
 
 /// Graph-aware Hermitian inner product: ``result := sum_i conj(A_i) * B_i``.
@@ -2429,53 +2296,7 @@ APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<float>,
 APIARY_INSTANTIATE_AS("dotc", einsums::GeneralRuntimeTensor<std::complex<double>, std::allocator<std::complex<double>>>, einsums::TiledRuntimeTensor<std::complex<double>>, einsums::TiledRuntimeTensor<std::complex<double>>)
 // clang-format on
 void dotc_python(ResultType *result, AType const &A, BType const &B) {
-    using T = typename AType::ValueType;
-    if (result->size() < 1) {
-        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::dotc: result tensor must have at least one element");
-    }
-
-    auto &ctx = CaptureContext::current();
-    if constexpr (IsTiledTensorV<std::remove_cvref_t<AType>>) {
-        // Tiled operands compose per-tile dots.
-        auto compute = [](AType const &a, BType const &b) -> T {
-            // A reduction's summation order is its thread count's, so the fence is what makes this a function of the operands alone.
-            blas::SerialVendorScope const serial;
-            return detail::tiled_dotc<T>(a, b);
-        };
-
-        if (!ctx.is_capturing()) {
-            LabeledSection("dotc_python eager");
-            result->data()[0] = compute(A, B);
-            return;
-        }
-
-        LabeledSection("dotc_python capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [b_id, b_slot] = ctx.get_slot(B);
-        auto [r_id, r_slot] = ctx.get_slot(*result);
-        auto executor       = [a_slot, b_slot, r_slot, compute]() {
-            LabeledSection("dotc_python execute");
-            auto *r_ptr      = static_cast<ResultType *>(r_slot->ptr);
-            r_ptr->data()[0] = compute(*static_cast<AType const *>(a_slot->ptr), *static_cast<BType const *>(b_slot->ptr));
-        };
-        // Same expansion hook as dot_python's, with the conjugation recorded.
-        TiledDotDescriptor td;
-        td.conjugated = true;
-        ctx.record(OpKind::Dot, "dotc", {a_id, b_id}, {r_id}, std::move(executor), std::move(td));
-    } else {
-        if (!ctx.is_capturing()) {
-            result->data()[0] = detail::eager_dot<T>(A.impl(), B.impl(), true);
-            return;
-        }
-        // Register the result as a normal tensor slot (not a scalar handle) so
-        // downstream tensor ops (scale, axpy, ...) on the same tensor see the
-        // same slot id; get_or_register_scalar would key by data()[0] and
-        // collide with get_slot(*result), giving rank-0 metadata to the scale.
-        TensorId const a_id = ctx.get_slot(A).first;
-        TensorId const b_id = ctx.get_slot(B).first;
-        TensorId const r_id = ctx.get_slot(*result).first;
-        detail::capture_dot<T>(ctx, true, a_id, b_id, r_id, detail::tensor_rank(*result));
-    }
+    detail::dot_into<true>(result, A, B);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2819,12 +2640,8 @@ void outer_sum(ResultType *result, std::vector<VectorType const *> vectors, std:
         detail::eager_outer_sum<T>(result->impl(), impls, effective_coeffs);
         return;
     }
-    std::vector<detail::SlotRef> vector_refs;
-    vector_refs.reserve(N);
-    for (size_t k = 0; k < N; ++k) {
-        vector_refs.push_back(ctx.get_slot(*vectors[k]));
-    }
-    auto const r_ref = ctx.get_slot(*result);
+    auto [vector_refs] = detail::slot_lists(ctx, N, {}, vectors);
+    auto const r_ref   = ctx.get_slot(*result);
     detail::capture_outer_sum<T>(ctx, r_ref, std::move(vector_refs), std::move(effective_coeffs), std::move(coefficients));
 }
 
@@ -2859,11 +2676,6 @@ BatchedGemmDescriptor make_batched_descriptor(bool trans_a, bool trans_b, double
     return d;
 }
 
-/// The uniform-batch check both batched forms make, so both phrase it alike.
-///
-/// gemm_batch takes ONE lda/ldb/ldc and one m/n/k for the whole batch, so a
-/// member that differs is not expressible. Caught at the call, where the caller
-/// can see which member and why, rather than as corruption at execute time.
 /// Refuse a rank-2 operand that `gemm_batch` cannot address as a matrix.
 ///
 /// The batched interface takes one base pointer and one leading dimension per
@@ -2899,6 +2711,11 @@ void require_blas_addressable(TensorType const &t, char const *who, size_t i, ch
     }
 }
 
+/// The uniform-batch check both batched forms make, so both phrase it alike.
+///
+/// gemm_batch takes ONE lda/ldb/ldc and one m/n/k for the whole batch, so a
+/// member that differs is not expressible. Caught at the call, where the caller
+/// can see which member and why, rather than as corruption at execute time.
 inline auto batched_gemm_requirer(char const *who) {
     return [who](bool ok, size_t i, char const *what) {
         if (!ok) {
@@ -3053,15 +2870,7 @@ void batched_gemm(double alpha, std::vector<AType const *> a_list, std::vector<B
         detail::eager_batched_gemm<T>(d, a_vs, b_vs, c_vs);
         return;
     }
-    std::vector<detail::SlotRef> a_refs, b_refs, c_refs;
-    a_refs.reserve(count);
-    b_refs.reserve(count);
-    c_refs.reserve(count);
-    for (size_t i = 0; i < count; ++i) {
-        a_refs.push_back(ctx.get_slot(*a_list[i]));
-        b_refs.push_back(ctx.get_slot(*b_list[i]));
-        c_refs.push_back(ctx.get_slot(*c_list[i]));
-    }
+    auto [a_refs, b_refs, c_refs] = detail::slot_lists(ctx, count, {}, a_list, b_list, c_list);
     detail::capture_batched_gemm(ctx, d, beta != 0.0, a_refs, b_refs, c_refs);
 }
 
@@ -3199,14 +3008,8 @@ void batched_gemm_blocked(double alpha, std::vector<AType const *> a_list, std::
     }
     // One slot for the whole destination, against one per member in the list
     // form. That is the point of this overload.
-    auto const                   c_ref = ctx.get_slot(*c_base);
-    std::vector<detail::SlotRef> a_refs, b_refs;
-    a_refs.reserve(count);
-    b_refs.reserve(count);
-    for (size_t i = 0; i < count; ++i) {
-        a_refs.push_back(ctx.get_slot(*a_list[i]));
-        b_refs.push_back(ctx.get_slot(*b_list[i]));
-    }
+    auto const c_ref      = ctx.get_slot(*c_base);
+    auto [a_refs, b_refs] = detail::slot_lists(ctx, count, {}, a_list, b_list);
     detail::capture_batched_gemm_blocked(ctx, d, beta != 0.0, a_refs, b_refs, c_ref, c_offsets);
 }
 
@@ -3468,16 +3271,7 @@ void grouped_batched_gemm(double alpha, std::vector<AType const *> a_list, std::
     }
     // In the FLATTENED order, so a group's offset indexes the extractors and the
     // node lists alike.
-    std::vector<detail::SlotRef> a_refs, b_refs, c_refs;
-    a_refs.reserve(count);
-    b_refs.reserve(count);
-    c_refs.reserve(count);
-    for (size_t i = 0; i < count; ++i) {
-        size_t const s = flat[i];
-        a_refs.push_back(ctx.get_slot(*a_list[s]));
-        b_refs.push_back(ctx.get_slot(*b_list[s]));
-        c_refs.push_back(ctx.get_slot(*c_list[s]));
-    }
+    auto [a_refs, b_refs, c_refs] = detail::slot_lists(ctx, count, flat, a_list, b_list, c_list);
     detail::capture_grouped_batched_gemm(ctx, std::move(d), beta != 0.0, trans_a, trans_b, a_refs, b_refs, c_refs, {});
 }
 
@@ -3792,25 +3586,13 @@ void grouped_dot(std::vector<ResultType *> results, std::vector<AType const *> a
     using T   = typename AType::ValueType;
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        std::vector<einsums::detail::TensorImpl<T> *>       r(count);
-        std::vector<einsums::detail::TensorImpl<T> const *> a(count), b(count);
-        for (size_t i = 0; i < count; i++) {
-            r[i] = &results[i]->impl();
-            a[i] = &a_list[i]->impl();
-            b[i] = &b_list[i]->impl();
-        }
+        auto const r = detail::impls_of(results);
+        auto const a = detail::impls_of(a_list);
+        auto const b = detail::impls_of(b_list);
         detail::eager_grouped_dot<T>(r, a, b);
         return;
     }
-    std::vector<detail::SlotRef> r_refs, a_refs, b_refs;
-    r_refs.reserve(count);
-    a_refs.reserve(count);
-    b_refs.reserve(count);
-    for (size_t i = 0; i < count; i++) {
-        a_refs.push_back(ctx.get_slot(*a_list[i]));
-        b_refs.push_back(ctx.get_slot(*b_list[i]));
-        r_refs.push_back(ctx.get_slot(*results[i]));
-    }
+    auto [a_refs, b_refs, r_refs] = detail::slot_lists(ctx, count, {}, a_list, b_list, results);
     detail::capture_grouped_dot<T>(ctx, r_refs, a_refs, b_refs);
 }
 
@@ -3904,22 +3686,12 @@ void grouped_axpby(std::vector<double> alphas, std::vector<XType const *> x_list
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        std::vector<einsums::detail::TensorImpl<T> const *> x(count);
-        std::vector<einsums::detail::TensorImpl<T> *>       y(count);
-        for (size_t i = 0; i < count; i++) {
-            x[i] = &x_list[i]->impl();
-            y[i] = &y_list[i]->impl();
-        }
+        auto const x = detail::impls_of(x_list);
+        auto const y = detail::impls_of(y_list);
         detail::eager_grouped_axpby<T>(a_typed, x, b_typed, y);
         return;
     }
-    std::vector<detail::SlotRef> x_refs, y_refs;
-    x_refs.reserve(count);
-    y_refs.reserve(count);
-    for (size_t i = 0; i < count; i++) {
-        x_refs.push_back(ctx.get_slot(*x_list[i]));
-        y_refs.push_back(ctx.get_slot(*y_list[i]));
-    }
+    auto [x_refs, y_refs] = detail::slot_lists(ctx, count, {}, x_list, y_list);
     detail::capture_grouped_axpby<T>(ctx, std::move(a_typed), std::move(b_typed), x_refs, y_refs);
 }
 
@@ -4031,22 +3803,12 @@ void grouped_permute(std::string const &spec, std::vector<CType *> c_list, std::
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        std::vector<einsums::detail::TensorImpl<T> *>       c(count);
-        std::vector<einsums::detail::TensorImpl<T> const *> a(count);
-        for (size_t i = 0; i < count; i++) {
-            c[i] = &c_list[i]->impl();
-            a[i] = &a_list[i]->impl();
-        }
+        auto const c = detail::impls_of(c_list);
+        auto const a = detail::impls_of(a_list);
         detail::eager_grouped_permute<T>(parsed, c_typed, c, a_typed, a);
         return;
     }
-    std::vector<detail::SlotRef> a_refs, c_refs;
-    a_refs.reserve(count);
-    c_refs.reserve(count);
-    for (size_t i = 0; i < count; i++) {
-        a_refs.push_back(ctx.get_slot(*a_list[i]));
-        c_refs.push_back(ctx.get_slot(*c_list[i]));
-    }
+    auto [a_refs, c_refs] = detail::slot_lists(ctx, count, {}, a_list, c_list);
     detail::capture_grouped_permute<T>(ctx, std::move(parsed), std::move(c_typed), std::move(a_typed), a_refs, c_refs);
 }
 
@@ -4089,25 +3851,13 @@ void grouped_binary_elementwise(char const *who, OpKind kind, char const *label,
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        std::vector<einsums::detail::TensorImpl<T> const *> a(count), b(count);
-        std::vector<einsums::detail::TensorImpl<T> *>       c(count);
-        for (size_t i = 0; i < count; i++) {
-            a[i] = &a_list[i]->impl();
-            b[i] = &b_list[i]->impl();
-            c[i] = &c_list[i]->impl();
-        }
+        auto const a = detail::impls_of(a_list);
+        auto const b = detail::impls_of(b_list);
+        auto const c = detail::impls_of(c_list);
         eager_grouped_binary<T>(kind, alphas, a, b, betas, c);
         return;
     }
-    std::vector<SlotRef> a_refs, b_refs, c_refs;
-    a_refs.reserve(count);
-    b_refs.reserve(count);
-    c_refs.reserve(count);
-    for (size_t i = 0; i < count; i++) {
-        a_refs.push_back(ctx.get_slot(*a_list[i]));
-        b_refs.push_back(ctx.get_slot(*b_list[i]));
-        c_refs.push_back(ctx.get_slot(*c_list[i]));
-    }
+    auto [a_refs, b_refs, c_refs] = slot_lists(ctx, count, {}, a_list, b_list, c_list);
     capture_grouped_binary<T>(ctx, kind, label, alphas, betas, a_refs, b_refs, c_refs);
 }
 
@@ -4321,26 +4071,15 @@ void grouped_sandwich(std::vector<CType *> c_list, std::vector<AType const *> a_
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        std::vector<einsums::detail::TensorImpl<T> *>       c(count);
-        std::vector<einsums::detail::TensorImpl<T> const *> a(count), m(count), p(count), s(count);
-        for (size_t i = 0; i < count; i++) {
-            c[i] = &c_list[i]->impl();
-            a[i] = &a_list[i]->impl();
-            m[i] = &m_list[i]->impl();
-            p[i] = &p_list[i]->impl();
-            s[i] = &s_list[i]->impl();
-        }
+        auto const c = detail::impls_of(c_list);
+        auto const a = detail::impls_of(a_list);
+        auto const m = detail::impls_of(m_list);
+        auto const p = detail::impls_of(p_list);
+        auto const s = detail::impls_of(s_list);
         detail::eager_grouped_sandwich<T>(c, a, m, p, s);
         return;
     }
-    std::vector<detail::SlotRef> c_refs, a_refs, m_refs, p_refs, s_refs;
-    for (size_t i = 0; i < count; i++) {
-        a_refs.push_back(ctx.get_slot(*a_list[i]));
-        m_refs.push_back(ctx.get_slot(*m_list[i]));
-        p_refs.push_back(ctx.get_slot(*p_list[i]));
-        s_refs.push_back(ctx.get_slot(*s_list[i]));
-        c_refs.push_back(ctx.get_slot(*c_list[i]));
-    }
+    auto [a_refs, m_refs, p_refs, s_refs, c_refs] = detail::slot_lists(ctx, count, {}, a_list, m_list, p_list, s_list, c_list);
     detail::capture_grouped_sandwich<T>(ctx, c_refs, a_refs, m_refs, p_refs, s_refs);
 }
 
@@ -4462,21 +4201,13 @@ void grouped_gather_rotate(std::vector<CType *> c_list, SrcType const &src, std:
 
     auto &ctx = CaptureContext::current();
     if (!ctx.is_capturing()) {
-        std::vector<einsums::detail::TensorImpl<T> *>       c(count);
-        std::vector<einsums::detail::TensorImpl<T> const *> x(count);
-        for (size_t i = 0; i < count; i++) {
-            c[i] = &c_list[i]->impl();
-            x[i] = &x_list[i]->impl();
-        }
+        auto const c = detail::impls_of(c_list);
+        auto const x = detail::impls_of(x_list);
         detail::eager_grouped_gather_rotate<T>(c, src.impl(), x, q_list, u_list);
         return;
     }
-    auto const                   s_ref = ctx.get_slot(src);
-    std::vector<detail::SlotRef> x_refs, c_refs;
-    for (size_t i = 0; i < count; i++) {
-        x_refs.push_back(ctx.get_slot(*x_list[i]));
-        c_refs.push_back(ctx.get_slot(*c_list[i]));
-    }
+    auto const s_ref      = ctx.get_slot(src);
+    auto [x_refs, c_refs] = detail::slot_lists(ctx, count, {}, x_list, c_list);
     detail::capture_grouped_gather_rotate<T>(ctx, c_refs, s_ref, x_refs, q_list, u_list);
 }
 
@@ -4651,11 +4382,7 @@ auto trace(AType const &A) -> typename AType::ValueType {
                                 "Use cg::trace(&result, A) instead.");
     if (A.dim(0) != A.dim(1))
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
-    using T = typename AType::ValueType;
-    T sum   = T{};
-    for (size_t i = 0; i < A.dim(0); ++i)
-        sum += A(i, i);
-    return sum;
+    return detail::diagonal_sum(A);
 }
 
 /// Trace of a square matrix: ``sum(A_ii)``. Returns the scalar.
@@ -4681,11 +4408,7 @@ auto trace(AType const &A) -> typename AType::ValueType {
     if (A.dim(0) != A.dim(1)) {
         EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
     }
-    using T = typename AType::ValueType;
-    T sum   = T{};
-    for (size_t i = 0; i < A.dim(0); ++i)
-        sum += A(i, i);
-    return sum;
+    return detail::diagonal_sum(A);
 }
 
 /// Graph-aware trace writing the result to a pre-allocated scalar.
@@ -4701,38 +4424,15 @@ void trace(typename AType::ValueType *result, AType const &A) {
 
     // Dense operands only: a block or tiled matrix has no single buffer for the
     // rank-erased diagonal walk, and keeps the typed sum and a capture-baked closure.
-    if constexpr (CoreBasicTensorConcept<AType>) {
-        if (!ctx.is_capturing()) {
-            *result = detail::eager_trace<T>(A.impl());
-            return;
-        }
-        TensorId const a_id = ctx.get_slot(A).first;
-        TensorId const r_id = ctx.get_or_register_scalar(result, "trace_result");
-        // Rank is keyed on the destination, which is a registered scalar: 0.
-        detail::capture_trace<T>(ctx, a_id, r_id, 0);
-    } else {
-        if (!ctx.is_capturing()) {
-            LabeledSection("trace eager");
-            if (A.dim(0) != A.dim(1))
-                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
-            *result = detail::diagonal_sum(A);
-            return;
-        }
-
-        LabeledSection("trace capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        TensorId r_id       = ctx.get_or_register_scalar(result, "trace_result");
-
-        auto executor = [result, a_slot]() {
-            LabeledSection("trace execute");
-            auto const &a = *static_cast<AType const *>(a_slot->ptr);
-            if (a.dim(0) != a.dim(1))
-                EINSUMS_THROW_EXCEPTION(std::invalid_argument, "cg::trace: input must be square");
-            *result = detail::diagonal_sum(a);
-        };
-
-        ctx.record(OpKind::Trace, "trace", {a_id}, {r_id}, std::move(executor));
+    static_assert(CoreBasicTensorConcept<AType>, "the dense-operand path is the only one; non-dense operands cannot be captured");
+    if (!ctx.is_capturing()) {
+        *result = detail::eager_trace<T>(A.impl());
+        return;
     }
+    TensorId const a_id = ctx.get_slot(A).first;
+    TensorId const r_id = ctx.get_or_register_scalar(result, "trace_result");
+    // Rank is keyed on the destination, which is a registered scalar: 0.
+    detail::capture_trace<T>(ctx, a_id, r_id, 0);
 }
 
 /// Python-friendly graph-aware trace: writes the diagonal sum into
@@ -4949,6 +4649,61 @@ void symm_gemm(AType const &A, BType const &B, CType *C) {
 // syev (in-place form): eigendecompose A, store eigenvalues in W
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace detail {
+
+/// The dense body behind cg::syev and cg::heev. One library entry serves both: eager_syev and
+/// capture_syev choose syev or heev from the element type. @p who names the caller in errors.
+template <bool ComputeEigenvectors, typename AType, typename WType>
+void eigh_dense(char const *who, AType *A, WType *W) {
+    if (tensor_rank(*A) != 2 || tensor_rank(*W) != 1) {
+        EINSUMS_THROW_EXCEPTION(RankError, "{} requires A rank-2 and W rank-1; got {}, {}.", who, tensor_rank(*A), tensor_rank(*W));
+    }
+    static_assert(CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<WType>,
+                  "the dense-operand path is the only one; non-dense operands cannot be captured");
+    using T   = typename AType::ValueType;
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        eager_syev<T>(ComputeEigenvectors, A->impl(), W->impl());
+        return;
+    }
+    auto const a_ref = ctx.get_slot(*A);
+    auto const w_ref = ctx.get_slot(*W);
+    capture_syev<T>(ctx, ComputeEigenvectors, a_ref, w_ref);
+}
+
+/// The tiled body behind cg::syev (@p Hermitian false) and cg::heev: each diagonal block of a
+/// block-diagonal tiled matrix is diagonalized independently.
+template <bool ComputeEigenvectors, bool Hermitian, typename AType, typename WType>
+void eigh_tiled(AType *A, WType *W) {
+    using T           = typename AType::ValueType;
+    auto const kernel = [](AType *a, WType *w) {
+        if constexpr (Hermitian) {
+            tiled_heev<ComputeEigenvectors, T>(a, w);
+        } else {
+            tiled_syev<ComputeEigenvectors, T>(a, w);
+        }
+    };
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        LabeledSection(Hermitian ? "heev eager" : "syev eager");
+        kernel(A, W);
+        return;
+    }
+    LabeledSection(Hermitian ? "heev capture" : "syev capture");
+    auto [a_id, a_slot] = ctx.get_slot(*A);
+    auto [w_id, w_slot] = ctx.get_slot(*W);
+    auto executor       = [a_slot, w_slot, kernel]() {
+        LabeledSection(Hermitian ? "heev execute" : "syev execute");
+        kernel(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
+    };
+    // No SyevDescriptor, deliberately. A tiled operand is a grid of buffers rather than one,
+    // so the dense builder cannot rebuild this node and the absent descriptor is what tells
+    // reconstruction_blocker so. Recording one would claim a save this kind cannot honor.
+    ctx.record(Hermitian ? OpKind::Heev : OpKind::Syev, Hermitian ? "heev" : "syev", {a_id}, {a_id, w_id}, std::move(executor));
+}
+
+} // namespace detail
+
 /// Real symmetric eigendecomposition (in-place): ``A = V * diag(W) * V^T``.
 ///
 /// On return, when ``compute_eigenvectors=True`` (the default), ``A``
@@ -4968,48 +4723,7 @@ APIARY_INSTANTIATE_BOOLS("syev", einsums::RuntimeTensorView<float>,  einsums::Ge
 APIARY_INSTANTIATE_BOOLS("syev", einsums::RuntimeTensorView<double>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 // clang-format on
 void syev(AType *A, WType *W) {
-    if (detail::tensor_rank(*A) != 2 || detail::tensor_rank(*W) != 1) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::syev requires A rank-2 and W rank-1; got {}, {}.", detail::tensor_rank(*A),
-                                detail::tensor_rank(*W));
-    }
-
-    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<WType>) {
-        using T   = typename AType::ValueType;
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            detail::eager_syev<T>(ComputeEigenvectors, A->impl(), W->impl());
-            return;
-        }
-        auto const a_ref = ctx.get_slot(*A);
-        auto const w_ref = ctx.get_slot(*W);
-        detail::capture_syev<T>(ctx, ComputeEigenvectors, a_ref, w_ref);
-    } else {
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            LabeledSection("syev eager");
-            linear_algebra::syev<ComputeEigenvectors>(A, W);
-            return;
-        }
-
-        LabeledSection("syev capture");
-        auto [a_id, a_slot] = ctx.get_slot(*A);
-        auto [w_id, w_slot] = ctx.get_slot(*W);
-
-        auto executor = [a_slot, w_slot]() {
-            LabeledSection("syev execute");
-            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-            linear_algebra::syev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
-        };
-
-        // A is BOTH an input and an output: the decomposition overwrites it. Listing it only as
-        // an output would let a reader of the original matrix be ordered after this node, and
-        // listing it only as an input would leave the overwrite unordered against a later writer.
-        //
-        // The descriptor carries the one piece of state a saved file cannot recover from the
-        // operand lists, because it is a template argument rather than a value. See SyevDescriptor.
-        ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor),
-                   OpData(SyevDescriptor{.compute_eigenvectors = ComputeEigenvectors}));
-    }
+    detail::eigh_dense<ComputeEigenvectors>("cg::syev", A, W);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5080,40 +4794,7 @@ APIARY_INSTANTIATE_BOOLS("heev", einsums::RuntimeTensorView<std::complex<float>>
 APIARY_INSTANTIATE_BOOLS("heev", einsums::RuntimeTensorView<std::complex<double>>, einsums::GeneralRuntimeTensor<double, std::allocator<double>>)
 // clang-format on
 void heev(AType *A, WType *W) {
-    if (detail::tensor_rank(*A) != 2 || detail::tensor_rank(*W) != 1) {
-        EINSUMS_THROW_EXCEPTION(RankError, "cg::heev requires A rank-2 and W rank-1; got {}, {}.", detail::tensor_rank(*A),
-                                detail::tensor_rank(*W));
-    }
-
-    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<WType>) {
-        using T   = typename AType::ValueType;
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            detail::eager_syev<T>(ComputeEigenvectors, A->impl(), W->impl());
-            return;
-        }
-        auto const a_ref = ctx.get_slot(*A);
-        auto const w_ref = ctx.get_slot(*W);
-        detail::capture_syev<T>(ctx, ComputeEigenvectors, a_ref, w_ref);
-    } else {
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            LabeledSection("heev eager");
-            linear_algebra::heev<ComputeEigenvectors>(A, W);
-            return;
-        }
-
-        LabeledSection("heev capture");
-        auto [a_id, a_slot] = ctx.get_slot(*A);
-        auto [w_id, w_slot] = ctx.get_slot(*W);
-
-        auto executor = [a_slot, w_slot]() {
-            LabeledSection("heev execute");
-            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-            linear_algebra::heev<ComputeEigenvectors>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
-        };
-        ctx.record(OpKind::Heev, "heev", {a_id}, {a_id, w_id}, std::move(executor));
-    }
+    detail::eigh_dense<ComputeEigenvectors>("cg::heev", A, W);
 }
 
 /// Tiled real-symmetric eigendecomposition: independently diagonalize each
@@ -5124,24 +4805,7 @@ void heev(AType *A, WType *W) {
 template <bool ComputeEigenvectors = true, TiledTensorConcept AType, TiledTensorConcept WType>
     requires(std::is_same_v<typename AType::ValueType, typename WType::ValueType> && !IsComplexV<typename AType::ValueType>)
 void syev(AType *A, WType *W) {
-    using T   = typename AType::ValueType;
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("syev eager");
-        detail::tiled_syev<ComputeEigenvectors, T>(A, W);
-        return;
-    }
-    LabeledSection("syev capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-    auto [w_id, w_slot] = ctx.get_slot(*W);
-    auto executor       = [a_slot, w_slot]() {
-        LabeledSection("syev execute");
-        detail::tiled_syev<ComputeEigenvectors, T>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
-    };
-    // No SyevDescriptor, deliberately. A tiled operand is a grid of buffers rather than one,
-    // so the dense builder cannot rebuild this node and the absent descriptor is what tells
-    // reconstruction_blocker so. Recording one would claim a save this kind cannot honor.
-    ctx.record(OpKind::Syev, "syev", {a_id}, {a_id, w_id}, std::move(executor));
+    detail::eigh_tiled<ComputeEigenvectors, false>(A, W);
 }
 
 /// Tiled Hermitian eigendecomposition (complex analogue of the tiled syev). W
@@ -5149,21 +4813,7 @@ void syev(AType *A, WType *W) {
 template <bool ComputeEigenvectors = true, TiledTensorConcept AType, TiledTensorConcept WType>
     requires(IsComplexV<typename AType::ValueType> && std::is_same_v<typename WType::ValueType, RemoveComplexT<typename AType::ValueType>>)
 void heev(AType *A, WType *W) {
-    using T   = typename AType::ValueType;
-    auto &ctx = CaptureContext::current();
-    if (!ctx.is_capturing()) {
-        LabeledSection("heev eager");
-        detail::tiled_heev<ComputeEigenvectors, T>(A, W);
-        return;
-    }
-    LabeledSection("heev capture");
-    auto [a_id, a_slot] = ctx.get_slot(*A);
-    auto [w_id, w_slot] = ctx.get_slot(*W);
-    auto executor       = [a_slot, w_slot]() {
-        LabeledSection("heev execute");
-        detail::tiled_heev<ComputeEigenvectors, T>(static_cast<AType *>(a_slot->ptr), static_cast<WType *>(w_slot->ptr));
-    };
-    ctx.record(OpKind::Heev, "heev", {a_id}, {a_id, w_id}, std::move(executor));
+    detail::eigh_tiled<ComputeEigenvectors, true>(A, W);
 }
 
 /// Python-facing syev: real-symmetric eigendecomposition (in place; A receives
@@ -5234,37 +4884,17 @@ auto gesv(AType *A, BType *B) -> int {
                                 detail::tensor_rank(*B));
     }
 
-    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType>) {
-        using T   = typename AType::ValueType;
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            return detail::eager_gesv<T>(A->impl(), B->impl());
-        }
-        auto const a_ref = ctx.get_slot(*A);
-        auto const b_ref = ctx.get_slot(*B);
-        detail::capture_gesv<T>(ctx, a_ref, b_ref);
-        return 0;
-    } else {
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            LabeledSection("gesv eager");
-            return linear_algebra::gesv(A, B);
-        }
-
-        LabeledSection("gesv capture");
-        auto [a_id, a_slot] = ctx.get_slot(*A);
-        auto [b_id, b_slot] = ctx.get_slot(*B);
-
-        auto executor = [a_slot, b_slot]() {
-            LabeledSection("gesv execute");
-            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-            ProfileAnnotate("nrhs", static_cast<int64_t>(static_cast<BType *>(b_slot->ptr)->dim(1)));
-            std::ignore = linear_algebra::gesv(static_cast<AType *>(a_slot->ptr), static_cast<BType *>(b_slot->ptr));
-        };
-        ctx.record(OpKind::Gesv, "gesv", {a_id, b_id}, {a_id, b_id}, std::move(executor));
-
-        return 0;
+    static_assert(CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType>,
+                  "the dense-operand path is the only one; non-dense operands cannot be captured");
+    using T   = typename AType::ValueType;
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        return detail::eager_gesv<T>(A->impl(), B->impl());
     }
+    auto const a_ref = ctx.get_slot(*A);
+    auto const b_ref = ctx.get_slot(*B);
+    detail::capture_gesv<T>(ctx, a_ref, b_ref);
+    return 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5309,35 +4939,14 @@ auto getrf(AType *A, LuPivots *pivots) -> int {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::getrf requires a rank-2 tensor; got rank {}.", detail::tensor_rank(*A));
     }
 
-    if constexpr (CoreBasicTensorConcept<AType>) {
-        using T   = typename AType::ValueType;
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            return detail::eager_getrf<T>(A->impl(), *pivots);
-        }
-        detail::capture_getrf<T>(ctx, ctx.get_slot(*A), *pivots);
-        return 0;
-    } else {
-        auto       &ctx    = CaptureContext::current();
-        auto const &buffer = pivots->buffer();
-
-        if (!ctx.is_capturing()) {
-            LabeledSection("getrf eager");
-            return linear_algebra::getrf(A, buffer.get());
-        }
-
-        LabeledSection("getrf capture");
-        auto [a_id, a_slot] = ctx.get_slot(*A);
-
-        auto executor = [a_slot, buffer]() {
-            LabeledSection("getrf execute");
-            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-            std::ignore = linear_algebra::getrf(static_cast<AType *>(a_slot->ptr), buffer.get());
-        };
-        ctx.record(OpKind::Getrf, "getrf", {a_id}, {a_id}, std::move(executor));
-
-        return 0;
+    static_assert(CoreBasicTensorConcept<AType>, "the dense-operand path is the only one; non-dense operands cannot be captured");
+    using T   = typename AType::ValueType;
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        return detail::eager_getrf<T>(A->impl(), *pivots);
     }
+    detail::capture_getrf<T>(ctx, ctx.get_slot(*A), *pivots);
+    return 0;
 }
 
 /// Solve ``A * X = B`` in place against a factorization ``getrf`` produced.
@@ -5367,38 +4976,17 @@ auto getrs(AType const &A, LuPivots const &pivots, BType *B) -> int {
                                 detail::tensor_rank(*B));
     }
 
-    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType>) {
-        using T   = typename AType::ValueType;
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            return detail::eager_getrs<T>(A.impl(), pivots, B->impl());
-        }
-        auto const a_ref = ctx.get_slot(A);
-        auto const b_ref = ctx.get_slot(*B);
-        detail::capture_getrs<T>(ctx, a_ref, pivots, b_ref);
-        return 0;
-    } else {
-        auto       &ctx    = CaptureContext::current();
-        auto const &buffer = pivots.buffer();
-
-        if (!ctx.is_capturing()) {
-            LabeledSection("getrs eager");
-            return linear_algebra::getrs(A, *buffer, B);
-        }
-
-        LabeledSection("getrs capture");
-        auto [a_id, a_slot] = ctx.get_slot(A);
-        auto [b_id, b_slot] = ctx.get_slot(*B);
-
-        auto executor = [a_slot, b_slot, buffer]() {
-            LabeledSection("getrs execute");
-            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType const *>(a_slot->ptr)->dim(0)));
-            std::ignore = linear_algebra::getrs(*static_cast<AType const *>(a_slot->ptr), *buffer, static_cast<BType *>(b_slot->ptr));
-        };
-        ctx.record(OpKind::Getrs, "getrs", {a_id, b_id}, {b_id}, std::move(executor));
-
-        return 0;
+    static_assert(CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<BType>,
+                  "the dense-operand path is the only one; non-dense operands cannot be captured");
+    using T   = typename AType::ValueType;
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        return detail::eager_getrs<T>(A.impl(), pivots, B->impl());
     }
+    auto const a_ref = ctx.get_slot(A);
+    auto const b_ref = ctx.get_slot(*B);
+    detail::capture_getrs<T>(ctx, a_ref, pivots, b_ref);
+    return 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5546,32 +5134,14 @@ void invert(AType *A) {
         EINSUMS_THROW_EXCEPTION(RankError, "cg::invert requires rank-2 tensor; got rank {}.", detail::tensor_rank(*A));
     }
 
-    if constexpr (CoreBasicTensorConcept<AType>) {
-        using T   = typename AType::ValueType;
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            detail::eager_invert<T>(A->impl());
-            return;
-        }
-        detail::capture_invert<T>(ctx, ctx.get_slot(*A));
-    } else {
-        auto &ctx = CaptureContext::current();
-        if (!ctx.is_capturing()) {
-            LabeledSection("invert eager");
-            linear_algebra::invert(A);
-            return;
-        }
-
-        LabeledSection("invert capture");
-        auto [a_id, a_slot] = ctx.get_slot(*A);
-
-        auto executor = [a_slot]() {
-            LabeledSection("invert execute");
-            ProfileAnnotate("n", static_cast<int64_t>(static_cast<AType *>(a_slot->ptr)->dim(0)));
-            linear_algebra::invert(static_cast<AType *>(a_slot->ptr));
-        };
-        ctx.record(OpKind::Invert, "invert", {a_id}, {a_id}, std::move(executor));
+    static_assert(CoreBasicTensorConcept<AType>, "the dense-operand path is the only one; non-dense operands cannot be captured");
+    using T   = typename AType::ValueType;
+    auto &ctx = CaptureContext::current();
+    if (!ctx.is_capturing()) {
+        detail::eager_invert<T>(A->impl());
+        return;
     }
+    detail::capture_invert<T>(ctx, ctx.get_slot(*A));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

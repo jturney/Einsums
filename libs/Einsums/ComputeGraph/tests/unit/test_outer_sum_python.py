@@ -292,3 +292,29 @@ def test_outer_sum_VV_then_element_transform_full_mp2_weight():
     expected_delta = eo[:, None, None, None] + eo[None, :, None, None] - ev[None, None, :, None] - ev[None, None, None, :]
     expected = 1.0 / expected_delta
     np.testing.assert_allclose(np.asarray(inv_delta), expected, rtol=1e-5)
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_outer_sum_reads_strided_vectors_through_their_stride(capture):
+    """A row of a column-major matrix is a vector whose elements are a matrix height apart.
+
+    The kernel read every vector as contiguous, so a row view summed the wrong elements.
+    """
+    M = einsums.create_zero_tensor("M", [4, 3])
+    m = np.arange(12.0).reshape(4, 3)
+    np.asarray(M)[...] = m
+    W = einsums.create_zero_tensor("W", [2, 2])
+    w = np.array([[10.0, 20.0], [30.0, 40.0]])
+    np.asarray(W)[...] = w
+    R = einsums.create_zero_tensor("R", [3, 2])
+
+    rows = [M[1, :], W[0, :]]
+    if capture:
+        g = cg.Graph("outer_sum_strided")
+        with cg.capture(g):
+            einsums.linalg.outer_sum(R, rows, [1.0, 2.0])
+        g.execute()
+    else:
+        einsums.linalg.outer_sum(R, rows, [1.0, 2.0])
+
+    np.testing.assert_allclose(np.asarray(R), m[1, :][:, None] + 2.0 * w[0, :][None, :], rtol=0, atol=1e-14)

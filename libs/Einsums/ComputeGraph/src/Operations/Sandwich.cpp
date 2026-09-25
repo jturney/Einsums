@@ -19,10 +19,9 @@
 #include <cstdint>
 #include <vector>
 
-EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
+#include "Record.hpp"
 
-template <typename T>
-using Impl = einsums::detail::TensorImpl<T>;
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 // ── grouped_sandwich: q-tiled dressed sandwich accumulations as ONE node ──────
 
@@ -250,17 +249,6 @@ void gather_rotate_member(T const *src, std::size_t sq, std::size_t const *qoff,
 }
 
 namespace {
-template <typename T>
-std::vector<OperandAccessor> accessors(std::vector<SlotRef> const &refs) {
-    std::vector<OperandAccessor> out;
-    out.reserve(refs.size());
-    for (SlotRef const &r : refs) {
-        // Read through the slot, not a captured pointer: rebind() and the
-        // MemoryPlanning arena can both move a tensor's storage.
-        out.emplace_back(r.second, packed_gemm::get_scalar_type<T>());
-    }
-    return out;
-}
 
 template <typename T>
 void run_sandwich_member(Impl<T> &ci, Impl<T> const &ai, Impl<T> const &mi, Impl<T> const &pi, Impl<T> const &si) {
@@ -421,8 +409,7 @@ void capture_grouped_gather_rotate(CaptureContext &ctx, std::vector<SlotRef> con
                                                                   std::vector<std::vector<size_t>>);
 
 // The sandwich and the gather-rotate are real-only, as their wrappers require.
-EINSUMS_SANDWICH_OPERATIONS(float)
-EINSUMS_SANDWICH_OPERATIONS(double)
+EINSUMS_CG_REAL_ELEMENT_TYPES(EINSUMS_SANDWICH_OPERATIONS)
 #undef EINSUMS_SANDWICH_OPERATIONS
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

@@ -7,6 +7,7 @@
 
 #include <Einsums/BLAS.hpp>
 #include <Einsums/ComputeGraph/Detail/BatchedGemm.hpp>
+#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraphTypes/Descriptors.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile.hpp>
@@ -89,14 +90,8 @@ GroupedGemmPlan<T> make_grouped_gemm_plan(GroupedBatchedGemmDescriptor const &d)
         p.first.push_back(g.first);
         // The descriptor carries the full complex prefactor; preserve both
         // parts, a phase factor must not be truncated to its real part.
-        if constexpr (IsComplexV<T>) {
-            using R = typename T::value_type;
-            p.alpha.push_back(T{static_cast<R>(g.alpha.real()), static_cast<R>(g.alpha.imag())});
-            p.beta.push_back(T{static_cast<R>(g.beta.real()), static_cast<R>(g.beta.imag())});
-        } else {
-            p.alpha.push_back(static_cast<T>(g.alpha.real()));
-            p.beta.push_back(static_cast<T>(g.beta.real()));
-        }
+        p.alpha.push_back(narrow_prefactor<T>(g.alpha));
+        p.beta.push_back(narrow_prefactor<T>(g.beta));
     }
     p.labels = d.labels;
     p.total  = d.total;
@@ -166,23 +161,13 @@ inline std::function<void()> make_grouped_batched_gemm_executor(GroupedBatchedGe
                                                                 BatchedGemmOperands b_ops, BatchedGemmOperands c_ops) {
     bool const profile = grouped_gemm_group_profiling();
 
-    // The plan is typed, so it is built here, once, under the same switch the
-    // uniform node does its dispatch with. Only the pointers move afterwards.
-    switch (d.scalar) {
-    case BlasScalar::Float:
-        return [p = make_grouped_gemm_plan<float>(d), a_ops = std::move(a_ops), b_ops = std::move(b_ops), c_ops = std::move(c_ops),
-                profile]() { extract_and_run_grouped<float>(p, a_ops, b_ops, c_ops, profile); };
-    case BlasScalar::Double:
-        return [p = make_grouped_gemm_plan<double>(d), a_ops = std::move(a_ops), b_ops = std::move(b_ops), c_ops = std::move(c_ops),
-                profile]() { extract_and_run_grouped<double>(p, a_ops, b_ops, c_ops, profile); };
-    case BlasScalar::ComplexFloat:
-        return [p = make_grouped_gemm_plan<std::complex<float>>(d), a_ops = std::move(a_ops), b_ops = std::move(b_ops),
-                c_ops = std::move(c_ops), profile]() { extract_and_run_grouped<std::complex<float>>(p, a_ops, b_ops, c_ops, profile); };
-    case BlasScalar::ComplexDouble:
-        break;
-    }
-    return [p = make_grouped_gemm_plan<std::complex<double>>(d), a_ops = std::move(a_ops), b_ops = std::move(b_ops),
-            c_ops = std::move(c_ops), profile]() { extract_and_run_grouped<std::complex<double>>(p, a_ops, b_ops, c_ops, profile); };
+    // The plan is typed, so it is built here, once, under the same dispatch the
+    // uniform node uses. Only the pointers move afterwards.
+    return dispatch_blas_scalar(d.scalar, [&]<typename T>(T /*tag*/) -> std::function<void()> {
+        return [p = make_grouped_gemm_plan<T>(d), a_ops = std::move(a_ops), b_ops = std::move(b_ops), c_ops = std::move(c_ops), profile]() {
+            extract_and_run_grouped<T>(p, a_ops, b_ops, c_ops, profile);
+        };
+    });
 }
 
 /// Run a grouped batch straight from raw pointers, for the eager path.

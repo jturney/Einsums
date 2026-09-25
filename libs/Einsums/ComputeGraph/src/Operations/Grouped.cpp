@@ -22,24 +22,11 @@
 #include <complex>
 #include <vector>
 
+#include "Record.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
-template <typename T>
-using Impl = einsums::detail::TensorImpl<T>;
-
-namespace {
-template <typename T>
-std::vector<OperandAccessor> accessors(std::vector<SlotRef> const &refs) {
-    std::vector<OperandAccessor> out;
-    out.reserve(refs.size());
-    for (SlotRef const &r : refs) {
-        // Read through the slot, not a captured pointer: rebind() and the
-        // MemoryPlanning arena can both move a tensor's storage.
-        out.emplace_back(r.second, packed_gemm::get_scalar_type<T>());
-    }
-    return out;
-}
-} // namespace
+namespace {} // namespace
 
 // ── grouped_dot ───────────────────────────────────────────────────────────────
 
@@ -259,10 +246,7 @@ void capture_grouped_binary(CaptureContext &ctx, OpKind kind, char const *label,
                                                            std::vector<T> const &, std::vector<SlotRef> const &,                           \
                                                            std::vector<SlotRef> const &, std::vector<SlotRef> const &);
 
-EINSUMS_GROUPED_OPERATIONS(float)
-EINSUMS_GROUPED_OPERATIONS(double)
-EINSUMS_GROUPED_OPERATIONS(std::complex<float>)
-EINSUMS_GROUPED_OPERATIONS(std::complex<double>)
+EINSUMS_CG_ELEMENT_TYPES(EINSUMS_GROUPED_OPERATIONS)
 #undef EINSUMS_GROUPED_OPERATIONS
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

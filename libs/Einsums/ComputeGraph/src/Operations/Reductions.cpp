@@ -18,10 +18,9 @@
 #include <limits>
 #include <vector>
 
-EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
+#include "Record.hpp"
 
-template <typename T>
-using Impl = einsums::detail::TensorImpl<T>;
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 namespace {
 /// Stride-correct fold over every element of a dense tensor or view.
@@ -36,23 +35,14 @@ Acc reduce_elements(Impl<T> const &A, Acc init, Op op) {
     T const     *base = A.data();
     if (base == nullptr || n == 0)
         return init;
-    std::vector<size_t> dims(rank), strides(rank), idx(rank, 0);
+    std::vector<size_t> dims(rank), strides(rank);
     for (size_t a = 0; a < rank; ++a) {
         dims[a]    = A.dim(a);
         strides[a] = A.stride(a);
     }
     Acc acc = init;
-    for (size_t k = 0; k < n; ++k) {
-        size_t off = 0;
-        for (size_t a = 0; a < rank; ++a)
-            off += idx[a] * strides[a];
-        acc = op(acc, base[off]);
-        for (size_t a = rank; a-- > 0;) { // increment the odometer
-            if (++idx[a] < dims[a])
-                break;
-            idx[a] = 0;
-        }
-    }
+    // Last axis fastest: the fold's order, and so its rounding, is part of what it computes.
+    for_each_index<true>(dims, [&](std::vector<size_t> const &idx) { acc = op(acc, base[offset_of(idx, strides)]); });
     return acc;
 }
 
@@ -77,17 +67,6 @@ T run_max(Impl<T> const &A) {
     return reduce_elements(A, std::numeric_limits<T>::lowest(), [](T acc, T x) { return (std::isnan(x) || x > acc) ? x : acc; });
 }
 
-/// A one-in one-out Custom node writing @p reduce's value into the first element of @p r.
-template <typename TR, typename TA, typename Fn>
-void record_reduction(CaptureContext &ctx, char const *name, char const *execute_label, SlotRef r, SlotRef a, Fn reduce) {
-    OperandAccessor const r_access(r.second, packed_gemm::get_scalar_type<TR>());
-    OperandAccessor const a_access(a.second, packed_gemm::get_scalar_type<TA>());
-    auto                  executor = [r_access, a_access, reduce, execute_label]() {
-        LabeledSection(execute_label);
-        r_access.impl<TR>()->data()[0] = reduce(*a_access.impl<TA>());
-    };
-    ctx.record(OpKind::Custom, name, {a.first}, {r.first}, std::move(executor));
-}
 } // namespace
 
 // ── norm ──────────────────────────────────────────────────────────────────────
@@ -157,10 +136,7 @@ void capture_max(CaptureContext &ctx, SlotRef r, SlotRef a) {
     template EINSUMS_EXPORT T                 eager_sum<T>(Impl<T> const &);                                                               \
     template EINSUMS_EXPORT void              capture_sum<T>(CaptureContext &, SlotRef, SlotRef);
 
-EINSUMS_REDUCTION_OPERATIONS(float)
-EINSUMS_REDUCTION_OPERATIONS(double)
-EINSUMS_REDUCTION_OPERATIONS(std::complex<float>)
-EINSUMS_REDUCTION_OPERATIONS(std::complex<double>)
+EINSUMS_CG_ELEMENT_TYPES(EINSUMS_REDUCTION_OPERATIONS)
 #undef EINSUMS_REDUCTION_OPERATIONS
 
 // max orders its elements, so it is real-only.
@@ -168,8 +144,7 @@ EINSUMS_REDUCTION_OPERATIONS(std::complex<double>)
     template EINSUMS_EXPORT T    eager_max<T>(Impl<T> const &);                                                                            \
     template EINSUMS_EXPORT void capture_max<T>(CaptureContext &, SlotRef, SlotRef);
 
-EINSUMS_REAL_REDUCTION_OPERATIONS(float)
-EINSUMS_REAL_REDUCTION_OPERATIONS(double)
+EINSUMS_CG_REAL_ELEMENT_TYPES(EINSUMS_REAL_REDUCTION_OPERATIONS)
 #undef EINSUMS_REAL_REDUCTION_OPERATIONS
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

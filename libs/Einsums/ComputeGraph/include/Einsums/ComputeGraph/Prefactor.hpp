@@ -9,10 +9,10 @@
  * @file Prefactor.hpp
  * @brief Type-erased scalar for einsum / scale prefactors.
  *
- * The graph's OpData variant carries one EinsumDescriptor type; templating it
- * on the scalar would explode the variant or force every Node/Graph to be
- * templated. Instead, the prefactor itself is type-erased into a variant over
- * the four bound dtypes. Optimization passes that read the prefactor use
+ * A node's descriptor is one type whatever the element type of its operands;
+ * templating it on the scalar would force every Node and Graph to be templated.
+ * Instead, the prefactor itself is type-erased into a variant over the four
+ * bound dtypes. Optimization passes that read the prefactor use
  * the helpers below; the executor lambda, which already knows the concrete
  * tensor type, calls @ref as<T> to extract a typed scalar for BLAS dispatch.
  */

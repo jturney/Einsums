@@ -24,10 +24,9 @@
 #include <stdexcept>
 #include <vector>
 
-EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
+#include "Record.hpp"
 
-template <typename T>
-using Impl = einsums::detail::TensorImpl<T>;
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 // ── gemm ──────────────────────────────────────────────────────────────────────
 
@@ -202,10 +201,7 @@ void capture_ger(CaptureContext &ctx, bool conjugated, T alpha, SlotRef x, SlotR
     template EINSUMS_EXPORT void eager_ger<T>(bool, T, Impl<T> const &, Impl<T> const &, Impl<T> &);                                       \
     template EINSUMS_EXPORT void capture_ger<T>(CaptureContext &, bool, T, SlotRef, SlotRef, SlotRef);
 
-EINSUMS_BLAS_OPERATIONS(float)
-EINSUMS_BLAS_OPERATIONS(double)
-EINSUMS_BLAS_OPERATIONS(std::complex<float>)
-EINSUMS_BLAS_OPERATIONS(std::complex<double>)
+EINSUMS_CG_ELEMENT_TYPES(EINSUMS_BLAS_OPERATIONS)
 #undef EINSUMS_BLAS_OPERATIONS
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

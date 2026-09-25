@@ -22,10 +22,9 @@
 #include <span>
 #include <variant>
 
-EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
+#include "Record.hpp"
 
-template <typename T>
-using Impl = einsums::detail::TensorImpl<T>;
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 // ── permute ───────────────────────────────────────────────────────────────────
 
@@ -89,10 +88,7 @@ void capture_transpose(CaptureContext &ctx, TensorId a_id, TensorId c_id, std::s
     template EINSUMS_EXPORT void eager_transpose<T>(Impl<T> &, Impl<T> const &);                                                           \
     template EINSUMS_EXPORT void capture_transpose<T>(CaptureContext &, TensorId, TensorId, std::size_t);
 
-EINSUMS_PERMUTE_OPERATIONS(float)
-EINSUMS_PERMUTE_OPERATIONS(double)
-EINSUMS_PERMUTE_OPERATIONS(std::complex<float>)
-EINSUMS_PERMUTE_OPERATIONS(std::complex<double>)
+EINSUMS_CG_ELEMENT_TYPES(EINSUMS_PERMUTE_OPERATIONS)
 #undef EINSUMS_PERMUTE_OPERATIONS
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

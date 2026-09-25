@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <Einsums/ComputeGraphTypes/Descriptors.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
@@ -68,6 +69,37 @@ decltype(auto) dispatch_by_rank(std::size_t rank, F &&f) {
         break;
     }
     EINSUMS_THROW_EXCEPTION(std::invalid_argument, "dispatch_by_rank: unsupported rank {}", rank);
+}
+
+/**
+ * @brief Invoke @p f with a value-initialized tag of the C++ element type named by @p scalar,
+ *        the BLAS-level twin of @ref dispatch_scalar_type.
+ */
+template <typename F>
+decltype(auto) dispatch_blas_scalar(BlasScalar scalar, F &&f) {
+    switch (scalar) {
+    case BlasScalar::Float:
+        return f(float{});
+    case BlasScalar::Double:
+        return f(double{});
+    case BlasScalar::ComplexFloat:
+        return f(std::complex<float>{});
+    case BlasScalar::ComplexDouble:
+        break;
+    }
+    return f(std::complex<double>{});
+}
+
+/// A descriptor's full complex prefactor in element type @p T: both parts for a complex @p T, so a
+/// phase factor is not truncated to its real part, and the real part for a real one.
+template <typename T>
+[[nodiscard]] T narrow_prefactor(std::complex<double> value) {
+    if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
+        using R = typename T::value_type;
+        return T{static_cast<R>(value.real()), static_cast<R>(value.imag())};
+    } else {
+        return static_cast<T>(value.real());
+    }
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

@@ -23,10 +23,9 @@
 #include <string>
 #include <vector>
 
-EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
+#include "Record.hpp"
 
-template <typename T>
-using Impl = einsums::detail::TensorImpl<T>;
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 // ── scale ─────────────────────────────────────────────────────────────────────
 
@@ -221,10 +220,7 @@ void capture_element_transform(CaptureContext &ctx, TensorId c_id, std::size_t r
     template EINSUMS_EXPORT void capture_element_transform<T>(CaptureContext &, TensorId, std::size_t, std::string_view,                   \
                                                               std::optional<double>);
 
-EINSUMS_ELEMENTWISE_OPERATIONS(float)
-EINSUMS_ELEMENTWISE_OPERATIONS(double)
-EINSUMS_ELEMENTWISE_OPERATIONS(std::complex<float>)
-EINSUMS_ELEMENTWISE_OPERATIONS(std::complex<double>)
+EINSUMS_CG_ELEMENT_TYPES(EINSUMS_ELEMENTWISE_OPERATIONS)
 #undef EINSUMS_ELEMENTWISE_OPERATIONS
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

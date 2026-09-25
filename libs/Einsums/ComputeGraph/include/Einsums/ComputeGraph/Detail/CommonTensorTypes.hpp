@@ -40,3 +40,9 @@
     X(double)                                                                                                                              \
     X(std::complex<float>)                                                                                                                 \
     X(std::complex<double>)
+
+/// The real element types, for the operations that have no complex form (sqrt, max, the sandwich
+/// kernels). @p X is applied to each.
+#define EINSUMS_CG_REAL_ELEMENT_TYPES(X)                                                                                                   \
+    X(float)                                                                                                                               \
+    X(double)

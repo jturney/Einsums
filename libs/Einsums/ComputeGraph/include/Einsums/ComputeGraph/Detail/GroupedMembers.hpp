@@ -8,7 +8,7 @@
 /// @file
 /// The member loop the grouped element-wise nodes run under.
 ///
-/// Shared between the capture entry points in `Operations.hpp` and the
+/// Shared between the capture entry points in `src/Operations/` and the
 /// executor builder, for the reason every other shared executor piece is
 /// shared: a node a region rewrite emitted has to run the members the way the
 /// captured node ran them, and two copies of the loop would drift on the one

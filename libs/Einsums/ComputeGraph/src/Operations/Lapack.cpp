@@ -18,10 +18,9 @@
 #include <tuple>
 #include <vector>
 
-EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
+#include "Record.hpp"
 
-template <typename T>
-using Impl = einsums::detail::TensorImpl<T>;
+EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 // ── syev / heev ───────────────────────────────────────────────────────────────
 
@@ -185,10 +184,7 @@ void capture_getrs(CaptureContext &ctx, SlotRef a, LuPivots const &pivots, SlotR
     template EINSUMS_EXPORT int  eager_getrs<T>(Impl<T> const &, LuPivots const &, Impl<T> &);                                             \
     template EINSUMS_EXPORT void capture_getrs<T>(CaptureContext &, SlotRef, LuPivots const &, SlotRef);
 
-EINSUMS_LAPACK_OPERATIONS(float)
-EINSUMS_LAPACK_OPERATIONS(double)
-EINSUMS_LAPACK_OPERATIONS(std::complex<float>)
-EINSUMS_LAPACK_OPERATIONS(std::complex<double>)
+EINSUMS_CG_ELEMENT_TYPES(EINSUMS_LAPACK_OPERATIONS)
 #undef EINSUMS_LAPACK_OPERATIONS
 
 EINSUMS_NAMESPACE_END(compute_graph::detail)

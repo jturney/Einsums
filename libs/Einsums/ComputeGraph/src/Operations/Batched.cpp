@@ -18,6 +18,8 @@
 #include <cstddef>
 #include <vector>
 
+#include "Record.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::detail)
 
 // ── batched gemm ──────────────────────────────────────────────────────────────
@@ -26,11 +28,7 @@ template <typename T>
 void eager_batched_gemm(BatchedGemmDescriptor const &d, std::vector<void const *> const &a, std::vector<void const *> const &b,
                         std::vector<void *> const &c) {
     LabeledSection("batched_gemm eager");
-    if constexpr (IsComplexV<T>) {
-        run_batched_gemm_complex<T>(d, a, b, c);
-    } else {
-        run_batched_gemm<T>(d, a, b, c);
-    }
+    run_batched_gemm<T>(d, a, b, c);
 }
 
 void capture_batched_gemm(CaptureContext &ctx, BatchedGemmDescriptor const &d, bool reads_c, std::vector<SlotRef> const &a,
@@ -161,10 +159,7 @@ void capture_grouped_batched_gemm(CaptureContext &ctx, GroupedBatchedGemmDescrip
 #define EINSUMS_GROUPED_BATCHED(T)                                                                                                         \
     template EINSUMS_EXPORT void eager_grouped_batched_gemm<T>(GroupedBatchedGemmDescriptor const &, std::vector<void const *> const &,    \
                                                                std::vector<void const *> const &, std::vector<void *> const &);
-EINSUMS_GROUPED_BATCHED(float)
-EINSUMS_GROUPED_BATCHED(double)
-EINSUMS_GROUPED_BATCHED(std::complex<float>)
-EINSUMS_GROUPED_BATCHED(std::complex<double>)
+EINSUMS_CG_ELEMENT_TYPES(EINSUMS_GROUPED_BATCHED)
 #undef EINSUMS_GROUPED_BATCHED
 
 template EINSUMS_EXPORT void eager_batched_gemm<float>(BatchedGemmDescriptor const &, std::vector<void const *> const &,
