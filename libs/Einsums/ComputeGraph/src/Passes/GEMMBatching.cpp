@@ -102,6 +102,8 @@ bool GEMMBatching::run(Graph &graph) {
             continue; // non-GEMM-pattern einsums skipped by capture
         if (live_conj_a(*desc) || live_conj_b(*desc))
             continue; // conjugated einsums aren't batched (conj not threaded through the batch rewrite)
+        if (carries_permutation_operators(nodes[nd]))
+            continue; // a batched GEMM computes the one unpermuted term an operator is a sum over
         // A GEMM-shaped einsum lists its two operands first and its destination as its one output;
         // an accumulating one also lists the destination among its inputs, after them. The batch
         // reads the operands off these lists, so a node not shaped that way is not a candidate.

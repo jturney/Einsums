@@ -215,3 +215,30 @@ TEST_CASE("AntisymmetryDetection - a graph with no operator probes nothing", "[C
     auto const pass = detect(graph);
     CHECK(pass->num_probed() == 0);
 }
+
+TEST_CASE("AntisymmetryDetection - never reads a declared tensor that has no storage yet", "[ComputeGraph][AntisymmetryDetection]") {
+    // Detection probes tensors shaped like an operator's output for the symmetry it asks about.
+    // Two tensors declared on the graph but not yet allocated have that shape, and a declared shell's
+    // impl can carry a sentinel base rather than null: probing its "data" read through the sentinel
+    // and crashed. Only the loop body's plain contraction into the second one made it a candidate
+    // that no earlier guard excluded.
+    auto X = create_random_tensor<double>("X", 2, 3, 3);
+    auto Y = create_random_tensor<double>("Y", 3, 8, 2);
+
+    cg::Graph graph("detection_shell");
+    auto     &T1 = graph.declare_runtime_tensor<double>("t1", {2, 3, 8, 2}, /*intermediate=*/true);
+    auto     &T2 = graph.declare_runtime_tensor<double>("t2", {2, 3, 8, 2}, /*intermediate=*/true);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("a,g,h,c <- P(a/c) a,g,e ; e,h,c", &T1, X, Y);
+    }
+    auto &body = graph.add_loop("iteration", 1, [](size_t) { return false; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("a,g,h,c <- a,g,e ; e,h,c", &T2, X, Y);
+    }
+
+    auto manager = cg::PassManager::create_default();
+    REQUIRE_NOTHROW(manager.run(graph));
+    REQUIRE_NOTHROW(graph.execute());
+}

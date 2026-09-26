@@ -47,6 +47,7 @@ import einsums._core.graph as _G
 from einsums import linalg as la
 from einsums.testing import ALL_DTYPES
 
+from _permutation_operators import apply_operator, operator_prefix
 from _region_invariants import assert_materialization_invariants
 from _sanitizer_scaling import sanitizer_examples
 
@@ -93,6 +94,9 @@ class Program(NamedTuple):
     intermediates declared on the graph, ``r`` are results. The tail exists
     because the flattener reads all three kinds as one product, so a program
     that only ever contracts leaves that half of it untested.
+    An einsum may carry a tenth element, a tuple of permutation operators over
+    its output letters in the form ``_permutation_operators`` defines, applied
+    to the product before the prefactors, the way ``P(i/j)`` prefixes a spec.
     ``disjoint`` is ``None`` or ``(statement index, summed letter)``: that
     statement's two operands get index spaces the registry declares disjoint,
     and the second operand is zeroed so the arithmetic honours the declaration.
@@ -118,7 +122,55 @@ def _kind_of(stmt):
     return stmt[8] if len(stmt) > 8 else "einsum"
 
 
-def _draw_program(pick_int) -> Program:
+def _operators_of(stmt):
+    """The statement's permutation operators, none when the tuple predates them."""
+    return stmt[9] if len(stmt) > 9 else ()
+
+
+def _pair_operator(x, y):
+    """``P(x/y)``, the one operator shape the fixed extents here can carry.
+
+    Every letter an operator permutes must have one extent, and ``_EXTENTS``
+    gives no extent to more than two letters, so the three- and four-letter
+    shapes are out of reach by construction. The einsum differential shard
+    forces extents equal instead and is where those shapes are drawn.
+    """
+    return (((x,), (y,)), 0, (x, y))
+
+
+def _draw_operators(pick_int, stmts):
+    """Put permutation operators on some einsum statements, over their outputs.
+
+    A term antisymmetrized over its output is what a coupled-cluster residual
+    is made of, and a rewrite that relates two terms, slices one, or fuses a
+    permute into one has to carry the operator along or drop a term the numbers
+    only show on data without the symmetry. Only letters of one extent can be
+    exchanged, so a statement whose output holds no such pair is left alone,
+    and one in four of the rest carries an operator, so the corpus the passes
+    were tuned on stays mostly what it was.
+    """
+    out = []
+    for stmt in stmts:
+        letters = stmt[1]
+        pairs = [(x, y) for x, y in itertools.combinations(letters, 2) if _EXTENTS[x] == _EXTENTS[y]]
+        # A repeated output letter is a diagonal write with no single axis to
+        # exchange, which the parser rejects.
+        if (_kind_of(stmt) != "einsum" or not pairs or len(set(letters)) != len(letters)
+                or pick_int(0, 3)):
+            out.append(stmt)
+            continue
+        first = pairs[pick_int(0, len(pairs) - 1)]
+        ops = [_pair_operator(*first)]
+        # A second operator over a disjoint pair, the P(ij) P(ab) shape a
+        # doubles residual has, whose expansion is the product of the two.
+        rest = [pair for pair in pairs if not set(pair) & set(first)]
+        if rest and pick_int(0, 1):
+            ops.append(_pair_operator(*rest[pick_int(0, len(rest) - 1)]))
+        out.append(tuple(stmt[:8]) + ("einsum", tuple(ops)))
+    return out
+
+
+def _draw_program(pick_int, operators=True) -> Program:
     """Draw one program from an integer source.
 
     ``pick_int(lo, hi)`` returns an integer in ``[lo, hi]``. Hypothesis and a
@@ -294,6 +346,13 @@ def _draw_program(pick_int) -> Program:
         stop = pick_int(start + 1, len(stmts))
         loop = (start, stop, pick_int(1, 2))
 
+    # Drawn LAST, so every earlier draw lands where it did before operators
+    # existed: the corpus guards below were tuned on those programs, and this
+    # only decorates them.
+    # Last, so a program drawn without operators is the same program with them stripped.
+    if operators:
+        stmts = _draw_operators(pick_int, stmts)
+
     return Program(pool, inter, outs, tuple(stmts), tuple(terms), disjoint, loop)
 
 
@@ -302,7 +361,7 @@ def _programs(draw):
     return _draw_program(lambda lo, hi: draw(st.integers(lo, hi)))
 
 
-def _ccsd_tau_program() -> Program:
+def _ccsd_tau_program(antisymmetrized=False) -> Program:
     """The tau term of the CCSD doubles residual, routed twice.
 
     Once through ``Wmnij``, contracting the virtual pair first into an o^4
@@ -310,8 +369,14 @@ def _ccsd_tau_program() -> Program:
     a v^4 one. Flattened through the two intermediates both routes are the same
     three-factor product with ``tau`` in it twice. Pinned because it is the case
     that found the three defects this shard exists to keep closed.
+
+    ``antisymmetrized`` puts ``P(i/j) P(a/b)`` on both writes of the residual,
+    which is how the term is written in a spin-orbital code, so a rewrite that
+    shares the intermediate has to keep both operators on what it emits.
     """
     o, v = 3, 4
+    ops = (_pair_operator("i", "j"), _pair_operator("a", "b"))
+    tail = ("einsum", ops) if antisymmetrized else ()
     return Program(
         pool={"p_tau": (o, o, v, v), "p_oovv": (o, o, v, v)},
         inter={"t_wmnij": (o, o, o, o), "t_wabef": (v, v, v, v)},
@@ -320,11 +385,11 @@ def _ccsd_tau_program() -> Program:
             ("t_wmnij", ("m", "n", "i", "j"), "p_tau", ("i", "j", "e", "f"),
              "p_oovv", ("m", "n", "e", "f"), 0.0, 1.0),
             ("r_t2n", ("i", "j", "a", "b"), "p_tau", ("m", "n", "a", "b"),
-             "t_wmnij", ("m", "n", "i", "j"), 0.0, 0.125),
+             "t_wmnij", ("m", "n", "i", "j"), 0.0, 0.125) + tail,
             ("t_wabef", ("a", "b", "e", "f"), "p_tau", ("m", "n", "a", "b"),
              "p_oovv", ("m", "n", "e", "f"), 0.0, 1.0),
             ("r_t2n", ("i", "j", "a", "b"), "p_tau", ("i", "j", "e", "f"),
-             "t_wabef", ("a", "b", "e", "f"), 1.0, 0.125),
+             "t_wabef", ("a", "b", "e", "f"), 1.0, 0.125) + tail,
         ),
         terms=(("p_tau", "p_oovv", "p_tau"), ("p_tau", "p_oovv", "p_tau")),
         disjoint=None,
@@ -430,6 +495,10 @@ def _numpy_result(prog, arrays, dtype):
             term = values[a] * values[b]
         else:
             term = np.einsum(f"{''.join(al)},{''.join(bl)}->{''.join(ol)}", values[a], values[b])
+            # The operators act on the product and the prefactors apply once to
+            # the antisymmetrized sum, which is what the spec's prefix means.
+            for op in _operators_of(stmt):
+                term = apply_operator(op, ol, term)
         values[out] = (np.asarray(c_pf, dt) * values[out] + np.asarray(ab_pf, dt) * term).astype(dt)
     return {key: values[key] for key in prog.outs}
 
@@ -473,7 +542,8 @@ def _run(prog, arrays, dtype, region, tiling_cap=None):
         elif kind == "dp":
             la.direct_product(ab_pf, tensors[a], tensors[b], c_pf, tensors[out])
         else:
-            spec = f"{','.join(ol)} <- {','.join(al)} ; {','.join(bl)}"
+            ops = "".join(operator_prefix(op) for op in _operators_of(stmt))
+            spec = f"{','.join(ol)} <- {ops}{','.join(al)} ; {','.join(bl)}"
             einsums.einsum(spec, tensors[out], tensors[a], tensors[b], c_pf=c_pf, ab_pf=ab_pf)
 
     def emit_run(into, run):
@@ -549,6 +619,8 @@ def _numpy_magnitude(prog, arrays, dtype):
             term = values[a] * values[b]
         else:
             term = np.einsum(f"{''.join(al)},{''.join(bl)}->{''.join(ol)}", values[a], values[b])
+            for op in _operators_of(stmt):
+                term = apply_operator(op, ol, term, magnitude=True)
         values[out] = (abs(c_pf) * values[out] + abs(ab_pf) * term).astype(real)
     return float(np.linalg.norm(np.concatenate(
         [values[key].ravel().astype(np.float64) for key in sorted(prog.outs)])))
@@ -639,6 +711,7 @@ def _check(prog, dtype, seed=0):
 @settings(max_examples=sanitizer_examples(100), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large])
 @example(prog=_ccsd_tau_program())
+@example(prog=_ccsd_tau_program(antisymmetrized=True))
 def test_the_region_pipeline_keeps_the_answer(prog, dtype):
     _check(prog, dtype)
 
@@ -653,16 +726,19 @@ def test_the_region_pipeline_keeps_the_answer(prog, dtype):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def _rng_program(seed):
+def _rng_program(seed, operators=True):
     rng = np.random.default_rng(seed)
-    return _draw_program(lambda lo, hi: int(rng.integers(lo, hi + 1)))
+    return _draw_program(lambda lo, hi: int(rng.integers(lo, hi + 1)), operators=operators)
 
 
 def test_the_corpus_provokes_the_region_passes():
     fired = {name: 0 for name in _FIRED_ATTR}
     cut_off = 0
     for seed in range(48):
-        prog = _rng_program(seed)
+        # Without operators: a region holding one is declined by the passes this guard demands,
+        # correctly, so a decorated corpus would measure the draw rather than the passes. The
+        # property tests above draw the operators.
+        prog = _rng_program(seed, operators=False)
         for pass_obj in _check(prog, "float64", seed=seed):
             attr = _FIRED_ATTR.get(pass_obj.name)
             if attr is not None and int(getattr(pass_obj, attr)):
@@ -688,11 +764,20 @@ def test_the_corpus_provokes_the_region_passes():
 def test_the_generator_draws_the_shapes_the_passes_need():
     """The three properties that separate this corpus from the einsum shards."""
     repeated_operand = shared_output = annotated = reduced = False
+    one_operator = two_operators = operator_on_intermediate = False
     for seed in range(200):
         prog = _rng_program(seed)
         kinds = {_kind_of(stmt) for stmt in prog.stmts}
         if {"dp", "dot"} <= kinds:
             reduced = True
+        for stmt in prog.stmts:
+            count = len(_operators_of(stmt))
+            one_operator |= count == 1
+            two_operators |= count == 2
+            # An operator on a statement whose output another statement reads is
+            # the one a flattener has to carry through a product, not just onto
+            # a result.
+            operator_on_intermediate |= count > 0 and stmt[0].startswith("t")
         for factors in prog.terms:
             if len(set(factors)) != len(factors):
                 repeated_operand = True
@@ -707,6 +792,9 @@ def test_the_generator_draws_the_shapes_the_passes_need():
     assert shared_output, "no two terms ever accumulate into one output"
     assert annotated, "no program ever declares a disjointness"
     assert reduced, "no program ever scales a contraction and reduces it to a scalar"
+    assert one_operator, "no statement ever carries a permutation operator"
+    assert two_operators, "no statement ever carries two permutation operators"
+    assert operator_on_intermediate, "no operator ever sits on a statement writing an intermediate"
 
 
 def test_the_corpus_reaches_both_outcomes_of_per_consumer_inlining():

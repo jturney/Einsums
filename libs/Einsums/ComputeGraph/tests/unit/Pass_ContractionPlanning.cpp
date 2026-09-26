@@ -946,3 +946,41 @@ TEST_CASE("ContractionPlanning - a chain with operands of different element type
     CHECK(run(double{}) == 1);
     CHECK(run(float{}) == 0);
 }
+
+TEST_CASE("ContractionPlanning - a chain ending in a permutation operator keeps it", "[ComputeGraph][Passes][CP]") {
+    // The rebuilt GEMMs compute the one unpermuted product, so re-bracketing a chain whose last
+    // link carries P(i/j) returned that product instead of its antisymmetrized sum.
+    auto A  = create_random_tensor<double>("A", 100, 1);
+    auto B  = create_random_tensor<double>("B", 1, 100);
+    auto D  = create_random_tensor<double>("D", 100, 1);
+    auto E  = create_random_tensor<double>("E", 1, 100);
+    auto T4 = create_zero_tensor<double>("T4", 100, 100);
+
+    auto T1r = create_zero_tensor<double>("T1r", 100, 100);
+    auto T3r = create_zero_tensor<double>("T3r", 100, 1);
+    auto T4r = create_zero_tensor<double>("T4r", 100, 100);
+    reference_einsum("ij <- ik ; kj", 0.0, &T1r, 1.0, A, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &T3r, 1.0, T1r, D);
+    reference_einsum("ij <- ik ; kj", 0.0, &T4r, 1.0, T3r, E);
+
+    cg::Graph graph("cp_operator");
+    auto     &T1 = graph.create_zero_tensor<double, 2>("T1", 100, 100);
+    auto     &T3 = graph.create_zero_tensor<double, 2>("T3", 100, 1);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &T3, 1.0, T1, D);
+        cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &T4, 1.0, T3, E);
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    pass.run(graph);
+    graph.execute();
+
+    for (size_t i = 0; i < 100; i++) {
+        for (size_t j = 0; j < 100; j++) {
+            double const want = T4r(i, j) - T4r(j, i);
+            REQUIRE(std::abs(T4(i, j) - want) <= 1e-9 * (1.0 + std::abs(want)));
+        }
+    }
+}

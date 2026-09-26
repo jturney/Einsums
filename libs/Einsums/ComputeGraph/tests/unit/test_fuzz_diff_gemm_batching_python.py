@@ -57,3 +57,32 @@ def test_fuzz_gemm_batching_with_consumers(seed):
         prog.append(consumer(outs[int(rng.integers(0, len(outs)))], D2))
 
     check_program(prog, pool, [], [], f"gemmbatch_consumer{seed}")
+
+
+def test_gemm_batching_leaves_antisymmetrized_contractions_alone():
+    """A batched GEMM computes the one unpermuted product, so batching two P(p/r) contractions
+    returned the plain product in both outputs. Expansion is disabled so the operators reach the
+    batching pass, which is the order a caller who disables expansion gets."""
+    import einsums
+    import einsums.graph as cg
+
+    n, k = 4, 3
+    rng = np.random.default_rng(0)
+    a, b = rng.standard_normal((n, k)), rng.standard_normal((k, n))
+    A, B = einsums.asarray(a), einsums.asarray(b)
+    R0 = einsums.zeros((n, n), dtype="float64")
+    R1 = einsums.zeros((n, n), dtype="float64")
+
+    graph = cg.Graph("batching_operator")
+    with cg.capture(graph):
+        einsums.einsum("p,r <- P(p/r) p,q ; q,r", R0, A, B)
+        einsums.einsum("p,r <- P(p/r) p,q ; q,r", R1, A, B)
+    manager = cg.PassManager()
+    manager.populate_default()
+    manager.disable("AntisymmetrizerExpansion")
+    manager.run(graph)
+    graph.execute()
+
+    want = a @ b - (a @ b).T
+    np.testing.assert_allclose(np.asarray(R0), want, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(np.asarray(R1), want, rtol=1e-12, atol=1e-12)

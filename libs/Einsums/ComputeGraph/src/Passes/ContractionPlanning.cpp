@@ -64,6 +64,11 @@ bool analyze_contraction(EinsumDescriptor const &desc, Graph const &graph, Node 
     if (live_conj_a(desc) || live_conj_b(desc))
         return false;
 
+    // The same for a permutation operator: the rebuilt GEMMs compute the one unpermuted product,
+    // so a chain ending in `P(ij)` came back without its other terms.
+    if (carries_permutation_operators(node))
+        return false;
+
     // Must have at least one link index (something to contract over)
     if (spec.link_indices.empty())
         return false;

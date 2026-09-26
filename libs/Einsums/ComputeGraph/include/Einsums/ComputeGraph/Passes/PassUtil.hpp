@@ -444,4 +444,15 @@ inline void apply_fold(Node &node, FoldSite site, double factor) {
     return perm;
 }
 
+/// Whether @p node applies a permutation operator (``P(ij)``) to its result.
+///
+/// Such a node computes a signed sum of permuted terms. A pass that matches, merges, batches or
+/// rebuilds a contraction from its index lists alone computes the single unpermuted term instead,
+/// so every such pass must either carry the operators through or decline the node; this is the
+/// test for the second.
+[[nodiscard]] inline bool carries_permutation_operators(Node const &node) {
+    auto const lists = node_index_lists(node);
+    return lists.has_value() && lists->operators != nullptr && !lists->operators->empty();
+}
+
 EINSUMS_NAMESPACE_END(compute_graph::passes)

@@ -482,6 +482,14 @@ void permute(PermuteFormatString spec, typename CType::ValueType beta, CType *C,
     }
     auto &parsed = parse_result.value();
 
+    // The spec must name every axis of both operands. A spec naming fewer ran over only the axes it
+    // named and left the rest of C untouched: "i <- i" on two 3x4 tensors copied one column.
+    if (detail::tensor_rank(A) != parsed.a_indices.size() || detail::tensor_rank(*C) != parsed.c_indices.size()) {
+        EINSUMS_THROW_EXCEPTION(RankError, "cg::permute: '{}' names {} axes of the output and {} of the input, whose ranks are {} and {}",
+                                parsed.raw, parsed.c_indices.size(), parsed.a_indices.size(), detail::tensor_rank(*C),
+                                detail::tensor_rank(A));
+    }
+
     if constexpr (TiledTensorConcept<AType> || TiledTensorConcept<CType>) {
         static_assert(TiledTensorConcept<AType> && TiledTensorConcept<CType>,
                       "cg::permute with a tiled operand requires both A and C to be TiledRuntimeTensor");

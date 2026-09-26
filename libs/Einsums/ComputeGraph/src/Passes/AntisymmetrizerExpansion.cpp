@@ -93,7 +93,10 @@ bool AntisymmetrizerExpansion::run(Graph &graph) {
         TensorId const b_id = graph.nodes()[index].inputs[1];
         TensorId const c_id = graph.nodes()[index].outputs[0];
 
-        auto const *c_handle = graph.find_tensor(graph.resolve_alias(c_id));
+        // The destination as the node addresses it, not its alias root: the temporary stands in for
+        // the contraction's result, so it takes the destination's own shape. For a view, which is
+        // what every member AxisTiling emits writes, the root is the whole parent, a different rank.
+        auto const *c_handle = graph.find_tensor(c_id);
         if (c_handle == nullptr || c_handle->dims.empty() || c_handle->dtype == packed_gemm::ScalarType::Unknown) {
             skip("the destination has no usable dtype and extents for a temporary", index);
             continue;

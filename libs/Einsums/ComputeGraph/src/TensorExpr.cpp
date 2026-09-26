@@ -926,6 +926,12 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
         if (node->outputs.empty()) {
             return unexpected(RaiseFailure{.reason = "a region node writes nothing", .detail = fmt::format("node '{}'", node->label)});
         }
+        // The algebra has no term for a permutation operator, so raising the node would describe
+        // only its identity term, and a rewrite lowered from that computes a different value.
+        if (passes::carries_permutation_operators(*node)) {
+            return unexpected(RaiseFailure{.reason = "a node applies a permutation operator, which the algebra has no term for",
+                                           .detail = fmt::format("node '{}'", node->label)});
+        }
 
         if (is_grouped_raisable(node->kind)) {
             auto grouped = raise_grouped(graph, *node, expr, ragged);

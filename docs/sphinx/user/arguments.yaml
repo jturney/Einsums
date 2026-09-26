@@ -470,6 +470,18 @@
     Log node count and wall-clock time before and after each optimization pass, even for
     passes that don't modify the graph.
 
+"einsums:pass:verify":
+  added: "2.0.0"
+  body: |
+    After every optimization pass, check the graph's structural invariants and fail with the name of
+    the pass that broke one: every node id unique within its graph, every operand a registered
+    tensor, every lifecycle node naming the tensor it manages, and every contraction and permutation
+    carrying the index lists its operands' ranks call for.
+
+    A pass that leaves a graph malformed usually still produces a graph that runs, so the damage
+    otherwise surfaces far from its cause. The test suite turns this on; a program that suspects a
+    pass can too. It costs one walk over the graph per pass.
+
 "einsums:pass:verbosity":
   added: "2.0.0"
   body: |

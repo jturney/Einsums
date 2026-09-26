@@ -203,3 +203,55 @@ def test_constant_folding_leaves_a_written_operand_alone():
     pass_inst = cg.ConstantFolding()
     assert not _run(pass_inst, g)
     assert pass_inst.num_folded == 0
+
+
+@pytest.mark.parametrize("container", ["loop", "conditional"])
+def test_constant_folding_sees_a_write_inside_a_body(container):
+    """A tensor a loop body or branch writes is not constant, though the parent lists no writer.
+
+    A Loop or Conditional node lists none of its body's writes, so the pass took T for constant
+    and folded the gemm after the loop with T still zero.
+    """
+    S = einsums.create_zero_tensor("S", [3, 3])
+    np.asarray(S)[...] = 1.0
+    out = einsums.create_zero_tensor("out", [3, 3])
+
+    g = cg.Graph("cf_body_write")
+    T = g.create_zero_tensor("T", [3, 3], intermediate=True, dtype="float64")
+    if container == "loop":
+        body = g.add_loop("loop", 1, lambda it: False)
+    else:
+        body, _ = g.add_conditional("cond", lambda: True)
+    with cg.capture(body):
+        einsums.linalg.axpy(1.0, S, T)
+    with cg.capture(g):
+        einsums.linalg.gemm(1.0, T, T, 0.0, out)
+
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    assert_close(out, np.ones((3, 3)) @ np.ones((3, 3)))
+
+
+def test_constant_folding_leaves_an_output_an_earlier_node_reads():
+    """A fold writes its output at pass time, before any node runs.
+
+    `out` is read by the axpy before the folded axpby's turn, so folding the axpby let that read
+    see K instead of 10 * out. A caller-owned output is also one the caller may change between
+    replays, which a node that never runs again would not follow.
+    """
+    out = einsums.create_zero_tensor("out", [2, 2])
+    np.asarray(out)[...] = 1.0
+    other = einsums.create_zero_tensor("other", [2, 2])
+
+    g = cg.Graph("cf_early_read")
+    K = g.create_zero_tensor("K", [2, 2], intermediate=True, dtype="float64")
+    np.asarray(K)[...] = np.eye(2)
+    with cg.capture(g):
+        einsums.linalg.scale(10.0, out)
+        einsums.linalg.axpy(1.0, out, other)
+        einsums.linalg.axpby(1.0, K, 0.0, out)
+
+    g.apply(cg.default_pass_manager())
+    g.execute()
+    assert_close(other, np.full((2, 2), 10.0))
+    assert_close(out, np.eye(2))

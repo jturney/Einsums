@@ -14,6 +14,7 @@ int register_Einsums_ComputeGraph_options() {
     cl::register_option(option::GraphDumpRegions);
     cl::register_option(option::PassAnalyze);
     cl::register_option(option::PassVerbose);
+    cl::register_option(option::PassVerify);
     cl::register_option(option::PassVerbosity);
     cl::register_option(option::GraphStructuralSearch);
     cl::register_option(option::GraphFactorizationCache);

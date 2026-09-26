@@ -231,3 +231,35 @@ TEST_CASE("AntisymmetrizerExpansion - declines a contraction whose operands diff
     REQUIRE(reasons.size() == 1);
     CHECK(reasons[0].first.find("different element types") != std::string::npos);
 }
+
+TEST_CASE("AntisymmetrizerExpansion - a destination view keeps its own shape", "[ComputeGraph][AntisymmetrizerExpansion]") {
+    // The temporary a contraction lowers through stands in for its result, so it takes the
+    // destination's shape. It was taken from the destination's alias ROOT, which for a view is the
+    // whole parent: here a 4x4 temporary for a 3x3 result, and the permutes then named axes of a
+    // tensor that was not the one they read. Every member AxisTiling emits writes a view.
+    auto A      = create_random_tensor<double>("A", 3, 5);
+    auto B      = create_random_tensor<double>("B", 5, 3);
+    auto parent = create_zero_tensor<double>("parent", 4, 4);
+
+    cg::Graph graph("expansion_view");
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &slice = cg::view<double, 2>(parent, cg::ViewAxis::range(0, 3), cg::ViewAxis::range(0, 3));
+        cg::einsum("a,b <- P(a/b) a,k ; k,b", 0.0, &slice, 1.0, A, B);
+    }
+    auto manager = cg::PassManager::create_default();
+    manager.run(graph);
+    graph.execute();
+
+    for (size_t i = 0; i < 4; i++) {
+        for (size_t j = 0; j < 4; j++) {
+            double want = 0.0;
+            if (i < 3 && j < 3) {
+                for (size_t k = 0; k < 5; k++) {
+                    want += A(i, k) * B(k, j) - A(j, k) * B(k, i);
+                }
+            }
+            REQUIRE(std::abs(parent(i, j) - want) <= 1e-12 * (1.0 + std::abs(want)));
+        }
+    }
+}

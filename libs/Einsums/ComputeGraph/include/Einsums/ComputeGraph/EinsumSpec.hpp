@@ -96,6 +96,9 @@ struct PermutationOperator {
 
     /// Every letter this operator names, in group-concatenation order.
     [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> letters() const;
+
+    /// Same partition, spelled the same way.
+    bool operator==(PermutationOperator const &) const = default;
 };
 
 /**

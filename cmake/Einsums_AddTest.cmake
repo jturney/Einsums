@@ -212,7 +212,11 @@ endfunction(einsums_add_test_and_deps_test)
 #:
 #:    Single source of truth for the sanitizer runtime options every Einsums test
 #:    process needs, appended to ``<out_var>`` (a CMake list of ``VAR=value``
-#:    entries) in the caller's scope.
+#:    entries) in the caller's scope, together with the one library option every
+#:    test runs under: ``EINSUMS_PASS_VERIFY=1`` checks the graph's structural
+#:    invariants after every optimization pass, so a pass that leaves a graph
+#:    malformed fails the test that ran it rather than surfacing later as a wrong
+#:    number.
 #:
 #:    ctest's ENVIRONMENT property CLOBBERS rather than merges, so each
 #:    test-registration path has to bake these in itself. Defining them here keeps
@@ -227,6 +231,7 @@ function(einsums_sanitizer_test_environment out_var)
   set(${out_var}
       "TSAN_OPTIONS=ignore_noninstrumented_modules=1:suppressions=${PROJECT_SOURCE_DIR}/devtools/sanitizers/tsan.supp"
       "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/devtools/lsan.supp"
+      "EINSUMS_PASS_VERIFY=1"
       PARENT_SCOPE
   )
 endfunction()

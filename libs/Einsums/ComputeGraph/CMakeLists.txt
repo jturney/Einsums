@@ -148,6 +148,7 @@ set(ComputeGraphSources
     Graph/Operations.cpp
     Graph/Execute.cpp
     Graph/Report.cpp
+    Graph/Verify.cpp
     GraphIR.cpp
     GraphIR/Write.cpp
     GraphIR/Read.cpp

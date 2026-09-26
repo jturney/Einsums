@@ -59,7 +59,9 @@ SymmetryDescriptor operator_invariance(std::vector<std::vector<int>> const &grou
 
 /// Whether @p desc holds in @p handle's data, dispatched on its element type.
 bool holds_in_data(TensorHandle const &handle, SymmetryDescriptor const &desc) {
-    if (!handle.impl_fn || desc.empty()) {
+    // Only storage that is really there. A declared tensor not yet allocated is a shell whose impl
+    // can carry a sentinel base rather than null, and reading it as data crashed the probe.
+    if (!handle.impl_fn || desc.empty() || handle.alloc_state != AllocState::Materialized) {
         return false;
     }
     bool result = false;

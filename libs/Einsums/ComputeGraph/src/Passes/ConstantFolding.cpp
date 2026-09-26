@@ -11,6 +11,8 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -55,11 +57,41 @@ bool ConstantFolding::run(Graph &graph) {
     // never written by any node are treated as constant. User-owned tensors
     // (is_intermediate=false) are NOT assumed constant because they may change
     // between loop iterations or between successive execute() calls.
+    //
+    // "Never written" covers the whole graph tree: a Loop or Conditional node lists none of its
+    // body's writes, so a tensor a body writes looked unwritten from here and a reader after the
+    // loop was folded with the value the tensor had before the loop ran.
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (writers.writer_count(tid) == 0 && handle.is_intermediate) {
+        if (writers.writer_count(tid) == 0 && writers.subtree_writer_count(tid) == 0 && handle.is_intermediate) {
             constant_tensors.insert(tid);
         }
     }
+
+    // Folding runs a node once, now, and never again, so each output keeps the value it gets here
+    // for every replay, and has it before any other node runs. That matches the unfolded graph only
+    // when the output is graph-owned (a caller may change its own tensor between replays), this node
+    // is its one writer anywhere in the tree (another write would be undone on the next replay), and
+    // nothing reads it before this node's position (that read would see the folded value early).
+    auto const unfoldable_output = [&](Node const &node, std::size_t idx) -> std::string_view {
+        for (TensorId const tid : node.outputs) {
+            auto const *handle = graph.find_tensor(tid);
+            if (handle == nullptr || !handle->is_intermediate) {
+                return "an output is not a graph-owned tensor, and its owner may change it between replays";
+            }
+            // subtree_writer_count counts this graph's writers as well as its descendants', so this
+            // node alone is a count of one in both.
+            if (writers.writer_count(tid) != 1 || writers.subtree_writer_count(tid) != 1 || writers.touched_by_subtree(tid)) {
+                return "an output has another writer, which a replay would undo";
+            }
+            TensorId const root = graph.resolve_alias(tid);
+            for (std::size_t earlier = 0; earlier < idx; ++earlier) {
+                if (std::ranges::any_of(nodes[earlier].inputs, [&](TensorId read) { return graph.resolve_alias(read) == root; })) {
+                    return "an earlier node reads an output, and would see the folded value before this node's turn";
+                }
+            }
+        }
+        return {};
+    };
 
     // A node may only be folded if every tensor it touches has real backing
     // data *right now*, folding executes the node at pass time and bakes
@@ -108,6 +140,11 @@ bool ConstantFolding::run(Graph &graph) {
 
         // Don't execute a node whose tensors aren't materialized yet (see above).
         if (!all_tensors_materialized(node)) {
+            continue;
+        }
+
+        if (auto const reason = unfoldable_output(node, idx); !reason.empty()) {
+            note_skip(std::string{reason}, fmt::format("node {} ({})", node.id, node.label));
             continue;
         }
 

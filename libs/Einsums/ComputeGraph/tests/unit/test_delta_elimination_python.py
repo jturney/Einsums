@@ -387,3 +387,36 @@ def test_the_reported_cost_agrees_with_the_nodes_it_emitted():
     assert pm2.run(zero)
     assert zero_pass.num_zero_blocks == 1
     assert zero_pass.cost_mismatches == [], zero_pass.cost_mismatches
+
+
+def test_a_permutation_operator_survives_a_rewrite_of_its_region():
+    """A region rewrite rebuilds every node it raised, and the algebra has no term for P(...), so an
+    antisymmetrized contraction sharing a region with the delta being eliminated lost its operator.
+    The annotation on the OTHER contraction is what makes the region form."""
+    rng = np.random.default_rng(0)
+    a, b = rng.standard_normal((2, 2, 6)), rng.standard_normal((6, 3, 8))
+    x, y = rng.standard_normal((4, 5)), rng.standard_normal((5, 4))
+    A, B, X, Y = (einsums.asarray(np.ascontiguousarray(v)) for v in (a, b, x, y))
+    R = einsums.zeros((2, 2, 3, 8), dtype="float64")
+    Z = einsums.zeros((4, 4), dtype="float64")
+
+    graph = cg.Graph("delta_operator")
+    registry = cg.SpaceRegistry()
+    occ = registry.register_space(cg.index_space("occ", "o", 4.0))
+    virt = registry.register_space(cg.index_space("virt", "v", 4.0))
+    registry.register_space(cg.index_space("aux", "x", 4.0))
+    registry.declare_disjoint(occ, virt)
+    graph.set_space_registry(registry)
+    with cg.capture(graph):
+        einsums.einsum("a,c,e,f <- P(a/c) a,c,d ; d,e,f", R, A, B)
+        einsums.einsum("s,u <- s,q ; q,u", Z, X, Y)
+    cg.annotate(X, ("aux", "occ"), graph=graph)
+    cg.annotate(Y, ("virt", "aux"), graph=graph)
+    manager = cg.PassManager()
+    manager.populate_default()
+    manager.run(graph)
+    graph.execute()
+
+    want = np.einsum("acd,def->acef", a, b)
+    want = want - want.transpose(1, 0, 2, 3)
+    np.testing.assert_allclose(np.asarray(R), want, rtol=1e-12, atol=1e-12)

@@ -857,3 +857,42 @@ def test_a_definition_whose_operand_is_rewritten_before_its_consumer_stays_put()
 
     graph.execute()
     assert_close(np.asarray(R), (a @ first) @ v, dtype="float64")
+
+
+def test_a_region_holding_a_permutation_operator_is_not_rewritten_without_it():
+    """The algebra a region is raised into has no term for P(...), so raising an antisymmetrized
+    contraction described only its identity term. The CCSD tau pair below, with P(i/j) P(a/b) on
+    both writes, came back as the unantisymmetrized sum once the search rewrote it."""
+    o, v = 3, 4
+    rng = np.random.default_rng(0)
+    tau = rng.standard_normal((o, o, v, v))
+    g_arr = rng.standard_normal((o, o, v, v))
+
+    def antisym(x):
+        x = x - x.transpose(1, 0, 2, 3)
+        return x - x.transpose(0, 1, 3, 2)
+
+    w1 = np.einsum("ijef,mnef->mnij", tau, g_arr)
+    w2 = np.einsum("mnab,mnef->abef", tau, g_arr)
+    want = 0.125 * antisym(np.einsum("mnab,mnij->ijab", tau, w1)) + 0.125 * antisym(np.einsum("ijef,abef->ijab", tau, w2))
+
+    graph = cg.Graph("mtf_operator")
+    T = einsums.asarray(np.ascontiguousarray(tau))
+    G = einsums.asarray(np.ascontiguousarray(g_arr))
+    R = einsums.zeros((o, o, v, v), dtype="float64")
+    W1 = graph.declare_tensor("w1", [o, o, o, o], intermediate=True, dtype="float64")
+    W2 = graph.declare_tensor("w2", [v, v, v, v], intermediate=True, dtype="float64")
+    with cg.capture(graph):
+        einsums.einsum("m,n,i,j <- i,j,e,f ; m,n,e,f", W1, T, G)
+        einsums.einsum("i,j,a,b <- P(i/j) P(a/b) m,n,a,b ; m,n,i,j", R, T, W1, c_pf=0.0, ab_pf=0.125)
+        einsums.einsum("a,b,e,f <- m,n,a,b ; m,n,e,f", W2, T, G)
+        einsums.einsum("i,j,a,b <- P(i/j) P(a/b) i,j,e,f ; a,b,e,f", R, T, W2, c_pf=1.0, ab_pf=0.125)
+    manager = cg.PassManager()
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    manager.add(mtf)
+    manager.set_optimizer_budget(0)
+    manager.add(cg.Materialization())
+    manager.run(graph)
+    graph.execute()
+    assert_close(R, want)

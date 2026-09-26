@@ -36,6 +36,7 @@ import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, example, given, settings
+from _permutation_operators import P_SHAPES, apply_operator, operator_prefix
 from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
@@ -80,54 +81,21 @@ def _rnd(shape, dt, rng):
     return a.astype(dt)
 
 
-# Permutation operators, as SHAPES with their expansions written out.
-#
-# Each entry is (groups over placeholder positions, [(substitution, sign)]).
-# A substitution maps placeholder p to placeholder ``perm[p]``, so the term
-# ``(ij)`` of ``P(x0/x1 x2)`` is ``(1, 0, 2)``.
-#
-# Written out rather than computed, deliberately. An oracle that re-derived the
-# coset representatives would only restate whatever the implementation does, and
-# the representative is a CONVENTION: a coset holds permutations of both
-# parities, so a wrong choice is still a valid antisymmetrizer and agrees with
-# this one on every term that has the within-group symmetry the operator
-# presumes. These rows are the literature's, transcribed by hand.
-_P_SHAPES = [
-    # P(x0/x1) = 1 - (01)
-    ([[0], [1]],
-     [((0, 1), 1.0), ((1, 0), -1.0)]),
-    # P(x0/x1 x2) = 1 - (01) - (02)
-    ([[0], [1, 2]],
-     [((0, 1, 2), 1.0), ((1, 0, 2), -1.0), ((2, 1, 0), -1.0)]),
-    # P(x0 x1/x2) = 1 - (02) - (12)
-    ([[0, 1], [2]],
-     [((0, 1, 2), 1.0), ((2, 1, 0), -1.0), ((0, 2, 1), -1.0)]),
-    # P(x0/x1/x2) = the full antisymmetrizer on three letters
-    ([[0], [1], [2]],
-     [((0, 1, 2), 1.0), ((1, 0, 2), -1.0), ((2, 1, 0), -1.0),
-      ((0, 2, 1), -1.0), ((1, 2, 0), 1.0), ((2, 0, 1), 1.0)]),
-    # P(x0 x1/x2 x3) = 1 - (02) - (03) - (12) - (13) + (02)(13)
-    ([[0, 1], [2, 3]],
-     [((0, 1, 2, 3), 1.0), ((0, 2, 1, 3), -1.0), ((0, 3, 2, 1), -1.0),
-      ((2, 1, 0, 3), -1.0), ((3, 1, 2, 0), -1.0), ((2, 3, 0, 1), 1.0)]),
-]
-
-
 def _draw_permutation_operator(draw, c_idx, extent):
     """Draw a ``P(...)`` over C's letters, or None.
 
     Every axis an operator permutes must have the same extent, so the letters
     are pooled by extent first. Letters that C repeats are excluded: a repeated
     output letter is a diagonal write with no single axis to reorder, which the
-    parser rejects and which would also break the oracle's axis lookup below.
+    parser rejects and which would also break the oracle's axis lookup in apply_operator.
     """
     if not c_idx or len(set(c_idx)) != len(c_idx) or not draw(st.booleans()):
         return None
-    shapes = [i for i, sh in enumerate(_P_SHAPES) if sum(len(g) for g in sh[0]) <= len(c_idx)]
+    shapes = [i for i, sh in enumerate(P_SHAPES) if sum(len(g) for g in sh[0]) <= len(c_idx)]
     if not shapes:
         return None
     shape_index     = draw(st.sampled_from(shapes))
-    groups_shape, _ = _P_SHAPES[shape_index]
+    groups_shape, _ = P_SHAPES[shape_index]
     n               = sum(len(g) for g in groups_shape)
     chosen          = list(draw(st.permutations(c_idx))[:n])
     # The extents are FORCED equal rather than filtered for. Looking for letters
@@ -140,32 +108,6 @@ def _draw_permutation_operator(draw, c_idx, extent):
         extent[letter] = common
     groups = [[chosen[i] for i in g] for g in groups_shape]
     return (groups, shape_index, chosen)
-
-
-def _operator_prefix(op):
-    """The ``P(a/bc) `` spelling, empty when there is no operator.
-
-    Comma-free, because the specs this file builds are comma-free and a comma
-    inside the operator would put its operand into multi-character mode.
-    """
-    if op is None:
-        return ""
-    groups, _, _ = op
-    return "P(" + "/".join("".join(g) for g in groups) + ") "
-
-
-def _apply_operator(op, c_idx, base):
-    """The antisymmetrized base result, by the table above."""
-    if op is None:
-        return base
-    _, shape_index, chosen = op
-    acc = np.zeros_like(base)
-    for perm, sign in _P_SHAPES[shape_index][1]:
-        sub    = {chosen[p]: chosen[perm[p]] for p in range(len(chosen))}
-        term_c = [sub.get(x, x) for x in c_idx]
-        axes   = [c_idx.index(letter) for letter in term_c]
-        acc    = acc + sign * base.transpose(np.argsort(axes))
-    return acc
 
 
 @st.composite
@@ -361,8 +303,8 @@ def _run_einsum_diff(prob, exact):
     np_spec = f"{''.join(a_idx)},{''.join(b_idx)}->{''.join(c_idx)}"
     # The operator applies to the CONTRACTION's result, and the prefactors apply
     # once to the antisymmetrized sum rather than once per term.
-    oracle  = c_pf * C0 + ab_pf * _apply_operator(operator, c_idx, np.einsum(np_spec, A0, B0))
-    es_spec = f"{''.join(c_idx)} <- {_operator_prefix(operator)}{''.join(a_idx)} ; {''.join(b_idx)}"
+    oracle  = c_pf * C0 + ab_pf * apply_operator(operator, c_idx, np.einsum(np_spec, A0, B0))
+    es_spec = f"{''.join(c_idx)} <- {operator_prefix(operator)}{''.join(a_idx)} ; {''.join(b_idx)}"
     At = _mk_maybe_view(A0, view_a, dt, rng)
     # Aliased operands: the SAME tensor object appears as both inputs, so
     # the capture sees one TensorId twice in a single einsum node.

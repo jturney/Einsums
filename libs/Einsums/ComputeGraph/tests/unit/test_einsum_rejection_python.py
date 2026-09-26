@@ -102,8 +102,10 @@ def test_numbered_indices_are_accepted(mode):
 
 
 # The permute parser accepted any character as an index label and any output
-# label at all, so "j@ <- @j" ran as a transpose.
-@pytest.mark.parametrize("spec", ["j@ <- @j", "ik <- ij"])
+# label at all, so "j@ <- @j" ran as a transpose. "i <- i" names fewer axes than
+# the operands have: it ran over the one axis it named and copied a single
+# column, leaving the rest of C untouched.
+@pytest.mark.parametrize("spec", ["j@ <- @j", "ik <- ij", "i <- i"])
 def test_invalid_permute_spec_rejected(spec):
     A = _mk("A", np.ones((2, 3)))
     C = _mk("C", np.zeros((3, 2)))

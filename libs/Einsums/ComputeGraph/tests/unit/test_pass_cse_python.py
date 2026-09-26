@@ -473,3 +473,56 @@ def test_cse_deduplicates_rank3_batched_gemm_row_major():
     modified = g.apply(_one_pass(cg.CSE()))
     assert modified
     assert _count_kind(g, "Einsum") == 1
+
+
+def test_cse_does_not_merge_contractions_that_differ_only_in_an_operator():
+    """`P(a/c) a,h ; h,c` and `a,h ; h,c` read the same operands and write the same shape, and one
+    is the antisymmetrized other. CSE compared only the index lists, merged them, and a reader of
+    the plain one got the antisymmetrized value (or, after expansion, a crash)."""
+    rng = np.random.default_rng(0)
+    a, b, w = rng.standard_normal((2, 8)), rng.standard_normal((8, 2)), rng.standard_normal((2, 6))
+    A, B, W = (einsums.asarray(np.ascontiguousarray(v)) for v in (a, b, w))
+    R1 = einsums.zeros((2, 2), dtype="float64")
+    R2 = einsums.zeros((2, 6), dtype="float64")
+
+    graph = cg.Graph("cse_operator")
+    T = graph.declare_tensor("t", [2, 2], intermediate=True, dtype="float64")
+    with cg.capture(graph):
+        einsums.einsum("a,c <- P(a/c) a,h ; h,c", R1, A, B)
+        einsums.einsum("a,c <- a,h ; h,c", T, A, B)
+        einsums.einsum("a,b <- a,c ; c,b", R2, T, W)
+    manager = cg.PassManager()
+    manager.populate_default()
+    manager.run(graph)
+    graph.execute()
+
+    ab = a @ b
+    assert_close(R1, ab - ab.T)
+    assert_close(R2, ab @ w)
+
+
+def test_cse_leaves_a_duplicate_it_cannot_redirect():
+    """Two identical antisymmetrized contractions expand into two identical temporaries. The
+    temporaries a pass creates have no slot, and redirect_slot silently does nothing without one,
+    so merging them left the second output reading a temporary nothing wrote: all zeros."""
+    n, k = 4, 3
+    rng = np.random.default_rng(0)
+    a, b = rng.standard_normal((n, k)), rng.standard_normal((k, n))
+    A, B = einsums.asarray(a), einsums.asarray(b)
+    R0 = einsums.zeros((n, n), dtype="float64")
+    R1 = einsums.zeros((n, n), dtype="float64")
+
+    graph = cg.Graph("cse_unredirectable")
+    with cg.capture(graph):
+        einsums.einsum("p,r <- P(p/r) p,q ; q,r", R0, A, B)
+        einsums.einsum("p,r <- P(p/r) p,q ; q,r", R1, A, B)
+    manager = cg.PassManager()
+    manager.add(cg.AntisymmetrizerExpansion())
+    manager.add(cg.CSE())
+    manager.add(cg.Materialization())
+    manager.run(graph)
+    graph.execute()
+
+    want = a @ b - (a @ b).T
+    assert_close(R0, want)
+    assert_close(R1, want)

@@ -44,8 +44,10 @@ bool einsum_indices_equal(EinsumDescriptor const &a, EinsumDescriptor const &b) 
     }
     auto const &sa = a.indices->spec;
     auto const &sb = b.indices->spec;
+    // The operators are half the value: `P(ij) ik;kj` and `ik;kj` read the same operands and write
+    // the same shape, and one is the antisymmetrized other.
     return sa.c_indices == sb.c_indices && sa.a_indices == sb.a_indices && sa.b_indices == sb.b_indices && sa.conj_a == sb.conj_a &&
-           sa.conj_b == sb.conj_b;
+           sa.conj_b == sb.conj_b && live_index_lists(a).operators == live_index_lists(b).operators;
 }
 
 // ── Proportional matching ───────────────────────────────────────────────────
@@ -133,7 +135,7 @@ std::optional<double> op_data_ratio(OpData const &a, OpData const &b) {
         // The index orders are half the operation: `C[j,i,k] = A[i,j,k]` and
         // `C[i,k,j] = A[i,j,k]` read the same source with the same scalars and
         // write the same shape, yet compute different transposes.
-        if (!(pa->beta == pb.beta && pa->c_indices == pb.c_indices && pa->a_indices == pb.a_indices)) {
+        if (!(pa->beta == pb.beta && pa->c_indices == pb.c_indices && pa->a_indices == pb.a_indices && pa->operators == pb.operators)) {
             return std::nullopt;
         }
         return exact_ratio(pa->alpha, pb.alpha);
@@ -438,6 +440,18 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
                     break;
             }
             if (escapes)
+                continue;
+
+            // Guard G: both outputs must have a slot. The merge reaches the duplicate's readers
+            // through Graph::redirect_slot, which repoints a slot; a tensor a pass created
+            // without one has nothing to repoint, so the redirect does nothing and its readers
+            // keep reading a buffer no node writes any more. That is how two antisymmetrizer
+            // expansions sharing a contraction left one output all zeros.
+            bool redirectable = true;
+            for (auto const *outs : {&nodes[i].outputs, &nodes[j].outputs}) {
+                redirectable = redirectable && std::ranges::all_of(*outs, [&](TensorId out) { return graph.find_slot(out) != nullptr; });
+            }
+            if (!redirectable)
                 continue;
 
             // Guard B: both producers' output buffers must be written exactly

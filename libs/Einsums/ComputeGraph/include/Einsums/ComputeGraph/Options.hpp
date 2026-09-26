@@ -33,6 +33,15 @@ inline constinit cl::ConfigOption<bool> PassAnalyze =
 inline constinit cl::ConfigOption<bool> PassVerbose = cl::config_flag(
     "einsums:pass:verbose", "Log node count and timing before and after each optimization pass", "ComputeGraph Passes", false);
 
+/// Check the graph's structural invariants after every optimization pass.
+///
+/// A pass that leaves a graph malformed usually still produces a graph that runs, and the damage
+/// surfaces later, far from the pass, as a wrong number or a lookup that finds the wrong node. This
+/// runs @ref Graph::verify after each pass and fails naming the pass. The test suite turns it on.
+inline constinit cl::ConfigOption<bool> PassVerify =
+    cl::config_flag("einsums:pass:verify", "Check the graph's structural invariants after every optimization pass and fail naming the pass",
+                    "ComputeGraph Passes", false);
+
 /// How much the optimization passes narrate about what they did and declined.
 ///
 /// 0 silent, 1 a summary line per pass, 2 each modification and each declined

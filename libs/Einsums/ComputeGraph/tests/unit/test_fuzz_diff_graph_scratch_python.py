@@ -3,7 +3,8 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 # ----------------------------------------------------------------------------------------------
 
-"""Parent-declared graph scratch consumed inside / after control flow.
+"""Parent-declared graph scratch consumed inside / after control flow, and
+eager graph-owned intermediates written only through views.
 
 Split out of the former monolithic test_fuzz_differential_python.py; the
 shared harness lives in _fuzz_diff_common.py."""
@@ -245,6 +246,307 @@ def _check_scratch_program(prog, m_arrays, n_scratch, n, label):
                     f"GRAPH-SCRATCH {ex_name} disagrees on m{idx}\n"
                     f"program={prog!r}\ngot=\n{got}\noracle=\n{oracle_ord[idx]}"
                 )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Eager graph-owned intermediates written ONLY through views.
+#
+# ConstantFolding executes a node at pass time when every input is a
+# MATERIALIZED graph-owned intermediate that no node writes. The arms above
+# never reach that question: their scratch is a deferred ``declare_*`` shell,
+# which the pass refuses to touch, and it is always written whole before any
+# view of it is. The bug that shipped lived exactly in the gap: an eager
+# intermediate T written only by an axpy into a slice of T looked unwritten,
+# so a later reader of T was folded with T's pre-write contents.
+#
+# This arm creates 1-3 intermediates with ``graph.create_zero_tensor`` (eager,
+# intermediate=True), optionally seeds them with data so even a scale through
+# a view changes the value, and writes most of them only through slices or
+# full-cover views with value-carrying ops (axpy, axpby, gemm into the view).
+# The rest stay untouched, so the pass has something it SHOULD fold and a
+# broken "is it written?" answer cannot hide behind the pass never firing.
+# Readers come after the writes and often take every input from the eager
+# intermediates, which is the shape that makes the reader itself foldable.
+#
+# View-write opcodes local to this arm (box = (r0, r1, c0, c1)):
+#
+#   ("gvaxpy",  a, src, sbox, dst, dbox)     m[dst][dbox] += a*m[src][sbox]
+#   ("gvaxpby", a, src, sbox, b, dst, dbox)  m[dst][dbox] = a*m[src][sbox] + b*m[dst][dbox]
+#   ("gvgemm",  a, A, ar0, B, bc0, b, dst, dbox)
+#         m[dst][dbox] = a*(m[A][ar0:ar0+h, :] @ m[B][:, bc0:bc0+w]) + b*m[dst][dbox]
+#
+# A full source box is emitted as the plain tensor rather than a view of it,
+# so the view-to-view and tensor-to-view overloads are both exercised.
+# ──────────────────────────────────────────────────────────────────────────
+
+_EAGER_VIEW_WRITES = ("gvaxpy", "gvaxpby", "gvgemm")
+
+
+def _draw_box(rng, n):
+    """A random sub-block, or the full cover a third of the time: a view whose
+    box equals its parent's is its own alias case and a random offset rarely
+    lands on it."""
+    if rng.random() < 1 / 3:
+        return (0, n, 0, n)
+    h = int(rng.integers(1, n + 1))
+    w = int(rng.integers(1, n + 1))
+    r0 = int(rng.integers(0, n - h + 1))
+    c0 = int(rng.integers(0, n - w + 1))
+    return (r0, r0 + h, c0, c0 + w)
+
+
+def _same_shaped_box(rng, box, n):
+    """A box of the same extent as ``box`` at a random offset, for the source."""
+    h, w = box[1] - box[0], box[3] - box[2]
+    r0 = int(rng.integers(0, n - h + 1))
+    c0 = int(rng.integers(0, n - w + 1))
+    return (r0, r0 + h, c0, c0 + w)
+
+
+def _view_write_eager(rng, dst, srcs, n):
+    """One write into ``dst`` that goes only through a view of it. ``srcs``
+    excludes ``dst``, so source and destination never share a buffer."""
+    a = _scalar(rng)
+    dbox = _draw_box(rng, n)
+    roll = int(rng.integers(0, 4))
+    if roll == 0:
+        return ("gvaxpy", a, int(rng.choice(srcs)), _same_shaped_box(rng, dbox, n), dst, dbox)
+    if roll == 1:
+        return ("gvaxpby", a, int(rng.choice(srcs)), _same_shaped_box(rng, dbox, n), _scalar(rng), dst, dbox)
+    if roll == 2:
+        h, w = dbox[1] - dbox[0], dbox[3] - dbox[2]
+        return ("gvgemm", a, int(rng.choice(srcs)), int(rng.integers(0, n - h + 1)),
+                int(rng.choice(srcs)), int(rng.integers(0, n - w + 1)), float(rng.integers(0, 2)), dst, dbox)
+    # A scale through a view only changes a seeded intermediate, but it is the
+    # write every other arm already draws, so keep it in the mix.
+    return ("vscale", a, dst, *dbox)
+
+
+def _read_eager(rng, eager, ords, all_owned):
+    """A whole-tensor read of the eager intermediates into a caller-owned
+    result. With ``all_owned`` every input is an eager intermediate and the
+    result's prior value is discarded, which leaves ConstantFolding free to
+    evaluate the node at pass time if it believes its inputs never change."""
+    a = _scalar(rng)
+    e1, e2 = int(rng.choice(eager)), int(rng.choice(eager))
+    o = int(rng.choice(ords))
+    if all_owned:
+        roll = int(rng.integers(0, 4))
+        if roll == 0:
+            return ("gemm", a, e1, e2, 0.0, o)
+        if roll == 1:
+            return ("einsum", _SQ, a, e1, e2, 0.0, o, False, False)
+        if roll == 2:
+            return ("perm", a, 0.0, e1, o)
+        return ("axpby", a, e1, 0.0, o)
+    roll = int(rng.integers(0, 3))
+    if roll == 0:
+        return ("axpy", a, e1, o)
+    o2 = _distinct(rng, ords, {o})
+    if roll == 1:
+        return ("gemm", a, e1, o, float(rng.integers(0, 2)), o2)
+    return ("gemm", a, o, e1, float(rng.integers(0, 2)), o2)
+
+
+def _gen_eager_view_program(rng, ords, eager, n):
+    """Arm E: view-only writes of eager intermediates, then whole reads."""
+    stmts = [_gen_square_primitive(rng, ords) for _ in range(int(rng.integers(0, 2)))]
+    # At least one intermediate is always view-written; an untouched one is
+    # drawn alongside it often enough that the pass also has a real fold.
+    written = [e for e in eager if rng.random() < 0.75] or [eager[0]]
+    for dst in written:
+        srcs = ords + [e for e in eager if e != dst]
+        writes = [_view_write_eager(rng, dst, srcs, n) for _ in range(int(rng.integers(1, 4)))]
+        if rng.random() < 0.25:
+            # A writer inside a loop body must still count against the parent's
+            # buffer; a per-graph writer scan would miss it the same way.
+            stmts.append(("loop", int(rng.integers(2, 4)), writes))
+        else:
+            stmts += writes
+        stmts += [_gen_square_primitive(rng, ords) for _ in range(int(rng.integers(0, 2)))]
+    for _ in range(int(rng.integers(1, 4))):
+        stmts.append(_read_eager(rng, eager, ords, all_owned=rng.random() < 0.6))
+    stmts += [_gen_square_primitive(rng, ords) for _ in range(int(rng.integers(0, 2)))]
+    return stmts
+
+
+def _box_slice(box):
+    return (slice(box[0], box[1]), slice(box[2], box[3]))
+
+
+def _interp_eager(stmts, m):
+    """numpy oracle: the local view-write opcodes here, everything else in
+    ``interp_np``. Control flow recurses here so a loop body may hold both."""
+    for s in stmts:
+        k = s[0]
+        if k == "gvaxpy":
+            _, a, src, sbox, dst, dbox = s
+            m[dst][_box_slice(dbox)] += a * m[src][_box_slice(sbox)]
+        elif k == "gvaxpby":
+            _, a, src, sbox, b, dst, dbox = s
+            m[dst][_box_slice(dbox)] = a * m[src][_box_slice(sbox)] + b * m[dst][_box_slice(dbox)]
+        elif k == "gvgemm":
+            _, a, A, ar0, B, bc0, b, dst, dbox = s
+            h, w = dbox[1] - dbox[0], dbox[3] - dbox[2]
+            prod = m[A][ar0:ar0 + h, :] @ m[B][:, bc0:bc0 + w]
+            m[dst][_box_slice(dbox)] = a * prod + b * m[dst][_box_slice(dbox)]
+        elif k == "loop":
+            for _ in range(s[1]):
+                _interp_eager(s[2], m)
+        else:
+            interp_np([s], m, [], [], np.dtype("float64"))
+
+
+def _src_operand(t, box, n):
+    return t if box == (0, n, 0, n) else cg.view(t, [(box[0], box[1]), (box[2], box[3])])
+
+
+def _emit_eager(s, m, n):
+    k = s[0]
+    if k == "gvaxpy":
+        _, a, src, sbox, dst, dbox = s
+        einsums.linalg.axpy(a, _src_operand(m[src], sbox, n), cg.view(m[dst], [dbox[:2], dbox[2:]]))
+    elif k == "gvaxpby":
+        _, a, src, sbox, b, dst, dbox = s
+        einsums.linalg.axpby(a, _src_operand(m[src], sbox, n), b, cg.view(m[dst], [dbox[:2], dbox[2:]]))
+    elif k == "gvgemm":
+        _, a, A, ar0, B, bc0, b, dst, dbox = s
+        h, w = dbox[1] - dbox[0], dbox[3] - dbox[2]
+        einsums.linalg.gemm(a, _src_operand(m[A], (ar0, ar0 + h, 0, n), n),
+                            _src_operand(m[B], (0, n, bc0, bc0 + w), n), b, cg.view(m[dst], [dbox[:2], dbox[2:]]))
+    else:
+        _emit_primitive(s, m, [], [])
+
+
+def _build_eager(stmts, graph, m, n, tag):
+    """``build_cg`` for this arm: straight runs are captured into ``graph``,
+    loops get their own body graph."""
+    run = []
+
+    def flush():
+        if run:
+            with cg.capture(graph):
+                for s in run:
+                    _emit_eager(s, m, n)
+            run.clear()
+
+    for i, s in enumerate(stmts):
+        if s[0] != "loop":
+            run.append(s)
+            continue
+        flush()
+        cnt = s[1]
+        body = graph.add_loop(f"{tag}_loop{i}", cnt, lambda it, c=cnt: it < c - 1)
+        _build_eager(s[2], body, m, n, f"{tag}_l{i}")
+    flush()
+
+
+def _check_eager_view_program(prog, m_arrays, e_arrays, n, label):
+    B = len(m_arrays)
+    om = [a.copy() for a in m_arrays] + [a.copy() for a in e_arrays]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        _interp_eager(prog, om)
+    if not _usable(om[:B], cap=_DTYPE_CAP["float64"]):
+        pytest.skip("oracle overflowed: numerically degenerate program")
+
+    for ex_name, exec_cls in _CROSS_EXECUTORS:
+        tag = f"{label}_{ex_name}"
+        g = cg.Graph(tag)
+        mats = []
+        for idx, arr in enumerate(m_arrays):
+            tn = einsums.create_zero_tensor(f"{tag}_m{idx}", [n, n], dtype="float64")
+            np.asarray(tn)[...] = arr
+            mats.append(tn)
+        for idx, arr in enumerate(e_arrays):
+            # Graph-owned AND materialized: the only kind of tensor
+            # ConstantFolding will evaluate a node over.
+            tn = g.create_zero_tensor(f"{tag}_e{idx}", [n, n], intermediate=True, dtype="float64")
+            np.asarray(tn)[...] = arr
+            mats.append(tn)
+        _build_eager(prog, g, mats, n, tag)
+        g.apply(cg.default_pass_manager())
+        assert_materialization_invariants(g, f"{label}/{ex_name}")
+        g.execute() if ex_name == "Sequential" else g.execute(exec_cls())
+        for idx in range(B):
+            got = np.asarray(mats[idx])
+            if not np.allclose(got, om[idx], rtol=RTOL, atol=ATOL):
+                raise AssertionError(
+                    f"EAGER-VIEW {ex_name} disagrees on m{idx}\n"
+                    f"program={prog!r}\ngot=\n{got}\noracle=\n{om[idx]}"
+                )
+
+
+def _eager_seed(rng, n):
+    m_arrays = [rng.standard_normal((n, n)) * 0.5 for _ in range(_SCRATCH_ORDS)]
+    n_eager = int(rng.integers(1, 4))
+    # Half the intermediates start at zero, as a fresh create_zero_tensor does;
+    # the rest carry data so a scale through a view is a visible write too.
+    e_arrays = [rng.standard_normal((n, n)) * 0.5 if rng.random() < 0.5 else np.zeros((n, n))
+                for _ in range(n_eager)]
+    ords = list(range(_SCRATCH_ORDS))
+    eager = list(range(_SCRATCH_ORDS, _SCRATCH_ORDS + n_eager))
+    return m_arrays, e_arrays, ords, eager
+
+
+@pytest.mark.parametrize("seed", fuzz_seeds(60))
+def test_fuzz_eager_intermediate_written_through_views(seed):
+    """Arm E: eager graph-owned intermediates written only through views, then
+    read whole (default pipeline, Sequential + parallel executors)."""
+    rng = np.random.default_rng(190_000 + seed)
+    n = _SCRATCH_N
+    m_arrays, e_arrays, ords, eager = _eager_seed(rng, n)
+    prog = _gen_eager_view_program(rng, ords, eager, n)
+    _check_eager_view_program(prog, m_arrays, e_arrays, n, f"eview{seed}")
+
+
+def _all_owned_reader_inputs(s, eager):
+    """The inputs of ``s`` if it is a reader ConstantFolding could evaluate:
+    every operand an eager intermediate and the result's prior value unread.
+    Empty otherwise."""
+    k = s[0]
+    if k == "gemm" and s[4] == 0.0:
+        ins = {s[2], s[3]}
+    elif k == "einsum" and s[5] == 0.0:
+        ins = {s[3], s[4]}
+    elif k == "perm" and s[2] == 0.0:
+        ins = {s[3]}
+    elif k == "axpby" and s[3] == 0.0:
+        ins = {s[2]}
+    else:
+        return set()
+    return ins if ins <= set(eager) else set()
+
+
+def test_the_eager_view_corpus_reaches_the_fold_question():
+    """The corpus guard for arm E: the shape behind the view-only-write fold bug
+    is an intermediate whose every write goes through a view with a value
+    carrying op, followed by a reader whose every input is graph-owned. A
+    generator change that stops producing it would leave the arm passing while
+    testing nothing."""
+    kinds = set()
+    full_box = False
+    hits = 0
+    for seed in range(40):
+        rng = np.random.default_rng(190_000 + seed)
+        _, _, ords, eager = _eager_seed(rng, _SCRATCH_N)
+        prog = _gen_eager_view_program(rng, ords, eager, _SCRATCH_N)
+        flat = []
+        for s in prog:
+            kinds.add(s[0])
+            flat += s[2] if s[0] == "loop" else [s]
+        for s in flat:
+            kinds.add(s[0])
+            if s[0] in _EAGER_VIEW_WRITES and s[-1] == (0, _SCRATCH_N, 0, _SCRATCH_N):
+                full_box = True
+        view_written = {s[-2] for s in flat if s[0] in _EAGER_VIEW_WRITES}
+        for s in flat:
+            owned = _all_owned_reader_inputs(s, eager)
+            if owned and owned & view_written:
+                hits += 1
+    for kind in _EAGER_VIEW_WRITES + ("loop",):
+        assert kind in kinds, f"{kind} never drawn: {sorted(kinds)}"
+    assert full_box, "no full-cover view write drawn"
+    assert hits >= 10, f"only {hits} all-owned readers of a view-written intermediate drawn"
 
 
 @pytest.mark.parametrize("seed", fuzz_seeds(60))

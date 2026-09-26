@@ -6,6 +6,8 @@
 // Tests for Graph features: to_json, move semantics, empty graph, PassManager default.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/Options.hpp>
+#include <Einsums/Options/Get.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -138,6 +140,59 @@ TEST_CASE("Graph - node ids stay unique through the default pipeline", "[Compute
         for (size_t jj = 0; jj < 6; jj++) {
             REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < 1e-9 * (1.0 + std::abs(D_ref(ii, jj))));
         }
+    }
+}
+
+namespace {
+
+/// A pass that appends a node naming a tensor the graph never registered, with no executor: the
+/// shape of damage a pass leaves when it splices a node without doing the bookkeeping.
+class CorruptingPass : public cg::OptimizerPass {
+  public:
+    [[nodiscard]] std::string name() const override { return "CorruptingPass"; }
+    bool                      run(cg::Graph &graph) override {
+        cg::Node node;
+        node.kind   = cg::OpKind::Custom;
+        node.label  = "stray";
+        node.inputs = {TensorId{987654}};
+        graph.nodes().push_back(std::move(node));
+        graph.mark_sorted();
+        return true;
+    }
+};
+
+/// Sets einsums:pass:verify for one test and restores it.
+struct VerifyPasses {
+    bool const previous = einsums::config::get(einsums::option::PassVerify);
+    VerifyPasses() { einsums::config::set(einsums::option::PassVerify, true); }
+    ~VerifyPasses() { einsums::config::set(einsums::option::PassVerify, previous); }
+};
+
+} // namespace
+
+TEST_CASE("Graph - verify names each structural problem and the pass that caused it", "[ComputeGraph][Verify]") {
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto B = create_random_tensor<double>("B", 3, 3);
+    auto C = create_zero_tensor<double>("C", 3, 3);
+
+    cg::Graph graph("verified");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+    }
+    CHECK(graph.verify().empty());
+
+    VerifyPasses const verifying;
+    cg::PassManager    manager;
+    manager.add<CorruptingPass>();
+    try {
+        (void)manager.run(graph);
+        FAIL("a pass that left the graph malformed was not reported");
+    } catch (std::logic_error const &error) {
+        std::string const message = error.what();
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("pass 'CorruptingPass' left the graph malformed"));
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("input tensor #987654 is not registered"));
+        CHECK_THAT(message, Catch::Matchers::ContainsSubstring("has no executor"));
     }
 }
 

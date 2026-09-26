@@ -284,8 +284,13 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
         check.id    = body.reserve_node_id();
         check.kind  = OpKind::Custom;
         check.label = fmt::format("verify {} detected symmetry fact(s) still hold", leaves.size());
+        // The body's own ids for the leaves, minted through the pointer index: the check lives in
+        // the body, so an id from the parent's table would name nothing there, and the setup's
+        // reads, which the parent derives from its body, would name nothing either.
         for (auto const &[tid, desc] : leaves) {
-            check.inputs.push_back(tid);
+            if (auto const *handle = graph.find_tensor(graph.resolve_alias(tid)); handle != nullptr) {
+                check.inputs.push_back(body.find_or_register_tensor_ptr(*handle));
+            }
         }
         check.execute = [owner, leaves = std::move(leaves)]() {
             for (auto const &[tid, desc] : leaves) {

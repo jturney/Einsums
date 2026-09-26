@@ -233,6 +233,7 @@ set(ComputeGraphTests
     test_hyp_lapack_diff_python.py
     test_hyp_largedim_diff_python.py
     test_hyp_largerank_diff_python.py
+    test_hyp_spec_rejection_python.py
     test_hyp_einsum_conj_python.py
     test_hyp_linalg_diff_python.py
     test_hyp_metamorphic_python.py

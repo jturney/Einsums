@@ -160,6 +160,14 @@ enum class OptLevel : std::uint8_t; // Optimizer.hpp
  * @return Whether any invocation modified its graph.
  */
 EINSUMS_EXPORT bool run_pass_tree(OptimizerPass &pass, Graph &graph);
+
+/**
+ * @brief When ``einsums:pass:verify`` is set, fail if @p graph breaks a structural invariant,
+ *        naming @p pass_name as the pass that left it that way. A no-op otherwise.
+ *
+ * @throws std::logic_error listing every problem @ref Graph::verify found.
+ */
+EINSUMS_EXPORT void verify_after_pass(Graph const &graph, std::string_view pass_name);
 struct ParsedEinsumSpec;
 
 /**
@@ -692,6 +700,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * id. Ids already issued are kept. Does not descend into sub-graphs.
      */
     void assign_node_ids();
+
+    /**
+     * @brief Every structural invariant this graph and its sub-graphs break, one message each.
+     *
+     * Checks that every node id is issued and unique within its graph, that every operand is a
+     * registered tensor, that each lifecycle node names the registered tensor it manages, that
+     * every node has an executor, and that each contraction and permutation carries index lists
+     * as long as its operands' ranks. Empty for a well-formed graph. Run after every pass when
+     * ``einsums:pass:verify`` is set.
+     */
+    [[nodiscard]] std::vector<std::string> verify() const;
 
     /**
      * @brief Register a tensor handle with the graph.
@@ -1523,6 +1542,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
         bool                   modified = run_pass_tree(pass, *this);
         assign_node_ids();
         for_each_descendant(std::function<void(Graph &)>{[](Graph &sub) { sub.assign_node_ids(); }});
+        verify_after_pass(*this, pass.name());
         return {modified, std::move(pass)};
     }
 

@@ -295,6 +295,21 @@ PassManager &PassManager::enable(std::string pass_name) {
     return *this;
 }
 
+void verify_after_pass(Graph const &graph, std::string_view pass_name) {
+    if (!config::get(option::PassVerify)) {
+        return;
+    }
+    auto const problems = graph.verify();
+    if (problems.empty()) {
+        return;
+    }
+    std::string report;
+    for (auto const &problem : problems) {
+        report += "\n  " + problem;
+    }
+    EINSUMS_THROW_EXCEPTION(std::logic_error, "pass '{}' left the graph malformed ({} problem(s)):{}", pass_name, problems.size(), report);
+}
+
 /// Run a single pass on @p graph and, when the pass opts in via
 /// ``recurse_into_subgraphs()``, on every descendant loop body /
 /// conditional branch in post-order (children before re-running on parent
@@ -431,6 +446,7 @@ bool PassManager::run(Graph &graph) {
             auto const structure_before = graph.structure_version();
             bool const modified         = run_pass_tree(*pass, graph);
             settle_node_ids(graph, pass->name());
+            verify_after_pass(graph, pass->name());
             auto   t1 = std::chrono::high_resolution_clock::now();
             double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
