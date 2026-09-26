@@ -63,10 +63,19 @@
 #include <Einsums/SIMD/Gather.hpp>
 #include <Einsums/SIMD/Operations.hpp>
 #include <Einsums/SIMD/Prefetch.hpp>
+#include <Einsums/SIMD/RuntimeFeatures.hpp>
 #include <Einsums/SIMD/Shuffle.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
 #include "TransposeImpl.hpp"
+
+// The rung this copy of the file is compiled for, as an einsums::simd::InstructionSet value.
+// The dispatch wrappers define EINSUMS_SIMD_DISPATCH_RUNG to the same ordinals.
+#if defined(EINSUMS_SIMD_DISPATCH_RUNG)
+#    define EINSUMS_HPTT_PLAN_RUNG EINSUMS_SIMD_DISPATCH_RUNG
+#else
+#    define EINSUMS_HPTT_PLAN_RUNG 0
+#endif
 
 EINSUMS_NAMESPACE_BEGIN(hptt)
 namespace EINSUMS_SIMD_ARCH_NS {
@@ -1106,11 +1115,15 @@ static void axpy_2D(floatType const *A, size_t const (&lda)[2], floatType *B, si
                            alpha * A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]] + beta * B[(i * ldb[0]) + j * ldb[1]];)
     } else {
         if constexpr (useStreamingStores)
-            HPTT_DUPLICATE(spawnThreads, for (size_t j = myStart; j < myEnd; j++)
-                                             _Pragma("vector nontemporal") for (size_t i = offsetB_; i < n0 + offsetB_;
-                                                                                i++) if constexpr (conjA) B[(i * ldb[0]) + j * ldb[1]] =
-                                                 alpha * conj(A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]]);
-                           else B[(i * ldb[0]) + j * ldb[1]] = alpha * A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]];)
+            // Compilers that honor the nontemporal pragma stream B, so each column ends with a
+            // fence on the thread that wrote it, for the same reason as the tiled path.
+            HPTT_DUPLICATE(
+                spawnThreads, for (size_t j = myStart; j < myEnd; j++) {
+                    _Pragma("vector nontemporal") for (size_t i = offsetB_; i < n0 + offsetB_; i++) if constexpr (conjA)
+                        B[(i * ldb[0]) + j * ldb[1]]  = alpha * conj(A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]]);
+                    else B[(i * ldb[0]) + j * ldb[1]] = alpha * A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]];
+                    einsums::simd::stream_fence();
+                })
         else
             HPTT_DUPLICATE(spawnThreads, for (size_t j = myStart; j < myEnd; j++) for (size_t i = offsetB_; i < n0 + offsetB_;
                                                                                        i++) if (conjA) B[(i * ldb[0]) + j * ldb[1]] =
@@ -1218,6 +1231,12 @@ void TransposeImpl<floatType>::execute_expert() noexcept {
             else
                 transpose_int<blocking_, blocking_, betaIsZero, floatType, useStreamingStores, false>(
                     _A, _A, _innerStrideA, _B, _B, _innerStrideB, _alpha, _beta, rootNode);
+            // The macro-kernel streams B when beta is zero, and streamed stores are weakly
+            // ordered: the caller, or another thread past the region's barrier, can read the
+            // old contents of a line this thread already wrote. Drain them once per task, on
+            // the thread that issued them.
+            if constexpr (useStreamingStores && betaIsZero)
+                einsums::simd::stream_fence();
         } else {
             auto rootNode = _masterPlan->get_root_node(taskId);
             if (_conjA)
@@ -2258,6 +2277,15 @@ std::shared_ptr<Plan> TransposeImpl<floatType>::select_plan(std::vector<std::sha
     return plans[bestPlan_id];
 }
 
+// The geometry this rung's plans are built for; see PlanTarget.
+template <typename FloatType>
+static PlanTarget this_plan_target() {
+    return PlanTarget{.vector_bits  = static_cast<uint16_t>(einsums::simd::native_bits),
+                      .element_size = static_cast<uint8_t>(sizeof(FloatType)),
+                      .rung         = static_cast<uint8_t>(EINSUMS_HPTT_PLAN_RUNG),
+                      .pad          = 0};
+}
+
 template <typename FloatType>
 void TransposeImpl<FloatType>::write_to_file(std::FILE *fp) const {
     setup_file(fp);
@@ -2268,6 +2296,7 @@ void TransposeImpl<FloatType>::write_to_file(std::FILE *fp) const {
     size_t     error2;
 
     TransposeConstants constants;
+    PlanTarget         target;
 
     int error1 = fseek(fp, 0, SEEK_SET);
 
@@ -2288,6 +2317,14 @@ void TransposeImpl<FloatType>::write_to_file(std::FILE *fp) const {
     error1 = fseek(fp, sizeof(FileHeader), SEEK_SET);
 
     if (error1 != 0) {
+        goto write_to_file_error;
+    }
+
+    target = this_plan_target<FloatType>();
+
+    error2 = fwrite(&target, sizeof(PlanTarget), 1, fp);
+
+    if (error2 < 1) {
         goto write_to_file_error;
     }
 
@@ -2406,6 +2443,7 @@ TransposeImpl<FloatType>::TransposeImpl(std::FILE *fp, FloatType alpha, FloatTyp
     FileHeader         header;
     size_t             error2;
     TransposeConstants constants;
+    PlanTarget         target;
     uint32_t           check;
 
     int error1 = fseek(fp, 0, SEEK_SET);
@@ -2424,10 +2462,39 @@ TransposeImpl<FloatType>::TransposeImpl(std::FILE *fp, FloatType alpha, FloatTyp
         EINSUMS_THROW_EXCEPTION(std::runtime_error, "Trying to read from a file that is not a HPTT transpose file!");
     }
 
+    if (header.version[2] != plan_file_format) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                "HPTT plan file has format version {}, but this build reads version {}; the file predates the "
+                                "recorded vector width and cannot be trusted. Recreate the plan.",
+                                static_cast<int>(header.version[2]), static_cast<int>(plan_file_format));
+    }
+
     error1 = fseek(fp, sizeof(FileHeader), SEEK_SET);
 
     if (error1 != 0) {
         goto read_from_file_error;
+    }
+
+    error2 = fread(&target, sizeof(PlanTarget), 1, fp);
+
+    if (error2 < 1) {
+        goto read_from_file_error;
+    }
+
+    {
+        PlanTarget const mine = this_plan_target<FloatType>();
+        if (endian_char() != header.version[3]) {
+            target.vector_bits = byteswap(target.vector_bits);
+        }
+        if (target.vector_bits != mine.vector_bits || target.element_size != mine.element_size) {
+            EINSUMS_THROW_EXCEPTION(
+                std::runtime_error,
+                "HPTT plan file was written by the {} rung for {}-bit vectors and {}-byte elements, but this process reads it with the {} "
+                "rung, {}-bit vectors and {}-byte elements. Its loop increments are wrong here; recreate the plan.",
+                einsums::simd::to_string(static_cast<einsums::simd::InstructionSet>(target.rung)), target.vector_bits,
+                static_cast<int>(target.element_size), einsums::simd::to_string(static_cast<einsums::simd::InstructionSet>(mine.rung)),
+                mine.vector_bits, static_cast<int>(mine.element_size));
+        }
     }
 
     error2 = fread(&constants, sizeof(TransposeConstants), 1, fp);

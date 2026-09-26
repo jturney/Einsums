@@ -434,6 +434,80 @@ TEST_CASE("ElementOps - a named element_transform over a strided view touches on
     }
 }
 
+TEST_CASE("ElementOps - is_dense_block recognizes packed layouts in any dimension order", "[ComputeGraph][ElementOps]") {
+    using cg::detail::is_dense_block;
+
+    // Column-major and row-major packings of a 3 x 4 x 5 block.
+    CHECK(is_dense_block<3>(Dim<3>{3, 4, 5}, Stride<3>{1, 3, 12}));
+    CHECK(is_dense_block<3>(Dim<3>{3, 4, 5}, Stride<3>{20, 5, 1}));
+    // A permuted packing.
+    CHECK(is_dense_block<3>(Dim<3>{3, 4, 5}, Stride<3>{4, 1, 12}));
+    // A unit extent carries any stride; it is never stepped along.
+    CHECK(is_dense_block<3>(Dim<3>{3, 1, 5}, Stride<3>{1, 999, 3}));
+    // Empty and rank-0.
+    CHECK(is_dense_block<0>(Dim<0>{}, Stride<0>{}));
+
+    // Padding between columns (a row slice of a taller parent).
+    CHECK_FALSE(is_dense_block<2>(Dim<2>{2, 4}, Stride<2>{1, 4}));
+    // A gap in the innermost stride.
+    CHECK_FALSE(is_dense_block<2>(Dim<2>{4, 4}, Stride<2>{2, 8}));
+    // A broadcast (stride 0) aliases elements.
+    CHECK_FALSE(is_dense_block<2>(Dim<2>{4, 4}, Stride<2>{1, 0}));
+    // Overlapping strides.
+    CHECK_FALSE(is_dense_block<2>(Dim<2>{4, 4}, Stride<2>{1, 2}));
+}
+
+TEST_CASE("ElementOps - dense_element_transform agrees on packed, permuted and strided operands", "[ComputeGraph][ElementOps]") {
+    auto const square = [](double x) { return x * x - 1.0; };
+
+    SECTION("column-major owning tensor (flat walk)") {
+        auto       t      = create_random_tensor<double>("t", 5, 7, 3);
+        auto const before = t;
+        cg::detail::dense_element_transform(&t, square);
+        for (size_t i = 0; i < 5; i++)
+            for (size_t j = 0; j < 7; j++)
+                for (size_t k = 0; k < 3; k++)
+                    REQUIRE(t(i, j, k) == square(before(i, j, k)));
+    }
+
+    SECTION("row-major owning tensor (flat walk over a permuted packing)") {
+        Tensor<double, 2> t(true, "t", 6, 9);
+        for (size_t i = 0; i < 6; i++)
+            for (size_t j = 0; j < 9; j++)
+                t(i, j) = static_cast<double>(i * 9 + j) * 0.5;
+        cg::detail::dense_element_transform(&t, square);
+        for (size_t i = 0; i < 6; i++)
+            for (size_t j = 0; j < 9; j++)
+                REQUIRE(t(i, j) == square(static_cast<double>(i * 9 + j) * 0.5));
+    }
+
+    SECTION("strided view (odometer walk) leaves the rest of the parent alone") {
+        auto       parent = create_random_tensor<double>("parent", 6, 5);
+        auto const before = parent;
+        auto       rows   = parent(Range{1, 4}, All);
+        cg::detail::dense_element_transform(&rows, square);
+        for (size_t i = 0; i < 6; i++)
+            for (size_t j = 0; j < 5; j++) {
+                INFO("element (" << i << ", " << j << ")");
+                double const expected = (i >= 1 && i < 4) ? square(before(i, j)) : before(i, j);
+                REQUIRE(parent(i, j) == expected);
+            }
+    }
+
+    SECTION("contiguous view with an offset (flat walk from the view's own start)") {
+        auto       parent = create_random_tensor<double>("parent", 4, 6);
+        auto const before = parent;
+        auto       cols   = parent(All, Range{2, 5});
+        cg::detail::dense_element_transform(&cols, square);
+        for (size_t i = 0; i < 4; i++)
+            for (size_t j = 0; j < 6; j++) {
+                INFO("element (" << i << ", " << j << ")");
+                double const expected = (j >= 2 && j < 5) ? square(before(i, j)) : before(i, j);
+                REQUIRE(parent(i, j) == expected);
+            }
+    }
+}
+
 TEST_CASE("ElementOps - an unregistered op name is refused at capture, naming the op", "[ComputeGraph][ElementOps]") {
     // At CAPTURE, not at replay. A name this process cannot resolve is a caller
     // error, and the design's rule is that it fails where the name is, not

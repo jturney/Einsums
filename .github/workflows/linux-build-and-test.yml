@@ -21,6 +21,11 @@ on:
         type: boolean
         required: false
         default: false
+      # Nightly only: runs the AVX2 and AVX-512 rung tests under Intel SDE on one leg.
+      sde:
+        type: boolean
+        required: false
+        default: false
 
 permissions: read-all
 
@@ -149,6 +154,34 @@ jobs:
           EINSUMS_FUZZ_SCALE: "20"
           EINSUMS_TEST_STACKDUMP_DIR: "${{ github.workspace }}/stackdumps"
         run: ctest -L PYTHON -R "Fuzz|Hyp" --output-on-failure -j4 --timeout 7200
+
+      # The runners rarely have AVX-512, so without an emulator every simd_v4 test is Skipped.
+      # SDE emulates CPUID and XGETBV and follows exec, so the rung guard sees a v4 host.
+      - name: Install Intel SDE
+        if: inputs.sde && matrix.compiler == 'clang' && matrix.blas == 'openblas' && matrix.variant == 'default'
+        env:
+          SDE_TARBALL: sde-external-10.13.1-2026-07-28-lin.tar.xz
+          # Intel's published SHA-256 for this tarball.
+          SDE_SHA256: 94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$SDE_TARBALL" \
+            "https://github.com/petarpetrovt/setup-sde/releases/download/binaries/$SDE_TARBALL"
+          echo "$SDE_SHA256  $RUNNER_TEMP/$SDE_TARBALL" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/sde"
+          tar -xJf "$RUNNER_TEMP/$SDE_TARBALL" -C "$RUNNER_TEMP/sde" --strip-components=1
+          echo "SDE64=$RUNNER_TEMP/sde/sde64" >> "$GITHUB_ENV"
+
+      - name: Test (CTest) - SIMD rungs under Intel SDE
+        if: inputs.sde && matrix.compiler == 'clang' && matrix.blas == 'openblas' && matrix.variant == 'default'
+        working-directory: "${{ github.workspace }}/build"
+        run: |
+          set -o pipefail
+          "$SDE64" -spr -- ctest -R '[.]simd_v[34]$' --no-tests=error --output-on-failure -j4 --timeout 3600 | tee sde-ctest.log
+          # A Skipped test here means the guard did not see the emulated CPU.
+          if grep -q "did not run" sde-ctest.log; then
+            echo "::error::rung tests were skipped under SDE"
+            exit 1
+          fi
 
       - name: Upload hung-test stack dumps
         if: always()

@@ -31,3 +31,11 @@ foreach(test ${SIMDTests})
     einsums_add_simd_rung_compiled_tests("Modules.SIMD" ${test})
   endif()
 endforeach()
+
+# The ladder tests pin the sme gate against what the rung's flags enable on
+# this compiler, the same answer RuntimeFeatures.cpp was built with.
+einsums_simd_rung_enables(sme _sme_sve _sme_sve2)
+target_compile_definitions(
+  RuntimeFeatures_test PRIVATE EINSUMS_SIMD_SME_RUNG_ENABLES_SVE=$<BOOL:${_sme_sve}>
+                               EINSUMS_SIMD_SME_RUNG_ENABLES_SVE2=$<BOOL:${_sme_sve2}>
+)

@@ -158,7 +158,7 @@ startup.
     CpuFeatures const &f = cpu_features();
     if (f.avx512f) { /* ... */ }
 
-    // The dispatch rung for this process: Baseline, V2, V3, or V4.
+    // The dispatch rung for this process: Baseline, V2, V3, V4, or Sme.
     InstructionSet arch = selected_arch();
 
 The x86 rungs follow the psABI micro-architecture levels, which map directly
@@ -176,29 +176,45 @@ Rung          ISA content                            Compiler flag
 All AVX-family reports are gated on operating-system state enablement
 (OSXSAVE + XCR0, queried with ``xgetbv``), not just CPUID bits: a feature is
 reported only if using it will not fault. On aarch64, optional features
-(FEAT_FP16, FEAT_BF16, FEAT_I8MM, FEAT_DotProd) are detected via ``sysctl``
-on macOS and ``getauxval`` on Linux; NEON itself is the aarch64 baseline.
+(FEAT_FP16, FEAT_BF16, FEAT_I8MM, FEAT_DotProd, FEAT_SVE, FEAT_SVE2, and the
+SME family) are detected via ``sysctl`` on macOS and ``getauxval`` on Linux;
+NEON itself is the aarch64 baseline.
+
+aarch64 has one optional rung, ``Sme`` (SME2 with FP64 outer products,
+compiled with ``-march=armv8.6-a+sme2+sme-f64f64``). Its features do not
+nest the way the x86 levels do: Apple M4 has SME but no non-streaming SVE.
+So the ladder is not a ranking of enumerator values. ``supports()`` says
+whether a machine can run a rung, and ``preference_order()`` lists each
+architecture's rungs from most to least preferred (``V4, V3, V2, Baseline``
+on x86, ``Sme, Baseline`` on aarch64). The ``Sme`` gate also requires
+whatever else the rung's flags switch on for the compiler in use: GCC
+before 15 makes ``+sme`` imply ``+sve2``, and a build with such a compiler
+only selects ``Sme`` on a core that has SVE2 as well.
 
 Overriding the rung
 -------------------
 
 Set the ``EINSUMS_SIMD_ARCH`` environment variable (``baseline``, ``v2``,
-``v3``, ``v4``, or the aliases ``sse2``/``sse4.2``/``avx2``/``avx512``)
-before process start to force a lower rung - the primary tool for testing
-every rung of a dispatch ladder on one machine. An override can only lower
-the selection; requesting more than the hardware supports logs a warning and
-clamps. For test suites, prefer ``einsums_add_simd_rung_tests()``: it wraps
-each per-rung registration in the ``simd_rung_guard`` launcher, which turns
-an unsupported rung into an honest ctest "Skipped" (exit 77) instead of a
-silently clamped rerun. The value is read once and cached; tests that need to exercise the
-resolution logic itself should call ``resolve_arch()`` with explicit
+``v3``, ``v4``, ``sme``, or the aliases ``sse2``/``sse4.2``/``avx2``/``avx512``/``sme2``)
+before process start to force another rung. This is the primary tool for
+testing every rung of a dispatch ladder on one machine. An override can only
+choose a rung the machine supports. Asking for one it cannot run logs a
+warning and takes the next supported rung in the architecture's preference
+order, so ``v4`` on an AVX2 machine gives ``v3``. A rung of another
+architecture, such as ``v3`` on aarch64, is ignored with a warning. For test
+suites, prefer ``einsums_add_simd_rung_tests()``: it wraps each per-rung
+registration in the ``simd_rung_guard`` launcher, which turns an unsupported
+rung into an honest ctest "Skipped" (exit 77) instead of a silent rerun at
+another rung. The value is read once and cached; tests that need to exercise
+the resolution logic itself should call ``resolve_arch()`` with explicit
 arguments instead of mutating the environment.
 
 Building a dispatch ladder
 --------------------------
 
-``select()`` picks the best entry point at or below the selected rung,
-falling through rungs a module chose not to build:
+``select()`` picks the best entry point at or after the selected rung in
+the architecture's preference order, falling through rungs a module chose
+not to build and rungs the machine cannot run:
 
 .. code-block:: cpp
 

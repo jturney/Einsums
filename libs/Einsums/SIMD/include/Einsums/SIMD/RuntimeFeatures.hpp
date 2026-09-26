@@ -11,9 +11,24 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
+
+/**
+ * @brief The instruction-set family a CpuFeatures describes.
+ *
+ * Each family has its own dispatch ladder (see preference_order()), so a rung
+ * of one family is never considered on a machine of another.
+ *
+ * @versionadded{2.0.0}
+ */
+enum class Architecture : std::uint8_t {
+    Other   = 0, ///< Neither x86 nor aarch64: only the Baseline rung exists.
+    X86     = 1, ///< x86 / x86-64: the psABI ladder Baseline, V2, V3, V4.
+    Aarch64 = 2, ///< aarch64: Baseline (NEON) and the optional Sme rung.
+};
 
 /**
  * @brief CPU features detected at runtime.
@@ -37,6 +52,9 @@ EINSUMS_NAMESPACE_BEGIN(simd)
  * @versionadded{2.0.0}
  */
 struct CpuFeatures {
+    /// The family of the machine; detect() sets it, and it picks the ladder the other fields are read against.
+    Architecture arch = Architecture::Other;
+
     // ---- x86 ----
     bool sse2  = false; ///< SSE2 (part of the x86-64 baseline; true on every x86-64 CPU).
     bool sse3  = false; ///< SSE3.
@@ -79,6 +97,9 @@ struct CpuFeatures {
     bool neon_i8mm    = false; ///< FEAT_I8MM: int8 matrix-multiply instructions.
     bool neon_dotprod = false; ///< FEAT_DotProd: vdotq int8 dot product.
 
+    bool sve  = false; ///< FEAT_SVE: non-streaming Scalable Vector Extension.
+    bool sve2 = false; ///< FEAT_SVE2: non-streaming SVE2.
+
     bool sme        = false; ///< FEAT_SME: Scalable Matrix Extension (streaming SVE + ZA tiles).
     bool sme2       = false; ///< FEAT_SME2: SME2 (multi-vector, required by the sme rung).
     bool sme_f64f64 = false; ///< FEAT_SME_F64F64: FP64 outer-product FMOPA into ZA64 tiles.
@@ -118,12 +139,11 @@ EINSUMS_EXPORT CpuFeatures const &cpu_features();
  * newer). Runtime rungs for further aarch64 features (FEAT_FP16,
  * FEAT_BF16) are future extensions of this enum.
  *
- * Rungs are ordered within an architecture: a larger enumerator value
- * strictly implies every feature of the smaller ones on that architecture,
- * so ordinary comparison operators express "at least" relationships. The
- * x86 rungs (V2-V4) and the aarch64 rung (Sme) never coexist at runtime -
- * highest_supported() only ever reports rungs of the running architecture,
- * so the cross-architecture ordering between V4 and Sme is never consulted.
+ * The enumerator values are identifiers, not a ranking. Whether a machine
+ * can run a rung is supports(), and the order in which rungs are preferred
+ * is preference_order(), which is per architecture: aarch64 features do not
+ * nest the way the x86 psABI levels do (Apple M4 has SME without SVE), so
+ * no single ordinal can say which rung "implies" another.
  *
  * @versionadded{2.0.0}
  */
@@ -171,8 +191,8 @@ EINSUMS_EXPORT int vector_bits(InstructionSet set);
  *        environment variable.
  *
  * Accepted spellings (case-insensitive): `baseline`, `v2`, `v3`, `v4`,
- * `x86-64-v2/-v3/-v4`, and the colloquial aliases `sse2` (baseline),
- * `sse4.2` (v2), `avx2` (v3), `avx512` (v4).
+ * `x86-64-v2/-v3/-v4`, `sme`, and the colloquial aliases `sse2` (baseline),
+ * `sse4.2` (v2), `avx2` (v3), `avx512` (v4), `sme2` (sme).
  *
  * @param[in] name The spelling to parse.
  *
@@ -183,16 +203,50 @@ EINSUMS_EXPORT int vector_bits(InstructionSet set);
 EINSUMS_EXPORT std::optional<InstructionSet> parse_instruction_set(std::string_view name);
 
 /**
- * @brief The highest rung this CPU can execute.
+ * @brief The rungs of one architecture's ladder, most preferred first.
  *
- * Pure function of the feature set: applies the full psABI gate for each
- * level (all listed extensions must be present, including the OS-state
- * gates folded into CpuFeatures). Useful directly in tests; most callers
- * want selected_arch() instead.
+ * x86 is `{V4, V3, V2, Baseline}` and aarch64 is `{Sme, Baseline}`; every
+ * other architecture has only `{Baseline}`. Every list ends in Baseline.
+ * Dispatch walks this list, never the enumerator values.
+ *
+ * @param[in] arch The architecture whose ladder to return.
+ *
+ * @return A view of a static array; valid for the lifetime of the process.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT std::span<InstructionSet const> preference_order(Architecture arch);
+
+/**
+ * @brief Whether a machine with @p features can execute code compiled for @p set.
+ *
+ * Pure function of the feature set. A rung of another architecture is never
+ * supported. The x86 levels apply the full psABI gate (every listed
+ * extension, including the OS-state gates folded into CpuFeatures). The
+ * `Sme` rung needs SME2 with FP64 outer products, and also whatever else the
+ * compiler enables for the rung's translation units: a compiler that turns
+ * on non-streaming SVE or SVE2 with `+sme2` (GCC before 15) may emit it
+ * anywhere in those TUs, so for such a build the rung needs SVE or SVE2 too.
+ *
+ * @param[in] features The feature set to test.
+ * @param[in] set The rung.
+ *
+ * @return True when every feature the rung's code may use is present.
+ *
+ * @versionadded{2.0.0}
+ */
+EINSUMS_EXPORT bool supports(CpuFeatures const &features, InstructionSet set);
+
+/**
+ * @brief The most preferred rung this CPU can execute.
+ *
+ * The first entry of `preference_order(features.arch)` that supports()
+ * accepts. Useful directly in tests; most callers want selected_arch()
+ * instead.
  *
  * @param[in] features The feature set to classify.
  *
- * @return The highest rung whose complete feature list is present.
+ * @return The best supported rung; Baseline when nothing else qualifies.
  *
  * @versionadded{2.0.0}
  */
@@ -203,11 +257,14 @@ EINSUMS_EXPORT InstructionSet highest_supported(CpuFeatures const &features);
  *        optional override spelling.
  *
  * The override (normally the `EINSUMS_SIMD_ARCH` environment variable) can
- * only lower the rung: an override above what the hardware supports is
- * clamped to the hardware's ceiling with a logged warning, and an
- * unparseable override is ignored with a logged warning. This is the pure,
- * deterministic core of selected_arch(), separated so tests can drive it
- * with synthetic feature sets and override strings.
+ * only choose a rung the machine supports. A supported rung is used as
+ * given. A rung of this architecture that the machine cannot run is
+ * replaced, with a logged warning, by the next supported rung after it in
+ * preference_order(), so asking for `v4` on an AVX2 machine gives `v3`. A
+ * rung of another architecture, or an unparseable spelling, is ignored with
+ * a logged warning. This is the pure, deterministic core of selected_arch(),
+ * separated so tests can drive it with synthetic feature sets and override
+ * strings.
  *
  * @param[in] features The detected (or synthetic) feature set.
  * @param[in] override_name Optional rung spelling; pass std::nullopt for "no override".
@@ -234,14 +291,73 @@ EINSUMS_EXPORT InstructionSet resolve_arch(CpuFeatures const &features, std::opt
  */
 EINSUMS_EXPORT InstructionSet selected_arch();
 
+namespace detail {
+/// Position of @p set in the argument list select() takes.
+constexpr int ladder_slot(InstructionSet set) noexcept {
+    switch (set) {
+    case InstructionSet::V2:
+        return 1;
+    case InstructionSet::V3:
+        return 2;
+    case InstructionSet::V4:
+        return 3;
+    case InstructionSet::Sme:
+        return 4;
+    case InstructionSet::Baseline:
+        break;
+    }
+    return 0;
+}
+} // namespace detail
+
+/**
+ * @brief select() against an explicit feature set and starting rung.
+ *
+ * Walks `preference_order(features.arch)` from @p start onward and returns
+ * the first entry that was built (not nullptr) and that supports() accepts.
+ * The support test matters on aarch64, where a rung later in the list is not
+ * implied by an earlier one. select() calls this with cpu_features() and
+ * selected_arch(); tests call it directly with synthetic machines.
+ *
+ * @param[in] features The machine to dispatch for.
+ * @param[in] start The rung to start from, normally selected_arch().
+ * @param[in] baseline Entry point for the Baseline rung; must not be nullptr.
+ * @param[in] v2 Entry point for the V2 rung, or nullptr if not built.
+ * @param[in] v3 Entry point for the V3 rung, or nullptr if not built.
+ * @param[in] v4 Entry point for the V4 rung, or nullptr if not built.
+ * @param[in] sme Entry point for the Sme rung, or nullptr if not built.
+ *
+ * @return The entry point to call; never nullptr.
+ *
+ * @versionadded{2.0.0}
+ */
+template <typename F>
+F select_for(CpuFeatures const &features, InstructionSet start, F baseline, F v2 = nullptr, F v3 = nullptr, F v4 = nullptr,
+             F sme = nullptr) {
+    F const slots[] = {baseline, v2, v3, v4, sme};
+    bool    reached = false;
+    for (InstructionSet const rung : preference_order(features.arch)) {
+        reached = reached || rung == start;
+        if (!reached) {
+            continue;
+        }
+        F const entry = slots[detail::ladder_slot(rung)];
+        if (entry != nullptr && supports(features, rung)) {
+            return entry;
+        }
+    }
+    return baseline;
+}
+
 /**
  * @brief Pick the best available entry point for the selected rung.
  *
  * Generic dispatch helper for modules that compile a kernel once per rung:
  * pass one entry point per rung (nullptr for rungs the module does not
- * build) and get back the entry for the highest built rung at or below
- * selected_arch(). Falls down the ladder through nullptr entries, so a
- * module may build any subset of rungs; `baseline` must always be provided.
+ * build) and get back the entry for the most preferred built rung at or
+ * after selected_arch() in preference_order(). Falls through nullptr
+ * entries, so a module may build any subset of rungs; `baseline` must
+ * always be provided.
  *
  * @code
  * using KernelFn = void (*)(float const *, float *, std::size_t);
@@ -253,6 +369,7 @@ EINSUMS_EXPORT InstructionSet selected_arch();
  * @param[in] v2 Entry point for the V2 rung, or nullptr if not built.
  * @param[in] v3 Entry point for the V3 rung, or nullptr if not built.
  * @param[in] v4 Entry point for the V4 rung, or nullptr if not built.
+ * @param[in] sme Entry point for the Sme rung, or nullptr if not built.
  *
  * @return The entry point to call; never nullptr.
  *
@@ -260,13 +377,7 @@ EINSUMS_EXPORT InstructionSet selected_arch();
  */
 template <typename F>
 F select(F baseline, F v2 = nullptr, F v3 = nullptr, F v4 = nullptr, F sme = nullptr) {
-    F const ladder[] = {baseline, v2, v3, v4, sme};
-    for (int rung = static_cast<int>(selected_arch()); rung > 0; --rung) {
-        if (ladder[rung] != nullptr) {
-            return ladder[rung];
-        }
-    }
-    return baseline;
+    return select_for<F>(cpu_features(), selected_arch(), baseline, v2, v3, v4, sme);
 }
 
 EINSUMS_NAMESPACE_END(simd)

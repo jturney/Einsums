@@ -10,6 +10,15 @@
 #include <cstddef>
 #include <cstdint>
 
+// FMA3 is usable in this translation unit. GCC, Clang, clang-cl and icx
+// define __FMA__ whenever FMA3 is enabled. The true MSVC driver never does,
+// not even under /arch:AVX2 or /arch:AVX512, although both of those enable
+// FMA3 code generation and its intrinsics, so key MSVC off __AVX2__ (which
+// /arch:AVX512 also defines).
+#if defined(__FMA__) || (defined(_MSC_VER) && !defined(__clang__) && defined(__AVX2__))
+#    define EINSUMS_SIMD_HAVE_FMA 1
+#endif
+
 EINSUMS_NAMESPACE_BEGIN(simd)
 
 // ---------------------------------------------------------------------------
@@ -62,7 +71,7 @@ inline constexpr bool has_avx2 =
 #endif
 
 inline constexpr bool has_fma =
-#if defined(__FMA__)
+#if defined(EINSUMS_SIMD_HAVE_FMA)
     true;
 #else
     false;
@@ -75,22 +84,14 @@ inline constexpr bool has_avx512 =
     false;
 #endif
 
-// AVX-10 (Intel's consolidation of AVX2 + AVX-512). Two width tiers:
-//   - AVX-10/256: all AVX-512 *instructions* at 256-bit max width. Ships
-//     on consumer chips that won't carry full 512-bit AVX-512 silicon
-//     (Granite Rapids client, Panther Lake). These chips define
-//     `__AVX__`/`__AVX2__` AND `__AVX10_1_256__`, but NOT `__AVX512F__`,
-//     so they naturally route through the AVX/AVX2 tier in Operations
-//     and Shuffle.
-//   - AVX-10/512: full 512-bit width, conceptually a rebrand of the
-//     AVX-512 family. These chips define `__AVX512F__` *and* the
-//     AVX-10/512 macros, so they already hit the existing AVX-512 tier.
-//
-// Future enhancement: on AVX-10/256-only chips, we
-// could opt into the EVEX-encoded AVX-512 instruction set at 256-bit
-// width (masked ops, embedded broadcast). The existing AVX2 path is
-// correct as-is; these flags expose the additional capability for
-// callers who want to hand-write specialized kernels.
+// AVX-10 (Intel's consolidation of AVX-512 under a version number). AVX10.2
+// requires 512-bit vectors on every part, and the parts that ship AVX10
+// (Granite Rapids and later) also set the legacy AVX-512 CPUID bits and
+// define `__AVX512F__`, so they already take the AVX-512 tier in Operations
+// and Shuffle and the V4 dispatch rung. A 256-bit-only AVX10 part would
+// define `__AVX2__` without `__AVX512F__` and take the AVX2 tier, which is
+// correct for it. These flags only expose the AVX10 version to callers that
+// want to hand-write kernels for it.
 inline constexpr bool has_avx10_1 =
 #if defined(__AVX10_1__)
     true;

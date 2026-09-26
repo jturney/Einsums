@@ -188,8 +188,10 @@ Micro-kernels and SIMD rungs
 The micro-kernel bodies are compiled once per instruction-set rung by
 :code:`einsums_add_simd_dispatch_sources()`, each copy in its own
 namespace, and the rung is chosen at run time in
-:code:`MicroKernelDispatch.cpp` by walking the ladder (baseline or native,
-V2, V3, V4, SME) down from :code:`simd::selected_arch()`. The result is
+:code:`MicroKernelDispatch.cpp` by walking the architecture's preference
+order (V4, V3, V2, baseline on x86; SME, native on aarch64) from
+:code:`simd::selected_arch()` and taking the first rung that was built and
+that the machine supports. The result is
 cached per element type. :code:`micro_kernel_entry<T>()` and
 :code:`micro_kernel_shape<T>()` resolve through the *same* ladder, which is
 what keeps the packing geometry matched to the kernel that will consume

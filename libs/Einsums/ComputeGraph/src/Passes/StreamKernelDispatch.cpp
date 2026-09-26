@@ -9,8 +9,8 @@
 // arch_baseline/arch_v2/arch_v3/arch_v4, or arch_native on aarch64/pinned
 // builds). This TU is compiled exactly once, WITHOUT arch flags: it declares
 // each rung's entry (guarded by the EINSUMS_SIMD_HAS_RUNG_* definitions the
-// CMake helper emits) and picks the best one at or below
-// einsums::simd::selected_arch(), cached per element type. No `sme` rung is
+// CMake helper emits) and picks the best built one the machine supports,
+// starting from einsums::simd::selected_arch(), cached per element type. No `sme` rung is
 // built for this kernel - a bandwidth-bound streaming FMA gains nothing from
 // the matrix unit - so the select ladder leaves that slot at its default.
 

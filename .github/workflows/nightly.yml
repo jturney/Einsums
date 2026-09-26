@@ -19,6 +19,7 @@ jobs:
     uses: ./.github/workflows/linux-build-and-test.yml
     with:
       long_fuzz: true
+      sde: true
 
   windows:
     name: Windows

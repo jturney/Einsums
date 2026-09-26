@@ -10,6 +10,8 @@
 #include <Einsums/SIMD/Prefetch.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
+#include <limits>
+
 #include <catch2/catch_all.hpp>
 
 using namespace einsums::simd;
@@ -139,6 +141,25 @@ TEMPLATE_TEST_CASE("fmadd: a*b + c", "[simd]", float, double) {
 
     for (int i = 0; i < N; ++i) {
         CHECK(r[i] == Catch::Approx(TestType(7.0))); // 2*3 + 1
+    }
+}
+
+// Where this translation unit has hardware FMA, fmadd must be one fused
+// operation. With a = 1 + eps and b = 1 - eps the exact product is
+// 1 - eps^2, which rounds to 1, so mul + add gives 0 and only a fused
+// multiply-add gives -eps^2. This is what catches a wrapper that silently
+// falls back to mul + add (MSVC defines no __FMA__).
+TEMPLATE_TEST_CASE("fmadd is fused where the target has FMA", "[simd]", float, double) {
+    if constexpr (has_fma || has_neon) {
+        constexpr int  N      = Vec<TestType>::lanes;
+        TestType const eps    = std::numeric_limits<TestType>::epsilon();
+        TestType volatile one = TestType(1);
+        auto const r          = fmadd(broadcast(one + eps), broadcast(one - eps), broadcast(-one));
+        for (int i = 0; i < N; ++i) {
+            CHECK(r[i] == -eps * eps);
+        }
+    } else {
+        SUCCEED("no hardware FMA in this translation unit");
     }
 }
 

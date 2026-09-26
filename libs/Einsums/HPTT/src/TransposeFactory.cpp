@@ -11,9 +11,10 @@
 // compiled exactly once, WITHOUT arch flags, and bridges the copies: it
 // declares each rung's make_transpose entry points (guarded by the
 // EINSUMS_SIMD_HAS_RUNG_* definitions the CMake helper emits) and picks the
-// best one at or below einsums::simd::selected_arch(). Everything downstream
-// of plan creation stays inside the chosen rung - execute() is a virtual
-// call on the rung's TransposeImpl.
+// best built one the machine supports, starting from
+// einsums::simd::selected_arch(). Everything downstream of plan creation
+// stays inside the chosen rung: execute() is a virtual call on the rung's
+// TransposeImpl.
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>

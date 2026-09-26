@@ -428,8 +428,9 @@ EINSUMS_FORCEINLINE Vec<double> mul(Vec<double> a, Vec<double> b) {
 template <typename T>
 EINSUMS_FORCEINLINE Vec<T> fmadd(Vec<T> a, Vec<T> b, Vec<T> c);
 
-// x86 with FMA3 support (available on AVX2+ and some AVX processors)
-#if defined(__FMA__)
+// x86 with FMA3 support (available on AVX2+ and some AVX processors). See
+// Platform.hpp for why this is not a bare __FMA__ test.
+#if defined(EINSUMS_SIMD_HAVE_FMA)
 #    if defined(__AVX512F__)
 template <>
 EINSUMS_FORCEINLINE Vec<float> fmadd(Vec<float> a, Vec<float> b, Vec<float> c) {

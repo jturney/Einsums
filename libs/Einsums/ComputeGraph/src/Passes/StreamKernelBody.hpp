@@ -65,22 +65,36 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
         }
 
         // (1,0,1) dot reduction: C is fixed -> C[co] += alpha * sum_i S[i]*W[i].
-        // The vector accumulator reorders the summation (same class as BLAS);
-        // results match the scalar oracle to tolerance.
+        // Four independent accumulators keep four FMA chains in flight; one
+        // chain would wait out the FMA latency on every step. The reordered
+        // summation is the same class as BLAS; results match the scalar
+        // oracle to tolerance.
         if (ds == 1 && dc == 0 && dw == 1) {
-            Vec<T>  acc = broadcast(T{0});
-            int64_t i   = 0;
-            for (; i + L <= n; i += L) {
-                acc = fmadd(loadu(sp + si + i), loadu(w + wo + i), acc);
+            T const *s    = sp + si;
+            T const *x    = w + wo;
+            Vec<T>   acc0 = broadcast(T{0});
+            Vec<T>   acc1 = acc0;
+            Vec<T>   acc2 = acc0;
+            Vec<T>   acc3 = acc0;
+            int64_t  i    = 0;
+            for (; i + 4 * L <= n; i += 4 * L) {
+                acc0 = fmadd(loadu(s + i), loadu(x + i), acc0);
+                acc1 = fmadd(loadu(s + i + L), loadu(x + i + L), acc1);
+                acc2 = fmadd(loadu(s + i + 2 * L), loadu(x + i + 2 * L), acc2);
+                acc3 = fmadd(loadu(s + i + 3 * L), loadu(x + i + 3 * L), acc3);
             }
-            T lane_buf[L];
+            for (; i + L <= n; i += L) {
+                acc0 = fmadd(loadu(s + i), loadu(x + i), acc0);
+            }
+            Vec<T> const acc = add(add(acc0, acc1), add(acc2, acc3));
+            T            lane_buf[L];
             storeu(lane_buf, acc);
             T sum = T{0};
             for (int64_t l = 0; l < L; ++l) {
                 sum += lane_buf[l];
             }
             for (; i < n; ++i) {
-                sum += sp[si + i] * w[wo + i];
+                sum += s[i] * x[i];
             }
             cb[co] += alpha * sum;
             return;
@@ -123,21 +137,34 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
             return;
         }
 
-        // (1,0,1) dot reduction: C[co] += alpha * sum_i S[i]*W[i].
+        // (1,0,1) dot reduction: C[co] += alpha * sum_i S[i]*W[i], with four
+        // accumulators for the same reason as the real case.
         if (ds == 1 && dc == 0 && dw == 1) {
-            CVec<U> acc = complex_broadcast(T{0});
-            int64_t i   = 0;
-            for (; i + L <= n; i += L) {
-                acc = complex_fmadd(complex_loadu(sp + si + i), complex_loadu(w + wo + i), acc);
+            T const *s    = sp + si;
+            T const *x    = w + wo;
+            CVec<U>  acc0 = complex_broadcast(T{0});
+            CVec<U>  acc1 = acc0;
+            CVec<U>  acc2 = acc0;
+            CVec<U>  acc3 = acc0;
+            int64_t  i    = 0;
+            for (; i + 4 * L <= n; i += 4 * L) {
+                acc0 = complex_fmadd(complex_loadu(s + i), complex_loadu(x + i), acc0);
+                acc1 = complex_fmadd(complex_loadu(s + i + L), complex_loadu(x + i + L), acc1);
+                acc2 = complex_fmadd(complex_loadu(s + i + 2 * L), complex_loadu(x + i + 2 * L), acc2);
+                acc3 = complex_fmadd(complex_loadu(s + i + 3 * L), complex_loadu(x + i + 3 * L), acc3);
             }
-            T lane_buf[L];
+            for (; i + L <= n; i += L) {
+                acc0 = complex_fmadd(complex_loadu(s + i), complex_loadu(x + i), acc0);
+            }
+            CVec<U> const acc = complex_add(complex_add(acc0, acc1), complex_add(acc2, acc3));
+            T             lane_buf[L];
             complex_storeu(lane_buf, acc);
             T sum{0};
             for (int64_t l = 0; l < L; ++l) {
                 sum += lane_buf[l];
             }
             for (; i < n; ++i) {
-                sum += sp[si + i] * w[wo + i];
+                sum += s[i] * x[i];
             }
             cb[co] += alpha * sum;
             return;

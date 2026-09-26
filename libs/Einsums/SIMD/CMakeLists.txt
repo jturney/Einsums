@@ -84,6 +84,19 @@ einsums_add_module(
   CMAKE_SUBDIRS examples tests
 )
 
+# The sme rung's runtime gate has to require whatever its flags enable (see
+# einsums_simd_rung_enables); RuntimeFeatures.cpp reads the answer from these.
+include(Einsums_AddSIMDDispatch)
+einsums_simd_rung_enables(sme _simd_sme_sve _simd_sme_sve2)
+if(_simd_sme_sve OR _simd_sme_sve2)
+  message(STATUS "Einsums_SIMD: the sme rung's flags enable non-streaming SVE on this compiler; "
+                 "the sme rung will also require SVE at run time")
+endif()
+target_compile_definitions(
+  Einsums_SIMD PRIVATE EINSUMS_SIMD_SME_RUNG_ENABLES_SVE=$<BOOL:${_simd_sme_sve}>
+                       EINSUMS_SIMD_SME_RUNG_ENABLES_SVE2=$<BOOL:${_simd_sme_sve2}>
+)
+
 # Resolve precedence and emit the right flag for the host architecture.
 # `-mcpu=` is the aarch64 spelling; `-march=` is the x86 spelling. MSVC
 # uses `/arch:` with a different vocabulary entirely (AVX, AVX2, AVX512)

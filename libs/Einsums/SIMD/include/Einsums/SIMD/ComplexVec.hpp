@@ -210,27 +210,21 @@ template <typename T>
 EINSUMS_FORCEINLINE CVec<T> complex_mul(CVec<T> a, CVec<T> b);
 
 #if defined(__AVX512F__)
+// fmaddsub(x, y, z) computes x*y - z in the even (real) lanes and x*y + z in
+// the odd (imaginary) lanes, which is steps 3 and 6 fused into one.
 template <>
 EINSUMS_FORCEINLINE CVec<float> complex_mul(CVec<float> a, CVec<float> b) {
     auto a_rr   = _mm512_moveldup_ps(a.reg);
     auto a_ii   = _mm512_movehdup_ps(a.reg);
     auto b_swap = _mm512_shuffle_ps(b.reg, b.reg, 0xB1);
-    auto t1     = _mm512_mul_ps(a_rr, b.reg);
-    auto t2     = _mm512_mul_ps(a_ii, b_swap);
-    // AVX-512 has no addsub; use fmaddsub: a*b ± c  →  fmaddsub(a_rr, b, -t2) won't work directly.
-    // Instead: negate even lanes of t2, then add.
-    auto neg_mask = _mm512_setr_ps(-1.f, 1.f, -1.f, 1.f, -1.f, 1.f, -1.f, 1.f, -1.f, 1.f, -1.f, 1.f, -1.f, 1.f, -1.f, 1.f);
-    return _mm512_add_ps(t1, _mm512_mul_ps(t2, neg_mask));
+    return _mm512_fmaddsub_ps(a_rr, b.reg, _mm512_mul_ps(a_ii, b_swap));
 }
 template <>
 EINSUMS_FORCEINLINE CVec<double> complex_mul(CVec<double> a, CVec<double> b) {
-    auto a_rr     = _mm512_movedup_pd(a.reg);
-    auto a_ii     = _mm512_shuffle_pd(a.reg, a.reg, 0xFF);
-    auto b_swap   = _mm512_shuffle_pd(b.reg, b.reg, 0x55);
-    auto t1       = _mm512_mul_pd(a_rr, b.reg);
-    auto t2       = _mm512_mul_pd(a_ii, b_swap);
-    auto neg_mask = _mm512_setr_pd(-1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0);
-    return _mm512_add_pd(t1, _mm512_mul_pd(t2, neg_mask));
+    auto a_rr   = _mm512_movedup_pd(a.reg);
+    auto a_ii   = _mm512_shuffle_pd(a.reg, a.reg, 0xFF);
+    auto b_swap = _mm512_shuffle_pd(b.reg, b.reg, 0x55);
+    return _mm512_fmaddsub_pd(a_rr, b.reg, _mm512_mul_pd(a_ii, b_swap));
 }
 #elif defined(__AVX__)
 template <>
@@ -240,18 +234,24 @@ EINSUMS_FORCEINLINE CVec<float> complex_mul(CVec<float> a, CVec<float> b) {
     auto a_ii = _mm256_movehdup_ps(a.reg); // broadcast odd lanes (imag)
     // Swap re<->im in b
     auto b_swap = _mm256_shuffle_ps(b.reg, b.reg, 0xB1); // 10_11_00_01
-    auto t1     = _mm256_mul_ps(a_rr, b.reg);
     auto t2     = _mm256_mul_ps(a_ii, b_swap);
-    return _mm256_addsub_ps(t1, t2); // even: t1-t2, odd: t1+t2
+#    if defined(EINSUMS_SIMD_HAVE_FMA)
+    return _mm256_fmaddsub_ps(a_rr, b.reg, t2); // even: a_rr*b - t2, odd: a_rr*b + t2
+#    else
+    return _mm256_addsub_ps(_mm256_mul_ps(a_rr, b.reg), t2); // even: t1-t2, odd: t1+t2
+#    endif
 }
 template <>
 EINSUMS_FORCEINLINE CVec<double> complex_mul(CVec<double> a, CVec<double> b) {
     auto a_rr   = _mm256_movedup_pd(a.reg);             // [r0,r0,r1,r1]
     auto a_ii   = _mm256_shuffle_pd(a.reg, a.reg, 0xF); // [i0,i0,i1,i1]
     auto b_swap = _mm256_shuffle_pd(b.reg, b.reg, 0x5); // swap re<->im
-    auto t1     = _mm256_mul_pd(a_rr, b.reg);
     auto t2     = _mm256_mul_pd(a_ii, b_swap);
-    return _mm256_addsub_pd(t1, t2);
+#    if defined(EINSUMS_SIMD_HAVE_FMA)
+    return _mm256_fmaddsub_pd(a_rr, b.reg, t2);
+#    else
+    return _mm256_addsub_pd(_mm256_mul_pd(a_rr, b.reg), t2);
+#    endif
 }
 #elif defined(__SSE3__) || (!defined(__clang__) && (defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)))
 // SSE3+ path: moveldup/movehdup/movedup and addsub are SSE3 intrinsics. True MSVC (cl) exposes

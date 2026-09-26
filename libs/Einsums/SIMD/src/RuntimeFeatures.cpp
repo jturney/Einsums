@@ -8,7 +8,18 @@
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
 #include <cstdlib>
+#include <span>
 #include <string>
+
+// What the sme rung's compiler flags switch on besides SME, probed at
+// configure time (see einsums_simd_rung_enables in
+// Einsums_AddSIMDDispatch.cmake). Absent means the flags enable neither.
+#if !defined(EINSUMS_SIMD_SME_RUNG_ENABLES_SVE)
+#    define EINSUMS_SIMD_SME_RUNG_ENABLES_SVE 0
+#endif
+#if !defined(EINSUMS_SIMD_SME_RUNG_ENABLES_SVE2)
+#    define EINSUMS_SIMD_SME_RUNG_ENABLES_SVE2 0
+#endif
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #    define EINSUMS_SIMD_DETECT_X86 1
@@ -72,6 +83,7 @@ bool bit(std::uint32_t reg, int idx) {
 
 CpuFeatures detect() {
     CpuFeatures f;
+    f.arch = Architecture::X86;
 
     CpuidRegs const id0 = cpuid(0, 0);
     if (id0.eax < 1) {
@@ -149,14 +161,18 @@ bool sysctl_flag(char const *name) {
 
 CpuFeatures detect() {
     CpuFeatures f;
+    f.arch         = Architecture::Aarch64;
     f.neon         = true;
     f.neon_fp16    = sysctl_flag("hw.optional.arm.FEAT_FP16");
     f.neon_bf16    = sysctl_flag("hw.optional.arm.FEAT_BF16");
     f.neon_i8mm    = sysctl_flag("hw.optional.arm.FEAT_I8MM");
     f.neon_dotprod = sysctl_flag("hw.optional.arm.FEAT_DotProd");
-    f.sme          = sysctl_flag("hw.optional.arm.FEAT_SME");
-    f.sme2         = sysctl_flag("hw.optional.arm.FEAT_SME2");
-    f.sme_f64f64   = sysctl_flag("hw.optional.arm.FEAT_SME_F64F64");
+    // No Apple core implements non-streaming SVE yet; the keys are absent and read as false.
+    f.sve        = sysctl_flag("hw.optional.arm.FEAT_SVE");
+    f.sve2       = sysctl_flag("hw.optional.arm.FEAT_SVE2");
+    f.sme        = sysctl_flag("hw.optional.arm.FEAT_SME");
+    f.sme2       = sysctl_flag("hw.optional.arm.FEAT_SME2");
+    f.sme_f64f64 = sysctl_flag("hw.optional.arm.FEAT_SME_F64F64");
     return f;
 }
 
@@ -164,9 +180,13 @@ CpuFeatures detect() {
 
 CpuFeatures detect() {
     CpuFeatures f;
+    f.arch = Architecture::Aarch64;
     f.neon = true;
 
     unsigned long const hwcap = getauxval(AT_HWCAP);
+#        if defined(HWCAP_SVE)
+    f.sve = (hwcap & HWCAP_SVE) != 0;
+#        endif
 #        if defined(HWCAP_ASIMDHP)
     f.neon_fp16 = (hwcap & HWCAP_ASIMDHP) != 0;
 #        endif
@@ -176,6 +196,9 @@ CpuFeatures detect() {
 
 #        if defined(AT_HWCAP2)
     unsigned long const hwcap2 = getauxval(AT_HWCAP2);
+#            if defined(HWCAP2_SVE2)
+    f.sve2 = (hwcap2 & HWCAP2_SVE2) != 0;
+#            endif
 #            if defined(HWCAP2_BF16)
     f.neon_bf16 = (hwcap2 & HWCAP2_BF16) != 0;
 #            endif
@@ -202,6 +225,7 @@ CpuFeatures detect() {
 // architecturally guaranteed, the optional features stay off.
 CpuFeatures detect() {
     CpuFeatures f;
+    f.arch = Architecture::Aarch64;
     f.neon = true;
     return f;
 }
@@ -281,14 +305,22 @@ std::optional<InstructionSet> parse_instruction_set(std::string_view name) {
     return std::nullopt;
 }
 
-InstructionSet highest_supported(CpuFeatures const &f) {
-    // aarch64 ladder: the sme rung requires SME2 with FP64 outer products,
-    // since the rung's TUs are compiled with +sme2+sme-f64f64 and may emit
-    // any of it anywhere.
-    if (f.sme && f.sme2 && f.sme_f64f64) {
-        return InstructionSet::Sme;
+std::span<InstructionSet const> preference_order(Architecture arch) {
+    static constexpr InstructionSet x86[]     = {InstructionSet::V4, InstructionSet::V3, InstructionSet::V2, InstructionSet::Baseline};
+    static constexpr InstructionSet aarch64[] = {InstructionSet::Sme, InstructionSet::Baseline};
+    static constexpr InstructionSet other[]   = {InstructionSet::Baseline};
+    switch (arch) {
+    case Architecture::X86:
+        return x86;
+    case Architecture::Aarch64:
+        return aarch64;
+    case Architecture::Other:
+        break;
     }
+    return other;
+}
 
+bool supports(CpuFeatures const &f, InstructionSet set) {
     // Full psABI gates: every extension of a level must be present for the
     // level to qualify, because a compiler told -march=x86-64-v3 may emit
     // any of them anywhere in the TU.
@@ -296,14 +328,35 @@ InstructionSet highest_supported(CpuFeatures const &f) {
     bool const v3 = v2 && f.avx && f.avx2 && f.fma && f.bmi1 && f.bmi2 && f.f16c && f.lzcnt && f.movbe && f.os_avx;
     bool const v4 = v3 && f.avx512f && f.avx512bw && f.avx512cd && f.avx512dq && f.avx512vl && f.os_avx512;
 
-    if (v4) {
-        return InstructionSet::V4;
+    switch (set) {
+    case InstructionSet::Baseline:
+        return true;
+    case InstructionSet::V2:
+        return f.arch == Architecture::X86 && v2;
+    case InstructionSet::V3:
+        return f.arch == Architecture::X86 && v3;
+    case InstructionSet::V4:
+        return f.arch == Architecture::X86 && v4;
+    case InstructionSet::Sme: {
+        // The rung's TUs are compiled with +sme2+sme-f64f64 and may use any of
+        // it anywhere. Some compilers also switch on non-streaming SVE/SVE2 for
+        // those flags (GCC before 15 makes +sme imply +sve2), and then the
+        // autovectorizer may emit it outside streaming mode, which faults on a
+        // core with SME but no SVE (Apple M4). The build probes the rung's
+        // flags and tells this TU what they imply.
+        bool const needs_sve  = EINSUMS_SIMD_SME_RUNG_ENABLES_SVE != 0;
+        bool const needs_sve2 = EINSUMS_SIMD_SME_RUNG_ENABLES_SVE2 != 0;
+        return f.arch == Architecture::Aarch64 && f.sme && f.sme2 && f.sme_f64f64 && (!needs_sve || f.sve) && (!needs_sve2 || f.sve2);
     }
-    if (v3) {
-        return InstructionSet::V3;
     }
-    if (v2) {
-        return InstructionSet::V2;
+    return false;
+}
+
+InstructionSet highest_supported(CpuFeatures const &f) {
+    for (InstructionSet const set : preference_order(f.arch)) {
+        if (supports(f, set)) {
+            return set;
+        }
     }
     return InstructionSet::Baseline;
 }
@@ -318,18 +371,31 @@ InstructionSet resolve_arch(CpuFeatures const &features, std::optional<std::stri
     auto const requested = parse_instruction_set(*override_name);
     if (!requested.has_value()) {
         EINSUMS_LOG_WARN("EINSUMS_SIMD_ARCH=\"{}\" is not a recognized instruction-set name; ignoring the override. "
-                         "Accepted: baseline, v2, v3, v4 (aliases: sse2, sse4.2, avx2, avx512).",
+                         "Accepted: baseline, v2, v3, v4, sme (aliases: sse2, sse4.2, avx2, avx512, sme2).",
                          *override_name);
         return ceiling;
     }
 
-    if (*requested > ceiling) {
-        EINSUMS_LOG_WARN("EINSUMS_SIMD_ARCH requests {} but this CPU/OS only supports {}; clamping to {}.", to_string(*requested),
-                         to_string(ceiling), to_string(ceiling));
-        return ceiling;
+    if (supports(features, *requested)) {
+        return *requested;
     }
 
-    return *requested;
+    // Clamp: the first supported rung after the requested one in this
+    // architecture's order. Baseline ends every order and is always supported.
+    auto const order = preference_order(features.arch);
+    bool       found = false;
+    for (InstructionSet const set : order) {
+        found = found || set == *requested;
+        if (found && supports(features, set)) {
+            EINSUMS_LOG_WARN("EINSUMS_SIMD_ARCH requests {} but this CPU/OS cannot run it; using {}.", to_string(*requested),
+                             to_string(set));
+            return set;
+        }
+    }
+
+    EINSUMS_LOG_WARN("EINSUMS_SIMD_ARCH requests {}, which is not a rung of this CPU's architecture; ignoring the override and using {}.",
+                     to_string(*requested), to_string(ceiling));
+    return ceiling;
 }
 
 InstructionSet selected_arch() {

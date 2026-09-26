@@ -13,7 +13,7 @@
 
 EINSUMS_NAMESPACE_BEGIN(hptt)
 
-constexpr char version[4] = {0, 0, 0, endian_char()};
+constexpr char version[4] = {0, 0, plan_file_format, endian_char()};
 
 void setup_file(std::FILE *fp) {
     FileHeader header{.magic{'H', 'P', 'T', 'T'}, .version{version[0], version[1], version[2], version[3]}, .checksum = 0xffffffff};
@@ -147,6 +147,10 @@ int verify_file(std::FILE *fp) {
 
     if (header.version[3] != endian_char()) {
         return 4;
+    }
+
+    if (header.version[2] != plan_file_format) {
+        return 6;
     }
 
     uint32_t checksum = compute_checksum(fp);

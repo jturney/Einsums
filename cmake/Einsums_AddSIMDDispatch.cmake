@@ -154,6 +154,54 @@ function(einsums_simd_rung_flags rung out_flags out_ordinal out_ok context)
   set(${out_ok} "${_ok}" PARENT_SCOPE)
 endfunction()
 
+#:
+#: .. cmake:command:: einsums_simd_rung_enables
+#:
+#:    Report whether a rung's flags also switch on non-streaming SVE or SVE2.
+#:
+#:    .. code-block:: cmake
+#:
+#:       einsums_simd_rung_enables(<rung> <out_sve> <out_sve2>)
+#:
+#:    A rung's translation units may use anything their flags enable, so the
+#:    runtime gate for the rung has to require all of it. For ``sme`` that is
+#:    more than SME on some compilers: GCC before 15 makes ``+sme`` imply
+#:    ``+sve2``, and its autovectorizer then emits non-streaming SVE that
+#:    faults on a core with SME but no SVE (Apple M4). This preprocesses an
+#:    empty TU at the rung's flags and reports ``__ARM_FEATURE_SVE`` and
+#:    ``__ARM_FEATURE_SVE2``. Both are FALSE off aarch64 or when the rung is
+#:    dropped.
+function(einsums_simd_rung_enables rung out_sve out_sve2)
+  set(_sve FALSE)
+  set(_sve2 FALSE)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    set(_flags "")
+    set(_ordinal 0)
+    set(_rung_ok FALSE)
+    einsums_simd_rung_flags(${rung} _flags _ordinal _rung_ok "einsums_simd_rung_enables(${rung})")
+    if(_rung_ok AND NOT "${_flags}" STREQUAL "")
+      include(CheckCXXSourceCompiles)
+      string(TOUPPER "${rung}" _rung_upper)
+      set(CMAKE_REQUIRED_FLAGS "${_flags}")
+      set(CMAKE_REQUIRED_QUIET ON)
+      foreach(_feature SVE SVE2)
+        check_cxx_source_compiles(
+          "#if !defined(__ARM_FEATURE_${_feature})\n#error not enabled\n#endif\nint main() { return 0; }"
+          EINSUMS_SIMD_RUNG_${_rung_upper}_ENABLES_${_feature}
+        )
+      endforeach()
+      if(EINSUMS_SIMD_RUNG_${_rung_upper}_ENABLES_SVE)
+        set(_sve TRUE)
+      endif()
+      if(EINSUMS_SIMD_RUNG_${_rung_upper}_ENABLES_SVE2)
+        set(_sve2 TRUE)
+      endif()
+    endif()
+  endif()
+  set(${out_sve} "${_sve}" PARENT_SCOPE)
+  set(${out_sve2} "${_sve2}" PARENT_SCOPE)
+endfunction()
+
 function(einsums_add_simd_dispatch_sources out_var)
   set(options)
   set(one_value_args IMPL)

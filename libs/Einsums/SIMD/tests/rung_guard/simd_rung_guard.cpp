@@ -9,8 +9,8 @@
 //
 // If the host CPU cannot execute <rung>, exits with 77 - registered as the
 // test's SKIP_RETURN_CODE - so ctest reports an honest "Skipped" instead of
-// silently rerunning a lower rung (EINSUMS_SIMD_ARCH clamps overrides above
-// the hardware ceiling). Otherwise replaces itself with <command>.
+// silently rerunning another rung (EINSUMS_SIMD_ARCH replaces an unsupported
+// rung with a supported one). Otherwise replaces itself with <command>.
 
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
@@ -34,10 +34,10 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    auto const ceiling = einsums::simd::highest_supported(einsums::simd::cpu_features());
-    if (*requested > ceiling) {
-        std::fprintf(stderr, "simd_rung_guard: host supports up to %s; skipping %s test\n", einsums::simd::to_string(ceiling),
-                     einsums::simd::to_string(*requested));
+    auto const &features = einsums::simd::cpu_features();
+    if (!einsums::simd::supports(features, *requested)) {
+        std::fprintf(stderr, "simd_rung_guard: host cannot run %s (best supported: %s); skipping the test\n",
+                     einsums::simd::to_string(*requested), einsums::simd::to_string(einsums::simd::highest_supported(features)));
         return 77; // SKIP_RETURN_CODE
     }
 

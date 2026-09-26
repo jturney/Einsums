@@ -102,6 +102,43 @@ TEMPLATE_TEST_CASE("CVec complex_mul", "[simd][complex]", float, double) {
     }
 }
 
+// Every lane holds a different pair, so a product that mixes lanes, or swaps
+// which lane subtracts and which adds, cannot pass. Small integers keep every
+// product and sum exact, so fused and unfused rungs must agree bitwise.
+TEMPLATE_TEST_CASE("CVec complex_mul: distinct lanes", "[simd][complex]", float, double) {
+    constexpr int                       N = CVec<TestType>::complex_lanes;
+    std::vector<std::complex<TestType>> a(N), b(N), dst(N);
+    for (int i = 0; i < N; ++i) {
+        a[i] = {TestType(i + 1), TestType(-2 * i + 3)};
+        b[i] = {TestType(3 * i - 4), TestType(i + 5)};
+    }
+
+    complex_storeu(dst.data(), complex_mul(complex_loadu(a.data()), complex_loadu(b.data())));
+
+    for (int i = 0; i < N; ++i) {
+        INFO("lane " << i);
+        CHECK(dst[i] == a[i] * b[i]);
+    }
+}
+
+// complex_fmadd is built on complex_mul; the same distinct-lane check for it.
+TEMPLATE_TEST_CASE("CVec complex_fmadd: distinct lanes", "[simd][complex]", float, double) {
+    constexpr int                       N = CVec<TestType>::complex_lanes;
+    std::vector<std::complex<TestType>> a(N), b(N), c(N), dst(N);
+    for (int i = 0; i < N; ++i) {
+        a[i] = {TestType(2 * i - 1), TestType(i + 2)};
+        b[i] = {TestType(i - 3), TestType(-i - 1)};
+        c[i] = {TestType(7 - i), TestType(3 * i)};
+    }
+
+    complex_storeu(dst.data(), complex_fmadd(complex_loadu(a.data()), complex_loadu(b.data()), complex_loadu(c.data())));
+
+    for (int i = 0; i < N; ++i) {
+        INFO("lane " << i);
+        CHECK(dst[i] == a[i] * b[i] + c[i]);
+    }
+}
+
 TEMPLATE_TEST_CASE("CVec complex_gather / complex_scatter", "[simd][complex]", float, double) {
     constexpr int                       N      = CVec<TestType>::complex_lanes;
     constexpr int                       stride = 3;
