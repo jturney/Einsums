@@ -18,11 +18,13 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -103,6 +105,40 @@ std::vector<size_t> grid_strides(std::vector<int> const &grid) {
     return stride;
 }
 
+/// Where in the sub-graph tree one tiled tensor object is used.
+struct TreeUse {
+    std::unordered_set<Graph const *> graphs; ///< graphs with a node that reads or writes it
+    bool                              written{false};
+};
+
+/// Record every tiled tensor the nodes of @p graph and its descendants touch, keyed by the
+/// tensor object, since a body's handle for a parent's tensor is a different id with the same
+/// object. Lifecycle nodes produce no value, and a control-flow node's own lists say nothing
+/// about its body, which the walk reaches directly.
+void collect_tiled_uses(Graph const &graph, std::unordered_map<void const *, TreeUse> &uses) {
+    for (auto const &nd : graph.nodes()) {
+        if (is_lifecycle(nd.kind) || is_control_flow(nd.kind)) {
+            continue;
+        }
+        auto note = [&](TensorId tid, bool write) {
+            auto const *h = graph.find_tensor(graph.buffer_of(tid));
+            if (h == nullptr || !h->is_tiled || h->tensor_ptr == nullptr) {
+                return;
+            }
+            auto &use = uses[h->tensor_ptr];
+            use.graphs.insert(&graph);
+            use.written = use.written || write;
+        };
+        for (auto tid : nd.inputs) {
+            note(tid, false);
+        }
+        for (auto tid : nd.outputs) {
+            note(tid, true);
+        }
+    }
+    graph.for_each_subgraph([&uses](Graph const &sub) { collect_tiled_uses(sub, uses); });
+}
+
 } // namespace
 
 TiledExpansion::TiledExpansion(size_t max_nodes, double zero_tile_tolerance, Densify densify, FuseTiles fuse)
@@ -124,8 +160,9 @@ std::vector<std::string> TiledExpansion::explain() const {
                                   _num_expanded, _num_tile_nodes, _num_screened, _num_densified, _num_fused, _num_gathers_reused));
     }
     if (_num_declined != 0) {
-        out.push_back(
-            fmt::format("TiledExpansion: declined {} tiled op(s) (over node budget or tile sparsity undecidable)", _num_declined));
+        out.push_back(fmt::format(
+            "TiledExpansion: declined {} tiled op(s) (over node budget, tile sparsity undecidable, or shared with another graph)",
+            _num_declined));
     }
     return out;
 }
@@ -141,6 +178,40 @@ void TiledExpansion::reset_stats() {
 }
 
 bool TiledExpansion::run(Graph &graph) {
+    // Planning is per graph, and a control-flow node names none of what its body touches, so
+    // a tiled tensor that one graph writes and another touches cannot be planned from either
+    // side: a reader predicts its tiles without seeing the writer, a per-tile writer leaves
+    // nothing to order it against the control-flow node, and screening measures tiles another
+    // graph has not written yet. Those tensors are found once, over the whole tree, and stay
+    // opaque everywhere.
+    std::unordered_map<void const *, TreeUse> uses;
+    collect_tiled_uses(graph, uses);
+    _cross_graph.clear();
+    for (auto const &[ptr, use] : uses) {
+        if (use.written && use.graphs.size() > 1) {
+            _cross_graph.insert(ptr);
+        }
+    }
+
+    // Parent before children. The children are collected after the parent is rewritten,
+    // since that can reallocate the node vector the walk would otherwise be iterating; a body
+    // is held by shared_ptr, so the pointers survive it.
+    bool                         modified = false;
+    std::function<void(Graph &)> visit    = [&](Graph &g) {
+        if (run_on_graph(g)) {
+            modified = true;
+        }
+        std::vector<Graph *> children;
+        g.for_each_subgraph([&children](Graph &sub) { children.push_back(&sub); });
+        for (Graph *sub : children) {
+            visit(*sub);
+        }
+    };
+    visit(graph);
+    return modified;
+}
+
+bool TiledExpansion::run_on_graph(Graph &graph) {
     // Planning below walks the nodes in order and carries each tiled tensor's tile
     // set forward across them, so the vector has to be in an order the executor
     // will actually use.
@@ -158,6 +229,18 @@ bool TiledExpansion::run(Graph &graph) {
     for (auto const &node : nodes) {
         for (auto tid : node.outputs) {
             produced.insert(tid);
+        }
+    }
+
+    // This graph's ids for the tiled tensors another graph of the tree shares. Nothing
+    // touching one expands, and none is screened, since its writer may run in another graph.
+    std::unordered_set<TensorId> shared;
+    if (!_cross_graph.empty()) {
+        for (auto const &[tid, h] : graph.tensors_map()) {
+            auto const *buf = graph.find_tensor(graph.buffer_of(tid));
+            if (buf != nullptr && buf->is_tiled && _cross_graph.contains(buf->tensor_ptr)) {
+                shared.insert(tid);
+            }
         }
     }
 
@@ -199,7 +282,7 @@ bool TiledExpansion::run(Graph &graph) {
             return it->second;
         }
         std::set<std::vector<int>> s;
-        if (_zero_tolerance >= 0.0 && !produced.contains(tid)) {
+        if (_zero_tolerance >= 0.0 && !produced.contains(tid) && !shared.contains(tid)) {
             for (auto const &co : v.coords()) {
                 if (auto const nrm = v.tile_norm(co); nrm && *nrm <= _zero_tolerance) {
                     s.insert(co);
@@ -1187,6 +1270,16 @@ bool TiledExpansion::run(Graph &graph) {
     // node touching its tiled tensors expands too, and rejecting one candidate can
     // strand another, so this iterates to a fixpoint.
     std::vector<bool> alive(plans.size(), true);
+    for (size_t p = 0; p < plans.size(); ++p) {
+        if (std::ranges::any_of(plans[p].touched, [&](TensorId tid) { return shared.contains(tid); })) {
+            alive[p]        = false;
+            Node const &nd  = nodes[plans[p].index];
+            auto const  why = "a tiled operand is shared with another graph of the tree, whose nodes this graph's plan cannot see";
+            ++_num_declined;
+            report(2, fmt::format("declining '{}': {}", nd.label, why));
+            EINSUMS_LOG_DEBUG("TiledExpansion: declining node {} - {}", nd.id, why);
+        }
+    }
     for (bool changed = true; changed;) {
         changed = false;
 

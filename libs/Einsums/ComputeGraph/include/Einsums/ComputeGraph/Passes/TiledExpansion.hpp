@@ -10,6 +10,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
+#include <unordered_set>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
@@ -138,6 +139,19 @@ enum class FuseTiles : std::uint8_t {
  * iterates to a fixpoint. Deciding this before any tile is created matters,
  * because minting a per-tile id creates the tile, and a spurious tile changes how
  * the runtime applies ``c_pf`` on the path that ends up not expanding.
+ *
+ * @par A tiled tensor shared across graphs stays opaque
+ * Prediction and stranding both work within one graph, and a loop body, a branch
+ * or a setup body is a graph of its own whose control-flow node names none of
+ * the tensors it touches. So a tiled tensor that one graph writes and another
+ * touches is never expanded, in any graph of the tree: every node that uses it
+ * is left as the opaque tiled op. Expanding it on one side would go wrong in
+ * three ways. A reader in the other graph would predict its tiles without
+ * seeing the writer, and expand against too few. A per-tile writer names only
+ * tile ids while the control-flow node names the whole tensor, so nothing would
+ * order the two. And screening would measure tiles another graph has not
+ * written yet. The set is computed once over the whole tree, by the tensor
+ * object, which is what a body's handle and its parent's have in common.
  *
  * @par Densifying small tiles
  * Expanding per tile only pays when a tile contraction is worth a dispatch. It
@@ -319,16 +333,19 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;
 
-    /// Safe per sub-graph: a tiled einsum is expanded within the single graph it
-    /// is handed, and the nodes it emits stay in that graph.
-    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+    /// False: ``run()`` walks the sub-graph tree itself, because which tiled
+    /// tensors are shared across graphs can only be answered from the whole tree.
+    /// Each graph is still expanded on its own, parent before children, and the
+    /// nodes it emits stay in that graph.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
 
     /// Tiled nodes replaced by per-tile nodes.
     [[nodiscard]] size_t num_expanded() const { return _num_expanded; }
     /// Dense per-tile nodes emitted, contractions and elementwise ops together.
     [[nodiscard]] size_t num_tile_nodes() const { return _num_tile_nodes; }
     /// Candidates left alone: misaligned partitions, produced operands, over
-    /// budget, or sharing a tiled tensor with a node that cannot expand.
+    /// budget, or sharing a tiled tensor with a node that cannot expand or with
+    /// another graph of the tree.
     [[nodiscard]] size_t num_declined() const { return _num_declined; }
     /// Tile contractions not emitted because an operand tile screened as zero.
     [[nodiscard]] size_t num_screened() const { return _num_screened; }
@@ -343,6 +360,13 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
     [[nodiscard]] size_t num_gathers_reused() const { return _num_gathers_reused; }
 
   private:
+    /// Expand the tiled ops of one graph of the tree.
+    bool run_on_graph(Graph &graph);
+
+    /// Tiled tensor objects that one graph of the tree writes and another touches.
+    /// Filled by ``run()`` before any graph is expanded; never expanded or screened.
+    std::unordered_set<void const *> _cross_graph;
+
     size_t    _max_nodes;
     double    _zero_tolerance;
     Densify   _densify;

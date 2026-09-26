@@ -533,6 +533,103 @@ class TiledChain(Motif):
                                      f" tail={list(zip(self.tail, self.scal))} scratch={self.via_scratch}")
 
 
+class TiledAcrossLoop(Motif):
+    """A tiled tensor X written on one side of a loop boundary and read on the other.
+
+    X is produced before the loop or in its body; the body reads it when the
+    producer is outside, and the parent reads it after the loop when the
+    producer is inside (each also drawn on its own). A body-local scale of the
+    body's own target gives TiledExpansion something it may expand beside the
+    shared tensor, and ``big`` moves everything to a grid whose contractions are
+    over the pass's node budget, so the producer can stay opaque while the
+    elementwise ops beside it expand. The motif places its own loop, so it is
+    never itself put inside one.
+    """
+
+    kind = "tiled_loop"
+
+    def __init__(self, rng, dtype, tag):
+        super().__init__(rng, dtype, tag)
+        big = bool(rng.random() < 0.3)
+        r, k, c = ([[1] * 17] * 3) if big else (_grid_axis(rng), _grid_axis(rng), _grid_axis(rng))
+        sparse = bool(rng.random() < 0.5)
+        self.arr = {"A": _TiledArray(rng, [r, k], dtype, sparse), "F": _TiledArray(rng, [k, c], dtype, sparse),
+                    "G": _TiledArray(rng, [r, c], dtype, sparse), "X": _TiledArray(rng, [r, c], dtype, False),
+                    "Y": _TiledArray(rng, [r, c], dtype, sparse), "E": _TiledArray(rng, [c, r], dtype, sparse)}
+        self.np = {k: v.dense.copy() for k, v in self.arr.items()}
+        self.grid_rc = [r, c]
+        self.big = big
+        self.iters = int(rng.integers(1, 4))
+        self.prod_side = str(rng.choice(["before", "body"]))
+        self.prod_op = str(rng.choice(["einsum", "axpy"]))
+        # A graph-owned X is overwritten by an einsum; an axpy into it would carry
+        # its value from one execution into the next, which the oracle does not model.
+        self.scratch = bool(rng.random() < 0.3) and self.prod_op == "einsum"
+        if self.scratch:
+            self.np["X"] = np.zeros_like(self.np["X"])
+        self.cpf = 0.0 if self.scratch else float(rng.choice([0.0, 1.0, 0.5]))
+        self.body_reader = self.prod_side == "before" or bool(rng.random() < 0.5)
+        self.after_reader = self.prod_side == "body" or bool(rng.random() < 0.5)
+        self.s = [_scalar(rng) for _ in range(4)]
+
+    def build(self, g, target):
+        self.t = {k: v.make(f"{self.tag}_{k}", self.dtype) for k, v in self.arr.items() if not (k == "X" and self.scratch)}
+        if self.scratch:
+            self._x = g.declare_zero_tiled_tensor(f"{self.tag}_X", self.grid_rc, intermediate=True, dtype=self.dtype)
+        X = self._x if self.scratch else self.t["X"]
+
+        def produce():
+            if self.prod_op == "einsum":
+                einsums.einsum("ij <- ik ; kj", X, self.t["A"], self.t["F"], c_pf=self.cpf, ab_pf=self.s[0])
+            else:
+                einsums.linalg.axpy(self.s[0], self.t["G"], X)
+
+        if self.prod_side == "before":
+            with cg.capture(g):
+                produce()
+        body = g.add_loop(f"{self.tag}_loop", self.iters, lambda it, c=self.iters: it < c - 1)
+        with cg.capture(body):
+            if self.prod_side == "body":
+                produce()
+            if self.body_reader:
+                einsums.linalg.axpy(self.s[1], X, self.t["Y"])
+            einsums.linalg.scale(self.s[2], self.t["Y"])
+        if self.after_reader:
+            with cg.capture(g):
+                einsums.permute("j,i <- i,j", self.t["E"], X, c_pf=0.5, a_pf=self.s[3])
+
+    def step(self, a):
+        def produce(x):
+            if self.prod_op == "einsum":
+                return self.cpf * x + self.s[0] * (a["A"] @ a["F"])
+            return x + self.s[0] * a["G"]
+
+        if self.prod_side == "before":
+            a["X"] = produce(a["X"])
+        for _ in range(self.iters):
+            if self.prod_side == "body":
+                a["X"] = produce(a["X"])
+            if self.body_reader:
+                a["Y"] = a["Y"] + self.s[1] * a["X"]
+            a["Y"] = self.s[2] * a["Y"]
+        if self.after_reader:
+            a["E"] = 0.5 * a["E"] + self.s[3] * a["X"].T
+
+    def observe(self):
+        return {k: _gather(t, self.dtype) for k, t in self.t.items()}
+
+    def expected(self, runs):
+        out = super().expected(runs)
+        if self.scratch:
+            out.pop("X", None)
+        return out
+
+    def describe(self):
+        return super().describe() + (f" big={self.big} iters={self.iters} producer={self.prod_op}@{self.prod_side}"
+                                     f" body_reader={self.body_reader} after_reader={self.after_reader}"
+                                     f" scratch={self.scratch} cpf={self.cpf} s={self.s}")
+
+
 class DiskLoad(Motif):
     """A captured disk read placed after unrelated compute.
 
@@ -717,7 +814,7 @@ class GpuGemm(Motif):
                                      f" cpu_write={self.cpu_write}")
 
 
-MOTIFS = {m.kind: m for m in (StreamJK, LayoutChain, ScratchReuse, BigScratch, TiledChain, DiskLoad,
+MOTIFS = {m.kind: m for m in (StreamJK, LayoutChain, ScratchReuse, BigScratch, TiledChain, TiledAcrossLoop, DiskLoad,
                               DiskRoundTrip, SpaceChain, GpuGemm)}
 
 #: The motif each pass needs in order to fire.
@@ -729,7 +826,7 @@ MOTIF_FOR_PASS = {
 }
 
 #: Motifs the default corpus draws from.
-CORPUS_KINDS = ("stream", "layout", "scratch", "big", "tiled", "io", "io_roundtrip", "spaces", "gpu")
+CORPUS_KINDS = ("stream", "layout", "scratch", "big", "tiled", "tiled_loop", "io", "io_roundtrip", "spaces", "gpu")
 
 #: Motifs that can sit inside a loop body. The stream and GPU motifs stay at
 #: top level only to keep the runtime down.

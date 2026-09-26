@@ -41,6 +41,7 @@ deterministic program and kept as the guard for its fix. The corpus comment in
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import subprocess
@@ -57,6 +58,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
+import einsums._core.graph as _G
 
 import _resource_pass_motifs as R
 from _fuzz_diff_common import _apply_one_pass
@@ -452,7 +454,51 @@ def test_hoisted_producer_of_freed_eager_scratch_leaves_the_body_stale():
     assert result.returncode == 0, f"the child failed (exit {result.returncode}):\n{result.stderr[-3000:]}"
 
 
-def test_tiled_consumer_of_a_hoisted_tiled_producer_expands_to_nothing():
+def _tiled_from(name, grid, value):
+    """A float64 tiled tensor over @p grid with every tile stored, holding @p value."""
+    t = einsums.TiledRuntimeTensorD(name, grid)
+    for tile in itertools.product(*[range(len(ax)) for ax in grid]):
+        t.add_tile(list(tile))
+    t.materialize()
+    offs = [np.cumsum([0] + ax)[:-1] for ax in grid]
+    for tile in itertools.product(*[range(len(ax)) for ax in grid]):
+        sl = tuple(slice(offs[d][tile[d]], offs[d][tile[d]] + grid[d][tile[d]]) for d in range(len(grid)))
+        np.asarray(t.tile_view(list(tile)))[...] = value[sl]
+    return t
+
+
+def _apply_order(g, order):
+    """Apply @p order one pass at a time ("default" is the whole default pipeline), then Materialization."""
+    for name in order:
+        if name == "default":
+            g.apply(cg.default_pass_manager())
+        else:
+            _apply_one_pass(g, name)
+    _apply_one_pass(g, "Materialization")
+
+
+#: Orders the cross-graph tiled pins run under. Reorder right after TiledExpansion
+#: is what exposes a missing ordering edge; the default pipeline twice meets the
+#: hoisted form of whatever the first run moved.
+_CROSS_GRAPH_ORDERS = [
+    ["TiledExpansion"],
+    ["TiledExpansion", "Reorder"],
+    ["LoopInvariantHoisting", "TiledExpansion", "Reorder"],
+    ["TiledExpansion", "LoopInvariantHoisting", "TiledExpansion"],
+    ["default"],
+    ["default", "default"],
+]
+
+#: One-element tiles, 17 to an axis: a contraction over this grid is 17**3 = 4913
+#: tile combinations, over TiledExpansion's default budget of 4096, so it stays
+#: the opaque tiled op, while an elementwise op over its 289 tiles expands.
+_OVER_BUDGET = [[1] * 17, [1] * 17]
+
+
+@pytest.mark.parametrize("order", [["LoopInvariantHoisting", "TiledExpansion"],
+                                   ["TiledExpansion", "LoopInvariantHoisting", "TiledExpansion"],
+                                   ["default", "default"]], ids=",".join)
+def test_tiled_consumer_of_a_hoisted_tiled_producer_expands_to_nothing(order):
     """LoopInvariantHoisting then TiledExpansion: a body permute of a tiled scratch keeps its terms.
 
     Defends against a hoist that stranded the body's consumer: once the
@@ -460,37 +506,116 @@ def test_tiled_consumer_of_a_hoisted_tiled_producer_expands_to_nothing():
     TiledExpansion leaves unexpanded, the body permute that reads it WAS
     expanded, against a predicted tile set seeded from the scratch's stored
     tiles, of which a deferred shell has none, and the body kept only the
-    leftover scale of E. TiledExpansion's prediction works per graph, so a body
-    never learned that its operand's producer lived, unexpanded, one level up.
-    LoopInvariantHoisting now keeps a tiled op in its body, so declining the
-    hoist is a correct outcome; the case asserts only the numbers.
+    leftover scale of E. TiledExpansion used to plan each graph on its own, so
+    a body never learned that its operand's producer lived one level up. It now
+    leaves a tiled tensor that one graph writes and another reads opaque in
+    both, so LoopInvariantHoisting hoists the tiled producer again and the
+    numbers hold in every order.
     """
     grid = [[2], [2]]
     rng = np.random.default_rng(0)
     a, b, e = (rng.standard_normal((2, 2)) for _ in range(3))
-
-    def mk(name, value):
-        t = einsums.TiledRuntimeTensorD(name, grid)
-        t.add_tile([0, 0])
-        t.materialize()
-        np.asarray(t.tile_view([0, 0]))[...] = value
-        return t
-
-    A, B, E = mk("th_A", a), mk("th_B", b), mk("th_E", e)
+    A, B, E = _tiled_from("th_A", grid, a), _tiled_from("th_B", grid, b), _tiled_from("th_E", grid, e)
     g = cg.Graph("tiled_hoist")
     T = g.declare_zero_tiled_tensor("th_T", grid, intermediate=True, dtype="float64")
     body = g.add_loop("l", 2, lambda it: it < 1)
     with cg.capture(body):
         einsums.einsum("ij <- ik ; kj", T, A, B, c_pf=0.0, ab_pf=1.0)
         einsums.permute("j,i <- i,j", E, T, c_pf=0.5, a_pf=2.0)
-    _apply_one_pass(g, "LoopInvariantHoisting")
-    _apply_one_pass(g, "TiledExpansion")
-    _apply_one_pass(g, "Materialization")
+    if order[0] == "LoopInvariantHoisting":
+        lih = _G.LoopInvariantHoisting()
+        pm = cg.PassManager()
+        pm.add(lih)
+        assert g.apply(pm)
+        assert lih.num_hoisted == 1, "the tiled producer is loop invariant and should leave the body"
+        order = order[1:]
+    _apply_order(g, order)
     g.execute()
     expected = e.copy()
     for _ in range(2):
         expected = 0.5 * expected + 2.0 * (a @ b).T
     np.testing.assert_allclose(np.asarray(E.tile_view([0, 0])), expected, atol=1e-12)
+
+
+@pytest.mark.parametrize("order", _CROSS_GRAPH_ORDERS, ids=",".join)
+def test_tiled_reader_after_a_loop_sees_the_tiles_its_body_creates(order):
+    """A parent permute after a loop reads the tiled scratch the loop body fills.
+
+    Defends against the parent being planned before, and apart from, the body:
+    the scratch has no tiles at pass time and the parent held no writer of it,
+    so the permute expanded against an empty tile set and E kept only
+    ``0.5 * E``. Seen as a max error of 2.7 under TiledExpansion alone and 11
+    under the default pipeline.
+    """
+    grid = [[2, 1], [2, 1]]
+    rng = np.random.default_rng(1)
+    a, b, e = (rng.standard_normal((3, 3)) for _ in range(3))
+    A, B, E = _tiled_from("ra_A", grid, a), _tiled_from("ra_B", grid, b), _tiled_from("ra_E", grid, e)
+    g = cg.Graph("tiled_reader_after_loop")
+    T = g.declare_zero_tiled_tensor("ra_T", grid, intermediate=True, dtype="float64")
+    body = g.add_loop("l", 2, lambda it: it < 1)
+    with cg.capture(body):
+        einsums.einsum("ij <- ik ; kj", T, A, B, c_pf=0.0, ab_pf=1.0)
+    with cg.capture(g):
+        einsums.permute("j,i <- i,j", E, T, c_pf=0.5, a_pf=2.0)
+    _apply_order(g, order)
+    g.execute()
+    np.testing.assert_allclose(R._gather(E, "float64"), 0.5 * e + 2.0 * (a @ b).T, atol=1e-12)
+
+
+@pytest.mark.parametrize("order", _CROSS_GRAPH_ORDERS, ids=",".join)
+def test_loop_body_reading_an_opaque_parent_producer_keeps_its_terms(order):
+    """A body permute reads a tiled scratch the parent writes with a contraction too big to expand.
+
+    Defends against the body predicting its operand without the parent's
+    writer, with no hoist involved: the producer stays the opaque tiled op, the
+    scratch has no stored tiles, and the body permute expanded into nothing but
+    the scale of E (max error 36 under TiledExpansion alone).
+    """
+    n = 17
+    rng = np.random.default_rng(2)
+    a, b, e = (rng.standard_normal((n, n)) for _ in range(3))
+    A, B = _tiled_from("op_A", _OVER_BUDGET, a), _tiled_from("op_B", _OVER_BUDGET, b)
+    E = _tiled_from("op_E", _OVER_BUDGET, e)
+    g = cg.Graph("tiled_opaque_parent_producer")
+    T = g.declare_zero_tiled_tensor("op_T", _OVER_BUDGET, intermediate=True, dtype="float64")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", T, A, B, c_pf=0.0, ab_pf=1.0)
+    body = g.add_loop("l", 2, lambda it: it < 1)
+    with cg.capture(body):
+        einsums.permute("j,i <- i,j", E, T, c_pf=0.5, a_pf=2.0)
+    _apply_order(g, order)
+    g.execute()
+    expected = e.copy()
+    for _ in range(2):
+        expected = 0.5 * expected + 2.0 * (a @ b).T
+    np.testing.assert_allclose(R._gather(E, "float64"), expected, atol=1e-10)
+
+
+@pytest.mark.parametrize("order", _CROSS_GRAPH_ORDERS, ids=",".join)
+def test_expanded_parent_writer_stays_ordered_before_a_loop_that_reads_it(order):
+    """A parent axpy into X, then a loop whose body contracts X too big to expand.
+
+    Defends against a missing dependency edge: the parent's axpy expanded into
+    per-tile writes naming tile ids, while the Loop node, through its body's
+    opaque contraction, names X as a whole. Nothing ordered the two, and
+    Reorder ran the loop first (max error 43 with Reorder after TiledExpansion,
+    38 under the default pipeline).
+    """
+    n = 17
+    rng = np.random.default_rng(3)
+    a, x0, f, e = (rng.standard_normal((n, n)) for _ in range(4))
+    A, X = _tiled_from("oe_A", _OVER_BUDGET, a), _tiled_from("oe_X", _OVER_BUDGET, x0)
+    F, E = _tiled_from("oe_F", _OVER_BUDGET, f), _tiled_from("oe_E", _OVER_BUDGET, e)
+    g = cg.Graph("tiled_parent_writer_edge")
+    with cg.capture(g):
+        einsums.linalg.axpy(1.5, A, X)
+    body = g.add_loop("l", 2, lambda it: it < 1)
+    with cg.capture(body):
+        einsums.einsum("ij <- ik ; kj", E, X, F, c_pf=1.0, ab_pf=1.0)
+    _apply_order(g, order)
+    g.execute()
+    np.testing.assert_allclose(R._gather(E, "float64"), e + 2.0 * ((x0 + 1.5 * a) @ f), atol=1e-10)
 
 
 def test_default_pipeline_reports_a_contraction_over_disjoint_spaces():

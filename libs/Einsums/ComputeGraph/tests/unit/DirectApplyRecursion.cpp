@@ -467,7 +467,7 @@ constexpr bool kRewritesMixedProgram =
 // every sub-graph well formed, compute the same numbers as the program run by brute force
 // (three loop iterations, the taken branch once, the untaken branch not at all), and treat
 // each sub-graph copy of the program the way it treats the program captured flat. The list
-// is every pass whose recurse_into_subgraphs() is true, plus one that walks the tree itself; the
+// is every pass whose recurse_into_subgraphs() is true, plus two that walk the tree themselves; the
 // first REQUIRE fails if one stops reaching the bodies.
 TEMPLATE_TEST_CASE("Direct apply - an opt-in pass is correct inside a loop body and a conditional",
                    "[ComputeGraph][Recursion][DirectApply]", cg::passes::AntisymmetrizerExpansion, cg::passes::AntisymmetrizerFolding,
@@ -482,7 +482,8 @@ TEMPLATE_TEST_CASE("Direct apply - an opt-in pass is correct inside a loop body 
                    cg::passes::TiledExpansion, cg::passes::TransferElimination, cg::passes::TransferInsertion) {
     using Pass = TestType;
     // A pass that walks the sub-graph tree inside run() reaches the bodies without the driver.
-    constexpr bool descends_itself = std::is_same_v<Pass, cg::passes::SymmetrizedAccumulation>;
+    constexpr bool descends_itself =
+        std::is_same_v<Pass, cg::passes::SymmetrizedAccumulation> || std::is_same_v<Pass, cg::passes::TiledExpansion>;
     REQUIRE((Pass{}.recurse_into_subgraphs() || descends_itself));
 
     FlatOutcome const outcome = check_direct_apply<Operands, Pass>();

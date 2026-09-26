@@ -12,6 +12,8 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/Passes/TiledExpansion.hpp>
 #include <Einsums/Tensor/TiledRuntimeTensor.hpp>
+#include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <fmt/format.h>
 
@@ -24,6 +26,8 @@
 
 using namespace einsums;
 namespace cg = einsums::compute_graph;
+using einsums::testing::reference_einsum;
+using einsums::testing::reference_permute;
 
 /// Densification (small tiles lowered to gather + one dense einsum + scatter) is a
 /// separate lowering with its own cases at the end of this file. Everything above
@@ -1708,4 +1712,123 @@ TEST_CASE("TiledExpansion - a gathered operand that is written is gathered again
     for (size_t i = 0; i < reference.size(); ++i) {
         REQUIRE_THAT(densified[i], Catch::Matchers::WithinRel(reference[i], 1e-12));
     }
+}
+
+// ── Tiled tensors shared across graphs ─────────────────────────────────────
+// A loop body is a graph of its own, and the Loop node in its parent names none of
+// the tensors the body touches. A tiled tensor that one graph writes and another
+// reads is therefore never expanded, on either side.
+
+namespace {
+
+/// The dense picture of a 2-D tiled tensor, absent tiles zero, for reference_einsum.
+Tensor<double, 2> to_dense(TiledRuntimeTensor<double> const &T, size_t R, size_t C) {
+    auto const flat = gather(T, R, C);
+    auto       out  = create_zero_tensor<double>("dense", R, C);
+    for (size_t r = 0; r < R; ++r) {
+        for (size_t c = 0; c < C; ++c) {
+            out(r, c) = flat[r * C + c];
+        }
+    }
+    return out;
+}
+
+void require_close(TiledRuntimeTensor<double> const &got, Tensor<double, 2> const &want, size_t R, size_t C) {
+    auto const flat = gather(got, R, C);
+    for (size_t r = 0; r < R; ++r) {
+        for (size_t c = 0; c < C; ++c) {
+            REQUIRE_THAT(flat[r * C + c], Catch::Matchers::WithinAbs(want(r, c), 1e-11));
+        }
+    }
+}
+
+} // namespace
+
+TEST_CASE("TiledExpansion - a loop body reading what a declined parent producer writes stays opaque", "[ComputeGraph][Passes][Tiled]") {
+    // The parent's contraction is over the node budget and stays the opaque tiled op.
+    // The body's permute reads its output, which has no tiles at pass time. The body
+    // used to be planned on its own, predicting that output from its stored tiles, of
+    // which it had none, so the permute expanded into the leftover scale of E alone.
+    Grid const g{{2, 2}, {2, 2}};
+    auto       A = make_tiled("A", g, full_coords(g));
+    auto       B = make_tiled("B", g, full_coords(g));
+    auto       T = make_tiled("T", g, {});
+    auto       E = make_tiled("E", g, full_coords(g));
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+    fill_det(E, 3.0);
+
+    auto T_ref = create_zero_tensor<double>("T_ref", 4, 4);
+    reference_einsum("ij <- ik ; kj", &T_ref, to_dense(A, 4, 4), to_dense(B, 4, 4));
+    auto E_ref = to_dense(E, 4, 4);
+    for (int it = 0; it < 2; ++it) {
+        reference_permute("ji <- ij", 0.5, &E_ref, 2.0, T_ref);
+    }
+
+    cg::Graph graph("declined_parent_producer");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &T, A, B);
+    }
+    auto &body = graph.add_loop("loop", 2, [](size_t it) { return it < 1; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::permute("ji <- ij", 0.5, &E, 2.0, T);
+    }
+
+    cg::PassManager pm;
+    // 2x2x2 = 8 tile contractions is over the budget; the permute's 4 tiles are not.
+    auto pass = std::make_shared<cg::passes::TiledExpansion>(/*max_nodes=*/6, -1.0, kPerTile, kNoFuse);
+    pm.add(pass);
+    CHECK_FALSE(graph.apply(pm));
+    CHECK(pass->num_expanded() == 0);
+    CHECK(pass->num_declined() == 2);
+
+    graph.execute();
+    require_close(E, E_ref, 4, 4);
+}
+
+TEST_CASE("TiledExpansion - a loop body never screens a tensor its parent writes", "[ComputeGraph][Passes][Tiled]") {
+    // X is stored and zero at pass time, and the parent overwrites it before the loop.
+    // The body's own writes were all the screening test looked at, so the body used to
+    // measure X's zero tiles, screen every contribution out, and leave D as it was.
+    Grid const g{{2, 2}, {2, 2}};
+    auto       A = make_tiled("A", g, full_coords(g));
+    auto       B = make_tiled("B", g, full_coords(g));
+    auto       X = make_tiled("X", g, full_coords(g));
+    auto       E = make_tiled("E", g, full_coords(g));
+    auto       D = make_tiled("D", g, full_coords(g));
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+    fill_det(E, 3.0);
+    fill_det(D, 4.0);
+    for (auto const &co : full_coords(g)) {
+        zero_tile(X, co);
+    }
+
+    auto X_ref = create_zero_tensor<double>("X_ref", 4, 4);
+    reference_einsum("ij <- ik ; kj", &X_ref, to_dense(A, 4, 4), to_dense(B, 4, 4));
+    auto D_ref = to_dense(D, 4, 4);
+    reference_einsum("il <- ij ; jl", 1.0, &D_ref, 2.0, X_ref, to_dense(E, 4, 4));
+
+    cg::Graph graph("screen_across_graphs");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ij <- ik ; kj", &X, A, B);
+    }
+    auto &body = graph.add_loop("loop", 2, [](size_t it) { return it < 1; });
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("il <- ij ; jl", 1.0, &D, 1.0, X, E);
+    }
+
+    cg::PassManager pm;
+    auto            pass = std::make_shared<cg::passes::TiledExpansion>(4096, 0.0, kPerTile, kNoFuse);
+    pm.add(pass);
+    CHECK_FALSE(graph.apply(pm));
+    CHECK(pass->num_screened() == 0);
+    CHECK(pass->num_expanded() == 0);
+
+    graph.execute();
+    require_close(D, D_ref, 4, 4);
 }
