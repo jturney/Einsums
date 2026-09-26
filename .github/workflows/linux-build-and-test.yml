@@ -16,6 +16,14 @@ on:
       build_configure_extra_args:
         type: string
         required: false
+      # The nightly sets this. Every fuzz and property test runs again, on one
+      # leg, with its sample counts multiplied (see _sanitizer_scaling.py): the
+      # per-PR counts are sized for speed, and some defects only appear past
+      # them.
+      long_fuzz:
+        type: boolean
+        required: false
+        default: false
 
 permissions: read-all
 
@@ -190,6 +198,18 @@ jobs:
           EINSUMS_TIER_REPORT_DIR: "${{ github.workspace }}/tier-reports"
           EINSUMS_TIER_LABEL: "linux-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}"
         run: ctest --rerun-failed --output-on-failure -j4
+
+      # One leg only: the clang/OpenBLAS default build, which has neither the
+      # coverage instrumentation nor a variant switch to slow it or narrow it.
+      # Hypothesis prints the falsifying example and the seed to reproduce it,
+      # which is what this step's log is for.
+      - name: Test (CTest) - Long fuzz
+        if: inputs.long_fuzz && matrix.compiler == 'clang' && matrix.blas == 'openblas' && matrix.variant == 'default'
+        working-directory: "${{ github.workspace }}/build"
+        env:
+          EINSUMS_FUZZ_SCALE: "20"
+          EINSUMS_TEST_STACKDUMP_DIR: "${{ github.workspace }}/stackdumps"
+        run: ctest -L PYTHON -R "Fuzz|Hyp" --output-on-failure -j4 --timeout 7200
 
       # if: always() - a dump exists precisely when the step above failed.
       # if-no-files-found: ignore keeps a green run quiet.

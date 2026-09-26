@@ -39,6 +39,8 @@ jobs:
   linux:
     name: Linux
     uses: ./.github/workflows/linux-build-and-test.yml
+    with:
+      long_fuzz: true
 
   windows:
     name: Windows

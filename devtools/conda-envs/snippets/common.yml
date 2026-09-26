@@ -63,6 +63,7 @@ dependencies:
   - python 3.14.* *_cp314
   - pybind11
   - pytest
+  - pytest-xdist
   - hypothesis >=6
   - numpy
   - scipy
