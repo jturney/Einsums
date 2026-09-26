@@ -9,11 +9,75 @@
 
 #include <cerrno>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 #include "PosixFileCompat.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(tensor_io)
+
+namespace detail {
+
+void check_entry_type(std::string_view path, std::string_view operation, TensorEntry const &entry, DType want,
+                      std::optional<size_t> want_rank) {
+    std::string const name   = entry.get_name();
+    auto const        stored = static_cast<DType>(entry.dtype);
+
+    if (entry.rank > ETN_MAX_RANK) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "{}: entry '{}' in '{}' is damaged: stored rank {} exceeds the maximum {}", operation,
+                                name, path, entry.rank, ETN_MAX_RANK);
+    }
+    if (dtype_size(stored) == 0) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error, "{}: entry '{}' in '{}' is damaged: unknown dtype code {}", operation, name, path,
+                                entry.dtype);
+    }
+    if (stored != want) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "{}: entry '{}' in '{}' holds {} data, but the tensor holds {}; element types are never converted",
+                                operation, name, path, dtype_name(stored), dtype_name(want));
+    }
+    if (want_rank.has_value() && *want_rank != entry.rank) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: entry '{}' in '{}' has rank {}, but the tensor has rank {}", operation, name,
+                                path, entry.rank, *want_rank);
+    }
+
+    // The copy sizes the destination from dims and moves data_size bytes, so the two must agree.
+    uint64_t elements = 1;
+    for (size_t d = 0; d < entry.rank; ++d) {
+        if (entry.dims[d] != 0 && elements > std::numeric_limits<uint64_t>::max() / entry.dims[d]) {
+            EINSUMS_THROW_EXCEPTION(std::runtime_error, "{}: entry '{}' in '{}' is damaged: its dims overflow", operation, name, path);
+        }
+        elements *= entry.dims[d];
+    }
+    uint64_t const elem_bytes = dtype_size(stored);
+    if (elements > std::numeric_limits<uint64_t>::max() / elem_bytes || entry.data_size != elements * elem_bytes) {
+        EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                                "{}: entry '{}' in '{}' is damaged: {} {} elements need {} bytes, but the entry records {}", operation,
+                                name, path, elements, dtype_name(stored), elements * elem_bytes, entry.data_size);
+    }
+}
+
+void check_slab_ranges(std::string_view path, std::string_view operation, TensorEntry const &entry,
+                       std::vector<std::pair<size_t, size_t>> const &ranges) {
+    std::string const name = entry.get_name();
+    if (ranges.size() != entry.rank) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: {} ranges given for entry '{}' in '{}', which has rank {}", operation,
+                                ranges.size(), name, path, entry.rank);
+    }
+    for (size_t d = 0; d < ranges.size(); ++d) {
+        auto const [first, last] = ranges[d];
+        if (first > last) {
+            EINSUMS_THROW_EXCEPTION(std::invalid_argument, "{}: range [{}, {}) for dim {} of entry '{}' in '{}' is reversed", operation,
+                                    first, last, d, name, path);
+        }
+        if (last > entry.dims[d]) {
+            EINSUMS_THROW_EXCEPTION(std::out_of_range, "{}: range [{}, {}) for dim {} of entry '{}' in '{}' runs past the stored extent {}",
+                                    operation, first, last, d, name, path, entry.dims[d]);
+        }
+    }
+}
+
+} // namespace detail
 
 TensorFile::TensorFile(std::string path, Mode mode) : _path(std::move(path)), _mode(mode) {
     detail::OpenMode open_mode = detail::OpenMode::ReadWrite;

@@ -21,11 +21,22 @@ import pytest
 
 import einsums
 import einsums.graph as cg
+from einsums.testing import ALL_DTYPES, assert_close
 
 
 def _temp_path(name):
     return os.path.join(tempfile.gettempdir(),
                         f"einsums_graphslab_{os.getpid()}_{name}.etn")
+
+
+def _arange_tensor(name, shape, dtype):
+    """``arange`` reshaped to ``shape`` in ``dtype``; complex dtypes also get an imaginary part."""
+    values = np.arange(int(np.prod(shape)), dtype=np.float64).reshape(shape)
+    if np.dtype(dtype).kind == "c":
+        values = values - 0.5j * values
+    rt = einsums.create_zero_tensor(name, list(shape), dtype=dtype)
+    np.asarray(rt, copy=False)[:] = values.astype(dtype)
+    return rt
 
 
 def test_slab_module_layout():
@@ -54,20 +65,20 @@ def test_slab_ranges_are_mutable():
     assert s.ranges == [(2, 4), (0, 4)]
 
 
-def test_graph_slab_round_trip_through_recorded_node():
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_graph_slab_round_trip_through_recorded_node(dtype):
     """Build a graph that reads a slab into ``block``, mutate the in-memory
     block, then run a second graph to write it back. Verifies that
     read_slice / write_slice fire under the executor and pick up
     the current Slab range each invocation."""
-    path = _temp_path("rt")
+    path = _temp_path(f"rt_{dtype}")
     try:
-        seed = einsums.RuntimeTensorD("A", [4, 4])
-        np.asarray(seed, copy=False)[:] = np.arange(16, dtype=np.float64).reshape(4, 4)
+        seed = _arange_tensor("A", (4, 4), dtype)
         f = einsums.io.TensorFile(path, einsums.io.Mode.Write)
         f.write("A", seed)
         del f
 
-        block = einsums.RuntimeTensorD("blk", [2, 2])
+        block = einsums.create_zero_tensor("blk", [2, 2], dtype=dtype)
         slab = einsums.io.Slab([(1, 3), (1, 3)])
 
         g_read = cg.Graph("r")
@@ -80,11 +91,11 @@ def test_graph_slab_round_trip_through_recorded_node():
         # themselves should match the corresponding slab.
         # Read the same slab via the non-graph TensorFile API for a
         # ground-truth comparison.
-        truth = einsums.RuntimeTensorD("truth", [2, 2])
+        truth = einsums.create_zero_tensor("truth", [2, 2], dtype=dtype)
         f2 = einsums.io.TensorFile(path, einsums.io.Mode.Read)
         f2.read_slice("A", truth, [(1, 3), (1, 3)])
-        assert np.allclose(np.asarray(block, copy=False),
-                           np.asarray(truth, copy=False))
+        assert_close(np.asarray(block, copy=False), np.asarray(truth, copy=False), dtype=dtype)
+        assert_close(np.asarray(block, copy=False), np.asarray(seed, copy=False)[1:3, 1:3], dtype=dtype)
         # Windows refuses to remove a file that is still open, where POSIX
         # unlinks it happily, so every reader is dropped before cleanup.
         del f2
@@ -93,7 +104,8 @@ def test_graph_slab_round_trip_through_recorded_node():
             os.remove(path)
 
 
-def test_graph_driven_tile_loop_via_add_loop():
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_graph_driven_tile_loop_via_add_loop(dtype):
     """The motivating use case driven entirely by the graph: ``add_loop``
     records a body subgraph that reads a slab, runs a Python ``transform``
     callable as a graph node (``cg.custom``), and writes the slab back.
@@ -101,15 +113,14 @@ def test_graph_driven_tile_loop_via_add_loop():
 
     No host-language loop, the graph drives everything.
     """
-    path = _temp_path("tiles_add_loop")
+    path = _temp_path(f"tiles_add_loop_{dtype}")
     try:
-        seed = einsums.RuntimeTensorD("A", [4, 4])
-        np.asarray(seed, copy=False)[:] = np.arange(16, dtype=np.float64).reshape(4, 4)
+        seed = _arange_tensor("A", (4, 4), dtype)
         f = einsums.io.TensorFile(path, einsums.io.Mode.Write)
         f.write("A", seed)
         del f
 
-        block = einsums.RuntimeTensorD("blk", [2, 2])
+        block = einsums.create_zero_tensor("blk", [2, 2], dtype=dtype)
         slab = einsums.io.Slab([(0, 2), (0, 2)])  # initial tile (0, 0)
 
         def transform():
@@ -132,50 +143,48 @@ def test_graph_driven_tile_loop_via_add_loop():
         g.add_loop("tiles", 4, cond, body)
         g.execute()
 
-        rt = einsums.RuntimeTensorD("rt", [4, 4])
+        rt = einsums.create_zero_tensor("rt", [4, 4], dtype=dtype)
         f3 = einsums.io.TensorFile(path, einsums.io.Mode.Read)
         f3.read("A", rt)
-        arr = np.asarray(rt, copy=False)
-        expected = np.arange(16, dtype=np.float64).reshape(4, 4) * 10.0
-        assert np.allclose(arr, expected), f"mismatch:\n{arr}\nvs\n{expected}"
+        expected = np.asarray(seed, copy=False) * 10.0
+        assert_close(np.asarray(rt, copy=False), expected, dtype=dtype)
         del f3
     finally:
         if os.path.exists(path):
             os.remove(path)
 
 
-def test_slab_io_runs_immediately_outside_capture():
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_slab_io_runs_immediately_outside_capture(dtype):
     """Option-A semantics: read_slice / write_slice called
     outside ``cg.capture(g)`` execute their executor lambdas immediately
     rather than throwing. Mirrors checkpoint_etn's pattern."""
-    path = _temp_path("immediate")
+    path = _temp_path(f"immediate_{dtype}")
     try:
-        seed = einsums.RuntimeTensorD("A", [4, 4])
-        np.asarray(seed, copy=False)[:] = np.arange(16, dtype=np.float64).reshape(4, 4)
+        seed = _arange_tensor("A", (4, 4), dtype)
         f = einsums.io.TensorFile(path, einsums.io.Mode.Write)
         f.write("A", seed)
         del f
 
-        block = einsums.RuntimeTensorD("blk", [2, 2])
+        block = einsums.create_zero_tensor("blk", [2, 2], dtype=dtype)
         slab = einsums.io.Slab([(1, 3), (1, 3)])
 
         # No cg.capture, runs immediately.
         einsums.io.read_slice(path, "A", slab, block)
-        truth = einsums.RuntimeTensorD("truth", [2, 2])
+        truth = einsums.create_zero_tensor("truth", [2, 2], dtype=dtype)
         f2 = einsums.io.TensorFile(path, einsums.io.Mode.Read)
         f2.read_slice("A", truth, [(1, 3), (1, 3)])
-        assert np.allclose(np.asarray(block, copy=False),
-                           np.asarray(truth, copy=False))
+        assert_close(np.asarray(block, copy=False), np.asarray(truth, copy=False), dtype=dtype)
 
         # write_slice outside capture also runs immediately.
         np.asarray(block, copy=False)[:] = 42.0
         einsums.io.write_slice(path, "A", slab, block)
 
         # Verify by reading back through the non-graph API.
-        check = einsums.RuntimeTensorD("check", [2, 2])
+        check = einsums.create_zero_tensor("check", [2, 2], dtype=dtype)
         f3 = einsums.io.TensorFile(path, einsums.io.Mode.Read)
         f3.read_slice("A", check, [(1, 3), (1, 3)])
-        assert np.allclose(np.asarray(check, copy=False), 42.0)
+        assert_close(np.asarray(check, copy=False), np.full((2, 2), 42.0, dtype=dtype), dtype=dtype)
         del f2, f3
     finally:
         if os.path.exists(path):

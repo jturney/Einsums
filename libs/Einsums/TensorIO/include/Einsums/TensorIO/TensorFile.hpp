@@ -314,6 +314,7 @@ void TensorFile::write_local(std::string_view name, Tensor<T, Rank> const &tenso
 template <typename T, size_t Rank>
 void TensorFile::read(std::string_view name, Tensor<T, Rank> &tensor) {
     auto const &entry = find_entry(name);
+    detail::check_entry_type(_path, "TensorFile::read", entry, dtype_for<T>(), Rank);
 
     // Resize tensor if needed
     Dim<Rank> dims;
@@ -326,7 +327,10 @@ void TensorFile::read(std::string_view name, Tensor<T, Rank> &tensor) {
 
 template <typename T, size_t Rank>
 void TensorFile::read_slice(std::string_view name, Tensor<T, Rank> &tensor, std::array<std::pair<size_t, size_t>, Rank> const &ranges) {
-    auto const &entry = find_entry(name);
+    auto const                                  &entry = find_entry(name);
+    std::vector<std::pair<size_t, size_t>> const rng(ranges.begin(), ranges.end());
+    detail::check_entry_type(_path, "TensorFile::read_slice", entry, dtype_for<T>(), Rank);
+    detail::check_slab_ranges(_path, "TensorFile::read_slice", entry, rng);
 
     Dim<Rank> slice_dims;
     for (size_t d = 0; d < Rank; ++d) {
@@ -338,7 +342,6 @@ void TensorFile::read_slice(std::string_view name, Tensor<T, Rank> &tensor, std:
     for (size_t d = 0; d < Rank; ++d) {
         entry_dims[d] = entry.dims[d];
     }
-    std::vector<std::pair<size_t, size_t>> rng(ranges.begin(), ranges.end());
 
     char *dst = reinterpret_cast<char *>(tensor.data());
     detail::walk_slab<T>(entry.data_offset, entry_dims, rng,
@@ -348,7 +351,10 @@ void TensorFile::read_slice(std::string_view name, Tensor<T, Rank> &tensor, std:
 template <typename T, size_t Rank>
 void TensorFile::write_slice(std::string_view name, Tensor<T, Rank> const &tensor,
                              std::array<std::pair<size_t, size_t>, Rank> const &ranges) {
-    auto const &entry = find_entry(name);
+    auto const                                  &entry = find_entry(name);
+    std::vector<std::pair<size_t, size_t>> const rng(ranges.begin(), ranges.end());
+    detail::check_entry_type(_path, "TensorFile::write_slice", entry, dtype_for<T>(), Rank);
+    detail::check_slab_ranges(_path, "TensorFile::write_slice", entry, rng);
 
     // Validate user tensor matches the requested slab shape.
     for (size_t d = 0; d < Rank; ++d) {
@@ -363,7 +369,6 @@ void TensorFile::write_slice(std::string_view name, Tensor<T, Rank> const &tenso
     for (size_t d = 0; d < Rank; ++d) {
         entry_dims[d] = entry.dims[d];
     }
-    std::vector<std::pair<size_t, size_t>> rng(ranges.begin(), ranges.end());
 
     char const *src = reinterpret_cast<char const *>(tensor.data());
     detail::walk_slab<T>(entry.data_offset, entry_dims, rng,
@@ -404,6 +409,7 @@ void TensorFile::reserve(std::string_view name, std::vector<size_t> const &dims)
 template <typename T, typename Alloc>
 void TensorFile::read(std::string_view name, GeneralRuntimeTensor<T, Alloc> &tensor) {
     auto const &entry = find_entry(name);
+    detail::check_entry_type(_path, "TensorFile::read", entry, dtype_for<T>(), std::nullopt);
 
     std::vector<size_t> dims(entry.rank);
     for (size_t d = 0; d < entry.rank; ++d) {
@@ -440,9 +446,8 @@ template <typename T, typename Alloc>
 void TensorFile::read_slice(std::string_view name, GeneralRuntimeTensor<T, Alloc> &tensor,
                             std::vector<std::pair<size_t, size_t>> const &ranges) {
     auto const &entry = find_entry(name);
-    if (ranges.size() != entry.rank) {
-        throw std::runtime_error(fmt::format("TensorFile::read_slice: ranges size {} != entry rank {}", ranges.size(), entry.rank));
-    }
+    detail::check_entry_type(_path, "TensorFile::read_slice", entry, dtype_for<T>(), std::nullopt);
+    detail::check_slab_ranges(_path, "TensorFile::read_slice", entry, ranges);
 
     std::vector<size_t> slab_dims(ranges.size());
     for (size_t d = 0; d < ranges.size(); ++d) {
@@ -464,9 +469,8 @@ template <typename T, typename Alloc>
 void TensorFile::write_slice(std::string_view name, GeneralRuntimeTensor<T, Alloc> const &tensor,
                              std::vector<std::pair<size_t, size_t>> const &ranges) {
     auto const &entry = find_entry(name);
-    if (ranges.size() != entry.rank) {
-        throw std::runtime_error(fmt::format("TensorFile::write_slice: ranges size {} != entry rank {}", ranges.size(), entry.rank));
-    }
+    detail::check_entry_type(_path, "TensorFile::write_slice", entry, dtype_for<T>(), std::nullopt);
+    detail::check_slab_ranges(_path, "TensorFile::write_slice", entry, ranges);
     if (tensor.rank() != entry.rank) {
         throw std::runtime_error(fmt::format("TensorFile::write_slice: tensor rank {} != entry rank {}", tensor.rank(), entry.rank));
     }
@@ -494,6 +498,7 @@ void TensorFile::read_local(std::string_view name, Tensor<T, Rank> &tensor, int 
     std::string const name_str(name);
     for (auto const &entry : _entries) {
         if (entry.get_name() == name_str && std::cmp_equal(entry.owning_rank, rank)) {
+            detail::check_entry_type(_path, "TensorFile::read_local", entry, dtype_for<T>(), Rank);
             Dim<Rank> dims;
             for (size_t d = 0; d < Rank; d++)
                 dims[d] = entry.dims[d];

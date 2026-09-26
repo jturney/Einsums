@@ -26,14 +26,18 @@
 /// existing data. Files written through the distributed path are standard
 /// binary, so they can be read back without MPI.
 
+#include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
 #include <algorithm>
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(tensor_io)
 
@@ -159,6 +163,30 @@ static_assert(sizeof(TensorEntry) == 160, "TensorEntry must be exactly 160 bytes
     return 0;
 }
 
+/// Get the name of a DType, spelled as numpy spells it ("float32", "complex128", ...).
+/// A value outside the enum, which only a damaged file can hold, is named "unknown".
+[[nodiscard]] inline constexpr std::string_view dtype_name(DType dt) {
+    switch (dt) {
+    case DType::Float32:
+        return "float32";
+    case DType::Float64:
+        return "float64";
+    case DType::Complex64:
+        return "complex64";
+    case DType::Complex128:
+        return "complex128";
+    case DType::Int32:
+        return "int32";
+    case DType::Int64:
+        return "int64";
+    case DType::UInt32:
+        return "uint32";
+    case DType::UInt64:
+        return "uint64";
+    }
+    return "unknown";
+}
+
 /// Map C++ type to DType.
 template <typename T>
 constexpr DType dtype_for();
@@ -194,5 +222,35 @@ template <>
 inline constexpr DType dtype_for<uint64_t>() {
     return DType::UInt64;
 }
+
+namespace detail {
+
+/// Check that a stored entry can be copied to or from a destination of element type @p want.
+///
+/// Every read and slice write calls this before it moves a byte, because the copy trusts the
+/// entry's dims and data size to describe memory of the destination's element type.
+/// There is no conversion between element types: reading float32 data into a float64 tensor
+/// throws rather than reinterpreting the bits.
+///
+/// @param path Path of the file holding the entry, for the message.
+/// @param operation Qualified name of the calling method ("TensorFile::read"), which leads the message.
+/// @param entry The stored entry.
+/// @param want Element type of the destination (or, for a slice write, the source).
+/// @param want_rank Rank of the destination when it is fixed at compile time; empty when the
+///        destination takes the stored rank.
+/// @throws std::invalid_argument if the stored dtype or rank differs from the requested one.
+/// @throws std::runtime_error if the entry's rank, dtype, or data size is inconsistent with its dims.
+EINSUMS_EXPORT void check_entry_type(std::string_view path, std::string_view operation, TensorEntry const &entry, DType want,
+                                     std::optional<size_t> want_rank);
+
+/// Check that @p ranges names a hyperslab inside the stored entry: one half-open range per stored
+/// dimension, each with start <= end <= dim.
+///
+/// @throws std::invalid_argument if the number of ranges differs from the stored rank or a range is reversed.
+/// @throws std::out_of_range if a range runs past the stored dimension.
+EINSUMS_EXPORT void check_slab_ranges(std::string_view path, std::string_view operation, TensorEntry const &entry,
+                                      std::vector<std::pair<size_t, size_t>> const &ranges);
+
+} // namespace detail
 
 EINSUMS_NAMESPACE_END(tensor_io)

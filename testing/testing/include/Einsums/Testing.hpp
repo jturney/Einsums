@@ -19,6 +19,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers_templated.hpp>
 #include <cmath>
+#include <complex>
+#include <tuple>
 #include <type_traits>
 
 #include <catch2/catch_all.hpp>
@@ -225,5 +227,15 @@ WithinMagnitudeMatcher<std::remove_cvref_t<TestType>> CheckWithinMagnitude(TestT
                                                                            double tolerance = ::einsums::tolerance<TestType>()) {
     return WithinMagnitudeMatcher<std::remove_cvref_t<TestType>>(reference, magnitude, tolerance);
 }
+
+namespace testing {
+
+/// The four element types every tensor operation supports, as a type list for Catch2's
+/// TEMPLATE_LIST_TEST_CASE:
+///
+///     TEMPLATE_LIST_TEST_CASE("round trip", "[tag]", einsums::testing::AllScalarTypes) { ... }
+using AllScalarTypes = std::tuple<float, double, std::complex<float>, std::complex<double>>;
+
+} // namespace testing
 
 EINSUMS_NAMESPACE_END()

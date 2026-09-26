@@ -178,6 +178,7 @@ void DistributedTensorFile::read(std::string_view name, Tensor<T, Rank> &tensor)
     std::string const name_str(name);
     for (auto const &entry : _entries) {
         if (entry.get_name() == name_str && entry.owning_rank == ETN_ALL_RANKS) {
+            detail::check_entry_type(_path, "DistributedTensorFile::read", entry, dtype_for<T>(), Rank);
             Dim<Rank> dims;
             for (size_t d = 0; d < Rank; d++)
                 dims[d] = entry.dims[d];
@@ -195,6 +196,7 @@ void DistributedTensorFile::read_local(std::string_view name, Tensor<T, Rank> &t
     std::string const name_str(name);
     for (auto const &entry : _entries) {
         if (entry.get_name() == name_str && std::cmp_equal(entry.owning_rank, _my_rank)) {
+            detail::check_entry_type(_path, "DistributedTensorFile::read_local", entry, dtype_for<T>(), Rank);
             Dim<Rank> dims;
             for (size_t d = 0; d < Rank; d++)
                 dims[d] = entry.dims[d];
