@@ -53,6 +53,13 @@ repos:
         exclude: (.*cmake-build-.*|.*build/.*)
         args: [ --style=file ]
 
+  # Also runs shellcheck over every run: script when shellcheck is on PATH (it is on the CI runner).
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+        name: Lint GitHub Actions workflows
+
   - repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.4
     hooks:

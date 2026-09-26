@@ -18,7 +18,7 @@ jobs:
   format:
     name: Format Files
     needs: [ detect_changes ]
-    if: ${{ contains(needs.detect_changes.outputs.filters, 'cmake') || contains(needs.detect_changes.outputs.filters, 'cpp') }}
+    if: ${{ contains(needs.detect_changes.outputs.filters, 'cmake') || contains(needs.detect_changes.outputs.filters, 'cpp') || contains(needs.detect_changes.outputs.filters, 'ci') }}
     runs-on: ubuntu-latest
 
     steps:
