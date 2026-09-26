@@ -19,11 +19,13 @@
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/MultiTermFactorization.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <chrono>
 #include <cmath>
@@ -35,6 +37,9 @@
 #include <vector>
 
 #include <Einsums/Testing.hpp>
+
+using einsums::testing::reference_einsum;
+using einsums::testing::reference_permute;
 
 using namespace einsums;
 namespace cg = einsums::compute_graph;
@@ -722,4 +727,188 @@ TEST_CASE("MultiTermFactorization - a batched letter stays outermost", "[Compute
 
     CHECK(norm_relative_gap(search1, plain1) <= re_associating_bound());
     CHECK(norm_relative_gap(search2, plain2) <= re_associating_bound());
+}
+
+namespace {
+
+/// ``P(i/j) X``: the value less its transpose, which is what an einsum wrapped in ``P(i/j)`` over
+/// a square rank-2 target computes. Built from the brute-force references, so a case checks the
+/// operator against arithmetic that shares no code with the engine.
+RuntimeTensor<double> antisymmetrized(RuntimeTensor<double> const &value) {
+    RuntimeTensor<double> out = create_zero_tensor<double>("P(X)", value.dim(0), value.dim(1));
+    reference_permute("ij <- ij", 0.0, &out, 1.0, value);
+    reference_permute("ij <- ji", 1.0, &out, -1.0, value);
+    return out;
+}
+
+/// How many nodes of @p graph apply a permutation operator.
+std::size_t operator_nodes(cg::Graph const &graph) {
+    std::size_t count = 0;
+    for (auto const &node : graph.nodes()) {
+        count += cg::passes::carries_permutation_operators(node) ? 1 : 0;
+    }
+    return count;
+}
+
+/// The gap the brute-force reference and a re-associated BLAS result may differ by: several
+/// summation orders apart, on products of a dozen terms.
+constexpr double kReferenceGap = 1e-12;
+
+} // namespace
+
+// Defends: a node carrying a permutation operator used to switch this pass off for the whole
+// graph. The raise refused any region holding one, and in a flat graph that region is every
+// node, so the shared product below was lost because of a statement that shares no tensor with
+// it. An unrelated P(i/j) must leave the rest of the graph's rewrite exactly as it was.
+TEST_CASE("MultiTermFactorization - an unrelated permutation operator leaves the rest of the rewrite alone",
+          "[ComputeGraph][MultiTermFactorization][PermutationOperators]") {
+    auto run = [](bool with_operator) {
+        Chain t = make_chain(31);
+        einsums::seed_random(37);
+        RuntimeTensor<double> E  = create_random_tensor<double>("E", 5, 4);
+        RuntimeTensor<double> F  = create_random_tensor<double>("F", 4, 5);
+        RuntimeTensor<double> R3 = create_zero_tensor<double>("R3", 5, 5);
+
+        cg::Graph graph("chains_and_operator");
+        capture_chains(graph, t);
+        if (with_operator) {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &R3, 1.0, E, F);
+        }
+
+        auto            pass = searching_pass();
+        cg::PassManager pm;
+        pm.add(pass);
+        pm.add<cg::passes::Materialization>();
+        graph.apply(pm);
+        graph.execute();
+
+        if (with_operator) {
+            RuntimeTensor<double> product = create_zero_tensor<double>("EF", 5, 5);
+            reference_einsum("ij <- ik ; kj", 0.0, &product, 1.0, E, F);
+            CHECK(norm_relative_gap(R3, antisymmetrized(product)) <= kReferenceGap);
+            CHECK(operator_nodes(graph) == 1);
+        }
+        return pass->num_shared();
+    };
+
+    std::size_t const without = run(false);
+    REQUIRE(without >= 1);
+    CHECK(run(true) == without);
+}
+
+// Defends: re-bracketing under an operator. The operator acts on the finished value, so the
+// pass may fold the captured intermediate into the product and choose a cheaper order, and the
+// operator must come back on the combine that writes R, and on nothing beneath it.
+TEST_CASE("MultiTermFactorization - a product under an operator is re-bracketed and keeps it",
+          "[ComputeGraph][MultiTermFactorization][PermutationOperators]") {
+    // (A B) C costs i*k*l + i*l*j = 432 + 1728 and A (B C) costs k*l*j + i*k*j = 432 + 432, so
+    // the search has a reason to move the bracket.
+    constexpr size_t kN = 12, kSmall = 3;
+    einsums::seed_random(41);
+    RuntimeTensor<double> A = create_random_tensor<double>("A", kN, kSmall);
+    RuntimeTensor<double> B = create_random_tensor<double>("B", kSmall, kN);
+    RuntimeTensor<double> C = create_random_tensor<double>("C", kN, kN);
+    RuntimeTensor<double> R = create_zero_tensor<double>("R", kN, kN);
+
+    cg::Graph graph("operator_rebracket");
+    {
+        auto                  &T = graph.declare_runtime_tensor<double>("T", {kN, kN}, /*intermediate=*/true);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,l <- i,k ; k,l", 0.0, &T, 1.0, A, B);
+        cg::einsum("i,j <- P(i/j) i,l ; l,j", 0.0, &R, 1.0, T, C);
+    }
+
+    auto            pass = searching_pass();
+    cg::PassManager pm;
+    pm.add(pass);
+    pm.add<cg::passes::Materialization>();
+    graph.apply(pm);
+    INFO(pm.explain());
+    CHECK(pass->num_inlined() == 1);
+    CHECK(pass->num_rebracketed() >= 1);
+    CHECK(operator_nodes(graph) == 1);
+    graph.execute();
+
+    RuntimeTensor<double> AB  = create_zero_tensor<double>("AB", kN, kN);
+    RuntimeTensor<double> ABC = create_zero_tensor<double>("ABC", kN, kN);
+    reference_einsum("il <- ik ; kl", 0.0, &AB, 1.0, A, B);
+    reference_einsum("ij <- il ; lj", 0.0, &ABC, 1.0, AB, C);
+    CHECK(norm_relative_gap(R, antisymmetrized(ABC)) <= kReferenceGap);
+}
+
+// Defends: a definition under an operator stays a definition. Folded into its consumer, the
+// operator would act on one factor of the consumer's product, which is a different value; the
+// pass must read T as the stored, antisymmetrized leaf it is.
+TEST_CASE("MultiTermFactorization - a definition under an operator is not folded into its consumer",
+          "[ComputeGraph][MultiTermFactorization][PermutationOperators]") {
+    constexpr size_t kN = 6;
+    einsums::seed_random(43);
+    RuntimeTensor<double> A = create_random_tensor<double>("A", kN, kN);
+    RuntimeTensor<double> B = create_random_tensor<double>("B", kN, kN);
+    RuntimeTensor<double> C = create_random_tensor<double>("C", kN, kN);
+    RuntimeTensor<double> R = create_zero_tensor<double>("R", kN, kN);
+
+    cg::Graph graph("operator_definition");
+    {
+        auto                  &T = graph.declare_runtime_tensor<double>("T", {kN, kN}, /*intermediate=*/true);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,l <- P(i/l) i,k ; k,l", 0.0, &T, 1.0, A, B);
+        cg::einsum("i,j <- i,l ; l,j", 0.0, &R, 1.0, T, C);
+    }
+
+    auto            pass = searching_pass();
+    cg::PassManager pm;
+    pm.add(pass);
+    pm.add<cg::passes::Materialization>();
+    graph.apply(pm);
+    INFO(pm.explain());
+    CHECK(pass->num_inlined() == 0);
+    CHECK(operator_nodes(graph) == 1);
+    graph.execute();
+
+    RuntimeTensor<double> AB = create_zero_tensor<double>("AB", kN, kN);
+    reference_einsum("il <- ik ; kl", 0.0, &AB, 1.0, A, B);
+    RuntimeTensor<double> expected = create_zero_tensor<double>("expected", kN, kN);
+    reference_einsum("ij <- il ; lj", 0.0, &expected, 1.0, antisymmetrized(AB), C);
+    CHECK(norm_relative_gap(R, expected) <= kReferenceGap);
+}
+
+// Defends: a statement under an operator never serves as a shared intermediate. R1 computes the
+// pair (A B) the other term wants, but what R1 holds is P(i/j)(A B), so a term handed R1 in place
+// of the product would read the antisymmetrized value.
+TEST_CASE("MultiTermFactorization - a product under an operator is not shared as the bare product",
+          "[ComputeGraph][MultiTermFactorization][PermutationOperators]") {
+    constexpr size_t kN = 6, kK2 = 12;
+    einsums::seed_random(47);
+    RuntimeTensor<double> A  = create_random_tensor<double>("A", kN, kK2);
+    RuntimeTensor<double> B  = create_random_tensor<double>("B", kK2, kN);
+    RuntimeTensor<double> C  = create_random_tensor<double>("C", kN, kK2);
+    RuntimeTensor<double> R1 = create_zero_tensor<double>("R1", kN, kN);
+    RuntimeTensor<double> R2 = create_zero_tensor<double>("R2", kN, kK2);
+
+    cg::Graph graph("operator_provider");
+    {
+        auto                  &T = graph.declare_runtime_tensor<double>("T", {kN, kN}, /*intermediate=*/true);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &R1, 1.0, A, B);
+        cg::einsum("i,l <- i,k ; k,l", 0.0, &T, 1.0, A, B);
+        cg::einsum("i,m <- i,l ; l,m", 0.0, &R2, 1.0, T, C);
+    }
+
+    auto            pass = searching_pass();
+    cg::PassManager pm;
+    pm.add(pass);
+    pm.add<cg::passes::Materialization>();
+    graph.apply(pm);
+    INFO(pm.explain());
+    graph.execute();
+
+    RuntimeTensor<double> AB = create_zero_tensor<double>("AB", kN, kN);
+    reference_einsum("ij <- ik ; kj", 0.0, &AB, 1.0, A, B);
+    RuntimeTensor<double> expected2 = create_zero_tensor<double>("expected2", kN, kK2);
+    reference_einsum("im <- il ; lm", 0.0, &expected2, 1.0, AB, C);
+    CHECK(norm_relative_gap(R1, antisymmetrized(AB)) <= kReferenceGap);
+    CHECK(norm_relative_gap(R2, expected2) <= kReferenceGap);
+    CHECK(operator_nodes(graph) == 1);
 }

@@ -524,6 +524,9 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         if (!is_zero(statement.target_prefactor)) {
             return false; // an accumulation is more than one value; inlining would drop the rest
         }
+        if (!statement.operators.empty()) {
+            return false; // inlined, the operators would act on one factor of the consumer's product
+        }
         auto const product = model_statement(expr, statement);
         // A prefactor other than one would have to be multiplied into the consumer's, and a
         // product of two PrefactorScalar variants is a conversion question this pass has no reason
@@ -1086,6 +1089,9 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
         }
         if (!is_zero(statement.target_prefactor) || !is_one(term.factor)) {
             return std::nullopt;
+        }
+        if (!statement.operators.empty()) {
+            return std::nullopt; // its target holds the permuted product, not the product
         }
         if (term.output.size() != site.result.size()) {
             return std::nullopt;
@@ -1733,6 +1739,9 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
                 // product and would name one the operands already use for something else.
                 emit_contraction(*left, *right, statement.target, statement.targets, statement.target_name, term.output,
                                  statement.target_prefactor, term.factor, statement.origin_label);
+                // The operators act on the finished value, so they go on the combine that writes
+                // the target and on none of the intermediates beneath it.
+                emitted.back().operators = statement.operators;
                 return Factor{.tensor = statement.target, .indices = term.output, .conjugate = false, .members = statement.targets};
             }
 

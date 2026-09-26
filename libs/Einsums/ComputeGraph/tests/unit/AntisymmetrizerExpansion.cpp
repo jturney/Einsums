@@ -50,6 +50,7 @@ TEST_CASE("AntisymmetrizerExpansion - P(ij)P(ab) lowers to a contraction plus fo
     auto            pass = std::make_shared<cg::passes::AntisymmetrizerExpansion>();
     cg::PassManager manager;
     manager.add(pass);
+    manager.add<cg::passes::Materialization>(); // the expansion's temporary is deferred scratch
     graph.apply(manager);
 
     CHECK(pass->num_sites() == 1);
@@ -103,6 +104,7 @@ TEST_CASE("AntisymmetrizerExpansion - the lowered graph computes the same number
     auto            pass = std::make_shared<cg::passes::AntisymmetrizerExpansion>();
     cg::PassManager manager;
     manager.add(pass);
+    manager.add<cg::passes::Materialization>(); // the expansion's temporary is deferred scratch
     expanded.apply(manager);
     REQUIRE(pass->num_expanded() == 1);
     expanded.execute();
@@ -168,6 +170,7 @@ TEST_CASE("AntisymmetrizerExpansion - a permute's operator is left alone", "[Com
     auto            pass = std::make_shared<cg::passes::AntisymmetrizerExpansion>();
     cg::PassManager manager;
     manager.add(pass);
+    manager.add<cg::passes::Materialization>(); // the expansion's temporary is deferred scratch
     graph.apply(manager);
 
     CHECK(pass->num_sites() == 0);
@@ -190,6 +193,7 @@ TEST_CASE("AntisymmetrizerExpansion - a graph with no operator is untouched", "[
     auto            pass = std::make_shared<cg::passes::AntisymmetrizerExpansion>();
     cg::PassManager manager;
     manager.add(pass);
+    manager.add<cg::passes::Materialization>(); // the expansion's temporary is deferred scratch
     graph.apply(manager);
 
     CHECK(pass->num_sites() == 0);
@@ -223,6 +227,7 @@ TEST_CASE("AntisymmetrizerExpansion - declines a contraction whose operands diff
     auto            pass = std::make_shared<cg::passes::AntisymmetrizerExpansion>();
     cg::PassManager manager;
     manager.add(pass);
+    manager.add<cg::passes::Materialization>(); // the expansion's temporary is deferred scratch
     graph.apply(manager);
 
     CHECK(pass->num_expanded() == 0);

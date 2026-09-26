@@ -215,6 +215,32 @@ struct NodeTimingSample {
 
 class Graph;
 
+/**
+ * @brief A name for a graph that stays correct when the graph is moved.
+ *
+ * An executor a pass bakes into a node often looks its tensors up by id when it runs, and so
+ * needs the graph those ids belong to. The graph's address is the wrong name for that: a
+ * @ref Graph can be moved, and an executor holding the old address then reads the moved-from
+ * object. The anchor lives on the heap, the graph points it at itself again on every move, and
+ * detaches it when the graph is destroyed or assigned over, so an executor holding one reaches
+ * the graph that owns it now, or fails with an exception rather than a dangling read.
+ *
+ * @see Graph::anchor
+ */
+class EINSUMS_EXPORT GraphAnchor {
+  public:
+    /**
+     * @brief The graph this anchor names.
+     * @return The graph, wherever it has been moved to.
+     * @throws std::logic_error If the graph has been destroyed or assigned over.
+     */
+    [[nodiscard]] Graph &graph() const;
+
+  private:
+    friend class Graph;
+    Graph *_graph{nullptr};
+};
+
 namespace detail {
 
 /// A recursive mutex that stays with its object. Moving the object hands the destination a
@@ -554,6 +580,10 @@ struct GraphState {
     /// state on the heap.
     CleanupStack _adopted_cleanups;
 
+    /// What executors baked by passes hold to reach this graph; see @ref GraphAnchor. Created on
+    /// first request, carried by a move, and re-pointed by @ref Graph's move operations.
+    std::shared_ptr<GraphAnchor> _anchor;
+
     /// Runtime parameter table. ``View`` executors and the @c WriteParam
     /// node read/write through this. Pipeline plumbs its own table down
     /// at stage construction; standalone graphs get a default empty table.
@@ -671,6 +701,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     Graph &operator=(Graph &&other) noexcept;
     Graph(Graph const &)            = delete;
     Graph &operator=(Graph const &) = delete;
+
+    /**
+     * @brief A handle naming this graph that stays valid when the graph is moved.
+     *
+     * An executor a pass bakes into a node must capture this, never ``&graph``, when it looks
+     * tensors up through the graph at run time. A captured address names the moved-from object
+     * once the graph is returned from a function or stored in a container.
+     *
+     * @return The graph's anchor, created on first request.
+     */
+    [[nodiscard]] std::shared_ptr<GraphAnchor const> anchor();
 
     /**
      * @brief Add an operation node to the graph.
@@ -856,7 +897,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] child  The tensor whose storage is part of another's.
      * @param[in] parent The tensor that owns the storage.
      *
-     * @note A no-op when either id is unknown to this graph or the two are equal.
+     * @note A no-op when the two ids are equal or either is 0, the "no tensor" id.
+     * @throws std::invalid_argument If either id names no tensor in this graph.
      * @throws std::invalid_argument If the declaration would make the two tensors each
      *         other's alias parent. Containment is not symmetric, and a cycle turns
      *         every later @ref resolve_alias into a throw whose message is about a
@@ -3582,8 +3624,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * an eliminated duplicate would keep reading the duplicate's (now
      * never-written) buffer. See CSE.
      *
-     * No-op if either slot is absent, a tensor never captured through a slot
-     * has no baked lambda to fix. The two tensors must hold the same element
+     * Both tensors must have a slot (@ref has_slot). A tensor without one still
+     * has readers: a node a pass builds reads its operands without a slot, so a
+     * redirect that quietly did nothing left those readers on a buffer nothing
+     * wrote any more. A pass that cannot redirect has to decline instead. The
+     * two tensors must hold the same element
      * type: an executor reads @p from's buffer as the type it was built for,
      * and its accessor recorded that type before the redirect, so after it
      * nothing downstream would notice the bytes are another type's.
@@ -3597,10 +3642,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * @param[in] from TensorId whose slot should be repointed.
      * @param[in] to   TensorId whose buffer @p from should resolve to, now and
      *                 after future rebinds of @p to.
-     * @throws std::logic_error if both tensors' element types are recorded and
-     *         differ. A pass that asks for it has a bug.
+     * @throws std::logic_error if either tensor has no slot, or both tensors' element
+     *         types are recorded and differ. A pass that asks for either has a bug.
      */
     void redirect_slot(TensorId from, TensorId to);
+
+    /// @brief Whether @p id has a slot @ref redirect_slot can repoint.
+    [[nodiscard]] bool has_slot(TensorId id) const noexcept { return _slot_map.contains(id); }
 
     // ── Operand ownership ───────────────────────────────────────────────────
 
@@ -4951,6 +4999,15 @@ auto Graph::bind_collect_one(InterfaceManifest const &contract, DimSolution &sol
     using Clean = std::remove_cvref_t<TensorType>;
 
     ManifestEntry const &entry = lookup_manifest_entry(contract, name);
+
+    // A bare scalar slot is written through a T*, so a tensor object bound there would have its
+    // own bytes overwritten by the first run. Refused here, before the transaction repoints anything.
+    if (TensorHandle const *handle = find_tensor(entry.id); handle != nullptr && handle->raw_scalar) {
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument,
+                                "Graph '{}': bind '{}': the slot holds a bare scalar that its writer fills through a pointer, and a tensor "
+                                "cannot stand in for one; hand it a scalar with bind_scalar",
+                                _name, name);
+    }
 
     std::size_t const              incoming_rank = detail::tensor_rank(tensor);
     std::vector<std::size_t> const incoming_dims = detail::tensor_dims(tensor);

@@ -230,6 +230,103 @@ TEST_CASE("a LAPACK node is a barrier that splits the regions around it", "[Comp
     }
 }
 
+// Defends: a node that applies a permutation operator is a barrier for a client that has not
+// opted in, rather than a member the raise refuses. A refusal costs the whole region, which in a
+// flat graph is every node, so one P(i/j) used to switch a client off for nodes that share nothing
+// with it. A client that opts in gets one region with the operator node inside it.
+TEST_CASE("a permutation operator is a barrier unless the client opts in",
+          "[ComputeGraph][RegionRewrite][Identity][PermutationOperators]") {
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+    auto X = create_zero_tensor<double>("X", 4, 4);
+
+    cg::Graph graph("operator_barrier");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+        cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &X, 1.0, A, B);
+        cg::scale(2.0, &C);
+    }
+
+    auto const escapes = cg::EscapeAnalysis::over(graph);
+    auto const split   = cg::form_regions(graph, escapes);
+    REQUIRE(split.size() == 2);
+    CHECK(split[0].size() == 1);
+    CHECK(split[1].size() == 1);
+
+    auto const whole = cg::form_regions(graph, escapes, cg::RegionOptions{.operators = true});
+    REQUIRE(whole.size() == 1);
+    CHECK(whole[0].size() == 3);
+
+    // And the raise puts the operator on the statement, where a client reads it.
+    auto const raised = cg::raise_region(graph, whole[0]);
+    REQUIRE(raised.has_value());
+    REQUIRE(raised->statements.size() == 3);
+    CHECK(raised->statements[0].operators.empty());
+    REQUIRE(raised->statements[1].operators.size() == 1);
+    CHECK(raised->statements[1].operators[0].render() == "P(i/j)");
+    CHECK(raised->to_string().find("P(i/j)") != std::string::npos);
+}
+
+// Defends: the raise and the lowering agree about where an operator goes, for both node kinds that
+// carry one. The contraction's operators are rebuilt into its spec and the permute's travel in
+// its descriptor, and either way the lowered graph must compute the same bits.
+TEST_CASE("identity round-trip - a contraction and a permute under permutation operators",
+          "[ComputeGraph][RegionRewrite][Identity][PermutationOperators]") {
+    auto A = create_random_tensor<double>("A", 4, 3);
+    auto B = create_random_tensor<double>("B", 3, 4);
+    auto S = create_random_tensor<double>("S", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+    auto D = create_zero_tensor<double>("D", 4, 4);
+
+    require_identity(
+        [&](cg::Graph &graph) {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &C, 2.0, A, B);
+            cg::permute("i,j <- P(i/j) j,i", 1.0, &D, 0.5, S);
+            cg::einsum("ik;kj->ij", 1.0, &D, 1.0, A, B);
+        },
+        [&] {
+            C.zero();
+            D.zero();
+        },
+        [&] {
+            auto out = flatten(C);
+            auto d   = flatten(D);
+            out.insert(out.end(), d.begin(), d.end());
+            return out;
+        });
+}
+
+// Defends: the lowering's check that an operator names only its target's letters. A rewrite that
+// renamed a target without its operators would otherwise emit a spec the parser cannot place, or
+// worse, one that permutes a different axis; the lowering refuses and leaves the graph unchanged.
+TEST_CASE("lowering refuses an operator over a letter its target does not carry", "[ComputeGraph][RegionRewrite][PermutationOperators]") {
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto X = create_zero_tensor<double>("X", 4, 4);
+
+    cg::Graph graph("operator_letters");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &X, 1.0, A, B);
+    }
+    auto const escapes = cg::EscapeAnalysis::over(graph);
+    auto const regions = cg::form_regions(graph, escapes, cg::RegionOptions{.operators = true});
+    REQUIRE(regions.size() == 1);
+    auto raised = cg::raise_region(graph, regions[0]);
+    REQUIRE(raised.has_value());
+    REQUIRE(raised->statements.size() == 1);
+    raised->statements[0].operators[0].groups = {{"i"}, {"z"}};
+
+    auto const before  = graph.nodes().size();
+    auto const lowered = cg::lower_region(graph, regions[0], *raised);
+    REQUIRE_FALSE(lowered.has_value());
+    CHECK(lowered.error().reason.find("names a letter its target does not carry") != std::string::npos);
+    CHECK(graph.nodes().size() == before);
+}
+
 TEST_CASE("the escape rule separates a region's outputs from its temporaries", "[ComputeGraph][RegionRewrite][Identity]") {
     auto A = create_random_tensor<double>("A", 4, 3);
     auto B = create_random_tensor<double>("B", 3, 5);

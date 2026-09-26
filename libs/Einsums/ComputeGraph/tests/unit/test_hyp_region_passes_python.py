@@ -47,7 +47,7 @@ import einsums._core.graph as _G
 from einsums import linalg as la
 from einsums.testing import ALL_DTYPES
 
-from _permutation_operators import apply_operator, operator_prefix
+from _permutation_operators import P_SHAPES, apply_operator, operator_prefix, operator_size, shaped_operator
 from _region_invariants import assert_materialization_invariants
 from _sanitizer_scaling import sanitizer_examples
 
@@ -67,8 +67,16 @@ def _nm(stem):
 # They also spread, because a cost model decides a bracketing and every extent
 # being two or three makes every bracketing cost about the same: the passes then
 # decline on the merits and the corpus proves nothing about them.
+#
+# The last four share ONE extent, which no letter above has, and only the
+# antisymmetrized family draws them. A permutation operator exchanges axes, so
+# every letter it names needs one extent, and no three letters above have one:
+# the three- and four-letter operators are only reachable through these. Added
+# rather than made by changing an extent above, since that would reshape every
+# program the shard has ever drawn and the pinned corpus with it.
 _EXTENTS = {"a": 2, "b": 6, "c": 2, "d": 6, "e": 3, "f": 8, "g": 3, "h": 8,
-            "p": 16, "q": 64, "r": 16, "s": 64, "u": 24, "w": 96}
+            "p": 16, "q": 64, "r": 16, "s": 64, "u": 24, "w": 96,
+            "i": 4, "j": 4, "k": 4, "l": 4}
 
 #: Letters a term draws its index groups from. The grouped alphabet keeps a
 #: rank-four factor small enough to run; the flat one is rank two by
@@ -82,6 +90,15 @@ _FLAT_LETTERS = "pqrsuw"
 #: where a re-association is most visible.
 _AB_PFS = (1.0, -1.0, 0.5)
 
+#: Letters of one extent, the ones an operator of any shape can permute.
+_SHARED_LETTERS = "ijkl"
+
+#: Complex prefactors, drawn on statements that carry an operator. Each has a
+#: real and an imaginary part, so a complex dtype sees both, and no two parts
+#: cancel, so the real projection ``_scalar`` makes of one is never zero and a
+#: real dtype still runs the term.
+_COMPLEX_PFS = (0.5 + 0.5j, -0.25 + 1.0j, 0.75 - 0.5j)
+
 
 class Program(NamedTuple):
     """A multi-statement contraction program, operands named by key.
@@ -94,9 +111,14 @@ class Program(NamedTuple):
     intermediates declared on the graph, ``r`` are results. The tail exists
     because the flattener reads all three kinds as one product, so a program
     that only ever contracts leaves that half of it untested.
-    An einsum may carry a tenth element, a tuple of permutation operators over
-    its output letters in the form ``_permutation_operators`` defines, applied
-    to the product before the prefactors, the way ``P(i/j)`` prefixes a spec.
+    A fourth kind, ``perm``, is a permute: ``b`` is ``None``, ``b_letters`` is
+    empty and ``ab_pf`` is the permute's ``a_pf``.
+    An einsum or a permute may carry a tenth element, a tuple of permutation
+    operators over its output letters in the form ``_permutation_operators``
+    defines, applied to the product before the prefactors, the way ``P(i/j)``
+    prefixes a spec. An einsum may carry an eleventh, ``(conj_a, conj_b)``,
+    spelled ``conj(...)`` around the operand. A prefactor may be complex, and a
+    real dtype runs its projection ``_scalar``.
     ``disjoint`` is ``None`` or ``(statement index, summed letter)``: that
     statement's two operands get index spaces the registry declares disjoint,
     and the second operand is zeroed so the arithmetic honours the declaration.
@@ -127,15 +149,156 @@ def _operators_of(stmt):
     return stmt[9] if len(stmt) > 9 else ()
 
 
+def _conj_of(stmt):
+    """Which operands the statement conjugates, neither when the tuple predates it."""
+    return stmt[10] if len(stmt) > 10 else (False, False)
+
+
+def _scalar(value, dtype):
+    """A drawn prefactor as ``dtype`` runs it.
+
+    A complex dtype takes the value as drawn. A real one takes the sum of its
+    parts, which is the value itself for a real draw and is nonzero for every
+    entry of ``_COMPLEX_PFS``, so one program runs on every dtype and the oracle
+    and the graph are handed the same number.
+    """
+    value = complex(value)
+    if np.dtype(dtype).kind == "c":
+        return value
+    return value.real + value.imag
+
+
 def _pair_operator(x, y):
-    """``P(x/y)``, the one operator shape the fixed extents here can carry.
+    """``P(x/y)``, the one operator shape the product statements can carry.
 
     Every letter an operator permutes must have one extent, and ``_EXTENTS``
-    gives no extent to more than two letters, so the three- and four-letter
-    shapes are out of reach by construction. The einsum differential shard
-    forces extents equal instead and is where those shapes are drawn.
+    gives no letter of the product alphabets an extent it shares with two
+    others, so the three- and four-letter shapes are drawn by the
+    antisymmetrized family instead, over ``_SHARED_LETTERS``.
     """
-    return (((x,), (y,)), 0, (x, y))
+    return shaped_operator(0, (x, y))
+
+
+def _decorate(pick_int, stmt, kind, ops):
+    """The statement with its operators, and on some of them a phase and a conjugation.
+
+    Only statements that carry an operator are decorated, so the corpus the
+    passes were tuned on keeps its real prefactors, and what is added is the
+    pairing a rewrite has to get right twice at once: an operator it must carry
+    along, and a complex scale or a conjugated operand it must carry with it. A
+    conjugation is a no-op on a real dtype and the phase projects to a real
+    number, so the same draw is meaningful on all four.
+    """
+    stmt = tuple(stmt[:8])
+    if not ops:
+        return stmt + (kind, ())
+    c_pf, ab_pf = stmt[6], stmt[7]
+    if pick_int(0, 1):
+        ab_pf = _COMPLEX_PFS[pick_int(0, len(_COMPLEX_PFS) - 1)]
+    # Only an accumulation gets a complex destination scale. A first write
+    # has c_pf zero, and an intermediate's prior contents are undefined.
+    if c_pf != 0.0 and pick_int(0, 1):
+        c_pf = _COMPLEX_PFS[pick_int(0, len(_COMPLEX_PFS) - 1)]
+    conj = (False, False)
+    # A permute spec has no conj() wrapper, so only a product is conjugated.
+    if kind == "einsum":
+        roll = pick_int(0, 5)
+        conj = {0: (True, False), 1: (False, True), 2: (True, True)}.get(roll, (False, False))
+    return stmt[:6] + (c_pf, ab_pf, kind, tuple(ops), conj)
+
+
+def _shuffled(pick_int, letters):
+    letters = list(letters)
+    return tuple(letters.pop(pick_int(0, len(letters) - 1)) for _ in range(len(letters)))
+
+
+def _draw_shaped_operators(pick_int, letters):
+    """An operator of any shape over the output's letters of one extent.
+
+    Every shape that fits is equally likely, so a four-letter output reaches the
+    three- and four-letter shapes four times in five. The letters are drawn in
+    a random order, which is what decides the placeholder each stands for: the
+    same shape over the same letters is a different operator when the groups
+    fall differently. A pair left over beside a pair operator gets a second
+    one, the ``P(ij) P(kl)`` of a doubles residual.
+    """
+    cands = [x for x in letters if x in _SHARED_LETTERS]
+    shapes = [index for index in range(len(P_SHAPES)) if operator_size(index) <= len(cands)]
+    if not shapes:
+        return ()
+    shape_index = shapes[pick_int(0, len(shapes) - 1)]
+    chosen = _shuffled(pick_int, cands)[:operator_size(shape_index)]
+    ops = [shaped_operator(shape_index, chosen)]
+    rest = [x for x in cands if x not in chosen]
+    if len(rest) >= 2 and pick_int(0, 1):
+        ops.append(_pair_operator(*_shuffled(pick_int, rest)[:2]))
+    return tuple(ops)
+
+
+def _draw_antisymmetric_family(pick_int, pool_key, inter, outs, stmts, terms):
+    """A product and a permute over the shared letters, both antisymmetrized.
+
+    The shape a coupled-cluster residual term has once it is written in its
+    own index order: a contraction into an output of three or four letters of
+    one extent, under an operator over three or four of them, and a permute
+    that relabels a tensor into the same output under an operator of its own.
+    Half the time the product goes through an intermediate the permute reads,
+    which is the pair a fusion rewrite folds into one statement and so has to
+    carry both operators into; otherwise the permute reads a pool tensor and
+    may accumulate into the product's output, which gives a region a SUM of two
+    antisymmetrized terms to relate.
+
+    An output sometimes holds one letter of another extent, which an operator
+    has to leave alone.
+    """
+    avail = list(_SHARED_LETTERS)
+    out_letters = [avail.pop(pick_int(0, len(avail) - 1)) for _ in range(pick_int(3, 4))]
+    if pick_int(0, 2) == 0:
+        out_letters.insert(pick_int(0, len(out_letters)), "abcd"[pick_int(0, 3)])
+    out_letters = tuple(out_letters)
+    out_dims = tuple(_EXTENTS[x] for x in out_letters)
+    summed = "eg"[pick_int(0, 1)]
+    split = pick_int(1, len(out_letters) - 1)
+    a_letters = _shuffled(pick_int, out_letters[:split] + (summed,))
+    b_letters = _shuffled(pick_int, (summed,) + out_letters[split:])
+    a = pool_key(tuple(_EXTENTS[x] for x in a_letters))
+    b = pool_key(tuple(_EXTENTS[x] for x in b_letters))
+
+    def target(dims):
+        same = [k for k, v in outs.items() if v == dims] if pick_int(0, 1) else []
+        if same:
+            return same[pick_int(0, len(same) - 1)], 1.0
+        key = f"r{len(outs)}"
+        outs[key] = dims
+        return key, 0.0
+
+    through = pick_int(0, 1)
+    if through:
+        key, c_pf = f"t_p{len(inter)}", 0.0
+        inter[key] = out_dims
+    else:
+        key, c_pf = target(out_dims)
+    stmts.append(_decorate(pick_int, (key, out_letters, a, a_letters, b, b_letters, c_pf,
+                                      _AB_PFS[pick_int(0, len(_AB_PFS) - 1)]),
+                           "einsum", _draw_shaped_operators(pick_int, out_letters)))
+    terms.append((a, b))
+
+    if through:
+        # The intermediate's axes are the product's output, so the permute
+        # reads them in that order and writes a relabelling of them.
+        src, src_letters = key, out_letters
+        perm_letters = _shuffled(pick_int, out_letters)
+    else:
+        src_letters = _shuffled(pick_int, out_letters)
+        src = pool_key(tuple(_EXTENTS[x] for x in src_letters))
+        perm_letters = out_letters
+    perm_key, perm_c_pf = target(tuple(_EXTENTS[x] for x in perm_letters))
+    # One permute in four carries no operator, so the plain relabelling beside
+    # an antisymmetrized one stays in the corpus.
+    ops = _draw_shaped_operators(pick_int, perm_letters) if pick_int(0, 3) else ()
+    stmts.append(_decorate(pick_int, (perm_key, perm_letters, src, src_letters, None, (), perm_c_pf,
+                                      _AB_PFS[pick_int(0, len(_AB_PFS) - 1)]),
+                           "perm", ops))
 
 
 def _draw_operators(pick_int, stmts):
@@ -167,7 +330,11 @@ def _draw_operators(pick_int, stmts):
         if rest and pick_int(0, 1):
             ops.append(_pair_operator(*rest[pick_int(0, len(rest) - 1)]))
         out.append(tuple(stmt[:8]) + ("einsum", tuple(ops)))
-    return out
+    # Decorated in a second sweep rather than as each operator is drawn, so the
+    # operators land where they did before decorations existed and the guards
+    # tuned on that placement still see it.
+    return [_decorate(pick_int, stmt, "einsum", _operators_of(stmt)) if _operators_of(stmt) else stmt
+            for stmt in out]
 
 
 def _draw_program(pick_int, operators=True) -> Program:
@@ -352,6 +519,16 @@ def _draw_program(pick_int, operators=True) -> Program:
     # Last, so a program drawn without operators is the same program with them stripped.
     if operators:
         stmts = _draw_operators(pick_int, stmts)
+        # After the operators, and behind the same switch, for the same reason:
+        # a program without them is still the program the region guards were
+        # tuned on. Half the programs get the family, and a third of those that
+        # have no loop yet get one around it, since an antisymmetrized residual
+        # is what a solver's loop body holds.
+        if pick_int(0, 1):
+            first = len(stmts)
+            _draw_antisymmetric_family(pick_int, pool_key, inter, outs, stmts, terms)
+            if loop is None and pick_int(0, 2) == 0:
+                loop = (first, len(stmts), pick_int(1, 2))
 
     return Program(pool, inter, outs, tuple(stmts), tuple(terms), disjoint, loop)
 
@@ -493,12 +670,18 @@ def _numpy_result(prog, arrays, dtype):
             continue
         if kind == "dp":
             term = values[a] * values[b]
+        elif kind == "perm":
+            term = np.einsum(f"{''.join(al)}->{''.join(ol)}", values[a])
         else:
-            term = np.einsum(f"{''.join(al)},{''.join(bl)}->{''.join(ol)}", values[a], values[b])
-            # The operators act on the product and the prefactors apply once to
-            # the antisymmetrized sum, which is what the spec's prefix means.
-            for op in _operators_of(stmt):
-                term = apply_operator(op, ol, term)
+            conj_a, conj_b = _conj_of(stmt)
+            term = np.einsum(f"{''.join(al)},{''.join(bl)}->{''.join(ol)}",
+                             np.conj(values[a]) if conj_a else values[a],
+                             np.conj(values[b]) if conj_b else values[b])
+        # The operators act on the product and the prefactors apply once to
+        # the antisymmetrized sum, which is what the spec's prefix means.
+        for op in _operators_of(stmt):
+            term = apply_operator(op, ol, term)
+        c_pf, ab_pf = _scalar(c_pf, dt), _scalar(ab_pf, dt)
         values[out] = (np.asarray(c_pf, dt) * values[out] + np.asarray(ab_pf, dt) * term).astype(dt)
     return {key: values[key] for key in prog.outs}
 
@@ -537,13 +720,20 @@ def _run(prog, arrays, dtype, region, tiling_cap=None):
     def emit(stmt):
         out, ol, a, al, b, bl, c_pf, ab_pf = stmt[:8]
         kind = _kind_of(stmt)
+        c_pf, ab_pf = _scalar(c_pf, dtype), _scalar(ab_pf, dtype)
+        ops = "".join(operator_prefix(op) for op in _operators_of(stmt))
         if kind == "dot":
             la.dot(tensors[out], tensors[a], tensors[b])
         elif kind == "dp":
             la.direct_product(ab_pf, tensors[a], tensors[b], c_pf, tensors[out])
+        elif kind == "perm":
+            spec = f"{','.join(ol)} <- {ops}{','.join(al)}"
+            einsums.permute(spec, tensors[out], tensors[a], c_pf=c_pf, a_pf=ab_pf)
         else:
-            ops = "".join(operator_prefix(op) for op in _operators_of(stmt))
-            spec = f"{','.join(ol)} <- {ops}{','.join(al)} ; {','.join(bl)}"
+            conj_a, conj_b = _conj_of(stmt)
+            a_spec = f"conj({','.join(al)})" if conj_a else ','.join(al)
+            b_spec = f"conj({','.join(bl)})" if conj_b else ','.join(bl)
+            spec = f"{','.join(ol)} <- {ops}{a_spec} ; {b_spec}"
             einsums.einsum(spec, tensors[out], tensors[a], tensors[b], c_pf=c_pf, ab_pf=ab_pf)
 
     def emit_run(into, run):
@@ -617,11 +807,13 @@ def _numpy_magnitude(prog, arrays, dtype):
             continue
         if kind == "dp":
             term = values[a] * values[b]
+        elif kind == "perm":
+            term = np.einsum(f"{''.join(al)}->{''.join(ol)}", values[a])
         else:
             term = np.einsum(f"{''.join(al)},{''.join(bl)}->{''.join(ol)}", values[a], values[b])
-            for op in _operators_of(stmt):
-                term = apply_operator(op, ol, term, magnitude=True)
-        values[out] = (abs(c_pf) * values[out] + abs(ab_pf) * term).astype(real)
+        for op in _operators_of(stmt):
+            term = apply_operator(op, ol, term, magnitude=True)
+        values[out] = (abs(_scalar(c_pf, dt)) * values[out] + abs(_scalar(ab_pf, dt)) * term).astype(real)
     return float(np.linalg.norm(np.concatenate(
         [values[key].ravel().astype(np.float64) for key in sorted(prog.outs)])))
 
@@ -797,6 +989,63 @@ def test_the_generator_draws_the_shapes_the_passes_need():
     assert operator_on_intermediate, "no operator ever sits on a statement writing an intermediate"
 
 
+def test_the_generator_draws_every_operator_shape_and_decoration():
+    """Each operator shape, on both kinds that carry one, and each decoration beside it.
+
+    The antisymmetrized family exists to reach what the product statements
+    cannot, so each thing it adds is asserted rather than assumed: a shape the
+    corpus never draws is one the property tests pass by never running.
+    """
+    shapes = {kind: set() for kind in ("einsum", "perm")}
+    perm_reads_intermediate = complex_ab = complex_c = looped_permute = False
+    conj = set()
+    for seed in range(200):
+        prog = _rng_program(seed)
+        for index, stmt in enumerate(prog.stmts):
+            kind, ops = _kind_of(stmt), _operators_of(stmt)
+            if not ops:
+                continue
+            shapes[kind] |= {op[1] for op in ops}
+            # A permute reading the product's intermediate is the pair a fusion
+            # folds into one statement, which has to keep both operators.
+            perm_reads_intermediate |= kind == "perm" and stmt[2].startswith("t")
+            complex_ab |= isinstance(stmt[7], complex)
+            complex_c |= isinstance(stmt[6], complex)
+            conj |= {side for side, flag in zip("ab", _conj_of(stmt)) if flag}
+            if prog.loop is not None and kind == "perm":
+                looped_permute |= prog.loop[0] <= index < prog.loop[1]
+    every = set(range(len(P_SHAPES)))
+    assert shapes["einsum"] == every, f"an einsum never carries operator shapes {every - shapes['einsum']}"
+    assert shapes["perm"] == every, f"a permute never carries operator shapes {every - shapes['perm']}"
+    assert perm_reads_intermediate, "no antisymmetrized permute ever reads an intermediate"
+    assert complex_ab, "no statement carrying an operator ever has a complex product prefactor"
+    assert complex_c, "no accumulation carrying an operator ever has a complex destination prefactor"
+    assert conj == {"a", "b"}, f"an operator-bearing einsum only ever conjugates {conj or 'nothing'}"
+    assert looped_permute, "no antisymmetrized permute ever sits in a loop body"
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_the_antisymmetrized_family_keeps_the_answer_in_every_arm(dtype):
+    """The family's programs, run through each arm on a fixed set of seeds.
+
+    The property tests draw them too, but a few dozen hypothesis examples may
+    hold none of the rarer shapes; these seeds are the corpus the guard above
+    counts, so what it says is drawn is also what is run.
+    """
+    ran = 0
+    for seed in range(40):
+        prog = _rng_program(seed)
+        if not any(_kind_of(stmt) == "perm" for stmt in prog.stmts):
+            continue
+        _check(prog, dtype, seed=seed)
+        try:
+            _check_tiled(prog, 1 + seed % 16, dtype, seed=seed)
+        except pytest.skip.Exception:
+            pass
+        ran += 1
+    assert ran > 8, f"only {ran} of 40 programs drew the antisymmetrized family"
+
+
 def test_the_corpus_reaches_both_outcomes_of_per_consumer_inlining():
     """An intermediate several statements read, and the two answers to it.
 
@@ -814,11 +1063,15 @@ def test_the_corpus_reaches_both_outcomes_of_per_consumer_inlining():
     """
     two = three = copied = left_whole = 0
     for seed in range(48):
-        prog = _rng_program(seed)
+        # Without operators, for the reason the first guard gives: the search
+        # declines a graph holding one, so a decorated corpus would count the
+        # draw's operators rather than the rule's two outcomes.
+        prog = _rng_program(seed, operators=False)
         readers: dict = {}
         for index, stmt in enumerate(prog.stmts):
             for key in (stmt[2], stmt[4]):
-                if key.startswith("t"):
+                # A permute has no second operand.
+                if key is not None and key.startswith("t"):
                     readers.setdefault(key, set()).add(index)
         counts = [len(statements) for statements in readers.values()]
         two += any(count == 2 for count in counts)

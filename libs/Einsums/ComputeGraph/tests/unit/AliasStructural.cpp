@@ -833,3 +833,17 @@ TEST_CASE("a typed view registers at its own address, not its parent's", "[Compu
     require_derivations_agree(graph);
     require_schedules_agree(graph);
 }
+
+TEST_CASE("declare_alias refuses a tensor the graph does not have", "[ComputeGraph][Alias]") {
+    // A declaration naming an unknown id used to be dropped in silence, and with it the hazard
+    // edges it existed to add: two tensors sharing storage would have been scheduled as if they
+    // did not. Equal ids and the "no tensor" id 0 still state nothing and stay no-ops.
+    auto       A = create_random_tensor<double>("A", 2, 2);
+    cg::Graph  graph("declare_unknown");
+    auto const a_id = graph.register_tensor(cg::make_handle(A, 0));
+
+    CHECK_THROWS_AS(graph.declare_alias(a_id, cg::TensorId{987654}), std::invalid_argument);
+    CHECK_THROWS_AS(graph.declare_alias(cg::TensorId{987654}, a_id), std::invalid_argument);
+    CHECK_NOTHROW(graph.declare_alias(a_id, a_id));
+    CHECK_NOTHROW(graph.declare_alias(a_id, cg::TensorId{0}));
+}

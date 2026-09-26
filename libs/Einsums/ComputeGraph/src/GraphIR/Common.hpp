@@ -124,6 +124,11 @@ struct IrTensor {
     /// otherwise had its intermediates allocated at capture.
     AllocState alloc{AllocState::Materialized};
 
+    /// A rank-0 record's storage: a tensor object rather than a bare element. Written as
+    /// ``"rank0": "tensor"`` or ``"scalar"`` on every rank-0 record since 1.9.0; absent reads as
+    /// a bare element, which is what every earlier reader built.
+    bool rank0_tensor{false};
+
     /// Set on a FRAGMENT tensor that denotes a buffer the enclosing frame
     /// already defines; the value is that frame's id for it.
     std::optional<std::size_t> outer;

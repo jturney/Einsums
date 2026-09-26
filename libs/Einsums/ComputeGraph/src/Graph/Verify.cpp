@@ -15,10 +15,14 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
+#include <algorithm>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -36,6 +40,42 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
         auto const *handle = graph.find_tensor(id);
         return handle != nullptr ? std::optional<std::size_t>{handle->rank} : std::nullopt;
     };
+
+    auto const dims_of = [&graph](TensorId id) -> std::vector<std::size_t> const * {
+        auto const *handle = graph.find_tensor(id);
+        return handle != nullptr ? &handle->dims : nullptr;
+    };
+    // Every letter of a contraction or a permute names one extent, whichever operand carries it.
+    // An intermediate declared with a different extent than the nodes using it runs, and writes or
+    // reads a different number of elements than its neighbours expect.
+    auto const check_extents = [&](Node const                                                                  &node,
+                                   std::initializer_list<std::pair<std::vector<std::string> const *, TensorId>> operands) {
+        std::unordered_map<std::string, std::size_t> extent;
+        for (auto const &[letters, id] : operands) {
+            auto const *dims = dims_of(id);
+            if (dims == nullptr || dims->size() != letters->size()) {
+                continue; // the rank check reports it
+            }
+            for (std::size_t axis = 0; axis < dims->size(); axis++) {
+                auto const [it, fresh] = extent.try_emplace((*letters)[axis], (*dims)[axis]);
+                if (!fresh && it->second != (*dims)[axis]) {
+                    note(node, fmt::format("index '{}' has extent {} on one operand and {} on another", (*letters)[axis], it->second,
+                                           (*dims)[axis]));
+                }
+            }
+        }
+    };
+
+    // A slot redirect says a merged-away tensor now reads another's storage. The pass that made it
+    // removed the source's writer; one that still writes it writes into the target, and a
+    // redirect pointed the wrong way sends every access at storage nothing allocates.
+    for (auto const &[from, to] : graph.slot_redirects()) {
+        for (auto const &node : graph.nodes()) {
+            if (!is_lifecycle(node.kind) && std::ranges::find(node.outputs, from) != node.outputs.end()) {
+                note(node, fmt::format("writes tensor #{}, whose slot is redirected to tensor #{}", from, to));
+            }
+        }
+    }
 
     std::unordered_set<NodeId> ids;
     for (auto const &node : graph.nodes()) {
@@ -90,6 +130,7 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
                     if (!lists.c.empty()) {
                         check(lists.c, node.outputs[0], "C");
                     }
+                    check_extents(node, {{&lists.a, node.inputs[0]}, {&lists.b, node.inputs[1]}, {&lists.c, node.outputs[0]}});
                 }
             }
         } else if (node.kind == OpKind::Permute) {
@@ -101,6 +142,25 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
                         note(node,
                              fmt::format("operand {} has rank {} but the spec names {} indices for it", operand, *rank, letters->size()));
                     }
+                }
+                check_extents(node, {{&desc->a_indices, node.inputs[0]}, {&desc->c_indices, node.outputs[0]}});
+            }
+        } else if (node.kind == OpKind::Scale) {
+            // In place: the executor scales its output, so a listed input can only be that output.
+            if (!node.outputs.empty() && std::ranges::any_of(node.inputs, [&](TensorId id) { return id != node.outputs[0]; })) {
+                note(node, "reads a tensor other than the one it scales in place");
+            }
+        } else if (node.kind == OpKind::Axpby) {
+            // y is read in place: the executor takes x from the first input and y from the output,
+            // and a second input, when listed, is that same y.
+            if (!node.outputs.empty() && node.inputs.size() > 1 && node.inputs[1] != node.outputs[0]) {
+                note(node, "lists a y it does not write");
+            }
+            if (!node.inputs.empty() && !node.outputs.empty()) {
+                auto const *x = dims_of(node.inputs[0]);
+                auto const *y = dims_of(node.outputs[0]);
+                if (x != nullptr && y != nullptr && *x != *y) {
+                    note(node, fmt::format("adds x of shape [{}] into y of shape [{}]", fmt::join(*x, ","), fmt::join(*y, ",")));
                 }
             }
         }

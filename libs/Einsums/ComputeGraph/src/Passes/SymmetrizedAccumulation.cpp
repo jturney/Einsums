@@ -294,7 +294,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
     // ── Rewrite (Level 1): fold each runtime-tensor site by making the permute
     // accumulate directly into r2 (r2 += s2 * P(tmp)) and dropping axpby2 + tmpP.
     std::vector<bool> remove(nodes.size(), false);
-    Graph            *graph_ptr = &graph;
+    auto const        anchor = graph.anchor();
 
     for (auto const &s : sites) {
         // Runtime-tensor / uniform-dtype gate (typed captures fold-out; the
@@ -334,15 +334,15 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         TensorId const        tmp = s.tmp;
         PrefactorScalar const s2  = s.s2;
 
-        auto exec = [graph_ptr, r2, tmp, pspec, s2, dtype]() {
+        auto exec = [anchor, r2, tmp, pspec, s2, dtype]() {
             auto build = [&]<typename T>(T /*tag*/) {
                 using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
                 // live_tensor_ptr, not tensor_ptr: both are captured operands,
                 // and tensor_ptr names the caller's wrapper, which capture
                 // allows to be destroyed before execute() because it adopted
                 // the storage into a stand-in.
-                auto *dst = static_cast<RT *>(graph_ptr->live_tensor_ptr(r2));
-                auto *src = static_cast<RT *>(graph_ptr->live_tensor_ptr(tmp));
+                auto *dst = static_cast<RT *>(anchor->graph().live_tensor_ptr(r2));
+                auto *src = static_cast<RT *>(anchor->graph().live_tensor_ptr(tmp));
                 dispatch::string_permute<RT, RT>(pspec, T{1}, dst, as<T>(s2), *src); // r2 = 1*r2 + s2*P(tmp)
             };
             detail::dispatch_scalar_type(dtype, build);

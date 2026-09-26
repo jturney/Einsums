@@ -294,6 +294,16 @@ struct ExprStatement {
     /// The value, by arena index.
     TermId value{invalid_term};
 
+    /// The permutation operators applied to the value before it lands: ``C = beta C + P(value)``.
+    ///
+    /// They act on the target's letters, so they belong to the statement rather than to any term.
+    /// Re-bracketing the value leaves them where they are, while substituting this statement into
+    /// another statement's product would move them onto one factor of it, where they mean
+    /// something else; a rewrite must not inline a statement that carries any. On a permute the
+    /// descriptor carries the same list, and lowering refuses a statement where the two disagree.
+    /// Only a client that opts in through @ref RegionOptions::operators ever sees a nonempty one.
+    std::vector<PermutationOperator> operators;
+
     /// The node this statement was raised from. Diagnostics only; lowering does
     /// NOT consult it, see the file note.
     NodeId origin{0};
@@ -409,8 +419,9 @@ class EINSUMS_EXPORT TensorExpr {
  *
  * @par Barriers
  * Anything not in the raisable set ends a run: LAPACK, control flow,
- * communication, I/O, lifecycle, and an anonymous @ref OpKind::ElementTransform
- * whose kernel has no registered name. A method whose body is not flat therefore
+ * communication, I/O, lifecycle, an anonymous @ref OpKind::ElementTransform
+ * whose kernel has no registered name, and, unless the client opts in through
+ * @ref RegionOptions::operators, a node that applies permutation operators. A method whose body is not flat therefore
  * gets a declined rewrite naming the barrier rather than a silently smaller
  * region.
  */
@@ -484,6 +495,11 @@ struct RegionOptions {
     /// so a client that has not been taught to read a ragged leaf keeps meeting
     /// grouped nodes as barriers.
     bool grouped{false};
+
+    /// Whether a node that applies permutation operators (``P(ij)``) may join a region. Off by
+    /// default, so such a node stays a barrier for a client that has not been taught the rules
+    /// @ref ExprStatement::operators states, and the nodes on either side still form regions.
+    bool operators{false};
 };
 
 /**

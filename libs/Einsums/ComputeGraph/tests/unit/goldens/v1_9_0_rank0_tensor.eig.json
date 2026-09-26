@@ -1,0 +1,65 @@
+{
+  "einsums_graph_ir": "1.9.0",
+  "provenance": {"library_version":"2.0.0","config_fingerprint":"0xa2b35bda3e940d68","structural_passes":[]},
+  "name": "rank0_tensor",
+  "manifest": [
+    {
+      "id": 0,
+      "name": "A",
+      "direction": "input",
+      "dtype": "float64",
+      "rank": 2,
+      "dims": [2,3],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "scope": "graph",
+      "aliases_input": null
+    },
+    {
+      "id": 1,
+      "name": "e",
+      "direction": "output",
+      "dtype": "float64",
+      "rank": 0,
+      "dims": [],
+      "dim_symbols": [],
+      "spaces": [],
+      "spaces_inferred": false,
+      "rank0": "tensor",
+      "scope": "graph",
+      "aliases_input": null
+    }
+  ],
+  "spaces": {"names":[],"symbol_ties":[]},
+  "approximations": [],
+  "params": [],
+  "gate_flags": [],
+  "tensors": [],
+  "slot_redirects": [],
+  "nodes": [
+    {
+      "id": 0,
+      "kind": "Einsum",
+      "label": "einsum: C[] = A[i,j] * B[i,j]",
+      "inputs": [0,0],
+      "outputs": [1],
+      "dtype": "float64",
+      "rank": 0,
+      "descriptor": {
+        "c_indices": [],
+        "a_indices": ["i","j"],
+        "b_indices": ["i","j"],
+        "link_indices": ["i","j"],
+        "target_indices": [],
+        "all_indices": ["i","j"],
+        "scalar_output": false,
+        "conj_a": false,
+        "conj_b": false,
+        "c_prefactor": {"dtype":"float64","re":0.0},
+        "ab_prefactor": {"dtype":"float64","re":1.0},
+        "letter_spaces": []
+      }
+    }
+  ]
+}

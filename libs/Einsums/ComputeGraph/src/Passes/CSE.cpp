@@ -449,7 +449,7 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
             // expansions sharing a contraction left one output all zeros.
             bool redirectable = true;
             for (auto const *outs : {&nodes[i].outputs, &nodes[j].outputs}) {
-                redirectable = redirectable && std::ranges::all_of(*outs, [&](TensorId out) { return graph.find_slot(out) != nullptr; });
+                redirectable = redirectable && std::ranges::all_of(*outs, [&](TensorId out) { return graph.has_slot(out); });
             }
             if (!redirectable)
                 continue;

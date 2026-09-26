@@ -18,6 +18,7 @@
 #include <Einsums/TensorImpl/TensorImpl.hpp>
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <algorithm>
 #include <complex>
@@ -250,6 +251,10 @@ std::string TensorExpr::to_string(SpaceRegistry const *registry) const {
                 out += fmt::format("({} * self) + ", compute_graph::to_string(statement.target_prefactor));
             }
         }
+        for (auto const &op : statement.operators) {
+            out += op.render();
+            out += ' ';
+        }
         out += render_term(*this, statement.value);
         auto const &term = statement.value < terms.size() ? at(statement.value) : ExprTerm{};
         if (!term.cost.flops.is_zero()) {
@@ -269,6 +274,12 @@ namespace {
 /// a barrier is the honest answer: raising it would produce a term that lowers
 /// into a different kernel or none.
 bool raisable_here(Node const &node, RegionOptions const &options) {
+    // A barrier rather than a member the raise later refuses: a refusal costs the whole region,
+    // and in a flat graph the region is the whole graph, so one P(ij) anywhere used to switch the
+    // client off for every node, including the ones that share nothing with it.
+    if (!options.operators && passes::carries_permutation_operators(node)) {
+        return false;
+    }
     if (options.grouped && is_grouped_raisable(node.kind)) {
         // A blocked grouped batch writes column ranges of shared bases and
         // declares only the DISTINCT bases as outputs, so its member list of
@@ -926,14 +937,17 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
         if (node->outputs.empty()) {
             return unexpected(RaiseFailure{.reason = "a region node writes nothing", .detail = fmt::format("node '{}'", node->label)});
         }
-        // The algebra has no term for a permutation operator, so raising the node would describe
-        // only its identity term, and a rewrite lowered from that computes a different value.
-        if (passes::carries_permutation_operators(*node)) {
-            return unexpected(RaiseFailure{.reason = "a node applies a permutation operator, which the algebra has no term for",
-                                           .detail = fmt::format("node '{}'", node->label)});
+        // Carried on the statement, not on a term; see ExprStatement::operators.
+        std::vector<PermutationOperator> operators;
+        if (auto const lists = node_index_lists(*node); lists.has_value() && lists->operators != nullptr) {
+            operators = *lists->operators;
         }
 
         if (is_grouped_raisable(node->kind)) {
+            if (!operators.empty()) {
+                return unexpected(RaiseFailure{.reason = "a grouped node applies a permutation operator, which a family has no place for",
+                                               .detail = fmt::format("node '{}'", node->label)});
+            }
             auto grouped = raise_grouped(graph, *node, expr, ragged);
             if (!grouped) {
                 return unexpected(std::move(grouped.error()));
@@ -948,6 +962,7 @@ expected<TensorExpr, RaiseFailure> raise_region(Graph const &graph, Region const
         statement.origin       = node->id;
         statement.origin_kind  = node->kind;
         statement.origin_label = node->label;
+        statement.operators    = std::move(operators);
 
         if (node->kind == OpKind::Einsum) {
             auto const *desc = node->op_data.get_if<EinsumDescriptor>();
@@ -1345,6 +1360,10 @@ expected<void, RaiseFailure> lower_region(Graph &graph, Region const &region, Te
         auto const &term = expr.at(statement.value);
 
         if (statement.family != invalid_family) {
+            if (!statement.operators.empty()) {
+                return unexpected(
+                    lower_refusal(statement, "a grouped statement carries permutation operators, which no grouped kind applies"));
+            }
             auto grouped = lower_grouped(graph, expr, statement);
             if (!grouped) {
                 return unexpected(std::move(grouped.error()));
@@ -1377,7 +1396,19 @@ expected<void, RaiseFailure> lower_region(Graph &graph, Region const &region, Te
             spec.a_indices = letters(term.operand_indices[0]);
             spec.b_indices = letters(term.operand_indices[1]);
             spec.c_indices = letters(statement.target_indices);
-            spec.raw       = spec.render();
+            spec.operators = statement.operators;
+            // An operator permutes the target's letters, so one naming a letter the target does not
+            // carry means a rewrite renamed the target without the operators.
+            for (auto const &op : spec.operators) {
+                for (auto const &letter : op.letters()) {
+                    if (std::ranges::find(spec.c_indices, letter) == spec.c_indices.end()) {
+                        return unexpected(RaiseFailure{.reason = "a permutation operator names a letter its target does not carry",
+                                                       .detail = fmt::format("target '{}': {} over [{}]", statement.target_name,
+                                                                             op.render(), fmt::join(spec.c_indices, ","))});
+                    }
+                }
+            }
+            spec.raw = spec.render();
 
             auto const &a_leaf = expr.at(term.operands[0]);
             auto const &b_leaf = expr.at(term.operands[1]);
@@ -1407,6 +1438,15 @@ expected<void, RaiseFailure> lower_region(Graph &graph, Region const &region, Te
             node.inputs.push_back(expr.at(operand).tensor);
         }
         node.op_data = term.descriptor;
+        // An elementwise node carries its operators in its descriptor, which is what the executor
+        // applies, so the statement's list is a claim about it and must match.
+        std::vector<PermutationOperator> const *carried = nullptr;
+        if (auto const *permute = node.op_data.get_if<PermuteDescriptor>(); permute != nullptr) {
+            carried = &permute->operators;
+        }
+        if (carried == nullptr ? !statement.operators.empty() : *carried != statement.operators) {
+            return unexpected(lower_refusal(statement, "a statement's permutation operators disagree with the node it lowers to"));
+        }
 
         auto const [dtype, rank] = destination_key(graph, statement.target);
         try {

@@ -56,9 +56,10 @@ namespace {
 /// One frame's loaded storage: the dense id's tensor object, its id in this
 /// frame's graph, and whether it is a scalar.
 struct LoadedTensor {
-    void    *object{nullptr};
-    TensorId id{0};
-    bool     scalar{false};
+    void                   *object{nullptr};
+    TensorId                id{0};
+    bool                    scalar{false};
+    packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown}; ///< What @ref object holds elements of.
 };
 
 /// Allocate placeholder storage for one tensor and register it.
@@ -70,11 +71,11 @@ struct LoadedTensor {
 /// from dereferencing nothing.
 template <typename T>
 LoadedTensor allocate_tensor(Graph &root, Graph &graph, IrTensor const &spec) {
-    if (spec.rank == 0) {
+    if (spec.rank == 0 && !spec.rank0_tensor) {
         auto *scalar = new T{};
         root.adopt([scalar]() { delete scalar; });
         TensorId const id = graph.register_tensor(make_scalar_handle(scalar, 0, spec.name));
-        return LoadedTensor{.object = static_cast<void *>(scalar), .id = id, .scalar = true};
+        return LoadedTensor{.object = static_cast<void *>(scalar), .id = id, .scalar = true, .dtype = spec.dtype};
     }
     using TensorType = GeneralRuntimeTensor<T, std::allocator<T>>;
 
@@ -104,25 +105,41 @@ LoadedTensor allocate_tensor(Graph &root, Graph &graph, IrTensor const &spec) {
     }
     TensorId const id = graph.register_tensor(std::move(handle));
     graph.get_or_create_slot(*tensor, id);
-    return LoadedTensor{.object = static_cast<void *>(tensor), .id = id, .scalar = false};
+    return LoadedTensor{.object = static_cast<void *>(tensor), .id = id, .scalar = false, .dtype = spec.dtype};
 }
 
 /// Register a handle in @p graph over storage an enclosing frame already owns.
 template <typename T>
 LoadedTensor adopt_outer_tensor(Graph &graph, IrTensor const &spec, LoadedTensor const &outer) {
+    if (outer.scalar != (spec.rank == 0 && !spec.rank0_tensor)) {
+        throw BuildFailure(fmt::format("tensor '{}' is declared as a {} but the enclosing frame's tensor it names is a {}", spec.name,
+                                       outer.scalar ? "tensor" : "bare scalar", outer.scalar ? "bare scalar" : "tensor"));
+    }
+    // The fragment's declaration and the enclosing tensor must describe the same storage: the
+    // object is cast to the type the declaration names, and the body's nodes were built against
+    // its extents. A file that pointed a body at a differently shaped or typed tensor used to be
+    // adopted as is, and the loop wrote into the wrong tensor.
+    if (outer.dtype != spec.dtype) {
+        throw BuildFailure(fmt::format("tensor '{}' is declared {} but the enclosing frame's tensor it names holds {}", spec.name,
+                                       spec.dtype, outer.dtype));
+    }
     if (outer.scalar) {
         TensorId const id = graph.register_tensor(make_scalar_handle(static_cast<T *>(outer.object), 0, spec.name));
-        return LoadedTensor{.object = outer.object, .id = id, .scalar = true};
+        return LoadedTensor{.object = outer.object, .id = id, .scalar = true, .dtype = outer.dtype};
     }
-    using TensorType       = GeneralRuntimeTensor<T, std::allocator<T>>;
-    auto *tensor           = static_cast<TensorType *>(outer.object);
-    auto  handle           = make_handle(*tensor, 0);
+    using TensorType = GeneralRuntimeTensor<T, std::allocator<T>>;
+    auto *tensor     = static_cast<TensorType *>(outer.object);
+    if (tensor->dims() != spec.dims) {
+        throw BuildFailure(fmt::format("tensor '{}' is declared [{}] but the enclosing frame's tensor it names is [{}]", spec.name,
+                                       fmt::join(spec.dims, ","), fmt::join(tensor->dims(), ",")));
+    }
+    auto handle            = make_handle(*tensor, 0);
     handle.is_intermediate = spec.intermediate;
     handle.ownership       = spec.scope;
     handle.init_kind       = spec.init;
     TensorId const id      = graph.register_tensor(std::move(handle));
     graph.get_or_create_slot(*tensor, id);
-    return LoadedTensor{.object = outer.object, .id = id, .scalar = false};
+    return LoadedTensor{.object = outer.object, .id = id, .scalar = false, .dtype = outer.dtype};
 }
 
 /// Dispatch @p spec's dtype and allocate or adopt accordingly.
@@ -284,6 +301,30 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
                     throw BuildFailure(fmt::format("node '{}' carries a GEMM hint with dtype 'unknown'", spec.label));
                 }
                 einsum->gemm_hint->scalar = detail::blas_scalar_from(spec.dtype);
+
+                // The hint is derived data, and GEMMBatching trusts it: it keys its groups on
+                // the hint's extents and runs the batched call with them. So a file's hint must
+                // be the one the loaded operands would produce, or a hand-edited or corrupted
+                // extent groups two products that differ and writes past a destination. Derived
+                // the way capture derives it and compared field by field.
+                auto const derived    = derive_gemm_hint(spec.dtype, einsum->spec, graph, einsum->gemm_hint->a.id, einsum->gemm_hint->b.id,
+                                                         einsum->gemm_hint->c.id);
+                GemmHint const &saved = *einsum->gemm_hint;
+                if (derived == nullptr) {
+                    throw BuildFailure(
+                        fmt::format("node '{}' carries a GEMM hint, but its operands do not form a matrix product", spec.label));
+                }
+                if (derived->m != saved.m || derived->n != saved.n || derived->k != saved.k || derived->trans_a != saved.trans_a ||
+                    derived->trans_b != saved.trans_b || derived->a.leading_dim != saved.a.leading_dim ||
+                    derived->b.leading_dim != saved.b.leading_dim || derived->c.leading_dim != saved.c.leading_dim) {
+                    throw BuildFailure(fmt::format("node '{}' carries a GEMM hint (m={} n={} k={} trans={}{} ld={},{},{}) that its "
+                                                   "operands contradict (m={} n={} k={} "
+                                                   "trans={}{} ld={},{},{})",
+                                                   spec.label, saved.m, saved.n, saved.k, saved.trans_a, saved.trans_b, saved.a.leading_dim,
+                                                   saved.b.leading_dim, saved.c.leading_dim, derived->m, derived->n, derived->k,
+                                                   derived->trans_a, derived->trans_b, derived->a.leading_dim, derived->b.leading_dim,
+                                                   derived->c.leading_dim));
+                }
             }
         }
         if (auto *conditional = node.op_data.get_if<ConditionalDescriptor>()) {
@@ -409,6 +450,15 @@ Graph build_graph(IrDocument const &document, SpaceRegistry &registry) {
         graph.declare_alias(loaded[entry.id].id, parent->second);
     }
     graph.link_alias_storage();
+
+    // The invariants every pass keeps, asked of the file too. A reader checks each field
+    // against its own schema; this is what checks the fields against EACH OTHER, which is how a
+    // consistent-looking file described a program no capture could write: an intermediate
+    // declared at a different extent from the nodes using it, an in-place node writing a tensor
+    // it does not read, a redirect whose source a node still writes.
+    if (auto const problems = graph.verify(); !problems.empty()) {
+        throw BuildFailure(fmt::format("the rebuilt graph is malformed: {}", fmt::join(problems, "; ")));
+    }
 
     // The manifest is DERIVED from what the nodes do, so the file's copy is a
     // declaration to check rather than state to install. A disagreement means

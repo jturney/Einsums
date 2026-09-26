@@ -214,11 +214,11 @@ bool SUMMAExpansion::run(Graph &graph) {
         // wrapper, which capture allows to be destroyed before execute()
         // because it adopted the storage into a stand-in; only
         // `live_tensor_ptr` returns the object the graph actually keeps alive.
-        auto          *graph_ptr = &graph;
-        TensorId const a_id      = node.inputs[0];
-        TensorId const b_id      = node.inputs[1];
-        TensorId const c_id      = node.outputs[0];
-        auto           dtype     = out_handle.dtype;
+        auto const     anchor = graph.anchor();
+        TensorId const a_id   = node.inputs[0];
+        TensorId const b_id   = node.inputs[1];
+        TensorId const c_id   = node.outputs[0];
+        auto           dtype  = out_handle.dtype;
 
         // We need type-specific SUMMA. Use dtype to dispatch.
         // For now, support double only.
@@ -230,10 +230,10 @@ bool SUMMAExpansion::run(Graph &graph) {
         // Build the SUMMA executor lambda. The panels are broadcast through
         // comm::broadcast on the row/col communicators, not through the handle's
         // allreduce hook.
-        node.execute = [&grid, panels, graph_ptr, a_id, b_id, c_id, dtype, params, c_snap, ab_snap]() {
-            void                 *a_ptr = graph_ptr->live_tensor_ptr(a_id);
-            void                 *b_ptr = graph_ptr->live_tensor_ptr(b_id);
-            void                 *c_ptr = graph_ptr->live_tensor_ptr(c_id);
+        node.execute = [&grid, panels, anchor, a_id, b_id, c_id, dtype, params, c_snap, ab_snap]() {
+            void                 *a_ptr = anchor->graph().live_tensor_ptr(a_id);
+            void                 *b_ptr = anchor->graph().live_tensor_ptr(b_id);
+            void                 *c_ptr = anchor->graph().live_tensor_ptr(c_id);
             PrefactorScalar const c_pf  = params ? params->c_pf : c_snap;
             PrefactorScalar const ab_pf = params ? params->ab_pf : ab_snap;
             if (dtype == packed_gemm::ScalarType::Float64) {

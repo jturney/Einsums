@@ -277,8 +277,8 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
     // At position zero, because a guard behind the work it guards has already
     // let the wrong answer be computed. add_setup_at exists for this reason.
     if (auto leaves = detected_leaves(EscapeAnalysis::over(graph)); !leaves.empty()) {
-        Graph &body  = graph.add_setup_at("antisymmetry premise guard", 0);
-        Graph *owner = &graph;
+        Graph     &body   = graph.add_setup_at("antisymmetry premise guard", 0);
+        auto const anchor = graph.anchor();
 
         Node check;
         check.id    = body.reserve_node_id();
@@ -292,9 +292,9 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
                 check.inputs.push_back(body.find_or_register_tensor_ptr(*handle));
             }
         }
-        check.execute = [owner, leaves = std::move(leaves)]() {
+        check.execute = [anchor, leaves = std::move(leaves)]() {
             for (auto const &[tid, desc] : leaves) {
-                auto const *handle = owner->find_tensor(owner->resolve_alias(tid));
+                auto const *handle = anchor->graph().find_tensor(anchor->graph().resolve_alias(tid));
                 if (handle == nullptr || !handle->impl_fn) {
                     continue;
                 }

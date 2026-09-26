@@ -13,9 +13,15 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <fmt/format.h>
+#include <fmt/ranges.h>
+
+#include <algorithm>
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <utility>
 
 #include <Einsums/Testing.hpp>
 
@@ -193,6 +199,79 @@ TEST_CASE("Graph - verify names each structural problem and the pass that caused
         CHECK_THAT(message, Catch::Matchers::ContainsSubstring("pass 'CorruptingPass' left the graph malformed"));
         CHECK_THAT(message, Catch::Matchers::ContainsSubstring("input tensor #987654 is not registered"));
         CHECK_THAT(message, Catch::Matchers::ContainsSubstring("has no executor"));
+    }
+}
+
+// Defends: the cross-field invariants a loaded file used to get past. Each held for every graph
+// capture could build, so nothing checked them, and a saved file that broke one loaded and ran:
+// an intermediate at a different extent from the nodes using it, a Scale writing a tensor it did
+// not read, an Axpby whose y was not its output, and a node still writing a redirect's source.
+// The loader now refuses a graph that fails verify(), so each is named here.
+TEST_CASE("Graph - verify names broken extents, in-place nodes and redirect writers", "[ComputeGraph][Verify]") {
+    auto const problems_mention = [](cg::Graph const &graph, std::string_view text) {
+        auto const problems = graph.verify();
+        INFO(fmt::format("{}", fmt::join(problems, "\n")));
+        return std::ranges::any_of(problems, [&](std::string const &problem) { return problem.find(text) != std::string::npos; });
+    };
+
+    SECTION("an einsum whose operands disagree on an extent") {
+        auto      A = create_random_tensor<double>("A", 3, 3);
+        auto      C = create_zero_tensor<double>("C", 3, 3);
+        auto      B = create_random_tensor<double>("B", 3, 4);
+        auto      D = create_zero_tensor<double>("D", 3, 4);
+        cg::Graph graph("extents");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", &C, A, A);
+            cg::einsum("ik;kj->ij", &D, A, B);
+        }
+        REQUIRE(graph.verify().empty());
+        graph.nodes()[0].outputs[0] = graph.nodes()[1].outputs[0]; // C[i,j] now names the 3x4 D
+        CHECK(problems_mention(graph, "has extent 3 on one operand and 4 on another"));
+    }
+
+    SECTION("a Scale that writes a tensor it does not read") {
+        auto      C = create_random_tensor<double>("C", 3, 3);
+        auto      D = create_random_tensor<double>("D", 3, 3);
+        cg::Graph graph("scale");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::scale(2.0, &C);
+            cg::scale(3.0, &D);
+        }
+        REQUIRE(graph.verify().empty());
+        graph.nodes()[0].outputs[0] = graph.nodes()[1].outputs[0];
+        CHECK(problems_mention(graph, "reads a tensor other than the one it scales in place"));
+    }
+
+    SECTION("an Axpby whose y is not its output") {
+        auto      X = create_random_tensor<double>("X", 3, 3);
+        auto      Y = create_random_tensor<double>("Y", 3, 3);
+        cg::Graph graph("axpby");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::axpy(1.0, X, &Y);
+        }
+        REQUIRE(graph.verify().empty());
+        auto &node = graph.nodes()[0];
+        REQUIRE(node.inputs.size() == 2);
+        std::swap(node.inputs[0], node.inputs[1]);
+        CHECK(problems_mention(graph, "lists a y it does not write"));
+    }
+
+    SECTION("a node that still writes a redirected tensor") {
+        auto      A  = create_random_tensor<double>("A", 3, 3);
+        auto      S1 = create_zero_tensor<double>("S1", 3, 3);
+        auto      S2 = create_zero_tensor<double>("S2", 3, 3);
+        cg::Graph graph("redirect");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", &S1, A, A);
+            cg::einsum("ik;kj->ij", &S2, A, A);
+        }
+        REQUIRE(graph.verify().empty());
+        graph.redirect_slot(graph.nodes()[1].outputs[0], graph.nodes()[0].outputs[0]);
+        CHECK(problems_mention(graph, "whose slot is redirected to tensor"));
     }
 }
 

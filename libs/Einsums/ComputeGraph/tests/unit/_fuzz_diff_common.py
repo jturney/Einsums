@@ -76,6 +76,7 @@ import pytest
 import einsums
 import einsums.graph as cg
 import einsums._core.graph as _G  # pass classes / Workspace, re-exported for shards
+from _permutation_operators import P_SHAPES, apply_operator, operator_prefix
 from _sanitizer_scaling import fuzz_seeds  # seed-count scaling under sanitizers
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -123,6 +124,19 @@ for _idx, _len in enumerate(VEC_LENS):
 R3_BY_SHAPE: dict[tuple[int, int, int], list[int]] = {}
 for _idx, _sh in enumerate(R3_SHAPES):
     R3_BY_SHAPE.setdefault(_sh, []).append(_idx)
+
+# Graph-owned scratch matrices, drawn only by the ``rich_ops`` generator. They
+# sit in the matrix pool AFTER every user matrix, at SCRATCH_BASE + j, so a
+# statement names one exactly as it names a user matrix; the rich arms create
+# them with ``Graph.create_zero_tensor`` (intermediate) and never compare them,
+# since a pass may legitimately free or elide a graph-owned buffer. They exist
+# because PermuteFusion, CSE and DeadNodeElimination decline anything the caller
+# holds, and a pool of nothing but user tensors never gave them a candidate.
+SCRATCH_SHAPES = [(r, c) for r in DIMS for c in DIMS for _ in range(2)]
+SCRATCH_BASE = len(MAT_SHAPES)
+SCRATCH_BY_SHAPE: dict[tuple[int, int], list[int]] = {}
+for _idx, _sh in enumerate(SCRATCH_SHAPES):
+    SCRATCH_BY_SHAPE.setdefault(_sh, []).append(SCRATCH_BASE + _idx)
 
 # einsum (rank-2) contraction patterns and numpy equivalents + operand-shape rule.
 EINSUM_PATTERNS = {
@@ -210,6 +224,23 @@ ETRANSFORM_FNS = [
 # identical byte spans and the pointer derivation merged the parents. The
 # matrix form drops the leading axis, so the view is strided; the rank-three
 # form drops the trailing one, so it is contiguous.
+#
+# Opt-in (``rich_ops=True``, drawn only by the optimization-level and rich
+# random-pipeline shards):
+#
+#   ("xeinsum", spec, op, ab, Aref, Bref, cpf, Cref, ca, cb)
+#         C = ab * op(A (x) B) + cpf * C, spec a key of EINSUM_PATTERNS or
+#         BEINSUM_PATTERNS and op a permutation operator from
+#         _permutation_operators (or None). Each operand is a reference:
+#           ("m", i)                       the whole matrix m[i]
+#           ("mv", i, r0, r1, c0, c1)      the block m[i][r0:r1, c0:c1]
+#           ("mt", i)                      the transpose view of m[i]
+#           ("t", i)                       the rank-3 tensor t[i]
+#         so one opcode carries an operator, a view read, and a view WRITE.
+#
+# A ``rich_ops`` program may also name graph-owned scratch: matrix slots at
+# SCRATCH_BASE and above, which only ``_build_with_scratch`` creates. Such a
+# program goes through the rich arms, never through ``check_program``.
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -242,21 +273,27 @@ def _fallback(rng):
     return ("scale", _scalar(rng), int(rng.integers(0, len(MAT_SHAPES))))
 
 
-def _gen_block(rng, depth, max_stmts, rich_views=False, rank_views=False):
+def _gen_block(rng, depth, max_stmts, rich_views=False, rank_views=False, rich_ops=False):
     stmts = []
     n = int(rng.integers(1, max_stmts + 1))
     for _ in range(n):
         roll = rng.random()
         if depth > 0 and roll < 0.18:
             cnt = int(rng.integers(1, 4))
-            stmts.append(("loop", cnt, _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views)))
+            stmts.append(("loop", cnt, _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views, rich_ops)))
         elif depth > 0 and roll < 0.30:
             flag = bool(rng.integers(0, 2))
-            then = _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views)
-            els = _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views)
+            then = _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views, rich_ops)
+            els = _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views, rich_ops)
             stmts.append(("cond", flag, then, els))
         else:
-            stmts.append(_gen_primitive(rng, rich_views, rank_views))
+            prim = _gen_primitive(rng, rich_views, rank_views, rich_ops)
+            # Only the rich_ops draw returns a run of statements (a batchable
+            # cluster), so the other corpora never reach the extend.
+            if isinstance(prim, list):
+                stmts.extend(prim)
+            else:
+                stmts.append(prim)
     return stmts
 
 
@@ -327,11 +364,322 @@ def _gen_rank_view(rng):
     return ("i3axpy", _scalar(rng), src, T, k, r0, r0 + sr, c0, c0 + sc)
 
 
-def _gen_primitive(rng, rich_views=False, rank_views=False):
+def _view_ref(rng, shape, exclude=()):
+    """A block of some matrix at least @p shape, at a random offset.
+
+    The parent is drawn from every matrix big enough rather than from the
+    matrices of exactly that shape, so a full-extent view (the block IS the
+    parent) and a strict sub-block are both reachable.
+    """
+    r, c = shape
+    cands = [i for i, (R, C) in enumerate(MAT_SHAPES) if R >= r and C >= c and i not in exclude]
+    if not cands:
+        return None
+    M = int(rng.choice(cands))
+    R, C = MAT_SHAPES[M]
+    r0 = int(rng.integers(0, R - r + 1))
+    c0 = int(rng.integers(0, C - c + 1))
+    return ("mv", M, r0, r0 + r, c0, c0 + c)
+
+
+def _transposed_ref(rng, shape, exclude=()):
+    """The transpose view of a whole matrix whose transpose has @p shape.
+
+    A different alias relation from a block: the view covers every element of
+    its parent but maps its axes crosswise, so a pass that compares a view with
+    its parent by extents alone sees two tensors of different shapes and no
+    overlap at all.
+    """
+    M = _pick_mat(rng, (shape[1], shape[0]), exclude)
+    return ("mt", M) if M is not None else None
+
+
+def _gen_rank2_operator(rng):
+    # P(x0/x1) is the only table row that fits a two-letter output. The letter
+    # order is drawn so both spellings, P(i/j) and P(j/i), reach the parser.
+    chosen = ["i", "j"] if rng.random() < 0.5 else ["j", "i"]
+    return ([[chosen[0]], [chosen[1]]], 0, chosen)
+
+
+def _gen_rich_op(rng):
+    """An einsum carrying a permutation operator, or a view read or written.
+
+    Drawn only when a caller asks for ``rich_ops``, for the reason
+    ``_gen_chained_view`` gives. These are the shapes the curated default
+    pipeline sees in real code and the shuffled pipelines never did: an
+    operator is what AntisymmetrizerExpansion expands and what CSE, PermuteFusion
+    and GEMMBatching must each refuse to treat as the plain product, and a view
+    operand is where alias-aware scheduling and every pass that moves a node
+    past another have to agree on what overlaps.
+    """
+    kind = int(rng.choice(8, p=[0.15, 0.12, 0.14, 0.14, 0.08, 0.08, 0.12, 0.17]))
+    if kind == 6:
+        return _gen_batch_cluster(rng)
+    if kind == 7:
+        return _gen_scratch_motif(rng)
+    a = _scalar(rng)
+    cpf = float(rng.integers(0, 2))
+    ca, cb = bool(rng.integers(0, 2)), bool(rng.integers(0, 2))
+
+    if kind == 1:  # rank-3 batched einsum under an operator over C's letters
+        spec = _BEINSUM_SPECS[int(rng.integers(0, len(_BEINSUM_SPECS)))]
+        _, shape_rule = BEINSUM_PATTERNS[spec]
+        c_idx = ["i", "j", "b"]
+        shape_index = int(rng.integers(0, 4))  # every row with at most three letters
+        groups_shape, _ = P_SHAPES[shape_index]
+        n = sum(len(g) for g in groups_shape)
+        chosen = [str(x) for x in rng.permutation(c_idx)[:n]]
+        # Forced equal rather than filtered for, as the einsum fuzzer does: an
+        # operator permutes axes into each other, so they must share an extent,
+        # and waiting for independent draws to agree reaches the three-letter
+        # rows almost never.
+        ext = {x: _d(rng, R3_DIMS) for x in ("i", "k", "j", "b")}
+        common = _d(rng, R3_DIMS)
+        for x in chosen:
+            ext[x] = common
+        op = ([[chosen[i] for i in g] for g in groups_shape], shape_index, chosen)
+        sa, sb, sc = shape_rule(ext["i"], ext["k"], ext["j"], ext["b"])
+        A, B = _pick_r3(rng, sa), _pick_r3(rng, sb)
+        if A is None or B is None:
+            return _fallback(rng)
+        C = _pick_r3(rng, sc, (A, B))
+        if C is None:
+            return _fallback(rng)
+        return ("xeinsum", spec, op, a, ("t", A), ("t", B), cpf, ("t", C), ca, cb)
+
+    spec = _EINSUM_SPECS[int(rng.integers(0, len(_EINSUM_SPECS)))]
+    _, shape_rule = EINSUM_PATTERNS[spec]
+    if kind == 0:
+        want_op = True
+    else:
+        want_op = rng.random() < 0.5
+    ni, nk, nj = _d(rng), _d(rng), _d(rng)
+    if want_op:
+        nj = ni
+    op = _gen_rank2_operator(rng) if want_op else None
+    sa, sb, sc = shape_rule(ni, nk, nj)
+
+    if kind == 0:  # operator, plain operands
+        A, B = _pick_mat(rng, sa), _pick_mat(rng, sb)
+        if A is None or B is None:
+            return _fallback(rng)
+        C = _pick_mat(rng, sc, (A, B))
+        if C is None:
+            return _fallback(rng)
+        return ("xeinsum", spec, op, a, ("m", A), ("m", B), cpf, ("m", C), ca, cb)
+
+    if kind == 2:  # one operand READ through a view
+        if rng.random() < 0.5:
+            Aref = _view_ref(rng, sa)
+            B = _pick_mat(rng, sb)
+            if Aref is None or B is None:
+                return _fallback(rng)
+            Bref = ("m", B)
+        else:
+            Bref = _view_ref(rng, sb)
+            A = _pick_mat(rng, sa)
+            if Bref is None or A is None:
+                return _fallback(rng)
+            Aref = ("m", A)
+        C = _pick_mat(rng, sc, (Aref[1], Bref[1]))
+        if C is None:
+            return _fallback(rng)
+        return ("xeinsum", spec, op, a, Aref, Bref, cpf, ("m", C), ca, cb)
+
+    if kind == 4:  # one operand READ through a transposed view of a whole matrix
+        if rng.random() < 0.5:
+            Aref = _transposed_ref(rng, sa)
+            B = _pick_mat(rng, sb)
+            if Aref is None or B is None:
+                return _fallback(rng)
+            Bref = ("m", B)
+        else:
+            Bref = _transposed_ref(rng, sb)
+            A = _pick_mat(rng, sa)
+            if Bref is None or A is None:
+                return _fallback(rng)
+            Aref = ("m", A)
+        C = _pick_mat(rng, sc, (Aref[1], Bref[1]))
+        if C is None:
+            return _fallback(rng)
+        return ("xeinsum", spec, op, a, Aref, Bref, cpf, ("m", C), ca, cb)
+
+    # kinds 3 and 5: the output WRITTEN through a view, a block for 3 and a
+    # transpose for 5. Neither input may live in the view's parent: an output
+    # overlapping an input is rejected unless the index lists match, and that
+    # rejection is a different test.
+    A, B = _pick_mat(rng, sa), _pick_mat(rng, sb)
+    if A is None or B is None:
+        return _fallback(rng)
+    Cref = _view_ref(rng, sc, (A, B)) if kind == 3 else _transposed_ref(rng, sc, (A, B))
+    if Cref is None:
+        return _fallback(rng)
+    return ("xeinsum", spec, op, a, ("m", A), ("m", B), cpf, Cref, ca, cb)
+
+
+def _gen_batch_cluster(rng):
+    """Two to four same-shaped contractions into distinct outputs, back to back.
+
+    GEMMBatching only fires on a run of independent contractions that share a
+    spec and a shape, which the one-statement draws above almost never line up.
+    Some members carry an operator and some do not, because a batched GEMM
+    computes the unpermuted product and a pass that batched an operator member
+    alongside a plain one returned the plain product for both.
+    """
+    spec = _EINSUM_SPECS[int(rng.integers(0, len(_EINSUM_SPECS)))]
+    _, shape_rule = EINSUM_PATTERNS[spec]
+    n = _d(rng)
+    sa, sb, sc = shape_rule(n, _d(rng), n)
+    # One prefactor pair and one conjugation choice for the whole cluster: the
+    # pass batches only bit-equal alpha and beta and skips a conjugated member,
+    # so independent draws would decline nearly every cluster.
+    ab, cpf = _scalar(rng), float(rng.integers(0, 2))
+    ca = cb = bool(rng.random() < 0.2)
+    members = []
+    written = set()
+    read = set()
+    for _ in range(int(rng.integers(2, 5))):
+        A = _pick_mat(rng, sa, tuple(written))
+        B = _pick_mat(rng, sb, tuple(written))
+        if A is None or B is None:
+            break
+        C = _pick_mat(rng, sc, tuple(written | read | {A, B}))
+        if C is None:
+            break
+        read |= {A, B}
+        written.add(C)
+        op = _gen_rank2_operator(rng) if rng.random() < 0.4 else None
+        members.append(("xeinsum", spec, op, ab, ("m", A), ("m", B), cpf, ("m", C), ca, cb))
+    return members if members else _fallback(rng)
+
+
+def _gen_scratch_motif(rng):
+    """A short run over graph-owned scratch that an O1 pass is built to rewrite.
+
+    Three shapes, one per pass family: a pure transpose into scratch read by an
+    einsum (PermuteFusion), the same contraction computed twice into two
+    scratch buffers and both read (CSE, then DeadNodeElimination), and a
+    contraction into scratch that is scaled or transformed before it is read
+    (ScaleAbsorption, ElementWiseFusion). The consumer einsum may carry an
+    operator, because a fused or deduplicated operand under an antisymmetrizer
+    is the combination the default order never produces on its own.
+    """
+    spec = _EINSUM_SPECS[int(rng.integers(0, len(_EINSUM_SPECS)))]
+    _, shape_rule = EINSUM_PATTERNS[spec]
+    want_op = rng.random() < 0.4
+    ni, nk, nj = _d(rng), _d(rng), _d(rng)
+    if want_op:
+        nj = ni
+    op = _gen_rank2_operator(rng) if want_op else None
+    sa, sb, sc = shape_rule(ni, nk, nj)
+    ab, cpf = _scalar(rng), float(rng.integers(0, 2))
+    ca, cb = bool(rng.integers(0, 2)), bool(rng.integers(0, 2))
+    roll = int(rng.integers(0, 3))
+
+    if roll == 0:
+        # The transpose must be pure (alpha 1, beta 0) and its output read once,
+        # or the pass declines; both are what this draws.
+        if rng.random() < 0.5:
+            S = _pick(rng, SCRATCH_BY_SHAPE, sa)
+            src = _pick_mat(rng, (sa[1], sa[0]))
+            B = _pick_mat(rng, sb)
+            if src is None or B is None:
+                return _fallback(rng)
+            C = _pick_mat(rng, sc, (src, B))
+            Aref, Bref = ("m", S), ("m", B)
+        else:
+            S = _pick(rng, SCRATCH_BY_SHAPE, sb)
+            src = _pick_mat(rng, (sb[1], sb[0]))
+            A = _pick_mat(rng, sa)
+            if src is None or A is None:
+                return _fallback(rng)
+            C = _pick_mat(rng, sc, (src, A))
+            Aref, Bref = ("m", A), ("m", S)
+        if C is None:
+            return _fallback(rng)
+        return [("perm", 1.0, 0.0, src, S),
+                ("xeinsum", spec, op, ab, Aref, Bref, cpf, ("m", C), ca, cb)]
+
+    A, B = _pick_mat(rng, sa), _pick_mat(rng, sb)
+    if A is None or B is None:
+        return _fallback(rng)
+    S1 = _pick(rng, SCRATCH_BY_SHAPE, sc)
+    C = _pick_mat(rng, sc, (A, B))
+    if C is None:
+        return _fallback(rng)
+    first = ("xeinsum", spec, op, ab, ("m", A), ("m", B), 0.0, ("m", S1), ca, cb)
+
+    if roll == 1:
+        S2 = _pick(rng, SCRATCH_BY_SHAPE, sc, (S1,))
+        C2 = _pick_mat(rng, sc, (A, B, C))
+        out = [first, first[:7] + (("m", S2),) + first[8:], ("axpy", _scalar(rng), S2, C)]
+        if C2 is not None and rng.random() < 0.5:
+            out.append(("axpy", _scalar(rng), S1, C2))
+        return out
+
+    middle = (("scale", _scalar(rng), S1) if rng.random() < 0.5
+              else ("etransform", int(rng.integers(0, len(ETRANSFORM_FNS))), S1))
+    return [first, middle, ("axpby", _scalar(rng), S1, _scalar(rng), C)]
+
+
+def _scratch_indices(stmts):
+    """Every scratch slot @p stmts names, at any nesting depth.
+
+    Relies on pool indices being the only integers in a statement that can
+    reach SCRATCH_BASE: extents, offsets, loop counts, table rows and flags are
+    all bounded by the four-wide dims well below it.
+    """
+    found = set()
+
+    def walk(x):
+        if isinstance(x, (list, tuple)):
+            for y in x:
+                walk(y)
+        elif isinstance(x, int) and not isinstance(x, bool) and x >= SCRATCH_BASE:
+            found.add(x)
+
+    walk(stmts)
+    return found
+
+
+def rich_op_census(stmts, out=None):
+    """How many operator einsums, view reads and view writes @p stmts holds.
+
+    Recurses into loop bodies and both branches of a conditional, because the
+    guards that read this want to know what the pipeline was SHOWN, and a
+    statement in an untaken branch is still a node every pass walks.
+    """
+    if out is None:
+        out = {"statements": 0, "operator": 0, "view_read": 0, "view_write": 0, "scratch": 0}
+    for s in stmts:
+        if s[0] == "loop":
+            rich_op_census(s[2], out)
+            continue
+        if s[0] == "cond":
+            rich_op_census(s[2], out)
+            rich_op_census(s[3], out)
+            continue
+        out["statements"] += 1
+        out["scratch"] += bool(_scratch_indices([s]))
+        if s[0] == "xeinsum":
+            _, _, op, _, Aref, Bref, _, Cref, _, _ = s
+            out["operator"] += op is not None
+            out["view_read"] += Aref[0] in ("mv", "mt") or Bref[0] in ("mv", "mt")
+            out["view_write"] += Cref[0] in ("mv", "mt")
+        elif s[0] in ("vgemm",):
+            out["view_read"] += 1
+        elif s[0] in ("vscale", "vaxpy"):
+            out["view_write"] += 1
+    return out
+
+
+def _gen_primitive(rng, rich_views=False, rank_views=False, rich_ops=False):
     if rich_views and rng.random() < 0.25:
         return _gen_chained_view(rng)
     if rank_views and rng.random() < 0.30:
         return _gen_rank_view(rng)
+    if rich_ops and rng.random() < 0.40:
+        return _gen_rich_op(rng)
     op = int(rng.integers(0, 14))
     a = _scalar(rng)
     if op == 13:  # gemm whose A operand is a *view* block of a larger matrix
@@ -448,6 +796,31 @@ def _gen_primitive(rng, rich_views=False, rank_views=False):
 # ──────────────────────────────────────────────────────────────────────────
 
 
+def _ref_read(ref, m, t):
+    if ref[0] == "t":
+        return t[ref[1]]
+    if ref[0] == "m":
+        return m[ref[1]]
+    if ref[0] == "mt":
+        return m[ref[1]].T
+    _, M, r0, r1, c0, c1 = ref
+    return m[M][r0:r1, c0:c1]
+
+
+def _ref_write(ref, m, t, value, cast):
+    # A whole-tensor write REBINDS the slot, so it needs the cast the rebinding
+    # ops above apply; a block write assigns into the typed parent, which casts.
+    if ref[0] == "t":
+        t[ref[1]] = cast(value)
+    elif ref[0] == "m":
+        m[ref[1]] = cast(value)
+    elif ref[0] == "mt":
+        m[ref[1]] = cast(np.asarray(value).T)
+    else:
+        _, M, r0, r1, c0, c1 = ref
+        m[M][r0:r1, c0:c1] = value
+
+
 def interp_np(stmts, m, v, t, dt=None):
     # When dt is given the oracle is kept in that precision: a Python-float
     # scalar times a float32 array would otherwise promote to float64, making
@@ -528,6 +901,16 @@ def interp_np(stmts, m, v, t, dt=None):
         elif k == "i3axpy":
             _, a, src, T, kk, r0, r1, c0, c1 = s
             t[T][r0:r1, c0:c1, kk] = t[T][r0:r1, c0:c1, kk] + a * m[src]
+        elif k == "xeinsum":
+            _, spec, op, ab, Aref, Bref, cpf, Cref, ca, cb = s
+            patterns = BEINSUM_PATTERNS if Cref[0] == "t" else EINSUM_PATTERNS
+            opA = _ref_read(Aref, m, t)
+            opB = _ref_read(Bref, m, t)
+            opA = np.conj(opA) if ca else opA
+            opB = np.conj(opB) if cb else opB
+            c_idx = list(spec.split("<-")[0].strip())
+            base = apply_operator(op, c_idx, patterns[spec][0](opA, opB))
+            _ref_write(Cref, m, t, ab * base + cpf * _ref_read(Cref, m, t), cast)
         elif k == "loop":
             _, n, body = s
             for _ in range(n):
@@ -612,8 +995,25 @@ def _emit_primitive(s, m, v, t):
     elif k == "i3axpy":
         _, a, src, T, kk, r0, r1, c0, c1 = s
         einsums.linalg.axpy(a, m[src], cg.view_indexed(t[T], [(1, r0, r1), (1, c0, c1), (2, kk, 0)]))
+    elif k == "xeinsum":
+        _, spec, op, ab, Aref, Bref, cpf, Cref, ca, cb = s
+        lhs, rhs = spec.split("<-")
+        full = f"{lhs.strip()} <- {operator_prefix(op)}{rhs.strip()}"
+        einsums.einsum(full, _ref_tensor(Cref, m, t), _ref_tensor(Aref, m, t), _ref_tensor(Bref, m, t),
+                       c_pf=cpf, ab_pf=ab, conj_a=ca, conj_b=cb)
     else:  # pragma: no cover
         raise AssertionError(f"not a primitive: {k!r}")
+
+
+def _ref_tensor(ref, m, t):
+    if ref[0] == "t":
+        return t[ref[1]]
+    if ref[0] == "m":
+        return m[ref[1]]
+    if ref[0] == "mt":
+        return cg.permute_view(m[ref[1]], [1, 0])
+    _, M, r0, r1, c0, c1 = ref
+    return cg.view(m[M], [(r0, r1), (c0, c1)])
 
 
 def build_cg(stmts, graph, m, v, t, tag):
@@ -874,6 +1274,207 @@ _SAFE_PASSES = [
     "ConstantFolding", "CSE", "DeadNodeElimination", "LoopInvariantHoisting",
     "SymmetryPropagation", "MemoryPlanning", "InplaceOptimization", "Reorder",
 ]
+
+# ──────────────────────────────────────────────────────────────────────────
+# Optimization levels
+#
+# ``check_program`` runs ``default_pass_manager``, which is the O2 list built
+# by a different entry point. What a user who writes ``graph.optimize(O1)``
+# gets is ``PassManager::create_for``: a separately written list that only
+# claims to match the head of the default one. Nothing else runs it against a
+# numeric oracle, so a pass that is sound only because a later pass cleans up
+# after it would be wrong at O1 and green everywhere else.
+#
+# ``_OPT_LEVEL_STATS`` counts, per level, the trials that ran and the ones the
+# pipeline actually changed, so a shard can assert the levels did something:
+# an O1 that silently stopped modifying anything passes every comparison.
+# ──────────────────────────────────────────────────────────────────────────
+
+OPT_LEVELS = {"O1": einsums._core.OptLevel.O1, "O2": einsums._core.OptLevel.O2}
+
+_OPT_LEVEL_STATS = {name: {"attempted": 0, "modified": 0} for name in OPT_LEVELS}
+
+
+def _oracle_typed(prog, m_arrays, v_arrays, t_arrays, dtype, runs=1):
+    """The numpy oracle in @p dtype, or a pytest skip if it overflowed.
+
+    The scratch slots start at zero, as ``create_zero_tensor`` does, and are
+    dropped from what is returned: only the caller's tensors are observable.
+    """
+    dt = np.dtype(dtype)
+    om = [a.copy() for a in m_arrays] + [np.zeros(sh, dtype=dt) for sh in SCRATCH_SHAPES]
+    ov = [a.copy() for a in v_arrays]
+    ot = [a.copy() for a in t_arrays]
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        for _ in range(runs):
+            interp_np(prog, om, ov, ot, dt)
+    om = om[:len(m_arrays)]
+    if not _usable(om, ov, ot, cap=_DTYPE_CAP[dtype]):
+        pytest.skip("oracle overflowed - numerically degenerate program")
+    return om, ov, ot
+
+
+def _build_with_scratch(prog, m_arrays, v_arrays, t_arrays, name):
+    """``_build``, plus a graph-owned intermediate for every scratch slot @p prog names.
+
+    Returns the matrix list truncated to the caller's tensors as well, which is
+    what gets compared.
+    """
+    mats, vecs, r3s = _make_pool(m_arrays, v_arrays, t_arrays, name)
+    g = cg.Graph(name)
+    used = _scratch_indices(prog)
+    dtype = str(m_arrays[0].dtype)
+    full = list(mats)
+    for j, sh in enumerate(SCRATCH_SHAPES):
+        slot = SCRATCH_BASE + j
+        if slot not in used:
+            full.append(None)
+        elif j % 2 == 0:
+            # The first copy of each shape is DEFERRED: Materialization gives
+            # it storage and FreeInsertion, InplaceOptimization and
+            # MemoryPlanning only ever act on a buffer whose lifetime the graph
+            # owns from allocation to free, which an eager tensor is not.
+            full.append(g.declare_zero_tensor(f"{name}_s{j}", list(sh), intermediate=True, dtype=dtype))
+        else:
+            full.append(g.create_zero_tensor(f"{name}_s{j}", list(sh), intermediate=True, dtype=dtype))
+    build_cg(prog, g, full, vecs, r3s, name)
+    return g, mats, vecs, r3s
+
+
+def _assert_pools_typed(got, oracle, prog, stage, dtype, extra=""):
+    rtol, atol = _DTYPE_TOL[dtype]
+    for kind, gs, os_ in zip("mvt", got, oracle):
+        for idx in range(len(os_)):
+            if not np.allclose(gs[idx], os_[idx], rtol=rtol, atol=atol):
+                raise AssertionError(
+                    f"{stage} disagrees with oracle on {kind}{idx} (dtype={dtype}){extra}\n"
+                    f"program={prog!r}\ngot=\n{gs[idx]}\noracle=\n{os_[idx]}")
+
+
+def check_program_opt_level(prog, m_arrays, v_arrays, t_arrays, label, level, dtype="float64", runs=1):
+    """``graph.optimize(level)``, executed @p runs times, against the oracle.
+
+    ``runs`` greater than one replays the optimized graph, which is where a
+    pass that inserted a Free or reused a buffer on the assumption of a single
+    execution shows up.
+    """
+    oracle = _oracle_typed(prog, m_arrays, v_arrays, t_arrays, dtype, runs)
+    g, mats, vecs, r3s = _build_with_scratch(prog, m_arrays, v_arrays, t_arrays, f"{label}_{level}")
+    stat = _OPT_LEVEL_STATS[level]
+    stat["attempted"] += 1
+    if g.optimize(OPT_LEVELS[level]):
+        stat["modified"] += 1
+    for _ in range(runs):
+        g.execute()
+    got = ([np.asarray(x).copy() for x in mats],
+           [np.asarray(x).copy() for x in vecs],
+           [np.asarray(x).copy() for x in r3s])
+    _assert_pools_typed(got, oracle, prog, f"optimize({level})", dtype, extra=f" runs={runs}")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Shuffled pipelines over operators and views
+#
+# The random-pipeline shards shuffle ``_SAFE_PASSES`` over the base corpus,
+# which never carries a permutation operator and never writes an einsum or a
+# transpose through a view. The passes that most need an order-independence
+# check on exactly those shapes are the ones the list left out:
+# AntisymmetrizerExpansion (rewrites an operator into its terms, so every pass
+# on either side of it sees a different graph), PermuteFusion (folds a
+# transpose into its consumer, which is wrong through an aliasing view) and
+# GEMMBatching (must not batch an operator member as if it were the plain
+# product). They go into this arm's list, and the programs come from
+# ``rich_ops``.
+#
+# GEMMBatching has no Python class, so it runs as the default pipeline with
+# every other pass switched off. ``_DEFAULT_PASS_NAMES`` is the list that makes
+# that possible, and the run checks it: a default pass missing from it would
+# run alongside GEMMBatching, and the check names that as stale rather than
+# letting it widen the pipeline under test.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Materialization is here because the rich corpus declares deferred scratch,
+# which cannot execute without it; shuffling it tests that no pass assumes
+# storage exists yet. FreeInsertion is left out: its 1 MiB floor is not
+# settable from Python and no tensor this pool holds reaches it, so it would be
+# shuffled and never fire.
+_RICH_SAFE_PASSES = _SAFE_PASSES + ["PermuteFusion", "AntisymmetrizerExpansion", "GEMMBatching",
+                                     "Materialization"]
+
+#: Every pass ``populate_default`` can build, in any build configuration.
+#: Names that this build does not have are harmless: they match nothing.
+_DEFAULT_PASS_NAMES = (
+    "ProvenancePropagation", "TiledExpansion", "DeltaElimination",
+    "AntisymmetryDetection", "AntisymmetrizerLinearity", "AntisymmetryInference",
+    "AntisymmetrizerFolding", "AntisymmetrizerExpansion", "ConstantFolding", "ScaleAbsorption",
+    "PermuteFusion", "CSE", "DeadNodeElimination", "SymmetrizedAccumulation", "ElementWiseFusion",
+    "LinearCombinationContractionFolding", "DistributiveFactoring", "LoopInvariantHoisting",
+    "ScratchPrivatization", "MultiTermFactorization", "LayoutAssignment", "ContractionPlanning",
+    "GEMMBatching", "Reorder", "IOPrefetch", "DistributionPlanning", "Materialization",
+    "SymmetryPropagation", "SpacePropagation", "CrossSpaceValidation", "ScalingAnalysis",
+    "StreamContractionFusion", "GPUPlacement", "TransferInsertion", "TransferElimination",
+    "GPUDiagnostics", "StreamAssignment", "InputSlicing", "SUMMAExpansion",
+    "CommunicationInsertion", "CommunicationElimination", "CommunicationScheduling",
+    "InplaceOptimization", "FreeInsertion", "MemoryPlanning",
+)
+
+#: Per pass: how many shuffled trials ran it and how many times it changed the
+#: graph. A pass in the list that never fires has been shuffled, not tested.
+_RICH_PIPELINE_STATS = {name: {"ran": 0, "modified": 0} for name in _RICH_SAFE_PASSES}
+
+
+def _isolated_default_pass(pass_name):
+    """The default pipeline with every pass but @p pass_name switched off."""
+    pm = cg.PassManager()
+    pm.populate_default()
+    for other in _DEFAULT_PASS_NAMES:
+        if other != pass_name:
+            pm.disable(other)
+    return pm
+
+
+def _apply_one_pass(g, pass_name):
+    """Run one pass of the shuffled list on @p g; True if it changed the graph."""
+    if hasattr(_G, pass_name):
+        pm = cg.PassManager()
+        pm.add(getattr(_G, pass_name)())
+        return g.apply(pm)
+    pm = _isolated_default_pass(pass_name)
+    modified = g.apply(pm)
+    skipped = pm.disabled_passes()
+    if pass_name in skipped or len(skipped) != pm.size - 1:
+        raise AssertionError(
+            f"isolating {pass_name} left {pm.size - len(skipped)} of {pm.size} default passes on; "
+            f"_DEFAULT_PASS_NAMES is stale (skipped: {skipped})")
+    return modified
+
+
+def check_program_rich_pipeline(prog, m_arrays, v_arrays, t_arrays, label, rng, dtype="float64", runs=1):
+    """A random order of ``_RICH_SAFE_PASSES``, applied one pass at a time.
+
+    One pass per PassManager so each pass's own verdict lands in
+    ``_RICH_PIPELINE_STATS``; the sequence of runs is the same pipeline a single
+    manager holding the whole order would be.
+    """
+    oracle = _oracle_typed(prog, m_arrays, v_arrays, t_arrays, dtype, runs)
+    order = list(_RICH_SAFE_PASSES)
+    rng.shuffle(order)
+    g, mats, vecs, r3s = _build_with_scratch(prog, m_arrays, v_arrays, t_arrays, label)
+    for name in order:
+        _RICH_PIPELINE_STATS[name]["ran"] += 1
+        if _apply_one_pass(g, name):
+            _RICH_PIPELINE_STATS[name]["modified"] += 1
+    # Every pipeline above O0 ends in Materialization, which is correctness-enabling rather than
+    # an optimization: a structural pass that runs after the shuffled one (AntisymmetrizerExpansion
+    # does) leaves deferred scratch only a later Materialization gives storage. Shuffled position
+    # is still exercised above; this closing one is not counted.
+    _apply_one_pass(g, "Materialization")
+    for _ in range(runs):
+        g.execute()
+    got = ([np.asarray(x).copy() for x in mats],
+           [np.asarray(x).copy() for x in vecs],
+           [np.asarray(x).copy() for x in r3s])
+    _assert_pools_typed(got, oracle, prog, "RICH-RANDOM-PIPELINE", dtype, extra=f"  order={order} runs={runs}")
 
 # ──────────────────────────────────────────────────────────────────────────
 # Region identity round trip
@@ -1367,6 +1968,11 @@ __all__ = [
     '_gen_primitive',
     '_gen_chained_view',
     '_gen_rank_view',
+    '_gen_rich_op',
+    '_gen_batch_cluster',
+    '_view_ref',
+    '_transposed_ref',
+    'rich_op_census',
     'interp_np',
     '_emit_primitive',
     'build_cg',
@@ -1391,6 +1997,23 @@ __all__ = [
     '_build',
     '_assert_pools',
     '_SAFE_PASSES',
+    'OPT_LEVELS',
+    '_OPT_LEVEL_STATS',
+    '_oracle_typed',
+    '_build_with_scratch',
+    '_scratch_indices',
+    '_gen_scratch_motif',
+    'SCRATCH_SHAPES',
+    'SCRATCH_BASE',
+    'SCRATCH_BY_SHAPE',
+    '_assert_pools_typed',
+    'check_program_opt_level',
+    '_RICH_SAFE_PASSES',
+    '_DEFAULT_PASS_NAMES',
+    '_RICH_PIPELINE_STATS',
+    '_isolated_default_pass',
+    '_apply_one_pass',
+    'check_program_rich_pipeline',
     '_G',
     'TIER_CANDIDATES',
     '_TIER_STATS',

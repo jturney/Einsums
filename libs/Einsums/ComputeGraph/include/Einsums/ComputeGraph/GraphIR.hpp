@@ -106,6 +106,13 @@
  * descriptor, rather than loading a node it cannot rebuild. As with a new kind,
  * an older reader refuses the whole file by version.
  *
+ * A rank-0 record says what it holds since 1.9.0: ``"rank0": "tensor"`` for a
+ * rank-0 tensor object and ``"scalar"`` for the bare element a returning-form op
+ * such as a dot writes through a pointer. Rank alone cannot tell the two apart, and
+ * a loader that rebuilt a tensor object as a bare element could neither run an
+ * einsum into it nor accept one at bind. An absent key reads as a bare element,
+ * which is what every earlier reader built.
+ *
  * @par The hash domain
  * @ref Graph::content_hash digests the canonical bytes of that object with
  * ``provenance`` REMOVED and nothing else changed. Provenance is therefore
@@ -239,7 +246,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph)
  * repurposed; a semantic change is a new field name and a minor bump.
  * @versionadded{2.0.0}
  */
-inline constexpr std::string_view graph_ir_schema_version = "1.8.0";
+inline constexpr std::string_view graph_ir_schema_version = "1.9.0";
 
 /// @brief Knobs for @ref save_graph.
 /// @versionadded{2.0.0}

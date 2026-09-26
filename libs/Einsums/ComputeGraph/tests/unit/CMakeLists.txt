@@ -40,6 +40,7 @@ set(ComputeGraphTests
     PooledOperands.cpp
     ControlFlow.cpp
     DeltaElimination.cpp
+    DirectApplyRecursion.cpp
     DependencyOrder.cpp
     DiisAccelerator.cpp
     DistributedIntegration.cpp
@@ -57,6 +58,7 @@ set(ComputeGraphTests
     GraphCapture.cpp
     GraphFeatures.cpp
     GraphRegistry.cpp
+    GraphStateContracts.cpp
     HeadersWithoutIndices.cpp
     InterfaceManifest.cpp
     Json.cpp
@@ -191,6 +193,9 @@ set(ComputeGraphTests
     test_fuzz_diff_graph_scratch_python.py
     test_fuzz_diff_regressions_python.py
     test_fuzz_diff_roundtrip_python.py
+    test_fuzz_diff_roundtrip_optimized_python.py
+    test_fuzz_diff_opt_levels_python.py
+    test_fuzz_diff_random_pipeline_rich_python.py
     test_fuzz_diff_region_identity_python.py
     test_fuzz_diff_cse_python.py
     test_fuzz_diff_replay_python.py
@@ -234,6 +239,7 @@ set(ComputeGraphTests
     test_hyp_largedim_diff_python.py
     test_hyp_largerank_diff_python.py
     test_hyp_spec_rejection_python.py
+    test_hyp_ir_mutation_python.py
     test_hyp_einsum_conj_python.py
     test_hyp_linalg_diff_python.py
     test_hyp_metamorphic_python.py

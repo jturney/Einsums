@@ -370,3 +370,49 @@ TEST_CASE("DeadNodeElimination - a declared result survives the pass", "[Compute
     CHECK(pass.num_eliminated() == 0);
     CHECK(pass.pruned_tensors().empty());
 }
+
+// Defends: a Materialize is kept while a surviving node writes its tensor. GEMMBatching folds the
+// dead product and the live one into one batched call, which keeps writing the dead product's
+// buffer; DeadNodeElimination used to judge that buffer's Materialize by "nothing reads it" alone,
+// removed it, and the batch then wrote through a deferred shell, so execute() threw. The default
+// order runs this pass before batching, which is why only a reordered pipeline reached it.
+TEST_CASE("DeadNodeElimination - keeps the Materialize a surviving batched GEMM writes through", "[ComputeGraph][Passes][GEMMBatching]") {
+    auto                    A     = create_random_tensor<double>("A", 2, 3);
+    auto                    B     = create_random_tensor<double>("B", 3, 3);
+    auto                    R     = create_random_tensor<double>("R", 2, 3);
+    Tensor<double, 2> const B_old = B;
+    Tensor<double, 2> const R_old = R;
+
+    cg::Graph graph("dne_batched_materialize");
+    auto     &dead = graph.scratch<double, 2>("dead", 2, 3);
+    auto     &live = graph.create_zero_tensor<double, 2>("live", 2, 3);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(0.5, &B);
+        cg::einsum("ik;kj->ij", &dead, A, B);
+        cg::einsum("ik;kj->ij", &live, A, B);
+        cg::axpy(1.0, live, &R);
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::GEMMBatching>();
+    pm.add<cg::passes::Materialization>();
+    pm.add<cg::passes::DeadNodeElimination>();
+    graph.apply(pm);
+    INFO(pm.explain());
+    // Not vacuous: the two products must really share one batched call.
+    REQUIRE(std::ranges::any_of(graph.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::BatchedGemm; }));
+
+    REQUIRE_NOTHROW(graph.execute());
+
+    auto B_half = create_zero_tensor<double>("B_half", 3, 3);
+    auto AB     = create_zero_tensor<double>("AB", 2, 3);
+    einsums::testing::reference_permute("ij <- ij", 0.0, &B_half, 0.5, B_old);
+    reference_einsum("ij <- ik ; kj", 0.0, &AB, 1.0, A, B_half);
+    auto R_ref = R_old;
+    einsums::testing::reference_permute("ij <- ij", 1.0, &R_ref, 1.0, AB);
+    for (size_t i = 0; i < R.size(); i++) {
+        INFO("element " << i);
+        CHECK(std::abs(R.data()[i] - R_ref.data()[i]) < 1e-12);
+    }
+}

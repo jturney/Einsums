@@ -291,18 +291,18 @@ bool TiledExpansion::run(Graph &graph) {
         nd.inputs.reserve(as_.size() * 2);
         nd.inputs.insert(nd.inputs.end(), as_.begin(), as_.end());
         nd.inputs.insert(nd.inputs.end(), bs.begin(), bs.end());
-        nd.outputs = {r};
-        Graph *g   = &graph;
-        nd.execute = [g, as_ = std::move(as_), bs = std::move(bs), r, conj, dt]() {
+        nd.outputs        = {r};
+        auto const anchor = graph.anchor();
+        nd.execute        = [anchor, as_ = std::move(as_), bs = std::move(bs), r, conj, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
                 T acc{0};
                 for (size_t i = 0; i < as_.size(); ++i) {
-                    auto const *ap = static_cast<Dense const *>(g->live_tensor_ptr(as_[i]));
-                    auto const *bp = static_cast<Dense const *>(g->live_tensor_ptr(bs[i]));
+                    auto const *ap = static_cast<Dense const *>(anchor->graph().live_tensor_ptr(as_[i]));
+                    auto const *bp = static_cast<Dense const *>(anchor->graph().live_tensor_ptr(bs[i]));
                     acc += conj ? linear_algebra::true_dot(*ap, *bp) : linear_algebra::dot(*ap, *bp);
                 }
-                auto *rp      = static_cast<Dense *>(g->live_tensor_ptr(r));
+                auto *rp      = static_cast<Dense *>(anchor->graph().live_tensor_ptr(r));
                 rp->data()[0] = acc;
             });
         };
@@ -363,17 +363,17 @@ bool TiledExpansion::run(Graph &graph) {
 
     auto emit_fused_scale = [&graph](std::vector<TensorId> tids, PrefactorScalar pf, packed_gemm::ScalarType dt, std::string label) {
         Node sc;
-        sc.id      = graph.reserve_node_id();
-        sc.kind    = OpKind::TileElementwise;
-        sc.label   = std::move(label);
-        sc.inputs  = tids;
-        sc.outputs = tids;
-        Graph *g   = &graph;
-        sc.execute = [g, tids = std::move(tids), pf, dt]() {
+        sc.id             = graph.reserve_node_id();
+        sc.kind           = OpKind::TileElementwise;
+        sc.label          = std::move(label);
+        sc.inputs         = tids;
+        sc.outputs        = tids;
+        auto const anchor = graph.anchor();
+        sc.execute        = [anchor, tids = std::move(tids), pf, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 bool const zero = is_zero(pf);
                 for (TensorId const tid : tids) {
-                    auto *t = static_cast<GeneralRuntimeTensor<T, std::allocator<T>> *>(g->live_tensor_ptr(tid));
+                    auto *t = static_cast<GeneralRuntimeTensor<T, std::allocator<T>> *>(anchor->graph().live_tensor_ptr(tid));
                     if (zero) {
                         t->zero();
                     } else {
@@ -393,14 +393,14 @@ bool TiledExpansion::run(Graph &graph) {
         nd.label  = std::move(label);
         nd.inputs = xs;
         nd.inputs.insert(nd.inputs.end(), ys.begin(), ys.end());
-        nd.outputs = ys;
-        Graph *g   = &graph;
-        nd.execute = [g, xs = std::move(xs), ys = std::move(ys), alpha, dt]() {
+        nd.outputs        = ys;
+        auto const anchor = graph.anchor();
+        nd.execute        = [anchor, xs = std::move(xs), ys = std::move(ys), alpha, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
                 for (size_t i = 0; i < xs.size(); ++i) {
-                    auto const *xptr = static_cast<Dense const *>(g->live_tensor_ptr(xs[i]));
-                    auto       *yptr = static_cast<Dense *>(g->live_tensor_ptr(ys[i]));
+                    auto const *xptr = static_cast<Dense const *>(anchor->graph().live_tensor_ptr(xs[i]));
+                    auto       *yptr = static_cast<Dense *>(anchor->graph().live_tensor_ptr(ys[i]));
                     linear_algebra::axpy(as<T>(alpha), *xptr, yptr);
                 }
             });
@@ -420,15 +420,15 @@ bool TiledExpansion::run(Graph &graph) {
         if (!is_zero(beta)) {
             nd.inputs.insert(nd.inputs.end(), cs.begin(), cs.end());
         }
-        nd.outputs = cs;
-        Graph *g   = &graph;
-        nd.execute = [g, as_ = std::move(as_), bs = std::move(bs), cs = std::move(cs), alpha, beta, dt]() {
+        nd.outputs        = cs;
+        auto const anchor = graph.anchor();
+        nd.execute        = [anchor, as_ = std::move(as_), bs = std::move(bs), cs = std::move(cs), alpha, beta, dt]() {
             detail::dispatch_scalar_type(dt, [&]<typename T>(T /*tag*/) {
                 using Dense = GeneralRuntimeTensor<T, std::allocator<T>>;
                 for (size_t i = 0; i < as_.size(); ++i) {
-                    auto const *aptr = static_cast<Dense const *>(g->live_tensor_ptr(as_[i]));
-                    auto const *bptr = static_cast<Dense const *>(g->live_tensor_ptr(bs[i]));
-                    auto       *cptr = static_cast<Dense *>(g->live_tensor_ptr(cs[i]));
+                    auto const *aptr = static_cast<Dense const *>(anchor->graph().live_tensor_ptr(as_[i]));
+                    auto const *bptr = static_cast<Dense const *>(anchor->graph().live_tensor_ptr(bs[i]));
+                    auto       *cptr = static_cast<Dense *>(anchor->graph().live_tensor_ptr(cs[i]));
                     linear_algebra::direct_division(as<T>(alpha), *aptr, *bptr, as<T>(beta), cptr);
                 }
             });
@@ -1315,17 +1315,17 @@ bool TiledExpansion::run(Graph &graph) {
         TensorId const buf_id = graph.register_tensor(make_handle(*buf, 0));
 
         Node g;
-        g.id      = graph.reserve_node_id();
-        g.kind    = OpKind::TileGather;
-        g.label   = fmt::format("tile_gather({})", what);
-        g.inputs  = ins;
-        g.outputs = {buf_id};
-        Graph *gp = &graph;
-        g.execute = [gp, buf, windows = std::move(windows)]() {
+        g.id              = graph.reserve_node_id();
+        g.kind            = OpKind::TileGather;
+        g.label           = fmt::format("tile_gather({})", what);
+        g.inputs          = ins;
+        g.outputs         = {buf_id};
+        auto const anchor = graph.anchor();
+        g.execute         = [anchor, buf, windows = std::move(windows)]() {
             buf->zero();
             T *dest = buf->data();
             for (auto const &w : windows) {
-                T const *tile = static_cast<Dense const *>(gp->live_tensor_ptr(w.id))->data();
+                T const *tile = static_cast<Dense const *>(anchor->graph().live_tensor_ptr(w.id))->data();
                 for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
                     T       *d = dest + buffer_offset;
                     T const *s = tile + tile_offset;
@@ -1369,13 +1369,13 @@ bool TiledExpansion::run(Graph &graph) {
                 sc.inputs.push_back(outs[i]);
             }
         }
-        sc.outputs = outs;
-        Graph *gp  = &graph;
-        sc.execute = [gp, bc, dsts = std::move(dsts), pfs = std::move(pfs)]() {
+        sc.outputs        = outs;
+        auto const anchor = graph.anchor();
+        sc.execute        = [anchor, bc, dsts = std::move(dsts), pfs = std::move(pfs)]() {
             T const *source = bc->data();
             for (size_t i = 0; i < dsts.size(); ++i) {
                 auto const &w    = dsts[i];
-                T          *tile = static_cast<Dense *>(gp->live_tensor_ptr(w.id))->data();
+                T          *tile = static_cast<Dense *>(anchor->graph().live_tensor_ptr(w.id))->data();
                 if (is_zero(pfs[i])) {
                     for_each_run(w, [&](size_t buffer_offset, size_t tile_offset) {
                         T const *s = source + buffer_offset;

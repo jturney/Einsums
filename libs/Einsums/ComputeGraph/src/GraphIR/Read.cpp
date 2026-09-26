@@ -590,6 +590,19 @@ IrTensor read_tensor(Fields const &record, bool manifest_entry) {
             fmt::format("rank is {} but {} index spaces are given; the annotation is all axes or none", out.rank, out.spaces.size()));
     }
 
+    // Optional: before 1.9.0 a rank-0 record was always a bare element, which is what an absent
+    // key still means.
+    if (Value const *kind = record.optional("rank0"); kind != nullptr) {
+        if (!kind->is_string() || (kind->as_string() != "tensor" && kind->as_string() != "scalar")) {
+            record.note("rank0", kind->position, R"(expected "tensor" or "scalar")");
+        } else if (out.rank != 0) {
+            record.note("rank0", kind->position,
+                        fmt::format("only a rank-0 record says what it holds, and this one has rank {}", out.rank));
+        } else {
+            out.rank0_tensor = kind->as_string() == "tensor";
+        }
+    }
+
     if (Value const *outer = record.optional("outer"); outer != nullptr) {
         if (!outer->is_int() || outer->as_int() < 0) {
             record.note("outer", outer->position, "expected a non-negative integer");

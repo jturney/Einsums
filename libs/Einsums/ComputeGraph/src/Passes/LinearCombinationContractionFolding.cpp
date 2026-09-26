@@ -400,7 +400,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         TensorId const        shared_id    = vg.key.shared_id;
         TensorId const        out_id       = vg.key.output_id;
         bool const            shared_first = vg.key.shared_is_first;
-        Graph                *graph_ptr    = &graph;
+        auto const            anchor       = graph.anchor();
 
         // Captured for the verbosity report below, before einspec is moved into the lambda.
         std::string const fold_out_indices = fmt::format("{}", fmt::join(einspec.c_indices, ","));
@@ -418,7 +418,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // node A has invariant inputs, a single writer, and a destination it does
         // not read, so LoopInvariantHoisting's existing criteria lift it out of
         // the loop with no changes to that pass.
-        auto build_l = [contribs = std::move(contribs), ab0, graph_ptr, nonshared_id, l_id, t_id, dtype]() {
+        auto build_l = [contribs = std::move(contribs), ab0, anchor, nonshared_id, l_id, t_id, dtype]() {
             detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
                 using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
                 // live_tensor_ptr, not tensor_ptr: B is a CAPTURED OPERAND, and
@@ -427,9 +427,9 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
                 // storage into a stand-in. Reading tensor_ptr here dereferenced
                 // the dead wrapper, so L came out zero and the fold returned zero
                 // while reporting success.
-                auto   *L     = static_cast<RT *>(graph_ptr->live_tensor_ptr(l_id));
-                auto   *B     = static_cast<RT *>(graph_ptr->live_tensor_ptr(nonshared_id));
-                auto   *Tt    = static_cast<RT *>(graph_ptr->live_tensor_ptr(t_id));
+                auto   *L     = static_cast<RT *>(anchor->graph().live_tensor_ptr(l_id));
+                auto   *B     = static_cast<RT *>(anchor->graph().live_tensor_ptr(nonshared_id));
+                auto   *Tt    = static_cast<RT *>(anchor->graph().live_tensor_ptr(t_id));
                 T const ab0_t = as<T>(ab0);
                 L->zero();
                 for (auto const &c : contribs) {

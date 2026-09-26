@@ -267,8 +267,12 @@ struct TensorHandle {
     std::vector<size_t>     strides;                                 ///< Stride of each dimension, in elements
     packed_gemm::ScalarType dtype{packed_gemm::ScalarType::Unknown}; ///< Element type enum for runtime dispatch
     bool                    is_intermediate{false};                  ///< True if this tensor is owned by the graph (from create_tensor())
-    bool                    is_tiled{false};   ///< True if a tile-wise sparse tensor (no single contiguous data() buffer)
-    bool                    is_runtime{false}; ///< True if tensor_ptr points at a GeneralRuntimeTensor<T> (passes that cast tensor_ptr to a
+    bool                    is_tiled{false}; ///< True if a tile-wise sparse tensor (no single contiguous data() buffer)
+    /// True when @ref tensor_ptr points at a bare element (the ``T *`` a returning-form op such as
+    /// a dot writes through) rather than at a tensor object. Rank 0 either way, and the two are not
+    /// interchangeable: an executor built for one writes through the pointer as the other.
+    bool raw_scalar{false};
+    bool is_runtime{false}; ///< True if tensor_ptr points at a GeneralRuntimeTensor<T> (passes that cast tensor_ptr to a
                             ///< runtime-tensor type MUST gate on this: statically-typed Tensor<T, Rank> captures pass through
                             ///< the same handles, and a blind cast is type confusion)
     /// True when @ref tensor_ptr points at a @c RuntimeTensorView<T> rather than at an owning
@@ -987,6 +991,7 @@ TensorHandle make_scalar_handle(T *scalar, TensorId id, std::string name = "scal
     h.rank         = 0;
     h.element_size = sizeof(T);
     h.dtype        = packed_gemm::get_scalar_type<T>();
+    h.raw_scalar   = true;
 
     // Enable allreduce on scalar results from distributed computations
     h.allreduce_sum_fn = [scalar]() {

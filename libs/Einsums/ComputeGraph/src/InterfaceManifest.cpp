@@ -458,9 +458,18 @@ void Graph::bind_scalar_impl(std::string const &name, void *storage, packed_gemm
     }
 
     TensorHandle &handle = tensor(entry.id);
-    handle.tensor_ptr    = storage;
-    handle.data_ptr      = storage;
-    handle.element_size  = element_size;
+    // A rank-0 TENSOR slot is read and written as a tensor object, so a bare element bound there
+    // would be decoded as one.
+    if (!handle.raw_scalar) {
+        EINSUMS_THROW_EXCEPTION(
+            std::invalid_argument,
+            "Graph '{}': bind_scalar('{}'): that slot holds a rank-0 tensor, not a bare scalar; bind a rank-0 tensor to "
+            "it with bind()",
+            _name, name);
+    }
+    handle.tensor_ptr   = storage;
+    handle.data_ptr     = storage;
+    handle.element_size = element_size;
     // The interface name is what the contract is written in; pin it exactly as
     // rebind() does, so a second bind_scalar of the same slot still finds it.
     _interface_names.emplace(entry.id, entry.name);

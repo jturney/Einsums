@@ -62,9 +62,13 @@ void Graph::declare_alias(TensorId child, TensorId parent) {
     if (child == 0 || parent == 0 || child == parent) {
         return;
     }
+    // An unknown id is a caller's mistake, and ignoring it would drop the hazard edges the
+    // declaration exists to add: two tensors sharing storage would then be scheduled as if they
+    // did not.
     auto *child_handle = find_tensor(child);
     if (child_handle == nullptr || !_tensors.contains(parent)) {
-        return;
+        EINSUMS_THROW_EXCEPTION(std::invalid_argument, "Graph '{}': declare_alias({}, {}) names a tensor this graph does not have: {}",
+                                _name, child, parent, child_handle == nullptr ? child : parent);
     }
     // A cycle would turn every later resolve_alias into a throw, and the message
     // there is about a corrupt link rather than about the declaration that made

@@ -310,6 +310,15 @@ TEST_CASE("redirect_slot refuses tensors of different element types", "[ComputeG
     auto const            f_id = graph.register_tensor(cg::make_handle(F, 0));
     auto const            d_id = graph.register_tensor(cg::make_handle(D, 0));
     auto const            e_id = graph.register_tensor(cg::make_handle(E, 0));
+
+    // Without slots there is nothing to repoint, and a redirect that quietly did nothing left a
+    // pass-built reader on a buffer no node wrote; it is refused instead.
+    CHECK_FALSE(graph.has_slot(d_id));
+    CHECK_THROWS_AS(graph.redirect_slot(d_id, e_id), std::logic_error);
+
+    graph.get_or_create_slot(F, f_id);
+    graph.get_or_create_slot(D, d_id);
+    graph.get_or_create_slot(E, e_id);
     CHECK_THROWS_AS(graph.redirect_slot(d_id, f_id), std::logic_error);
     CHECK_NOTHROW(graph.redirect_slot(d_id, e_id));
 }

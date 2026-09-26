@@ -106,81 +106,113 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
         std::vector<bool> dead(n, false);
         size_t            eliminated_here = 0;
 
-        for (size_t idx = 0; idx < n; idx++) {
-            auto const &node = nodes[idx];
+        // A Materialize or Initialize prepares a buffer for whoever writes it, so it is decided
+        // AFTER the value nodes and kept while any surviving one touches its tensor. Judged like a
+        // value node it looked dead whenever the tensor went unread, which is also true of a
+        // tensor a surviving node still writes: a batched GEMM whose one call covers a dead
+        // product and a live one keeps writing the dead product's buffer, and removing that
+        // buffer's Materialize left the batch writing through a deferred shell.
+        auto const                   prepares = [](OpKind kind) { return kind == OpKind::Materialize || kind == OpKind::Initialize; };
+        std::unordered_set<TensorId> touched_by_survivors;
 
-            // Never eliminate control flow or memory nodes
-            if (is_control_flow(node.kind) || node.kind == OpKind::Alloc || node.kind == OpKind::Free) {
-                continue;
-            }
-
-            // Node with no outputs is side-effect only (e.g., scale), keep it
-            if (node.outputs.empty()) {
-                continue;
-            }
-
-            // Check if all outputs are dead (intermediate + not consumed here + not
-            // used by a child body + not referenced from outside this graph).
-            // Resolve each output through view aliases to its owning buffer: a
-            // write through a view of T is dead only if T itself is, otherwise
-            // removing it would drop a partial update to a live tensor (the view
-            // tid is an unread intermediate, but the owner is what counts).
-            bool all_outputs_dead = true;
-            for (auto raw_tid : node.outputs) {
-                TensorId const tid             = graph.resolve_alias(raw_tid);
-                bool const     is_intermediate = intermediate_tensors.contains(tid);
-                bool const     is_consumed     = consumed_tensors.contains(tid);
-
-                bool used_by_subgraph = false;
-                bool used_externally  = false;
-                if (auto const *handle = graph.find_tensor(tid); handle != nullptr && handle->tensor_ptr != nullptr) {
-                    used_by_subgraph = subtree_referenced.contains(handle->tensor_ptr);
-                    // Any reference from an enclosing graph (a parent node after
-                    // this control-flow child, or a sibling loop body) keeps this
-                    // output live. Conservative on purpose: a body tensor read
-                    // only by an outside consumer must not have its producer
-                    // eliminated, that would leave the reader observing unwritten
-                    // storage.
-                    used_externally = external_refs.contains(handle->tensor_ptr);
-                }
-
-                if (!is_intermediate || is_consumed || used_by_subgraph || used_externally) {
-                    all_outputs_dead = false;
-                    break;
+        for (int phase = 0; phase < 2; phase++) {
+            if (phase == 1) {
+                for (size_t idx = 0; idx < n; idx++) {
+                    if (dead[idx] || is_lifecycle(nodes[idx].kind)) {
+                        continue;
+                    }
+                    for (auto tid : nodes[idx].inputs) {
+                        touched_by_survivors.insert(graph.resolve_alias(tid));
+                    }
+                    for (auto tid : nodes[idx].outputs) {
+                        touched_by_survivors.insert(graph.resolve_alias(tid));
+                    }
                 }
             }
+            for (size_t idx = 0; idx < n; idx++) {
+                auto const &node = nodes[idx];
 
-            if (all_outputs_dead) {
-                dead[idx] = true;
-                eliminated_here++;
+                // Never eliminate control flow or memory nodes
+                if (is_control_flow(node.kind) || node.kind == OpKind::Alloc || node.kind == OpKind::Free) {
+                    continue;
+                }
+                if (prepares(node.kind) != (phase == 1)) {
+                    continue;
+                }
+                if (phase == 1 && std::ranges::any_of(node.outputs, [&](TensorId tid) {
+                        return touched_by_survivors.contains(graph.resolve_alias(tid));
+                    })) {
+                    continue;
+                }
 
-                // Name what is being dropped, not just how much. A node removed here wrote a
-                // tensor nothing in the graph reads, which is both the intended case and what a
-                // caller sees who created a result with the scratch-defaulted creator: the
-                // answer disappears and the buffer keeps whatever it held. Recording the names
-                // is what lets explain() say which tensor went, instead of leaving a node count
-                // to be bisected.
-                //
-                // Only the names that will be shown are kept; the rest are counted. A graph that
-                // drops ten thousand intermediates then costs a counter rather than ten thousand
-                // strings and a quadratic dedup scan over them.
+                // Node with no outputs is side-effect only (e.g., scale), keep it
+                if (node.outputs.empty()) {
+                    continue;
+                }
+
+                // Check if all outputs are dead (intermediate + not consumed here + not
+                // used by a child body + not referenced from outside this graph).
+                // Resolve each output through view aliases to its owning buffer: a
+                // write through a view of T is dead only if T itself is, otherwise
+                // removing it would drop a partial update to a live tensor (the view
+                // tid is an unread intermediate, but the owner is what counts).
+                bool all_outputs_dead = true;
                 for (auto raw_tid : node.outputs) {
-                    auto const *handle = graph.find_tensor(graph.resolve_alias(raw_tid));
-                    if (handle == nullptr || handle->name.empty()) {
-                        continue;
+                    TensorId const tid             = graph.resolve_alias(raw_tid);
+                    bool const     is_intermediate = intermediate_tensors.contains(tid);
+                    bool const     is_consumed     = consumed_tensors.contains(tid);
+
+                    bool used_by_subgraph = false;
+                    bool used_externally  = false;
+                    if (auto const *handle = graph.find_tensor(tid); handle != nullptr && handle->tensor_ptr != nullptr) {
+                        used_by_subgraph = subtree_referenced.contains(handle->tensor_ptr);
+                        // Any reference from an enclosing graph (a parent node after
+                        // this control-flow child, or a sibling loop body) keeps this
+                        // output live. Conservative on purpose: a body tensor read
+                        // only by an outside consumer must not have its producer
+                        // eliminated, that would leave the reader observing unwritten
+                        // storage.
+                        used_externally = external_refs.contains(handle->tensor_ptr);
                     }
-                    if (std::ranges::find(_pruned_tensors, handle->name) != _pruned_tensors.end()) {
-                        continue;
-                    }
-                    if (_pruned_tensors.size() < max_reported_tensors) {
-                        _pruned_tensors.push_back(handle->name);
-                    } else {
-                        _pruned_unreported++;
+
+                    if (!is_intermediate || is_consumed || used_by_subgraph || used_externally) {
+                        all_outputs_dead = false;
+                        break;
                     }
                 }
 
-                EINSUMS_LOG_INFO("DeadNodeElimination: removing dead node {} ({})", node.id, node.label);
-                report(2, fmt::format("remove dead node {} ({}), outputs never consumed", node.id, node.label));
+                if (all_outputs_dead) {
+                    dead[idx] = true;
+                    eliminated_here++;
+
+                    // Name what is being dropped, not just how much. A node removed here wrote a
+                    // tensor nothing in the graph reads, which is both the intended case and what a
+                    // caller sees who created a result with the scratch-defaulted creator: the
+                    // answer disappears and the buffer keeps whatever it held. Recording the names
+                    // is what lets explain() say which tensor went, instead of leaving a node count
+                    // to be bisected.
+                    //
+                    // Only the names that will be shown are kept; the rest are counted. A graph that
+                    // drops ten thousand intermediates then costs a counter rather than ten thousand
+                    // strings and a quadratic dedup scan over them.
+                    for (auto raw_tid : node.outputs) {
+                        auto const *handle = graph.find_tensor(graph.resolve_alias(raw_tid));
+                        if (handle == nullptr || handle->name.empty()) {
+                            continue;
+                        }
+                        if (std::ranges::find(_pruned_tensors, handle->name) != _pruned_tensors.end()) {
+                            continue;
+                        }
+                        if (_pruned_tensors.size() < max_reported_tensors) {
+                            _pruned_tensors.push_back(handle->name);
+                        } else {
+                            _pruned_unreported++;
+                        }
+                    }
+
+                    EINSUMS_LOG_INFO("DeadNodeElimination: removing dead node {} ({})", node.id, node.label);
+                    report(2, fmt::format("remove dead node {} ({}), outputs never consumed", node.id, node.label));
+                }
             }
         }
 

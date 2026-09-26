@@ -52,6 +52,23 @@ P_SHAPES = [
 ]
 
 
+def shaped_operator(shape_index, chosen):
+    """The operator of row ``shape_index`` with ``chosen[p]`` standing for placeholder ``p``.
+
+    The groups are derived from the row rather than passed alongside it, so a
+    caller cannot hand the spelling one partition and the oracle another.
+    """
+    chosen = tuple(chosen)
+    groups_shape, _ = P_SHAPES[shape_index]
+    assert len(chosen) == sum(len(g) for g in groups_shape), (shape_index, chosen)
+    return (tuple(tuple(chosen[p] for p in g) for g in groups_shape), shape_index, chosen)
+
+
+def operator_size(shape_index):
+    """How many letters row ``shape_index`` permutes."""
+    return sum(len(g) for g in P_SHAPES[shape_index][0])
+
+
 def operator_prefix(op):
     """The ``P(a/bc) `` spelling, empty when there is no operator.
 

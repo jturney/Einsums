@@ -343,6 +343,19 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      */
     [[nodiscard]] virtual bool raises_grouped() const { return false; }
 
+    /**
+     * @brief Whether this pass may have nodes that apply permutation operators raised into its regions.
+     *
+     * Off by default, which keeps such a node a barrier: the regions on either side of it are
+     * still formed and rewritten, and only a rewrite spanning it is given up. A client that opts
+     * in sees the operators on @ref ExprStatement::operators and must keep the rules stated
+     * there: never inline a statement that carries operators into another product, never merge
+     * values under different operators, and rename an operator's letters with the target's.
+     *
+     * @return True when the pass keeps those rules.
+     */
+    [[nodiscard]] virtual bool raises_operators() const { return false; }
+
   private:
     /// Record a region turned away, counting the reason for the structural report as well as
     /// for the skip tally. One call rather than two statements at each site, because the two
@@ -431,6 +444,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// numbers or a different node set says the raise and the lowering
     /// disagree about what the family computes.
     [[nodiscard]] bool raises_grouped() const override { return true; }
+
+    /// @copydoc RegionRewrite::raises_operators
+    /// True, for the same reason: a region holding a P(ij) node that comes back different says
+    /// the raise and the lowering disagree about where its operators go.
+    [[nodiscard]] bool raises_operators() const override { return true; }
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

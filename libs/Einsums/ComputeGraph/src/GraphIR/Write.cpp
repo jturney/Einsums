@@ -543,6 +543,14 @@ void write_shape(Object &out, packed_gemm::ScalarType dtype, std::size_t rank, s
     }
 }
 
+/// Whether a rank-0 record is a tensor object or a bare element, which rank alone cannot say
+/// and a loader must know to rebuild the right one. Nothing for any other rank.
+void write_rank0_kind(Object &out, std::size_t rank, TensorHandle const *handle) {
+    if (rank == 0) {
+        out.set("rank0", Value{handle != nullptr && !handle->raw_scalar ? "tensor" : "scalar"});
+    }
+}
+
 /// One tensor's storage-side record.
 Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t dense, Frame const &frame) {
     require_storable_dtype(handle.name, handle.dtype);
@@ -556,6 +564,7 @@ Value write_tensor(Graph const &graph, TensorHandle const &handle, std::size_t d
                 // build. The reader turns an empty name back into an unannotated axis.
                 to_array(handle.spaces, [&graph](SpaceId space) { return Value{graph.space_registry().name_of(space)}; }),
                 handle.spaces_inferred, &handle.tag);
+    write_rank0_kind(out, handle.rank, &handle);
     out.set("intermediate", Value{handle.is_intermediate});
     out.set("scope", Value{tensor_ownership_name(handle.ownership)});
     out.set("init", Value{init_kind_name(handle.init_kind)});
@@ -773,6 +782,7 @@ Object write_structure(Graph const &graph) {
         TensorHandle const *handle = graph.find_tensor(entry.id);
         write_shape(record, entry.dtype, entry.rank, entry.dims, entry.dim_symbols, to_array(entry.spaces), entry.spaces_inferred,
                     handle != nullptr ? &handle->tag : nullptr);
+        write_rank0_kind(record, entry.rank, handle);
         record.set("scope", Value{tensor_ownership_name(entry.scope)});
 
         // By NAME, never by id: an alias declaration is part of the interface

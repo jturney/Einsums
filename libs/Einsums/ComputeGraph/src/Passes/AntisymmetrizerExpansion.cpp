@@ -20,6 +20,8 @@
 #include <utility>
 #include <vector>
 
+#include "ExprHelpers.hpp"
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 std::vector<std::string> AntisymmetrizerExpansion::explain() const {
@@ -86,9 +88,9 @@ bool AntisymmetrizerExpansion::run(Graph &graph) {
                 continue;
             }
         }
-        // Copied, not referenced: create_zero_runtime_tensor_dynamic below
-        // appends an Alloc node and may reallocate the node vector, which would
-        // dangle anything held into it across the call.
+        // Copied, not referenced: declaring the scratch below registers a tensor
+        // and may reallocate what the graph holds, which would dangle anything
+        // held into it across the call.
         TensorId const a_id = graph.nodes()[index].inputs[0];
         TensorId const b_id = graph.nodes()[index].inputs[1];
         TensorId const c_id = graph.nodes()[index].outputs[0];
@@ -130,13 +132,16 @@ bool AntisymmetrizerExpansion::run(Graph &graph) {
             continue;
         }
 
-        auto scratch =
-            graph.create_zero_runtime_tensor_dynamic(fmt::format("_asym_{}_{}", name(), _num_expanded), c_handle->dtype, c_handle->dims);
-        if (!scratch) {
+        // A deferred intermediate, like every structural pass's scratch. An eager one arrived with
+        // an Alloc node, which a save refuses, so the structural phase the save flow documents
+        // could not save the plainest antisymmetrized contraction. The contraction below
+        // overwrites it, so it needs no zeroing, and Materialization gives it storage.
+        TensorId const tmp_id =
+            expr::declare_scratch(graph, fmt::format("_asym_{}_{}", name(), _num_expanded), c_handle->dtype, c_handle->dims);
+        if (tmp_id == 0) {
             skip("a temporary shaped like the destination could not be created", index);
             continue;
         }
-        TensorId const tmp_id = scratch.value().first;
 
         std::vector<Node> group;
         group.reserve(terms.size() + 1);
@@ -185,9 +190,8 @@ bool AntisymmetrizerExpansion::run(Graph &graph) {
         return false;
     }
 
-    // The mask is sized to the ORIGINAL prefix; the Alloc nodes the scratch
-    // creation appended sit past its end and are kept, which is the behaviour
-    // Graph::replace_nodes documents and which every planning pass relies on.
+    // The mask is sized to the ORIGINAL prefix, which is the node list the
+    // positions above index; Graph::replace_nodes documents the contract.
     graph.replace_nodes(remove, std::move(inserts));
     graph.topological_sort();
     return true;

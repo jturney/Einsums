@@ -22,6 +22,7 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/ComputeGraph/GraphIR.hpp>
+#include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/TensorUtilities/CreateIdentity.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
@@ -837,4 +838,135 @@ TEST_CASE("a graph with no declared disjointness never forms a region", "[Comput
     pm.add(pass);
     CHECK_FALSE(pm.run(graph));
     CHECK(pass->regions_formed() == 0);
+}
+
+namespace {
+
+/// ``C := P(i/j) X`` over a square rank-2 tensor: the value less its transpose, entry by entry,
+/// with no code shared with either engine.
+std::vector<double> antisymmetrized(Tensor<double, 2> const &value) {
+    std::vector<double> out;
+    out.reserve(value.dim(0) * value.dim(1));
+    for (std::size_t i = 0; i < value.dim(0); ++i) {
+        for (std::size_t j = 0; j < value.dim(1); ++j) {
+            out.push_back(value(i, j) - value(j, i));
+        }
+    }
+    return out;
+}
+
+bool has_operator_permute(cg::Graph const &graph) {
+    return std::ranges::any_of(graph.nodes(), [](cg::Node const &node) {
+        auto const *permute = node.op_data.get_if<cg::PermuteDescriptor>();
+        return node.kind == cg::OpKind::Permute && permute != nullptr && !permute->operators.empty();
+    });
+}
+
+} // namespace
+
+// Defends: a delta contraction under an operator still becomes a permute, and the permute carries
+// the operator. Before operators reached this pass the node was a barrier; now it is raised, and
+// a permute that dropped the operator would write A where the program asked for A less its
+// transpose.
+TEST_CASE("a delta contraction under a permutation operator keeps a permute that carries it",
+          "[ComputeGraph][DeltaElimination][PermutationOperators]") {
+    auto A     = create_random_tensor<double>("A", 5, 5);
+    auto delta = create_identity_tensor<double>("delta", 5, 5);
+    auto C     = create_zero_tensor<double>("C", 5, 5);
+
+    auto const build = [&](cg::Graph &graph) {
+        graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &C, 1.0, A, delta);
+    };
+
+    auto const pass = require_within_ulps(build, [&] { C.zero(); }, [&] { return flatten(C); });
+    CHECK(pass->num_eliminated() == 1);
+    CHECK(pass->num_dissolved() == 0);
+
+    cg::Graph after("after");
+    build(after);
+    cg::PassManager pm;
+    pm.add(std::make_shared<cg::passes::DeltaElimination>());
+    REQUIRE(pm.run(after));
+    CHECK(has_operator_permute(after));
+
+    C.zero();
+    after.execute();
+    auto const expected = antisymmetrized(A);
+    auto const actual   = flatten(C);
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        INFO("element " << i);
+        CHECK(actual[i] == expected[i]);
+    }
+}
+
+// Defends: an intermediate under an operator is not dissolved. Its target holds the operand less
+// its transpose, so handing the reader the operand in its place would drop the operator.
+TEST_CASE("an intermediate under a permutation operator is not dissolved", "[ComputeGraph][DeltaElimination][PermutationOperators]") {
+    auto A     = create_random_tensor<double>("A", 4, 4);
+    auto delta = create_identity_tensor<double>("delta", 4, 4);
+    auto D     = create_random_tensor<double>("D", 4, 3);
+    auto C     = create_zero_tensor<double>("C", 4, 3);
+
+    auto const build = [&](cg::Graph &graph) {
+        graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
+        auto                  &tmp = graph.create_zero_tensor<double, 2>("tmp", 4, 4);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &tmp, 1.0, A, delta);
+        cg::einsum("i,l <- i,j ; j,l", 0.0, &C, 1.0, tmp, D);
+    };
+
+    auto const pass = require_within_ulps(build, [&] { C.zero(); }, [&] { return flatten(C); });
+    CHECK(pass->num_eliminated() == 1);
+    CHECK(pass->num_dissolved() == 0);
+
+    // Against the operator applied by hand: C = (A - A^T) D.
+    auto const skew = antisymmetrized(A);
+    for (std::size_t i = 0; i < 4; ++i) {
+        for (std::size_t l = 0; l < 3; ++l) {
+            double expected = 0.0;
+            for (std::size_t j = 0; j < 4; ++j) {
+                expected += skew[i * 4 + j] * D(j, l);
+            }
+            INFO("element (" << i << "," << l << ")");
+            CHECK(std::abs(C(i, l) - expected) <= 1e-13 * std::max(1.0, std::abs(expected)));
+        }
+    }
+}
+
+// Defends: a zero block under an operator. Every permutation of zero is zero, so what is left is
+// the destination's prefactor alone, and the Scale the statement becomes must not try to carry an
+// operator no Scale can apply.
+TEST_CASE("a contraction over disjoint spaces under a permutation operator keeps only its prefactor",
+          "[ComputeGraph][DeltaElimination][Spaces][PermutationOperators]") {
+    DisjointSpaces spaces;
+
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_zero_tensor<double>("B", 4, 4);
+    auto C = create_random_tensor<double>("C", 4, 4);
+
+    std::vector<double> const seed(C.data(), C.data() + C.size());
+
+    cg::Graph graph("zero_block_operator");
+    graph.set_space_registry(spaces.registry);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- P(i/j) i,k ; k,j", 2.0, &C, 1.0, A, B);
+    }
+    graph.annotate_spaces(A, {spaces.aux, spaces.occ});
+    graph.annotate_spaces(B, {spaces.virt, spaces.aux});
+
+    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
+    cg::PassManager pm;
+    pm.add(pass);
+    REQUIRE(pm.run(graph));
+    CHECK(pass->num_zero_blocks() == 1);
+    CHECK(std::ranges::none_of(graph.nodes(), [](cg::Node const &node) { return cg::passes::carries_permutation_operators(node); }));
+
+    graph.execute();
+    for (std::size_t i = 0; i < seed.size(); ++i) {
+        INFO("element " << i);
+        CHECK(C.data()[i] == 2.0 * seed[i]);
+    }
 }

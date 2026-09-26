@@ -334,7 +334,8 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
                         replacement.operand_indices.push_back(statement.target_indices);
                     }
 
-                    statement.value            = expr.add(std::move(replacement));
+                    statement.value = expr.add(std::move(replacement));
+                    statement.operators.clear(); // every permutation of zero is zero
                     statement.origin_kind      = OpKind::Scale;
                     statement.target_prefactor = overwritten ? PrefactorScalar{double{0}} : PrefactorScalar{double{1}};
                     statement.origin_label     = fmt::format("scale: '{}' keeps only its own prefactor", statement.target_name);
@@ -421,9 +422,11 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
             // statement is the target's only writer here. Anything less and the target still has
             // to be produced, so a permute is emitted instead.
             bool const internal = std::ranges::find(region.internal, statement.target) != region.internal.end();
-            bool const plain_copy =
-                same_letters_in_order(renamed, statement.target_indices) && is_one(term.factor) && is_zero(statement.target_prefactor);
-            std::size_t writers = 0;
+            // Operators make the target a signed sum of permuted copies of the operand, which no
+            // reader may be handed the operand in place of.
+            bool const  plain_copy = same_letters_in_order(renamed, statement.target_indices) && is_one(term.factor) &&
+                                     is_zero(statement.target_prefactor) && statement.operators.empty();
+            std::size_t writers    = 0;
             for (auto const &other_statement : expr.statements) {
                 if (other_statement.target == statement.target && other_statement.value != invalid_term) {
                     ++writers;
@@ -450,6 +453,7 @@ bool DeltaElimination::rewrite(Graph &graph, Region const &region, TensorExpr &e
                 permute.c_indices = expr::letter_list(statement.target_indices);
                 permute.alpha     = as<std::complex<double>>(term.factor);
                 permute.beta      = as<std::complex<double>>(statement.target_prefactor);
+                permute.operators = statement.operators;
 
                 ExprTerm replacement;
                 replacement.kind         = TermKind::Elementwise;

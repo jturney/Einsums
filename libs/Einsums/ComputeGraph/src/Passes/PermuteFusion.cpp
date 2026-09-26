@@ -144,13 +144,37 @@ bool PermuteFusion::run(Graph &graph) {
         for (auto tid : nodes[nd].outputs)
             producer[tid] = nd;
 
-    // consumer_count[tid] = how many nodes read tensor tid. Needed so
-    // we only fuse when the permute's output has EXACTLY one consumer
-    // otherwise removing the permute would break other readers.
-    std::unordered_map<TensorId, size_t> consumer_count;
-    for (auto const &n : nodes)
-        for (auto tid : n.inputs)
-            consumer_count[tid]++;
+    // The buffer a tensor id lands in: through a view to its parent, and through a slot redirect
+    // to the tensor whose storage it now shares (CSE merges two ids that way). Two ids with the
+    // same buffer are one tensor to every question below, and asking by id is how an earlier
+    // version fused a permute whose output another node still wrote under a different name.
+    auto const &redirects = graph.slot_redirects();
+    auto const  buffer_of = [&](TensorId id) {
+        for (std::size_t hop = 0; hop <= redirects.size(); hop++) {
+            TensorId const root = graph.resolve_alias(id);
+            auto const     next = redirects.find(root);
+            if (next == redirects.end()) {
+                return root;
+            }
+            id = next->second;
+        }
+        return graph.resolve_alias(id);
+    };
+
+    // Readers and value writers of every buffer, by node position. The permute's output has to
+    // have exactly one of each, the permute and its consumer: removing the permute leaves the
+    // buffer unwritten, and the redirect below hands the source's storage to EVERY id sharing it,
+    // so another writer would write into the caller's tensor and another reader would read it.
+    std::unordered_map<TensorId, std::vector<size_t>> readers;
+    std::unordered_map<TensorId, std::vector<size_t>> writers;
+    for (size_t nd = 0; nd < nodes.size(); nd++) {
+        for (auto tid : nodes[nd].inputs)
+            readers[buffer_of(tid)].push_back(nd);
+        if (is_lifecycle(nodes[nd].kind))
+            continue;
+        for (auto tid : nodes[nd].outputs)
+            writers[buffer_of(tid)].push_back(nd);
+    }
 
     auto const        guard = EscapeAnalysis::over(graph);
     std::vector<bool> remove(nodes.size(), false);
@@ -191,11 +215,39 @@ bool PermuteFusion::run(Graph &graph) {
             // Safety: exactly one consumer. If the permuted tensor is
             // read by multiple downstream nodes, removing the permute
             // would break them.
-            if (consumer_count[input_tid] != 1) {
+            TensorId const permuted     = buffer_of(input_tid);
+            auto const     reader_count = readers[permuted].size();
+            if (reader_count != 1) {
                 EINSUMS_LOG_INFO("PermuteFusion: skip {} (node {}): {} consumers, need exactly 1", nodes[prod_idx].label,
-                                 nodes[prod_idx].id, consumer_count[input_tid]);
+                                 nodes[prod_idx].id, reader_count);
                 note_skip("permuted tensor has more than one consumer, so the permute cannot be removed",
-                          fmt::format("permute node {} has {} consumers", nodes[prod_idx].id, consumer_count[input_tid]));
+                          fmt::format("permute node {} has {} consumers", nodes[prod_idx].id, reader_count));
+                continue;
+            }
+            if (writers[permuted].size() != 1) {
+                note_skip("something besides the permute writes the permuted tensor, and the redirect would send that write into the "
+                          "permute's source",
+                          fmt::format("permute node {}: {} writers", nodes[prod_idx].id, writers[permuted].size()));
+                continue;
+            }
+
+            // The consumer will read the source where it stands rather than where the permute
+            // read it, so the source must hold the same value at both places: nothing between
+            // may write it, a control-flow node's hidden writes included, and the consumer must
+            // not write it either, or the fused node would read and write one buffer.
+            TensorId const source = buffer_of(nodes[prod_idx].inputs[0]);
+            bool           moved  = false;
+            for (size_t between = prod_idx + 1; between < nd && !moved; between++) {
+                moved = is_control_flow(nodes[between].kind) ||
+                        std::ranges::any_of(nodes[between].outputs, [&](TensorId out) { return buffer_of(out) == source; });
+            }
+            if (moved) {
+                note_skip("the permute's source is written between the permute and its consumer",
+                          fmt::format("permute node {}", nodes[prod_idx].id));
+                continue;
+            }
+            if (std::ranges::any_of(nodes[nd].outputs, [&](TensorId out) { return buffer_of(out) == source; })) {
+                note_skip("the consumer writes the permute's source", fmt::format("permute node {}", nodes[prod_idx].id));
                 continue;
             }
 

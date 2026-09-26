@@ -402,6 +402,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// declares a shared intermediate carrying a member letter per member.
     [[nodiscard]] bool raises_grouped() const override { return true; }
 
+    /// @copydoc RegionRewrite::raises_operators
+    /// True. An operator acts on the finished value, so re-bracketing the product under it is
+    /// free. A statement carrying one is never folded into a consumer and never serves as a
+    /// shared intermediate, since its target holds the permuted value rather than the product,
+    /// and the outermost combine of its re-bracketed tree carries the operators again.
+    [[nodiscard]] bool raises_operators() const override { return true; }
+
   private:
     /// @brief A cached plan's identity: which graph, which region of it, under which caps.
     ///

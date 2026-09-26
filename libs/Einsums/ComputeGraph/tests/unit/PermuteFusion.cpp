@@ -14,6 +14,9 @@
 
 #include <Einsums/Testing.hpp>
 
+using einsums::testing::reference_einsum;
+using einsums::testing::reference_permute;
+
 using namespace einsums;
 namespace cg = einsums::compute_graph;
 
@@ -527,4 +530,118 @@ TEST_CASE("PermuteFusion: skip when a loop body reads the permute output", "[Com
     auto D_ref = create_zero_tensor<double>("D_ref", 3, 5);
     einsums::testing::reference_einsum("ik <- ij ; jk", 0.0, &D_ref, 1.0, A, B);
     require_close(D, D_ref);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Soundness of the source and the redirect
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Defends: the fused einsum reads the permute's source where the EINSUM stands, not where the
+// permute stood. A write to the source between the two used to go unnoticed, so C came out as
+// (X Y)^T B instead of A^T B; the fuzzers reached it through Reorder moving an unrelated writer of
+// A into the gap, and it survived O1, O2 and the default pipeline.
+TEST_CASE("PermuteFusion: skip when the source is written between the permute and its consumer",
+          "[ComputeGraph][Optimizer][PermuteFusion]") {
+    auto                    A     = create_random_tensor<double>("A", 4, 4);
+    auto                    X     = create_random_tensor<double>("X", 4, 3);
+    auto                    Y     = create_random_tensor<double>("Y", 3, 4);
+    auto                    B     = create_random_tensor<double>("B", 4, 2);
+    auto                    C     = create_zero_tensor<double>("C", 4, 2);
+    Tensor<double, 2> const A_old = A;
+
+    cg::Graph graph("pf_source_written");
+    auto     &S = graph.create_zero_tensor<double, 2>("S", 4, 4);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::permute("ji <- ij", &S, A);
+        cg::einsum("ik;kj->ij", &A, X, Y);
+        cg::einsum("ik;kj->ij", &C, S, B);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::PermuteFusion>();
+    CHECK_FALSE(modified);
+    CHECK(pass.num_rewrites() == 0);
+    graph.execute();
+
+    auto S_ref = create_zero_tensor<double>("S_ref", 4, 4);
+    auto C_ref = create_zero_tensor<double>("C_ref", 4, 2);
+    reference_permute("ji <- ij", 0.0, &S_ref, 1.0, A_old);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, S_ref, B);
+    require_close(C, C_ref);
+}
+
+// Defends: fusing redirects the scratch's slot at the source, which moves EVERY write through that
+// slot into the caller's tensor. An earlier writer of the scratch therefore wrote X Y into A.
+TEST_CASE("PermuteFusion: skip when something else writes the permuted scratch", "[ComputeGraph][Optimizer][PermuteFusion]") {
+    auto                    A     = create_random_tensor<double>("A", 4, 4);
+    auto                    X     = create_random_tensor<double>("X", 4, 3);
+    auto                    Y     = create_random_tensor<double>("Y", 3, 4);
+    auto                    B     = create_random_tensor<double>("B", 4, 2);
+    auto                    C     = create_zero_tensor<double>("C", 4, 2);
+    Tensor<double, 2> const A_old = A;
+
+    cg::Graph graph("pf_second_writer");
+    auto     &S = graph.create_zero_tensor<double, 2>("S", 4, 4);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &S, X, Y);
+        cg::permute("ji <- ij", &S, A);
+        cg::einsum("ik;kj->ij", &C, S, B);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::PermuteFusion>();
+    CHECK_FALSE(modified);
+    graph.execute();
+
+    require_close(A, A_old);
+    auto S_ref = create_zero_tensor<double>("S_ref", 4, 4);
+    auto C_ref = create_zero_tensor<double>("C_ref", 4, 2);
+    reference_permute("ji <- ij", 0.0, &S_ref, 1.0, A_old);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, S_ref, B);
+    require_close(C, C_ref);
+}
+
+// Defends: the same hole reached through CSE, which is how O1 found it. CSE merges S2 into S1 by
+// redirecting S2's slot, so the node reading S2 still names S2 and a reader count by id sees
+// nothing else reading S1. By buffer, S1 has two readers and two writers and is left alone.
+TEST_CASE("PermuteFusion: a reader merged in by CSE still counts", "[ComputeGraph][Optimizer][PermuteFusion][CSE]") {
+    auto                    A     = create_random_tensor<double>("A", 4, 4);
+    auto                    X     = create_random_tensor<double>("X", 4, 3);
+    auto                    Y     = create_random_tensor<double>("Y", 3, 4);
+    auto                    B     = create_random_tensor<double>("B", 4, 2);
+    auto                    C     = create_zero_tensor<double>("C", 4, 2);
+    auto                    R     = create_random_tensor<double>("R", 4, 4);
+    Tensor<double, 2> const A_old = A;
+    Tensor<double, 2> const R_old = R;
+
+    cg::Graph graph("pf_cse_reader");
+    auto     &S1 = graph.create_zero_tensor<double, 2>("S1", 4, 4);
+    auto     &S2 = graph.create_zero_tensor<double, 2>("S2", 4, 4);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &S1, X, Y);
+        cg::einsum("ik;kj->ij", &S2, X, Y);
+        cg::axpy(1.0, S2, &R);
+        cg::permute("ji <- ij", &S1, A);
+        cg::einsum("ik;kj->ij", &C, S1, B);
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::CSE>();
+    pm.add<cg::passes::PermuteFusion>();
+    graph.apply(pm);
+    INFO(pm.explain());
+    graph.execute();
+
+    require_close(A, A_old);
+    auto XY    = create_zero_tensor<double>("XY", 4, 4);
+    auto S_ref = create_zero_tensor<double>("S_ref", 4, 4);
+    auto C_ref = create_zero_tensor<double>("C_ref", 4, 2);
+    reference_einsum("ij <- ik ; kj", 0.0, &XY, 1.0, X, Y);
+    reference_permute("ji <- ij", 0.0, &S_ref, 1.0, A_old);
+    reference_einsum("ij <- ik ; kj", 0.0, &C_ref, 1.0, S_ref, B);
+    auto R_ref = R_old;
+    reference_permute("ij <- ij", 1.0, &R_ref, 1.0, XY);
+    require_close(C, C_ref);
+    require_close(R, R_ref);
 }

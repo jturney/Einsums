@@ -1539,3 +1539,85 @@ TEMPLATE_TEST_CASE("SaveLoad - a mixed-precision einsum round-trips bitwise", "[
     auto      wrong = create_random_tensor<TB>("wrong", 4, 3);
     CHECK_THROWS_AS(again.bind("A", wrong), std::invalid_argument);
 }
+
+// ── Rank-0 storage ─────────────────────────────────────────────────────────
+
+namespace {
+
+/// ``e = sum_ij A_ij A_ij`` into a rank-0 tensor object.
+void capture_scalar_einsum(cg::Graph &graph, RuntimeTensor<double> &e, RuntimeTensor<double> const &A) {
+    cg::CaptureGuard const guard(graph);
+    cg::einsum(" <- i,j ; i,j", 0.0, &e, 1.0, A, A);
+}
+
+} // namespace
+
+// Defends: a rank-0 tensor object saves as one and loads as one. The record used to say only
+// "rank 0", which the loader read as a bare element with no slot, so a saved scalar einsum was
+// refused by the file it had just written ("operand C exposes no rank-erased geometry").
+TEST_CASE("SaveLoad - a rank-0 tensor object loads, binds and computes", "[ComputeGraph][SaveLoad][Rank0]") {
+    RuntimeTensor<double> A = create_random_tensor<double>("A", 3, 4);
+    RuntimeTensor<double> e("e", std::vector<size_t>{});
+    e.zero();
+
+    cg::Graph graph("scalar_einsum");
+    capture_scalar_einsum(graph, e, A);
+
+    std::string const text = must_save(graph);
+    CHECK(text.find(R"("rank0": "tensor")") != std::string::npos);
+
+    cg::Graph             loaded = must_load(text);
+    RuntimeTensor<double> A2     = create_random_tensor<double>("A2", 3, 4);
+    RuntimeTensor<double> e2("e2", std::vector<size_t>{});
+    e2.zero();
+    loaded.bind("A", A2, "e", e2);
+    loaded.execute();
+
+    RuntimeTensor<double> expected("expected", std::vector<size_t>{});
+    reference_einsum(" <- ij ; ij", 0.0, &expected, 1.0, A2, A2);
+    CHECK(std::abs(e2.data()[0] - expected.data()[0]) <= 1e-12 * std::abs(expected.data()[0]));
+}
+
+// Defends: the two rank-0 kinds are not interchangeable at bind. A bare-scalar slot is written
+// through a T*, so a rank-0 tensor bound to it had its own bytes overwritten by the first run and
+// crashed on the next read; the reverse would decode a bare double as a tensor object.
+TEST_CASE("SaveLoad - bind refuses the wrong rank-0 kind in either direction", "[ComputeGraph][SaveLoad][Rank0]") {
+    auto   A      = create_random_tensor<double>("A", 4, 4);
+    auto   B      = create_random_tensor<double>("B", 4, 4);
+    double result = 0.0;
+
+    cg::Graph dot_graph("dot");
+    {
+        cg::CaptureGuard const guard(dot_graph);
+        cg::dot(&result, A, B);
+    }
+    std::string const dot_text = must_save(dot_graph);
+    CHECK(dot_text.find(R"("rank0": "scalar")") != std::string::npos);
+
+    cg::Graph             dot_loaded = must_load(dot_text);
+    RuntimeTensor<double> as_tensor("as_tensor", std::vector<size_t>{});
+    CHECK_THROWS_AS(dot_loaded.bind("dot_result", as_tensor), std::invalid_argument);
+    double as_scalar = 0.0;
+    CHECK_NOTHROW(dot_loaded.bind_scalar("dot_result", &as_scalar));
+
+    RuntimeTensor<double> M = create_random_tensor<double>("A", 3, 4);
+    RuntimeTensor<double> e("e", std::vector<size_t>{});
+    cg::Graph             einsum_graph("scalar_einsum");
+    capture_scalar_einsum(einsum_graph, e, M);
+    cg::Graph einsum_loaded = must_load(must_save(einsum_graph));
+    double    bare          = 0.0;
+    CHECK_THROWS_AS(einsum_loaded.bind_scalar("e", &bare), std::invalid_argument);
+}
+
+// Defends: the reader's check on the new key. Any value but the two kinds is a malformed record,
+// and a file older than the key, which cannot carry it, still reads as a bare element.
+TEST_CASE("SaveLoad - a rank-0 kind must be one of the two", "[ComputeGraph][SaveLoad][Rank0]") {
+    RuntimeTensor<double> A = create_random_tensor<double>("A", 3, 4);
+    RuntimeTensor<double> e("e", std::vector<size_t>{});
+    cg::Graph             graph("scalar_einsum");
+    capture_scalar_einsum(graph, e, A);
+
+    std::string const text = must_save(graph);
+    CHECK(load_refusal(patched(text, R"("rank0": "tensor")", R"("rank0": "matrix")")).find(R"(expected "tensor" or "scalar")") !=
+          std::string::npos);
+}

@@ -72,7 +72,29 @@ void Graph::release() noexcept {
     // Cleanups first, newest first, while everything they might reach is still alive: later-
     // adopted objects may depend on earlier ones.
     _adopted_cleanups.run();
+    // An executor that outlives the graph, in a sub-graph body someone else still holds, now
+    // throws instead of reading a destroyed graph.
+    if (_anchor) {
+        _anchor->_graph = nullptr;
+        _anchor.reset();
+    }
     unregister_graph(this);
+}
+
+Graph &GraphAnchor::graph() const {
+    if (_graph == nullptr) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "an executor ran after the graph it belongs to was destroyed or assigned over");
+    }
+    return *_graph;
+}
+
+std::shared_ptr<GraphAnchor const> Graph::anchor() {
+    std::scoped_lock const lock(_content_mutex);
+    if (!_anchor) {
+        _anchor         = std::make_shared<GraphAnchor>();
+        _anchor->_graph = this;
+    }
+    return _anchor;
 }
 
 void Graph::adopt(std::function<void()> deleter) {
@@ -82,6 +104,9 @@ void Graph::adopt(std::function<void()> deleter) {
 }
 
 Graph::Graph(Graph &&other) noexcept : detail::GraphState(std::move(other)) {
+    if (_anchor) {
+        _anchor->_graph = this;
+    }
     transfer_graph_registration(&other, this);
 }
 
@@ -90,6 +115,9 @@ Graph &Graph::operator=(Graph &&other) noexcept {
         // What this graph held dies here, exactly as it would in the destructor.
         release();
         detail::GraphState::operator=(std::move(other));
+        if (_anchor) {
+            _anchor->_graph = this;
+        }
         transfer_graph_registration(&other, this);
     }
     return *this;
@@ -531,7 +559,10 @@ void Graph::redirect_slot(TensorId from, TensorId to) {
     TensorSlot const *to_slot   = find_slot(to);
     TensorSlot       *from_slot = find_slot(from);
     if (to_slot == nullptr || from_slot == nullptr) {
-        return;
+        EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                "Graph '{}': cannot redirect tensor {} to tensor {}: {} has no slot, so the readers of {} would keep "
+                                "reading a buffer nothing writes. A pass must check has_slot and decline",
+                                _name, from, to, from_slot == nullptr ? from : to, from);
     }
     // The geometry accessor travels with the pointer. @p from's own
     // accessor was baked for @p from's static type, and the object behind
