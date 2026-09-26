@@ -1832,3 +1832,70 @@ TEST_CASE("TiledExpansion - a loop body never screens a tensor its parent writes
     graph.execute();
     require_close(D, D_ref, 4, 4);
 }
+
+TEST_CASE("TiledExpansion - a loop body's scratch materialized in the parent stays opaque", "[ComputeGraph][Passes][Tiled]") {
+    // T is graph-owned tiled scratch declared in the parent and used only inside the
+    // loop body, so Materialization puts its Materialize and zeroing Initialize in the
+    // parent. What orders those before the loop is the loop naming T through its body.
+    // TiledExpansion skipped lifecycle nodes when it looked for tensors shared across
+    // graphs, so it expanded the body and renamed every touch of T to a tile id: the
+    // loop stopped naming T, Reorder moved the zeroing after the loop, and under a
+    // DataflowExecutor the zeroing raced the body. The resource-pass fuzz caught it as
+    // a wrong Y on a few runs in a hundred; the structure below fails every time.
+    Grid const g{{2, 2}, {2, 2}};
+    auto       A = make_tiled("A", g, full_coords(g));
+    auto       B = make_tiled("B", g, full_coords(g));
+    auto       Y = make_tiled("Y", g, full_coords(g));
+    fill_det(A, 1.0);
+    fill_det(B, 2.0);
+    fill_det(Y, 3.0);
+
+    // Y += A B on each of two iterations.
+    auto AB = create_zero_tensor<double>("AB", 4, 4);
+    reference_einsum("ij <- ik ; kj", &AB, to_dense(A, 4, 4), to_dense(B, 4, 4));
+    auto Y_ref = to_dense(Y, 4, 4);
+    for (size_t r = 0; r < 4; ++r) {
+        for (size_t c = 0; c < 4; ++c) {
+            Y_ref(r, c) += 2.0 * AB(r, c);
+        }
+    }
+
+    cg::Graph graph("scratch_materialized_in_parent");
+    graph.set_executor(std::make_shared<cg::DataflowExecutor>());
+    auto &T    = graph.declare_zero_tiled_tensor<double>("T", g, /*intermediate=*/true);
+    auto &body = graph.add_loop("loop", 2, [](size_t it) { return it < 1; });
+    body.set_executor(std::make_shared<cg::DataflowExecutor>());
+    {
+        cg::CaptureGuard const guard(body);
+        cg::einsum("ij <- ik ; kj", 0.0, &T, 1.0, A, B);
+        cg::axpy(1.0, T, &Y);
+    }
+
+    cg::PassManager pm;
+    pm.add<cg::passes::Materialization>();
+    auto pass = std::make_shared<cg::passes::TiledExpansion>(4096, -1.0, kPerTile, kNoFuse);
+    pm.add(pass);
+    pm.add<cg::passes::Reorder>();
+    graph.apply(pm);
+
+    CHECK(pass->num_expanded() == 0);
+    // Every node that writes T in the parent still precedes the loop.
+    size_t loop_pos = 0;
+    for (size_t i = 0; i < graph.nodes().size(); ++i) {
+        if (graph.nodes()[i].kind == cg::OpKind::Loop) {
+            loop_pos = i;
+        }
+    }
+    for (size_t i = 0; i < graph.nodes().size(); ++i) {
+        auto const kind = graph.nodes()[i].kind;
+        if (kind == cg::OpKind::Materialize || kind == cg::OpKind::Initialize) {
+            CHECK(i < loop_pos);
+        }
+    }
+
+    for (int rep = 0; rep < 20; ++rep) {
+        fill_det(Y, 3.0);
+        graph.execute();
+        require_close(Y, Y_ref, 4, 4);
+    }
+}

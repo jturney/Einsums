@@ -113,11 +113,19 @@ struct TreeUse {
 
 /// Record every tiled tensor the nodes of @p graph and its descendants touch, keyed by the
 /// tensor object, since a body's handle for a parent's tensor is a different id with the same
-/// object. Lifecycle nodes produce no value, and a control-flow node's own lists say nothing
-/// about its body, which the walk reaches directly.
+/// object. A control-flow node's own lists say nothing about its body, which the walk reaches
+/// directly.
+///
+/// Lifecycle nodes count as writes. Materialization puts a declared tensor's Materialize and
+/// zeroing Initialize in the graph that declares it, which for a loop's scratch is the parent,
+/// and the only thing that orders them before the body is the loop node naming the tensor,
+/// through the body nodes that touch it. Expanding the body renames every one of those touches
+/// to a tile id, so the loop stopped naming the tensor: Reorder floated the zeroing past the
+/// loop, and a DataflowExecutor ran it concurrently with the body. Skipping these nodes here
+/// is what let the body expand anyway.
 void collect_tiled_uses(Graph const &graph, std::unordered_map<void const *, TreeUse> &uses) {
     for (auto const &nd : graph.nodes()) {
-        if (is_lifecycle(nd.kind) || is_control_flow(nd.kind)) {
+        if (is_control_flow(nd.kind)) {
             continue;
         }
         auto note = [&](TensorId tid, bool write) {
