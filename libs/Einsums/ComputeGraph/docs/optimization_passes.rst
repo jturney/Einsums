@@ -644,6 +644,13 @@ Reports ``chains_restructured()``, ``intermediates_created()``, and per chain
 
 See :doc:`hardware_profiles` for how to provide calibrated performance data.
 
+Constructed with ``ChainPricing::Flops`` (``cg.ContractionPlanning(cg.ChainPricing.Flops)``
+from Python), the pass prices every GEMM by its flop count alone, through
+``CostModel::flop_count()``. Its decision is then the same on every machine,
+where the detected model decides a chain of small matrices by per-call overheads
+that differ from one machine to the next. The time fields of its reports are
+then nominal microseconds at 1 GFLOP/s.
+
 GEMMBatching
 ------------
 

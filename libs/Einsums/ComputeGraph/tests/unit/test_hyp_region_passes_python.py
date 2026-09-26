@@ -593,7 +593,10 @@ def _region_pass_manager():
         cg.DistributiveFactoring(),
         mtf,
         cg.LayoutAssignment(),
-        cg.ContractionPlanning(),
+        # Priced by flops: the corpus guard demands a restructured chain, and the
+        # detected model decides small chains by per-call overheads that differ
+        # by machine.
+        cg.ContractionPlanning(cg.ChainPricing.Flops),
         cg.Materialization(),
     ]
     # The region rewrites check their own cost line against the nodes they emit. Off by default

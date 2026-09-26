@@ -12,6 +12,8 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <ranges>
 #include <sstream>
 #include <string>
@@ -34,6 +36,27 @@ size_t count_nodes(cg::Graph const &g, cg::OpKind kind) {
     }
     return n;
 }
+
+// The largest element error of out against ref, as a fraction of ref's largest
+// magnitude. The arena cases chain up to six products of 400x400 uniform(-1, 1)
+// matrices, so the reference reaches ~5e8, where one ulp is 6e-8: an absolute
+// bound of 1e-8 demanded bitwise agreement between the BLAS summation order and
+// the brute-force reference, and OpenBLAS differs from it by a few ulps. Honest
+// rounding sits near 1e-15 of the scale. An arena slot handed to the wrong
+// tensor corrupts whole elements, an error of order one.
+double scaled_error(Tensor<double, 2> const &out, Tensor<double, 2> const &ref) {
+    double scale = 0.0;
+    double worst = 0.0;
+    for (size_t ii = 0; ii < static_cast<size_t>(ref.dim(0)); ii++) {
+        for (size_t jj = 0; jj < static_cast<size_t>(ref.dim(1)); jj++) {
+            scale = std::max(scale, std::abs(ref(ii, jj)));
+            worst = std::max(worst, std::abs(out(ii, jj) - ref(ii, jj)));
+        }
+    }
+    return scale == 0.0 ? worst : worst / scale;
+}
+
+constexpr double kScaledTol = 1e-12;
 
 } // namespace
 
@@ -207,20 +230,12 @@ TEST_CASE("MemoryPlanning - arena shares storage between disjoint-lifetime inter
     CHECK(mp.planned_arena_bytes() <= 2 * kOneBuf);
 
     graph.execute();
-    for (size_t ii = 0; ii < N; ii += 41) {
-        for (size_t jj = 0; jj < N; jj += 37) {
-            REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
-        }
-    }
+    REQUIRE(scaled_error(out2, OUT2_ref) < kScaledTol);
 
     out1.zero();
     out2.zero();
     graph.execute(); // replay through the arena
-    for (size_t ii = 0; ii < N; ii += 41) {
-        for (size_t jj = 0; jj < N; jj += 37) {
-            REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
-        }
-    }
+    REQUIRE(scaled_error(out2, OUT2_ref) < kScaledTol);
 }
 
 TEST_CASE("MemoryPlanning - arena slot reuse is ordered under DataflowExecutor", "[ComputeGraph][Passes][Arena][Dataflow]") {
@@ -301,16 +316,12 @@ TEST_CASE("MemoryPlanning - arena slot reuse is ordered under DataflowExecutor",
         out2.zero();
         cg::DataflowExecutor df;
         graph.execute(df);
-        for (size_t ii = 0; ii < N; ii += 41) {
-            for (size_t jj = 0; jj < N; jj += 37) {
-                REQUIRE(std::abs(out1(ii, jj) - OUT1_ref(ii, jj)) < 1e-8);
-                REQUIRE(std::abs(out1b(ii, jj) - OUT1B_ref(ii, jj)) < 1e-8);
-                REQUIRE(std::abs(out1c(ii, jj) - OUT1C_ref(ii, jj)) < 1e-8);
-                REQUIRE(std::abs(out1d(ii, jj) - OUT1D_ref(ii, jj)) < 1e-8);
-                REQUIRE(std::abs(out1e(ii, jj) - OUT1E_ref(ii, jj)) < 1e-8);
-                REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
-            }
-        }
+        REQUIRE(scaled_error(out1, OUT1_ref) < kScaledTol);
+        REQUIRE(scaled_error(out1b, OUT1B_ref) < kScaledTol);
+        REQUIRE(scaled_error(out1c, OUT1C_ref) < kScaledTol);
+        REQUIRE(scaled_error(out1d, OUT1D_ref) < kScaledTol);
+        REQUIRE(scaled_error(out1e, OUT1E_ref) < kScaledTol);
+        REQUIRE(scaled_error(out2, OUT2_ref) < kScaledTol);
     }
 }
 
@@ -348,11 +359,7 @@ TEST_CASE("MemoryPlanning - arena keeps overlapping lifetimes apart", "[ComputeG
     reference_einsum("ij <- ik ; kj", &out_ref, Y_ref, X_ref);
 
     graph.execute();
-    for (size_t ii = 0; ii < N; ii += 41) {
-        for (size_t jj = 0; jj < N; jj += 37) {
-            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-8);
-        }
-    }
+    REQUIRE(scaled_error(out, out_ref) < kScaledTol);
 }
 
 TEST_CASE("MemoryPlanning - analysis-only mode plans without applying", "[ComputeGraph][Passes][Arena]") {
@@ -561,13 +568,7 @@ TEST_CASE("MemoryPlanning - a setup at graph level leaves the arena on", "[Compu
     CHECK(mp.planned_tensor_bytes() == 2 * kBuf);
 
     graph.execute();
-    auto check = [&]() {
-        for (size_t ii = 0; ii < N; ii += 41) {
-            for (size_t jj = 0; jj < N; jj += 37) {
-                REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
-            }
-        }
-    };
+    auto check = [&]() { REQUIRE(scaled_error(out2, OUT2_ref) < kScaledTol); };
     check();
 
     // The replay is where an S placed in the arena would show: the setup body
@@ -649,13 +650,7 @@ TEST_CASE("MemoryPlanning - an intermediate a setup body reads is kept out of th
     CHECK(setup_skip->second == 1); // R, and only R
 
     graph.execute();
-    auto check = [&]() {
-        for (size_t ii = 0; ii < N; ii += 41) {
-            for (size_t jj = 0; jj < N; jj += 37) {
-                REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
-            }
-        }
-    };
+    auto check = [&]() { REQUIRE(scaled_error(out2, OUT2_ref) < kScaledTol); };
     check();
 
     // A rebind puts the setup body back to work, and it reads R again.
@@ -719,12 +714,8 @@ TEST_CASE("MemoryPlanning - a loop at graph level suppresses the flat-prefix are
     CHECK(mp.num_planned() == 0); // flat prefix left unplanned despite being shareable
 
     auto check_against_refs = [&]() {
-        for (size_t ii = 0; ii < N; ii += 31) {
-            for (size_t jj = 0; jj < N; jj += 29) {
-                REQUIRE(std::abs(out2(ii, jj) - OUT2_ref(ii, jj)) < 1e-8);
-                REQUIRE(std::abs(acc(ii, jj) - ACC_ref(ii, jj)) < 1e-8);
-            }
-        }
+        REQUIRE(scaled_error(out2, OUT2_ref) < kScaledTol);
+        REQUIRE(scaled_error(acc, ACC_ref) < kScaledTol);
     };
 
     graph.execute();

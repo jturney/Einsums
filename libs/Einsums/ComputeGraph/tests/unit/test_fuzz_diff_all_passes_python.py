@@ -109,7 +109,11 @@ _GUARD_CORPORA = ((440_000, 2, 6), (450_000, 0, 10))
 #: symmetrization sites that accumulate through a view, which the pass leaves
 #: alone, brought SymmetrizedAccumulation to 0.13. The fold and factoring motifs'
 #: view variants, and the repeated sum, left LinearCombinationContractionFolding
-#: at 0.15 and DistributiveFactoring at 0.15.
+#: at 0.15 and DistributiveFactoring at 0.15. ContractionPlanning prices by
+#: flops since its detected cost model restructured nothing on the x86 CI
+#: runners; the corpus then measured it at 0.08 and MultiTermFactorization,
+#: which re-brackets some of the same chains when it runs second, at 0.10, the
+#: same on every machine.
 _FIRE_FLOORS = {
     "ProvenancePropagation": 0.065,
     "DeltaElimination": 0.09,

@@ -375,9 +375,10 @@ def test_contraction_planning_uses_each_chains_own_dtype(how, second):
     restructuring, and the defect emitted it as Gemm nodes built for float64: execute stopped
     with "an operand holding complex128 was read as float64".
 
-    Whether the pass restructures is the cost model's decision, and Python cannot pin it: the
-    only bound constructor measures the machine, and no knob forces or forbids a rewrite. The
-    case therefore asserts the numbers against numpy whichever way the pass decides.
+    Whether the pass restructures is the cost model's decision. Alone, the pass prices by flops
+    (``ChainPricing.Flops``), which ties the square chain and re-brackets the other on every
+    machine, so the case asserts that it fired. In the default pipeline and at O2 it prices
+    against the detected machine, and the case asserts the numbers whichever way it decides.
     """
     rng = np.random.default_rng(104)
 
@@ -404,7 +405,12 @@ def test_contraction_planning_uses_each_chains_own_dtype(how, second):
 
     expected = [a @ b @ c for _, (a, b, c) in chains]
     rtol = 1e-4 if second == "float32" else 1e-10
-    _check(build, expected, how, lambda: _manager(_G.ContractionPlanning()), rtol=rtol, atol=1e-4 if second == "float32" else 1e-12)
+    atol = 1e-4 if second == "float32" else 1e-12
+    if how == "alone":
+        _check_fires(build, expected, how, lambda: _G.ContractionPlanning(_G.ChainPricing.Flops),
+                     lambda p: p.chains_restructured == 1, None, rtol=rtol, atol=atol)
+    else:
+        _check(build, expected, how, lambda: _manager(_G.ContractionPlanning()), rtol=rtol, atol=atol)
 
 
 @pytest.mark.parametrize("how", ["alone", "default", "O2"])

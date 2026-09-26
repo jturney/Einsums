@@ -14,6 +14,9 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <algorithm>
+#include <cmath>
+
 #include <Einsums/Testing.hpp>
 
 using einsums::testing::reference_einsum;
@@ -281,12 +284,24 @@ TEST_CASE("FreeInsertion - Free is ordered after every reader under DataflowExec
     g.apply(pm);
     REQUIRE(count_nodes(g, cg::OpKind::Free) == 2);
 
+    // Measured against the size of C, not element by element. C is A^5, whose
+    // entries reach ~100 while cancellation leaves some near 0.01, and BLAS sums
+    // in a different order from the brute-force reference: a relative bound of
+    // 1e-12 on such an element demanded agreement to the last bits, and failed on
+    // the TSan and no-profiler legs at a difference of 2e-14. A buffer released
+    // under a reader corrupts whole elements, far outside this bound.
+    double scale = 0.0;
+    for (size_t ii = 0; ii < n; ii++) {
+        for (size_t jj = 0; jj < n; jj++) {
+            scale = std::max(scale, std::abs(C_ref(ii, jj)));
+        }
+    }
     for (int rep = 0; rep < 10; rep++) {
         cg::DataflowExecutor df;
         g.execute(df);
         for (size_t ii = 0; ii < n; ii++) {
             for (size_t jj = 0; jj < n; jj++) {
-                REQUIRE_THAT(C(ii, jj), Catch::Matchers::WithinRel(C_ref(ii, jj), 1e-12));
+                REQUIRE_THAT(C(ii, jj), Catch::Matchers::WithinAbs(C_ref(ii, jj), 1e-12 * scale));
             }
         }
     }

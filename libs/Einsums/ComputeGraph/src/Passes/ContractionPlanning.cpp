@@ -462,6 +462,10 @@ Target determine_target(CostModel const &cost_model, size_t M, size_t N, size_t 
 ContractionPlanning::ContractionPlanning() : _cost_model(CostModel::detect_default()) {
 }
 
+ContractionPlanning::ContractionPlanning(ChainPricing pricing)
+    : _cost_model(pricing == ChainPricing::Flops ? CostModel::flop_count() : CostModel::detect_default()) {
+}
+
 ContractionPlanning::ContractionPlanning(CostModel cost_model) : _cost_model(std::move(cost_model)) {
 }
 

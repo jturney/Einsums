@@ -9,10 +9,20 @@
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
+
+/// What ContractionPlanning prices a bracketing against.
+enum class APIARY_EXPOSE APIARY_MODULE("graph") ChainPricing : std::uint8_t{
+    Auto,  ///< The detected machine's @ref CostModel. The default.
+    Flops, ///< @ref CostModel::flop_count: flops alone, the same answer on every
+           ///< machine. For tests that must know whether a chain is re-bracketed,
+           ///< which on small shapes the detected model decides by its per-call
+           ///< overheads, and so differently from one machine to the next.
+};
 
 /**
  * @brief Multi-objective contraction planning pass.
@@ -60,8 +70,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *     einsums.einsum("il <- ik ; kl", T, A, B)   # T = A * B
  *     einsums.einsum("in <- il ; ln", D, T, C)   # D = (A*B) * C
  * g.apply(cg.default_pass_manager())             # ContractionPlanning runs in the default pipeline
- * # ContractionPlanning is not a standalone Python-constructible pass: it takes a
- * # CostModel and is applied only as part of the default manager.
+ * # Standalone, it prices against the detected machine, or by flops alone:
+ * pm = cg.PassManager()
+ * pm.add(cg.ContractionPlanning(cg.ChainPricing.Flops))
  * @endcode
  *
  * @par Limitations
@@ -110,11 +121,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT ContractionPlanning : public OptimizerPass {
   public:
     /// Construct with auto-detected hardware cost_model.
-    ///
-    /// The only constructor reachable from Python: the @ref CostModel overload below takes a
-    /// type nothing binds, and a pass whose cost model is a hint rather than a premise is
-    /// worth reaching with the machine's own numbers anyway.
     APIARY_EXPOSE ContractionPlanning();
+
+    /// Construct pricing against @p pricing's model. The @ref CostModel overload below takes a
+    /// type nothing binds, so this is how Python pins the price: @ref ChainPricing::Flops.
+    APIARY_EXPOSE explicit ContractionPlanning(ChainPricing pricing);
 
     /// Construct with a specific hardware cost_model.
     explicit ContractionPlanning(CostModel cost_model);

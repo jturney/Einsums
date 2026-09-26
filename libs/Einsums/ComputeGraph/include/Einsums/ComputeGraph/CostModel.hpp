@@ -224,7 +224,7 @@ enum class DeviceType : std::uint8_t { CPU, GPU };
  */
 struct DeviceProfile {
     std::string              name;                         ///< e.g., "Apple M4 Pro", "NVIDIA A100"
-    std::string              source{"default"};            ///< "default", "database", "calibrated"
+    std::string              source{"default"};            ///< "default", "database", "calibrated", "flop_count"
     DeviceType               device_type{DeviceType::CPU}; ///< CPU or GPU
     std::string              brand_family;                 ///< Normalized key, e.g., "apple_m4_pro"
     std::vector<std::string> match_patterns;               ///< Substrings for brand string matching
@@ -709,6 +709,18 @@ struct EINSUMS_EXPORT CostModel {
 
     /// Auto-detect hardware and load profile from shipped database.
     [[nodiscard]] static CostModel detect_default();
+
+    /**
+     * @brief A model that prices a GEMM by its flop count alone, identical on every machine.
+     *
+     * Every GEMM runs at a nominal 1 GFLOP/s with no launch, allocation or memory
+     * cost, and there is no GPU, so an estimate is `2 M N K / 1000` nominal
+     * microseconds and only comparable with another estimate from this model.
+     * This is the textbook matrix-chain price. A decision made against it does
+     * not move with the hardware a program happens to run on, which is what a
+     * test asserting that a pass rewrote something needs.
+     */
+    [[nodiscard]] static CostModel flop_count();
 
     /// Load from a JSON file. Returns error if file cannot be read or parsed.
     [[nodiscard]] static expected<CostModel, GraphError> load_json(std::string const &path);

@@ -14,6 +14,7 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -441,6 +442,79 @@ TEST_CASE("ContractionPlanning - reports speedup for classic chain", "[ComputeGr
 
     // Graph still executes correctly (pass is analysis-only for now)
     graph.execute();
+}
+
+TEST_CASE("CostModel - flop_count prices a GEMM by its flops alone", "[ComputeGraph][CostModel]") {
+    auto const model = cg::CostModel::flop_count();
+    CHECK_FALSE(model.has_gpu());
+    // 2 M N K flops at a nominal 1 GFLOP/s, whatever the shape, element size or
+    // target: no launch, allocation or memory term.
+    for (auto const [M, N, K] : {std::array<size_t, 3>{1, 1, 1}, {6, 1, 6}, {64, 2, 64}, {1000, 1000, 1000}}) {
+        double const want = 2.0 * static_cast<double>(M * N * K) / 1e3;
+        CHECK(model.estimate_total_gemm_time_us(M, N, K, 8, cg::Target::CPU) == Catch::Approx(want).epsilon(1e-12));
+        CHECK(model.estimate_total_gemm_time_us(M, N, K, 16, cg::Target::GPU) == Catch::Approx(want).epsilon(1e-12));
+    }
+
+    // Every figure is finite, so the model saves and reloads like a calibrated one.
+    auto const path = (std::filesystem::temp_directory_path() / "einsums_flop_count_model.json").string();
+    REQUIRE(model.save_json(path));
+    auto const loaded = cg::CostModel::load_json(path);
+    std::filesystem::remove(path);
+    REQUIRE(loaded);
+    CHECK(loaded->estimate_total_gemm_time_us(64, 2, 64, 8, cg::Target::CPU) ==
+          Catch::Approx(model.estimate_total_gemm_time_us(64, 2, 64, 8, cg::Target::CPU)).epsilon(1e-12));
+}
+
+TEST_CASE("ContractionPlanning - flop pricing re-brackets a small chain on any machine", "[ComputeGraph][Passes][CostModel]") {
+    // A(6x1) B(1x6) C(6x1) costs 144 flops left to right and 24 as A (B C). A model
+    // that charges per call, as the built-in x86 profiles do, prices both
+    // bracketings at their two calls' overheads and declines the chain: on a Linux
+    // runner the all-passes fuzz shard saw ContractionPlanning restructure nothing
+    // while an Apple machine restructured a tenth of the same corpus.
+    // ChainPricing::Flops is what a test pins to get one answer everywhere.
+    auto A     = create_random_tensor<double>("A", 6, 1);
+    auto B     = create_random_tensor<double>("B", 1, 6);
+    auto C     = create_random_tensor<double>("C", 6, 1);
+    auto D_ref = create_zero_tensor<double>("Dref", 6, 1);
+    {
+        auto T_ref = create_zero_tensor<double>("Tref", 6, 6);
+        reference_einsum("ij <- ik ; kj", &T_ref, A, B);
+        reference_einsum("ij <- ik ; kj", &D_ref, T_ref, C);
+    }
+
+    auto build = [&](cg::Graph &graph, Tensor<double, 2> &D) {
+        auto                  &T = graph.create_zero_tensor<double, 2>("T", 6, 6);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 0.0, &T, 1.0, A, B);
+        cg::einsum("ik;kj->ij", 0.0, &D, 1.0, T, C);
+    };
+
+    cg::CostModel overhead_heavy;
+    overhead_heavy.cpu.kernel_launch_overhead_us = 100.0;
+    {
+        auto      D = create_zero_tensor<double>("D", 6, 1);
+        cg::Graph graph("cp_overhead_heavy");
+        build(graph, D);
+        cg::passes::ContractionPlanning pass(overhead_heavy);
+        pass.run(graph);
+        CHECK(pass.chains_restructured() == 0);
+    }
+
+    auto      D = create_zero_tensor<double>("D", 6, 1);
+    cg::Graph graph("cp_flops");
+    build(graph, D);
+    cg::passes::ContractionPlanning pass(cg::passes::ChainPricing::Flops);
+    CHECK(pass.run(graph));
+    CHECK(pass.chains_restructured() == 1);
+    REQUIRE(pass.chain_reports().size() == 1);
+    CHECK(pass.chain_reports()[0].original_time_us == Catch::Approx(0.144));
+    CHECK(pass.chain_reports()[0].optimal_time_us == Catch::Approx(0.024));
+
+    // The pass materializes the intermediates it declares, so the graph runs as it stands.
+    graph.execute();
+    for (size_t ii = 0; ii < 6; ii++) {
+        CHECK(D(ii, 0) == Catch::Approx(D_ref(ii, 0)).epsilon(1e-12));
+    }
 }
 
 TEST_CASE("ContractionPlanning - 3-GEMM chain analysis", "[ComputeGraph][Passes]") {

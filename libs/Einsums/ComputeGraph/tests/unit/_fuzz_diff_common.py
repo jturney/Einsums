@@ -1223,9 +1223,11 @@ def region_pass_manager():
     # gives: a search that runs out of one emits a valid but different graph, so
     # what a slower machine would be comparing is not what a faster one compared.
     pm.set_optimizer_budget(0)
+    # ContractionPlanning prices by flops, so which chains it re-brackets, and so
+    # which graph the oracle checks, does not depend on the machine's profile.
     for p in (cg.DeltaElimination(), cg.LinearCombinationContractionFolding(),
               cg.DistributiveFactoring(), mtf, cg.LayoutAssignment(),
-              cg.ContractionPlanning(), cg.Materialization()):
+              cg.ContractionPlanning(cg.ChainPricing.Flops), cg.Materialization()):
         pm.add(p)
     return pm
 
@@ -2941,6 +2943,11 @@ def _make_all_passes_pass(name):
     and a shuffle would otherwise run it without it doing anything.
     DistributiveFactoring skips its cost model, which declines everything this
     pool's extents can express: the rewrite is what is under test, not the price.
+    ContractionPlanning prices by flops alone for the same reason. The detected
+    model prices a chain this small mostly by per-call overheads, which differ by
+    machine: the built-in x86 profiles charge enough per GEMM that no chain here
+    clears the pass's 5% threshold, so on a Linux runner it restructured nothing
+    while the Apple profile restructured a tenth of the corpus.
     """
     if name == "MultiTermFactorization":
         p = _G.MultiTermFactorization()
@@ -2948,6 +2955,8 @@ def _make_all_passes_pass(name):
         return p
     if name == "DistributiveFactoring":
         return _G.DistributiveFactoring(_G.Factor.Always)
+    if name == "ContractionPlanning":
+        return _G.ContractionPlanning(_G.ChainPricing.Flops)
     if hasattr(_G, name):
         return getattr(_G, name)()
     return None

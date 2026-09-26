@@ -400,6 +400,27 @@ CostModel CostModel::detect_default() {
     return with_detected_caches(db.build_cost_model());
 }
 
+CostModel CostModel::flop_count() {
+    CostModel model;
+    model.source                        = "flop_count";
+    model.cpu.name                      = "Flop count";
+    model.cpu.brand_family              = "flop_count";
+    model.cpu.source                    = "flop_count";
+    model.cpu.peak_gflops_fp64          = 1.0;
+    model.cpu.peak_gflops_fp32          = 1.0;
+    model.cpu.kernel_launch_overhead_us = 0.0;
+    model.cpu.alloc_overhead_us         = 0.0;
+    // One efficiency point, so the nearest-neighbour lookup answers 1 GFLOP/s for
+    // every shape.
+    model.cpu.gemm_efficiency = {{.M = 1, .N = 1, .K = 1, .gflops = 1.0}};
+    // Memory traffic priced at nothing. Finite, because a JSON document cannot
+    // hold an infinity and this model should survive save_json like any other;
+    // at this rate the largest GEMM's traffic stays far below its smallest flop
+    // term, so the roofline max always picks the compute time.
+    model.cpu.mem_bandwidth_gbps = 1e30;
+    return model;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // JSON I/O
 // ═══════════════════════════════════════════════════════════════════════════════
