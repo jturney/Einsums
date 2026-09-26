@@ -22,11 +22,18 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 namespace {
 
 /// Key for grouping factorable einsum nodes.
+///
+/// Members are rebuilt as ONE contraction with the first member's index lists, so the key has to
+/// fix every list but the summed operand's tensor: the shared operand's letters, C's letters and the
+/// non-shared operand's letters. Without the first two, ``R[ia] += A[ik] B1[ka]`` and
+/// ``R[ia] += A[ki] B2[ka]`` grouped together and the second was computed with the first's spec.
 struct FactorKey {
     TensorId                 output_id;
     TensorId                 shared_input_id;
     bool                     shared_is_first;
     std::vector<std::string> non_shared_indices;
+    std::vector<std::string> shared_indices;
+    std::vector<std::string> output_indices;
 
     bool operator==(FactorKey const &) const = default;
 };
@@ -38,6 +45,8 @@ struct FactorKeyHash {
         hash_combine(h, k.shared_input_id);
         hash_combine(h, k.shared_is_first);
         hash_range(h, k.non_shared_indices);
+        hash_range(h, k.shared_indices);
+        hash_range(h, k.output_indices);
         return h;
     }
 };
@@ -226,7 +235,8 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         TensorId const out_id = node.outputs[0];
         TensorId const in_a   = node.inputs[0];
         TensorId const in_b   = node.inputs[1];
-        auto const    &spec   = desc->spec;
+        // The LIVE lists, which are what the executor contracts and what the rebuild below reads.
+        auto const spec = live_index_lists(*desc);
 
         // The factoring math below is real-valued; a prefactor with nonzero
         // imaginary part would silently lose it, so skip those nodes.
@@ -235,16 +245,30 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         }
         auto const ab_pf_d = as_real<double>(live_ab_prefactor(*desc));
 
+        if (!understands(graph, node)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+            continue;
+        }
+
         // Try first input as shared
         {
-            FactorKey const key{
-                .output_id = out_id, .shared_input_id = in_a, .shared_is_first = true, .non_shared_indices = spec.b_indices};
+            FactorKey const key{.output_id          = out_id,
+                                .shared_input_id    = in_a,
+                                .shared_is_first    = true,
+                                .non_shared_indices = spec.b,
+                                .shared_indices     = spec.a,
+                                .output_indices     = spec.c};
             candidate_groups[key].push_back({.node_index = ni, .non_shared_input = in_b, .ab_prefactor = ab_pf_d});
         }
         // Try second input as shared
         {
-            FactorKey const key{
-                .output_id = out_id, .shared_input_id = in_b, .shared_is_first = false, .non_shared_indices = spec.a_indices};
+            FactorKey const key{.output_id          = out_id,
+                                .shared_input_id    = in_b,
+                                .shared_is_first    = false,
+                                .non_shared_indices = spec.a,
+                                .shared_indices     = spec.b,
+                                .output_indices     = spec.c};
             candidate_groups[key].push_back({.node_index = ni, .non_shared_input = in_a, .ab_prefactor = ab_pf_d});
         }
     }
@@ -395,7 +419,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
                 is_member[c.node_index] = true;
                 operand_ids.insert(c.non_shared_input);
             }
-            bool const interference = span_interferes(nodes, first_pos, last_pos, is_member, {vg.key.output_id}, operand_ids,
+            bool const interference = span_interferes(graph, first_pos, last_pos, is_member, {vg.key.output_id}, operand_ids,
                                                       /*reject_control_flow=*/true);
             if (interference) {
                 auto on = tensors.find(vg.key.output_id);

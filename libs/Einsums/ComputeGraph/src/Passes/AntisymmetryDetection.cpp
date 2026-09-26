@@ -148,7 +148,7 @@ bool AntisymmetryDetection::run(Graph &graph) {
     // automatic.
     std::map<TensorId, std::vector<SymmetryOp>> wanted;
     auto const                                  want = [&](TensorId id, SymmetryOp const &op) {
-        TensorId const resolved = graph.resolve_alias(id);
+        TensorId const resolved = graph.buffer_of(id);
         if (writers.writer_count(resolved) != 0) {
             return;
         }
@@ -179,7 +179,7 @@ bool AntisymmetryDetection::run(Graph &graph) {
         if (!read_operators(node, ops, c_indices) || node.outputs.empty()) {
             continue;
         }
-        auto const *out_handle = graph.find_tensor(graph.resolve_alias(node.outputs[0]));
+        auto const *out_handle = graph.find_tensor(graph.buffer_of(node.outputs[0]));
         if (out_handle == nullptr) {
             continue;
         }

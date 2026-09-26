@@ -1594,6 +1594,20 @@ struct NodeIndexLists {
 /// exactly as @ref LuPivots does.
 [[nodiscard]] EINSUMS_EXPORT std::vector<std::string> param_reads(Node const &node);
 
+/// @brief Every named resource outside the tensor dataflow this node WRITES, as ordering keys.
+///
+/// The union of @ref param_writes (as ``param:<name>``) and the disk dataset a @c DiskWrite
+/// stores (as ``disk:<file>#<dataset>``). A disk read and a disk write of one dataset share no
+/// tensor, since the read names only its destination and the write only its source, so a
+/// TensorId-keyed scan let a read of a dataset move ahead of the graph's own write to it and
+/// return the file's previous contents. Anything that orders nodes pairs this with
+/// @ref named_reads exactly as it pairs outputs with inputs.
+[[nodiscard]] EINSUMS_EXPORT std::vector<std::string> named_writes(Node const &node);
+
+/// @brief Every named resource outside the tensor dataflow this node READS, as ordering keys:
+///        @ref param_reads and the dataset a @c DiskRead loads. See @ref named_writes.
+[[nodiscard]] EINSUMS_EXPORT std::vector<std::string> named_reads(Node const &node);
+
 /// @brief True when a @c View's slice is resolved from runtime state (a named
 ///        parameter or a callback) rather than from literals.
 ///

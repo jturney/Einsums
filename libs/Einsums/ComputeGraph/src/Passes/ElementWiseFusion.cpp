@@ -92,6 +92,16 @@ bool ElementWiseFusion::run(Graph &graph) {
     PassCounter const fused{_num_fused};
     graph.topological_sort();
 
+    // Every node a fusion rewrites or removes is asked this first.
+    auto const declines = [&](Node const &node) {
+        if (understands(graph, node)) {
+            return false;
+        }
+        note_skip("the node carries a feature this pass does not understand",
+                  fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+        return true;
+    };
+
     auto &nodes = graph.nodes();
     if (nodes.size() < 2) {
         return false;
@@ -109,7 +119,7 @@ bool ElementWiseFusion::run(Graph &graph) {
         if (remove[i])
             continue;
         auto const *desc_i = fusable_axpby(nodes[i]);
-        if (desc_i == nullptr)
+        if (desc_i == nullptr || declines(nodes[i]))
             continue;
 
         TensorId const y = nodes[i].outputs[0];
@@ -125,7 +135,7 @@ bool ElementWiseFusion::run(Graph &graph) {
             // Only a directly following axpby on the same (X, Y) may fuse;
             // anything else could observe or disturb Y in between.
             auto const *desc_j = fusable_axpby(nodes[j]);
-            if (desc_j == nullptr || nodes[j].outputs[0] != y || nodes[j].inputs[0] != x)
+            if (desc_j == nullptr || nodes[j].outputs[0] != y || nodes[j].inputs[0] != x || declines(nodes[j]))
                 break;
 
             // Mixing prefactor alternatives would make the composition lossy;
@@ -165,7 +175,7 @@ bool ElementWiseFusion::run(Graph &graph) {
 
         // Look for consecutive Scale ops on the same tensor
         auto *desc_i = fusable_scale(nodes[i]);
-        if (desc_i == nullptr)
+        if (desc_i == nullptr || declines(nodes[i]))
             continue;
 
         TensorId const target = nodes[i].outputs[0];
@@ -182,7 +192,7 @@ bool ElementWiseFusion::run(Graph &graph) {
                 break;
 
             auto *desc_j = fusable_scale(nodes[j]);
-            if (desc_j == nullptr)
+            if (desc_j == nullptr || declines(nodes[j]))
                 break;
 
             // Mixing prefactor alternatives would make the composition lossy;

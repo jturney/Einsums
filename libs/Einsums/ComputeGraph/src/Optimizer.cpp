@@ -6,6 +6,7 @@
 #include <Einsums/Comm/Platform.hpp>
 #include <Einsums/ComputeGraph/CostModel.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Optimizer.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/AntisymmetrizerExpansion.hpp>
@@ -62,6 +63,7 @@
 #include <chrono>
 #include <functional>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -69,6 +71,8 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include "GraphIR/Common.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
@@ -310,6 +314,75 @@ void verify_after_pass(Graph const &graph, std::string_view pass_name) {
     EINSUMS_THROW_EXCEPTION(std::logic_error, "pass '{}' left the graph malformed ({} problem(s)):{}", pass_name, problems.size(), report);
 }
 
+bool OptimizerPass::understands(Graph const &graph, Node const &node) const {
+    auto const understood = understood_features();
+    return !understood.has_value() || understood->covers(features_of(graph, node));
+}
+
+namespace {
+
+/// One node a pass promised to leave alone, and what it looked like before.
+struct Untouchable {
+    std::string  fingerprint;
+    std::string  label;
+    NodeFeatures unknown;
+};
+using UntouchableMap = std::map<std::pair<Graph const *, NodeId>, Untouchable>;
+
+// NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
+void collect_untouchable(Graph const &graph, NodeFeatures understood, UntouchableMap &out) {
+    for (auto const &node : graph.nodes()) {
+        auto const features = features_of(graph, node);
+        if (!understood.covers(features)) {
+            out.emplace(std::pair{&graph, node.id},
+                        Untouchable{graph_ir::node_fingerprint(graph, node), node.label, understood.missing_from(features)});
+        }
+        for_each_child_graph(node, [&](Graph const &child) { collect_untouchable(child, understood, out); });
+    }
+}
+
+// NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
+void index_nodes(Graph const &graph, std::map<std::pair<Graph const *, NodeId>, Node const *> &out) {
+    for (auto const &node : graph.nodes()) {
+        out.emplace(std::pair{&graph, node.id}, &node);
+        for_each_child_graph(node, [&](Graph const &child) { index_nodes(child, out); });
+    }
+}
+
+/// The nodes @p pass promised to leave alone, when there is a promise to check.
+UntouchableMap untouchable_before(Graph const &graph, OptimizerPass const &pass) {
+    UntouchableMap out;
+    auto const     understood = pass.understood_features();
+    if (understood.has_value() && config::get(option::PassVerify)) {
+        collect_untouchable(graph, *understood, out);
+    }
+    return out;
+}
+
+/// Throw if @p pass rewrote or removed a node carrying a feature it does not understand.
+void check_untouched(Graph const &graph, UntouchableMap const &before, std::string_view pass_name) {
+    if (before.empty()) {
+        return;
+    }
+    std::map<std::pair<Graph const *, NodeId>, Node const *> now;
+    index_nodes(graph, now);
+    std::string report;
+    for (auto const &[key, was] : before) {
+        auto const hit = now.find(key);
+        if (hit == now.end()) {
+            report += fmt::format("\n  removed node #{} '{}', which carries {}", key.second, was.label, describe_features(was.unknown));
+        } else if (graph_ir::node_fingerprint(*key.first, *hit->second) != was.fingerprint) {
+            report += fmt::format("\n  rewrote node #{} '{}', which carries {}", key.second, was.label, describe_features(was.unknown));
+        }
+    }
+    if (!report.empty()) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error, "pass '{}' changed nodes carrying features it does not declare it understands:{}",
+                                pass_name, report);
+    }
+}
+
+} // namespace
+
 /// Run a single pass on @p graph and, when the pass opts in via
 /// ``recurse_into_subgraphs()``, on every descendant loop body /
 /// conditional branch in post-order (children before re-running on parent
@@ -444,9 +517,11 @@ bool PassManager::run(Graph &graph) {
         } else {
             auto const baseline         = observed_writes(graph);
             auto const structure_before = graph.structure_version();
+            auto const untouchable      = untouchable_before(graph, *pass);
             bool const modified         = run_pass_tree(*pass, graph);
             settle_node_ids(graph, pass->name());
             verify_after_pass(graph, pass->name());
+            check_untouched(graph, untouchable, pass->name());
             auto   t1 = std::chrono::high_resolution_clock::now();
             double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
@@ -493,13 +568,14 @@ bool PassManager::run(Graph &graph) {
         }
     }
 
-    // Post-run annotation consistency. The default pipeline places the analysis
-    // passes at #19-20, ahead of the GPU, distributed and tail blocks, so a
-    // structural-resource pass down there leaves SymmetryPropagation's and
-    // SpacePropagation's output describing a node set that has since gained
+    // Post-run annotation consistency. The default pipeline runs its analysis
+    // passes before the rewrites that change the node set: SpacePropagation
+    // ahead of the algebraic cluster, SymmetryPropagation ahead of the GPU,
+    // distributed and tail blocks. A structural pass after either leaves its
+    // output describing a node set that has since gained or lost nodes,
     // transfers, slices or SUMMA loops. Re-running them once at the end is the
     // smallest thing that makes "after run(), the annotations match the graph"
-    // true without moving any pass.
+    // true without giving up the early annotations the rewrites read.
     //
     // Deliberately NOT a reset_all_stats() re-run: the counters accumulate
     // across the two invocations, so explain() and num_inferred() report what
@@ -752,6 +828,19 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // decision and their planning are made against one profile.
     list.push_back(std::make_shared<passes::TiledExpansion>(4096, -1.0, passes::Densify::Auto, passes::FuseTiles::Auto, cost_model));
 
+    // Space propagation and cross-space validation, before any rewrite. Propagation fills in the
+    // index spaces of graph-owned intermediates from the annotations on their producers' operands,
+    // so the algebraic passes below and the check after it see a fully annotated program when the
+    // user annotated only the inputs; the end-of-run re-analysis refreshes it after the rewrites.
+    // The check then asks whether any contraction letter binds a slot of one space against a slot
+    // of another, which is a question about what the author wrote. It used to run after
+    // Materialization, by which point DeltaElimination below had already reduced a contraction over
+    // disjoint spaces to its prefactor, the two responses the design pairs had become one, and the
+    // error the author needed was gone. Read-only and silent unless something is wrong: the
+    // findings reach graph.explain() and print_report(), never stdout.
+    list.push_back(std::make_shared<passes::SpacePropagation>());
+    list.push_back(std::make_shared<passes::CrossSpaceValidation>());
+
     // Delta elimination ahead of the cleanup cluster, because what it leaves behind is exactly
     // what that cluster is for: dissolving an intermediate strands the Alloc and Free that
     // named it, and DeadNodeElimination three entries below removes them. Running it after
@@ -885,25 +974,6 @@ std::vector<std::shared_ptr<OptimizerPass>> PassManager::build_default_passes() 
     // here (after Materialization, before GPU placement) so downstream
     // passes and executions see the inferred symmetry.
     list.push_back(std::make_shared<passes::SymmetryPropagation>());
-
-    // Space propagation: fill in the index spaces of graph-owned intermediates
-    // from the annotations their producers' operands carry, so the algebraic
-    // passes and the cross-space checks see a fully annotated graph after the
-    // user has annotated only the inputs. Independent of SymmetryPropagation
-    // (neither reads the other's output); it sits here because it is the same
-    // shape of analysis and wants the same position, after Materialization and
-    // before the backend passes.
-    list.push_back(std::make_shared<passes::SpacePropagation>());
-
-    // Cross-space validation: now that every intermediate carries whatever spaces
-    // could be inferred, check that no contraction letter binds a slot of one
-    // space against a slot of another. Immediately after SpacePropagation
-    // because that pass is what makes the check see a whole program rather than
-    // its inputs, and because SpacePropagation declines a conflicting operand
-    // silently by design and leaves the diagnosis here. Read-only and silent
-    // unless something is wrong: the findings reach graph.explain() and
-    // print_report(), never stdout.
-    list.push_back(std::make_shared<passes::CrossSpaceValidation>());
 
     // Scaling analysis: the cost layer delivered as a user-facing report. Runs
     // after the validation so a report is not built on letters the check just

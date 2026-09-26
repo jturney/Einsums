@@ -200,17 +200,17 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
         if (is_control_flow(nd.kind)) {
             auto [eff_in, eff_out] = graph.effective_io(nd);
             for (auto const raw : eff_in) {
-                disqualified.emplace(graph.resolve_alias(raw), "a control-flow node's body touches it");
+                disqualified.emplace(graph.buffer_of(raw), "a control-flow node's body touches it");
             }
             for (auto const raw : eff_out) {
-                disqualified.emplace(graph.resolve_alias(raw), "a control-flow node's body touches it");
+                disqualified.emplace(graph.buffer_of(raw), "a control-flow node's body touches it");
             }
             continue;
         }
 
         bool const lifecycle = is_lifecycle(nd.kind);
         for (auto const raw : nd.inputs) {
-            TensorId const tid = graph.resolve_alias(raw);
+            TensorId const tid = graph.buffer_of(raw);
             if (raw != tid || lifecycle) {
                 // A view access is a partial touch; a lifecycle node ties the
                 // buffer's storage to this graph's schedule. Both make
@@ -221,7 +221,7 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
             accesses[tid].push_back({.node_idx = i, .starts_generation = false});
         }
         for (auto const raw : nd.outputs) {
-            TensorId const tid = graph.resolve_alias(raw);
+            TensorId const tid = graph.buffer_of(raw);
             if (raw != tid || lifecycle) {
                 disqualified.emplace(tid, lifecycle ? "an allocation or free node touches it" : "it is accessed through a view");
                 continue;
@@ -295,15 +295,26 @@ void ScratchPrivatization::privatize_one_graph(Graph &graph) {
         // Only the interior generations are renamed; the last stays on the
         // original tensor so every value observable after execution is
         // unchanged. All their nodes must be rebuildable.
-        size_t const interior = gens.size() - 1;
-        bool         ok       = true;
+        size_t const interior       = gens.size() - 1;
+        bool         ok             = true;
+        Node const  *not_understood = nullptr;
         for (size_t j = 0; j < interior && ok; ++j) {
             for (size_t const idx : gens[j]) {
+                if (!understands(graph, nodes[idx])) {
+                    not_understood = &nodes[idx];
+                    ok             = false;
+                    break;
+                }
                 if (!rebuildable(graph, nodes[idx])) {
                     ok = false;
                     break;
                 }
             }
+        }
+        if (not_understood != nullptr) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", not_understood->label, describe_features(features_of(graph, *not_understood))));
+            continue;
         }
         if (!ok) {
             skip("a node in one of its interior generations cannot be rebuilt onto a clone");

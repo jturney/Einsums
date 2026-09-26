@@ -7,12 +7,15 @@
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/GPUPlacement.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Platform.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Logging.hpp>
+
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <functional>
@@ -258,6 +261,12 @@ bool GPUPlacement::run(Graph &graph) {
 
             if (!node_is_dispatchable(node, g))
                 continue;
+
+            if (!understands(g, node)) {
+                note_skip("the node carries a feature this pass does not understand",
+                          fmt::format("node '{}': {}", node.label, describe_features(features_of(g, node))));
+                continue;
+            }
 
             if (!node_dtypes_supported(node, g)) {
                 EINSUMS_LOG_DEBUG("GPUPlacement: skipping node {} — unsupported dtype for GPU backend", node.id);

@@ -7,9 +7,12 @@
 #include <Einsums/Comm/Runtime.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationInsertion.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
+
+#include <fmt/format.h>
 
 #include <ranges>
 
@@ -48,6 +51,12 @@ bool CommunicationInsertion::run(Graph &graph) {
         // inputs the has_distributed_input check below short-circuits.
         if (is_infrastructure(node.kind))
             continue;
+
+        if (!understands(graph, node)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+            continue;
+        }
 
         // Check if any input is distributed (non-replicated)
         bool has_distributed_input = false;

@@ -10,6 +10,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -119,6 +120,8 @@ class EINSUMS_EXPORT ThreadPlanning : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Tuning; }
+    /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
     bool run(Graph &graph) override;
     void reset_stats() override;

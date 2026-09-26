@@ -5,6 +5,7 @@
 
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
@@ -19,6 +20,7 @@
 #include <algorithm>
 #include <complex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -57,10 +59,37 @@ void SymmetrizedAccumulation::reset_stats() {
     _num_rewritten  = 0;
 }
 
+namespace {
+
+/// The storage the ordinary nodes of @p graph reference, as tensor pointers. A control-flow node is
+/// left out: its lists name what its body touches, and the body is visited on its own.
+void collect_value_ptrs(Graph const &graph, std::unordered_set<void const *> &out) {
+    for (auto const &node : graph.nodes()) {
+        if (is_control_flow(node.kind) || is_lifecycle(node.kind)) {
+            continue;
+        }
+        for (auto const &ids : {node.inputs, node.outputs}) {
+            for (TensorId const id : ids) {
+                if (auto const *handle = graph.find_tensor(graph.buffer_of(id)); handle != nullptr && handle->tensor_ptr != nullptr) {
+                    out.insert(handle->tensor_ptr);
+                }
+            }
+        }
+    }
+}
+
+} // namespace
+
 bool SymmetrizedAccumulation::run(Graph &graph) {
+    return run_one(graph, {}, {});
+}
+
+bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void const *> const &external,
+                                      std::unordered_set<void const *> const &inherited_scratch) {
     PassCounter const rewritten{_num_rewritten};
-    auto             &nodes = graph.nodes();
-    size_t const      n     = nodes.size();
+    auto             &nodes   = graph.nodes();
+    size_t const      n       = nodes.size();
+    auto const        escapes = EscapeAnalysis::over(graph);
 
     auto const contains = [](std::vector<TensorId> const &v, TensorId t) { return std::ranges::find(v, t) != v.end(); };
     // Generation bounds for scratch that is REUSED across sites (the CCSD body
@@ -88,12 +117,19 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
     // outputs (Operations.hpp records inputs = {src, dst} only when beta != 0).
     //
     // cg::axpy records an Axpby with beta == 1, so `r2 += tmp` - the spelling
-    // every other library uses - matches here like any other accumulation. A
-    // pass-built node with no descriptor is rejected below, where the scalar is
-    // read.
+    // every other library uses - matches here like any other accumulation.
+    //
+    // The LIVE beta must be exactly one, not merely nonzero: the fold rewrites
+    // `r2 = beta*r2 + s*P(tmp)` as `r2 += s*P(tmp)`, which drops any other beta.
+    // A pass-built node with no descriptor has no readable beta and does not
+    // match.
     auto const is_accumulating_axpby = [&](Node const &node, TensorId src, TensorId dst) {
-        return node.kind == OpKind::Axpby && node.outputs.size() == 1 && node.outputs[0] == dst && contains(node.inputs, src) &&
-               contains(node.inputs, dst);
+        if (node.kind != OpKind::Axpby || node.outputs.size() != 1 || node.outputs[0] != dst || !contains(node.inputs, src) ||
+            !contains(node.inputs, dst)) {
+            return false;
+        }
+        PrefactorScalar const *beta = axpby_beta(node);
+        return beta != nullptr && is_one(*beta);
     };
     // A safely-foldable site (interference-clean). Collected in a first pass so
     // the rewrite does not mutate `nodes` mid-scan.
@@ -113,12 +149,18 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         if (permute.kind != OpKind::Permute) {
             continue;
         }
+        if (!understands(graph, permute)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", permute.label, describe_features(features_of(graph, permute))));
+            continue;
+        }
         auto const *pd = permute.op_data.get_if<PermuteDescriptor>();
         if (pd == nullptr) {
             continue;
         }
-        // Pure overwrite permutation (tmpP freshly written): beta == 0.
-        if (pd->beta != 0.0) {
+        // Pure overwrite permutation (tmpP freshly written): beta == 0. The
+        // live beta, which is what the executor applies.
+        if (!is_zero(pd->params != nullptr ? pd->params->beta : PrefactorScalar{pd->beta})) {
             note_skip("permute accumulates into its output (beta != 0)", fmt::format("permute #{}", pi));
             continue;
         }
@@ -133,14 +175,36 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         TensorId const tmp  = permute.inputs[0];
         TensorId const tmpP = permute.outputs[0];
 
-        // This permute's tmpP value is live until tmpP's next overwrite; it
-        // must be consumed by exactly one reader in that window, an
-        // accumulating axpby. Readers outside the window belong to other
-        // generations of a reused buffer and are irrelevant here.
-        size_t const tmpP_gen_end = next_write_after(tmpP, pi);
-        long         a2_found     = -1;
+        // The fold stops writing tmpP, so tmpP must be graph-owned scratch nothing outside this
+        // graph can observe: a caller's tensor, or one a loop body or branch reads, would be left
+        // holding a stale value.
+        if (auto const *handle = graph.find_tensor(graph.buffer_of(tmpP));
+            handle == nullptr || handle->tensor_ptr == nullptr ||
+            !(handle->is_intermediate || inherited_scratch.contains(handle->tensor_ptr)) || external.contains(handle->tensor_ptr) ||
+            escapes.touched_by_subtree(tmpP)) {
+            note_skip("the permuted result is not graph-owned scratch this graph alone reads", fmt::format("permute #{}", pi));
+            continue;
+        }
+
+        // This permute's tmpP value is live until the next node that REPLACES it: a pure
+        // overwrite. A read-modify-write of tmpP (tmpP += X, a scale of it) reads this value and
+        // so is one of its consumers, not the end of its generation. Compared by buffer, so a read
+        // through a view of tmpP counts. It must be consumed by exactly one reader in that
+        // window, an accumulating axpby.
+        TensorId const tmpP_buffer = graph.buffer_of(tmpP);
+        auto const     names_tmpP  = [&](std::vector<TensorId> const &ids) {
+            return std::ranges::any_of(ids, [&](TensorId id) { return graph.buffer_of(id) == tmpP_buffer; });
+        };
+        size_t tmpP_gen_end = n;
+        for (size_t i = pi + 1; i < n; ++i) {
+            if (names_tmpP(nodes[i].outputs) && !names_tmpP(nodes[i].inputs)) {
+                tmpP_gen_end = i;
+                break;
+            }
+        }
+        long a2_found = -1;
         for (size_t i = pi + 1; i < tmpP_gen_end; ++i) {
-            if (contains(nodes[i].inputs, tmpP)) {
+            if (names_tmpP(nodes[i].inputs)) {
                 if (a2_found != -1) {
                     a2_found = -2; // second consumer of this generation
                     break;
@@ -165,6 +229,11 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         TensorId const r2 = axpby2.outputs[0];
         if (!is_accumulating_axpby(axpby2, tmpP, r2)) {
             note_skip("consumer of the permuted result is not an accumulating axpy/axpby", fmt::format("node #{} '{}'", a2, axpby2.label));
+            continue;
+        }
+        if (!understands(graph, axpby2)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", axpby2.label, describe_features(features_of(graph, axpby2))));
             continue;
         }
 
@@ -210,10 +279,10 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         // them entirely and only tripped, incidentally, on the View-creation
         // node's parent input - which is a metadata rebind, not a value read,
         // and is exempted below.
-        TensorId const r2_owner      = graph.resolve_alias(r2);
-        TensorId const tmp_owner     = graph.resolve_alias(tmp);
+        TensorId const r2_owner      = graph.buffer_of(r2);
+        TensorId const tmp_owner     = graph.buffer_of(tmp);
         auto const     touches_owner = [&](std::vector<TensorId> const &ids, TensorId owner) {
-            return std::any_of(ids.begin(), ids.end(), [&](TensorId raw) { return graph.resolve_alias(raw) == owner; });
+            return std::any_of(ids.begin(), ids.end(), [&](TensorId raw) { return graph.buffer_of(raw) == owner; });
         };
         // The live destination prefactor of an einsum, or null when the node is not one.
         auto const einsum_c_pf = [](Node const &node) -> PrefactorScalar const * {
@@ -233,6 +302,13 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
             // below via alias resolution.
             if (nodes[i].kind == OpKind::View) {
                 continue;
+            }
+            // A loop or branch does not list what its body reads or writes, so it cannot be
+            // shown not to observe the half-symmetrized r2.
+            if (is_control_flow(nodes[i].kind)) {
+                note_skip("a control-flow node sits between the two halves", fmt::format("permute #{} node #{}", pi, i));
+                clean = false;
+                break;
             }
             bool const writes_tmp = touches_owner(nodes[i].outputs, tmp_owner);
             bool const touches_r2 = touches_owner(nodes[i].inputs, r2_owner) || touches_owner(nodes[i].outputs, r2_owner);
@@ -255,14 +331,14 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
             // commuting accumulation it looks like, so read its beta rather
             // than treating every intervening write as interference.
             PrefactorScalar const *beta = axpby_beta(nodes[i]);
-            bool additive_accum = beta != nullptr && is_one(*beta) && nodes[i].inputs.size() == 2 &&
-                                  graph.resolve_alias(nodes[i].inputs[0]) != r2_owner && touches_owner(nodes[i].outputs, r2_owner) &&
-                                  touches_owner(nodes[i].inputs, r2_owner);
+            bool additive_accum         = beta != nullptr && is_one(*beta) && nodes[i].inputs.size() == 2 &&
+                                          graph.buffer_of(nodes[i].inputs[0]) != r2_owner && touches_owner(nodes[i].outputs, r2_owner) &&
+                                          touches_owner(nodes[i].inputs, r2_owner);
             if (!additive_accum && nodes[i].kind == OpKind::Einsum) {
                 PrefactorScalar const *c_pf = einsum_c_pf(nodes[i]);
                 additive_accum = c_pf != nullptr && is_one(*c_pf) && nodes[i].inputs.size() >= 2 && nodes[i].outputs.size() == 1 &&
-                                 graph.resolve_alias(nodes[i].inputs[0]) != r2_owner &&
-                                 graph.resolve_alias(nodes[i].inputs[1]) != r2_owner && touches_owner(nodes[i].outputs, r2_owner);
+                                 graph.buffer_of(nodes[i].inputs[0]) != r2_owner && graph.buffer_of(nodes[i].inputs[1]) != r2_owner &&
+                                 touches_owner(nodes[i].outputs, r2_owner);
             }
             if (writes_tmp || (touches_r2 && !additive_accum)) {
                 note_skip(writes_tmp ? "an intervening node rewrites the permute source"
@@ -319,7 +395,7 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         // Only fold a pure permutation (alpha == 1); a scaled permute would need
         // s2 * alpha folded into the accumulate, deferred until it appears.
         auto *pd = nodes[s.permute_idx].op_data.get_if<PermuteDescriptor>();
-        if (pd == nullptr || pd->alpha != 1.0) {
+        if (pd == nullptr || !is_one(pd->params != nullptr ? pd->params->alpha : PrefactorScalar{pd->alpha})) {
             note_skip("permute is scaled (alpha != 1)", fmt::format("permute #{}", s.permute_idx));
             continue;
         }
@@ -353,19 +429,62 @@ bool SymmetrizedAccumulation::run(Graph &graph) {
         perm.inputs  = {tmp, r2}; // accumulate: r2 is read (beta = 1) - RMW convention
         perm.outputs = {r2};
         perm.label   = "symacc: r2 += s2 * P(tmp)";
-        pd->beta     = 1.0; // was 0 (overwrite tmpP); now accumulate into r2
+        // The descriptor says what the executor now does, r2 = 1*r2 + s2*P(tmp), in the snapshot
+        // AND the live params: a later pass reads the live scalars, and one that still saw alpha 1
+        // and beta 0 would take this accumulation for a plain overwrite.
+        pd->alpha = as<std::complex<double>>(s2);
+        pd->beta  = 1.0;
+        if (pd->params != nullptr) {
+            pd->params->alpha = s2;
+            pd->params->beta  = PrefactorScalar{double{1}};
+        }
 
         remove[s.axpby2_idx] = true; // axpby2 folded into the permute
         ++_num_rewritten;
     }
 
-    if (!rewritten.moved()) {
-        return false;
+    bool modified = false;
+    if (rewritten.moved()) {
+        graph.erase_nodes(remove);
+        graph.topological_sort();
+        modified = true;
     }
 
-    graph.erase_nodes(remove);
-    graph.topological_sort();
-    return true;
+    // Descend, the way DeadNodeElimination does. A body sees as external what this graph's own
+    // nodes reference and what every sibling sub-tree references, and inherits as scratch every
+    // intermediate an enclosing graph owns. A reference that resolves to no pointer means the
+    // walk cannot vouch for anything it inherited, so that body folds only its own scratch.
+    std::vector<Graph *> children;
+    graph.for_each_subgraph([&children](Graph &sub) { children.push_back(&sub); });
+    if (children.empty()) {
+        return modified;
+    }
+    std::unordered_set<void const *> own = external;
+    collect_value_ptrs(graph, own);
+    std::unordered_set<void const *> scratch = inherited_scratch;
+    for (auto const &[id, handle] : graph.tensors_map()) {
+        if (handle.is_intermediate && handle.tensor_ptr != nullptr) {
+            scratch.insert(handle.tensor_ptr);
+        }
+    }
+    std::vector<std::unordered_set<void const *>> subtrees(children.size());
+    bool                                          unresolved = false;
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        collect_value_ptrs(*children[i], subtrees[i]);
+        children[i]->collect_subtree_referenced_ptrs(subtrees[i], &unresolved);
+    }
+    for (std::size_t i = 0; i < children.size(); ++i) {
+        std::unordered_set<void const *> child_external = own;
+        for (std::size_t j = 0; j < children.size(); ++j) {
+            if (j != i) {
+                child_external.insert(subtrees[j].begin(), subtrees[j].end());
+            }
+        }
+        if (run_one(*children[i], child_external, unresolved ? std::unordered_set<void const *>{} : scratch)) {
+            modified = true;
+        }
+    }
+    return modified;
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

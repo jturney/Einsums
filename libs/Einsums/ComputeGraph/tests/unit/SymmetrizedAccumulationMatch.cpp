@@ -28,8 +28,8 @@ namespace {
 // `tag` keeps the intermediate names unique across sites in one graph.
 void capture_symacc_site(cg::Graph &graph, Tensor<double, 4> &r2, Tensor<double, 2> const &A, Tensor<double, 2> const &B,
                          std::string const &tag) {
-    auto &tmp  = graph.declare_tensor<double, 4>("tmp" + tag, A.dim(0), B.dim(0), A.dim(1), B.dim(1));
-    auto &tmpP = graph.declare_tensor<double, 4>("tmpP" + tag, B.dim(0), A.dim(0), B.dim(1), A.dim(1));
+    auto &tmp  = graph.scratch<double, 4>("tmp" + tag, A.dim(0), B.dim(0), A.dim(1), B.dim(1));
+    auto &tmpP = graph.scratch<double, 4>("tmpP" + tag, B.dim(0), A.dim(0), B.dim(1), A.dim(1));
 
     cg::CaptureGuard const guard(graph);
     cg::einsum("i,j,a,b <- i,a ; j,b", &tmp, A, B); // outer product -> tmp
@@ -87,8 +87,8 @@ TEST_CASE("SymmetrizedAccumulation matcher - sites sharing one scratch pair matc
     auto r2 = create_zero_tensor<double>("r2", 2, 2, 3, 3);
 
     cg::Graph graph("symacc-shared-scratch");
-    auto     &tmp  = graph.declare_tensor<double, 4>("tmp", 2, 2, 3, 3);
-    auto     &tmpP = graph.declare_tensor<double, 4>("tmpP", 2, 2, 3, 3);
+    auto     &tmp  = graph.scratch<double, 4>("tmp", 2, 2, 3, 3);
+    auto     &tmpP = graph.scratch<double, 4>("tmpP", 2, 2, 3, 3);
     {
         cg::CaptureGuard const guard(graph);
         for (int site = 0; site < 3; ++site) {
@@ -112,8 +112,8 @@ TEST_CASE("SymmetrizedAccumulation matcher - a lone permute+axpby is not a site"
     auto r2 = create_zero_tensor<double>("r2", 2, 2, 3, 3);
 
     cg::Graph graph("symacc-negative");
-    auto     &tmp  = graph.declare_tensor<double, 4>("tmp", 2, 2, 3, 3);
-    auto     &tmpP = graph.declare_tensor<double, 4>("tmpP", 2, 2, 3, 3);
+    auto     &tmp  = graph.scratch<double, 4>("tmp", 2, 2, 3, 3);
+    auto     &tmpP = graph.scratch<double, 4>("tmpP", 2, 2, 3, 3);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("i,j,a,b <- i,a ; j,b", &tmp, A, B);
@@ -138,8 +138,8 @@ TEST_CASE("SymmetrizedAccumulation matcher - the axpy spelling matches like axpb
     auto r2 = create_zero_tensor<double>("r2", 2, 2, 3, 3);
 
     cg::Graph graph("symacc-axpy-spelling");
-    auto     &tmp  = graph.declare_tensor<double, 4>("tmp", 2, 2, 3, 3);
-    auto     &tmpP = graph.declare_tensor<double, 4>("tmpP", 2, 2, 3, 3);
+    auto     &tmp  = graph.scratch<double, 4>("tmp", 2, 2, 3, 3);
+    auto     &tmpP = graph.scratch<double, 4>("tmpP", 2, 2, 3, 3);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("i,j,a,b <- i,a ; j,b", &tmp, A, B);
@@ -162,8 +162,8 @@ TEST_CASE("SymmetrizedAccumulation - skip reasons reset between applies", "[Comp
     auto r2 = create_zero_tensor<double>("r2", 2, 2, 3, 3);
 
     cg::Graph graph("symacc-reset");
-    auto     &tmp  = graph.declare_tensor<double, 4>("tmp", 2, 2, 3, 3);
-    auto     &tmpP = graph.declare_tensor<double, 4>("tmpP", 2, 2, 3, 3);
+    auto     &tmp  = graph.scratch<double, 4>("tmp", 2, 2, 3, 3);
+    auto     &tmpP = graph.scratch<double, 4>("tmpP", 2, 2, 3, 3);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("i,j,a,b <- i,a ; j,b", &tmp, A, B);

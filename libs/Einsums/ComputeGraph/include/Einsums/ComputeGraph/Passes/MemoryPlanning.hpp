@@ -95,6 +95,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE explicit MemoryPlanning(bool apply_arena) : _apply_arena(apply_arena) {}
 
     [[nodiscard]] std::string name() const override { return "MemoryPlanning"; }
+    /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }

@@ -44,6 +44,7 @@
 #include <Einsums/Python/Annotations.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -329,32 +330,17 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] virtual std::size_t min_region_nodes() const { return 1; }
 
     /**
-     * @brief Whether this pass may have grouped nodes raised into its regions.
+     * @brief The node features this pass's regions may hold: @ref default_region_features.
      *
-     * Off by default, which keeps a grouped node a barrier for every client
-     * that has not been taught to read one. That is a correctness gate rather
-     * than a convenience: a grouped statement's value is a member LIST, so
-     * @ref ExprTerm::tensor is empty on its leaves and
-     * @ref ExprStatement::target on its statements, and a rewrite that reads
-     * either without gating on @ref ExprTerm::ragged would name a tensor the
-     * statement does not write.
+     * A node carrying any other is a region barrier, which keeps it out of every rewrite this
+     * pass makes. A client that has been taught more says so by overriding this: admitting
+     * @ref NodeFeature::Grouped means reading a ragged leaf through its member list rather than
+     * @ref ExprTerm::tensor, and admitting @ref NodeFeature::PermutationOperators means keeping the
+     * rules @ref ExprStatement::operators states.
      *
-     * @return True when the pass reads ragged terms.
+     * @return The features a region of this pass may hold.
      */
-    [[nodiscard]] virtual bool raises_grouped() const { return false; }
-
-    /**
-     * @brief Whether this pass may have nodes that apply permutation operators raised into its regions.
-     *
-     * Off by default, which keeps such a node a barrier: the regions on either side of it are
-     * still formed and rewritten, and only a rewrite spanning it is given up. A client that opts
-     * in sees the operators on @ref ExprStatement::operators and must keep the rules stated
-     * there: never inline a statement that carries operators into another product, never merge
-     * values under different operators, and rename an operator's letters with the target's.
-     *
-     * @return True when the pass keeps those rules.
-     */
-    [[nodiscard]] virtual bool raises_operators() const { return false; }
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return default_region_features; }
 
   private:
     /// Record a region turned away, counting the reason for the structural report as well as
@@ -438,17 +424,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      */
     bool rewrite(Graph &graph, Region const &region, TensorExpr &expr) override;
 
-    /// @copydoc RegionRewrite::raises_grouped
-    /// True, and it is the gate the grouped raise is proved through: this pass
-    /// rewrites nothing, so a grouped region that comes back with different
-    /// numbers or a different node set says the raise and the lowering
-    /// disagree about what the family computes.
-    [[nodiscard]] bool raises_grouped() const override { return true; }
-
-    /// @copydoc RegionRewrite::raises_operators
-    /// True, for the same reason: a region holding a P(ij) node that comes back different says
-    /// the raise and the lowering disagree about where its operators go.
-    [[nodiscard]] bool raises_operators() const override { return true; }
+    /// @copydoc RegionRewrite::understood_features
+    /// Every feature, and this is the gate the grouped and operator raise are proved through: this
+    /// pass rewrites nothing, so a region that comes back with different numbers or a different
+    /// node set says the raise and the lowering disagree about what it computes.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 };
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

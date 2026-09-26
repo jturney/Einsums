@@ -144,22 +144,10 @@ bool PermuteFusion::run(Graph &graph) {
         for (auto tid : nodes[nd].outputs)
             producer[tid] = nd;
 
-    // The buffer a tensor id lands in: through a view to its parent, and through a slot redirect
-    // to the tensor whose storage it now shares (CSE merges two ids that way). Two ids with the
-    // same buffer are one tensor to every question below, and asking by id is how an earlier
-    // version fused a permute whose output another node still wrote under a different name.
-    auto const &redirects = graph.slot_redirects();
-    auto const  buffer_of = [&](TensorId id) {
-        for (std::size_t hop = 0; hop <= redirects.size(); hop++) {
-            TensorId const root = graph.resolve_alias(id);
-            auto const     next = redirects.find(root);
-            if (next == redirects.end()) {
-                return root;
-            }
-            id = next->second;
-        }
-        return graph.resolve_alias(id);
-    };
+    // Every question below is about the BUFFER an id lands in (Graph::buffer_of: through a view to
+    // its parent, and through a slot redirect to the storage it now shares). Asking by id is how an
+    // earlier version fused a permute whose output another node still wrote under a different name.
+    auto const buffer_of = [&graph](TensorId id) { return graph.buffer_of(id); };
 
     // Readers and value writers of every buffer, by node position. The permute's output has to
     // have exactly one of each, the permute and its consumer: removing the permute leaves the
@@ -182,6 +170,11 @@ bool PermuteFusion::run(Graph &graph) {
     for (size_t nd = 0; nd < nodes.size(); nd++) {
         if (nodes[nd].kind != OpKind::Einsum)
             continue;
+        if (!understands(graph, nodes[nd])) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", nodes[nd].label, describe_features(features_of(graph, nodes[nd]))));
+            continue;
+        }
 
         // Check each input slot (0=A, 1=B) of this einsum.
         for (size_t slot = 0; slot < nodes[nd].inputs.size() && slot < 2; slot++) {
@@ -197,6 +190,12 @@ bool PermuteFusion::run(Graph &graph) {
                 continue;
 
             _num_candidates++;
+
+            if (!understands(graph, nodes[prod_idx])) {
+                note_skip("the node carries a feature this pass does not understand",
+                          fmt::format("node '{}': {}", nodes[prod_idx].label, describe_features(features_of(graph, nodes[prod_idx]))));
+                continue;
+            }
 
             // Removing the permute leaves its output unwritten, so the output has to be
             // graph-owned scratch nobody can read afterwards, and no sub-graph body may

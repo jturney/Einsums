@@ -307,8 +307,14 @@ class EINSUMS_EXPORT TiledExpansion : public OptimizerPass {
      * derived from the phases.
      */
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
-    bool                    run(Graph &graph) override;
-    void                    reset_stats() override;
+    /// @copydoc OptimizerPass::understood_features
+    /// Not mixed precision, views or redirected slots: a tiled dot's result is cast with its operands' type.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
+               NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
+    }
+    bool run(Graph &graph) override;
+    void reset_stats() override;
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;

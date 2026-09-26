@@ -7,9 +7,12 @@
 #include <Einsums/Comm/Runtime.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Passes/InputSlicing.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
+
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <variant>
@@ -44,6 +47,12 @@ bool InputSlicing::run(Graph &graph) {
 
     for (size_t idx = 0; idx < nodes.size(); idx++) {
         auto const &node = nodes[idx];
+
+        if (!understands(graph, node)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+            continue;
+        }
 
         // The output's index list and each input's. Other kinds (BatchedGemm among them:
         // distributed batched contractions aren't supported, see docs/gemm_batching.rst) carry

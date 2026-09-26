@@ -22,6 +22,7 @@ from hypothesis import strategies as st
 
 import einsums
 import einsums.graph as cg
+from _sanitizer_scaling import sanitizer_examples
 
 _ctr = itertools.count()
 
@@ -43,7 +44,7 @@ def _rnd(shape, cplx, rng):
 @given(pattern=st.sampled_from(["linear_comb", "chain", "batch"]),
        conj_flags=st.tuples(st.booleans(), st.booleans(), st.booleans()),
        dt=st.sampled_from(["float64", "complex128"]), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=400, deadline=None,
+@settings(max_examples=sanitizer_examples(400), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_einsum_conj_through_passes(pattern, conj_flags, dt, seed):
     rng = np.random.default_rng(seed)

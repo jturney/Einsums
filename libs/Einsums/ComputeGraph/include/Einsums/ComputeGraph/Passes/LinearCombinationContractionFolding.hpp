@@ -110,6 +110,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Not permutation operators, views or redirected slots: the fused contraction is rebuilt without operators over owning runtime
+    /// tensors.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
+               NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
+    }
 
     /// @copydoc OptimizerPass::tier
     /// Folding a transpose pair into one contraction changes the order the two terms are summed in.

@@ -329,7 +329,7 @@ bool LayoutAssignment::run(Graph &graph) {
             note_skip("a loop body or conditional branch touches the permute's source", fmt::format("permute node {}", nodes[nd].id));
             return false;
         }
-        TensorId const root = graph.resolve_alias(source);
+        TensorId const root = graph.buffer_of(source);
         for (std::size_t later = nd + 1; later < nodes.size(); later++) {
             if (is_control_flow(nodes[later].kind)) {
                 note_skip("a sub-graph runs after the permute, and what it writes is not in this node list",
@@ -340,7 +340,7 @@ bool LayoutAssignment::run(Graph &graph) {
                 continue;
             }
             for (auto const out : nodes[later].outputs) {
-                if (graph.resolve_alias(out) == root) {
+                if (graph.buffer_of(out) == root) {
                     note_skip("the permute's source is written again after the copy is taken",
                               fmt::format("permute node {}", nodes[nd].id));
                     return false;
@@ -352,6 +352,20 @@ bool LayoutAssignment::run(Graph &graph) {
 
     for (std::size_t nd = 0; nd < nodes.size(); nd++) {
         Node const &node = nodes[nd];
+
+        // A node carrying a feature this pass does not understand is left alone, and so are its
+        // operands: re-laying one out would change what the node reads underneath it.
+        if (!understands(graph, node)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+            for (auto id : node.inputs) {
+                pin(id);
+            }
+            for (auto id : node.outputs) {
+                pin(id);
+            }
+            continue;
+        }
 
         // The lifecycle kinds name a tensor without indexing it, so they say nothing about its
         // axes. Everything else that is not a contraction pins what it touches: this pass

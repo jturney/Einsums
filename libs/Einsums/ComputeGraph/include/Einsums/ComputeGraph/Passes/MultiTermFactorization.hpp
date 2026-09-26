@@ -395,19 +395,21 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @return Two.
     [[nodiscard]] std::size_t min_region_nodes() const override { return 2; }
 
-    /// @copydoc RegionRewrite::raises_grouped
-    /// True. A grouped node is one operation over a family of members, which is a contraction
-    /// with one more free letter, and the residual terms of one pair body are several products
-    /// over the same per-pair operands. This pass reads a ragged leaf through its member list and
-    /// declares a shared intermediate carrying a member letter per member.
-    [[nodiscard]] bool raises_grouped() const override { return true; }
-
-    /// @copydoc RegionRewrite::raises_operators
-    /// True. An operator acts on the finished value, so re-bracketing the product under it is
-    /// free. A statement carrying one is never folded into a consumer and never serves as a
-    /// shared intermediate, since its target holds the permuted value rather than the product,
-    /// and the outermost combine of its re-bracketed tree carries the operators again.
-    [[nodiscard]] bool raises_operators() const override { return true; }
+    /// @copydoc RegionRewrite::understood_features
+    /// The region default plus grouped families and permutation operators.
+    ///
+    /// A grouped node is one operation over a family of members, which is a contraction with one
+    /// more free letter, and the residual terms of one pair body are several products over the same
+    /// per-pair operands. This pass reads a ragged leaf through its member list and declares a shared
+    /// intermediate carrying a member letter per member.
+    ///
+    /// An operator acts on the finished value, so re-bracketing the product under it is free. A
+    /// statement carrying one is never folded into a consumer and never serves as a shared
+    /// intermediate, since its target holds the permuted value rather than the product, and the
+    /// outermost combine of its re-bracketed tree carries the operators again.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return default_region_features | NodeFeature::Grouped | NodeFeature::PermutationOperators;
+    }
 
   private:
     /// @brief A cached plan's identity: which graph, which region of it, under which caps.

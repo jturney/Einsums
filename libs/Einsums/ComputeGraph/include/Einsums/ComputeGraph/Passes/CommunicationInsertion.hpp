@@ -69,8 +69,14 @@ class EINSUMS_EXPORT CommunicationInsertion : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
-    bool                    run(Graph &graph) override;
-    void                    reset_stats() override;
+    /// @copydoc OptimizerPass::understood_features
+    /// Not views, grouped families, tiled operands or redirected slots: the allreduce spans a whole dense buffer.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
+               NodeFeature::MixedPrecision | NodeFeature::ControlFlow | NodeFeature::RawScalar;
+    }
+    bool run(Graph &graph) override;
+    void reset_stats() override;
 
     [[nodiscard]] size_t num_inserted() const { return _num_inserted; }
 

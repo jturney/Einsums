@@ -187,8 +187,9 @@ struct TreeContext {
 
 void collect_tree_context(Graph const &graph, TreeContext &ctx) {
     auto const &tensors = graph.tensors_map();
-    auto const  ptr_of  = [&](TensorId tid) -> void const  *{
-        auto it = tensors.find(tid);
+    // By BUFFER: a touch through a view or a redirected slot is a touch of the storage it lands in.
+    auto const ptr_of = [&](TensorId tid) -> void const * {
+        auto it = tensors.find(graph.buffer_of(tid));
         return (it != tensors.end()) ? it->second.tensor_ptr : nullptr;
     };
 
@@ -232,10 +233,12 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
     // Build a remapping of tensor IDs for eliminated nodes.
     std::unordered_map<TensorId, TensorId> tensor_redirect;
 
-    // Resolve a TensorId in this graph to its underlying buffer pointer
-    // (stable identity for a tensor; null when unresolved).
+    // Resolve a TensorId in this graph to the pointer of the BUFFER it occupies (stable identity
+    // for a tensor across graphs; null when unresolved). Through views and slot redirects, so a
+    // write through a view of a shared input, or through one of the survivor, counts against the
+    // storage it lands in: keyed on the id's own object, both guards below missed such a write.
     auto ptr_of = [&](TensorId tid) -> void const * {
-        auto const *handle = graph.find_tensor(tid);
+        auto const *handle = graph.find_tensor(graph.buffer_of(tid));
         return handle != nullptr ? handle->tensor_ptr : nullptr;
     };
 
@@ -353,6 +356,15 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
         if (!pure_overwrite(nodes[j]))
             continue;
 
+        // Neither a survivor nor a candidate: a merge either removes the node or keys every later
+        // match on its reading of the operands, and a node carrying a feature this pass does not
+        // understand is one it cannot read.
+        if (!understands(graph, nodes[j])) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", nodes[j].label, describe_features(features_of(graph, nodes[j]))));
+            continue;
+        }
+
         CandidateKey key;
         key.kind        = nodes[j].kind;
         key.num_outputs = nodes[j].outputs.size();
@@ -366,6 +378,11 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
 
         auto &bucket = buckets[key];
         bool  merged = false;
+
+        // Whether every reader of j's outputs is a node this pass understands, asked once and only
+        // when a match reaches the merge: a merge rewrites each such reader's inputs, and may fold
+        // a factor into it.
+        std::optional<bool> readers_understood;
 
         for (size_t const i : bucket) {
             // The two nodes must compute the same thing up to one real scalar;
@@ -550,6 +567,27 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
                 if (!all_foldable)
                     continue;
             }
+
+            if (!readers_understood.has_value()) {
+                readers_understood = true;
+                std::unordered_set<TensorId> outputs;
+                for (TensorId const out : nodes[j].outputs) {
+                    outputs.insert(graph.buffer_of(out));
+                }
+                for (size_t k = 0; k < nodes.size() && *readers_understood; k++) {
+                    if (k == j || remove[k])
+                        continue;
+                    bool const reads =
+                        std::ranges::any_of(nodes[k].inputs, [&](TensorId in) { return outputs.contains(graph.buffer_of(in)); });
+                    if (reads && !understands(graph, nodes[k])) {
+                        note_skip("the node carries a feature this pass does not understand",
+                                  fmt::format("node '{}': {}", nodes[k].label, describe_features(features_of(graph, nodes[k]))));
+                        readers_understood = false;
+                    }
+                }
+            }
+            if (!*readers_understood)
+                break; // no survivor can take j's place while a reader of it is one this pass cannot rewrite
 
             for (size_t const k : folds) {
                 apply_fold(nodes[k], FoldSite::Operand, *ratio);

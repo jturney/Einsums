@@ -304,6 +304,10 @@ TEST_CASE("Recursion policy - hoisting / aggregation passes stay opt-out", "[Com
     // per-graph auto-recursion cannot see those references and would wrongly
     // eliminate a body producer whose only reader is outside the child.
     CHECK_FALSE(cg::passes::DeadNodeElimination{}.recurse_into_subgraphs());
+    // SymmetrizedAccumulation for the same reason: folding a site stops writing its scratch, which
+    // an enclosing graph may own and read, so run() carries what the rest of the program touches
+    // down into each body itself.
+    CHECK_FALSE(cg::passes::SymmetrizedAccumulation{}.recurse_into_subgraphs());
 }
 
 TEST_CASE("DeadNodeElimination transforms a loop body via its own descent", "[ComputeGraph][Recursion]") {

@@ -76,8 +76,15 @@ class EINSUMS_EXPORT TransferElimination : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
-    bool                    run(Graph &graph) override;
-    void                    reset_stats() override;
+    /// @copydoc OptimizerPass::understood_features
+    /// Every feature today: it only removes redundant transfers.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::Conjugation |
+               NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow |
+               NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
+    }
+    bool run(Graph &graph) override;
+    void reset_stats() override;
 
     /// Recurse into loop bodies / conditional branches. Per-graph cleanup
     /// of redundant transfers within each body (its existing is_loop_tensor

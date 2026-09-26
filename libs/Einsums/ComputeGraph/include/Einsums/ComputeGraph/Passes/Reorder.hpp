@@ -72,6 +72,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Tuning; }
+    /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
     [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
 

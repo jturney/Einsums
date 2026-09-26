@@ -76,7 +76,7 @@ import pytest
 import einsums
 import einsums.graph as cg
 import einsums._core.graph as _G  # pass classes / Workspace, re-exported for shards
-from _permutation_operators import P_SHAPES, apply_operator, operator_prefix
+from _permutation_operators import P_SHAPES, apply_operator, operator_prefix, shaped_operator
 from _sanitizer_scaling import fuzz_seeds  # seed-count scaling under sanitizers
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -238,6 +238,17 @@ ETRANSFORM_FNS = [
 #           ("t", i)                       the rank-3 tensor t[i]
 #         so one opcode carries an operator, a view read, and a view WRITE.
 #
+# Opt-in (``all_passes=True``, drawn only by the all-passes shuffled shard):
+#
+#   ("aperm", kind, op, a, src, cpf, C)
+#         C = a * op(src) + cpf * C, a permute under a permutation operator on
+#         the matrix pool (kind "m", letters i,j) or the rank-3 pool (kind "t",
+#         letters i,j,k)
+#   ("dot", kind, out, A, B)                v[out] = [sum(A * B)]
+#   ("ddiv", a, A, D, cpf, C)               m[C] = a * m[A] / m[D] + cpf * m[C]
+#
+# plus the statements above, over the extra pool slots ``ALLPASS_*`` describes.
+#
 # A ``rich_ops`` program may also name graph-owned scratch: matrix slots at
 # SCRATCH_BASE and above, which only ``_build_with_scratch`` creates. Such a
 # program goes through the rich arms, never through ``check_program``.
@@ -273,23 +284,25 @@ def _fallback(rng):
     return ("scale", _scalar(rng), int(rng.integers(0, len(MAT_SHAPES))))
 
 
-def _gen_block(rng, depth, max_stmts, rich_views=False, rank_views=False, rich_ops=False):
+def _gen_block(rng, depth, max_stmts, rich_views=False, rank_views=False, rich_ops=False, all_passes=False):
     stmts = []
     n = int(rng.integers(1, max_stmts + 1))
     for _ in range(n):
         roll = rng.random()
         if depth > 0 and roll < 0.18:
             cnt = int(rng.integers(1, 4))
-            stmts.append(("loop", cnt, _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views, rich_ops)))
+            stmts.append(("loop", cnt, _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views, rich_ops,
+                                                  all_passes)))
         elif depth > 0 and roll < 0.30:
             flag = bool(rng.integers(0, 2))
-            then = _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views, rich_ops)
-            els = _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views, rich_ops)
+            then = _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views, rich_ops, all_passes)
+            els = _gen_block(rng, depth - 1, max_stmts, rich_views, rank_views, rich_ops, all_passes)
             stmts.append(("cond", flag, then, els))
         else:
-            prim = _gen_primitive(rng, rich_views, rank_views, rich_ops)
-            # Only the rich_ops draw returns a run of statements (a batchable
-            # cluster), so the other corpora never reach the extend.
+            prim = _gen_primitive(rng, rich_views, rank_views, rich_ops, all_passes)
+            # Only the rich_ops and all_passes draws return a run of statements
+            # (a batchable cluster, a motif), so the other corpora never reach
+            # the extend.
             if isinstance(prim, list):
                 stmts.extend(prim)
             else:
@@ -673,7 +686,11 @@ def rich_op_census(stmts, out=None):
     return out
 
 
-def _gen_primitive(rng, rich_views=False, rank_views=False, rich_ops=False):
+def _gen_primitive(rng, rich_views=False, rank_views=False, rich_ops=False, all_passes=False):
+    # Checked first and drawn only when asked for, so no other corpus consumes
+    # an extra random number and every existing seed keeps its program.
+    if all_passes and rng.random() < 0.45:
+        return _gen_all_passes_motif(rng)
     if rich_views and rng.random() < 0.25:
         return _gen_chained_view(rng)
     if rank_views and rng.random() < 0.30:
@@ -847,7 +864,8 @@ def interp_np(stmts, m, v, t, dt=None):
             ca, cb = (s[7], s[8]) if len(s) > 7 else (False, False)
             opA = np.conj(m[A]) if ca else m[A]
             opB = np.conj(m[B]) if cb else m[B]
-            m[C] = cast(ab * EINSUM_PATTERNS[spec][0](opA, opB) + cpf * m[C])
+            fn = EINSUM_PATTERNS[spec][0] if spec in EINSUM_PATTERNS else _MATMUL_SPELLINGS[spec]
+            m[C] = cast(ab * fn(opA, opB) + cpf * m[C])
         elif k == "beinsum":
             spec, ab, A, B, cpf, C = s[1:7]
             ca, cb = (s[7], s[8]) if len(s) > 7 else (False, False)
@@ -911,6 +929,18 @@ def interp_np(stmts, m, v, t, dt=None):
             c_idx = list(spec.split("<-")[0].strip())
             base = apply_operator(op, c_idx, patterns[spec][0](opA, opB))
             _ref_write(Cref, m, t, ab * base + cpf * _ref_read(Cref, m, t), cast)
+        elif k == "aperm":
+            _, kind, op, a, src, cpf, C = s
+            pool = m if kind == "m" else t
+            letters = _APERM_LETTERS[kind]
+            pool[C] = cast(a * apply_operator(op, letters, pool[src]) + cpf * pool[C])
+        elif k == "dot":
+            _, kind, out, A, B = s
+            pool = m if kind == "m" else t
+            v[out] = cast(np.array([np.sum(pool[A] * pool[B])]))
+        elif k == "ddiv":
+            _, a, A, D, cpf, C = s
+            m[C] = cast(a * (m[A] / m[D]) + cpf * m[C])
         elif k == "loop":
             _, n, body = s
             for _ in range(n):
@@ -1001,6 +1031,18 @@ def _emit_primitive(s, m, v, t):
         full = f"{lhs.strip()} <- {operator_prefix(op)}{rhs.strip()}"
         einsums.einsum(full, _ref_tensor(Cref, m, t), _ref_tensor(Aref, m, t), _ref_tensor(Bref, m, t),
                        c_pf=cpf, ab_pf=ab, conj_a=ca, conj_b=cb)
+    elif k == "aperm":
+        _, kind, op, a, src, cpf, C = s
+        pool = m if kind == "m" else t
+        letters = ",".join(_APERM_LETTERS[kind])
+        einsums.permute(f"{letters} <- {operator_prefix(op)}{letters}", pool[C], pool[src], c_pf=cpf, a_pf=a)
+    elif k == "dot":
+        _, kind, out, A, B = s
+        pool = m if kind == "m" else t
+        einsums.linalg.dot(v[out], pool[A], pool[B])
+    elif k == "ddiv":
+        _, a, A, D, cpf, C = s
+        einsums.linalg.direct_division(a, m[A], m[D], cpf, m[C])
     else:  # pragma: no cover
         raise AssertionError(f"not a primitive: {k!r}")
 
@@ -1934,6 +1976,853 @@ def measure_program_single_pass(prog, m_arrays, v_arrays, t_arrays, label,
     }
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# Every default pass in a shuffled order
+#
+# ``check_program_rich_pipeline`` shuffles the passes that act on operators,
+# views and scratch. The default pipeline holds eleven more that no shuffled
+# arm ever ran: the delta and provenance pair, the four antisymmetrizer passes,
+# SymmetrizedAccumulation, the two sum-factoring folds, and the two passes that
+# re-bracket products. Each is a recognizer for a shape the random corpus never
+# draws (a tensor declared an identity, a bound antisymmetric input, a
+# transposed accumulation, a chain large enough for a cost model to have an
+# opinion), so shuffling them over that corpus would shuffle them without ever
+# running them.
+#
+# So the arm carries its own motifs, one per recognizer, and a pool extended by
+# the tensors those motifs need. The extension lives AFTER every slot the other
+# corpora know about, so no existing program or seed changes:
+#
+#   matrix slots ALLPASS_XM_BASE + j, described by ALLPASS_XM_SLOTS[j]
+#   rank-3 slots ALLPASS_XT_BASE + j, described by ALLPASS_XT_SLOTS[j]
+#   vector slots ALLPASS_XV_BASE + j, described by ALLPASS_XV_SLOTS[j]
+#
+# Each slot has a role. Roles whose data the declarations and the
+# data-reading passes rely on, which no generator writes except to rescale an
+# ``anti`` slot, which keeps it antisymmetric:
+#
+#   delta        an identity, declared one with ``cg.annotate(tag="identity")``
+#   anti, anti3  data antisymmetric in the axes an operator permutes (axes 1
+#                and 2 for rank three, the group of P(i/jk))
+#   sym          a symmetric, strictly positive denominator
+#   occ, zero    space annotations that make their shared letter range over
+#                two disjoint spaces; ``zero`` holds zeros, so the data honours
+#                what the annotation claims
+#
+# Source roles, random data the motifs read. The linearity, fold, multi-term
+# and distributive motifs now and then write one of theirs between the
+# statements a pass rewrites, which is a write that pass must see:
+#
+#   linsrc       the sources of the linearity and fold motifs
+#   mtfsrc       the factors of the multi-term motif
+#   cpsrc        the factors of the chain motif
+#   dfsrc        the operands of the distributive motif
+#   lccft, lccfv the rank-3 and vector operands of the 2J-K motif (lccft also
+#                serves as a rank-3 fold source)
+#
+# Roles only one motif writes: ``mtfout``, ``cpout``, ``dfout``, ``lccfout``
+# and ``symout``, each that motif's result. Graph-owned roles, created only
+# when a program names them: ``scratch``, ``symacc``, ``foldscr``, ``cpscr``
+# and ``deltascr``.
+#
+# The dedicated roles keep each motif's shape intact wherever it lands: a
+# recognizer finds the single writer or the untouched operand it looks for,
+# unless the motif itself drew the write that must make it decline (see the
+# motif docstrings for which writes each one draws).
+# ──────────────────────────────────────────────────────────────────────────
+
+#: The two extents of the re-bracketing motifs: a product through the long one
+#: is what ContractionPlanning and MultiTermFactorization re-bracket.
+ALLPASS_BS, ALLPASS_BL = 3, 12
+
+ALLPASS_XM_BASE = SCRATCH_BASE + len(SCRATCH_SHAPES)
+ALLPASS_XM_SLOTS: list[tuple[tuple[int, ...], str]] = (
+    [((n, n), "delta") for n in DIMS for _ in range(2)]
+    + [((n, n), "anti") for n in DIMS[1:] for _ in range(2)]
+    + [((n, n), "sym") for n in DIMS for _ in range(2)]
+    + [((n, n), "occ") for n in DIMS[1:]]
+    + [((n, n), "zero") for n in DIMS[1:]]
+    + [((n, n), "linsrc") for n in DIMS[1:] for _ in range(2)]
+    + [((n, n), "symout") for n in DIMS for _ in range(2)]
+    + [((a, b), "dfsrc") for a in (2, 3) for b in (2, 3) for _ in range(4)]
+    + [((a, b), "dfout") for a in (2, 3) for b in (2, 3) for _ in range(2)]
+    + [((n, n), "lccfout") for n in R3_DIMS for _ in range(2)]
+    + [((ALLPASS_BS, ALLPASS_BL), "mtfsrc") for _ in range(3)]
+    + [((ALLPASS_BL, ALLPASS_BS), "mtfsrc")]
+    + [((ALLPASS_BS, ALLPASS_BL), "mtfout") for _ in range(2)]
+    + [((ALLPASS_BL, ALLPASS_BS), "cpsrc") for _ in range(2)]
+    + [((ALLPASS_BS, ALLPASS_BL), "cpsrc")]
+    + [((ALLPASS_BL, ALLPASS_BS), "cpout")]
+    + [((n, n), "scratch") for n in DIMS for _ in range(4)]
+    + [((n, n), "symacc") for n in DIMS for _ in range(2)]
+    + [((n, n), "deltascr") for n in DIMS for _ in range(2)]
+    + [((n, n), "foldscr") for n in DIMS[1:] for _ in range(12)]
+    + [((ALLPASS_BL, ALLPASS_BL), "scratch") for _ in range(2)]
+    + [((ALLPASS_BL, ALLPASS_BL), "cpscr") for _ in range(4)]
+)
+
+ALLPASS_XT_BASE = len(R3_SHAPES)
+ALLPASS_XT_SLOTS: list[tuple[tuple[int, ...], str]] = (
+    [((k, n, n), "lccft") for k in R3_DIMS for n in R3_DIMS]
+    + [((n, n, n), "anti3") for n in R3_DIMS[1:] for _ in range(2)]
+    + [((n, n, n), "scratch") for n in R3_DIMS[1:] for _ in range(4)]
+)
+
+
+def _slots_by_role(slots, base):
+    out: dict[str, dict[tuple[int, ...], list[int]]] = {}
+    for j, (shape, role) in enumerate(slots):
+        out.setdefault(role, {}).setdefault(shape, []).append(base + j)
+    return out
+
+
+ALLPASS_XV_BASE = len(VEC_LENS)
+ALLPASS_XV_SLOTS: list[tuple[tuple[int, ...], str]] = [((k,), "lccfv") for k in R3_DIMS]
+
+ALLPASS_XM_BY = _slots_by_role(ALLPASS_XM_SLOTS, ALLPASS_XM_BASE)
+ALLPASS_XV_BY = _slots_by_role(ALLPASS_XV_SLOTS, ALLPASS_XV_BASE)
+
+#: Roles whose slots are graph-owned and start at zero. ``symacc`` is scratch
+#: that only the SymmetrizedAccumulation motif touches (see _motif_symacc) and
+#: ``foldscr`` scratch only the rank-2 fold motif writes, so its operands keep
+#: the single writer the antisymmetrizer passes look for; ``cpscr`` is the
+#: chain motif's interior, for the same reason; ``deltascr`` holds a transposed
+#: delta and nothing else (see _motif_delta).
+_ALLPASS_SCRATCH_ROLES = ("scratch", "symacc", "foldscr", "cpscr", "deltascr")
+ALLPASS_XT_BY = _slots_by_role(ALLPASS_XT_SLOTS, ALLPASS_XT_BASE)
+
+#: The letters an ``aperm`` spells its operand and result with, per pool.
+_APERM_LETTERS = {"m": ["i", "j"], "t": ["i", "j", "k"]}
+
+_MATMUL = "ij <- ik ; kj"
+
+#: Other spellings of the plain matrix product, so a chain can name each
+#: statement's letters apart the way hand-written CC code does. Kept out of
+#: EINSUM_PATTERNS, whose key list the other corpora draw from.
+_MATMUL_SPELLINGS = {spec: (lambda A, B: A @ B) for spec in (
+    "pr <- pq ; qr", "ps <- pr ; rs", "qs <- qr ; rs", "ps <- pq ; qs",
+    "tv <- tu ; uv", "tw <- tv ; vw")}
+
+
+def _xm(rng, role, shape, exclude=()):
+    return _pick(rng, ALLPASS_XM_BY.get(role, {}), shape, exclude)
+
+
+def _xt(rng, role, shape, exclude=()):
+    return _pick(rng, ALLPASS_XT_BY.get(role, {}), shape, exclude)
+
+
+def _pick_distinct(picker, count, *args):
+    """@p count distinct slots from @p picker, or None when the pool runs short."""
+    got = []
+    for _ in range(count):
+        s = picker(*args, exclude=tuple(got))
+        if s is None:
+            return None
+        got.append(s)
+    return got
+
+
+def _motif_delta(rng):
+    """A contraction against a declared identity, feeding a second contraction.
+
+    DeltaElimination's shape. A third of the time the identity is first
+    transposed into scratch, which is an identity only because
+    ProvenancePropagation carries the tag across the permute, so whether the
+    delta is seen depends on which of the two ran first.
+    """
+    spec = _EINSUM_SPECS[int(rng.integers(0, len(_EINSUM_SPECS)))]
+    _, shape_rule = EINSUM_PATTERNS[spec]
+    ni, nk, nj = _d(rng), _d(rng), _d(rng)
+    on_left = rng.random() < 0.5
+    # The delta operand must be square, so the two letters it carries share an extent.
+    if on_left:
+        ni = nk
+    else:
+        nj = nk
+    sa, sb, sc = shape_rule(ni, nk, nj)
+    n = sa[0] if on_left else sb[0]
+    delta = _xm(rng, "delta", (n, n))
+    out = []
+    if rng.random() < 0.33:
+        # Half the time a plain transpose into a ``deltascr`` slot, which nothing
+        # else writes, so the copy is an identity the tag may follow. Otherwise the
+        # copy scales or accumulates, lands in scratch other statements share,
+        # or is overwritten before the contraction reads it, and the tag must
+        # not follow (``test_provenance_propagation_tags_only_a_plain_copy``).
+        if rng.random() < 0.5:
+            moved = _xm(rng, "deltascr", (n, n))
+            out.append(("perm", 1.0, 0.0, delta, moved))
+        else:
+            moved = _xm(rng, "scratch", (n, n)) if rng.random() < 0.5 else _pick(rng, SCRATCH_BY_SHAPE, (n, n))
+            a = 1.0 if rng.random() < 0.5 else _scalar(rng)
+            out.append(("perm", a, 0.0 if rng.random() < 0.7 else 1.0, delta, moved))
+            if rng.random() < 0.25:
+                X, Y = _pick_mat(rng, (n, n)), _pick_mat(rng, (n, n))
+                out.append(("einsum", _MATMUL, _scalar(rng), X, Y, 0.0, moved, False, False))
+        delta = moved
+    other = _pick_mat(rng, sb if on_left else sa)
+    if other is None:
+        return _fallback(rng)
+    A, B = (delta, other) if on_left else (other, delta)
+    # Usually graph scratch, which is what the pass dissolves; sometimes a user
+    # tensor, whose write the rewrite must keep.
+    into_scratch = rng.random() < 0.75
+    if into_scratch:
+        tmp = _pick(rng, SCRATCH_BY_SHAPE, sc, (A, B))
+    else:
+        tmp = _pick_mat(rng, sc, (A, B))
+    if tmp is None:
+        return _fallback(rng)
+    # A unit prefactor into scratch read by the next contraction is a chain
+    # MultiTermFactorization dissolves, spelled with letters (i, j, k at
+    # whatever extents the draw gave) that other statements in the region
+    # reuse at other extents; see ``_respelled``.
+    ab = 1.0 if rng.random() < 0.6 else _scalar(rng)
+    cpf = 0.0 if rng.random() < 0.8 else 1.0
+    ca, cb = bool(rng.random() < 0.2), bool(rng.random() < 0.2)
+    out.append(("einsum", spec, ab, A, B, cpf, tmp, ca, cb))
+    q = _d(rng)
+    E = _pick_mat(rng, (sc[1], q))
+    C2 = _pick_mat(rng, (sc[0], q), (A, B, tmp, E))
+    if E is None or C2 is None:
+        return _fallback(rng)
+    out.append(("einsum", _MATMUL, _scalar(rng), tmp, E, float(rng.integers(0, 2)), C2,
+                bool(rng.random() < 0.2), False))
+    return out
+
+
+def _motif_zero_block(rng):
+    """A contraction whose summed letter ranges over two disjoint spaces."""
+    n = int(rng.choice(DIMS[1:]))
+    A, Z = _xm(rng, "occ", (n, n)), _xm(rng, "zero", (n, n))
+    C = _pick_mat(rng, (n, n))
+    cpf = [0.0, 1.0, 2.0, _scalar(rng)][int(rng.integers(0, 4))]
+    return [("einsum", _MATMUL, _scalar(rng), A, Z, cpf, C, False, False)]
+
+
+def _unit_or_scalar(rng):
+    """Exactly one half of the time, the prefactor a hand-written operator most often carries."""
+    return 1.0 if rng.random() < 0.5 else _scalar(rng)
+
+
+def _antisym_producer(rng, op, n, src, out):
+    """``out = a * op(src)``, as a permute or as an einsum under the operator.
+
+    Both forms draw ``a`` half of the time and use one otherwise. A fold that
+    repoints the contraction at the permute's source must carry the permute's
+    prefactor with it
+    (``test_antisymmetrizer_folding_keeps_the_operator_prefactor``).
+    """
+    if rng.random() < 0.7:
+        return ("aperm", "m", op, _unit_or_scalar(rng), src, 0.0, out)
+    k = _d(rng)
+    A, B = _pick_mat(rng, (n, k)), _pick_mat(rng, (k, n))
+    return ("xeinsum", _MATMUL, op, _unit_or_scalar(rng), ("m", A), ("m", B), 0.0, ("m", out), False, False)
+
+
+def _motif_antisym_fold(rng):
+    """An antisymmetrized matrix contracted to a scalar against an antisymmetric one.
+
+    The AntisymmetrizerFolding shape, with the premise on the other operand
+    established two ways: structurally (a second antisymmetrizer's output,
+    which AntisymmetryInference tags) or through an invariant denominator
+    (inference carries the tag across a division by a ``sym`` slot, which
+    AntisymmetryDetection finds invariant). A bound antisymmetric matrix as the
+    other operand is not a premise the passes establish for P(i/j), whose
+    groups are singletons, so it is not drawn; _motif_antisym_fold3 is where a
+    premise read from the data is exercised.
+    """
+    n = int(rng.choice(DIMS[1:]))
+    op = _gen_rank2_operator(rng)
+    # A source is sometimes a matrix other statements write, and a quarter of
+    # the time one is rescaled between the operators and the dot. The fold
+    # repoints the dot at the source, so it must see that write
+    # (``test_antisymmetrizer_folding_sees_its_source_overwritten``). A
+    # rescale keeps an ``anti`` slot antisymmetric, which is what
+    # AntisymmetryDetection reads from it.
+    roll = rng.random()
+    src_v = (_xm(rng, "anti", (n, n)) if roll < 0.3 else _xm(rng, "linsrc", (n, n)) if roll < 0.8
+             else _pick_mat(rng, (n, n)))
+    scratch = _pick_distinct(lambda exclude=(): _xm(rng, "foldscr", (n, n), exclude), 3)
+    out = _pick_vec(rng, 1)
+    if scratch is None or out is None:
+        return _fallback(rng)
+    W, V, Wd = scratch
+    # The folded operand is always a permute: the pass folds only that form.
+    # Now and then a destination prefactor: the output is no longer the
+    # operator's value, so the fold must decline.
+    stmts = [("aperm", "m", op, _unit_or_scalar(rng), src_v, 1.0 if rng.random() < 0.1 else 0.0, V)]
+    src_w = _xm(rng, "anti", (n, n)) if rng.random() < 0.5 else _xm(rng, "linsrc", (n, n))
+    stmts.insert(0, _antisym_producer(rng, op, n, src_w, W))
+    if rng.random() < 0.25:
+        stmts.append(("scale", _scalar(rng), src_v if rng.random() < 0.7 else src_w))
+    other = W
+    if rng.random() < 0.5:
+        stmts.append(("ddiv", 1.0 if rng.random() < 0.5 else _scalar(rng), W, _xm(rng, "sym", (n, n)), 0.0, Wd))
+        other = Wd
+    pair = (other, V) if rng.random() < 0.5 else (V, other)
+    stmts.append(("dot", "m", out) + pair)
+    return stmts
+
+
+def _motif_antisym_fold3(rng):
+    """The coset form on rank three: P(i/jk) of a source antisymmetric in (j,k).
+
+    Only AntisymmetryDetection establishes the within-group premise, so the fold
+    here rests on data rather than on structure.
+    """
+    n = int(rng.choice(R3_DIMS[1:]))
+    shape_index = int(rng.choice([1, 1, 3, 2]))
+    op = shaped_operator(shape_index, ("i", "j", "k"))
+    # Read-only sources. The rank-3 pool has no whole-tensor write, and a slab
+    # write would break the antisymmetry AntisymmetryDetection reads from an
+    # ``anti3`` slot; _motif_antisym_fold draws a source written before the dot.
+    src_w = _xt(rng, "anti3", (n, n, n)) if rng.random() < 0.7 else _xt(rng, "lccft", (n, n, n))
+    src_v = _xt(rng, "lccft", (n, n, n)) if rng.random() < 0.7 else _xt(rng, "anti3", (n, n, n))
+    scratch = _pick_distinct(lambda exclude=(): _xt(rng, "scratch", (n, n, n), exclude), 2)
+    out = _pick_vec(rng, 1)
+    if scratch is None or out is None or src_w is None or src_v is None:
+        return _fallback(rng)
+    W, V = scratch
+    # Drawn prefactors, for the reason _antisym_producer gives.
+    return [("aperm", "t", op, _unit_or_scalar(rng), src_w, 0.0, W),
+            ("aperm", "t", op, _unit_or_scalar(rng), src_v, 0.0, V),
+            ("dot", "t", out) + ((W, V) if rng.random() < 0.5 else (V, W))]
+
+
+def _motif_linearity(rng):
+    """``X = a P(A)``, ``Y = c P(B)``, ``X += s Y``, then X read: AntisymmetrizerLinearity."""
+    n = int(rng.choice(DIMS[1:]))
+    op = _gen_rank2_operator(rng)
+    # B is sometimes a matrix other statements write, and a quarter of the time
+    # the second operator's source is rescaled between the two operators. The
+    # merged sum is built at the FIRST operator, so it must see that write
+    # (``test_antisymmetrizer_linearity_sees_a_write_between_the_operators``).
+    A = _xm(rng, "anti", (n, n)) if rng.random() < 0.3 else _xm(rng, "linsrc", (n, n))
+    B = _xm(rng, "linsrc", (n, n), (A,)) if rng.random() < 0.8 else _pick_mat(rng, (n, n))
+    scratch = _pick_distinct(lambda exclude=(): _xm(rng, "scratch", (n, n), exclude), 2)
+    if scratch is None:
+        return _fallback(rng)
+    X, Y = scratch
+    # Now and then the second operator is spelled with its letters swapped, which
+    # names the same antisymmetrizer through a different group order.
+    op_y = op if rng.random() < 0.8 else _gen_rank2_operator(rng)
+    prod = [("aperm", "m", op, _scalar(rng), A, 0.0, X), ("aperm", "m", op_y, _scalar(rng), B, 0.0, Y)]
+    if rng.random() < 0.5:
+        prod.reverse()
+    if rng.random() < 0.25:
+        prod.insert(1, ("scale", _scalar(rng), prod[1][4]))
+    stmts = prod + [("axpby", _scalar(rng), Y, 1.0, X)]
+    if rng.random() < 0.5:
+        C = _pick_mat(rng, (n, n))
+        stmts.append(("axpy", _scalar(rng), X, C))
+    else:
+        stmts.append(("dot", "m", _pick_vec(rng, 1), X, _pick_mat(rng, (n, n))))
+    return stmts
+
+
+def _motif_symacc(rng):
+    """``r2 += s tmp; tmpP = tmp^T; r2 += s tmpP``: SymmetrizedAccumulation.
+
+    ``tmp`` may be a user tensor, which is a program a caller can write and
+    whose final value the caller can read. ``tmpP`` is usually graph scratch of
+    the ``symacc`` role, which nothing but the transpose writes, and otherwise
+    a user tensor the caller reads back
+    (``test_symmetrized_accumulation_keeps_a_caller_held_transpose``). A
+    fifth of the time the site is followed by an accumulate into ``tmpP``
+    and a read of it
+    (``test_symmetrized_accumulation_sees_a_later_accumulate_into_the_transpose``).
+    Either way the rewrite must keep ``tmpP``'s write. Now and then a loop
+    that reads ``r2`` sits right after the transpose, ahead of a half, and the
+    rewrite must not move that half's contribution up past it
+    (``test_symmetrized_accumulation_sees_a_loop_between_the_halves``). A
+    shuffled Reorder or LoopInvariantHoisting also moves loops between the
+    halves when the motif lands both in a block and inside one of its loops.
+    """
+    n, k = _d(rng), _d(rng)
+    A, B = _pick_mat(rng, (n, k)), _pick_mat(rng, (k, n))
+    tmp = _xm(rng, "scratch", (n, n)) if rng.random() < 0.7 else _pick_mat(rng, (n, n), (A, B))
+    tmpP = _xm(rng, "symacc", (n, n)) if rng.random() < 0.8 else _pick_mat(rng, (n, n), (A, B, tmp))
+    r2 = _xm(rng, "symout", (n, n))
+    if None in (A, B, tmp, tmpP, r2):
+        return _fallback(rng)
+    s1 = _scalar(rng)
+    s2 = s1 if rng.random() < 0.8 else _scalar(rng)
+    e = ("einsum", _MATMUL, _scalar(rng), A, B, 0.0, tmp, False, False)
+    a1 = ("axpby", s1, tmp, 1.0, r2)
+    p = ("perm", 1.0, 0.0, tmp, tmpP)
+    a2 = ("axpby", s2, tmpP, 1.0, r2)
+    orders = ([e, a1, p, a2], [e, p, a1, a2], [e, p, a2, a1])
+    stmts = list(orders[int(rng.integers(0, len(orders)))])
+    if rng.random() < 0.15:
+        Z = _pick_mat(rng, (n, n), (tmp, tmpP))
+        stmts.insert(stmts.index(p) + 1, ("loop", int(rng.integers(1, 3)), [("axpy", _scalar(rng), r2, Z)]))
+    if rng.random() < 0.2:
+        X, Z = _pick_mat(rng, (n, n), (tmpP,)), _pick_mat(rng, (n, n), (tmpP,))
+        stmts += [("axpy", _scalar(rng), X, tmpP), ("axpy", _scalar(rng), tmpP, Z)]
+    return stmts
+
+
+def _motif_lccf(rng):
+    """One rank-3 tensor read twice under transposed axes into one output: the 2J-K shape.
+
+    Every operand is a slot only this motif touches (``lccft``, ``lccfv``,
+    ``lccfout``). Now and then a loop that rescales the output sits between
+    the first two members, and the fold must see the write inside it
+    (``test_linear_combination_folding_sees_a_loop_between_the_members``). A
+    shuffled Reorder or LoopInvariantHoisting also moves loops between the
+    members when the motif lands both in a block and inside one of its loops.
+    """
+    k, n = _d(rng, R3_DIMS), _d(rng, R3_DIMS)
+    T = _pick(rng, ALLPASS_XT_BY["lccft"], (k, n, n))
+    vec = _pick(rng, ALLPASS_XV_BY["lccfv"], (k,))
+    C = _xm(rng, "lccfout", (n, n))
+    if T is None or vec is None or C is None:
+        return _fallback(rng)
+    pats = ["kij", "kji"]
+    if rng.random() < 0.5:
+        pats.reverse()
+    if rng.random() < 0.25:
+        pats.append(pats[int(rng.integers(0, 2))])
+    first_cpf = [0.0, 1.0, _scalar(rng)][int(rng.integers(0, 3))]
+    stmts = [("leinsum", p, _scalar(rng), vec, T, first_cpf if i == 0 else 1.0, C) for i, p in enumerate(pats)]
+    if rng.random() < 0.15:
+        stmts.insert(1, ("loop", int(rng.integers(1, 3)), [("scale", _scalar(rng), C)]))
+    return stmts
+
+
+def _motif_distributive(rng):
+    """Two or three contractions accumulating into one output, sharing one operand.
+
+    Operands are ``dfsrc`` slots and the output a ``dfout`` slot only this
+    motif touches. A quarter of the time a write through a VIEW of an operand
+    or of the output lands between two members, which the pass must see
+    through the alias
+    (``test_distributive_factoring_sees_a_view_write_between_the_members``).
+    A fifth of the time a second group follows into the same output, each
+    group headed by its own destination prefactor, and the two replacements
+    must keep program order
+    (``test_distributive_factoring_keeps_two_groups_in_program_order``).
+    """
+    ni, nj = _d(rng, (2, 3)), _d(rng, (2, 3))
+    C = _xm(rng, "dfout", (ni, nj))
+    stmts = _distributive_group(rng, ni, nj, C)
+    if stmts is None:
+        return _fallback(rng)
+    if rng.random() < 0.2:
+        stmts += _distributive_group(rng, ni, nj, C) or []
+    return stmts
+
+
+def _distributive_group(rng, ni, nj, C):
+    """One shared-operand group into the (@p ni, @p nj) output @p C, or None when the pool runs short."""
+    spec = _EINSUM_SPECS[int(rng.integers(0, len(_EINSUM_SPECS)))]
+    _, shape_rule = EINSUM_PATTERNS[spec]
+    sa, sb, sc = shape_rule(ni, _d(rng, (2, 3)), nj)
+    count = int(rng.integers(2, 4))
+    shared_left = rng.random() < 0.5
+    shared = _xm(rng, "dfsrc", sa if shared_left else sb)
+    others = _pick_distinct(lambda exclude=(): _xm(rng, "dfsrc", sb if shared_left else sa, exclude + (shared,)), count)
+    if shared is None or others is None:
+        return None
+    first_cpf = [1.0, 0.5, 2.0][int(rng.integers(0, 3))]
+    stmts = []
+    for i, other in enumerate(others):
+        A, B = (shared, other) if shared_left else (other, shared)
+        stmts.append(("einsum", spec, _scalar(rng), A, B, first_cpf if i == 0 else 1.0, C,
+                      bool(rng.random() < 0.05), False))
+    if rng.random() < 0.25:
+        roll = rng.random()
+        M, shape = ((shared, sa if shared_left else sb) if roll < 0.4
+                    else (others[1], sb if shared_left else sa) if roll < 0.8 else (C, sc))
+        write = _view_write(rng, M, shape)
+        if write is not None:
+            stmts.insert(int(rng.integers(1, len(stmts))), write)
+    return stmts
+
+
+def _view_write(rng, M, shape):
+    """``M[block] += a * src`` through a view of a random block of @p M, or None."""
+    sr, sc = int(rng.integers(1, shape[0] + 1)), int(rng.integers(1, shape[1] + 1))
+    src = _pick_mat(rng, (sr, sc))
+    if src is None:
+        return None
+    r0, c0 = int(rng.integers(0, shape[0] - sr + 1)), int(rng.integers(0, shape[1] - sc + 1))
+    return ("vaxpy", _scalar(rng), src, M, r0, r0 + sr, c0, c0 + sc)
+
+
+def _motif_multi_term(rng):
+    """Two three-factor products sharing ``A B``, maybe bracketed apart: MultiTermFactorization."""
+    s, L = ALLPASS_BS, ALLPASS_BL
+    # The factors are ``mtfsrc`` slots. A quarter of the time a factor of the
+    # shared pair is rescaled just ahead of the chains, and the shared product
+    # must be computed after that write
+    # (``test_multi_term_factorization_shares_after_a_factor_is_written``).
+    factors = _pick_distinct(lambda exclude=(): _xm(rng, "mtfsrc", (s, L), exclude), 3)
+    outs = _pick_distinct(lambda exclude=(): _xm(rng, "mtfout", (s, L), exclude), 2)
+    wide = None if factors is None or outs is None else factors + outs
+    B = _xm(rng, "mtfsrc", (L, s))
+    T1, T1b = _pick_distinct(lambda exclude=(): _xm(rng, "scratch", (s, s), exclude), 2) or (None, None)
+    T2 = _xm(rng, "scratch", (L, L))
+    if wide is None or T1 is None:
+        return _fallback(rng)
+    A, C, D, R1, R2 = wide
+    # Letters p, q, r, s name each statement's axes apart at fixed extents
+    # (p = r = 3, q = s = 12); see ``_respelled`` for the other spelling.
+    stmts = [("einsum", "pr <- pq ; qr", 1.0, A, B, 0.0, T1, False, False),
+             ("einsum", "ps <- pr ; rs", _scalar(rng), T1, C, float(rng.integers(0, 2)), R1, False, False)]
+    if rng.random() < 0.5:
+        stmts += [("einsum", "qs <- qr ; rs", 1.0, B, D, 0.0, T2, False, False),
+                  ("einsum", "ps <- pq ; qs", _scalar(rng), A, T2, float(rng.integers(0, 2)), R2, False, False)]
+    else:
+        stmts += [("einsum", "pr <- pq ; qr", 1.0, A, B, 0.0, T1b, False, False),
+                  ("einsum", "ps <- pr ; rs", _scalar(rng), T1b, D, float(rng.integers(0, 2)), R2, False, False)]
+    if rng.random() < 0.25:
+        stmts.insert(0, ("scale", _scalar(rng), B if rng.random() < 0.5 else A))
+    return _respelled(rng, stmts)
+
+
+def _respelled(rng, stmts):
+    """@p stmts, a third of the time with every product spelled ``ij <- ik ; kj``.
+
+    Letters are scoped to a statement, so in ``(A B) C`` that spelling gives
+    k an extent of 12 in the first product and 3 in the second, j the reverse,
+    and the rest of the region gives i, j and k whatever extents it draws. A
+    pass that keys extents by letter across a region sizes the intermediate it
+    introduces wrong
+    (``test_multi_term_factorization_sizes_a_reused_letter_by_its_own_statement``).
+    """
+    if rng.random() >= 1 / 3:
+        return stmts
+    return [st[:1] + (_MATMUL,) + st[2:] if st[0] == "einsum" else st for st in stmts]
+
+
+def _motif_chain(rng):
+    """``R = (A B) C`` through a (12, 12) intermediate, where ``A (B C)`` is far cheaper."""
+    s, L = ALLPASS_BS, ALLPASS_BL
+    srcs = _pick_distinct(lambda exclude=(): _xm(rng, "cpsrc", (L, s), exclude), 2)
+    tall = None if srcs is None else srcs + [_xm(rng, "cpout", (L, s))]
+    B = _xm(rng, "cpsrc", (s, L))
+    T = _xm(rng, "cpscr", (L, L))
+    if tall is None:
+        return _fallback(rng)
+    A, C, R = tall
+    cpf = 0.0 if rng.random() < 0.8 else 1.0
+    # Letters t, u, v, w, or the reused spelling ``_respelled`` draws.
+    return _respelled(rng, [
+        ("einsum", "tv <- tu ; uv", 1.0 if rng.random() < 0.7 else _scalar(rng), A, B, 0.0, T, False, False),
+        ("einsum", "tw <- tv ; vw", _scalar(rng), T, C, cpf, R, False, False)])
+
+
+#: Each motif with its draw weight. The folds and the re-bracketing motifs
+#: are drawn more often because their passes fire on a smaller share of the
+#: orders a shuffle produces: a fold needs AntisymmetryInference ahead of it and
+#: AntisymmetrizerExpansion behind it, one order in six, and a chain is
+#: re-bracketed by whichever of MultiTermFactorization and ContractionPlanning
+#: reaches it first. The identity contraction, the transposed accumulation
+#: and the shared-operand sum are drawn more often too, since a share of their
+#: instances carry a shape the pass must decline on (half the transposed
+#: identities, about a third of the sites and a quarter of the sums).
+_ALLPASS_MOTIFS = ((_motif_delta, 1.5), (_motif_zero_block, 1.0), (_motif_antisym_fold, 3.0),
+                   (_motif_antisym_fold3, 2.0), (_motif_linearity, 1.5), (_motif_symacc, 1.5),
+                   (_motif_lccf, 1.0), (_motif_distributive, 1.5), (_motif_multi_term, 2.0),
+                   (_motif_chain, 2.0))
+_ALLPASS_MOTIF_P = np.array([w for _, w in _ALLPASS_MOTIFS]) / sum(w for _, w in _ALLPASS_MOTIFS)
+
+
+def _gen_all_passes_motif(rng):
+    """One motif, drawn by weight. See the section comment for what each provokes."""
+    return _ALLPASS_MOTIFS[int(rng.choice(len(_ALLPASS_MOTIFS), p=_ALLPASS_MOTIF_P))][0](rng)
+
+
+def allpass_named_slots(prog):
+    """Every pool integer @p prog names at or above SCRATCH_BASE, nested bodies included."""
+    return _scratch_indices(prog)
+
+
+def allpass_program(rng, depth, max_stmts):
+    """A program for the all-passes arm: ``_gen_block`` with its motifs, run as drawn."""
+    return _gen_block(rng, depth=depth, max_stmts=max_stmts, all_passes=True)
+
+
+def _deferred_scratch(prog):
+    """The scratch slots the builder DECLARES: the even ones."""
+    slots = {SCRATCH_BASE + j for j in range(0, len(SCRATCH_SHAPES), 2)}
+    slots |= {ALLPASS_XM_BASE + j for j, (_, role) in enumerate(ALLPASS_XM_SLOTS)
+              if role in _ALLPASS_SCRATCH_ROLES and j % 2 == 0}
+    return slots
+
+
+def _deferred_scratch_t(prog):
+    return {ALLPASS_XT_BASE + j for j, (_, role) in enumerate(ALLPASS_XT_SLOTS)
+            if role in _ALLPASS_SCRATCH_ROLES and j % 2 == 0}
+
+
+def allpass_seed_arrays(rng, dtype="float64"):
+    """``_seed_arrays`` plus the extension's user slots, as ``(m, v, t, xm, xt, xv)``.
+
+    ``xm[j]`` and ``xt[j]`` are None for scratch slots, which start at zero.
+    """
+    m, v, t = _seed_arrays(rng, dtype)
+    dt = np.dtype(dtype)
+    is_complex = dt.kind == "c"
+
+    def gen(sh):
+        a = rng.standard_normal(sh)
+        if is_complex:
+            a = a + 1j * rng.standard_normal(sh)
+        return a
+
+    def fill(shape, role):
+        if role in _ALLPASS_SCRATCH_ROLES:
+            return None
+        if role == "delta":
+            return np.eye(shape[0]).astype(dt)
+        if role == "zero":
+            return np.zeros(shape, dtype=dt)
+        if role == "anti":
+            x = gen(shape)
+            return (x - x.T).astype(dt)
+        if role == "anti3":
+            x = gen(shape)
+            return (x - x.transpose(0, 2, 1)).astype(dt)
+        if role == "sym":
+            x = rng.standard_normal(shape)
+            return (2.0 + np.abs(x + x.T)).astype(dt)
+        return gen(shape).astype(dt)
+
+    xm = [fill(sh, role) for sh, role in ALLPASS_XM_SLOTS]
+    xt = [fill(sh, role) for sh, role in ALLPASS_XT_SLOTS]
+    xv = [fill(sh, role) for sh, role in ALLPASS_XV_SLOTS]
+    return m, v, t, xm, xt, xv
+
+
+def _oracle_all_passes(prog, arrays, dtype, runs=1):
+    """The numpy oracle over the extended pool, returning only what a caller can observe."""
+    m, v, t, xm, xt, xv = arrays
+    dt = np.dtype(dtype)
+    om = ([a.copy() for a in m] + [np.zeros(sh, dtype=dt) for sh in SCRATCH_SHAPES]
+          + [a.copy() if a is not None else np.zeros(sh, dtype=dt) for a, (sh, _) in zip(xm, ALLPASS_XM_SLOTS)])
+    ot = [a.copy() for a in t] + [a.copy() if a is not None else np.zeros(sh, dtype=dt)
+                                  for a, (sh, _) in zip(xt, ALLPASS_XT_SLOTS)]
+    ov = [a.copy() for a in v] + [a.copy() for a in xv]
+    # A DEFERRED zero tensor is materialized and zeroed at the start of every
+    # execute, where an eager one keeps its value across replays; a replay
+    # re-zeroes exactly the slots the builder declares.
+    deferred_m = sorted(_deferred_scratch(prog))
+    deferred_t = sorted(_deferred_scratch_t(prog))
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        for _ in range(runs):
+            for slot in deferred_m:
+                om[slot] = np.zeros_like(om[slot])
+            for slot in deferred_t:
+                ot[slot] = np.zeros_like(ot[slot])
+            interp_np(prog, om, ov, ot, dt)
+    out_m = om[:len(m)] + [om[ALLPASS_XM_BASE + j] for j, a in enumerate(xm) if a is not None]
+    out_t = ot[:len(t)] + [ot[ALLPASS_XT_BASE + j] for j, a in enumerate(xt) if a is not None]
+    if not _usable(out_m, ov, out_t, cap=_DTYPE_CAP[dtype]):
+        pytest.skip("oracle overflowed: a numerically degenerate program")
+    return out_m, ov, out_t
+
+
+def _allpass_registry(graph):
+    """occ and virt share no element; aux is related to nothing. Private to @p graph."""
+    registry = cg.private_space_registry(graph)
+    occ = registry.register_space(cg.index_space("occ", "o", 4.0))
+    virt = registry.register_space(cg.index_space("virt", "v", 4.0))
+    registry.register_space(cg.index_space("aux", "x", 4.0))
+    registry.declare_disjoint(occ, virt)
+    return registry
+
+
+def _build_all_passes(prog, arrays, name):
+    """Build @p prog over the extended pool.
+
+    Returns the graph and the tensors a caller can observe, in the order
+    ``_oracle_all_passes`` returns them. The declarations each role needs are
+    made on the root graph for every slot the program names: a delta is tagged
+    an identity before capture, and the space-annotated slots get their spaces
+    after it.
+    """
+    m, v, t, xm, xt, xv = arrays
+    mats, vecs, r3s = _make_pool(m, v, t, name)
+    g = cg.Graph(name)
+    _allpass_registry(g)
+    used = _scratch_indices(prog)
+    dtype = str(m[0].dtype)
+    # Kept apart: matrix and rank-3 slot numbers overlap.
+    deferred_m, deferred_t = _deferred_scratch(prog), _deferred_scratch_t(prog)
+
+    def scratch(label, slot, shape, deferred):
+        # Alternate deferred and eager, as _build_with_scratch does, so both
+        # storage modes meet every pass.
+        if slot in deferred:
+            return g.declare_zero_tensor(label, list(shape), intermediate=True, dtype=dtype)
+        return g.create_zero_tensor(label, list(shape), intermediate=True, dtype=dtype)
+
+    def user(label, arr):
+        tn = einsums.create_zero_tensor(label, list(arr.shape), dtype=dtype)
+        np.asarray(tn)[...] = arr
+        return tn
+
+    full_m = list(mats)
+    for j, sh in enumerate(SCRATCH_SHAPES):
+        full_m.append(scratch(f"{name}_s{j}", SCRATCH_BASE + j, sh, deferred_m) if SCRATCH_BASE + j in used else None)
+    x_users = []
+    late_spaces = []
+    for j, (sh, role) in enumerate(ALLPASS_XM_SLOTS):
+        slot = ALLPASS_XM_BASE + j
+        if role in _ALLPASS_SCRATCH_ROLES:
+            full_m.append(scratch(f"{name}_xs{j}", slot, sh, deferred_m) if slot in used else None)
+            continue
+        tn = user(f"{name}_x{j}", xm[j])
+        if slot in used and role == "delta":
+            cg.annotate(tn, tag="identity", graph=g)
+        elif slot in used and role in ("occ", "zero"):
+            late_spaces.append((tn, ("aux", "occ") if role == "occ" else ("virt", "aux")))
+        full_m.append(tn)
+        x_users.append(tn)
+    full_t = list(r3s)
+    xt_users = []
+    for j, (sh, role) in enumerate(ALLPASS_XT_SLOTS):
+        slot = ALLPASS_XT_BASE + j
+        if role in _ALLPASS_SCRATCH_ROLES:
+            full_t.append(scratch(f"{name}_xts{j}", slot, sh, deferred_t) if slot in used else None)
+            continue
+        tn = user(f"{name}_xt{j}", xt[j])
+        full_t.append(tn)
+        xt_users.append(tn)
+    x_vecs = [user(f"{name}_xv{j}", xv[j]) for j in range(len(xv))]
+    build_cg(prog, g, full_m, vecs + x_vecs, full_t, name)
+    # Spaces AFTER capture, as a Python caller annotating a finished program
+    # does: capture binds each letter to one space and rejects a contraction
+    # whose letter would bind two, which is the very contraction the zero-block
+    # rewrite exists for. The passes read the handles as they stand when they run.
+    for tn, spaces in late_spaces:
+        cg.annotate(tn, spaces, graph=g)
+    return g, (mats + x_users, vecs + x_vecs, r3s + xt_users)
+
+
+#: The eleven default passes no other shuffled arm runs.
+_ALL_PASSES_ADDED = [
+    "ProvenancePropagation", "DeltaElimination", "AntisymmetryDetection", "AntisymmetrizerLinearity",
+    "AntisymmetryInference", "AntisymmetrizerFolding", "SymmetrizedAccumulation",
+    "LinearCombinationContractionFolding", "DistributiveFactoring", "MultiTermFactorization",
+    "ContractionPlanning",
+]
+
+#: What the all-passes arm shuffles: the rich list plus the eleven above.
+_ALL_PASSES = _RICH_SAFE_PASSES + _ALL_PASSES_ADDED
+
+#: The counters that say a pass acted, where its return value cannot. The
+#: analysis passes (detection, inference, provenance) never report a change to
+#: the node set, so "modified" would call them vacuous when they are not.
+_ALL_PASSES_FIRE_ATTRS = {
+    "ProvenancePropagation": ("num_propagated",),
+    "DeltaElimination": ("num_eliminated", "num_zero_blocks"),
+    "AntisymmetryDetection": ("num_found",),
+    "AntisymmetrizerLinearity": ("num_merged",),
+    "AntisymmetryInference": ("num_tagged",),
+    "AntisymmetrizerFolding": ("num_folded",),
+    "SymmetrizedAccumulation": ("num_rewritten",),
+    "LinearCombinationContractionFolding": ("num_eliminated",),
+    "DistributiveFactoring": ("num_eliminated",),
+    "MultiTermFactorization": ("num_shared", "num_rebracketed"),
+    "ContractionPlanning": ("chains_restructured",),
+}
+
+#: Per pass: trials that ran it and trials on which it fired.
+_ALL_PASSES_STATS = {name: {"ran": 0, "fired": 0} for name in _ALL_PASSES}
+
+
+def _make_all_passes_pass(name):
+    """The pass object the arm runs for @p name, or None to isolate it from the default list.
+
+    MultiTermFactorization has its search switched on, since off is its default
+    and a shuffle would otherwise run it without it doing anything.
+    DistributiveFactoring skips its cost model, which declines everything this
+    pool's extents can express: the rewrite is what is under test, not the price.
+    """
+    if name == "MultiTermFactorization":
+        p = _G.MultiTermFactorization()
+        p.set_search_enabled(True)
+        return p
+    if name == "DistributiveFactoring":
+        return _G.DistributiveFactoring(_G.Factor.Always)
+    if hasattr(_G, name):
+        return getattr(_G, name)()
+    return None
+
+
+def _apply_all_passes_one(g, name):
+    """Run one pass on @p g; returns how many rewrites it reports (1 or 0 without a counter)."""
+    p = _make_all_passes_pass(name)
+    if p is None:
+        return int(bool(_apply_one_pass(g, name)))
+    pm = cg.PassManager()
+    # No wall-clock allowance, so a search is never cut off and the graph a
+    # trial runs does not depend on how fast the machine is.
+    pm.set_optimizer_budget(0)
+    pm.add(p)
+    modified = g.apply(pm)
+    attrs = _ALL_PASSES_FIRE_ATTRS.get(name)
+    return sum(int(getattr(p, a)) for a in attrs) if attrs else int(bool(modified))
+
+
+def check_program_all_passes(prog, arrays, label, rng, dtype="float64", runs=1):
+    """A random order of ``_ALL_PASSES``, one pass per manager, then Materialization.
+
+    Returns the set of passes that fired on this trial. A pass that throws, a
+    graph the verifier rejects, and a wrong number are all reported with the
+    order and the program, which is what a reduction starts from. The drawn
+    order runs exactly as drawn.
+    """
+    oracle = _oracle_all_passes(prog, arrays, dtype, runs)
+    order = list(_ALL_PASSES)
+    rng.shuffle(order)
+    g, observed = _build_all_passes(prog, arrays, label)
+    fired = set()
+    stage = None
+    try:
+        for stage in order:
+            _ALL_PASSES_STATS[stage]["ran"] += 1
+            if _apply_all_passes_one(g, stage):
+                _ALL_PASSES_STATS[stage]["fired"] += 1
+                fired.add(stage)
+        # Correctness-enabling rather than shuffled: see check_program_rich_pipeline.
+        stage = "closing Materialization"
+        _apply_all_passes_one(g, "Materialization")
+        stage = "execute"
+        for _ in range(runs):
+            g.execute()
+    except Exception as exc:
+        raise AssertionError(f"ALL-PASSES pipeline failed at {stage}: {exc}\n"
+                             f"order={order}\nprogram={prog!r}") from exc
+    got = tuple([np.asarray(x).copy() for x in pool] for pool in observed)
+    _assert_pools_typed(got, oracle, prog, "ALL-PASSES-PIPELINE", dtype,
+                        extra=f"  order={order} runs={runs}")
+    return fired
+
+
+def run_program_all_passes_default(prog, arrays, label, dtype="float64", level=None, runs=1):
+    """The same program under ``default_pass_manager()``, or ``optimize(level)`` when given.
+
+    For triage: whether a shuffled-order failure is also reachable in an order
+    a user gets.
+    """
+    oracle = _oracle_all_passes(prog, arrays, dtype, runs)
+    g, observed = _build_all_passes(prog, arrays, label)
+    if level is None:
+        g.apply(cg.default_pass_manager())
+    else:
+        g.optimize(OPT_LEVELS[level])
+    for _ in range(runs):
+        g.execute()
+    got = tuple([np.asarray(x).copy() for x in pool] for pool in observed)
+    _assert_pools_typed(got, oracle, prog, f"ALL-PASSES {level or 'default'}", dtype, extra=f" runs={runs}")
+
+
 __all__ = [
     'fuzz_seeds',
     'check_program_region_pipeline',
@@ -2024,4 +2913,29 @@ __all__ = [
     '_run_program_raw_written',
     '_gap',
     'measure_program_single_pass',
+    'ALLPASS_BS',
+    'ALLPASS_BL',
+    'ALLPASS_XM_BASE',
+    'ALLPASS_XM_SLOTS',
+    'ALLPASS_XT_BASE',
+    'ALLPASS_XT_SLOTS',
+    'ALLPASS_XM_BY',
+    'ALLPASS_XT_BY',
+    'ALLPASS_XV_BASE',
+    'ALLPASS_XV_SLOTS',
+    'ALLPASS_XV_BY',
+    '_gen_all_passes_motif',
+    'allpass_program',
+    'allpass_named_slots',
+    'allpass_seed_arrays',
+    '_oracle_all_passes',
+    '_build_all_passes',
+    '_ALL_PASSES_ADDED',
+    '_ALL_PASSES',
+    '_ALL_PASSES_FIRE_ATTRS',
+    '_ALL_PASSES_STATS',
+    '_make_all_passes_pass',
+    '_apply_all_passes_one',
+    'check_program_all_passes',
+    'run_program_all_passes_default',
 ]

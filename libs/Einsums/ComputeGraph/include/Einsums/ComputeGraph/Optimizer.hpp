@@ -8,6 +8,7 @@
 #include <Einsums/Config.hpp>
 
 #include <Einsums/ComputeGraph/Approximation.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Python/Annotations.hpp>
@@ -18,6 +19,7 @@
 #include <initializer_list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -428,6 +430,35 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) Optimi
      * ``Graph::live_tensor_ptr``.
      */
     [[nodiscard]] virtual bool recurse_into_subgraphs() const { return false; }
+
+    /**
+     * @brief The node features this pass understands, or nothing for a pass that has not said.
+     *
+     * A pass must leave every node carrying a feature outside this set exactly as it found it:
+     * not rewritten, not merged, not removed. Asking @ref understands where the pass picks its
+     * candidates is how it keeps that promise, and with ``einsums:pass:verify`` on the pass manager
+     * checks it, fingerprinting every such node before the pass and throwing, naming the pass and
+     * the feature, if one came back different or not at all.
+     *
+     * Every pass in this library declares a set. A pass that never interprets a node, and only
+     * moves, schedules or deletes by dataflow, declares @ref NodeFeatures::all. A pass written
+     * outside the library that does not override this is left unchecked, as before.
+     *
+     * The point is the NEXT feature. A pass written before a feature existed reads a node
+     * carrying it as the plain operation it knows; with a declared set it leaves that node alone
+     * instead, until someone teaches it the feature and adds it here.
+     *
+     * @return The set, or @c std::nullopt when the pass has not declared one.
+     */
+    [[nodiscard]] virtual std::optional<NodeFeatures> understood_features() const { return std::nullopt; }
+
+    /**
+     * @brief Whether this pass may rewrite @p node: every feature it carries is one the pass understands.
+     * @param[in] graph The graph @p node belongs to.
+     * @param[in] node  The node.
+     * @return True when @ref understood_features covers @ref features_of the node, or declares nothing.
+     */
+    [[nodiscard]] EINSUMS_EXPORT bool understands(Graph const &graph, Node const &node) const;
 
     /**
      * @brief Zero this pass's per-apply statistics.

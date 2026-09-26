@@ -83,9 +83,9 @@ bool ConstantFolding::run(Graph &graph) {
             if (writers.writer_count(tid) != 1 || writers.subtree_writer_count(tid) != 1 || writers.touched_by_subtree(tid)) {
                 return "an output has another writer, which a replay would undo";
             }
-            TensorId const root = graph.resolve_alias(tid);
+            TensorId const root = graph.buffer_of(tid);
             for (std::size_t earlier = 0; earlier < idx; ++earlier) {
-                if (std::ranges::any_of(nodes[earlier].inputs, [&](TensorId read) { return graph.resolve_alias(read) == root; })) {
+                if (std::ranges::any_of(nodes[earlier].inputs, [&](TensorId read) { return graph.buffer_of(read) == root; })) {
                     return "an earlier node reads an output, and would see the folded value before this node's turn";
                 }
             }
@@ -135,6 +135,12 @@ bool ConstantFolding::run(Graph &graph) {
         }
 
         if (!std::ranges::all_of(node.inputs, [&](TensorId tid) { return constant_tensors.contains(tid); })) {
+            continue;
+        }
+
+        if (!understands(graph, node)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
             continue;
         }
 

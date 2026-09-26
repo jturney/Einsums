@@ -54,6 +54,7 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Optimizer.hpp
     Einsums/ComputeGraph/UsageAnalysis.hpp
     Einsums/ComputeGraph/EscapeAnalysis.hpp
+    Einsums/ComputeGraph/NodeFeatures.hpp
     Einsums/ComputeGraph/TensorExpr.hpp
     Einsums/ComputeGraph/Passes/ContractionPlanning.hpp
     Einsums/ComputeGraph/Passes/DeltaElimination.hpp
@@ -159,6 +160,7 @@ set(ComputeGraphSources
     GroupedBatchedGemm.cpp
     UsageAnalysis.cpp
     EscapeAnalysis.cpp
+    NodeFeatures.cpp
     TensorExpr.cpp
     BisectDriver.cpp
     CostModel.cpp

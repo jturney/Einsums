@@ -6,6 +6,8 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 
+#include <fmt/format.h>
+
 #include <memory>
 #include <string>
 #include <string_view>
@@ -221,6 +223,41 @@ std::vector<std::string> param_reads(Node const &node) {
         }
     }
     return names;
+}
+
+namespace {
+
+std::string disk_key(Node const &node) {
+    auto const *io = node.op_data.get_if<DiskIODescriptor>();
+    return io == nullptr ? std::string{} : fmt::format("disk:{}#{}", io->file_path, io->dataset_name);
+}
+
+} // namespace
+
+std::vector<std::string> named_writes(Node const &node) {
+    std::vector<std::string> keys;
+    for (auto &name : param_writes(node)) {
+        keys.push_back("param:" + std::move(name));
+    }
+    if (node.kind == OpKind::DiskWrite) {
+        if (auto key = disk_key(node); !key.empty()) {
+            keys.push_back(std::move(key));
+        }
+    }
+    return keys;
+}
+
+std::vector<std::string> named_reads(Node const &node) {
+    std::vector<std::string> keys;
+    for (auto &name : param_reads(node)) {
+        keys.push_back("param:" + std::move(name));
+    }
+    if (node.kind == OpKind::DiskRead) {
+        if (auto key = disk_key(node); !key.empty()) {
+            keys.push_back(std::move(key));
+        }
+    }
+    return keys;
 }
 
 bool has_runtime_view_bounds(Node const &node) {

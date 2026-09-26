@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <ranges>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -66,25 +67,27 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
             }
         }
 
-        // (b) after any prior node that reads or writes the read's outputs.
+        // (b) after any prior node that reads or writes the read's outputs, by buffer: a view or
+        // a redirected slot of the destination is the destination.
         for (auto out_tid : nodes[pos].outputs) {
+            TensorId const buffer  = graph.buffer_of(out_tid);
+            auto const     touches = [&](std::vector<TensorId> const &ids) {
+                return std::ranges::any_of(ids, [&](TensorId tid) { return graph.buffer_of(tid) == buffer; });
+            };
             for (size_t idx = 0; idx < pos; idx++) {
-                bool touches = false;
-                for (auto tid : nodes[idx].inputs) {
-                    if (tid == out_tid) {
-                        touches = true;
-                        break;
-                    }
+                if (touches(nodes[idx].inputs) || touches(nodes[idx].outputs)) {
+                    earliest = std::max(earliest, idx + 1);
                 }
-                if (!touches) {
-                    for (auto tid : nodes[idx].outputs) {
-                        if (tid == out_tid) {
-                            touches = true;
-                            break;
-                        }
-                    }
-                }
-                if (touches) {
+            }
+        }
+
+        // (c) after any prior write of the dataset it reads. A write names only its source tensor
+        // and the read only its destination, so (a) and (b) cannot see the file they share, and a
+        // read moved ahead of the graph's own write returns the file's previous contents.
+        for (auto const &key : named_reads(nodes[pos])) {
+            for (size_t idx = 0; idx < pos; idx++) {
+                auto const writes = named_writes(nodes[idx]);
+                if (std::ranges::find(writes, key) != writes.end()) {
                     earliest = std::max(earliest, idx + 1);
                 }
             }
@@ -129,6 +132,23 @@ bool prefetch_within(Graph &graph, size_t &num_prefetched) {
 /// recursion step until it lands before the outermost loop, gaining the edge
 /// at each level. The load writes through the captured tensor pointer, which
 /// the body's consumers share.
+/// Whether any node of @p graph, at any depth, writes the named resource @p key.
+// NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
+bool writes_anywhere(Graph const &graph, std::string const &key) {
+    for (auto const &node : graph.nodes()) {
+        auto const writes = named_writes(node);
+        if (std::ranges::find(writes, key) != writes.end()) {
+            return true;
+        }
+        bool nested = false;
+        for_each_child_graph(node, [&](Graph const &sub) { nested = nested || writes_anywhere(sub, key); });
+        if (nested) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t &num_prefetched) {
     // Single-writer test by pointer across the whole loop subtree: a read is
     // hoistable iff nothing, at any depth, overwrites its destination. Reads do
@@ -157,6 +177,10 @@ bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t 
         if (writers.subtree_writer_count(out_tid) != 1)
             continue; // overwritten somewhere in the subtree, re-read each iteration matters.
 
+        // Nor may the loop write the dataset: each iteration then reads what the last one stored.
+        if (std::ranges::any_of(named_reads(n), [&](std::string const &key) { return writes_anywhere(child, key); }))
+            continue;
+
         // Only hoist when the destination is already materialized (eager).
         // IOPrefetch runs before the MaterializationPass, so hoisting a read
         // whose destination is a deferred shell would load into not-yet-
@@ -164,7 +188,8 @@ bool hoist_reads_from_body(Graph &parent, size_t loop_idx, Graph &child, size_t 
         if (dest->second.alloc_state != AllocState::Materialized)
             continue;
 
-        Node copy   = n; // keep the executor (it captures the tensor ptr)
+        Node copy   = n;                  // keep the executor (it captures the tensor ptr)
+        copy.id     = unassigned_node_id; // the body's id, not the parent's: the parent mints its own
         copy.inputs = {};
         // Register the destination BUFFER in the parent so the hoisted read
         // owns the same TensorId the body's reads resolve to via effective_io.

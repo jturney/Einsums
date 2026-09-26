@@ -29,7 +29,7 @@ namespace {
 // skips the same kinds for the same reason (see is_lifecycle in Enums.hpp).
 void collect_own_node_ptrs(Graph const &g, std::unordered_set<void const *> &out) {
     auto add = [&](TensorId tid) {
-        if (auto const *h = g.find_tensor(g.resolve_alias(tid)); h != nullptr && h->tensor_ptr != nullptr) {
+        if (auto const *h = g.find_tensor(g.buffer_of(tid)); h != nullptr && h->tensor_ptr != nullptr) {
             out.insert(h->tensor_ptr);
         }
     };
@@ -75,7 +75,7 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
         std::unordered_set<TensorId> consumed_tensors;
         for (auto const &node : nodes) {
             for (auto tid : node.inputs) {
-                consumed_tensors.insert(graph.resolve_alias(tid));
+                consumed_tensors.insert(graph.buffer_of(tid));
             }
         }
 
@@ -122,10 +122,10 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
                         continue;
                     }
                     for (auto tid : nodes[idx].inputs) {
-                        touched_by_survivors.insert(graph.resolve_alias(tid));
+                        touched_by_survivors.insert(graph.buffer_of(tid));
                     }
                     for (auto tid : nodes[idx].outputs) {
-                        touched_by_survivors.insert(graph.resolve_alias(tid));
+                        touched_by_survivors.insert(graph.buffer_of(tid));
                     }
                 }
             }
@@ -139,9 +139,8 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
                 if (prepares(node.kind) != (phase == 1)) {
                     continue;
                 }
-                if (phase == 1 && std::ranges::any_of(node.outputs, [&](TensorId tid) {
-                        return touched_by_survivors.contains(graph.resolve_alias(tid));
-                    })) {
+                if (phase == 1 &&
+                    std::ranges::any_of(node.outputs, [&](TensorId tid) { return touched_by_survivors.contains(graph.buffer_of(tid)); })) {
                     continue;
                 }
 
@@ -158,7 +157,7 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
                 // tid is an unread intermediate, but the owner is what counts).
                 bool all_outputs_dead = true;
                 for (auto raw_tid : node.outputs) {
-                    TensorId const tid             = graph.resolve_alias(raw_tid);
+                    TensorId const tid             = graph.buffer_of(raw_tid);
                     bool const     is_intermediate = intermediate_tensors.contains(tid);
                     bool const     is_consumed     = consumed_tensors.contains(tid);
 
@@ -196,7 +195,7 @@ bool DeadNodeElimination::run_one(Graph &graph, std::unordered_set<void const *>
                     // drops ten thousand intermediates then costs a counter rather than ten thousand
                     // strings and a quadratic dedup scan over them.
                     for (auto raw_tid : node.outputs) {
-                        auto const *handle = graph.find_tensor(graph.resolve_alias(raw_tid));
+                        auto const *handle = graph.find_tensor(graph.buffer_of(raw_tid));
                         if (handle == nullptr || handle->name.empty()) {
                             continue;
                         }

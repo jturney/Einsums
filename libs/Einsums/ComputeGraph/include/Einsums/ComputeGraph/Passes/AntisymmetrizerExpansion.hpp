@@ -80,6 +80,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Every feature today: it expands the operators, carries conjugation and live prefactors onto the rebuilt nodes, and declines a
+    /// mixed-precision contraction or a scalar destination.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::Conjugation |
+               NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow |
+               NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
+    }
 
     /// @copydoc OptimizerPass::tier
     ///

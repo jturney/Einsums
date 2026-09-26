@@ -158,7 +158,7 @@ std::pair<std::vector<TensorId>, std::vector<TensorId>> Graph::subtree_io(Node c
                 // through a view inside the subtree is attributed to the parent
                 // tensor: otherwise an op outside the control-flow node that
                 // touches the owner sees no dependency and can be misordered.
-                auto const *handle = sub.find_tensor(sub.resolve_alias(tid));
+                auto const *handle = sub.find_tensor(sub.buffer_of(tid));
                 if (handle != nullptr && handle->tensor_ptr != nullptr) {
                     dst.insert(handle->tensor_ptr);
                     rep_handle.emplace(handle->tensor_ptr, *handle);
@@ -268,8 +268,8 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     // Storage-level aliasing must be resolved before anything reasons about
     // which buffer a node touches; cheap and idempotent after the first call.
     link_alias_storage();
-    // Owner-resolved (resolve_alias), subtree-aware (effective_io_cached)
-    // RAW/WAW/WAR scan. Every emitted edge points from an earlier to a later
+    // Buffer-resolved (buffer_of: view parents and slot redirects), subtree-aware
+    // (effective_io_cached) RAW/WAW/WAR scan. Every emitted edge points from an earlier to a later
     // position, so program order remains a valid topological order.
     //
     // Accesses through views with STATICALLY DISJOINT extents do not conflict:
@@ -380,8 +380,9 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     // and a parameter-bound View's dependence on it never touch a tensor, so
     // the owner-resolved scan above emits no edge between them and the two are
     // free to be reordered - which silently freezes the slice at whatever the
-    // table happened to hold. Keyed by parameter name; see param_writes /
-    // param_reads in Node.hpp.
+    // table happened to hold. Keyed by name, which also covers a disk dataset a
+    // read and a write share without sharing a tensor; see named_writes /
+    // named_reads in Node.hpp.
     std::unordered_map<std::string, std::vector<size_t>> param_writers;
     std::unordered_map<std::string, std::vector<size_t>> param_readers;
 
@@ -389,7 +390,7 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
     for (size_t i = 0; i < n; i++) {
         auto [eff_in, eff_out] = effective_io_cached(_nodes[i], cache);
         for (auto raw : eff_in) {
-            TensorId const tid = resolve_alias(raw);
+            TensorId const tid = buffer_of(raw);
             Box const     *box = box_of(_nodes[i], raw, tid);
             for (auto const &w : writers[tid]) {
                 if (w.pos != i && may_overlap(w.box, box)) {
@@ -399,7 +400,7 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
             readers[tid].push_back({.pos = i, .box = box});
         }
         for (auto raw : eff_out) {
-            TensorId const tid = resolve_alias(raw);
+            TensorId const tid = buffer_of(raw);
             Box const     *box = box_of(_nodes[i], raw, tid);
             auto          &wl  = writers[tid];
             for (auto const &w : wl) {
@@ -430,7 +431,7 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
             wl.push_back({.pos = i, .box = box});
         }
 
-        for (auto const &pname : param_reads(_nodes[i])) {
+        for (auto const &pname : named_reads(_nodes[i])) {
             for (size_t const w : param_writers[pname]) {
                 if (w != i) {
                     emit(w, i); // RAW: parameter write -> slice that resolves it
@@ -438,7 +439,7 @@ void Graph::for_each_hazard_edge(EffectiveIoCache &cache, F &&emit) {
             }
             param_readers[pname].push_back(i);
         }
-        for (auto const &pname : param_writes(_nodes[i])) {
+        for (auto const &pname : named_writes(_nodes[i])) {
             for (size_t const w : param_writers[pname]) {
                 if (w != i) {
                     emit(w, i); // WAW: the later write must win
@@ -526,10 +527,10 @@ std::vector<std::string> Graph::unjustified_hazard_edges() {
         }
         // The other half of what the hazard scan orders: a parameter write and the slice that
         // resolves against it touch no tensor at all.
-        for (auto const &name : param_reads(_nodes[i])) {
+        for (auto const &name : named_reads(_nodes[i])) {
             params[i].insert(name);
         }
-        for (auto const &name : param_writes(_nodes[i])) {
+        for (auto const &name : named_writes(_nodes[i])) {
             params[i].insert(name);
         }
     }
@@ -991,8 +992,8 @@ void Graph::topological_sort() {
     size_t const n = _nodes.size();
 
     // Track dependencies: read-after-write, write-after-write, write-after-read.
-    // Keyed by *owner* TensorId (resolve_alias), so reads/writes through a view
-    // register against the parent tensor. Without this, the scheduler would
+    // Keyed by the owning buffer (buffer_of), so reads/writes through a view or
+    // through a redirected slot register against the tensor that holds the data. Without this, the scheduler would
     // treat ``GEMM(C_occ, …)`` and ``Syev(C, …)`` as independent, they're not,
     // since C_occ aliases C.
     std::vector<std::vector<size_t>> adj(n);

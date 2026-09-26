@@ -9,6 +9,7 @@
 #include <Einsums/Config/Namespace.hpp>
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -66,6 +67,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::phase
     /// Annotation only; never rewrites the node set.
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Analysis; }
+    /// Every feature: an analysis pass annotates and never rewrites a node, which the pass manager enforces.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
     /// @copydoc OptimizerPass::tier
     /// Changes no arithmetic at all.

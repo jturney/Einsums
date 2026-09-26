@@ -159,12 +159,15 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      */
     bool rewrite(Graph &graph, Region const &region, TensorExpr &expr) override;
 
-    /// @copydoc RegionRewrite::raises_operators
-    /// True. A delta renames the surviving operand's letter to the target's and leaves the
-    /// target's own letters, which are what an operator permutes, as they were. A statement carrying operators is not dissolved, since its
-    /// target holds the permuted value and not the operand, and the permute it becomes carries the
+    /// @copydoc RegionRewrite::understood_features
+    /// The region default plus permutation operators. A delta renames the surviving operand's
+    /// letter to the target's and leaves the target's own letters, which are what an operator
+    /// permutes, as they were. A statement carrying operators is not dissolved, since its target
+    /// holds the permuted value and not the operand, and the permute it becomes carries the
     /// operators instead; a zero block drops them, because every permutation of zero is zero.
-    [[nodiscard]] bool raises_operators() const override { return true; }
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return default_region_features | NodeFeature::PermutationOperators;
+    }
 
     /**
      * @brief Does @p graph hold a tensor declared to be an identity?

@@ -99,8 +99,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Analysis; }
-    bool                    run(Graph &graph) override;
-    void                    reset_stats() override;
+    /// Every feature: an analysis pass annotates and never rewrites a node, which the pass manager enforces.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
+    bool                                      run(Graph &graph) override;
+    void                                      reset_stats() override;
 
     /// @copydoc OptimizerPass::explain
     [[nodiscard]] std::vector<std::string> explain() const override;

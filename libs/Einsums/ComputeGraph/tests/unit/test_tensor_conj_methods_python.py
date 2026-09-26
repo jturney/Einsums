@@ -18,6 +18,7 @@ from hypothesis import strategies as st
 
 import einsums
 import einsums.graph as cg
+from _sanitizer_scaling import sanitizer_examples
 
 _ctr = itertools.count()
 
@@ -59,7 +60,7 @@ def _run(graph, fn):
 @given(method=st.sampled_from(["conj", "real", "imag", "H", "abs"]),
        shape=st.lists(st.integers(1, 4), min_size=1, max_size=3), cplx=st.booleans(),
        view=st.booleans(), graph=st.booleans(), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=400, deadline=None,
+@settings(max_examples=sanitizer_examples(400), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_tensor_conj_methods(method, shape, cplx, view, graph, seed):
     rng = np.random.default_rng(seed)

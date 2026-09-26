@@ -19,6 +19,7 @@ from hypothesis import strategies as st
 import einsums
 import einsums.graph as cg
 from einsums.testing import assert_close
+from _sanitizer_scaling import sanitizer_examples
 
 
 def _oracle(A_np, B_np, s):
@@ -28,8 +29,10 @@ def _oracle(A_np, B_np, s):
     return s * (tmp + P_tmp)
 
 
-def _capture_symacc(A, B, r2, tmp, tmpP, s):
+def _capture_symacc(A, B, r2, tmp, s):
     g = cg.Graph("symacc")
+    # Graph-owned scratch: the fold stops writing tmpP, so a tensor the caller held would be stale.
+    tmpP = g.create_zero_tensor("tmpP", list(np.asarray(tmp).shape), dtype=str(np.asarray(tmp).dtype), intermediate=True)
     with cg.capture(g):
         einsums.einsum("i,j,a,b <- i,a ; j,b", tmp, A, B)
         einsums.linalg.axpby(s, tmp, 1.0, r2)
@@ -53,9 +56,8 @@ def test_pass_folds_and_matches_numpy(dtype):
     B = einsums.asarray(B_np)
     r2 = einsums.zeros((o, o, v, v), dtype=dtype)
     tmp = einsums.zeros((o, o, v, v), dtype=dtype)
-    tmpP = einsums.zeros((o, o, v, v), dtype=dtype)
 
-    g = _capture_symacc(A, B, r2, tmp, tmpP, s)
+    g = _capture_symacc(A, B, r2, tmp, s)
 
     pm = cg.PassManager()
     pass_obj = cg.SymmetrizedAccumulation()
@@ -87,9 +89,8 @@ def test_default_pipeline_stays_correct(dtype):
     B = einsums.asarray(B_np)
     r2 = einsums.zeros((o, o, v, v), dtype=dtype)
     tmp = einsums.zeros((o, o, v, v), dtype=dtype)
-    tmpP = einsums.zeros((o, o, v, v), dtype=dtype)
 
-    g = _capture_symacc(A, B, r2, tmp, tmpP, s)
+    g = _capture_symacc(A, B, r2, tmp, s)
     g.apply(cg.default_pass_manager())
     g.execute()
 
@@ -105,7 +106,7 @@ def test_default_pipeline_stays_correct(dtype):
 @given(o=st.integers(1, 3), v=st.integers(1, 3), s=st.sampled_from([1.0, -0.5, 0.5]),
        niters=st.integers(1, 4), dtype=st.sampled_from(["float64", "complex128"]),
        use_default=st.booleans(), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=150, deadline=None,
+@settings(max_examples=sanitizer_examples(150), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_symacc_inside_loop_body(o, v, s, niters, dtype, use_default, seed):
     rng = np.random.default_rng(seed)
@@ -122,9 +123,9 @@ def test_symacc_inside_loop_body(o, v, s, niters, dtype, use_default, seed):
     B = einsums.asarray(B_np)
     r2 = einsums.zeros((o, o, v, v), dtype=dtype)
     tmp = einsums.zeros((o, o, v, v), dtype=dtype)
-    tmpP = einsums.zeros((o, o, v, v), dtype=dtype)
 
     g = cg.Graph("symacc_loop")
+    tmpP = g.create_zero_tensor("tmpP", [o, o, v, v], dtype=dtype, intermediate=True)
     loop = g.add_loop("L", niters, lambda it, N=niters: it < N - 1)
     with cg.capture(loop):
         einsums.einsum("i,j,a,b <- i,a ; j,b", tmp, A, B)
@@ -157,7 +158,7 @@ def test_symacc_inside_loop_body(o, v, s, niters, dtype, use_default, seed):
 @given(o=st.integers(1, 3), v=st.integers(1, 3), s=st.sampled_from([1.0, -0.5, 0.5]),
        niters=st.integers(2, 4), dtype=st.sampled_from(["float64", "complex128"]),
        use_default=st.booleans(), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=150, deadline=None,
+@settings(max_examples=sanitizer_examples(150), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_symacc_loop_body_with_loop_carried_operand(o, v, s, niters, dtype, use_default, seed):
     rng = np.random.default_rng(seed)
@@ -189,9 +190,9 @@ def test_symacc_loop_body_with_loop_carried_operand(o, v, s, niters, dtype, use_
     dA = einsums.asarray(dA_np)
     r2 = einsums.zeros((o, o, v, v), dtype=dtype)
     tmp = einsums.zeros((o, o, v, v), dtype=dtype)
-    tmpP = einsums.zeros((o, o, v, v), dtype=dtype)
 
     g = cg.Graph("symacc_loop_carried")
+    tmpP = g.create_zero_tensor("tmpP", [o, o, v, v], dtype=dtype, intermediate=True)
     loop = g.add_loop("L", niters, lambda it, N=niters: it < N - 1)
     with cg.capture(loop):
         einsums.einsum("i,j,a,b <- i,a ; j,b", tmp, A, B)
@@ -220,7 +221,7 @@ def test_symacc_loop_body_with_loop_carried_operand(o, v, s, niters, dtype, use_
 @given(o=st.integers(1, 3), v=st.integers(1, 3), s=st.sampled_from([1.0, -0.5]),
        damp=st.sampled_from([0.5, 0.25, -0.75]), niters=st.integers(1, 3),
        dtype=st.sampled_from(["float64", "complex128"]), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=100, deadline=None,
+@settings(max_examples=sanitizer_examples(100), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_symacc_damping_in_window_is_not_folded(o, v, s, damp, niters, dtype, seed):
     rng = np.random.default_rng(seed)
@@ -247,9 +248,9 @@ def test_symacc_damping_in_window_is_not_folded(o, v, s, damp, niters, dtype, se
     X = einsums.asarray(X_np)
     r2 = einsums.zeros((o, o, v, v), dtype=dtype)
     tmp = einsums.zeros((o, o, v, v), dtype=dtype)
-    tmpP = einsums.zeros((o, o, v, v), dtype=dtype)
 
     g = cg.Graph("symacc_damped")
+    tmpP = g.create_zero_tensor("tmpP", [o, o, v, v], dtype=dtype, intermediate=True)
     loop = g.add_loop("L", niters, lambda it, N=niters: it < N - 1)
     with cg.capture(loop):
         einsums.einsum("i,j,a,b <- i,a ; j,b", tmp, A, B)
@@ -275,7 +276,7 @@ def test_symacc_damping_in_window_is_not_folded(o, v, s, damp, niters, dtype, se
 @given(o=st.integers(1, 3), v=st.integers(1, 3), s=st.sampled_from([1.0, -0.5]),
        niters=st.integers(1, 3), take=st.booleans(),
        dtype=st.sampled_from(["float64", "complex128"]), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=100, deadline=None,
+@settings(max_examples=sanitizer_examples(100), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_symacc_inside_conditional_in_loop(o, v, s, niters, take, dtype, seed):
     rng = np.random.default_rng(seed)
@@ -293,11 +294,11 @@ def test_symacc_inside_conditional_in_loop(o, v, s, niters, take, dtype, seed):
     B = einsums.asarray(B_np)
     r2 = einsums.zeros((o, o, v, v), dtype=dtype)
     tmp = einsums.zeros((o, o, v, v), dtype=dtype)
-    tmpP = einsums.zeros((o, o, v, v), dtype=dtype)
 
     # Subgraphs are declared outside any capture (nested captures are rejected)
     # and each level is then captured on its own.
     g = cg.Graph("symacc_cond")
+    tmpP = g.create_zero_tensor("tmpP", [o, o, v, v], dtype=dtype, intermediate=True)
     loop = g.add_loop("L", niters, lambda it, N=niters: it < N - 1)
     then_g, _else_g = loop.add_conditional("branch", lambda t=take: t)
     with cg.capture(then_g):
@@ -383,9 +384,9 @@ def _capture_site_with_interloper(interloper):
     Sm = einsums.asarray(S_np)
     r2 = einsums.zeros((o, o, v, v), dtype="float64")
     tmp = einsums.zeros((o, o, v, v), dtype="float64")
-    tmpP = einsums.zeros((o, o, v, v), dtype="float64")
 
     g = cg.Graph("symacc-interloper")
+    tmpP = g.create_zero_tensor("tmpP", [o, o, v, v], dtype="float64", intermediate=True)
     _FULL = (0, 0, 0)
     with cg.capture(g):
         einsums.einsum("i,j,a,b <- i,a ; j,b", tmp, A, B)

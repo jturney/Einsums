@@ -179,6 +179,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * made from the same measurement is not.
      */
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Not permutation operators, views, bare scalars or redirected slots: the rebuilt contraction carries no operators and the summed
+    /// operand is assumed a dense tensor.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
+               NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled;
+    }
 
     /// @copydoc OptimizerPass::tier
     /// Folding A*B1 + A*B2 into A*(B1+B2) sums the operands before contracting instead of after.

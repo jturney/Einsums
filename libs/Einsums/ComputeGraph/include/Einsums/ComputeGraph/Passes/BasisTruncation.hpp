@@ -288,6 +288,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// statement about the arithmetic, and one a reload quietly dropped would change what the graph
     /// computes.
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Only what commutes with a real rotation of one index space: repointing is by id and does not reach loop bodies, so views, control
+    /// flow and redirected slots stay out.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
+               NodeFeature::RawScalar;
+    }
 
     /// @copydoc OptimizerPass::run
     bool run(Graph &graph) override;

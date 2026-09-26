@@ -33,6 +33,8 @@ struct OperatorWrite {
     TensorId                         source{0};
     PrefactorScalar                  alpha{double{1}};
     std::vector<PermutationOperator> operators;
+    std::vector<std::string>         c_indices; ///< the index map, which the operator's letters refer to
+    std::vector<std::string>         a_indices;
 };
 
 std::optional<OperatorWrite> as_operator_write(Node const &node, std::size_t index) {
@@ -51,7 +53,9 @@ std::optional<OperatorWrite> as_operator_write(Node const &node, std::size_t ind
     return OperatorWrite{.index     = index,
                          .source    = node.inputs[0],
                          .alpha     = desc->params != nullptr ? desc->params->alpha : snapshot,
-                         .operators = desc->operators};
+                         .operators = desc->operators,
+                         .c_indices = desc->c_indices,
+                         .a_indices = desc->a_indices};
 }
 
 } // namespace
@@ -88,12 +92,23 @@ bool AntisymmetrizerLinearity::run(Graph &graph) {
     };
     std::vector<Site> sites;
 
+    // Every node the merge rewrites or deletes: the operator write, the
+    // accumulate, and the operator write behind the accumulated operand.
+    auto const declines = [&](Node const &node) {
+        if (understands(graph, node)) {
+            return false;
+        }
+        note_skip("the node carries a feature this pass does not understand",
+                  fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+        return true;
+    };
+
     for (auto const &[tid, list] : writers) {
         if (list.size() != 2) {
             continue;
         }
         auto const first = as_operator_write(graph.nodes()[list[0]], list[0]);
-        if (!first.has_value()) {
+        if (!first.has_value() || declines(graph.nodes()[list[0]])) {
             continue;
         }
         Node const &second = graph.nodes()[list[1]];
@@ -104,9 +119,12 @@ bool AntisymmetrizerLinearity::run(Graph &graph) {
         if (adesc == nullptr || !is_one(live_beta(*adesc))) {
             continue; // anything but a pure accumulate changes what the sum is
         }
+        if (declines(second)) {
+            continue;
+        }
         ++_num_candidates;
 
-        TensorId const other        = graph.resolve_alias(second.inputs[0]);
+        TensorId const other        = graph.buffer_of(second.inputs[0]);
         auto const    &other_writes = writers[other];
         if (other_writes.size() != 1) {
             note_skip("the accumulated operand is not settled by a single write", fmt::format("tensor #{}", tid));
@@ -117,17 +135,47 @@ bool AntisymmetrizerLinearity::run(Graph &graph) {
             note_skip("the accumulated operand was not written by a permutation operator", fmt::format("tensor #{}", tid));
             continue;
         }
+        if (declines(graph.nodes()[other_writes[0]])) {
+            continue;
+        }
         // The SAME operator, or the sum does not factor through one.
         if (behind->operators.size() != first->operators.size()) {
             note_skip("the two operators differ, so the sum does not factor through one", fmt::format("tensor #{}", tid));
             continue;
         }
-        bool same = true;
+        // And over the same index map: P(i/j) acting on a transposed copy is a different operator
+        // on the source, so two writes that name the same groups over different maps do not sum
+        // through one. Merging them flipped the sign of one term.
+        bool same = behind->c_indices == first->c_indices && behind->a_indices == first->a_indices;
         for (std::size_t k = 0; k < behind->operators.size() && same; ++k) {
             same = behind->operators[k].groups == first->operators[k].groups;
         }
         if (!same) {
             note_skip("the two operators differ, so the sum does not factor through one", fmt::format("tensor #{}", tid));
+            continue;
+        }
+
+        // The merged sum reads A where the first operator stands, not where the operator behind it
+        // read it, and D stops holding P(B) between the two writes. So across the whole span from
+        // the first operator to the accumulate, nothing may write A, nothing but the accumulate may
+        // read D, and no loop or branch may sit there, since its body's reads and writes are not on
+        // its own lists.
+        std::size_t const span_first = std::min(list[0], other_writes[0]);
+        std::size_t const span_last  = list[1];
+        TensorId const    a_buffer   = graph.buffer_of(behind->source);
+        bool              disturbed  = false;
+        for (std::size_t j = span_first + 1; j < span_last && !disturbed; ++j) {
+            Node const &between = graph.nodes()[j];
+            if (j == other_writes[0] || is_lifecycle(between.kind)) {
+                continue;
+            }
+            auto const names = [&](std::vector<TensorId> const &ids, TensorId buffer) {
+                return std::ranges::any_of(ids, [&](TensorId id) { return graph.buffer_of(id) == buffer; });
+            };
+            disturbed = is_control_flow(between.kind) || names(between.outputs, a_buffer) || names(between.inputs, tid);
+        }
+        if (disturbed) {
+            note_skip("a node between the two operators rewrites the operand or reads the half-built sum", fmt::format("tensor #{}", tid));
             continue;
         }
 
@@ -154,7 +202,7 @@ bool AntisymmetrizerLinearity::run(Graph &graph) {
     std::vector<std::pair<std::size_t, std::vector<Node>>> inserts;
 
     for (auto const &site : sites) {
-        auto const *src_handle = graph.find_tensor(graph.resolve_alias(site.own_source));
+        auto const *src_handle = graph.find_tensor(graph.buffer_of(site.own_source));
         if (src_handle == nullptr) {
             continue;
         }

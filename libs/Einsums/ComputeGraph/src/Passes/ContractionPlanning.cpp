@@ -133,8 +133,9 @@ struct ContractionInfo {
     PrefactorScalar ab_prefactor; ///< The scalar this member multiplies its product by
 };
 
-/// Find chains of contractions where each feeds the next.
-std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &graph) {
+/// Find chains of contractions where each feeds the next. @p admits says whether the pass may
+/// rewrite a node; a member it refuses ends the chain there.
+std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &graph, std::function<bool(Node const &)> const &admits) {
     auto const                               &nodes = graph.nodes();
     std::vector<bool>                         in_chain(nodes.size(), false);
     std::vector<std::vector<ContractionInfo>> chains;
@@ -169,7 +170,7 @@ std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &g
             continue;
 
         size_t M, K, N;
-        if (!analyze_contraction(*desc, graph, nodes[i], M, K, N))
+        if (!analyze_contraction(*desc, graph, nodes[i], M, K, N) || !admits(nodes[i]))
             continue;
 
         std::vector<ContractionInfo> chain;
@@ -198,7 +199,7 @@ std::vector<std::vector<ContractionInfo>> find_contraction_chains(Graph const &g
                 break;
 
             size_t M2, K2, N2;
-            if (!analyze_contraction(*next_desc, graph, nodes[j], M2, K2, N2))
+            if (!analyze_contraction(*next_desc, graph, nodes[j], M2, K2, N2) || !admits(nodes[j]))
                 break;
 
             chain.push_back(make_info(j, M2, K2, N2));
@@ -493,26 +494,31 @@ bool ContractionPlanning::run(Graph &graph) {
         // an untouched chain once per fixpoint iteration; see the harvest below.
         std::vector<ChainReport> scan_reports;
 
-        auto chains = find_contraction_chains(graph);
+        auto chains = find_contraction_chains(graph, [&](Node const &node) {
+            if (understands(graph, node)) {
+                return true;
+            }
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+            return false;
+        });
         if (chains.empty())
             break;
 
         bool restructured_this_scan = false;
 
-        // Determine element size and dtype from first chain
-        size_t                  element_size = 8;
-        packed_gemm::ScalarType dtype        = packed_gemm::ScalarType::Float64;
-        {
-            auto const &tensors = graph.tensors_map();
-            auto        it      = tensors.find(chains[0][0].output_tid);
-            if (it != tensors.end()) {
-                element_size = it->second.element_size;
-                dtype        = it->second.dtype;
-            }
-        }
-
         for (auto const &chain : chains) {
             size_t n = chain.size(); // Number of GEMMs
+
+            // Each chain's own element type. Taking the first chain's for every chain built a
+            // float32 chain's GEMMs and intermediates as float64 when a float64 chain came first
+            // in the scan, and the replay failed reading one type as the other.
+            size_t                  element_size = 8;
+            packed_gemm::ScalarType dtype        = packed_gemm::ScalarType::Unknown;
+            if (auto const *handle = graph.find_tensor(chain[0].output_tid); handle != nullptr) {
+                element_size = handle->element_size;
+                dtype        = handle->dtype;
+            }
 
             // Extract leaf matrices: n+1 leaves from n GEMMs.
             auto         leaves     = extract_leaves(chain);
@@ -683,10 +689,16 @@ bool ContractionPlanning::run(Graph &graph) {
             {
                 std::unordered_set<size_t>   member_indices;
                 std::unordered_set<TensorId> interior;
+                // The same interior as buffers, which is what a reader is matched by: a view of
+                // an interior output reads the value re-parenthesizing elides just as the output
+                // itself does.
+                std::unordered_set<TensorId> interior_buffers;
                 for (size_t ci = 0; ci < chain.size(); ci++) {
                     member_indices.insert(chain[ci].node_idx);
-                    if (ci + 1 < chain.size())
+                    if (ci + 1 < chain.size()) {
                         interior.insert(chain[ci].output_tid);
+                        interior_buffers.insert(graph.buffer_of(chain[ci].output_tid));
+                    }
                 }
                 bool interior_observable = false;
                 for (auto const tid : interior) {
@@ -708,7 +720,7 @@ bool ContractionPlanning::run(Graph &graph) {
                 // a DAG rather than a chain; decline it.
                 if (!interior_observable) {
                     for (auto const leaf : leaves) {
-                        if (interior.contains(leaf)) {
+                        if (interior_buffers.contains(graph.buffer_of(leaf))) {
                             interior_observable = true;
                             break;
                         }
@@ -720,7 +732,7 @@ bool ContractionPlanning::run(Graph &graph) {
                         if (member_indices.count(idx))
                             continue;
                         for (auto const tid : all_nodes[idx].inputs) {
-                            if (interior.count(tid)) {
+                            if (interior_buffers.contains(graph.buffer_of(tid))) {
                                 interior_observable = true; // outside reader of an interior value
                                 break;
                             }

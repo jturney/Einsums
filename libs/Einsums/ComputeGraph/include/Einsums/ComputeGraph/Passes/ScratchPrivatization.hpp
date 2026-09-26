@@ -81,6 +81,14 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE void set_require_executor(bool require) { _require_executor = require; }
 
     [[nodiscard]] std::string name() const override { return "ScratchPrivatization"; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Every feature today: a rebuilt node keeps its operators, conjugation and live prefactors, and any view, redirect or body access
+    /// disqualifies the buffer.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::Conjugation |
+               NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow |
+               NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
+    }
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::StructuralResource; }

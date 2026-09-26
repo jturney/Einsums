@@ -8,9 +8,12 @@
 #include <Einsums/Comm/Runtime.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Passes/DistributionPlanning.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
+
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <deque>
@@ -149,14 +152,34 @@ bool DistributionPlanning::run(Graph &graph) {
     };
     std::unordered_map<TensorId, std::vector<TensorRole>> tensor_usage;
 
-    // Synthetic ContractionSpecs for Permute nodes (all indices are "shared"). A deque,
-    // because tensor_usage keeps pointers into it while later permutes append: a vector
-    // reallocated under them once the graph held a second permute.
-    std::deque<packed_gemm::ContractionSpec> permute_specs;
+    // The index lists each classified node runs with: an einsum's live lists, and a synthetic
+    // spec for each Permute node (all indices are "shared"). A deque, because tensor_usage keeps
+    // pointers into it while later nodes append: a vector reallocated under them once the graph
+    // held a second one.
+    std::deque<packed_gemm::ContractionSpec> usage_specs;
+
+    // Every buffer a node this pass does not understand reads or writes. Such a node reads the
+    // whole tensor through an operator, a view, a family or a body, so a layout planned from the
+    // nodes this pass does understand would hand it one rank's slice. Those tensors stay whole.
+    std::unordered_set<TensorId> pinned_buffers;
 
     auto const &nodes = graph.nodes();
     for (size_t idx = 0; idx < nodes.size(); idx++) {
         auto const &node = nodes[idx];
+
+        if (!understands(graph, node)) {
+            for (TensorId const tid : node.inputs) {
+                pinned_buffers.insert(graph.buffer_of(tid));
+            }
+            for (TensorId const tid : node.outputs) {
+                pinned_buffers.insert(graph.buffer_of(tid));
+            }
+            if (node.kind == OpKind::Einsum || node.kind == OpKind::Permute || node.kind == OpKind::Transpose) {
+                note_skip("the node carries a feature this pass does not understand",
+                          fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+            }
+            continue;
+        }
 
         // Only classify Einsum nodes. BatchedGemm replaces einsums after
         // GEMMBatching runs; mixing batched and distributed dispatch is
@@ -166,12 +189,23 @@ bool DistributionPlanning::run(Graph &graph) {
             auto const *desc = node.op_data.get_if<EinsumDescriptor>();
             if (!desc)
                 continue;
+            // The lists the executor runs with, not the capture-time snapshot a pass may have
+            // left behind when it rewrote the live block.
+            auto const                   lists = live_index_lists(*desc);
+            packed_gemm::ContractionSpec spec;
+            spec.c_indices    = lists.c;
+            spec.a_indices    = lists.a;
+            spec.b_indices    = lists.b;
+            spec.link_indices = lists.link;
+            usage_specs.push_back(std::move(spec));
+            auto const *spec_ptr = &usage_specs.back();
+
             if (!node.outputs.empty())
-                tensor_usage[node.outputs[0]].push_back({.node_idx = idx, .role = "C", .spec = &desc->spec});
+                tensor_usage[node.outputs[0]].push_back({.node_idx = idx, .role = "C", .spec = spec_ptr});
             if (node.inputs.size() > 0)
-                tensor_usage[node.inputs[0]].push_back({.node_idx = idx, .role = "A", .spec = &desc->spec});
+                tensor_usage[node.inputs[0]].push_back({.node_idx = idx, .role = "A", .spec = spec_ptr});
             if (node.inputs.size() > 1)
-                tensor_usage[node.inputs[1]].push_back({.node_idx = idx, .role = "B", .spec = &desc->spec});
+                tensor_usage[node.inputs[1]].push_back({.node_idx = idx, .role = "B", .spec = spec_ptr});
         } else if (node.kind == OpKind::Permute || node.kind == OpKind::Transpose) {
             auto const *pdesc = node.op_data.get_if<PermuteDescriptor>();
             if (!pdesc || pdesc->c_indices.empty())
@@ -187,8 +221,8 @@ bool DistributionPlanning::run(Graph &graph) {
             // as if they're all target_a (since there's no B tensor).
             // Use c_indices as b_indices too so shared = c_indices.
             spec.b_indices = pdesc->c_indices;
-            permute_specs.push_back(std::move(spec));
-            auto *spec_ptr = &permute_specs.back();
+            usage_specs.push_back(std::move(spec));
+            auto *spec_ptr = &usage_specs.back();
 
             if (!node.outputs.empty())
                 tensor_usage[node.outputs[0]].push_back({.node_idx = idx, .role = "C", .spec = spec_ptr});
@@ -231,6 +265,14 @@ bool DistributionPlanning::run(Graph &graph) {
         }
 
         size_t total_bytes = handle.total_bytes();
+
+        if (pinned_buffers.contains(graph.buffer_of(tid))) {
+            handle.is_distributed = false;
+            handle.is_replicated  = true;
+            _num_replicated++;
+            EINSUMS_LOG_DEBUG("DistributionPlanning: '{}' → replicated (a node this pass does not understand reads it whole)", handle.name);
+            continue;
+        }
 
         if (total_bytes <= _threshold) {
             handle.is_distributed = false;

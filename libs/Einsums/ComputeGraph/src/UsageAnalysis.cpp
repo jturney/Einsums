@@ -87,7 +87,7 @@ UsageAnalysis UsageAnalysis::build(Graph &graph) {
         auto const                   note = [&](auto const &ids, bool is_write, bool via_subtree) {
             auto &seen = is_write ? own_written : own_read;
             for (auto const tid : ids) {
-                TensorId const owner = graph.resolve_alias(tid);
+                TensorId const owner = graph.buffer_of(tid);
                 if (seen.insert(owner).second) {
                     ua._table[owner].uses.push_back(TensorUse{pos, node.kind, is_write, via_subtree});
                 }
@@ -106,7 +106,7 @@ UsageAnalysis UsageAnalysis::build(Graph &graph) {
 }
 
 TensorUsage const *UsageAnalysis::find(Graph const &graph, TensorId id) const {
-    return find_owner(graph.resolve_alias(id));
+    return find_owner(graph.buffer_of(id));
 }
 
 TensorUsage const *UsageAnalysis::find_owner(TensorId owner) const {

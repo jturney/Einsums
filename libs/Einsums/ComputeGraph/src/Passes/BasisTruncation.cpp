@@ -680,10 +680,10 @@ bool BasisTruncation::run(Graph &graph) {
         }
         for (auto &candidate : candidates) {
             for (TensorId const in : node.inputs) {
-                candidate.read = candidate.read || graph.resolve_alias(in) == candidate.id;
+                candidate.read = candidate.read || graph.buffer_of(in) == candidate.id;
             }
             for (TensorId const out : node.outputs) {
-                candidate.written = candidate.written || graph.resolve_alias(out) == candidate.id;
+                candidate.written = candidate.written || graph.buffer_of(out) == candidate.id;
             }
         }
     }
@@ -813,6 +813,35 @@ bool BasisTruncation::run(Graph &graph) {
                   "unmeasured bound is not the record this rewrite owes",
                   "call set_occupied_energies");
         return false;
+    }
+
+    // A node touching a tensor over the space being replaced is one the repointing below may
+    // rewrite, so one carrying a feature this pass does not understand declines the whole
+    // truncation, and does so here, before the first tensor is declared. A control-flow node is
+    // asked through its effective I/O, which is what its sub-graphs touch.
+    {
+        auto const touches_candidate = [&](std::vector<TensorId> const &ids) {
+            return std::ranges::any_of(ids, [&](TensorId id) {
+                TensorId const buffer = graph.buffer_of(id);
+                return std::ranges::any_of(candidates, [&](Candidate const &candidate) { return candidate.id == buffer; });
+            });
+        };
+        for (std::size_t i = 0; i < graph.nodes().size(); ++i) {
+            if (understands(graph, graph.nodes()[i])) {
+                continue;
+            }
+            bool touches = touches_candidate(graph.nodes()[i].inputs) || touches_candidate(graph.nodes()[i].outputs);
+            if (!touches && is_control_flow(graph.nodes()[i].kind)) {
+                auto const [reads, writes] = graph.effective_io(graph.nodes()[i]);
+                touches                    = touches_candidate(reads) || touches_candidate(writes);
+            }
+            if (touches) {
+                Node const &node = graph.nodes()[i];
+                note_skip("the node carries a feature this pass does not understand",
+                          fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+                return false;
+            }
+        }
     }
 
     // ── The projected tensors ────────────────────────────────────────────────

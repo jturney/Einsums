@@ -70,8 +70,14 @@ class EINSUMS_EXPORT SUMMAExpansion : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
-    bool                    run(Graph &graph) override;
-    void                    reset_stats() override;
+    /// @copydoc OptimizerPass::understood_features
+    /// Not mixed precision, views or tiled operands: the panels cast operands to owning tensors of the output's type.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
+               NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
+    }
+    bool run(Graph &graph) override;
+    void reset_stats() override;
 
     [[nodiscard]] size_t num_expanded() const { return _num_expanded; }
 

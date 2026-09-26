@@ -501,6 +501,19 @@ bool TiledExpansion::run(Graph &graph) {
         for (size_t ni = 0; ni < n; ++ni) {
             Node const &src = nodes[ni];
 
+            // A node carrying a feature this pass does not understand is not
+            // expanded. Skipped in both sweeps: the stranding fixpoint below
+            // treats it like any other node that does not expand, so no plan
+            // touching its tiled tensors survives either way. Noted once, in
+            // the sweep that reports.
+            if (!understands(graph, src)) {
+                if (planning) {
+                    note_skip("the node carries a feature this pass does not understand",
+                              fmt::format("node '{}': {}", src.label, describe_features(features_of(graph, src))));
+                }
+                continue;
+            }
+
             auto decline = [&](std::string_view why) {
                 if (!planning) {
                     return; // sweep 0 tracks tile sets only; sweep 1 repeats the walk and reports

@@ -123,6 +123,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      * made from the same measurement is not.
      */
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Not views or redirected slots: the outside-reader scan of a chain's interior compares ids.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
+               NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
+    }
 
     /// @copydoc OptimizerPass::tier
     /// Re-parenthesizing a GEMM chain is matrix-chain associativity, which is exact in the algebra and reorders every

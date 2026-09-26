@@ -82,6 +82,8 @@ class EINSUMS_EXPORT FreeInsertion : public OptimizerPass {
     explicit FreeInsertion(size_t min_bytes = static_cast<size_t>(1024 * 1024)) : _min_bytes(min_bytes) {}
 
     [[nodiscard]] std::string name() const override { return "FreeInsertion"; }
+    /// Every feature: this pass moves, schedules, allocates or deletes nodes by dataflow and never reads their arithmetic.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }

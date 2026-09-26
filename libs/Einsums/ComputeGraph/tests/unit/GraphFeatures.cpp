@@ -6,7 +6,9 @@
 // Tests for Graph features: to_json, move semantics, empty graph, PassManager default.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
+#include <Einsums/ComputeGraph/UsageAnalysis.hpp>
 #include <Einsums/Options/Get.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
@@ -244,6 +246,20 @@ TEST_CASE("Graph - verify names broken extents, in-place nodes and redirect writ
         CHECK(problems_mention(graph, "reads a tensor other than the one it scales in place"));
     }
 
+    SECTION("an ElementTransform that writes a tensor it does not read") {
+        auto      C = create_random_tensor<double>("C", 3, 3);
+        auto      D = create_random_tensor<double>("D", 3, 3);
+        cg::Graph graph("element_transform");
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::element_transform(&C, "square");
+            cg::element_transform(&D, "square");
+        }
+        REQUIRE(graph.verify().empty());
+        graph.nodes()[0].outputs[0] = graph.nodes()[1].outputs[0];
+        CHECK(problems_mention(graph, "reads a tensor other than the one it transforms in place"));
+    }
+
     SECTION("an Axpby whose y is not its output") {
         auto      X = create_random_tensor<double>("X", 3, 3);
         auto      Y = create_random_tensor<double>("Y", 3, 3);
@@ -272,6 +288,58 @@ TEST_CASE("Graph - verify names broken extents, in-place nodes and redirect writ
         REQUIRE(graph.verify().empty());
         graph.redirect_slot(graph.nodes()[1].outputs[0], graph.nodes()[0].outputs[0]);
         CHECK(problems_mention(graph, "whose slot is redirected to tensor"));
+    }
+}
+
+// Defends: one answer to "which storage does this id use", asked the same way everywhere. A slot
+// redirect makes a merged-away tensor read the survivor's buffer, and every analysis used to key
+// on the view relation alone, which misses it: a node still naming the merged-away id looked like
+// it read a tensor nothing writes. The scheduler then put it in the same level as the writer it
+// depends on, and a threading executor ran the two concurrently.
+TEST_CASE("Graph - buffer_of follows views and redirects, and the buffer analyses key on it", "[ComputeGraph][BufferIdentity]") {
+    auto A  = create_random_tensor<double>("A", 3, 3);
+    auto B  = create_random_tensor<double>("B", 3, 3);
+    auto S1 = create_zero_tensor<double>("S1", 3, 3);
+    auto S2 = create_zero_tensor<double>("S2", 3, 3);
+    auto C  = create_zero_tensor<double>("C", 3, 3);
+
+    cg::Graph graph("buffer_identity");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &S1, A, A);
+        cg::einsum("ik;kj->ij", &S2, A, A);
+        cg::einsum("ik;kj->ij", &C, S2, B);
+    }
+    auto const s1 = graph.nodes()[0].outputs[0];
+    auto const s2 = graph.nodes()[1].outputs[0];
+    CHECK(graph.buffer_of(s2) == s2);
+
+    // The duplicate's writer goes and its slot follows the survivor, exactly as CSE merges two
+    // results, except that the reader still names the merged-away id.
+    graph.erase_nodes({false, true, false});
+    graph.redirect_slot(s2, s1);
+    REQUIRE(graph.verify().empty());
+
+    CHECK(graph.buffer_of(s2) == s1);
+    auto const escapes = cg::EscapeAnalysis::over(graph);
+    CHECK(escapes.writer_count(s2) == 1);
+    auto const *usage = graph.usage().find(graph, s2);
+    REQUIRE(usage != nullptr);
+    CHECK(usage->writes() == 1);
+    CHECK(usage->reads() == 1);
+
+    // Ordered: the reader of the merged-away id waits for the survivor's writer.
+    CHECK(graph.schedule_level_sizes() == std::vector<size_t>{1, 1});
+
+    graph.execute();
+    auto AA = create_zero_tensor<double>("AA", 3, 3);
+    auto CC = create_zero_tensor<double>("CC", 3, 3);
+    reference_einsum("ij <- ik ; kj", &AA, A, A);
+    reference_einsum("ij <- ik ; kj", &CC, AA, B);
+    for (size_t i = 0; i < 3; i++) {
+        for (size_t j = 0; j < 3; j++) {
+            CHECK_THAT(C(i, j), Catch::Matchers::WithinRel(CC(i, j), 1e-12));
+        }
     }
 }
 

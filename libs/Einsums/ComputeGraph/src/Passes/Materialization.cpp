@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "LifecycleNodes.hpp"
@@ -126,6 +127,27 @@ void collect_deferred(Graph &graph, std::vector<DeferredEntry> &out, std::vector
     }
 }
 
+/// The storage every Materialize in @p graph and its descendants brings to life, by tensor pointer.
+///
+/// The identity a body and its parent agree on. A second run of this pass used to meet a body's
+/// handle for a buffer the first run had already given a hoisted Materialize, find it still
+/// deferred (the handle only learns otherwise at execute), and hoist a second lifecycle, whose
+/// Initialize re-zeroed a value the parent had written by then. Keyed by name the check misses it,
+/// because a body may name the buffer differently from the parent that owns its Materialize.
+// NOLINTNEXTLINE(misc-no-recursion): sub-graphs nest.
+void collect_materialized_ptrs(Graph const &graph, std::unordered_set<void const *> &out) {
+    for (auto const &node : graph.nodes()) {
+        if (node.kind == OpKind::Materialize) {
+            for (TensorId const id : node.outputs) {
+                if (auto const *handle = graph.find_tensor(id); handle != nullptr && handle->tensor_ptr != nullptr) {
+                    out.insert(handle->tensor_ptr);
+                }
+            }
+        }
+        for_each_child_graph(node, [&out](Graph const &child) { collect_materialized_ptrs(child, out); });
+    }
+}
+
 /// Whether @p graph already holds a Materialize node for the tensor named @p name.
 ///
 /// Name-keyed, matching what FreeInsertion does for the same question. The pass is re-runnable (a
@@ -173,7 +195,7 @@ void collect_audit(Graph const &graph, std::map<std::string, std::size_t> &mater
         // Through aliases: a tensor written only through a view of it is used, and the view is a
         // separate handle with a name of its own.
         auto note = [&](TensorId tid) {
-            if (TensorHandle const *handle = graph.find_tensor(graph.resolve_alias(tid)); handle != nullptr) {
+            if (TensorHandle const *handle = graph.find_tensor(graph.buffer_of(tid)); handle != nullptr) {
                 used.insert(handle->name);
             }
         };
@@ -235,10 +257,18 @@ void Materialization::reset_stats() {
 }
 
 bool Materialization::run(Graph &graph) {
+    // Storage an earlier run already gave a Materialize, anywhere in the tree; see
+    // collect_materialized_ptrs. Neither the parent's own handles nor a body's are planned again.
+    std::unordered_set<void const *> already_live;
+    collect_materialized_ptrs(graph, already_live);
+    auto const planned = [&already_live](TensorHandle const &handle) {
+        return handle.tensor_ptr != nullptr && already_live.contains(handle.tensor_ptr);
+    };
+
     // ── 1. The parent graph's own deferred tensors ────────────────────────
     std::vector<TensorId> own_deferred;
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (handle.alloc_state == AllocState::Deferred) {
+        if (handle.alloc_state == AllocState::Deferred && !planned(handle)) {
             own_deferred.push_back(tid);
         }
     }
@@ -270,6 +300,9 @@ bool Materialization::run(Graph &graph) {
             std::vector<DeferredEntry> found;
             collect_deferred(child, found, nested_setups);
             for (auto const &e : found) {
+                if (planned(e.handle_owner->tensor(e.tid))) {
+                    continue;
+                }
                 hoists.push_back({.owning_node_index = i, .handle_owner = e.handle_owner, .tid = e.tid});
             }
         };
@@ -431,7 +464,7 @@ bool Materialization::run(Graph &graph) {
     auto body_writes = [](Graph &body, void const *ptr) {
         for (auto const &node : body.nodes()) {
             for (TensorId const out : node.outputs) {
-                TensorHandle const *written = body.find_tensor(body.resolve_alias(out));
+                TensorHandle const *written = body.find_tensor(body.buffer_of(out));
                 if (written != nullptr && written->tensor_ptr == ptr) {
                     return true;
                 }

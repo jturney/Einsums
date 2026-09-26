@@ -57,6 +57,11 @@ struct RewriteOptions {
     /// declined.
     std::function<TensorId(std::string const &, packed_gemm::ScalarType, std::vector<std::size_t> const &)> declare;
 
+    /// Whether the calling pass understands a node, by its own declared features. Asked of the
+    /// writers of a denominator, which sit outside every region and so outside the barrier that
+    /// keeps the rest of the rewrite to nodes the pass was taught. Unset means every node.
+    std::function<bool(Node const &)> understands;
+
     /// Whether to build the setup emitter. A trial that is only costed does not need one.
     bool want_setup{true};
 

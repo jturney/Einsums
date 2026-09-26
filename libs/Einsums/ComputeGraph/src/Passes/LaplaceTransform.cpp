@@ -8,6 +8,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/LaplaceQuadrature.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Options.hpp>
 #include <Einsums/ComputeGraph/Passes/LaplaceTransform.hpp>
 #include <Einsums/ComputeGraph/TensorExpr.hpp>
@@ -78,20 +79,20 @@ enum class WriterVerdict : std::uint8_t { None, Verified, Unverifiable };
 /// @return The verdict.
 WriterVerdict classify_writers(Graph const &graph, TensorId id, std::vector<std::string> const &energy_names, std::vector<int> const &signs,
                                quadrature::RewriteOptions const &options, std::string &trouble) {
-    auto const                owner = graph.resolve_alias(id);
+    auto const                owner = graph.buffer_of(id);
     std::vector<Node const *> writers;
     std::size_t               readers = 0;
     for (auto const &node : graph.nodes()) {
         bool writes = false;
         for (TensorId const out : node.outputs) {
-            writes = writes || graph.resolve_alias(out) == owner;
+            writes = writes || graph.buffer_of(out) == owner;
         }
         if (writes) {
             writers.push_back(&node);
             continue;
         }
         for (TensorId const in : node.inputs) {
-            readers += graph.resolve_alias(in) == owner ? 1 : 0;
+            readers += graph.buffer_of(in) == owner ? 1 : 0;
         }
     }
     if (writers.empty()) {
@@ -100,6 +101,15 @@ WriterVerdict classify_writers(Graph const &graph, TensorId id, std::vector<std:
     if (writers.size() != 2) {
         trouble = fmt::format("{} node(s) write it; the chain this pass can verify is an outer sum and a reciprocal", writers.size());
         return WriterVerdict::Unverifiable;
+    }
+    // A writer outside every region is one the region barrier never sees, so the check that it
+    // carries nothing this pass cannot read is made here, before the chain can be dissolved.
+    for (Node const *writer : writers) {
+        if (options.understands && !options.understands(*writer)) {
+            trouble = fmt::format("its writer '{}' carries a feature this pass does not understand: {}", writer->label,
+                                  describe_features(features_of(graph, *writer)));
+            return WriterVerdict::Unverifiable;
+        }
     }
     if (readers != 1) {
         // Exactly the direct product this rewrite is about. Anything else reads a value the
@@ -145,7 +155,7 @@ WriterVerdict classify_writers(Graph const &graph, TensorId id, std::vector<std:
         trouble = fmt::format("the second writer is not the '{}' element transform", kReciprocal);
         return WriterVerdict::Unverifiable;
     }
-    if (reciprocal->inputs.size() != 1 || graph.resolve_alias(reciprocal->inputs.front()) != owner) {
+    if (reciprocal->inputs.size() != 1 || graph.buffer_of(reciprocal->inputs.front()) != owner) {
         trouble = "the reciprocal does not read the sum it is supposed to invert";
         return WriterVerdict::Unverifiable;
     }
@@ -381,7 +391,7 @@ bool LaplaceTransform::run(Graph &graph) {
         std::vector<bool> remove(graph.nodes().size(), false);
         std::size_t       erased = 0;
         for (TensorId const denominator : _dissolve) {
-            auto const owner = graph.resolve_alias(denominator);
+            auto const owner = graph.buffer_of(denominator);
             for (std::size_t position = 0; position < graph.nodes().size(); ++position) {
                 Node const &node = graph.nodes()[position];
                 if (node.kind != OpKind::Custom && node.kind != OpKind::ElementTransform) {
@@ -389,7 +399,13 @@ bool LaplaceTransform::run(Graph &graph) {
                 }
                 bool writes = false;
                 for (TensorId const out : node.outputs) {
-                    writes = writes || graph.resolve_alias(out) == owner;
+                    writes = writes || graph.buffer_of(out) == owner;
+                }
+                // The writers sit outside every region, so the region barrier never saw them.
+                if (writes && !understands(graph, node)) {
+                    note_skip("the node carries a feature this pass does not understand",
+                              fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+                    continue;
                 }
                 if (writes) {
                     remove[position] = true;
@@ -979,10 +995,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 
 bool LaplaceTransform::rewrite(Graph &graph, Region const &region, TensorExpr &expr) {
     quadrature::RewriteOptions options;
-    options.epsilon = epsilon();
-    options.points  = _points;
-    options.energy  = [this](std::string const &wanted) { return energy(wanted); };
-    options.declare = [&graph](std::string const &tensor_name, packed_gemm::ScalarType dtype, std::vector<std::size_t> const &dims) {
+    options.understands = [this, &graph](Node const &node) { return understands(graph, node); };
+    options.epsilon     = epsilon();
+    options.points      = _points;
+    options.energy      = [this](std::string const &wanted) { return energy(wanted); };
+    options.declare     = [&graph](std::string const &tensor_name, packed_gemm::ScalarType dtype, std::vector<std::size_t> const &dims) {
         return expr::declare_scratch(graph, tensor_name, dtype, dims);
     };
 

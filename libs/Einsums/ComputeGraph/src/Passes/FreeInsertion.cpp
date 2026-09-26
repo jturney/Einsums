@@ -145,7 +145,7 @@ bool FreeInsertion::run(Graph &graph) {
         // is the same mapping Part A's usage table is keyed on.
         auto const [eff_in, eff_out] = graph.effective_io(node);
         for (TensorId const tid : eff_out) {
-            setup_outputs.insert(graph.resolve_alias(tid));
+            setup_outputs.insert(graph.buffer_of(tid));
         }
     }
 

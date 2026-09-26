@@ -124,6 +124,13 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
         : _cost_model(std::move(cost_model)), _has_cost_model(true), _max_gemm_us(max_gemm_us) {}
 
     [[nodiscard]] std::string name() const override { return "GEMMBatching"; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Every feature today: operators and conjugation are declined, and the interference gate compares buffers.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::Conjugation |
+               NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow |
+               NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
+    }
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }

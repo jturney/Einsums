@@ -6,11 +6,14 @@
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferElimination.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferNode.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Logging.hpp>
+
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <limits>
@@ -112,6 +115,15 @@ bool TransferElimination::run(Graph &graph) {
             auto res = residency[tid];
 
             if (res == Residency::Device || res == Residency::Both) {
+                // A transfer this pass does not understand stays and leaves both copies current,
+                // as any kept upload does; the tensor already holds its device bytes, so the
+                // budget has nothing new to count.
+                if (!understands(graph, node)) {
+                    note_skip("the node carries a feature this pass does not understand",
+                              fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+                    residency[tid] = Residency::Both;
+                    continue;
+                }
                 // Already on device, redundant.
                 remove[idx] = true;
                 _num_eliminated++;
@@ -173,6 +185,14 @@ bool TransferElimination::run(Graph &graph) {
             auto res = residency[tid];
 
             if (res == Residency::Host || res == Residency::Both) {
+                // A transfer this pass does not understand stays and leaves both copies current,
+                // as any kept download does.
+                if (!understands(graph, node)) {
+                    note_skip("the node carries a feature this pass does not understand",
+                              fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+                    residency[tid] = Residency::Both;
+                    continue;
+                }
                 // Already on host, redundant.
                 remove[idx] = true;
                 _num_eliminated++;

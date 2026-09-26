@@ -17,6 +17,7 @@ from hypothesis import strategies as st
 
 import einsums
 import einsums.graph as cg
+from _sanitizer_scaling import sanitizer_examples
 
 _ctr = itertools.count()
 _TRT = {np.float64: einsums.TiledRuntimeTensorD, np.complex128: einsums.TiledRuntimeTensorZ}
@@ -61,7 +62,7 @@ def _axis(draw):
 
 @given(op=st.sampled_from(["conj", "real", "imag", "abs"]), rows=_axis(), cols=_axis(),
        cplx=st.booleans(), graph=st.booleans(), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=300, deadline=None,
+@settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_tiled_conj(op, rows, cols, cplx, graph, seed):
     rng = np.random.default_rng(seed)

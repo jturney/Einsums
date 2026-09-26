@@ -1456,6 +1456,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * intermediate as the usual symptom.
      *
      * @param[in] id The tensor identifier.
+     * A redirected id (see @ref redirect_slot) answers with the tensor its slot
+     * was redirected to, since that is the storage its slot reads; the id's own
+     * object is the merged-away duplicate that nothing writes any more.
+     *
      * @return The stand-in when capture adopted one, otherwise the registered
      *         pointer. Null if no tensor with that id exists.
      */
@@ -2127,6 +2131,22 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
     /// to the root, so only genuinely nested views (a view of a view of a
     /// view) walk more than one hop.
     [[nodiscard]] TensorId resolve_alias(TensorId id) const;
+
+    /**
+     * @brief The tensor whose storage @p id actually reads and writes.
+     *
+     * Two relations make one buffer answer to several ids: a view names its parent
+     * (@ref resolve_alias), and a slot redirect sends a merged-away tensor to the survivor's
+     * storage (@ref redirect_slot). This follows both, alternately, until neither moves, so every
+     * id over one buffer answers the same. Any question of the form "is this the same data",
+     * "who else writes this" or "who reads this before I change it" is a question about buffers
+     * and asks this; @ref resolve_alias alone misses a redirect, which is how a pass counted one
+     * reader of a tensor two nodes read and fused a transpose into a caller's input.
+     *
+     * @param[in] id A tensor id of this graph.
+     * @return The id of the tensor that owns @p id's storage, or @p id itself.
+     */
+    [[nodiscard]] TensorId buffer_of(TensorId id) const;
 
     /// Access dependency info (populated by topological_sort()).
     [[nodiscard]] DependencyInfo const &dependencies() const { return _deps; }

@@ -86,7 +86,7 @@ MemStats analyze_one(Graph &graph) {
     // find(), not operator[]: a default-constructed interval (first_use ==
     // SIZE_MAX) would blow up the event sweep below.
     auto mark_device = [&](TensorId tid) {
-        if (auto it = intervals.find(graph.resolve_alias(tid)); it != intervals.end()) {
+        if (auto it = intervals.find(graph.buffer_of(tid)); it != intervals.end()) {
             it->second.on_device = true;
         }
     };

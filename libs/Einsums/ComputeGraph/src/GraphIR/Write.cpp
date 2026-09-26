@@ -907,6 +907,26 @@ Object write_structure(Graph const &graph) {
     return out;
 }
 
+std::string node_fingerprint(Graph const &graph, Node const &node) {
+    // The callables by TYPE: two std::function objects cannot be compared, but a pass that swaps in
+    // an executor of its own (a folded constant's no-op, a distributed kernel, a device dispatch)
+    // installs a different callable type, and the placement is what decides which one runs.
+    auto const  callable = [](std::function<void()> const &fn) -> std::string_view { return fn ? fn.target_type().name() : "none"; };
+    std::string out      = fmt::format("{}|in {}|out {}|target {}|exec {}|fallback {}|async {}|", node.kind, fmt::join(node.inputs, ","),
+                                       fmt::join(node.outputs, ","), node.target == Target::GPU ? "gpu" : "cpu", callable(node.execute),
+                                       callable(node.cpu_fallback), callable(node.async_start));
+    if (is_control_flow(node.kind)) {
+        return out + std::string(node.op_data.name());
+    }
+    try {
+        Frame frame(graph, nullptr);
+        out += json::emit(write_descriptor(node, graph, graph, frame));
+    } catch (std::exception const &) {
+        out += fmt::format("unencodable {}", node.op_data.name());
+    }
+    return out;
+}
+
 /// The whole document: the structure sections with provenance spliced in at the
 /// fixed second position.
 Value write_document(Graph const &graph, SaveOptions const &options) {

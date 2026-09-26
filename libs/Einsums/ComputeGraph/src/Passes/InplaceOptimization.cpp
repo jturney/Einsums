@@ -10,6 +10,7 @@
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -59,11 +60,16 @@ struct MergePlan {
     TensorId src; ///< dying input whose storage is reused
 };
 
+/// Whether the pass may rewrite a node; notes the skip when it may not.
+using Accepts = std::function<bool(Node const &)>;
+
 /// Find the first sound merge in `graph`, or nullopt. Called repeatedly
 /// until quiescent because each applied merge deletes lifecycle nodes and
 /// rewrites ids (graphs are small and merges are rare, so the restart is
-/// cheaper than maintaining incremental state).
-std::optional<MergePlan> find_merge(Graph &graph) {
+/// cheaper than maintaining incremental state). `accepts` says whether the
+/// pass may rewrite a node; a merge rewrites the consumer and every node
+/// naming the merged-away tensor, so each of them must be accepted.
+std::optional<MergePlan> find_merge(Graph &graph, Accepts const &accepts) {
     graph.topological_sort();
 
     auto const &nodes   = graph.nodes();
@@ -129,6 +135,9 @@ std::optional<MergePlan> find_merge(Graph &graph) {
         if (!elementwise_alias_safe(node.kind) || node.outputs.size() != 1) {
             continue;
         }
+        if (!accepts(node)) {
+            continue;
+        }
 
         TensorId const dst = node.outputs[0];
 
@@ -160,6 +169,22 @@ std::optional<MergePlan> find_merge(Graph &graph) {
 
         auto const &dst_handle = tensors.at(dst);
 
+        // The merge renames dst in every node naming it and drops dst's
+        // lifecycle nodes, so each of those must be one the pass may rewrite.
+        // Asked once a src qualifies, so a candidate that would not merge
+        // anyway is not reported as skipped.
+        auto dst_nodes_accepted = [&] {
+            for (auto const &n : nodes) {
+                bool const names_dst = std::ranges::find(n.inputs, dst) != n.inputs.end() ||
+                                       std::ranges::find(n.outputs, dst) != n.outputs.end() ||
+                                       lifecycle::lifecycle_tensor_name(n) == dst_handle.name;
+                if (names_dst && !accepts(n)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
         for (auto const src : node.inputs) {
             if (src == dst || !mergeable_intermediate(src)) {
                 continue;
@@ -170,8 +195,14 @@ std::optional<MergePlan> find_merge(Graph &graph) {
                 continue;
             }
             auto const &src_handle = tensors.at(src);
-            if (src_handle.dims != dst_handle.dims || src_handle.total_bytes() != dst_handle.total_bytes()) {
+            // Equal dtype as well as equal bytes: a float64 and a complex64
+            // buffer of the same size are not interchangeable storage.
+            if (src_handle.dims != dst_handle.dims || src_handle.dtype != dst_handle.dtype ||
+                src_handle.total_bytes() != dst_handle.total_bytes()) {
                 continue;
+            }
+            if (!dst_nodes_accepted()) {
+                break; // the same nodes name dst whatever the src, so no src of this candidate can merge
             }
 
             return MergePlan{.node_idx = idx, .dst = dst, .src = src};
@@ -205,7 +236,7 @@ void apply_merge(Graph &graph, MergePlan const &plan, size_t &num_merged) {
     num_merged++;
 }
 
-void process(Graph &graph, size_t &num_candidates, size_t &num_merged) {
+void process(Graph &graph, Accepts const &accepts, size_t &num_candidates, size_t &num_merged) {
     // Candidate census (kept for introspection parity with the old
     // analysis-only behavior).
     {
@@ -229,7 +260,7 @@ void process(Graph &graph, size_t &num_candidates, size_t &num_merged) {
         }
     }
 
-    while (auto plan = find_merge(graph)) {
+    while (auto plan = find_merge(graph, accepts)) {
         auto const &src_name = graph.tensor(plan->src).name;
         auto const &dst_name = graph.tensor(plan->dst).name;
         EINSUMS_LOG_INFO("InplaceOptimization: '{}' reuses the storage of dying '{}' ({} bytes saved)", dst_name, src_name,
@@ -248,7 +279,15 @@ void InplaceOptimization::reset_stats() {
 bool InplaceOptimization::run(Graph &graph) {
     PassCounter const merged{_num_merged};
     PassCounter const candidates{_num_candidates};
-    process(graph, _num_candidates, _num_merged);
+    Accepts const     accepts = [this, &graph](Node const &node) {
+        if (understands(graph, node)) {
+            return true;
+        }
+        note_skip("the node carries a feature this pass does not understand",
+                  fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+        return false;
+    };
+    process(graph, accepts, _num_candidates, _num_merged);
 
     if (merged.moved()) {
         report(1, fmt::format("merged {} output buffer(s) into dying elementwise inputs ({} candidate(s) found)", _num_merged,

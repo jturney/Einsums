@@ -59,6 +59,7 @@ set(ComputeGraphTests
     GraphFeatures.cpp
     GraphRegistry.cpp
     GraphStateContracts.cpp
+    NodeFeatures.cpp
     HeadersWithoutIndices.cpp
     InterfaceManifest.cpp
     Json.cpp
@@ -196,6 +197,8 @@ set(ComputeGraphTests
     test_fuzz_diff_roundtrip_optimized_python.py
     test_fuzz_diff_opt_levels_python.py
     test_fuzz_diff_random_pipeline_rich_python.py
+    test_fuzz_diff_resource_passes_python.py
+    test_fuzz_diff_all_passes_python.py
     test_fuzz_diff_region_identity_python.py
     test_fuzz_diff_cse_python.py
     test_fuzz_diff_replay_python.py
@@ -240,6 +243,9 @@ set(ComputeGraphTests
     test_hyp_largerank_diff_python.py
     test_hyp_spec_rejection_python.py
     test_hyp_ir_mutation_python.py
+    test_pass_audit_reproducers_python.py
+    test_pass_audit_reproducers_fusion_python.py
+    test_pass_audit_reproducers_resource_python.py
     test_hyp_einsum_conj_python.py
     test_hyp_linalg_diff_python.py
     test_hyp_metamorphic_python.py
@@ -349,6 +355,39 @@ add_test(
 )
 set_tests_properties(
   Tests.Unit.Modules.ComputeGraph.CompileTimeIndices Tests.Unit.Modules.ComputeGraph.CompileTimeIndicesSelfTest
+  PROPERTIES LABELS "UNIT_ONLY"
+)
+
+# Passes ask Graph::buffer_of, never Graph::resolve_alias, which misses slot redirects; see the
+# script for why. The self test proves the pattern still catches a call.
+add_test(
+  NAME Tests.Unit.Modules.ComputeGraph.PassBufferIdentity
+  COMMAND ${CMAKE_COMMAND} -DROOT=${PROJECT_SOURCE_DIR}/libs/Einsums/ComputeGraph -P
+          ${PROJECT_SOURCE_DIR}/cmake/scripts/check_pass_buffer_identity.cmake
+)
+add_test(
+  NAME Tests.Unit.Modules.ComputeGraph.PassBufferIdentitySelfTest
+  COMMAND ${CMAKE_COMMAND} -DSELF_TEST=ON -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/pass_buffer_identity_self_test -P
+          ${PROJECT_SOURCE_DIR}/cmake/scripts/check_pass_buffer_identity.cmake
+)
+set_tests_properties(
+  Tests.Unit.Modules.ComputeGraph.PassBufferIdentity Tests.Unit.Modules.ComputeGraph.PassBufferIdentitySelfTest
+  PROPERTIES LABELS "UNIT_ONLY"
+)
+
+# Every library pass declares the node features it understands; see the script for why.
+add_test(
+  NAME Tests.Unit.Modules.ComputeGraph.PassFeatureDeclarations
+  COMMAND ${CMAKE_COMMAND} -DROOT=${PROJECT_SOURCE_DIR}/libs/Einsums/ComputeGraph -P
+          ${PROJECT_SOURCE_DIR}/cmake/scripts/check_pass_feature_declarations.cmake
+)
+add_test(
+  NAME Tests.Unit.Modules.ComputeGraph.PassFeatureDeclarationsSelfTest
+  COMMAND ${CMAKE_COMMAND} -DSELF_TEST=ON -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/pass_feature_declarations_self_test -P
+          ${PROJECT_SOURCE_DIR}/cmake/scripts/check_pass_feature_declarations.cmake
+)
+set_tests_properties(
+  Tests.Unit.Modules.ComputeGraph.PassFeatureDeclarations Tests.Unit.Modules.ComputeGraph.PassFeatureDeclarationsSelfTest
   PROPERTIES LABELS "UNIT_ONLY"
 )
 

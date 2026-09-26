@@ -25,6 +25,12 @@ slow and that grows the lock-order graph), not on a build flag: TSan/ASan export
 here whether the run came through ctest or a manual preload.
 ``EINSUMS_FUZZ_MAX_SEEDS`` overrides the caps explicitly (0 = no cap, i.e. always
 run the full sweep; N > 0 = cap every fuzzer at N samples).
+
+``EINSUMS_FUZZ_SCALE`` goes the other way: a factor of at least 1 that multiplies
+every fuzzer's sample count before any cap applies. The per-PR counts are sized
+to keep the suite fast, and some failures only appear past them (the IR mutation
+fuzzer reached a crash at 200 examples that 80 never drew), so the nightly long
+fuzz leg runs the same tests with this set.
 """
 
 from __future__ import annotations
@@ -72,7 +78,11 @@ if _CAPPING:
     )
 
 
+_SCALE = max(1.0, float(os.environ.get("EINSUMS_FUZZ_SCALE", "1")))
+
+
 def _cap(n: int, default_cap: int) -> int:
+    n = int(n * _SCALE)
     if _ENV is not None:
         return n if _OVERRIDE <= 0 else min(n, _OVERRIDE)
     return min(n, default_cap) if _CAPPING else n

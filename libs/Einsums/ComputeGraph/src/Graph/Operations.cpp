@@ -375,6 +375,11 @@ expected<void, GraphError> Graph::validate_tensors() const {
             // orphan is just an id anchor for dependency edges).
             if (!referenced_tids.contains(id))
                 continue;
+            // A redirected id's slot reads another tensor's storage, so its own deferred shell is
+            // never touched; the tensor it was redirected to is the one that needs storage, and
+            // this loop checks that one on its own.
+            if (_slot_redirects.contains(id))
+                continue;
             if (materialize_tids.contains(id))
                 continue;
             if (handle.tensor_ptr != nullptr && materialize_ptrs.contains(handle.tensor_ptr))

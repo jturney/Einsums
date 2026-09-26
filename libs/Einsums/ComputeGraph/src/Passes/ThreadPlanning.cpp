@@ -124,7 +124,7 @@ std::size_t working_set_bytes(Graph const &graph, Node const &node) {
     auto const                  &map   = graph.tensors_map();
 
     auto add = [&](TensorId raw) {
-        TensorId const tid = graph.resolve_alias(raw);
+        TensorId const tid = graph.buffer_of(raw);
         if (!seen.insert(tid).second) {
             return;
         }
@@ -144,7 +144,7 @@ std::size_t working_set_bytes(Graph const &graph, Node const &node) {
 /// Elements in a tensor, or 0 when the graph does not know the tensor.
 std::size_t elems_of(Graph const &graph, TensorId raw) {
     auto const &map = graph.tensors_map();
-    auto        it  = map.find(graph.resolve_alias(raw));
+    auto        it  = map.find(graph.buffer_of(raw));
     return it == map.end() ? 0 : it->second.total_elems();
 }
 
@@ -533,7 +533,7 @@ ThreadPlanning::SubPlan ThreadPlanning::plan_graph(Graph &graph, unsigned p) {
                 auto const &map  = graph.tensors_map();
                 std::size_t rank = 2;
                 if (!node.inputs.empty()) {
-                    if (auto it = map.find(graph.resolve_alias(node.inputs[0])); it != map.end() && it->second.rank > 0) {
+                    if (auto it = map.find(graph.buffer_of(node.inputs[0])); it != map.end() && it->second.rank > 0) {
                         rank = it->second.rank;
                     }
                 }

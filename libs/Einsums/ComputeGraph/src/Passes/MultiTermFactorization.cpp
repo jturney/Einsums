@@ -695,6 +695,13 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             if (!index.space.valid() && axis < handle->spaces.size()) {
                 index.space = handle->spaces[axis];
             }
+            // One letter names one extent across the region, since intermediates are sized from the
+            // table. Two statements that reuse a letter at different extents (`ij <- ik ; kj` over
+            // 3x3 and then over 4x4) would otherwise size a term's intermediates by whichever came
+            // first, so a term that disagrees is left as it was raised.
+            if (auto const known = table.extent.find(index.letter); known != table.extent.end() && known->second != handle->dims[axis]) {
+                return false;
+            }
             auto const origin = renamed_from.find(index.letter);
             if (origin == renamed_from.end()) {
                 table.observe(index, handle->dims[axis]);
@@ -985,6 +992,12 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
     if (std::ranges::none_of(terms, [](Term const &term) { return term.searchable; })) {
         keep({});
         return false;
+    }
+
+    // Every value a statement of this region writes, for the sharing gate in the search.
+    std::set<ValueKey> region_written;
+    for (auto const &statement : expr.statements) {
+        region_written.insert(value_key(statement));
     }
 
     // ── Search ─────────────────────────────────────────────────────────────────────────────
@@ -1380,6 +1393,12 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
             }
             for (std::size_t i = 0; i + 1 < terms[t].factors.size(); i++) {
                 for (std::size_t j = i + 1; j < terms[t].factors.size(); j++) {
+                    // A shared intermediate is emitted at the front of the region, ahead of every
+                    // statement, so it may only read factors nothing in the region writes: one that
+                    // a statement writes would be read before its value exists.
+                    if (region_written.contains(terms[t].factors[i].key()) || region_written.contains(terms[t].factors[j].key())) {
+                        continue;
+                    }
                     if (auto described = describe_pair(terms[t], i, j, t); described.has_value()) {
                         candidates[described->first].push_back(std::move(described->second));
                     }

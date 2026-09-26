@@ -116,6 +116,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// the algebra is untouched, so nothing here is saved and everything here is re-derived from
     /// the algebraic form on a load.
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Not views, conjugation or redirected slots: a sliced body re-emits a dotc as a dot and bakes the handle's own object.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
+               NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
+    }
 
     /// @copydoc OptimizerPass::tier
     ///

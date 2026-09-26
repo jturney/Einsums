@@ -90,6 +90,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE InplaceOptimization() = default;
 
     [[nodiscard]] std::string name() const override { return "InplaceOptimization"; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Not mixed precision, grouped readers or redirected slots: source and destination are matched on byte size and uses are counted by
+    /// id.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::Conjugation |
+               NodeFeature::ComplexPrefactor | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
+    }
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase                phase() const override { return PassPhase::Tuning; }

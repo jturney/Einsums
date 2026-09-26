@@ -190,15 +190,18 @@ def gen_symmetrized_accumulation(rng):
     o, vv = 2, 3
 
     def build(g, m, v, t, name):
+        # The transposed copy is graph-owned scratch, which the fold requires: it stops writing
+        # that copy, so a tensor the caller held would be left stale.
+        tmpP = g.create_zero_tensor(f"{name}_tmpP", [o, o, vv, vv], dtype=str(np.asarray(t[1]).dtype), intermediate=True)
         with cg.capture(g):
             einsums.einsum("i,j,a,b <- i,a ; j,b", t[1], m[0], m[1])
             einsums.linalg.axpby(0.5, t[1], 1.0, t[0])
-            einsums.permute("j,i,b,a <- i,j,a,b", t[2], t[1])
-            einsums.linalg.axpby(0.5, t[2], 1.0, t[0])
+            einsums.permute("j,i,b,a <- i,j,a,b", tmpP, t[1])
+            einsums.linalg.axpby(0.5, tmpP, 1.0, t[0])
     return (build,
             [_r(rng, o, vv), _r(rng, o, vv)],
             [],
-            [np.zeros((o, o, vv, vv)) for _ in range(3)])
+            [np.zeros((o, o, vv, vv)) for _ in range(2)])
 
 
 def gen_constant_folding(rng):

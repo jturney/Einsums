@@ -58,6 +58,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -81,6 +82,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief Writes annotations only.
     /// @return @ref PassPhase::Analysis.
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Analysis; }
+    /// Every feature: an analysis pass annotates and never rewrites a node, which the pass manager enforces.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
     /// @brief Correct on a flat sub-graph, so loop bodies are visited too.
     /// @return True.

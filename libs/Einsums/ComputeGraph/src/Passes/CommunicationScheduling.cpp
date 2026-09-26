@@ -6,9 +6,12 @@
 #include <Einsums/Comm/Runtime.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Passes/CommunicationScheduling.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
+
+#include <fmt/format.h>
 
 #include <memory>
 #include <variant>
@@ -42,6 +45,12 @@ bool CommunicationScheduling::run(Graph &graph) {
         // Skip nodes that already have async phases
         if (node.async_start && node.async_finish)
             continue;
+
+        if (!understands(graph, node)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+            continue;
+        }
 
         // Get the tensor handle for the allreduced tensor
         auto const *desc = node.op_data.get_if<CommDescriptor>();

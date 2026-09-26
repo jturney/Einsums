@@ -61,6 +61,11 @@ bool AntisymmetrizerExpansion::run(Graph &graph) {
         if (operators.empty()) {
             continue;
         }
+        if (!understands(graph, node)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+            continue;
+        }
         // Refused where the node is built, so only a node a pass edited or a loaded one gets here:
         // the expansion's temporary takes C's type and its terms go through the same-type permute.
         if (!einsum_is_uniform(graph, node)) {

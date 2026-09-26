@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
@@ -99,6 +100,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Not permutation operators, views, complex prefactors or redirected slots: the rebuilt permute drops operators and its executor casts
+    /// the operands to owning tensors.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow |
+               NodeFeature::Tiled | NodeFeature::RawScalar;
+    }
 
     /// @copydoc OptimizerPass::tier
     /// The folded form accumulates the same terms; measured at exactly zero on all six legs.
@@ -110,8 +118,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     [[nodiscard]] std::vector<std::string> explain() const override;
     void                                   reset_stats() override;
 
-    /// The CCSD residual is a loop body; the sites live in the subgraph.
-    [[nodiscard]] bool recurse_into_subgraphs() const override { return true; }
+    /// False, and the pass walks the sub-graph tree itself. The CCSD residual is a loop body whose
+    /// scratch the enclosing graph declares, and folding a site stops writing that scratch; only a
+    /// walk that carries what the rest of the program reads down into each body can tell whether
+    /// anything outside the body would see the value go stale.
+    [[nodiscard]] bool recurse_into_subgraphs() const override { return false; }
 
     /// Structural matches: permute (involutive, overwrite) whose output feeds,
     /// within the generation this permute starts, exactly one accumulating
@@ -129,6 +140,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     APIARY_EXPOSE APIARY_GETTER("num_rewritten") [[nodiscard]] size_t num_rewritten() const { return _num_rewritten; }
 
   private:
+    /// Fold the sites of @p graph, then descend. @p external holds the storage something outside
+    /// this graph references, and @p inherited_scratch the storage an enclosing graph owns as an
+    /// intermediate, both as the tensor pointers every graph of the tree agrees on.
+    bool run_one(Graph &graph, std::unordered_set<void const *> const &external, std::unordered_set<void const *> const &inherited_scratch);
+
     size_t _num_candidates{0};
     size_t _num_matched{0};
     size_t _num_rewritten{0};

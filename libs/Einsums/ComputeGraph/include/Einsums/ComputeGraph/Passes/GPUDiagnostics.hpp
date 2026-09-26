@@ -66,7 +66,9 @@ class EINSUMS_EXPORT GPUDiagnostics : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Diagnostic; }
-    bool                    run(Graph &graph) override;
+    /// Every feature: an analysis pass annotates and never rewrites a node, which the pass manager enforces.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
+    bool                                      run(Graph &graph) override;
 
     /// Print the diagnostic report to a stream.
     void print_report(std::ostream &os) const;

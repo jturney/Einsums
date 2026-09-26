@@ -51,7 +51,8 @@ bool Reorder::run(Graph &graph) {
     // without these edges the reschedule below is free to float a slice ahead
     // of the write that positions it -- which reads the previous iteration's
     // value, or throws outright on the first iteration when the parameter has
-    // never been set. See param_writes / param_reads in Node.hpp.
+    // never been set. The same keys order a disk read after the graph's own
+    // write of that dataset. See named_writes / named_reads in Node.hpp.
     std::unordered_map<std::string, size_t>              last_param_writer;
     std::unordered_map<std::string, std::vector<size_t>> param_readers_since_write;
 
@@ -64,7 +65,7 @@ bool Reorder::run(Graph &graph) {
         for (auto raw_tid : eff_in) {
             // Resolve view aliases to the owning buffer, or a write through a
             // view of T looks unrelated to a read of T and gets reordered past it.
-            TensorId const tid = graph.resolve_alias(raw_tid);
+            TensorId const tid = graph.buffer_of(raw_tid);
             auto           it  = last_writer.find(tid);
             if (it != last_writer.end() && it->second != i) {
                 adj_set[it->second].insert(i); // RAW: writer → reader
@@ -72,7 +73,7 @@ bool Reorder::run(Graph &graph) {
             readers_since_write[tid].push_back(i); // remember for a later WAR edge
         }
         for (auto raw_tid : eff_out) {
-            TensorId const tid = graph.resolve_alias(raw_tid);
+            TensorId const tid = graph.buffer_of(raw_tid);
             auto           it  = last_writer.find(tid);
             if (it != last_writer.end() && it->second != i) {
                 adj_set[it->second].insert(i); // WAW: previous writer → this writer
@@ -89,14 +90,14 @@ bool Reorder::run(Graph &graph) {
             }
             last_writer[tid] = i;
         }
-        for (auto const &pname : param_reads(nodes[i])) {
+        for (auto const &pname : named_reads(nodes[i])) {
             auto it = last_param_writer.find(pname);
             if (it != last_param_writer.end() && it->second != i) {
                 adj_set[it->second].insert(i); // RAW: parameter write -> slice
             }
             param_readers_since_write[pname].push_back(i);
         }
-        for (auto const &pname : param_writes(nodes[i])) {
+        for (auto const &pname : named_writes(nodes[i])) {
             auto it = last_param_writer.find(pname);
             if (it != last_param_writer.end() && it->second != i) {
                 adj_set[it->second].insert(i); // WAW
@@ -135,10 +136,10 @@ bool Reorder::run(Graph &graph) {
     for (size_t i = 0; i < n; i++) {
         auto [eff_in, eff_out] = graph.effective_io(nodes[i]);
         for (auto raw_tid : eff_in) {
-            last_consumer[graph.resolve_alias(raw_tid)] = i;
+            last_consumer[graph.buffer_of(raw_tid)] = i;
         }
         for (auto raw_tid : eff_out) {
-            last_consumer[graph.resolve_alias(raw_tid)] = i; // Also counts as "using" it
+            last_consumer[graph.buffer_of(raw_tid)] = i; // Also counts as "using" it
         }
     }
 

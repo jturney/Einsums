@@ -230,4 +230,10 @@ using Problems = std::vector<std::string>;
 /// document that READS clean still cannot be built.
 [[nodiscard]] Graph build_graph(IrDocument const &document, SpaceRegistry &registry);
 
+/// What @p node computes, as text two snapshots of it can be compared by: its kind, its operand
+/// ids, and its descriptor as the writer encodes it, live scalars and operators included. A
+/// control-flow node contributes no body, whose nodes are compared one by one, and a descriptor
+/// the writer cannot encode contributes its name alone.
+[[nodiscard]] std::string node_fingerprint(Graph const &graph, Node const &node);
+
 EINSUMS_NAMESPACE_END(compute_graph::graph_ir)

@@ -453,10 +453,10 @@ bool RegionAnalysis::collect() {
         }
         auto const [reads, writes] = const_cast<Graph &>(_graph).effective_io(nodes[i]);
         for (TensorId const tid : reads) {
-            _touched_outside.insert(_graph.resolve_alias(tid));
+            _touched_outside.insert(_graph.buffer_of(tid));
         }
         for (TensorId const tid : writes) {
-            _touched_outside.insert(_graph.resolve_alias(tid));
+            _touched_outside.insert(_graph.buffer_of(tid));
         }
     }
 
@@ -1018,7 +1018,7 @@ bool RegionAnalysis::build(Labelling const &labelling, Plan &plan, std::string &
         if (!handle->is_intermediate) {
             continue;
         }
-        if (_touched_outside.contains(_graph.resolve_alias(tid))) {
+        if (_touched_outside.contains(_graph.buffer_of(tid))) {
             reason = "an intermediate the loop would declare at slice extents is read outside the run, where the whole of it is wanted";
             return false;
         }
@@ -1516,7 +1516,14 @@ bool AxisTiling::run(Graph &graph) {
     std::size_t best_last  = 0;
     std::size_t run_first  = 0;
     for (std::size_t i = 0; i <= nodes.size(); ++i) {
-        bool const ok = i < nodes.size() && tileable_kind(nodes[i].kind);
+        bool ok = i < nodes.size() && tileable_kind(nodes[i].kind);
+        // A node carrying a feature this pass does not understand is a barrier: the run never
+        // takes it into the loop body.
+        if (ok && !understands(graph, nodes[i])) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", nodes[i].label, describe_features(features_of(graph, nodes[i]))));
+            ok = false;
+        }
         if (!ok) {
             if (i - run_first > best_last - best_first) {
                 best_first = run_first;

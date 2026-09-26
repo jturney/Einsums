@@ -133,15 +133,16 @@ def _build_symacc():
     A, B = einsums.asarray(a_np), einsums.asarray(b_np)
     r2 = einsums.zeros((o, o, v, v), dtype="float64")
     tmp = einsums.zeros((o, o, v, v), dtype="float64")
-    tmpP = einsums.zeros((o, o, v, v), dtype="float64")
     g = cg.Graph("symacc")
+    # Graph-owned: the fold stops writing the transposed copy, so it must not be the caller's.
+    tmpP = g.create_zero_tensor("tmpP", [o, o, v, v], dtype="float64", intermediate=True)
     with cg.capture(g):
         einsums.einsum("i,j,a,b <- i,a ; j,b", tmp, A, B)
         einsums.linalg.axpby(s, tmp, 1.0, r2)
         einsums.permute("j,i,b,a <- i,j,a,b", tmpP, tmp)
         einsums.linalg.axpby(s, tmpP, 1.0, r2)
-    # r2 is the result and is kept; everything else is droppable.
-    return g, r2, ref, [A, B, tmp, tmpP]
+    # r2 is the result and is kept; everything else the caller holds is droppable.
+    return g, r2, ref, [A, B, tmp]
 
 
 @pytest.mark.parametrize("with_pass", [False, True], ids=["control", "symacc"])

@@ -91,10 +91,10 @@ std::size_t max_pieces() {
 /// to have its factors refitted whenever it changed, and the setup body this pass emits runs
 /// once per bound problem; so only an operand nothing here writes is safely replaceable.
 bool written_anywhere(Graph const &graph, TensorId id) {
-    auto const owner = graph.resolve_alias(id);
+    auto const owner = graph.buffer_of(id);
     for (auto const &node : graph.nodes()) {
         for (TensorId const out : node.outputs) {
-            if (graph.resolve_alias(out) == owner) {
+            if (graph.buffer_of(out) == owner) {
                 return true;
             }
         }
@@ -1595,11 +1595,12 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
         std::vector<TensorId> internal = region.internal;
         internal.push_back(trial_numerator);
         quadrature::RewriteOptions options;
-        options.epsilon    = _laplace->epsilon();
-        options.points     = _laplace->points();
-        options.energy     = [this](std::string const &wanted) { return _laplace->energy(wanted); };
-        options.declare    = invent;
-        options.want_setup = false;
+        options.epsilon     = _laplace->epsilon();
+        options.points      = _laplace->points();
+        options.energy      = [this](std::string const &wanted) { return _laplace->energy(wanted); };
+        options.understands = [this, &graph](Node const &node) { return understands(graph, node); };
+        options.declare     = invent;
+        options.want_setup  = false;
         std::vector<TensorId> claimed;
 
         auto const outcomes = quadrature::rewrite_denominators(graph, internal, trial, options, claimed);
@@ -1724,10 +1725,11 @@ std::optional<std::size_t> FactorizationPass::rewrite_denominator_product(Graph 
     std::vector<TensorId> internal = region.internal;
     internal.push_back(numerator);
     quadrature::RewriteOptions options;
-    options.epsilon = _laplace->epsilon();
-    options.points  = _laplace->points();
-    options.energy  = [this](std::string const &wanted) { return _laplace->energy(wanted); };
-    options.declare = declare;
+    options.epsilon     = _laplace->epsilon();
+    options.points      = _laplace->points();
+    options.energy      = [this](std::string const &wanted) { return _laplace->energy(wanted); };
+    options.understands = [this, &graph](Node const &node) { return understands(graph, node); };
+    options.declare     = declare;
     std::vector<TensorId> claimed;
 
     auto const outcomes = quadrature::rewrite_denominators(graph, internal, expr, options, claimed);

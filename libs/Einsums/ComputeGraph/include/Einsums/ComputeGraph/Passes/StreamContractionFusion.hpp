@@ -169,6 +169,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::Tuning; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Not permutation operators or redirected slots: the stream kernel computes the unpermuted term and reads operands through the handle.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::Views | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
+               NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
+    }
 
     bool run(Graph &graph) override;
 

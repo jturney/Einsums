@@ -112,6 +112,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief The pass name.
     /// @return ``"FactorizationPass"``.
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string name() const override { return "FactorizationPass"; }
+    /// @copydoc RegionRewrite::understood_features
+    /// The region default less views, redirected slots and mixed precision: its flattening checks interference by id, and a carried
+    /// elementwise node is rebuilt in the destination's type.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return default_region_features.without(NodeFeature::Views | NodeFeature::RedirectedSlot | NodeFeature::MixedPrecision);
+    }
 
     /// @copydoc OptimizerPass::tier
     /// Substitutes a fitted factorization for the tensor it approximates, under a tolerance it records through

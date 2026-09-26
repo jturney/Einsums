@@ -11,6 +11,7 @@
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/AntisymmetrizerFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
+#include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
@@ -20,11 +21,13 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <complex>
 #include <cstddef>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -51,6 +54,13 @@ std::optional<OperatorProducer> read_producer(Node const &node) {
         if (desc == nullptr || desc->operators.empty() || node.inputs.size() != 1) {
             return std::nullopt;
         }
+        // The fold replaces the permuted tensor by its source and multiplies by the term count, so
+        // it only describes `C = P(A)`. A scaled permute `C = alpha P(A)` would lose alpha; the
+        // LIVE value, since a pass that folded a scale into the permute wrote it there.
+        bool const unscaled = desc->params != nullptr ? is_one(desc->params->alpha) : desc->alpha == std::complex<double>{1.0, 0.0};
+        if (!unscaled) {
+            return std::nullopt;
+        }
         out.source     = node.inputs[0];
         out.operators  = desc->operators;
         out.c_indices  = desc->c_indices;
@@ -72,7 +82,13 @@ std::optional<OperatorProducer> read_producer(Node const &node) {
 }
 
 /// The facts DETECTION established: a hint on a tensor nothing in the graph
-/// writes.
+/// writes and something reads.
+///
+/// A tensor nothing reads founds no rewrite, whatever its hint says. Requiring a
+/// reader also keeps the guard off a tensor another pass orphaned: after
+/// SymmetrizedAccumulation drops a transpose, its deferred destination keeps the
+/// hint SymmetryPropagation derived, has no writer, and is never materialized
+/// where the guard runs.
 ///
 /// Reconstructed by walking the graph rather than threaded through from the
 /// detection pass. The alternative is provenance, recording per fold which leaves
@@ -80,9 +96,19 @@ std::optional<OperatorProducer> read_producer(Node const &node) {
 /// right thing to re-check: if any detected fact stops holding, some rewrite
 /// justified by it may be invalid, and this pass cannot see which.
 std::vector<std::pair<TensorId, SymmetryDescriptor>> detected_leaves(EscapeAnalysis const &writers) {
+    Graph const                 &graph = writers.graph();
+    std::unordered_set<TensorId> read;
+    for (Node const &node : graph.nodes()) {
+        for (TensorId const id : node.inputs) {
+            read.insert(graph.buffer_of(id));
+        }
+    }
     std::vector<std::pair<TensorId, SymmetryDescriptor>> leaves;
-    for (auto const &[tid, handle] : writers.graph().tensors_map()) {
+    for (auto const &[tid, handle] : graph.tensors_map()) {
         if (writers.writer_count(tid) != 0 || handle.symmetry_hint == nullptr || !handle.impl_fn) {
+            continue;
+        }
+        if (!read.contains(graph.buffer_of(tid)) && !writers.touched_by_subtree(tid)) {
             continue;
         }
         leaves.emplace_back(tid, *handle.symmetry_hint);
@@ -126,10 +152,15 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
         if (dot.kind != OpKind::Dot || dot.inputs.size() != 2 || dot.outputs.size() != 1) {
             continue;
         }
+        if (!understands(graph, dot)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", dot.label, describe_features(features_of(graph, dot))));
+            continue;
+        }
 
         for (std::size_t slot = 0; slot < 2; ++slot) {
-            TensorId const folded = graph.resolve_alias(dot.inputs[slot]);
-            TensorId const other  = graph.resolve_alias(dot.inputs[1 - slot]);
+            TensorId const folded = graph.buffer_of(dot.inputs[slot]);
+            TensorId const other  = graph.buffer_of(dot.inputs[1 - slot]);
 
             // The operand must be written exactly once in this graph and not
             // touched by a child sub-graph, or the value the identity reasons
@@ -151,11 +182,18 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
                 if (is_lifecycle(node.kind)) {
                     continue;
                 }
-                if (std::ranges::any_of(node.outputs, [&](TensorId t) { return graph.resolve_alias(t) == folded; })) {
+                if (std::ranges::any_of(node.outputs, [&](TensorId t) { return graph.buffer_of(t) == folded; })) {
                     producer_index = j;
                 }
             }
             if (!producer_index.has_value()) {
+                continue;
+            }
+            // The fold reads the producer's operators and source, so a producer
+            // carrying a feature this pass does not know is not one it can reason about.
+            if (Node const &producer_node = graph.nodes()[*producer_index]; !understands(graph, producer_node)) {
+                note_skip("the node carries a feature this pass does not understand",
+                          fmt::format("node '{}': {}", producer_node.label, describe_features(features_of(graph, producer_node))));
                 continue;
             }
 
@@ -164,6 +202,22 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
                 continue;
             }
             ++_num_candidates;
+
+            // The dot will read the operator's SOURCE where the dot stands, not where the operator
+            // read it, so nothing in between may write that source: a loop or branch cannot be
+            // shown not to, and any other writer of its buffer changes what the dot would read.
+            TensorId const source_buffer = graph.buffer_of(producer->source);
+            bool           rewritten     = false;
+            for (std::size_t j = *producer_index + 1; j < i && !rewritten; ++j) {
+                Node const &between = graph.nodes()[j];
+                rewritten = is_control_flow(between.kind) ||
+                            (!is_lifecycle(between.kind) &&
+                             std::ranges::any_of(between.outputs, [&](TensorId t) { return graph.buffer_of(t) == source_buffer; }));
+            }
+            if (rewritten) {
+                note_skip("the operator's source is written between the operator and the contraction", fmt::format("dot #{}", dot.id));
+                continue;
+            }
 
             if (!producer->overwrites) {
                 note_skip("the operator node accumulates, so its output is not the operator's value", fmt::format("dot #{}", dot.id));
@@ -202,25 +256,18 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
     // unscaled value.
     std::vector<std::pair<std::size_t, std::vector<Node>>> inserts;
     for (auto const &site : sites) {
-        Node &dot             = graph.nodes()[site.dot_index];
-        dot.inputs[site.slot] = site.producer.source;
-        dot.label             = fmt::format("{} (antisymmetrizer folded, x{})", dot.label, site.producer.terms);
-
-        // REBUILD the executor. Rewriting node.inputs alone changes what the
-        // dataflow says and not what the replay does: the closure build_executor
-        // returned resolved its operands when it was built, so the contraction
-        // went on reading the antisymmetrized operand and the scale below then
-        // multiplied an already-complete answer by N. The test caught it because
-        // it compares NUMBERS against an unfolded run; a structural check would
-        // have passed.
-        auto const *operand_handle = graph.find_tensor(graph.resolve_alias(dot.inputs[0]));
+        // Every decline runs BEFORE the contraction is touched: a decline after
+        // the repoint would leave a Dot reading the operator's source with no
+        // scale node behind it, a wrong answer rather than a missed fold.
+        TensorId const operand0       = site.slot == 0 ? site.producer.source : graph.nodes()[site.dot_index].inputs[0];
+        auto const    *operand_handle = graph.find_tensor(graph.buffer_of(operand0));
         if (operand_handle == nullptr) {
             continue;
         }
-        dot.execute = build_executor(OpKind::Dot, operand_handle->dtype, operand_handle->rank, dot.op_data, graph,
-                                     std::span<TensorId const>{dot.inputs}, std::span<TensorId const>{dot.outputs});
+        auto const operand_dtype = operand_handle->dtype;
+        auto const operand_rank  = operand_handle->rank;
 
-        auto const *result_handle = graph.find_tensor(graph.resolve_alias(site.result));
+        auto const *result_handle = graph.find_tensor(graph.buffer_of(site.result));
         if (result_handle == nullptr) {
             continue;
         }
@@ -234,6 +281,22 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
                       fmt::format("dot #{}", graph.nodes()[site.dot_index].id));
             continue;
         }
+        auto const result_dtype = result_handle->dtype;
+        auto const result_rank  = result_handle->rank;
+
+        Node &dot             = graph.nodes()[site.dot_index];
+        dot.inputs[site.slot] = site.producer.source;
+        dot.label             = fmt::format("{} (antisymmetrizer folded, x{})", dot.label, site.producer.terms);
+
+        // REBUILD the executor. Rewriting node.inputs alone changes what the
+        // dataflow says and not what the replay does: the closure build_executor
+        // returned resolved its operands when it was built, so the contraction
+        // went on reading the antisymmetrized operand and the scale below then
+        // multiplied an already-complete answer by N. The test caught it because
+        // it compares NUMBERS against an unfolded run; a structural check would
+        // have passed.
+        dot.execute = build_executor(OpKind::Dot, operand_dtype, operand_rank, dot.op_data, graph, std::span<TensorId const>{dot.inputs},
+                                     std::span<TensorId const>{dot.outputs});
 
         ScaleDescriptor desc;
         desc.factor        = PrefactorScalar{static_cast<double>(site.producer.terms)};
@@ -247,8 +310,8 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
         scale.inputs  = {site.result};
         scale.outputs = {site.result};
         scale.op_data = OpData(std::move(desc));
-        scale.execute = build_executor(OpKind::Scale, result_handle->dtype, result_handle->rank, scale.op_data, graph, {},
-                                       std::span<TensorId const>{scale.outputs});
+        scale.execute =
+            build_executor(OpKind::Scale, result_dtype, result_rank, scale.op_data, graph, {}, std::span<TensorId const>{scale.outputs});
 
         std::vector<Node> group;
         group.push_back(std::move(scale));
@@ -288,13 +351,13 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
         // the body, so an id from the parent's table would name nothing there, and the setup's
         // reads, which the parent derives from its body, would name nothing either.
         for (auto const &[tid, desc] : leaves) {
-            if (auto const *handle = graph.find_tensor(graph.resolve_alias(tid)); handle != nullptr) {
+            if (auto const *handle = graph.find_tensor(graph.buffer_of(tid)); handle != nullptr) {
                 check.inputs.push_back(body.find_or_register_tensor_ptr(*handle));
             }
         }
         check.execute = [anchor, leaves = std::move(leaves)]() {
             for (auto const &[tid, desc] : leaves) {
-                auto const *handle = anchor->graph().find_tensor(anchor->graph().resolve_alias(tid));
+                auto const *handle = anchor->graph().find_tensor(anchor->graph().buffer_of(tid));
                 if (handle == nullptr || !handle->impl_fn) {
                     continue;
                 }

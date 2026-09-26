@@ -5,14 +5,17 @@
 
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferInsertion.hpp>
 #include <Einsums/ComputeGraph/Passes/TransferNode.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/GPU/Runtime.hpp>
 #include <Einsums/Logging.hpp>
 
 #include <algorithm>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -82,6 +85,15 @@ bool TransferInsertion::run(Graph &graph) {
         auto &node = nodes[idx];
 
         if (node.target == Target::GPU) {
+            // A device node this pass does not understand has no sound way to be declined: left
+            // unbracketed it would run on whatever the device holds. It can only come from a
+            // placement pass that understood a feature this one does not, so say so.
+            if (!understands(graph, node)) {
+                EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                        "TransferInsertion: device node '{}' carries a feature this pass does not understand ({})",
+                                        node.label, describe_features(features_of(graph, node)));
+            }
+
             // Insert H2D for each input not yet on device.
             for (auto tid : node.inputs) {
                 // Skip H2D for dead inputs, the operation will overwrite this tensor
@@ -122,8 +134,31 @@ bool TransferInsertion::run(Graph &graph) {
                                      new_nodes[new_nodes.size() - 2].kind);
                 }
             }
+        } else if (node.kind == OpKind::HostToDevice || node.kind == OpKind::DeviceToHost) {
+            // A transfer an earlier run inserted copies one side onto the other, so both copies
+            // are valid afterwards. It is not a host write, and reading it as one would make a
+            // second run upload what the first already uploaded.
+            for (TensorId const tid : node.outputs) {
+                residency[tid] = Residency::Both;
+            }
+            for (TensorId const tid : node.inputs) {
+                residency[tid] = Residency::Both;
+            }
+            new_nodes.push_back(std::move(node));
         } else {
-            // CPU node, just pass through.
+            // A CPU node that writes a tensor leaves the device copy stale, so it is on the host
+            // alone again: a later GPU reader needs an upload, and the final download must not copy
+            // the stale device value over what the host wrote. By buffer, since a write through a
+            // view or a redirected slot lands in the same storage, and through a control-flow
+            // node's body, whose writes its own output list does not name.
+            for (TensorId const out : graph.effective_io(node).second) {
+                TensorId const buffer = graph.buffer_of(out);
+                for (auto &[tid, res] : residency) {
+                    if (graph.buffer_of(tid) == buffer) {
+                        res = Residency::Host;
+                    }
+                }
+            }
             new_nodes.push_back(std::move(node));
         }
     }

@@ -772,6 +772,17 @@ def test_scale_writing_a_different_tensor_is_reported_or_harmless():
     check_mutation("mixed", _pinned("mixed", {("nodes", 1, "outputs", 0): 3}))
 
 
+def test_element_transform_writing_another_tensor_is_reported_or_harmless():
+    """An ``ElementTransform`` whose output is not its input.
+
+    Fixed bug: in the mixed golden, ``element_transform(C, "square")`` has inputs [C]
+    and outputs [C]. Rewriting its output to D validated and loaded, because the
+    in-place check covered ``Scale`` alone: the executor still squared C while the
+    graph ordered the node as a writer of D, and C and D came out different.
+    """
+    check_mutation("mixed", _pinned("mixed", {("nodes", 3, "outputs", 0): 3}))
+
+
 def test_axpby_with_swapped_operands_is_reported_or_harmless():
     """An ``Axpby`` whose y input is not its output.
 

@@ -463,6 +463,11 @@ bool StreamContractionFusion::run(Graph &graph) {
         if (node.kind != OpKind::Einsum || node.inputs.size() != 2 || node.outputs.size() != 1) {
             continue;
         }
+        if (!understands(graph, node)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+            continue;
+        }
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr || live_conj_a(*desc) || live_conj_b(*desc)) {
             continue;
@@ -627,7 +632,7 @@ bool StreamContractionFusion::run(Graph &graph) {
         }
 
         // Every id below is resolved to the BUFFER it names
-        // (Graph::resolve_alias), never compared raw. A view and its parent are
+        // (Graph::buffer_of), never compared raw. A view and its parent are
         // different TensorIds over the same memory, and in a real capture views
         // are the common case (a DLPNO-CCSD iteration registers ~5800 of them
         // against ~1200 whole tensors), so an id-only comparison answers "these
@@ -636,7 +641,7 @@ bool StreamContractionFusion::run(Graph &graph) {
         // members, and an interleaving is only equivalent to the original order
         // when no member's write is observable by another member or by any node
         // it moves across.
-        auto const root_of = [&](TensorId id) { return graph.resolve_alias(id); };
+        auto const root_of = [&](TensorId id) { return graph.buffer_of(id); };
 
         TensorId const               s_root = root_of(s_id);
         std::unordered_set<TensorId> out_roots, w_roots;
@@ -679,6 +684,23 @@ bool StreamContractionFusion::run(Graph &graph) {
         for (auto const &m : members) {
             is_member[m.node_index] = true;
         }
+        // A control-flow node lists none of what its sub-graphs read or write,
+        // so the lists scanned below cannot clear it: a Loop between members
+        // whose body writes an operand would go unseen. Decline any group that
+        // spans one.
+        bool spans_control_flow = false;
+        for (size_t n = lo + 1; n < hi; n++) {
+            if (!is_member[n] && is_control_flow(nodes[n].kind)) {
+                spans_control_flow = true;
+                break;
+            }
+        }
+        if (spans_control_flow) {
+            note_skip("a control-flow node lies between the members, and what its sub-graphs touch is not in its node lists",
+                      fmt::format("stream over '{}'", handle_of(s_id) != nullptr ? handle_of(s_id)->name : "?"));
+            continue;
+        }
+
         bool interference = false;
         for (size_t n = lo + 1; n < hi && !interference; n++) {
             if (is_member[n]) {

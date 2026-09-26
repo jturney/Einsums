@@ -7,6 +7,7 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/ProvenancePropagation.hpp>
+#include <Einsums/ComputeGraph/Prefactor.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
@@ -14,6 +15,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <complex>
 #include <cstddef>
 #include <vector>
 
@@ -29,6 +31,19 @@ namespace {
 /// to know that from the node alone.
 bool preserves_identity(OpKind kind) {
     return kind == OpKind::Permute || kind == OpKind::Transpose || kind == OpKind::HPTTPermute;
+}
+
+/// Whether @p node overwrites its output with exactly its source, relabelled: the LIVE alpha is one,
+/// the live beta zero, and no permutation operator turns it into a signed sum.
+bool is_plain_copy(Node const &node) {
+    if (auto const *desc = node.op_data.get_if<PermuteDescriptor>()) {
+        bool const unscaled = desc->params != nullptr
+                                  ? is_one(desc->params->alpha) && is_zero(desc->params->beta)
+                                  : desc->alpha == std::complex<double>{1.0, 0.0} && desc->beta == std::complex<double>{};
+        return unscaled && desc->operators.empty();
+    }
+    // A transpose carries no scalars; anything else of these kinds is not provably a copy.
+    return node.kind == OpKind::Transpose;
 }
 
 /// Give every handle of @p graph and its descendants naming the buffer @p ptr the tag @p tag,
@@ -82,6 +97,7 @@ bool ProvenancePropagation::run(Graph &graph) {
 
     // Forward over program order, so a chain of permutes carries a tag the whole way in one
     // sweep rather than needing one sweep per hop.
+    auto const copy_writers = EscapeAnalysis::over(graph);
     for (auto const &node : graph.nodes()) {
         if (!preserves_identity(node.kind) || node.inputs.empty() || node.outputs.empty()) {
             continue;
@@ -94,7 +110,17 @@ bool ProvenancePropagation::run(Graph &graph) {
         }
 
         // A permute writing back into its own source says nothing new.
-        if (graph.resolve_alias(node.inputs[0]) == graph.resolve_alias(node.outputs[0])) {
+        if (graph.buffer_of(node.inputs[0]) == graph.buffer_of(node.outputs[0])) {
+            continue;
+        }
+
+        // A tag says what the WHOLE tensor is, so only a plain copy carries it: an overwrite by
+        // exactly the source (no scale, no accumulation, no permutation operator), into a tensor
+        // nothing else writes, here or in a body. A scaled or accumulated delta is not a delta,
+        // and one a later node overwrites stops being one; DeltaElimination acted on all three.
+        if (!is_plain_copy(node) || copy_writers.writer_count(node.outputs[0]) != 1 ||
+            copy_writers.subtree_writer_count(node.outputs[0]) != 1) {
+            note_skip("the node is not a plain copy into a tensor it alone writes", fmt::format("node '{}'", node.label));
             continue;
         }
 

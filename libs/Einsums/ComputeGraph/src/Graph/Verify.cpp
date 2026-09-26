@@ -145,10 +145,11 @@ void verify_into(Graph const &graph, std::string const &where, std::vector<std::
                 }
                 check_extents(node, {{&desc->a_indices, node.inputs[0]}, {&desc->c_indices, node.outputs[0]}});
             }
-        } else if (node.kind == OpKind::Scale) {
-            // In place: the executor scales its output, so a listed input can only be that output.
+        } else if (node.kind == OpKind::Scale || node.kind == OpKind::ElementTransform) {
+            // In place: the executor rewrites one tensor, so a listed input can only be that output.
             if (!node.outputs.empty() && std::ranges::any_of(node.inputs, [&](TensorId id) { return id != node.outputs[0]; })) {
-                note(node, "reads a tensor other than the one it scales in place");
+                note(node, node.kind == OpKind::Scale ? "reads a tensor other than the one it scales in place"
+                                                      : "reads a tensor other than the one it transforms in place");
             }
         } else if (node.kind == OpKind::Axpby) {
             // y is read in place: the executor takes x from the first input and y from the output,

@@ -20,6 +20,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import einsums
+from _sanitizer_scaling import sanitizer_examples
 
 _ctr = itertools.count()
 _DT = ["float64", "complex64", "complex128"]
@@ -46,7 +47,7 @@ def _tol(dt):
 
 @given(k=st.integers(1, 6), i=st.integers(1, 6), j=st.integers(1, 6),
        dt=st.sampled_from(_DT), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=400, deadline=None,
+@settings(max_examples=sanitizer_examples(400), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_conj_cross_path_agreement(k, i, j, dt, seed):
     """A^H @ B computed four ways must all agree."""
@@ -76,7 +77,7 @@ def test_conj_cross_path_agreement(k, i, j, dt, seed):
 
 
 @given(n=st.integers(1, 6), m=st.integers(1, 6), dt=st.sampled_from(_DT), seed=st.integers(0, 2**31 - 1))
-@settings(max_examples=300, deadline=None,
+@settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_conj_metamorphic(n, m, dt, seed):
     rng = np.random.default_rng(seed)

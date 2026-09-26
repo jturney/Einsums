@@ -67,6 +67,7 @@
 
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/SymbolicCost.hpp>
 #include <Einsums/ComputeGraphTypes/Enums.hpp>
 #include <Einsums/ComputeGraphTypes/Ids.hpp>
@@ -301,7 +302,7 @@ struct ExprStatement {
     /// another statement's product would move them onto one factor of it, where they mean
     /// something else; a rewrite must not inline a statement that carries any. On a permute the
     /// descriptor carries the same list, and lowering refuses a statement where the two disagree.
-    /// Only a client that opts in through @ref RegionOptions::operators ever sees a nonempty one.
+    /// Only a client whose @ref RegionOptions::understood admits @ref NodeFeature::PermutationOperators ever sees a nonempty one.
     std::vector<PermutationOperator> operators;
 
     /// The node this statement was raised from. Diagnostics only; lowering does
@@ -420,8 +421,8 @@ class EINSUMS_EXPORT TensorExpr {
  * @par Barriers
  * Anything not in the raisable set ends a run: LAPACK, control flow,
  * communication, I/O, lifecycle, an anonymous @ref OpKind::ElementTransform
- * whose kernel has no registered name, and, unless the client opts in through
- * @ref RegionOptions::operators, a node that applies permutation operators. A method whose body is not flat therefore
+ * whose kernel has no registered name, and a node carrying a feature outside
+ * @ref RegionOptions::understood. A method whose body is not flat therefore
  * gets a declined rewrite naming the barrier rather than a silently smaller
  * region.
  */
@@ -470,7 +471,7 @@ struct Region {
  * a member list rather than over a tensor, and a rewrite that reads
  * @ref ExprTerm::tensor without gating on @ref ExprTerm::ragged would act on a
  * tensor the statement does not name. A client opts in through
- * ``RegionRewrite::raises_grouped``; everything else keeps these as barriers.
+ * @ref NodeFeature::Grouped in @ref RegionOptions::understood; everything else keeps these as barriers.
  *
  * The two grouped kinds that are NOT here are fused kernels rather than one
  * algebraic term: @ref OpKind::GroupedSandwich dresses a slice and accumulates
@@ -484,6 +485,11 @@ struct Region {
  */
 [[nodiscard]] EINSUMS_EXPORT bool is_grouped_raisable(OpKind kind);
 
+/// @brief The node features a region admits unless its client says otherwise: every one but a grouped
+/// family and a permutation operator, which a client must be taught to read and so opts into.
+inline constexpr NodeFeatures default_region_features =
+    NodeFeatures::all().without(NodeFeature::Grouped | NodeFeature::PermutationOperators);
+
 /// @brief Knobs for @ref form_regions.
 struct RegionOptions {
     /// Regions smaller than this are not formed. One-node regions are legal and
@@ -491,15 +497,15 @@ struct RegionOptions {
     /// pass usually wants at least two nodes before there is anything to say.
     std::size_t min_nodes{1};
 
-    /// Whether @ref is_grouped_raisable kinds may join a region. Off by default,
-    /// so a client that has not been taught to read a ragged leaf keeps meeting
-    /// grouped nodes as barriers.
-    bool grouped{false};
-
-    /// Whether a node that applies permutation operators (``P(ij)``) may join a region. Off by
-    /// default, so such a node stays a barrier for a client that has not been taught the rules
-    /// @ref ExprStatement::operators states, and the nodes on either side still form regions.
-    bool operators{false};
+    /// The node features a region may hold. A node carrying any other is a barrier, so the nodes
+    /// on either side of it still form regions and only a rewrite spanning it is given up.
+    /// @ref RegionRewrite passes its client's declared ``understood_features`` here.
+    ///
+    /// A grouped statement's value is a member LIST, so @ref ExprTerm::tensor is empty on its
+    /// leaves and @ref ExprStatement::target on its statements; a client that admits
+    /// @ref NodeFeature::Grouped must read @ref ExprTerm::ragged. One that admits
+    /// @ref NodeFeature::PermutationOperators must keep the rules @ref ExprStatement::operators states.
+    NodeFeatures understood{default_region_features};
 };
 
 /**

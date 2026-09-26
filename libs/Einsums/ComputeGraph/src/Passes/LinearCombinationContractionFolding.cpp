@@ -103,6 +103,11 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         if (node.kind != OpKind::Einsum) {
             continue;
         }
+        if (!understands(graph, node)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", node.label, describe_features(features_of(graph, node))));
+            continue;
+        }
         auto const *desc = node.op_data.get_if<EinsumDescriptor>();
         if (desc == nullptr) {
             continue;
@@ -280,7 +285,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
             is_member[m.node_index] = true;
         }
         std::unordered_set<TensorId> const operand_ids{vg.key.shared_id, vg.key.non_shared_id};
-        bool const interference = span_interferes(nodes, lo, hi, is_member, {vg.key.output_id}, operand_ids, /*reject_control_flow=*/false);
+        bool const interference = span_interferes(graph, lo, hi, is_member, {vg.key.output_id}, operand_ids, /*reject_control_flow=*/true);
         if (interference) {
             auto on = tensors.find(vg.key.output_id);
             note_skip("an intervening node reads or writes the output or a folded operand",

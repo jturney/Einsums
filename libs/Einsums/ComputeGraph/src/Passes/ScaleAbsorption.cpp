@@ -69,22 +69,19 @@ bool ScaleAbsorption::run(Graph &graph) {
     // scaled tensor's buffer through an id that is not the scaled tensor
     // itself - a view of it, its parent, a sibling view - disqualifies the
     // scale outright, for the dead-scale path as much as for the fold.
-    bool has_aliases = false;
-    for (auto const &entry : graph.tensors_map()) {
-        if (entry.second.aliases != 0) {
-            has_aliases = true;
-            break;
-        }
-    }
+    //
     // Owner-resolve every registered id once. Per-access resolution would walk
     // the alias chain inside a quadratic window scan; a graph with 13k tensors
-    // is not unusual and the chains are path-compressed anyway.
+    // is not unusual and the chains are path-compressed anyway. Built whatever
+    // the graph holds: a slot redirect shares a buffer between two ids with no
+    // view in sight, so a graph without views still needs every id resolved.
     std::unordered_map<TensorId, TensorId> owner;
-    if (has_aliases) {
-        owner.reserve(graph.tensors_map().size());
-        for (auto const &entry : graph.tensors_map()) {
-            owner.emplace(entry.first, graph.resolve_alias(entry.first));
-        }
+    owner.reserve(graph.tensors_map().size());
+    bool has_aliases = false;
+    for (auto const &entry : graph.tensors_map()) {
+        TensorId const buffer = graph.buffer_of(entry.first);
+        owner.emplace(entry.first, buffer);
+        has_aliases = has_aliases || buffer != entry.first;
     }
     auto const owner_of = [&owner](TensorId t) {
         auto const it = owner.find(t);
@@ -141,6 +138,11 @@ bool ScaleAbsorption::run(Graph &graph) {
         if (scale_node.kind != OpKind::Scale) {
             continue;
         }
+        if (!understands(graph, scale_node)) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", scale_node.label, describe_features(features_of(graph, scale_node))));
+            continue;
+        }
         auto *scale_desc = scale_node.op_data.get_if<ScaleDescriptor>();
         if (scale_desc == nullptr || scale_node.outputs.size() != 1) {
             continue;
@@ -149,11 +151,11 @@ bool ScaleAbsorption::run(Graph &graph) {
         // factor is left alone rather than projected onto its real part: the
         // descriptor used to be a plain double filled from `factor.real()`, so
         // a complex scale folded a wrong value here with nothing to warn on.
-        if (!is_real_valued(scale_desc->factor)) {
+        if (!is_real_valued(live_factor(*scale_desc))) {
             continue;
         }
         TensorId const scaled_tensor = scale_node.outputs[0];
-        auto const     scale_factor  = as_real<double>(scale_desc->factor);
+        auto const     scale_factor  = as_real<double>(live_factor(*scale_desc));
 
         // Scan the window [sc+1, next-writer-of-scaled_tensor): who observes the
         // scaled value? A `scale` is IN-PLACE, so the tensor's own value is
@@ -235,6 +237,17 @@ bool ScaleAbsorption::run(Graph &graph) {
         // prefactor. Both are exact, and with all of them compensated the Scale
         // itself is redundant. Bail on the whole scale if any one of them
         // cannot take it - a partial fold would be wrong, not merely missed.
+        //
+        // A reader carrying a feature this pass does not understand cannot be
+        // rewritten, so it disqualifies the whole scale just as an unfoldable
+        // one does.
+        auto const not_understood = std::ranges::find_if(readers, [&](size_t r) { return !understands(graph, nodes[r]); });
+        if (not_understood != readers.end()) {
+            Node const &reader = nodes[*not_understood];
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", reader.label, describe_features(features_of(graph, reader))));
+            continue;
+        }
         std::vector<std::pair<size_t, FoldSite>> folds;
         folds.reserve(readers.size());
         bool all_foldable = true;

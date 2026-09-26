@@ -196,6 +196,12 @@ void Graph::insert_node_groups(std::vector<std::pair<std::size_t, std::vector<No
 }
 
 size_t Graph::replace_nodes(std::vector<bool> const &remove, std::vector<std::pair<std::size_t, std::vector<Node>>> inserts) {
+    // Program order first, while the positions still say it. Two groups that start at different
+    // places can land on one position once the nodes between them are erased, and a tie keeps the
+    // order of this vector; a caller that built it in any other order (a hash-map walk of groups)
+    // then got two writers of one output spliced in the wrong order.
+    std::ranges::stable_sort(inserts, {}, &std::pair<std::size_t, std::vector<Node>>::first);
+
     size_t const removed = erase_nodes(remove);
 
     // The positions in `inserts` are in the PRE-ERASE numbering, so each one has
@@ -450,6 +456,16 @@ TensorId Graph::live_tensor_id_by_ptr(void const *ptr, std::weak_ptr<void> const
 }
 
 void *Graph::live_tensor_ptr(TensorId id) const noexcept {
+    // A redirected id's slot reads the survivor's storage, and so must anything that reaches the
+    // tensor by id: the id's own object is the merged-away duplicate nothing writes any more.
+    // Bounded by the redirect count, since redirect_slot keeps every entry pointing at a terminal.
+    for (std::size_t hops = 0; hops < _slot_redirects.size(); ++hops) {
+        auto const next = _slot_redirects.find(id);
+        if (next == _slot_redirects.end()) {
+            break;
+        }
+        id = next->second;
+    }
     auto const *handle = find_tensor(id);
     if (handle == nullptr) {
         return nullptr;
@@ -489,6 +505,22 @@ TensorId Graph::resolve_alias(TensorId id) const {
                             "Graph '{}': alias chain from tensor {} exceeds the tensor count ({}), which means a "
                             "cycle in the alias links; the hazard scan cannot order accesses to it",
                             _name, id, _tensors.size());
+}
+
+TensorId Graph::buffer_of(TensorId id) const {
+    // Each redirect names a terminal id (redirect_slot collapses chains), and a terminal may
+    // itself be a view, so the two relations alternate at most once per redirect.
+    for (size_t hops = 0; hops <= _slot_redirects.size(); ++hops) {
+        TensorId const root     = resolve_alias(id);
+        auto const     redirect = _slot_redirects.find(root);
+        if (redirect == _slot_redirects.end()) {
+            return root;
+        }
+        id = redirect->second;
+    }
+    EINSUMS_THROW_EXCEPTION(std::runtime_error,
+                            "Graph '{}': the slot redirects and alias links from tensor {} form a cycle, so no tensor owns its storage",
+                            _name, id);
 }
 
 void Graph::mark_sorted() {
@@ -573,6 +605,9 @@ void Graph::redirect_slot(TensorId from, TensorId to) {
     from_slot->resync_of  = to_slot->resync_of;
     _slot_redirects[from] = to;
     _slots_validated      = false;
+    // Buffer-keyed analyses (UsageAnalysis, the hazard scan) keyed @p from on its own id until now.
+    _deps_valid = false;
+    _analysis_version++;
     // Anything already redirected to `from` now follows the same terminal.
     for (auto &[f, t] : _slot_redirects) {
         if (t == from) {

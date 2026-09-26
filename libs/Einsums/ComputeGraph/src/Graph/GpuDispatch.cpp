@@ -118,7 +118,10 @@ namespace {
 [[nodiscard]] inline void *resolve_device_ptr([[maybe_unused]] TensorHandle const &h, [[maybe_unused]] TensorId id,
                                               [[maybe_unused]] DeviceShadowMap &shadows) {
     if constexpr (gpu::has_unified_memory) {
-        return h.data_ptr;
+        // The LIVE buffer, not the one registered at capture: a Free and a later Materialize
+        // release and reallocate an eager scratch, and the registration-time pointer then names
+        // freed memory that a replayed GEMM wrote into.
+        return live_host_ptr(h);
     } else {
         return shadows.get(id);
     }
@@ -409,14 +412,18 @@ bool try_gpu_scale(Node const &node, std::unordered_map<TensorId, TensorHandle> 
     // Only the real device kernels are wired up here, so a complex factor
     // declines rather than being projected onto its real part: this path used
     // to truncate silently, which is a wrong answer and not a slow one.
-    if (!is_real_valued(desc->factor)) {
+    //
+    // The live factor, not the capture-time snapshot: a pass that rescales the
+    // node writes the params block the host executor reads.
+    auto const &factor = live_factor(*desc);
+    if (!is_real_valued(factor)) {
         return false;
     }
     if (handle.dtype == packed_gemm::ScalarType::Float32) {
-        gpu::blas::scal<float>(n, as_real<float>(desc->factor), static_cast<float *>(ptr), 1);
+        gpu::blas::scal<float>(n, as_real<float>(factor), static_cast<float *>(ptr), 1);
         return true;
     } else if (handle.dtype == packed_gemm::ScalarType::Float64) {
-        gpu::blas::scal<double>(n, as_real<double>(desc->factor), static_cast<double *>(ptr), 1);
+        gpu::blas::scal<double>(n, as_real<double>(factor), static_cast<double *>(ptr), 1);
         return true;
     }
     return false;

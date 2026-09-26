@@ -79,8 +79,15 @@ class EINSUMS_EXPORT DistributionPlanning : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
-    bool                    run(Graph &graph) override;
-    void                    reset_stats() override;
+    /// @copydoc OptimizerPass::understood_features
+    /// Only what an axis layout does not depend on: operators, views, grouped families, bodies and tiled operands all read the whole
+    /// tensor.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
+               NodeFeature::RawScalar;
+    }
+    bool run(Graph &graph) override;
+    void reset_stats() override;
 
     [[nodiscard]] size_t num_distributed() const { return _num_distributed; }
     [[nodiscard]] size_t num_replicated() const { return _num_replicated; }

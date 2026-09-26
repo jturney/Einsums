@@ -160,7 +160,7 @@ bool AntisymmetryInference::run(Graph &graph) {
     auto const guard = EscapeAnalysis::over(graph);
 
     auto const hint_of = [&](TensorId id) -> SymmetryDescriptor const * {
-        auto const *handle = graph.find_tensor(graph.resolve_alias(id));
+        auto const *handle = graph.find_tensor(graph.buffer_of(id));
         return handle != nullptr ? handle->symmetry_hint.get() : nullptr;
     };
 
@@ -287,11 +287,11 @@ bool AntisymmetryInference::run(Graph &graph) {
         }
 
         per_node[i] = std::move(contribution);
-        collected[graph.resolve_alias(node.outputs[0])].push_back(&per_node[i]);
+        collected[graph.buffer_of(node.outputs[0])].push_back(&per_node[i]);
 
         // Settle the tensor once its LAST write has been seen. Waiting until the
         // end of the loop would keep the fact from the nodes that consume it.
-        TensorId const out  = graph.resolve_alias(node.outputs[0]);
+        TensorId const out  = graph.buffer_of(node.outputs[0]);
         auto const    &list = writers[out];
         if (list.empty() || list.back() != i) {
             continue;

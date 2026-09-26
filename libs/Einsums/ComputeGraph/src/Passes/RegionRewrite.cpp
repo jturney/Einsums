@@ -211,8 +211,7 @@ bool RegionRewrite::run(Graph &graph) {
     auto const    escapes = EscapeAnalysis::over(graph);
     RegionOptions options;
     options.min_nodes  = min_region_nodes();
-    options.grouped    = raises_grouped();
-    options.operators  = raises_operators();
+    options.understood = understood_features().value_or(default_region_features);
     auto const regions = form_regions(graph, escapes, options);
     // ACCUMULATED, not assigned. The driver calls `run` once per sub-graph and zeroes the
     // counters once per apply, so a count written here would report whatever the last-visited

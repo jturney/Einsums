@@ -273,14 +273,14 @@ namespace {
 /// from the algebra, which is the same reason it cannot be saved. Treating it as
 /// a barrier is the honest answer: raising it would produce a term that lowers
 /// into a different kernel or none.
-bool raisable_here(Node const &node, RegionOptions const &options) {
+bool raisable_here(Graph const &graph, Node const &node, RegionOptions const &options) {
     // A barrier rather than a member the raise later refuses: a refusal costs the whole region,
     // and in a flat graph the region is the whole graph, so one P(ij) anywhere used to switch the
     // client off for every node, including the ones that share nothing with it.
-    if (!options.operators && passes::carries_permutation_operators(node)) {
+    if (!options.understood.covers(features_of(graph, node))) {
         return false;
     }
-    if (options.grouped && is_grouped_raisable(node.kind)) {
+    if (is_grouped_raisable(node.kind)) {
         // A blocked grouped batch writes column ranges of shared bases and
         // declares only the DISTINCT bases as outputs, so its member list of
         // destinations is not on the node at all. It stays a barrier rather
@@ -306,12 +306,12 @@ std::vector<Region> form_regions(Graph const &graph, EscapeAnalysis const &escap
 
     std::size_t position = 0;
     while (position < nodes.size()) {
-        if (!raisable_here(nodes[position], options)) {
+        if (!raisable_here(graph, nodes[position], options)) {
             ++position;
             continue;
         }
         std::size_t const first = position;
-        while (position < nodes.size() && raisable_here(nodes[position], options)) {
+        while (position < nodes.size() && raisable_here(graph, nodes[position], options)) {
             ++position;
         }
 

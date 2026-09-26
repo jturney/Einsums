@@ -33,7 +33,7 @@ void count_subtree_writers(Graph const &graph, std::unordered_map<void const *, 
             // Resolve first: a write through a view of T is a write to T, and
             // counting the view object instead would report T as single-writer
             // while a different node overwrote it every iteration.
-            auto const *handle = graph.find_tensor(graph.resolve_alias(tid));
+            auto const *handle = graph.find_tensor(graph.buffer_of(tid));
             if (handle != nullptr && handle->tensor_ptr != nullptr) {
                 writers[handle->tensor_ptr]++;
             }
@@ -69,14 +69,14 @@ EscapeAnalysis EscapeAnalysis::over(Graph const &graph) {
     for (auto const &node : graph.nodes()) {
         bool const lifecycle = is_lifecycle(node.kind);
         for (auto const tid : node.outputs) {
-            auto const root = graph.resolve_alias(tid);
+            auto const root = graph.buffer_of(tid);
             out._any_writers[root].push_back(node.id);
             if (!lifecycle) {
                 out._value_writers[root].push_back(node.id);
             }
         }
         for (auto const tid : node.inputs) {
-            auto const root = graph.resolve_alias(tid);
+            auto const root = graph.buffer_of(tid);
             out._any_readers[root].push_back(node.id);
             if (!lifecycle) {
                 out._value_readers[root].push_back(node.id);
@@ -89,7 +89,7 @@ EscapeAnalysis EscapeAnalysis::over(Graph const &graph) {
     // aliases the buffer and a region that dissolved it would be wrong the moment
     // a later pass gave it a reader.
     for (auto const &[id, handle] : graph.tensors_map()) {
-        out._by_root[graph.resolve_alias(id)].push_back(id);
+        out._by_root[graph.buffer_of(id)].push_back(id);
     }
     // tensors_map is unordered, so sort. A region rewrite driven off an
     // unordered walk is a rewrite that varies between runs, and the Kahn FIFO
@@ -105,12 +105,12 @@ EscapeAnalysis EscapeAnalysis::over(Graph const &graph) {
 }
 
 int EscapeAnalysis::writer_count(TensorId id) const {
-    auto const hit = _value_writers.find(_graph->resolve_alias(id));
+    auto const hit = _value_writers.find(_graph->buffer_of(id));
     return hit == _value_writers.end() ? 0 : static_cast<int>(hit->second.size());
 }
 
 int EscapeAnalysis::subtree_writer_count(TensorId id) const {
-    auto const *handle = _graph->find_tensor(_graph->resolve_alias(id));
+    auto const *handle = _graph->find_tensor(_graph->buffer_of(id));
     if (handle == nullptr || handle->tensor_ptr == nullptr) {
         return 0;
     }
@@ -119,7 +119,7 @@ int EscapeAnalysis::subtree_writer_count(TensorId id) const {
 }
 
 bool EscapeAnalysis::touched_by_subtree(TensorId id) const {
-    auto const *handle = _graph->find_tensor(_graph->resolve_alias(id));
+    auto const *handle = _graph->find_tensor(_graph->buffer_of(id));
     if (handle == nullptr) {
         return true; // cannot prove otherwise
     }
@@ -139,7 +139,7 @@ bool EscapeAnalysis::stable(TensorId id) const {
 }
 
 std::vector<TensorId> EscapeAnalysis::aliases_of(TensorId id) const {
-    auto const hit = _by_root.find(_graph->resolve_alias(id));
+    auto const hit = _by_root.find(_graph->buffer_of(id));
     return hit == _by_root.end() ? std::vector<TensorId>{id} : hit->second;
 }
 
@@ -160,7 +160,7 @@ Escape EscapeAnalysis::classify(TensorId id, std::unordered_set<NodeId> const &r
         return std::ranges::any_of(hit->second, [&region](NodeId nid) { return !region.contains(nid); });
     };
 
-    auto const root = _graph->resolve_alias(id);
+    auto const root = _graph->buffer_of(id);
 
     // A sibling view of the same buffer that the user owns takes the whole buffer
     // out of reach, whatever the nodes do: the caller holds a tensor and expects a
@@ -206,7 +206,7 @@ Escape EscapeAnalysis::classify(TensorId id, std::unordered_set<NodeId> const &r
 
 expected<NodeId, std::string> amplitude_update_writer(Graph const &graph, TensorId tensor) {
     auto const analysis = EscapeAnalysis::over(graph);
-    auto const root     = graph.resolve_alias(tensor);
+    auto const root     = graph.buffer_of(tensor);
 
     // Exactly one value-writer here, and none in any descendant. Two writers mean the value the
     // fit would be about is not settled by the statement being recognized, and a write inside a
@@ -225,7 +225,7 @@ expected<NodeId, std::string> amplitude_update_writer(Graph const &graph, Tensor
             continue;
         }
         for (auto const out : node.outputs) {
-            if (graph.resolve_alias(out) == root) {
+            if (graph.buffer_of(out) == root) {
                 writer = &node;
             }
         }
@@ -243,7 +243,7 @@ expected<NodeId, std::string> amplitude_update_writer(Graph const &graph, Tensor
     // DIIS can read, which is how the tiled example spells it.
     if (writer->kind == OpKind::Axpby) {
         for (auto const in : writer->inputs) {
-            auto const source = graph.resolve_alias(in);
+            auto const source = graph.buffer_of(in);
             if (source == root) {
                 continue;
             }
@@ -252,7 +252,7 @@ expected<NodeId, std::string> amplitude_update_writer(Graph const &graph, Tensor
                     continue;
                 }
                 for (auto const out : node.outputs) {
-                    if (graph.resolve_alias(out) == source) {
+                    if (graph.buffer_of(out) == source) {
                         return writer->id;
                     }
                 }

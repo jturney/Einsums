@@ -97,6 +97,11 @@ bool GEMMBatching::run(Graph &graph) {
     for (size_t nd = 0; nd < n_nodes; ++nd) {
         if (nodes[nd].kind != OpKind::Einsum)
             continue;
+        if (!understands(graph, nodes[nd])) {
+            note_skip("the node carries a feature this pass does not understand",
+                      fmt::format("node '{}': {}", nodes[nd].label, describe_features(features_of(graph, nodes[nd]))));
+            continue;
+        }
         auto *desc = nodes[nd].op_data.get_if<EinsumDescriptor>();
         if (!desc || !desc->gemm_hint)
             continue; // non-GEMM-pattern einsums skipped by capture
@@ -210,7 +215,7 @@ bool GEMMBatching::run(Graph &graph) {
                 for (auto tid : nodes[idx].outputs)
                     batch_writes.insert(tid);
             }
-            if (span_interferes(nodes, first_pos, last_pos, is_member, batch_writes, batch_reads, /*reject_control_flow=*/true)) {
+            if (span_interferes(graph, first_pos, last_pos, is_member, batch_writes, batch_reads, /*reject_control_flow=*/true)) {
                 EINSUMS_LOG_INFO("GEMMBatching: group of {} einsums at level {} has an interfering node between members — not batching",
                                  group.size(), lvl);
                 note_skip("a node between the group members reads or writes one of their operands",

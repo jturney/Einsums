@@ -165,6 +165,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Storage order is mathematics-preserving and machine-independent to state, so a save keeps
     /// it. The permute costs it is chosen from are a hint; see the file note.
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Not permutation operators, views, complex prefactors or redirected slots: a permute fold ignores operators and reads snapshot
+    /// scalars.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow |
+               NodeFeature::Tiled | NodeFeature::RawScalar;
+    }
 
     /// @copydoc OptimizerPass::tier
     /// The same products summed over the same letters, through a different kernel. See the file

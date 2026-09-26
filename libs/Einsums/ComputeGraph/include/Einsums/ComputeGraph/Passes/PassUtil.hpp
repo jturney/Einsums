@@ -276,7 +276,11 @@ inline void hash_range(std::size_t &h, Range const &range) {
  * LinearCombinationContractionFolding keeps its existing (control-flow-agnostic)
  * behavior.
  *
- * @param[in] nodes               The graph's node list.
+ * Tensors are compared by the buffer they occupy (@ref Graph::buffer_of), so a
+ * write through a view or a redirected slot of something the group touches
+ * counts: comparing ids let one slip between two batched members unseen.
+ *
+ * @param[in] graph               The graph whose node list the positions index.
  * @param[in] first               Position of the first group member.
  * @param[in] last                Position of the last group member.
  * @param[in] is_member           Membership mask over @p nodes.
@@ -284,30 +288,9 @@ inline void hash_range(std::size_t &h, Range const &range) {
  * @param[in] reads               Every tensor the group reads.
  * @param[in] reject_control_flow Whether a control-flow node in the span disqualifies it.
  */
-[[nodiscard]] inline bool span_interferes(std::vector<Node> const &nodes, std::size_t first, std::size_t last,
-                                          std::vector<bool> const &is_member, std::unordered_set<TensorId> const &writes,
-                                          std::unordered_set<TensorId> const &reads, bool reject_control_flow) {
-    for (std::size_t n = first + 1; n < last; ++n) {
-        if (is_member[n]) {
-            continue;
-        }
-        Node const &other = nodes[n];
-        if (reject_control_flow && is_control_flow(other.kind)) {
-            return true;
-        }
-        for (auto const out : other.outputs) {
-            if (writes.contains(out) || reads.contains(out)) {
-                return true;
-            }
-        }
-        for (auto const in : other.inputs) {
-            if (writes.contains(in)) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
+[[nodiscard]] EINSUMS_EXPORT bool span_interferes(Graph const &graph, std::size_t first, std::size_t last,
+                                                  std::vector<bool> const &is_member, std::unordered_set<TensorId> const &writes,
+                                                  std::unordered_set<TensorId> const &reads, bool reject_control_flow);
 
 /// Where a scale of some tensor can be folded inside a consumer.
 enum class FoldSite : std::uint8_t {

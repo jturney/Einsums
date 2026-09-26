@@ -210,6 +210,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @brief The pass name.
     /// @return ``"LaplaceTransform"``.
     APIARY_EXPOSE APIARY_GETTER("name") [[nodiscard]] std::string name() const override { return "LaplaceTransform"; }
+    /// @copydoc RegionRewrite::understood_features
+    /// The region default less views, redirected slots and mixed precision: its interference checks and numerator lookup compare ids, and a
+    /// complex numerator over a real denominator loses its imaginary part.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return default_region_features.without(NodeFeature::Views | NodeFeature::RedirectedSlot | NodeFeature::MixedPrecision);
+    }
 
     /// @copydoc OptimizerPass::tier
     /// Substitutes a numerical quadrature for the reciprocal it approximates, under a tolerance

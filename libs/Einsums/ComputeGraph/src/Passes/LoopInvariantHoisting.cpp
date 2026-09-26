@@ -6,6 +6,7 @@
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
+#include <Einsums/ComputeGraph/NodeFeatures.hpp>
 #include <Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -14,6 +15,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -120,6 +122,16 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
             if (bnode.kind == OpKind::WriteParam || has_runtime_view_bounds(bnode)) {
                 note_skip("node's per-iteration effect is a parameter write or a parameter-bound slice, not visible as dataflow",
                           fmt::format("body node '{}'", bnode.label));
+                continue;
+            }
+
+            // A tiled op stays where it is. TiledExpansion decides which tiles a tensor holds
+            // within one graph, from the producers it can see there; a tiled producer lifted into
+            // the parent leaves the body's consumers predicting from a tensor with no tiles yet,
+            // and they were expanded against nothing. The default pipeline expands tiled ops
+            // before this pass runs, so this costs a hoist only in orders that do not.
+            if (features_of(*loop_desc->body, bnode).covers(NodeFeature::Tiled)) {
+                note_skip("a tiled op is not hoisted, because tile prediction is per graph", fmt::format("body node '{}'", bnode.label));
                 continue;
             }
 
@@ -277,6 +289,25 @@ void LoopInvariantHoisting::hoist_one_level(Graph &graph) {
                 // The body numbered this node; the parent issues its own id when the pass hands
                 // the graph back, or the two counters would name two nodes with one id.
                 h.id = unassigned_node_id;
+                // The executor still reaches its operands through the BODY's slots, and a body
+                // re-seats its adopted stand-ins only when the body itself executes. Hoisted, the
+                // node runs before that, right after the parent's Materialize may have moved a
+                // scratch buffer, and it wrote through the stand-in's stale address while the body
+                // then read the new, unwritten one. So the body's slots are re-seated first; one
+                // comparison per slot when nothing moved. The anchor, not the body's address, in
+                // case the body is ever held elsewhere.
+                auto const body_anchor = loop_desc->body->anchor();
+                auto const reseat      = [body_anchor](std::function<void()> inner) -> std::function<void()> {
+                    if (!inner) {
+                        return inner;
+                    }
+                    return [body_anchor, inner = std::move(inner)]() {
+                        body_anchor->graph().resync_slot_storage();
+                        inner();
+                    };
+                };
+                h.execute     = reseat(std::move(h.execute));
+                h.async_start = reseat(std::move(h.async_start));
                 for (auto &tid : h.inputs)
                     tid = remap_or_register(tid);
                 for (auto &tid : h.outputs)

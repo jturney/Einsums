@@ -87,6 +87,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
+    /// @copydoc OptimizerPass::understood_features
+    /// Not views, mixed precision, tiled operands or a bare scalar: the fold repoints the dot at a root-shaped source and rebuilds its
+    /// executor from the root.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
+               NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::RedirectedSlot;
+    }
 
     /// @copydoc OptimizerPass::tier
     ///

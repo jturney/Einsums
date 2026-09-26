@@ -255,7 +255,8 @@ TEST_CASE("a permutation operator is a barrier unless the client opts in",
     CHECK(split[0].size() == 1);
     CHECK(split[1].size() == 1);
 
-    auto const whole = cg::form_regions(graph, escapes, cg::RegionOptions{.operators = true});
+    auto const whole = cg::form_regions(
+        graph, escapes, cg::RegionOptions{.understood = cg::default_region_features | cg::NodeFeature::PermutationOperators});
     REQUIRE(whole.size() == 1);
     CHECK(whole[0].size() == 3);
 
@@ -313,7 +314,8 @@ TEST_CASE("lowering refuses an operator over a letter its target does not carry"
         cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &X, 1.0, A, B);
     }
     auto const escapes = cg::EscapeAnalysis::over(graph);
-    auto const regions = cg::form_regions(graph, escapes, cg::RegionOptions{.operators = true});
+    auto const regions = cg::form_regions(
+        graph, escapes, cg::RegionOptions{.understood = cg::default_region_features | cg::NodeFeature::PermutationOperators});
     REQUIRE(regions.size() == 1);
     auto raised = cg::raise_region(graph, regions[0]);
     REQUIRE(raised.has_value());
@@ -514,7 +516,7 @@ std::vector<double> flatten_pool(std::vector<Tensor<double, 2>> const &pool) {
 /// Every region of @p graph, formed with the grouped kinds admitted.
 std::vector<cg::Region> grouped_regions(cg::Graph const &graph) {
     cg::RegionOptions options;
-    options.grouped = true;
+    options.understood = cg::default_region_features | cg::NodeFeature::Grouped;
     return cg::form_regions(graph, cg::EscapeAnalysis::over(graph), options);
 }
 

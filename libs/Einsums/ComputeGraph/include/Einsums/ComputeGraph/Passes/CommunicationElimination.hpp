@@ -59,8 +59,14 @@ class EINSUMS_EXPORT CommunicationElimination : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
-    bool                    run(Graph &graph) override;
-    void                    reset_stats() override;
+    /// @copydoc OptimizerPass::understood_features
+    /// Not views, control flow or redirected slots: a reduced tensor is invalidated by the id of a later write.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
+               NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::Tiled | NodeFeature::RawScalar;
+    }
+    bool run(Graph &graph) override;
+    void reset_stats() override;
 
     [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
 

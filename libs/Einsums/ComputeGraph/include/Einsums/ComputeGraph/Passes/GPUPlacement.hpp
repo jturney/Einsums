@@ -104,8 +104,14 @@ class EINSUMS_EXPORT GPUPlacement : public OptimizerPass {
 
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralResource; }
-    bool                    run(Graph &graph) override;
-    void                    reset_stats() override;
+    /// @copydoc OptimizerPass::understood_features
+    /// Not permutation operators, views or redirected slots: the device kernels ignore operators and run contiguous over a view.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
+        return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
+               NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
+    }
+    bool run(Graph &graph) override;
+    void reset_stats() override;
 
     /// Number of nodes placed on GPU in the last run.
     [[nodiscard]] size_t num_placed() const { return _num_placed; }
