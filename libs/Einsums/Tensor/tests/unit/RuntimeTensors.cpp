@@ -632,3 +632,27 @@ TEST_CASE("RuntimeTensor::reshape_view reinterprets without copying", "[tensor][
         REQUIRE(S.reshapable_as_view({2, 20}));
     }
 }
+
+TEST_CASE("RuntimeTensor refuses a view while it has no storage", "[tensor][runtime][view][lifecycle]") {
+    using namespace einsums;
+
+    // A view copies its parent's data pointer when it is made. Taken while the
+    // tensor was deferred, it kept that missing pointer after materialize(), and
+    // a graph einsum reading it through a captured slice faulted in the GEMM.
+    RuntimeTensor<double> t(RuntimeTensor<double>::deferred_alloc, "deferred", std::vector<size_t>{4, 6});
+    REQUIRE_FALSE(t.is_materialized());
+
+    REQUIRE_THROWS_AS(t(All, Range{0, 2}), std::logic_error);
+    REQUIRE_THROWS_AS(t.transpose_view(), std::logic_error);
+    REQUIRE_THROWS_AS(t.permute_view(std::vector<size_t>{1, 0}), std::logic_error);
+    REQUIRE_THROWS_AS(t.reshape_view(std::vector<size_t>{24}), std::logic_error);
+    REQUIRE_THROWS_AS(t.at_view(std::vector<einsums::SliceSpec>(2)), std::logic_error);
+    REQUIRE_THROWS_AS(RuntimeTensorView<double>(t, std::vector<size_t>{24}), std::logic_error);
+
+    // Once storage exists, the same view reads it.
+    t.materialize();
+    t.set_all(2.0);
+    RuntimeTensorView<double> const col = t(All, Range{1, 2});
+    REQUIRE(col.data() == t.data() + t.stride(1));
+    REQUIRE(col(3, 0) == 2.0);
+}

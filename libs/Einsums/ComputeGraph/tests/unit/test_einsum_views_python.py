@@ -24,6 +24,7 @@ relevant region.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 import einsums
 import einsums.graph as cg
@@ -240,3 +241,33 @@ def test_einsum_mp2_iajb_block_via_view():
     sliced = np.asarray(eri_mo)[:nocc, nocc:, :nocc, nocc:]
     expected = float(np.sum(sliced * sliced))
     np.testing.assert_allclose(float(np.asarray(e)), expected, rtol=1e-5)
+
+
+def test_a_view_of_graph_scratch_is_taken_inside_the_capture():
+    """A slice of deferred graph scratch taken BEFORE the capture is refused.
+
+    Defect: the view copied the scratch's missing data pointer, Materialization
+    later gave the scratch storage the view never saw, and execute faulted in the
+    GEMM reading it. The same slice taken inside the capture is recorded against
+    the live storage and computes the product.
+    """
+    n = 4
+    A = einsums.create_random_tensor("A", [n, n], dtype="float64")
+    C = einsums.create_zero_tensor("C", [n, n], dtype="float64")
+    a = np.asarray(A)
+
+    early = cg.Graph("early_view")
+    X = early.scratch("X", [n, n], "float64")
+    with pytest.raises(Exception, match="no storage yet"):
+        X[:, :]
+
+    g = cg.Graph("captured_view")
+    X = g.scratch("X", [n, n], "float64")
+    with cg.capture(g):
+        einsums.einsum("ij <- ik ; kj", X, A, A)
+        einsums.einsum("ij <- ik ; kj", C, X[:, :], A)
+    pm = cg.PassManager()
+    pm.add(cg.Materialization())
+    g.apply(pm)
+    g.execute()
+    np.testing.assert_allclose(np.asarray(C), a @ a @ a, rtol=1e-12)

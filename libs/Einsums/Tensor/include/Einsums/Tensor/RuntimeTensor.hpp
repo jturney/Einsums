@@ -37,6 +37,35 @@
 
 EINSUMS_NAMESPACE_BEGIN()
 
+namespace detail {
+/**
+ * @brief Returns @p tensor, after checking that it has storage a view can point into.
+ *
+ * A view copies its parent's data pointer when it is made. A deferred tensor has
+ * none yet, so a view of it would keep that missing pointer after the tensor is
+ * materialized, and reading it faults. A view taken inside a capture (``cg::view``,
+ * or a Python slice, which routes there) is recorded as a View node that the graph
+ * builds against the live storage, so that is the way to view a tensor the graph has
+ * not allocated yet.
+ *
+ * @param tensor The tensor to view.
+ * @param what What is being taken, for the message.
+ * @throws std::logic_error when @p tensor is deferred.
+ */
+template <typename Tensor>
+Tensor &viewable(Tensor &tensor, char const *what) {
+    if (!tensor.is_materialized()) {
+        EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                "{}: tensor '{}' has no storage yet (it is deferred), and a view of it would keep a pointer that "
+                                "materializing the tensor never updates. Take the view inside the capture (cg::view, or a Python "
+                                "slice, which routes there), where the graph records it against the live storage, or materialize "
+                                "the tensor first.",
+                                what, tensor.name());
+    }
+    return tensor;
+}
+} // namespace detail
+
 /**
  * @class GeneralRuntimeTensor
  *
@@ -707,7 +736,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
             requires !(std::is_integral_v<Args> && ... && true);
         }
     RuntimeTensorView<T> const operator()(Args const &...args) const {
-        return RuntimeTensorView<T>(_impl.subscript(args...), _storage);
+        return RuntimeTensorView<T>(detail::viewable(*this, "subscript").impl().subscript(args...), _storage);
     }
 
     /**
@@ -723,7 +752,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
             requires !(std::is_integral_v<Args> && ... && true);
         }
     RuntimeTensorView<T> operator()(Args const &...args) {
-        return RuntimeTensorView<T>(_impl.subscript(args...), _storage);
+        return RuntimeTensorView<T>(detail::viewable(*this, "subscript").impl().subscript(args...), _storage);
     }
 
     /**
@@ -1130,16 +1159,18 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     // tensor's storage to the returned view so numpy arrays built from it
     // stay valid.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> transpose_view() {
-        return RuntimeTensorView<T>(_impl.transpose_view(), _storage);
+        return RuntimeTensorView<T>(detail::viewable(*this, "transpose_view").impl().transpose_view(), _storage);
     }
 
-    [[nodiscard]] RuntimeTensorView<T> const transpose_view() const { return RuntimeTensorView<T>(_impl.transpose_view(), _storage); }
+    [[nodiscard]] RuntimeTensorView<T> const transpose_view() const {
+        return RuntimeTensorView<T>(detail::viewable(*this, "transpose_view").impl().transpose_view(), _storage);
+    }
 
     // Zero-copy axis-permuted view (result axis i takes parent axis perm[i]).
     // Backs the eager ``.transpose(axes)`` / ``.swapaxes`` (see einsums/__init__.py);
     // the capture path uses cg.permute_view instead. KEEP_ALIVE(0,1) ties storage.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> permute_view(std::vector<size_t> const &perm) {
-        return RuntimeTensorView<T>(_impl.permute_view(perm), _storage);
+        return RuntimeTensorView<T>(detail::viewable(*this, "permute_view").impl().permute_view(perm), _storage);
     }
 
     // Zero-copy reshaped view. The reinterpretation is free when the axes being
@@ -1148,11 +1179,11 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
     // than silently copying when the strides do not allow it, so a caller that
     // wanted a view finds out. KEEP_ALIVE(0,1) ties storage.
     [[nodiscard]] APIARY_EXPOSE APIARY_KEEP_ALIVE(0, 1) RuntimeTensorView<T> reshape_view(std::vector<size_t> const &new_dims) {
-        return RuntimeTensorView<T>(_impl.reshape_view(new_dims), _storage);
+        return RuntimeTensorView<T>(detail::viewable(*this, "reshape_view").impl().reshape_view(new_dims), _storage);
     }
 
     [[nodiscard]] RuntimeTensorView<T> const reshape_view(std::vector<size_t> const &new_dims) const {
-        return RuntimeTensorView<T>(_impl.reshape_view(new_dims), _storage);
+        return RuntimeTensorView<T>(detail::viewable(*this, "reshape_view").impl().reshape_view(new_dims), _storage);
     }
 
     // Whether reshape_view would succeed, for callers that have a fallback.
@@ -1160,22 +1191,32 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
         return _impl.reshapable_as_view(new_dims);
     }
 
-    [[nodiscard]] RuntimeTensorView<T> to_row_major() { return RuntimeTensorView<T>(_impl.to_row_major(), _storage); }
+    [[nodiscard]] RuntimeTensorView<T> to_row_major() {
+        return RuntimeTensorView<T>(detail::viewable(*this, "to_row_major").impl().to_row_major(), _storage);
+    }
 
-    [[nodiscard]] RuntimeTensorView<T> const to_row_major() const { return RuntimeTensorView<T>(_impl.to_row_major(), _storage); }
+    [[nodiscard]] RuntimeTensorView<T> const to_row_major() const {
+        return RuntimeTensorView<T>(detail::viewable(*this, "to_row_major").impl().to_row_major(), _storage);
+    }
 
-    [[nodiscard]] RuntimeTensorView<T> to_column_major() { return RuntimeTensorView<T>(_impl.to_column_major(), _storage); }
+    [[nodiscard]] RuntimeTensorView<T> to_column_major() {
+        return RuntimeTensorView<T>(detail::viewable(*this, "to_column_major").impl().to_column_major(), _storage);
+    }
 
-    [[nodiscard]] RuntimeTensorView<T> const to_column_major() const { return RuntimeTensorView<T>(_impl.to_column_major(), _storage); }
+    [[nodiscard]] RuntimeTensorView<T> const to_column_major() const {
+        return RuntimeTensorView<T>(detail::viewable(*this, "to_column_major").impl().to_column_major(), _storage);
+    }
 
     template <std::integral... MultiIndex>
     [[nodiscard]] RuntimeTensorView<T> tie_indices(MultiIndex &&...index) {
-        return RuntimeTensorView<T>(_impl.tie_indices(std::forward<MultiIndex>(index)...), _storage);
+        return RuntimeTensorView<T>(detail::viewable(*this, "tie_indices").impl().tie_indices(std::forward<MultiIndex>(index)...),
+                                    _storage);
     }
 
     template <std::integral... MultiIndex>
     [[nodiscard]] RuntimeTensorView<T> const tie_indices(MultiIndex &&...index) const {
-        return RuntimeTensorView<T>(_impl.tie_indices(std::forward<MultiIndex>(index)...), _storage);
+        return RuntimeTensorView<T>(detail::viewable(*this, "tie_indices").impl().tie_indices(std::forward<MultiIndex>(index)...),
+                                    _storage);
     }
 
     // ── Symmetry metadata ──────────────────────────────────────────────
@@ -1539,7 +1580,8 @@ APIARY_INSTANTIATE_AS("RuntimeTensorViewZ", RuntimeTensorView<std::complex<doubl
      */
     template <Container Dim>
     RuntimeTensorView(RuntimeTensor<T> const &other, Dim const &dims)
-        : _impl{const_cast<Pointer>(other.data()), dims, other.impl().is_row_major()}, _storage_ref{other.storage()} {}
+        : _impl{const_cast<Pointer>(detail::viewable(other, "view").data()), dims, other.impl().is_row_major()},
+          _storage_ref{other.storage()} {}
 
     /**
      * @brief Creates a view of a tensor with new dimensions specified.
@@ -1561,7 +1603,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorViewZ", RuntimeTensorView<std::complex<doubl
      */
     template <Container Dim, Container Stride, Container Offset, typename Alloc>
     RuntimeTensorView(GeneralRuntimeTensor<T, Alloc> const &other, Dim const &dims, Stride const &strides, Offset const &offsets)
-        : _impl(const_cast<Pointer>(other.data(offsets)), dims, strides), _storage_ref{other.storage()} {}
+        : _impl(const_cast<Pointer>(detail::viewable(other, "view").data(offsets)), dims, strides), _storage_ref{other.storage()} {}
 
     /**
      * @brief Creates a view of a tensor with new dimensions, strides, and offsets specified.
