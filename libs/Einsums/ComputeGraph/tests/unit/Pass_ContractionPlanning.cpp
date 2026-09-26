@@ -984,3 +984,96 @@ TEST_CASE("ContractionPlanning - a chain ending in a permutation operator keeps 
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Views
+// ═══════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("ContractionPlanning - a chain over views restructures and reads each view's strides", "[ComputeGraph][Passes][CP][Views]") {
+    // The leaves are strided blocks of larger tensors and the result is a block of another. The
+    // emitted GEMMs reach every operand through its impl, so a view is read where it lies.
+    auto BigA = create_random_tensor<double>("BigA", 103, 3);
+    auto BigB = create_random_tensor<double>("BigB", 2, 101);
+    auto E    = create_random_tensor<double>("E", 100, 1);
+    auto BigD = create_random_tensor<double>("BigD", 104, 2);
+
+    // References on dense copies of the blocks.
+    auto A = create_zero_tensor<double>("A", 100, 1);
+    auto B = create_zero_tensor<double>("B", 1, 100);
+    for (size_t i = 0; i < 100; i++) {
+        A(i, 0) = BigA(i + 3, 2);
+        B(0, i) = BigB(1, i + 1);
+    }
+    auto T1r = create_zero_tensor<double>("T1r", 100, 100);
+    auto Dr  = create_zero_tensor<double>("Dr", 100, 1);
+    reference_einsum("ij <- ik ; kj", 0.0, &T1r, 1.0, A, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &Dr, 1.0, T1r, E);
+    auto const untouched = BigD(0, 1);
+
+    cg::Graph graph("cp_views");
+    auto     &T1 = graph.create_zero_tensor<double, 2>("T1", 100, 100);
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &Av = cg::view(BigA, cg::ViewAxis::range(3, 103), cg::ViewAxis::range(2, 3));
+        auto                  &Bv = cg::view(BigB, cg::ViewAxis::range(1, 2), cg::ViewAxis::range(1, 101));
+        auto                  &Dv = cg::view(BigD, cg::ViewAxis::range(4, 104), cg::ViewAxis::range(0, 1));
+        cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, Av, Bv);
+        cg::einsum("ik;kj->ij", 0.0, &Dv, 1.0, T1, E);
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    pass.run(graph);
+    CHECK(pass.chains_restructured() == 1);
+
+    graph.execute();
+    for (size_t i = 0; i < 100; i++) {
+        CHECK(BigD(i + 4, 0) == Catch::Approx(Dr(i, 0)).margin(1e-10));
+    }
+    CHECK(BigD(0, 1) == untouched);
+}
+
+TEST_CASE("ContractionPlanning - a chain that writes one of its own leaves is not re-bracketed", "[ComputeGraph][Passes][CP][Views]") {
+    // A = (A*B)*L. Left to right, the first member reads A before the last one writes it; the
+    // re-bracketed A*(B*L) reads A in the very GEMM that writes it, which came out off by 30 in
+    // Python on the same shapes. The view form writes one block of P and reads an overlapping
+    // one, which only a comparison of the buffers the operands land in sees.
+    auto const alias = GENERATE(0, 1);
+    auto       P     = create_random_tensor<double>("P", 101, 1);
+    auto       B     = create_random_tensor<double>("B", 1, 100);
+    auto       L     = create_random_tensor<double>("L", 100, 1);
+
+    auto A0 = create_zero_tensor<double>("A0", 100, 1);
+    for (size_t i = 0; i < 100; i++) {
+        A0(i, 0) = P(i + alias, 0);
+    }
+    auto Tr = create_zero_tensor<double>("Tr", 100, 100);
+    auto Rr = create_zero_tensor<double>("Rr", 100, 1);
+    reference_einsum("ij <- ik ; kj", 0.0, &Tr, 1.0, A0, B);
+    reference_einsum("ij <- ik ; kj", 0.0, &Rr, 1.0, Tr, L);
+
+    auto      A = A0;
+    cg::Graph graph("cp_writes_its_leaf");
+    auto     &T = graph.create_zero_tensor<double, 2>("T", 100, 100);
+    {
+        cg::CaptureGuard const guard(graph);
+        if (alias == 0) {
+            cg::einsum("ik;kj->ij", 0.0, &T, 1.0, A, B);
+            cg::einsum("ik;kj->ij", 0.0, &A, 1.0, T, L);
+        } else {
+            auto &leaf = cg::view(P, cg::ViewAxis::range(1, 101), cg::ViewAxis::full());
+            auto &out  = cg::view(P, cg::ViewAxis::range(0, 100), cg::ViewAxis::full());
+            cg::einsum("ik;kj->ij", 0.0, &T, 1.0, leaf, B);
+            cg::einsum("ik;kj->ij", 0.0, &out, 1.0, T, L);
+        }
+    }
+
+    cg::passes::ContractionPlanning pass(skewed_model());
+    pass.run(graph);
+    CHECK(pass.chains_restructured() == 0);
+
+    graph.execute();
+    for (size_t i = 0; i < 100; i++) {
+        double const got = alias == 0 ? A(i, 0) : P(i, 0);
+        CHECK(got == Catch::Approx(Rr(i, 0)).margin(1e-10));
+    }
+}

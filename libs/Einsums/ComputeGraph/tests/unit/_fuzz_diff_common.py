@@ -235,16 +235,29 @@ ETRANSFORM_FNS = [
 #           ("m", i)                       the whole matrix m[i]
 #           ("mv", i, r0, r1, c0, c1)      the block m[i][r0:r1, c0:c1]
 #           ("mt", i)                      the transpose view of m[i]
+#           ("mvs", i, r0, r1, c0, c1)     "mv", one view object for every
+#           ("mts", i)                     "mt"  statement of a capture run
 #           ("t", i)                       the rank-3 tensor t[i]
 #         so one opcode carries an operator, a view read, and a view WRITE.
+#         "mv" and "mt" take a fresh view per statement, so two statements
+#         never name one view id; "mvs" and "mts" share it, which is what a
+#         pass keyed on operand ids (a fold, a factoring) needs to see.
+#
+#   ("vdecl", ref)
+#         Take the shared view @p ref ("mvs" or "mts") now, ahead of the
+#         statements that read it; nothing for the oracle. A captured view is
+#         a View node, and one landing between the members of a group reads to
+#         the factoring as a write of the parent between them.
 #
 # Opt-in (``all_passes=True``, drawn only by the all-passes shuffled shard):
 #
 #   ("aperm", kind, op, a, src, cpf, C)
 #         C = a * op(src) + cpf * C, a permute under a permutation operator on
 #         the matrix pool (kind "m", letters i,j) or the rank-3 pool (kind "t",
-#         letters i,j,k)
+#         letters i,j,k). ``a`` may be ("cx", re, im): re + im*1j on a complex
+#         pool and re alone on a real one, so one program serves every dtype.
 #   ("dot", kind, out, A, B)                v[out] = [sum(A * B)]
+#   ("dotc", kind, out, A, B)               v[out] = [sum(conj(A) * B)]
 #   ("ddiv", a, A, D, cpf, C)               m[C] = a * m[A] / m[D] + cpf * m[C]
 #
 # plus the statements above, over the extra pool slots ``ALLPASS_*`` describes.
@@ -257,6 +270,13 @@ ETRANSFORM_FNS = [
 
 def _scalar(rng):
     return float(np.round(rng.uniform(-1.0, 1.0), 4))
+
+
+def _dtype_scalar(a, dtype):
+    """A drawn scalar in the pool's element type: ("cx", re, im) is complex on a complex pool, re on a real one."""
+    if isinstance(a, tuple) and a[0] == "cx":
+        return complex(a[1], a[2]) if np.dtype(dtype).kind == "c" else a[1]
+    return a
 
 
 def _d(rng, dims=DIMS):
@@ -677,8 +697,8 @@ def rich_op_census(stmts, out=None):
         if s[0] == "xeinsum":
             _, _, op, _, Aref, Bref, _, Cref, _, _ = s
             out["operator"] += op is not None
-            out["view_read"] += Aref[0] in ("mv", "mt") or Bref[0] in ("mv", "mt")
-            out["view_write"] += Cref[0] in ("mv", "mt")
+            out["view_read"] += Aref[0] in _VIEW_REFS or Bref[0] in _VIEW_REFS
+            out["view_write"] += Cref[0] in _VIEW_REFS
         elif s[0] in ("vgemm",):
             out["view_read"] += 1
         elif s[0] in ("vscale", "vaxpy"):
@@ -813,12 +833,16 @@ def _gen_primitive(rng, rich_views=False, rank_views=False, rich_ops=False, all_
 # ──────────────────────────────────────────────────────────────────────────
 
 
+#: The operand references that name a view.
+_VIEW_REFS = ("mv", "mt", "mvs", "mts")
+
+
 def _ref_read(ref, m, t):
     if ref[0] == "t":
         return t[ref[1]]
     if ref[0] == "m":
         return m[ref[1]]
-    if ref[0] == "mt":
+    if ref[0] in ("mt", "mts"):
         return m[ref[1]].T
     _, M, r0, r1, c0, c1 = ref
     return m[M][r0:r1, c0:c1]
@@ -831,7 +855,7 @@ def _ref_write(ref, m, t, value, cast):
         t[ref[1]] = cast(value)
     elif ref[0] == "m":
         m[ref[1]] = cast(value)
-    elif ref[0] == "mt":
+    elif ref[0] in ("mt", "mts"):
         m[ref[1]] = cast(np.asarray(value).T)
     else:
         _, M, r0, r1, c0, c1 = ref
@@ -927,20 +951,25 @@ def interp_np(stmts, m, v, t, dt=None):
             opA = np.conj(opA) if ca else opA
             opB = np.conj(opB) if cb else opB
             c_idx = list(spec.split("<-")[0].strip())
-            base = apply_operator(op, c_idx, patterns[spec][0](opA, opB))
+            product = patterns[spec][0] if spec in patterns else _MATMUL_SPELLINGS[spec]
+            base = apply_operator(op, c_idx, product(opA, opB))
             _ref_write(Cref, m, t, ab * base + cpf * _ref_read(Cref, m, t), cast)
         elif k == "aperm":
             _, kind, op, a, src, cpf, C = s
             pool = m if kind == "m" else t
             letters = _APERM_LETTERS[kind]
+            a = _dtype_scalar(a, np.asarray(pool[C]).dtype)
             pool[C] = cast(a * apply_operator(op, letters, pool[src]) + cpf * pool[C])
-        elif k == "dot":
+        elif k in ("dot", "dotc"):
             _, kind, out, A, B = s
             pool = m if kind == "m" else t
-            v[out] = cast(np.array([np.sum(pool[A] * pool[B])]))
+            left = np.conj(pool[A]) if k == "dotc" else pool[A]
+            v[out] = cast(np.array([np.sum(left * pool[B])]))
         elif k == "ddiv":
             _, a, A, D, cpf, C = s
             m[C] = cast(a * (m[A] / m[D]) + cpf * m[C])
+        elif k == "vdecl":
+            pass
         elif k == "loop":
             _, n, body = s
             for _ in range(n):
@@ -1025,6 +1054,8 @@ def _emit_primitive(s, m, v, t):
     elif k == "i3axpy":
         _, a, src, T, kk, r0, r1, c0, c1 = s
         einsums.linalg.axpy(a, m[src], cg.view_indexed(t[T], [(1, r0, r1), (1, c0, c1), (2, kk, 0)]))
+    elif k == "vdecl":
+        _ref_tensor(s[1], m, t)
     elif k == "xeinsum":
         _, spec, op, ab, Aref, Bref, cpf, Cref, ca, cb = s
         lhs, rhs = spec.split("<-")
@@ -1035,11 +1066,12 @@ def _emit_primitive(s, m, v, t):
         _, kind, op, a, src, cpf, C = s
         pool = m if kind == "m" else t
         letters = ",".join(_APERM_LETTERS[kind])
+        a = _dtype_scalar(a, np.asarray(pool[C]).dtype)
         einsums.permute(f"{letters} <- {operator_prefix(op)}{letters}", pool[C], pool[src], c_pf=cpf, a_pf=a)
-    elif k == "dot":
+    elif k in ("dot", "dotc"):
         _, kind, out, A, B = s
         pool = m if kind == "m" else t
-        einsums.linalg.dot(v[out], pool[A], pool[B])
+        (einsums.linalg.dotc if k == "dotc" else einsums.linalg.dot)(v[out], pool[A], pool[B])
     elif k == "ddiv":
         _, a, A, D, cpf, C = s
         einsums.linalg.direct_division(a, m[A], m[D], cpf, m[C])
@@ -1047,7 +1079,18 @@ def _emit_primitive(s, m, v, t):
         raise AssertionError(f"not a primitive: {k!r}")
 
 
+#: The views the current capture run shares, by reference; None outside ``build_cg``.
+_SHARED_VIEWS = None
+
+
 def _ref_tensor(ref, m, t):
+    if ref[0] in ("mvs", "mts"):
+        fresh = ("mv",) + ref[1:] if ref[0] == "mvs" else ("mt", ref[1])
+        if _SHARED_VIEWS is None:
+            return _ref_tensor(fresh, m, t)
+        if ref not in _SHARED_VIEWS:
+            _SHARED_VIEWS[ref] = _ref_tensor(fresh, m, t)
+        return _SHARED_VIEWS[ref]
     if ref[0] == "t":
         return t[ref[1]]
     if ref[0] == "m":
@@ -1059,6 +1102,7 @@ def _ref_tensor(ref, m, t):
 
 
 def build_cg(stmts, graph, m, v, t, tag):
+    global _SHARED_VIEWS
     i = 0
     n = len(stmts)
     while i < n:
@@ -1067,9 +1111,14 @@ def build_cg(stmts, graph, m, v, t, tag):
             run.append(stmts[i])
             i += 1
         if run:
-            with cg.capture(graph):
-                for s in run:
-                    _emit_primitive(s, m, v, t)
+            # A shared view lives for one capture run: its statements name one id.
+            _SHARED_VIEWS = {}
+            try:
+                with cg.capture(graph):
+                    for s in run:
+                        _emit_primitive(s, m, v, t)
+            finally:
+                _SHARED_VIEWS = None
         if i < n:
             s = stmts[i]
             i += 1
@@ -2235,6 +2284,17 @@ def _motif_antisym_fold(rng):
     """
     n = int(rng.choice(DIMS[1:]))
     op = _gen_rank2_operator(rng)
+    # A conjugated dot and complex operator scales come from a spawned generator,
+    # which leaves the parent's stream where it was, so the programs drawn
+    # before they existed are drawn unchanged. The fold scales by conj(alpha)
+    # out of the conjugated operand of a dotc and by alpha out of the other.
+    variant = rng.spawn(1)[0]
+
+    def complex_scale(stmt):
+        if stmt[0] != "aperm" or variant.random() >= 0.3:
+            return stmt
+        return stmt[:3] + (("cx", _scalar(variant), _scalar(variant)),) + stmt[4:]
+
     # A source is sometimes a matrix other statements write, and a quarter of
     # the time one is rescaled between the operators and the dot. The fold
     # repoints the dot at the source, so it must see that write
@@ -2252,9 +2312,9 @@ def _motif_antisym_fold(rng):
     # The folded operand is always a permute: the pass folds only that form.
     # Now and then a destination prefactor: the output is no longer the
     # operator's value, so the fold must decline.
-    stmts = [("aperm", "m", op, _unit_or_scalar(rng), src_v, 1.0 if rng.random() < 0.1 else 0.0, V)]
+    stmts = [complex_scale(("aperm", "m", op, _unit_or_scalar(rng), src_v, 1.0 if rng.random() < 0.1 else 0.0, V))]
     src_w = _xm(rng, "anti", (n, n)) if rng.random() < 0.5 else _xm(rng, "linsrc", (n, n))
-    stmts.insert(0, _antisym_producer(rng, op, n, src_w, W))
+    stmts.insert(0, complex_scale(_antisym_producer(rng, op, n, src_w, W)))
     if rng.random() < 0.25:
         stmts.append(("scale", _scalar(rng), src_v if rng.random() < 0.7 else src_w))
     other = W
@@ -2262,7 +2322,7 @@ def _motif_antisym_fold(rng):
         stmts.append(("ddiv", 1.0 if rng.random() < 0.5 else _scalar(rng), W, _xm(rng, "sym", (n, n)), 0.0, Wd))
         other = Wd
     pair = (other, V) if rng.random() < 0.5 else (V, other)
-    stmts.append(("dot", "m", out) + pair)
+    stmts.append(("dotc" if variant.random() < 0.4 else "dot", "m", out) + pair)
     return stmts
 
 
@@ -2353,6 +2413,24 @@ def _motif_symacc(rng):
     a1 = ("axpby", s1, tmp, 1.0, r2)
     p = ("perm", 1.0, 0.0, tmp, tmpP)
     a2 = ("axpby", s2, tmpP, 1.0, r2)
+    # The variants draw from a spawned generator, which leaves the parent's stream where it was,
+    # so the programs drawn before they existed are drawn unchanged. The transpose is sometimes
+    # scaled, and sometimes an antisymmetrizer P(i/j) with a scale that is complex on a complex
+    # pool: the folded permute carries both. A tenth of the time both halves accumulate into a
+    # block of a larger matrix through a view, which the pass leaves alone.
+    variant = rng.spawn(1)[0]
+    roll = variant.random()
+    if roll < 0.3:
+        scale = _unit_or_scalar(variant) if variant.random() < 0.6 else ("cx", _scalar(variant), _scalar(variant))
+        p = ("aperm", "m", _gen_rank2_operator(variant), scale, tmp, 0.0, tmpP)
+    elif roll < 0.5:
+        p = ("perm", _scalar(variant), 0.0, tmp, tmpP)
+    if variant.random() < 0.1:
+        block = _view_ref(variant, (n, n), (A, B, tmp, tmpP))
+        if block is not None:
+            _, M, r0, r1, c0, c1 = block
+            a1 = ("vaxpy", s1, tmp, M, r0, r1, c0, c1)
+            a2 = ("vaxpy", s2, tmpP, M, r0, r1, c0, c1)
     orders = ([e, a1, p, a2], [e, p, a1, a2], [e, p, a2, a1])
     stmts = list(orders[int(rng.integers(0, len(orders)))])
     if rng.random() < 0.15:
@@ -2389,7 +2467,40 @@ def _motif_lccf(rng):
     stmts = [("leinsum", p, _scalar(rng), vec, T, first_cpf if i == 0 else 1.0, C) for i, p in enumerate(pats)]
     if rng.random() < 0.15:
         stmts.insert(1, ("loop", int(rng.integers(1, 3)), [("scale", _scalar(rng), C)]))
+    # The variant draws from a spawned generator, which leaves the parent's stream where it
+    # was, so every program the corpus drew before it existed is drawn unchanged.
+    variant = rng.spawn(1)[0]
+    if variant.random() < 0.4:
+        return _motif_lccf_views(variant) or stmts
     return stmts
+
+
+def _motif_lccf_views(rng):
+    """``C = c C + a A B + b A B^T`` on matrices, with its operands named through views.
+
+    The same fold on the shared operand A and the folded operand B, each a block of a user
+    matrix, B sometimes the transpose view of one, and C sometimes a view of its own ``lccfout``
+    slot, which the fused contraction writes through. Each operand is one view object for both
+    statements (``mvs``/``mts``), since the fold groups on operand ids. None when the pool runs
+    short.
+    """
+    n = _d(rng, (2, 3))
+    C = _xm(rng, "lccfout", (n, n))
+    A = _view_ref(rng, (n, n)) if rng.random() < 0.6 else ("m", _pick_mat(rng, (n, n)))
+    roll = rng.random()
+    B = (_view_ref(rng, (n, n)) if roll < 0.45 else _transposed_ref(rng, (n, n)) if roll < 0.7
+         else ("m", _pick_mat(rng, (n, n))))
+    if C is None or A is None or B is None or A[1] is None or B[1] is None:
+        return None
+    shared = {"mv": "mvs", "mt": "mts", "m": "m"}
+    A, B = (shared[A[0]],) + A[1:], (shared[B[0]],) + B[1:]
+    Cref = ("mvs", C, 0, n, 0, n) if rng.random() < 0.4 else ("m", C)
+    specs = ["ij <- ik ; kj", "ij <- ik ; jk"]
+    if rng.random() < 0.5:
+        specs.reverse()
+    first_cpf = [0.0, 1.0, _scalar(rng)][int(rng.integers(0, 3))]
+    return [("xeinsum", spec, None, _scalar(rng), A, B, first_cpf if i == 0 else 1.0, Cref, False, False)
+            for i, spec in enumerate(specs)]
 
 
 def _motif_distributive(rng):
@@ -2439,7 +2550,72 @@ def _distributive_group(rng, ni, nj, C):
         write = _view_write(rng, M, shape)
         if write is not None:
             stmts.insert(int(rng.integers(1, len(stmts))), write)
+    # Drawn from a spawned generator, as _motif_chain's variants are, so programs drawn before
+    # these existed stay as they were.
+    variant = rng.spawn(1)[0]
+    if variant.random() < 0.35:
+        stmts = _distributive_through_views(variant, stmts, shared_left, sa, sb)
+    if variant.random() < 0.2:
+        stmts = _distributive_repeated(variant, stmts, shared, others, shared_left, sa if shared_left else sb,
+                                       sb if shared_left else sa)
     return stmts
+
+
+def _distributive_through_views(rng, stmts, shared_left, sa, sb):
+    """@p stmts with the operands named through views, read by the axpys that build the sum.
+
+    Every view is one object for all its statements (``mvs``), taken ahead of the group
+    (``vdecl``), since the factoring groups on operand ids and reads a View node between two
+    members as a write of the parent. The shared operand is sometimes a whole-extent view of its
+    slot; each summed operand is a view of its own slot, or a block of a user matrix big enough.
+    Only reads: the output stays the ``dfout`` slot itself.
+    """
+    shared_view = rng.random() < 0.5
+    out = []
+    views = []
+    for st in stmts:
+        if st[0] != "einsum":
+            out.append(st)
+            continue
+        _, spec, ab, A, B, cpf, C, ca, cb = st
+        refs = []
+        for M, shape, is_shared in ((A, sa, shared_left), (B, sb, not shared_left)):
+            if is_shared:
+                refs.append(("mvs", M, 0, shape[0], 0, shape[1]) if shared_view else ("m", M))
+            elif rng.random() < 0.7:
+                block = _view_ref(rng, shape) if rng.random() < 0.3 else None
+                refs.append(("mvs",) + block[1:] if block else ("mvs", M, 0, shape[0], 0, shape[1]))
+            else:
+                refs.append(("m", M))
+        views += [r for r in refs if r[0] == "mvs" and r not in views]
+        out.append(("xeinsum", spec, None, ab, refs[0], refs[1], cpf, ("m", C), ca, cb))
+    return [("vdecl", r) for r in views] + out
+
+
+def _distributive_repeated(rng, stmts, shared, others, shared_left, s_shape, o_shape):
+    """@p stmts, then the same sum into another ``dfout`` slot, sometimes after a write to a summed operand.
+
+    The second group sums the operands the first did with the same prefactors, so the pass
+    reuses the first group's sum; a write through a view of a summed operand between them must
+    stop the reuse (``test_factoring_does_not_reuse_a_sum_across_a_write_through_a_view``).
+    """
+    first = [st for st in stmts if st[0] in ("einsum", "xeinsum")]
+    C = first[0][6] if first[0][0] == "einsum" else first[0][7][1]
+    C2 = _xm(rng, "dfout", ALLPASS_XM_SLOTS[C - ALLPASS_XM_BASE][0], (C,))
+    if C2 is None:
+        return stmts
+    second = []
+    for st in first:
+        if st[0] == "einsum":
+            second.append(st[:5] + (1.0, C2) + st[7:])
+        else:
+            second.append(st[:6] + (1.0, ("m", C2)) + st[8:])
+    between = []
+    if rng.random() < 0.5:
+        write = _view_write(rng, others[int(rng.integers(0, len(others)))], o_shape)
+        if write is not None:
+            between.append(write)
+    return stmts + between + second
 
 
 def _view_write(rng, M, shape):
@@ -2499,7 +2675,15 @@ def _respelled(rng, stmts):
 
 
 def _motif_chain(rng):
-    """``R = (A B) C`` through a (12, 12) intermediate, where ``A (B C)`` is far cheaper."""
+    """``R = (A B) C`` through a (12, 12) intermediate, where ``A (B C)`` is far cheaper.
+
+    A quarter of the time every operand but the intermediate is named through a
+    whole-extent view, which the re-bracketed GEMMs read through its impl like
+    any other operand. A tenth of the time R is A itself: left to right the first
+    product reads A before the second overwrites it, and ``A (B C)`` would read
+    A in the GEMM that writes it
+    (``test_contraction_planning_keeps_a_chain_that_writes_its_own_leaf``).
+    """
     s, L = ALLPASS_BS, ALLPASS_BL
     srcs = _pick_distinct(lambda exclude=(): _xm(rng, "cpsrc", (L, s), exclude), 2)
     tall = None if srcs is None else srcs + [_xm(rng, "cpout", (L, s))]
@@ -2508,11 +2692,25 @@ def _motif_chain(rng):
     if tall is None:
         return _fallback(rng)
     A, C, R = tall
+    # The variants draw from a spawned generator, which leaves the parent's stream where it
+    # was, so every program the corpus drew before they existed is drawn unchanged.
+    variant = rng.spawn(1)[0]
+    if variant.random() < 0.1:
+        R = A
     cpf = 0.0 if rng.random() < 0.8 else 1.0
+    first_ab = 1.0 if rng.random() < 0.7 else _scalar(rng)
+    stmts = [("einsum", "tv <- tu ; uv", first_ab, A, B, 0.0, T, False, False),
+             ("einsum", "tw <- tv ; vw", _scalar(rng), T, C, cpf, R, False, False)]
     # Letters t, u, v, w, or the reused spelling ``_respelled`` draws.
-    return _respelled(rng, [
-        ("einsum", "tv <- tu ; uv", 1.0 if rng.random() < 0.7 else _scalar(rng), A, B, 0.0, T, False, False),
-        ("einsum", "tw <- tv ; vw", _scalar(rng), T, C, cpf, R, False, False)])
+    stmts = _respelled(rng, stmts)
+    if variant.random() < 0.25:
+        def ref(M, shape):
+            return ("mv", M, 0, shape[0], 0, shape[1]) if variant.random() < 0.7 else ("m", M)
+
+        (_, s1, a1, _, _, _, _, _, _), (_, s2, a2, _, _, _, _, _, _) = stmts
+        stmts = [("xeinsum", s1, None, a1, ref(A, (L, s)), ref(B, (s, L)), 0.0, ("m", T), False, False),
+                 ("xeinsum", s2, None, a2, ("m", T), ref(C, (L, s)), cpf, ref(R, (L, s)), False, False)]
+    return stmts
 
 
 #: Each motif with its draw weight. The folds and the re-bracketing motifs

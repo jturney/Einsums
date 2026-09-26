@@ -88,6 +88,14 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - Interior outputs of the chain must be graph-owned, unaliased intermediates
  *   read by no node outside the chain; a user-visible or externally-read interior
  *   value makes the eliminated write observable, so the chain is declined.
+ * - The chain's final output must not share a buffer with any leaf. The original
+ *   order reads an early member's leaves before the last member writes, and a
+ *   re-parenthesized tree can read one of them in the GEMM that writes, as in
+ *   `A = (A*B)*L`. Views of one parent share a buffer even where their elements
+ *   are disjoint, so such a chain is declined too.
+ * - Leaves and the final output may be views: the emitted GEMM reads every operand
+ *   through its impl and its strides, and falls back to a strided loop when an
+ *   operand has no BLAS reading.
  *
  * @par Future improvements
  * - Flatten higher-rank operands into a rank-2 `(M,K)` reading so those chains
@@ -124,11 +132,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      */
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
     /// @copydoc OptimizerPass::understood_features
-    /// Not views or redirected slots: the outside-reader scan of a chain's interior compares ids.
-    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
-        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
-               NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
-    }
+    /// Every feature: the members of a chain are adjacent, the interior, leaf and outside-reader checks compare the buffers
+    /// operands land in, and the emitted GEMMs read each operand through its impl, so a view reaches the storage it names.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
     /// @copydoc OptimizerPass::tier
     /// Re-parenthesizing a GEMM chain is matrix-chain associativity, which is exact in the algebra and reorders every

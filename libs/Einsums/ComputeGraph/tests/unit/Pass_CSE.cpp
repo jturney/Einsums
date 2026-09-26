@@ -7,6 +7,7 @@
 /// @brief Unit tests for Common Subexpression Elimination.
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
@@ -831,4 +832,50 @@ TEST_CASE("CSE - an axpy consumer of an eliminated duplicate reads the survivor"
         }
     }
     REQUIRE(magnitude > 1e-6); // guard against the all-zeros false pass
+}
+
+TEST_CASE("CSE - merges duplicates that read a view whose bounds are parameters", "[ComputeGraph][CSE][Views]") {
+    // A view's bounds move only where its View node runs, and that node precedes both readers.
+    // Rebinding the parameter between the two products changes nothing either one reads, so
+    // they are one computation over slab 1 of T and the second is merged into the first.
+    auto                  Tt = create_random_tensor<double>("T", 3, 4, 4);
+    RuntimeTensor<double> T(Tt);
+    auto                  B  = create_random_tensor<double>("B", 4, 4);
+    auto                  R1 = create_zero_tensor<double>("R1", 4, 4);
+    auto                  R2 = create_zero_tensor<double>("R2", 4, 4);
+
+    cg::Graph graph("cse_param_view");
+    graph.params_ptr()->set("k", 1);
+    auto &K1 = graph.create_tensor<double, 2>("K1", 4, 4);
+    auto &K2 = graph.create_tensor<double, 2>("K2", 4, 4);
+    {
+        cg::CaptureGuard const guard(graph);
+        auto                  &slab = cg::view_runtime(T, {cg::ViewAxis::drop("k"), cg::ViewAxis::full(), cg::ViewAxis::full()});
+        cg::einsum("ik;kj->ij", 0.0, &K1, 1.0, slab, B);
+        cg::write_param("k", cg::BoundExpr(2));
+        cg::einsum("ik;kj->ij", 0.0, &K2, 1.0, slab, B);
+        cg::axpby(1.0, K1, 0.0, &R1);
+        cg::axpby(1.0, K2, 0.0, &R2);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::CSE>();
+    CHECK(modified);
+    CHECK(pass.num_eliminated() == 1);
+
+    graph.execute();
+
+    auto S = create_zero_tensor<double>("S", 4, 4);
+    for (size_t i = 0; i < 4; i++) {
+        for (size_t j = 0; j < 4; j++) {
+            S(i, j) = Tt(1, i, j);
+        }
+    }
+    auto Rr = create_zero_tensor<double>("Rr", 4, 4);
+    reference_einsum("ij <- ik ; kj", 0.0, &Rr, 1.0, S, B);
+    for (size_t i = 0; i < 4; i++) {
+        for (size_t j = 0; j < 4; j++) {
+            CHECK(R1(i, j) == Catch::Approx(Rr(i, j)).margin(1e-12));
+            CHECK(R2(i, j) == Catch::Approx(Rr(i, j)).margin(1e-12));
+        }
+    }
 }

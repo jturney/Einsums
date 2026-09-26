@@ -3,22 +3,17 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-#include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
 #include <Einsums/ComputeGraph/EinsumSpec.hpp>
 #include <Einsums/ComputeGraph/EscapeAnalysis.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
 #include <Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp>
-#include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/Errors/ThrowException.hpp>
-#include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <fmt/format.h>
 
 #include <algorithm>
-#include <complex>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -134,13 +129,11 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
     // A safely-foldable site (interference-clean). Collected in a first pass so
     // the rewrite does not mutate `nodes` mid-scan.
     struct Site {
-        size_t                   permute_idx;
-        size_t                   axpby2_idx;
-        TensorId                 tmp;
-        TensorId                 r2;
-        PrefactorScalar          s2; // axpby2's alpha: r2 += s2 * P(tmp)
-        std::vector<std::string> a_indices;
-        std::vector<std::string> c_indices;
+        size_t          permute_idx;
+        size_t          axpby2_idx;
+        TensorId        tmp;
+        TensorId        r2;
+        PrefactorScalar s2; // axpby2's alpha: r2 += s2 * P(tmp)
     };
     std::vector<Site> sites;
 
@@ -177,9 +170,10 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
 
         // The fold stops writing tmpP, so tmpP must be graph-owned scratch nothing outside this
         // graph can observe: a caller's tensor, or one a loop body or branch reads, would be left
-        // holding a stale value.
+        // holding a stale value. It must also be its own storage, not a view or a redirected slot:
+        // those land in a buffer other ids read.
         if (auto const *handle = graph.find_tensor(graph.buffer_of(tmpP));
-            handle == nullptr || handle->tensor_ptr == nullptr ||
+            graph.buffer_of(tmpP) != tmpP || handle == nullptr || handle->tensor_ptr == nullptr ||
             !(handle->is_intermediate || inherited_scratch.contains(handle->tensor_ptr)) || external.contains(handle->tensor_ptr) ||
             escapes.touched_by_subtree(tmpP)) {
             note_skip("the permuted result is not graph-owned scratch this graph alone reads", fmt::format("permute #{}", pi));
@@ -229,6 +223,12 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
         TensorId const r2 = axpby2.outputs[0];
         if (!is_accumulating_axpby(axpby2, tmpP, r2)) {
             note_skip("consumer of the permuted result is not an accumulating axpy/axpby", fmt::format("node #{} '{}'", a2, axpby2.label));
+            continue;
+        }
+        // The fold reads tmp in the node that writes r2, where the program read tmp only to write
+        // tmpP. A tmp laid over r2's storage (a view of it) would be read while it is overwritten.
+        if (graph.buffer_of(tmp) == graph.buffer_of(r2)) {
+            note_skip("the permute source shares storage with the output", fmt::format("permute #{}", pi));
             continue;
         }
         if (!understands(graph, axpby2)) {
@@ -364,80 +364,67 @@ bool SymmetrizedAccumulation::run_one(Graph &graph, std::unordered_set<void cons
                       fmt::format("node #{} '{}'", a2, axpby2.label));
             continue;
         }
-        sites.push_back(Site{pi, a2, tmp, r2, live_alpha(*ad), pd->a_indices, pd->c_indices});
+        sites.push_back(Site{pi, a2, tmp, r2, live_alpha(*ad)});
     }
 
-    // ── Rewrite (Level 1): fold each runtime-tensor site by making the permute
-    // accumulate directly into r2 (r2 += s2 * P(tmp)) and dropping axpby2 + tmpP.
+    // ── Rewrite (Level 1): fold each site by making the permute accumulate directly into r2
+    // (r2 += s2 * alpha * P(tmp)) and dropping axpby2 + tmpP.
+    //
+    // The folded node is built by the library's own permute factory from one descriptor, so its
+    // executor applies exactly what the descriptor says: the permute's operators, both scalars,
+    // and operands reached through their impls, whatever tensor type or view they are. The
+    // operator is linear and its signs are real, so `tmpP = alpha P(tmp)` then `r2 += s2 tmpP` is
+    // `r2 += (s2 alpha) P(tmp)`; the executor applies the destination's one to the first term only.
     std::vector<bool> remove(nodes.size(), false);
-    auto const        anchor = graph.anchor();
 
     for (auto const &s : sites) {
-        // Runtime-tensor / uniform-dtype gate (typed captures fold-out; the
-        // executor casts to GeneralRuntimeTensor<T>, which would be UB on a
-        // typed Tensor<T, Rank>).
         auto const *th_tmp = graph.find_tensor(s.tmp);
         auto const *th_r2  = graph.find_tensor(s.r2);
         if (th_tmp == nullptr || th_r2 == nullptr) {
             note_skip("operand tensor is not registered in the graph", fmt::format("permute #{}", s.permute_idx));
             continue;
         }
-        if (!th_tmp->is_runtime || !th_r2->is_runtime) {
-            note_skip(
-                "operands are statically-typed tensors, not RuntimeTensor - this fold only applies to runtime-ranked operands",
-                fmt::format("permute #{}: tmp.is_runtime={}, r2.is_runtime={}", s.permute_idx, th_tmp->is_runtime, th_r2->is_runtime));
-            continue;
-        }
         if (th_tmp->dtype != th_r2->dtype) {
             note_skip("operands have mixed dtypes", fmt::format("permute #{}", s.permute_idx));
             continue;
         }
-        // Only fold a pure permutation (alpha == 1); a scaled permute would need
-        // s2 * alpha folded into the accumulate, deferred until it appears.
-        auto *pd = nodes[s.permute_idx].op_data.get_if<PermuteDescriptor>();
-        if (pd == nullptr || !is_one(pd->params != nullptr ? pd->params->alpha : PrefactorScalar{pd->alpha})) {
-            note_skip("permute is scaled (alpha != 1)", fmt::format("permute #{}", s.permute_idx));
+        // The factory reaches both operands through their rank-erased impls; only a tile-wise
+        // sparse tensor has none.
+        if (!th_tmp->impl_fn || !th_r2->impl_fn) {
+            note_skip("an operand has no rank-erased impl", fmt::format("permute #{}", s.permute_idx));
             continue;
         }
-        auto const dtype = th_r2->dtype;
-
-        ParsedPermuteSpec pspec;
-        pspec.c_indices = s.c_indices;
-        pspec.a_indices = s.a_indices;
-        pspec.raw       = pspec.render();
-
-        TensorId const        r2  = s.r2;
-        TensorId const        tmp = s.tmp;
-        PrefactorScalar const s2  = s.s2;
-
-        auto exec = [anchor, r2, tmp, pspec, s2, dtype]() {
-            auto build = [&]<typename T>(T /*tag*/) {
-                using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
-                // live_tensor_ptr, not tensor_ptr: both are captured operands,
-                // and tensor_ptr names the caller's wrapper, which capture
-                // allows to be destroyed before execute() because it adopted
-                // the storage into a stand-in.
-                auto *dst = static_cast<RT *>(anchor->graph().live_tensor_ptr(r2));
-                auto *src = static_cast<RT *>(anchor->graph().live_tensor_ptr(tmp));
-                dispatch::string_permute<RT, RT>(pspec, T{1}, dst, as<T>(s2), *src); // r2 = 1*r2 + s2*P(tmp)
-            };
-            detail::dispatch_scalar_type(dtype, build);
-        };
-
-        Node &perm   = nodes[s.permute_idx];
-        perm.execute = std::move(exec);
-        perm.inputs  = {tmp, r2}; // accumulate: r2 is read (beta = 1) - RMW convention
-        perm.outputs = {r2};
-        perm.label   = "symacc: r2 += s2 * P(tmp)";
-        // The descriptor says what the executor now does, r2 = 1*r2 + s2*P(tmp), in the snapshot
-        // AND the live params: a later pass reads the live scalars, and one that still saw alpha 1
-        // and beta 0 would take this accumulation for a plain overwrite.
-        pd->alpha = as<std::complex<double>>(s2);
-        pd->beta  = 1.0;
-        if (pd->params != nullptr) {
-            pd->params->alpha = s2;
-            pd->params->beta  = PrefactorScalar{double{1}};
+        auto const *pd = nodes[s.permute_idx].op_data.get_if<PermuteDescriptor>();
+        if (pd == nullptr) {
+            continue;
         }
+        PrefactorScalar const alpha = pd->params != nullptr
+                                          ? pd->params->alpha
+                                          : (pd->alpha.imag() == 0.0 ? PrefactorScalar{pd->alpha.real()} : PrefactorScalar{pd->alpha});
+        // A real destination cannot take an imaginary scale, and the two nodes as captured refuse
+        // one at execute. Their product can be real (i times i), so each is asked on its own: a
+        // fold must not turn that refusal into an answer.
+        bool const complex_destination =
+            th_r2->dtype == packed_gemm::ScalarType::Complex64 || th_r2->dtype == packed_gemm::ScalarType::Complex128;
+        if (!complex_destination && (!is_real_valued(s.s2) || !is_real_valued(alpha))) {
+            note_skip("a real destination would be scaled by a complex factor", fmt::format("permute #{}", s.permute_idx));
+            continue;
+        }
+        PrefactorScalar const factor = multiply_prefactors(s.s2, alpha);
+
+        ParsedPermuteSpec spec;
+        spec.c_indices = pd->c_indices;
+        spec.a_indices = pd->a_indices;
+        spec.operators = pd->operators;
+        spec.raw       = spec.render();
+
+        Node  folded = graph.make_permute_node(s.tmp, s.r2, spec, factor, PrefactorScalar{double{1}}, "symacc: r2 += s2 * P(tmp)");
+        Node &perm   = nodes[s.permute_idx];
+        perm.execute = std::move(folded.execute);
+        perm.op_data = std::move(folded.op_data);
+        perm.inputs  = std::move(folded.inputs);
+        perm.outputs = std::move(folded.outputs);
+        perm.label   = std::move(folded.label);
 
         remove[s.axpby2_idx] = true; // axpby2 folded into the permute
         ++_num_rewritten;

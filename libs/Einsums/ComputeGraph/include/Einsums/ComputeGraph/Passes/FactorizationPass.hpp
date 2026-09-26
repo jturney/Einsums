@@ -116,7 +116,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// The region default less views, redirected slots and mixed precision: its flattening checks interference by id, and a carried
     /// elementwise node is rebuilt in the destination's type.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
-        return default_region_features.without(NodeFeature::Views | NodeFeature::RedirectedSlot | NodeFeature::MixedPrecision);
+        return default_region_features.without(NodeFeature::Views | NodeFeature::WritesView | NodeFeature::RedirectedSlot |
+                                               NodeFeature::MixedPrecision);
     }
 
     /// @copydoc OptimizerPass::tier

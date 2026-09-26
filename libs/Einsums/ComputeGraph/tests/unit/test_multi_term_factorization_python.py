@@ -859,6 +859,55 @@ def test_a_definition_whose_operand_is_rewritten_before_its_consumer_stays_put()
     assert_close(np.asarray(R), (a @ first) @ v, dtype="float64")
 
 
+@pytest.mark.parametrize("alias", ["same", "view"])
+def test_a_definition_whose_operand_its_consumer_overwrites_stays_put(alias):
+    """``A = (A B) C``: the consumer's own write is a write the inlined read may not travel past.
+
+    Left to right, ``T = A B`` reads A before ``A = T C`` overwrites it. Inlined and
+    re-bracketed as ``A (B C)``, A is read by the contraction that writes it. Defends
+    against the travel check stopping one statement short of the consumer: with A itself
+    the rebuilt contraction refused to run (the output overlaps an input), and with
+    the result written into one view of a tensor while the operand is an overlapping view
+    of it, two ids the check compared, the numbers were off by 70.
+    """
+    rng = np.random.default_rng(113)
+    m, k = 12, 3
+    a, b, c = rng.standard_normal((m, k)), rng.standard_normal((k, m)), rng.standard_normal((m, k))
+    parent = np.zeros((m + 1, k))
+    parent[1:] = a
+    if alias == "same":
+        expected = a @ b @ c
+    else:
+        expected = parent.copy()
+        expected[:m] = a @ b @ c
+
+    graph = cg.Graph("mtf-consumer-overwrites-an-operand")
+    B, C = _tensor("B", b, "float64"), _tensor("C", c, "float64")
+    if alias == "same":
+        result = _tensor("A", a, "float64")
+        out = leaf = result
+    else:
+        result = _tensor("P", parent, "float64")
+        out, leaf = result[0:m, 0:k], result[1:m + 1, 0:k]
+    T = graph.declare_tensor("T", [m, m], intermediate=True, dtype="float64")
+    with cg.capture(graph):
+        einsums.einsum("tv <- tu ; uv", T, leaf, B)
+        einsums.einsum("tw <- tv ; vw", out, T, C)
+
+    mtf = cg.MultiTermFactorization()
+    mtf.set_search_enabled(True)
+    pm = cg.PassManager()
+    pm.set_optimizer_budget(0)  # see _NO_ALLOWANCE
+    pm.add(mtf)
+    pm.add(cg.Materialization())
+    pm.run(graph)
+    assert mtf.num_inlined == 0 and mtf.num_rebracketed == 0
+    assert any("cannot travel there" in reason for reason, _count in mtf.skip_reasons), mtf.skip_reasons
+
+    graph.execute()
+    assert_close(np.asarray(result), expected, dtype="float64")
+
+
 def test_a_region_holding_a_permutation_operator_is_not_rewritten_without_it():
     """The algebra a region is raised into has no term for P(...), so raising an antisymmetrized
     contraction described only its identity term. The CCSD tau pair below, with P(i/j) P(a/b) on

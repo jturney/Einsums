@@ -66,9 +66,9 @@ class EINSUMS_EXPORT CommunicationScheduling : public OptimizerPass {
     /// @copydoc OptimizerPass::understood_features
     /// Every feature today: it swaps a synchronous allreduce for the asynchronous one over the same tensor.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
-        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::Conjugation |
-               NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow |
-               NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::WritesView |
+               NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped |
+               NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
     }
     bool run(Graph &graph) override;
     void reset_stats() override;

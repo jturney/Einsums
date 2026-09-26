@@ -80,7 +80,7 @@ bool grouped(OpKind kind) {
     }
 }
 
-constexpr std::array<std::pair<NodeFeature, std::string_view>, 10> kNames{{
+constexpr std::array<std::pair<NodeFeature, std::string_view>, 11> kNames{{
     {NodeFeature::PermutationOperators, "permutation operators"},
     {NodeFeature::Views, "views"},
     {NodeFeature::Conjugation, "conjugation"},
@@ -91,6 +91,7 @@ constexpr std::array<std::pair<NodeFeature, std::string_view>, 10> kNames{{
     {NodeFeature::Tiled, "tiled operand"},
     {NodeFeature::RawScalar, "bare scalar"},
     {NodeFeature::RedirectedSlot, "redirected slot"},
+    {NodeFeature::WritesView, "view write"},
 }};
 
 } // namespace
@@ -114,7 +115,7 @@ NodeFeatures features_of(Graph const &graph, Node const &node) {
     }
 
     std::set<packed_gemm::ScalarType> dtypes;
-    auto const                        operand = [&](TensorId id) {
+    auto const                        operand = [&](TensorId id, bool written) {
         if (graph.slot_redirects().contains(id)) {
             out = out | NodeFeature::RedirectedSlot;
         }
@@ -126,6 +127,9 @@ NodeFeatures features_of(Graph const &graph, Node const &node) {
         // alone misses it; the handle knows it is a view regardless.
         if (handle->aliases != 0 || handle->is_tensor_view) {
             out = out | NodeFeature::Views;
+            if (written) {
+                out = out | NodeFeature::WritesView;
+            }
         }
         if (handle->is_tiled) {
             out = out | NodeFeature::Tiled;
@@ -138,10 +142,10 @@ NodeFeatures features_of(Graph const &graph, Node const &node) {
         }
     };
     for (TensorId const id : node.inputs) {
-        operand(id);
+        operand(id, false);
     }
     for (TensorId const id : node.outputs) {
-        operand(id);
+        operand(id, true);
     }
     if (dtypes.size() > 1) {
         out = out | NodeFeature::MixedPrecision;

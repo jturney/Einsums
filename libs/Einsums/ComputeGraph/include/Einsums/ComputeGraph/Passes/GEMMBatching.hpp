@@ -127,9 +127,9 @@ class EINSUMS_EXPORT GEMMBatching : public OptimizerPass {
     /// @copydoc OptimizerPass::understood_features
     /// Every feature today: operators and conjugation are declined, and the interference gate compares buffers.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
-        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::Conjugation |
-               NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow |
-               NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::WritesView |
+               NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped |
+               NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
     }
 
     /// @copydoc OptimizerPass::phase

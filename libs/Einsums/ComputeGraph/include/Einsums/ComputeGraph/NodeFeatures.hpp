@@ -33,16 +33,18 @@ struct Node;
 
 /// @brief One thing a node can carry that a pass must know about to rewrite it correctly.
 enum class NodeFeature : std::uint32_t {
-    PermutationOperators = 1U << 0, ///< Applies P(..) to its result: a signed sum of permuted terms.
-    Views                = 1U << 1, ///< Names a view: a tensor laid over part of another's storage.
-    Conjugation          = 1U << 2, ///< Conjugates an operand.
-    ComplexPrefactor     = 1U << 3, ///< Scales by a prefactor with a nonzero imaginary part.
-    MixedPrecision       = 1U << 4, ///< Its operands hold different element types.
-    Grouped              = 1U << 5, ///< Computes a family of members in one node.
-    ControlFlow          = 1U << 6, ///< Owns sub-graphs (a loop, a branch, a setup).
-    Tiled                = 1U << 7, ///< Names a tile-wise sparse tensor, which has no single buffer.
-    RawScalar            = 1U << 8, ///< Names a bare scalar written through a pointer.
-    RedirectedSlot       = 1U << 9, ///< Names a tensor whose slot a pass redirected to another's storage.
+    PermutationOperators = 1U << 0,  ///< Applies P(..) to its result: a signed sum of permuted terms.
+    Views                = 1U << 1,  ///< Names a view: a tensor laid over part of another's storage.
+    Conjugation          = 1U << 2,  ///< Conjugates an operand.
+    ComplexPrefactor     = 1U << 3,  ///< Scales by a prefactor with a nonzero imaginary part.
+    MixedPrecision       = 1U << 4,  ///< Its operands hold different element types.
+    Grouped              = 1U << 5,  ///< Computes a family of members in one node.
+    ControlFlow          = 1U << 6,  ///< Owns sub-graphs (a loop, a branch, a setup).
+    Tiled                = 1U << 7,  ///< Names a tile-wise sparse tensor, which has no single buffer.
+    RawScalar            = 1U << 8,  ///< Names a bare scalar written through a pointer.
+    RedirectedSlot       = 1U << 9,  ///< Names a tensor whose slot a pass redirected to another's storage.
+    WritesView           = 1U << 10, ///< Writes a view. Such a node carries Views as well, so a pass that understands Views
+                                     ///< and not this reads through views and leaves their writers alone.
 };
 
 /// @brief A set of @ref NodeFeature values.
@@ -88,7 +90,7 @@ class NodeFeatures {
     constexpr bool operator==(NodeFeatures const &) const = default;
 
   private:
-    static constexpr std::uint32_t kAll = (1U << 10) - 1;
+    static constexpr std::uint32_t kAll = (1U << 11) - 1;
 
     constexpr explicit NodeFeatures(std::uint32_t bits) : _bits(bits) {}
 

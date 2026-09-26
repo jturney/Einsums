@@ -43,7 +43,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * - nothing between the two nodes writing either operand.
  *
  * The rewrite repoints the contraction at the operator's SOURCE and inserts a
- * scale by @f$N@f$ on the result. The operator node is left standing;
+ * scale by @f$N\alpha@f$ on the result, with @f$\alpha@f$ the operator node's
+ * own scale (@f$B = \alpha P[G](V)@f$), conjugated when the contraction is a
+ * @c dotc and @c B is its conjugated operand. A real result under an imaginary
+ * @f$\alpha@f$ is left alone. The operator node is left standing;
  * @ref DeadNodeElimination removes it when nothing else reads it, which in the
  * toy's naive (T) is true of @c V and false of @c W, matching by construction
  * what the hand-written folded spelling does.

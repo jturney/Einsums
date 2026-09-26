@@ -62,6 +62,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   another node do not fuse even when nothing in between touches the tensor.
  * - axpby fusion requires the same source X and the same destination Y. Two different sources are a three-operand update, which
  *   no single axpby expresses. It also requires all four prefactors to share a PrefactorScalar alternative.
+ * - axpby fusion also requires X and Y to occupy different buffers. Two views of one tensor are distinct ids, and when they
+ *   overlap the first update changes the X the second one reads, which the composed scalars do not model. Disjoint views of one
+ *   parent are declined with them.
  * - `ElementTransform` is not composed: it holds an opaque callable, so two of them can only be chained, not merged.
  * - Merged scalars are plain floating-point arithmetic; no reassociation or overflow handling.
  */
@@ -74,11 +77,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
     /// @copydoc OptimizerPass::understood_features
-    /// Not views or redirected slots: two axpbys are composed on an id comparison of x and y.
-    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
-        return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::PermutationOperators | NodeFeature::ComplexPrefactor |
-               NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
-    }
+    /// Every feature: a fusion only rewrites the scalars of two adjacent nodes on the same ids, and X and Y are told apart by
+    /// buffer, so a view or a redirected slot reaches the storage the scalars already describe.
+    [[nodiscard]] std::optional<NodeFeatures> understood_features() const override { return NodeFeatures::all(); }
 
     /// @copydoc OptimizerPass::tier
     /// Folding consecutive element-wise ops multiplies their scalars, which is done once instead of once per element and lands

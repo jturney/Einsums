@@ -173,7 +173,7 @@ struct BuiltSum {
     std::vector<std::pair<TensorId, double>> identity;
     TensorId                                 t_id{0};
     std::size_t                              build_pos{0}; ///< pre-erase position its nodes are spliced at
-    std::unordered_set<TensorId>             operands;     ///< what it summed, for staleness checks
+    std::unordered_set<TensorId>             operands;     ///< the buffers it summed, for staleness checks
 };
 
 } // namespace
@@ -315,11 +315,11 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
         if (has_duplicate)
             continue;
 
-        // The rewrite redirects the non-shared operand's SLOT (keyed by tensor id)
-        // to the summed intermediate T. If the shared operand is the SAME tensor as
-        // a summed operand, they share that slot, so a self-contraction like A*A
-        // would read T for BOTH factors (T*T instead of A*T). Reject aliased groups;
-        // the slot-redirect trick cannot separate the two reads.
+        // A group whose shared operand is also a summed operand (A*A + A*B) is
+        // declined. The fused form this pass once emitted redirected the summed
+        // operand's slot to T, so both reads of A saw T (T*T instead of A*T). The
+        // explicit nodes it emits now would read A and T apart, but no test pins
+        // that case yet.
         bool shared_aliases_nonshared = false;
         for (auto const &c : candidates) {
             if (c.non_shared_input == key.shared_input_id) {
@@ -437,31 +437,6 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             continue;
         auto const &ref_handle = ref_it->second;
 
-        // The combined executor redirects the einsum's non-shared operand slot to
-        // the accumulator T, so T must be the SAME tensor kind the operands are: a
-        // runtime graph reads a GeneralRuntimeTensor at that slot, a compile-time
-        // graph a Tensor<T, Rank>. Require every summed operand to share that kind
-        // and build a matching accumulator, so make_zero/make_axpy dispatch
-        // correctly - a compile-time accumulator fed runtime operands rank-errors
-        // at execute on any Python-captured graph.
-        bool const operands_runtime = ref_handle.is_runtime;
-        bool       kinds_uniform    = true;
-        for (auto const &c : available) {
-            auto it = tensors.find(c.non_shared_input);
-            if (it == tensors.end() || it->second.is_runtime != operands_runtime) {
-                kinds_uniform = false;
-                break;
-            }
-        }
-        if (!kinds_uniform) {
-            // The accumulator this pass builds has to dispatch like its
-            // operands; a compile-time accumulator fed runtime operands
-            // rank-errors at execute.
-            note_skip("summed operands mix runtime and statically-typed tensors",
-                      fmt::format("group of {} into tensor {}", available.size(), vg.key.output_id));
-            continue;
-        }
-
         // --- Reuse a sum already built at this level ---
         // A quantity a chemist names once and consumes several times (CCSD's tau
         // feeds W_mnij, W_abef and the T2 equation) arrives here as several groups
@@ -489,18 +464,19 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             }
             // And nothing in between may rewrite a summed operand, or T holds a
             // stale value by the time we get here. Control flow hides its writes
-            // in a subgraph, so its presence in the span forfeits the reuse.
+            // in a subgraph, so its presence in the span forfeits the reuse. A
+            // node an earlier group removed counts too: that group's contraction
+            // takes its first member's place and writes the same output.
             bool usable = true;
             for (size_t k = bs.build_pos; k < first_pos && usable; k++) {
-                if (remove[k]) {
-                    continue; // subsumed by an earlier group; it will not exist
-                }
                 if (is_control_flow(nodes[k].kind)) {
                     usable = false;
                     break;
                 }
+                // By buffer: a write through a view of a summed operand changes it
+                // as surely as a write naming it.
                 for (auto out : nodes[k].outputs) {
-                    if (bs.operands.contains(out)) {
+                    if (bs.operands.contains(graph.buffer_of(out))) {
                         usable = false;
                         break;
                     }
@@ -572,8 +548,10 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             }
         }
 
-        // Create intermediate tensor T = sum of non-shared operands, of the same
-        // kind as the operands. This APPENDS an Alloc node (kept below).
+        // Create intermediate tensor T = sum of non-shared operands. This APPENDS an
+        // Alloc node (kept below). Every node built below reads and writes its
+        // operands through their rank-erased geometry, so T's kind need not match
+        // the operands', and a view operand is read through its own strides.
         TensorId    t_id{};
         std::string t_name;
         if (reuse_id) {
@@ -582,8 +560,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             t_name   = tit != tensors.end() ? tit->second.name : "?";
         } else {
             t_name             = fmt::format("_df_sum_{}", _num_groups);
-            auto create_result = operands_runtime ? graph.create_zero_runtime_tensor_dynamic(t_name, ref_handle.dtype, ref_handle.dims)
-                                                  : graph.create_tensor_dynamic(t_name, ref_handle.dtype, ref_handle.dims);
+            auto create_result = graph.create_zero_runtime_tensor_dynamic(t_name, ref_handle.dtype, ref_handle.dims);
             if (!create_result)
                 continue; // Skip this factoring group if tensor creation fails
             t_id = create_result.value().first;
@@ -660,7 +637,7 @@ bool DistributiveFactoring::factor_one_level(Graph &graph) {
             bs.t_id      = t_id;
             bs.build_pos = first_pos;
             for (auto const &c : available) {
-                bs.operands.insert(c.non_shared_input);
+                bs.operands.insert(graph.buffer_of(c.non_shared_input));
             }
             built_sums.push_back(std::move(bs));
         }

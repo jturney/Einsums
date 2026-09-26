@@ -602,14 +602,29 @@ bool MultiTermFactorization::rewrite(Graph &graph, Region const &region, TensorE
                                   expr.statements[back].target_name, sites.size(), consumer_cap));
             continue;
         }
+        // Compared by the buffers the values land in, and up to AND including the consumer: the
+        // consumer's own write lands after every read it inlines, and a re-bracketed product can
+        // read an inlined operand in the very contraction that writes the consumer's target, as
+        // `A = (A B) C` does once it is `A = A (B C)`. A view of A written while another view of
+        // it is read is the same hazard under two ids.
+        std::set<TensorId> cone_buffers;
+        for (auto const &key : cone_reads[back]) {
+            for (TensorId const id : key) {
+                cone_buffers.insert(graph.buffer_of(id));
+            }
+        }
+        auto const writes_the_cone = [&](std::size_t statement) {
+            return std::ranges::any_of(value_key(expr.statements[statement]),
+                                       [&](TensorId id) { return cone_buffers.contains(graph.buffer_of(id)); });
+        };
         bool travels = true;
         for (auto const site : sites) {
-            for (std::size_t between = back + 1; between < site && travels; between++) {
-                travels = cone_reads[back].count(value_key(expr.statements[between])) == 0;
+            for (std::size_t between = back + 1; between <= site && travels; between++) {
+                travels = !writes_the_cone(between);
             }
         }
         if (!travels) {
-            note_skip("a definition reads an operand something rewrites before its consumer, so it cannot travel there",
+            note_skip("a definition reads an operand its consumer, or something before it, rewrites, so it cannot travel there",
                       fmt::format("target '{}'", expr.statements[back].target_name));
             continue;
         }

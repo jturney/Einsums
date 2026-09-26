@@ -3,16 +3,15 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
+#include <Einsums/ComputeGraph/Detail/ErasedEinsum.hpp>
 #include <Einsums/ComputeGraph/Detail/ScalarDispatch.hpp>
+#include <Einsums/ComputeGraph/ExecutorBuilder.hpp>
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/LinearCombinationContractionFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/PassUtil.hpp>
-#include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Logging.hpp>
-#include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <algorithm>
 #include <complex>
@@ -299,34 +298,23 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
             continue;
         }
 
-        // The combine executor casts the user operands (shared, non-shared,
-        // output) to GeneralRuntimeTensor<T> of the non-shared operand's
-        // dtype. Statically-typed Tensor<T, Rank> captures produce the same
-        // handle shape, and a blind cast is type confusion (a segfault in
-        // the fused axpy); so is a mixed-dtype triple. Fold only when all
-        // three really are runtime tensors of one dtype.
-        auto const dtype     = b_handle->dtype;
-        auto const rt_dtyped = [&](TensorId tid) {
+        // L takes the folded operand's element type, and the fused contraction
+        // reads it in that operand's place, so all three must share it. Any
+        // tensor with a rank-erased geometry qualifies: the L build and the fused
+        // contraction both read their operands through it, strides included, so
+        // a view or a statically-typed tensor is as good as a runtime one.
+        auto const dtype   = b_handle->dtype;
+        auto const same_dt = [&](TensorId tid) {
             auto const *h = graph.find_tensor(tid);
-            return h != nullptr && h->is_runtime && h->dtype == dtype;
+            return h != nullptr && h->dtype == dtype && static_cast<bool>(h->impl_fn);
         };
-        if (!rt_dtyped(vg.key.output_id) || !rt_dtyped(vg.key.shared_id) || !rt_dtyped(vg.key.non_shared_id)) {
-            auto const kind_of = [&](TensorId tid) {
-                auto const *h = graph.find_tensor(tid);
-                if (h == nullptr) {
-                    return "unregistered";
-                }
-                return h->is_runtime ? "runtime" : "typed";
-            };
-            note_skip("operands are statically-typed tensors, not RuntimeTensor - this fold only applies to runtime-ranked operands",
-                      fmt::format("group of {} into tensor {}: output={}, shared={}, folded={}", members.size(), vg.key.output_id,
-                                  kind_of(vg.key.output_id), kind_of(vg.key.shared_id), kind_of(vg.key.non_shared_id)));
+        if (!same_dt(vg.key.output_id) || !same_dt(vg.key.shared_id) || !same_dt(vg.key.non_shared_id)) {
+            note_skip("the output and both operands must share one element type and a rank-erased geometry",
+                      fmt::format("group of {} into tensor {}", members.size(), vg.key.output_id));
             continue;
         }
 
-        // L = sum_k (ab_k / ab_0) * P_k(B), in operand-0's canonical layout, and a
-        // reused scratch T for permuted contributions. Both RUNTIME tensors so the
-        // combine below can cast operands uniformly to GeneralRuntimeTensor<T>.
+        // L = sum_k (ab_k / ab_0) * P_k(B), in operand-0's canonical layout.
         // The fused contraction is node-0's einsum; grab its descriptor up
         // front so the prefactor gate below can see c_prefactor too.
         auto const *n0_desc = nodes[members[0].node_index].op_data.get_if<EinsumDescriptor>();
@@ -350,12 +338,7 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         if (!l_res) {
             continue;
         }
-        TensorId const l_id  = l_res.value().first;
-        auto           t_res = graph.create_zero_runtime_tensor_dynamic(fmt::format("_lccf_T_{}", _num_groups), dtype, b_handle->dims);
-        if (!t_res) {
-            continue;
-        }
-        TensorId const t_id = t_res.value().first;
+        TensorId const l_id = l_res.value().first;
 
         // The create_* calls above append Alloc nodes and may reallocate the
         // node vector, dangling the descriptor pointer fetched for the gate;
@@ -368,27 +351,23 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         }
         auto const &canonical = members[0].non_shared_indices;
 
-        // Per-member contribution descriptor, resolved against runtime tensors at
-        // execution time (no static-rank assumptions). The ab prefactor stays
-        // type-erased; the kernel forms the ratio ab/ab0 in T so complex
-        // prefactors fold exactly.
+        // One permute per member, L = beta*L + (ab/ab0) * P_k(B), with beta zero
+        // on the first so it overwrites. A member reading B in the canonical
+        // order is the identity permute. The ab prefactor stays type-erased;
+        // the kernel forms the ratio ab/ab0 in T so complex prefactors fold
+        // exactly.
         struct Contribution {
-            bool              is_permute;
             PrefactorScalar   ab;
             ParsedPermuteSpec spec;
         };
         std::vector<Contribution> contribs;
         contribs.reserve(members.size());
         for (auto const &m : members) {
-            if (m.non_shared_indices == canonical) {
-                contribs.push_back({.is_permute = false, .ab = m.ab_prefactor, .spec = {}});
-            } else {
-                ParsedPermuteSpec pspec;
-                pspec.c_indices = canonical;
-                pspec.a_indices = m.non_shared_indices;
-                pspec.raw       = pspec.render();
-                contribs.push_back({.is_permute = true, .ab = m.ab_prefactor, .spec = std::move(pspec)});
-            }
+            ParsedPermuteSpec pspec;
+            pspec.c_indices = canonical;
+            pspec.a_indices = m.non_shared_indices;
+            pspec.raw       = pspec.render();
+            contribs.push_back({.ab = m.ab_prefactor, .spec = std::move(pspec)});
         }
 
         // The fused contraction is node-0's einsum with its non-shared operand
@@ -405,7 +384,6 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         TensorId const        shared_id    = vg.key.shared_id;
         TensorId const        out_id       = vg.key.output_id;
         bool const            shared_first = vg.key.shared_is_first;
-        auto const            anchor       = graph.anchor();
 
         // Captured for the verbosity report below, before einspec is moved into the lambda.
         std::string const fold_out_indices = fmt::format("{}", fmt::join(einspec.c_indices, ","));
@@ -423,40 +401,34 @@ bool LinearCombinationContractionFolding::run(Graph &graph) {
         // node A has invariant inputs, a single writer, and a destination it does
         // not read, so LoopInvariantHoisting's existing criteria lift it out of
         // the loop with no changes to that pass.
-        auto build_l = [contribs = std::move(contribs), ab0, anchor, nonshared_id, l_id, t_id, dtype]() {
+        //
+        // Both operands are read through accessors bound here, which go through the
+        // slot first: a rebind or a redirected slot of B lands on the next replay, and
+        // a view or a statically-typed operand is read through its own geometry.
+        OperandAccessor const b_access = resolve_operand(graph, nonshared_id, "LinearCombinationContractionFolding", "B");
+        OperandAccessor const l_access = resolve_operand(graph, l_id, "LinearCombinationContractionFolding", "L");
+        auto                  build_l  = [contribs = std::move(contribs), ab0, b_access, l_access, dtype]() {
             detail::dispatch_scalar_type(dtype, [&]<typename T>(T /*tag*/) {
-                using RT = GeneralRuntimeTensor<T, std::allocator<T>>;
-                // live_tensor_ptr, not tensor_ptr: B is a CAPTURED OPERAND, and
-                // tensor_ptr names the caller's wrapper, which capture allows to
-                // be destroyed before execute() precisely because it adopted the
-                // storage into a stand-in. Reading tensor_ptr here dereferenced
-                // the dead wrapper, so L came out zero and the fold returned zero
-                // while reporting success.
-                auto   *L     = static_cast<RT *>(anchor->graph().live_tensor_ptr(l_id));
-                auto   *B     = static_cast<RT *>(anchor->graph().live_tensor_ptr(nonshared_id));
-                auto   *Tt    = static_cast<RT *>(anchor->graph().live_tensor_ptr(t_id));
+                auto   *L     = l_access.impl<T>();
+                auto   *B     = b_access.impl<T>();
                 T const ab0_t = as<T>(ab0);
-                L->zero();
+                bool    first = true;
                 for (auto const &c : contribs) {
                     T const scale = as<T>(c.ab) / ab0_t; // exact in T, complex included
-                    if (c.is_permute) {
-                        dispatch::string_permute<RT, RT>(c.spec, T{0}, Tt, T{1}, *B); // T = P_k(B)
-                        linear_algebra::axpy(scale, *Tt, L);                          // L += scale * T
-                    } else {
-                        linear_algebra::axpy(scale, *B, L); // L += scale * B
-                    }
+                    dispatch::string_permute_impl<T>(c.spec, first ? T{0} : T{1}, L, scale, *B);
+                    first = false;
                 }
             });
         };
 
-        // Node A. Writes L (and the T scratch) and reads neither, so it is a pure
-        // producer as far as the hoisting and liveness analyses are concerned.
+        // Node A. Writes L and does not read it, so it is a pure producer as far as
+        // the hoisting and liveness analyses are concerned.
         Node lbuild;
         lbuild.kind    = OpKind::Custom;
         lbuild.label   = fmt::format("lccf_build_L({} terms -> _lccf_L_{})", members.size(), _num_groups);
         lbuild.execute = std::move(build_l);
         lbuild.inputs  = {nonshared_id};
-        lbuild.outputs = {l_id, t_id};
+        lbuild.outputs = {l_id};
         lbuild.id      = graph.reserve_node_id();
 
         // Node B, the contraction: node-0's einsum with its non-shared operand

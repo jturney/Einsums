@@ -180,6 +180,42 @@ def test_resource_passes_fire_under_a_shuffled_order():
             f"{name} fired on only {fired.get(name, 0)} of {base} programs carrying its motif ({kind})")
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# The in-place motif. InplaceOptimization is a neighbour pass, drawn into some
+# orders only, so its motif has arms of its own whose orders always hold it.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _inplace_trial(seed, record=True):
+    rng = np.random.default_rng(seed)
+    dtype = _DTYPES[seed % len(_DTYPES)]
+    kinds = ["inplace"] + ([str(rng.choice(R.CORPUS_KINDS))] if rng.random() < 0.4 else [])
+    prog = R.Program(rng, dtype, f"ip{seed}", kinds=kinds)
+    order = R.draw_order(rng, _AVAILABLE)
+    if "InplaceOptimization" not in order:
+        order.insert(int(rng.integers(0, len(order) + 1)), "InplaceOptimization")
+    runs = 1 + int(rng.random() < 0.5)
+    return R.run_trial(prog, order, runs=runs, record=record)
+
+
+@pytest.mark.parametrize("seed", fuzz_seeds(120))
+def test_fuzz_resource_inplace_motif(seed):
+    """The in-place motif, alone or beside another motif, under a shuffled order that runs InplaceOptimization."""
+    _inplace_trial(460_000 + seed)
+
+
+def test_inplace_optimization_fires_on_its_motif():
+    """InplaceOptimization merges on a floor share of the in-place motif's trials.
+
+    A fifth of the draws carry a hazard the pass must decline on, and some orders put
+    Materialization's zero-initialization of declared scratch ahead of it, so the floor sits
+    well under the measured rate (0.81).
+    """
+    seeds = range(max(80, len(fuzz_seeds(120))))
+    fired = sum("InplaceOptimization" in _inplace_trial(470_000 + seed, record=False) for seed in seeds)
+    assert fired >= 0.5 * len(seeds), f"InplaceOptimization fired on only {fired} of {len(seeds)} in-place trials"
+
+
 def test_transfer_elimination_fires_on_a_host_write_between_device_gemms():
     """Placeholder: TransferElimination has nothing to remove in the GPU corpus.
 

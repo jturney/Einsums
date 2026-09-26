@@ -134,6 +134,11 @@ bool try_gpu_gemm(EinsumDescriptor const &desc, Node const &node, std::unordered
     if (desc.spec.target_indices.size() != 2 || desc.spec.link_indices.size() != 1)
         return false;
 
+    // A permutation operator makes the result a signed sum of permuted products, which one GEMM
+    // does not compute.
+    if (!live_index_lists(desc).operators.empty())
+        return false;
+
     // Need exactly 1 output (C).
     if (node.outputs.size() != 1)
         return false;
@@ -289,6 +294,9 @@ bool try_gpu_gemv(EinsumDescriptor const &desc, Node const &node, std::unordered
     // Must be: y[i] = A[i,k] * x[k] or y[i] = A[k,i] * x[k] (with transpose)
     if (desc.spec.target_indices.size() != 1 || desc.spec.link_indices.size() != 1)
         return false;
+
+    // No operator check, unlike GEMM: an operator names two or more output letters, and a
+    // GEMV-shaped spec has one, so the spec parser has already refused any operator here.
 
     if (node.outputs.size() != 1)
         return false;

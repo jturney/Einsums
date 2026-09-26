@@ -56,6 +56,19 @@ def test_fuzz_rich_random_pipeline_replay(seed):
     check_program_rich_pipeline(prog, *_seed_arrays(rng), f"rrpreplay{seed}", rng, runs=2)
 
 
+@pytest.mark.parametrize("seed", fuzz_seeds(150))
+def test_fuzz_rich_random_pipeline_chained_and_rank_views(seed):
+    """The rich corpus plus views of views, views of a transpose and rank-reducing views.
+
+    CSE, ContractionPlanning and ElementWiseFusion read through views, so a shuffled order
+    meets every alias shape the generator can draw rather than only the blocks ``rich_ops``
+    names. A separate corpus, so the seeds above keep drawing the programs they always have.
+    """
+    rng = np.random.default_rng(270_000 + seed)
+    prog = _gen_block(rng, depth=2, max_stmts=8, rich_views=True, rank_views=True, rich_ops=True)
+    check_program_rich_pipeline(prog, *_seed_arrays(rng), f"rrpviews{seed}", rng)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Guards: a shuffled pass that never fires has been shuffled, not tested, and a
 # corpus that stopped drawing operators or view writes would leave the added

@@ -71,6 +71,29 @@ def _check(build, expected, how, alone, rtol=1e-10, atol=1e-12):
         np.testing.assert_allclose(np.asarray(got), want, rtol=rtol, atol=atol)
 
 
+def _check_fires(build, expected, how, make_pass, fired, report, rtol=1e-10, atol=1e-12):
+    """Like @ref _check, and asserts the pass rewrote the program.
+
+    ``alone`` runs the pass made by @p make_pass and asks @p fired of it; ``default`` runs the
+    default pipeline and looks for @p report in its explanation, which is where a pass in a
+    pipeline says what it did.
+    """
+    held = []
+    graph = cg.Graph("audit")
+    outputs = build(graph, held)
+    if how == "alone":
+        the_pass = make_pass()
+        graph.apply(_manager(the_pass))
+        assert fired(the_pass), "the pass did not fire"
+    else:
+        manager = cg.default_pass_manager()
+        graph.apply(manager)
+        assert report in manager.explain(), manager.explain()
+    graph.execute()
+    for got, want in zip(outputs, expected):
+        np.testing.assert_allclose(np.asarray(got), want, rtol=rtol, atol=atol)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # AntisymmetrizerFolding
 # ──────────────────────────────────────────────────────────────────────────
@@ -121,16 +144,77 @@ def test_folding_into_a_bare_scalar_keeps_the_factor(how):
     _check(build, expected, how, _folding_alone)
 
 
+def _check_folds(build, expected, how, rtol=1e-10, atol=1e-12):
+    """@ref _check for AntisymmetrizerFolding, asserting it folded one contraction.
+
+    ``alone`` reads the pass's counter; ``default`` looks for its line in the default
+    pipeline's explanation.
+    """
+    held = []
+    graph = cg.Graph("audit")
+    outputs = build(graph, held)
+    if how == "alone":
+        fold = _G.AntisymmetrizerFolding()
+        graph.apply(_manager(_G.AntisymmetryInference(), fold))
+        assert fold.num_folded == 1, fold.skip_reasons
+    else:
+        manager = cg.default_pass_manager()
+        graph.apply(manager)
+        assert "AntisymmetrizerFolding: collapsed 1 " in manager.explain(), manager.explain()
+    graph.execute()
+    for got, want in zip(outputs, expected):
+        np.testing.assert_allclose(np.asarray(got), want, rtol=rtol, atol=atol)
+
+
 @pytest.mark.parametrize("how", ["alone", "default", "O2"])
 def test_folding_keeps_the_operator_permutes_alpha(how):
     """AntisymmetrizerFolding carries the producer's alpha along with the term count.
 
     Defends against ``read_producer`` recording the source, operators and term count of
     ``W = 2 P(i/j/k) Wsrc`` but not its alpha, so that the folded dot read Wsrc directly and the
-    energy came out halved.
+    energy came out halved. The contraction is folded.
     """
     build, expected = _folding_program(alpha=2.0, rank0=False)
-    _check(build, expected, how, _folding_alone)
+    if how == "O2":
+        _check(build, expected, how, _folding_alone)
+    else:
+        _check_folds(build, expected, how)
+
+
+@pytest.mark.parametrize("how", ["alone", "default"])
+@pytest.mark.parametrize("conjugated", [False, True], ids=["dot", "dotc"])
+@pytest.mark.parametrize("slot", [0, 1])
+def test_folding_carries_a_complex_alpha_into_either_slot(how, conjugated, slot):
+    """``<W, V>`` with ``W = alpha P(i/j/k) Ws`` in either operand slot, conjugated or not.
+
+    The dot is bilinear, and sesquilinear in its first operand when conjugated, so the fold
+    scales by ``N alpha``, or by ``N conj(alpha)`` when W is the conjugated operand. For the
+    second slot the first operand's source is rescaled after its operator, which keeps the fold
+    off that slot and puts it on W's.
+    """
+    rng = np.random.default_rng(117)
+    n = 3
+    ws = rng.standard_normal((n, n, n)) + 1j * rng.standard_normal((n, n, n))
+    vs = rng.standard_normal((n, n, n)) + 1j * rng.standard_normal((n, n, n))
+    alpha = 0.5 - 1.25j
+    w, v = alpha * _antisymmetrize3(ws), _antisymmetrize3(vs)
+    a, b = (w, v) if slot == 0 else (v, w)
+    expected = np.sum((np.conj(a) if conjugated else a) * b)
+
+    def build(graph, held):
+        W = graph.create_zero_tensor("W", [n, n, n], dtype="complex128")
+        V = graph.create_zero_tensor("V", [n, n, n], dtype="complex128")
+        Ws, Vs = einsums.asarray(ws), einsums.asarray(vs)
+        result = einsums.zeros([1], dtype="complex128")
+        with cg.capture(graph):
+            einsums.permute("ijk <- P(i/j/k) ijk", V, Vs, 0.0, 1.0)
+            einsums.permute("ijk <- P(i/j/k) ijk", W, Ws, 0.0, alpha)
+            la.scale(2.0, Vs)
+            (la.dotc if conjugated else la.dot)(result, *((W, V) if slot == 0 else (V, W)))
+        held += [Ws, Vs]
+        return [result]
+
+    _check_folds(build, [np.array([expected])], how)
 
 
 @pytest.mark.parametrize("how", ["alone", "default", "O2"])
@@ -355,15 +439,13 @@ def test_contraction_planning_sees_a_view_reader_of_an_interior(how):
 
 
 @pytest.mark.parametrize("how", ["alone", "default", "O2"])
-def test_contraction_planning_leaves_a_chain_with_a_view_leaf(how):
-    """ContractionPlanning does not re-parenthesize a chain one of whose leaves is a view.
+def test_contraction_planning_restructures_a_chain_with_a_view_leaf(how):
+    """ContractionPlanning re-parenthesizes a chain one of whose leaves is a view, correctly.
 
     ``T = A B`` then ``D = T C`` with A a strided sub-block of a larger tensor, sliced before the
     capture, and with the shapes of the dtype case above, for which ``A (B C)`` is far cheaper.
-    Defends the ``understands`` filter handed to ``find_contraction_chains``: the pass does not
-    declare Views, and without the filter it replaced both einsums, nodes carrying a view, with
-    Gemm nodes. The rebuilt chain happens to compute the right numbers, so what fails without
-    the filter is the pass audit (``EINSUMS_PASS_VERIFY``), which refuses the rewrite.
+    The emitted GEMM reads A through its impl and strides. This case used to be declined by the
+    pass's feature declaration; the C++ tests assert that the chain is restructured.
 
     Whether the pass restructures is the cost model's decision, and Python cannot pin it (see
     the dtype case above), so the case asserts the numbers against numpy either way.
@@ -385,6 +467,87 @@ def test_contraction_planning_leaves_a_chain_with_a_view_leaf(how):
         return [D]
 
     _check(build, [a @ b @ c], how, lambda: _manager(_G.ContractionPlanning()))
+
+
+@pytest.mark.parametrize("how", ["alone", "default", "O2"])
+@pytest.mark.parametrize("slab", ["middle", "leading"])
+def test_contraction_planning_reads_density_fitting_slabs(how, slab):
+    """A chain over slabs of a three-index tensor, into a slice of a larger result, computes the product.
+
+    ``T_ab = X_Qa Y_Qb`` then ``D = T C`` with X and Y slabs of one ``(naux, nocc, nvir)`` tensor,
+    the DF-MP2 shape, and D a block of a larger tensor. A ``B[:, i, :]`` slab is a column-major
+    matrix with a long leading dimension; a ``B[i, :, :]`` slab has no unit stride at all, so the
+    emitted GEMM reads it through the strided loop. Re-parenthesized, ``X^T (Y C)`` reads each slab
+    once through the GEMM that writes the slice.
+    """
+    rng = np.random.default_rng(112)
+    naux, nocc, nvir, k = 48, 3, 40, 2
+    if slab == "middle":
+        three = rng.standard_normal((naux, nocc, nvir))
+        x, y = three[:, 0, :], three[:, 2, :]
+    else:
+        three = rng.standard_normal((nocc, naux, nvir))
+        x, y = three[0], three[2]
+    c = rng.standard_normal((nvir, k))
+    big_d = rng.standard_normal((nvir + 2, k + 3))
+    expected = big_d.copy()
+    expected[2:, 1:k + 1] = x.T @ y @ c
+
+    def build(graph, held):
+        Three, C, BigD = einsums.asarray(three), einsums.asarray(c), einsums.asarray(big_d)
+        if slab == "middle":
+            X, Y = Three[:, 0, :], Three[:, 2, :]
+        else:
+            X, Y = Three[0, :, :], Three[2, :, :]
+        D = BigD[2:nvir + 2, 1:k + 1]
+        T = graph.create_zero_tensor("T", [nvir, nvir])
+        with cg.capture(graph):
+            einsums.einsum("ab <- Qa ; Qb", T, X, Y)
+            einsums.einsum("ab <- ac ; cb", D, T, C)
+        held += [Three, C, BigD, X, Y, D]
+        return [BigD]
+
+    _check(build, [expected], how, lambda: _manager(_G.ContractionPlanning()))
+
+
+@pytest.mark.parametrize("how", ["alone", "default", "O2"])
+@pytest.mark.parametrize("alias", ["same", "view"])
+def test_contraction_planning_keeps_a_chain_that_writes_its_own_leaf(how, alias):
+    """ContractionPlanning does not re-parenthesize ``A = (A B) L``.
+
+    Left to right, the first member reads A before the last one overwrites it. Defends against
+    the pass checking a chain's final output only against its interior: re-parenthesized as
+    ``A (B L)``, the GEMM that writes A also reads it, and the result was off by 30 on this data
+    (``same``). ``view`` writes the result into one view of a tensor and reads the leaf through
+    an overlapping one, which only a comparison by buffer sees.
+    """
+    rng = np.random.default_rng(113)
+    m, k = 64, 2
+    a, b, l = rng.standard_normal((m, k)), rng.standard_normal((k, m)), rng.standard_normal((m, k))
+    parent = np.zeros((m + 1, k))
+    if alias == "same":
+        expected = a @ b @ l
+    else:
+        parent[1:] = a
+        expected = parent.copy()
+        expected[:m] = a @ b @ l
+
+    def build(graph, held):
+        B, L = einsums.asarray(b), einsums.asarray(l)
+        T = graph.create_zero_tensor("T", [m, m])
+        if alias == "same":
+            A = einsums.asarray(a)
+            out, leaf, result = A, A, A
+        else:
+            result = einsums.asarray(parent)
+            out, leaf = result[0:m, 0:k], result[1:m + 1, 0:k]
+        with cg.capture(graph):
+            einsums.einsum("ij <- ik ; kj", T, leaf, B)
+            einsums.einsum("ij <- ik ; kj", out, T, L)
+        held += [B, L, out, leaf, result]
+        return [result]
+
+    _check(build, [expected], how, lambda: _manager(_G.ContractionPlanning()))
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -460,7 +623,8 @@ def test_cse_follows_a_view_of_the_eliminated_duplicate(how):
 
     Defends against the redirect rewriting only node inputs naming K2 and K2's slot: the view
     is a separate operand whose slot still pointed into K2's storage, which nothing wrote any
-    more, so R2 came out zero.
+    more, so R2 came out zero. The merge is now refused because a reader reaches K2 through
+    another id.
     """
     a, b = _cse_data()
     n = _CSE_N
@@ -481,15 +645,19 @@ def test_cse_follows_a_view_of_the_eliminated_duplicate(how):
     _check(build, [a @ b, a @ b], how, lambda: _manager(_G.CSE()))
 
 
-@pytest.mark.parametrize("how", ["alone", "default", "O1", "O2"])
-def test_cse_leaves_duplicates_that_read_a_view(how):
-    """CSE neither keeps nor removes a product that reads a view.
+def _cse_eliminated(count):
+    return lambda the_pass: the_pass.num_eliminated == count
+
+
+@pytest.mark.parametrize("how", ["alone", "default"])
+@pytest.mark.parametrize("captured", [False, True], ids=["eager_view", "captured_view"])
+def test_cse_merges_duplicates_that_read_a_view(how, captured):
+    """CSE merges two products that read one view, and the survivor's value reaches both readers.
 
     ``K1 = V B`` and ``K2 = V B`` with V a strided slice of a larger tensor, sliced before the
-    capture. Defends the ``understands`` check on each candidate: CSE does not declare Views, and
-    without the check it removed K2's producer, a node carrying a view, and redirected K2's reader
-    onto K1. The merge happens to be value-preserving, so what fails without the check is the pass
-    audit (``EINSUMS_PASS_VERIFY``), which refuses the removal.
+    capture or by ``cg.view`` inside it. Reading through a view is something the aliasing guards
+    see, since they compare the buffers operands land in. This case used to be declined by the
+    pass's feature declaration.
     """
     rng = np.random.default_rng(111)
     n = _CSE_N
@@ -497,10 +665,12 @@ def test_cse_leaves_duplicates_that_read_a_view(how):
 
     def build(graph, held):
         Big, B = einsums.asarray(big), einsums.asarray(b)
-        view = Big[1:n + 1, 0:n]
+        view = None if captured else Big[1:n + 1, 0:n]
         R1, R2 = einsums.zeros([n, n]), einsums.zeros([n, n])
         K1, K2 = graph.create_zero_tensor("K1", [n, n]), graph.create_zero_tensor("K2", [n, n])
         with cg.capture(graph):
+            if captured:
+                view = cg.view(Big, [(1, n + 1), (0, n)])
             einsums.einsum("ij <- ik ; kj", K1, view, B)
             einsums.einsum("ij <- ik ; kj", K2, view, B)
             la.axpby(1.0, K1, 0.0, R1)
@@ -508,7 +678,40 @@ def test_cse_leaves_duplicates_that_read_a_view(how):
         held += [Big, B, view]
         return [R1, R2]
 
-    _check(build, [big[1:] @ b, big[1:] @ b], how, lambda: _manager(_G.CSE()))
+    _check_fires(build, [big[1:] @ b, big[1:] @ b], how, _G.CSE, _cse_eliminated(1), "CSE: eliminated 1")
+
+
+@pytest.mark.parametrize("how", ["alone", "default", "O1", "O2"])
+def test_cse_keeps_a_duplicate_that_writes_a_view(how):
+    """CSE does not remove a duplicate whose output is a view of a tensor other nodes read.
+
+    ``K1 = A B`` and ``V = A B`` with V a block of K2 sliced before the capture; the readers take
+    K1 and the whole of K2. Redirecting V's slot onto K1 leaves K2's block unwritten. Defends
+    the refusal of a node that writes a view and the check that every reader names the duplicate's
+    own output; either one alone keeps this merge out.
+    """
+    a, b = _cse_data()
+    n = _CSE_N
+    k2 = np.random.default_rng(114).standard_normal((n + 2, n))
+    expected = k2.copy()
+    expected[1:n + 1] = a @ b
+
+    def build(graph, held):
+        A, B = einsums.asarray(a), einsums.asarray(b)
+        R1, R2 = einsums.zeros([n, n]), einsums.zeros([n + 2, n])
+        K1 = graph.create_zero_tensor("K1", [n, n])
+        K2 = graph.create_zero_tensor("K2", [n + 2, n])
+        np.asarray(K2)[...] = k2
+        view = K2[1:n + 1, 0:n]
+        with cg.capture(graph):
+            einsums.einsum("ij <- ik ; kj", K1, A, B)
+            einsums.einsum("ij <- ik ; kj", view, A, B)
+            la.axpby(1.0, K1, 0.0, R1)
+            la.axpby(1.0, K2, 0.0, R2)
+        held += [A, B, view]
+        return [R1, R2]
+
+    _check(build, [a @ b, expected], how, lambda: _manager(_G.CSE()))
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -597,6 +800,184 @@ def test_factoring_sees_a_write_through_a_view_between_members(eager_view):
     build, (a, b1, b2, r0) = _factoring_program(["ia <- ik ; ka", "ia <- ik ; ka"], before_second=True,
                                                 eager_view=eager_view)
     _check(build, [r0 + a @ b1 + 2 * a @ b2], "alone", _factoring_alone)
+
+
+@pytest.mark.parametrize("how", ["alone", "default"])
+@pytest.mark.parametrize("captured", [False, True], ids=["eager_view", "captured_view"])
+def test_factoring_sums_views(how, captured):
+    """``R += A V1`` and ``R += A V2`` factor into ``R += A (V1 + V2)`` when A, V1 and V2 are views.
+
+    A is a block of one tensor, V1 and V2 two column blocks of another, the shape of a residual
+    contracted against slices of an integral. The axpys that build the sum and the contraction
+    read every operand through its own strides. This case used to be declined by the pass's
+    feature declaration. The default pipeline prices the group with its cost model, so there
+    the case asserts the pass reached the group, factored or priced out, and the numbers.
+    """
+    rng = np.random.default_rng(118)
+    n = 5
+    big_a, pair, r0 = rng.standard_normal((n + 1, n + 2)), rng.standard_normal((n, 2 * n)), rng.standard_normal((n, n))
+    a, v1, v2 = big_a[1:, 2:], pair[:, :n], pair[:, n:]
+    expected = r0 + a @ v1 + a @ v2
+
+    def build(graph, held):
+        BigA, Pair, R = einsums.asarray(big_a), einsums.asarray(pair), einsums.asarray(r0)
+        views = (BigA[1:n + 1, 2:n + 2], Pair[0:n, 0:n], Pair[0:n, n:2 * n]) if not captured else None
+        with cg.capture(graph):
+            if captured:
+                views = (cg.view(BigA, [(1, n + 1), (2, n + 2)]), cg.view(Pair, [(0, n), (0, n)]),
+                         cg.view(Pair, [(0, n), (n, 2 * n)]))
+            A, V1, V2 = views
+            einsums.einsum("ij <- ik ; kj", R, A, V1, 1.0)
+            einsums.einsum("ij <- ik ; kj", R, A, V2, 1.0)
+        held += [BigA, Pair, *views]
+        return [R]
+
+    if how == "alone":
+        _check_fires(build, [expected], how, _factoring_alone_pass, lambda p: p.num_groups == 1, None)
+        return
+    held = []
+    graph = cg.Graph("audit")
+    outputs = build(graph, held)
+    manager = cg.default_pass_manager()
+    graph.apply(manager)
+    report = manager.explain()
+    reached = ("DistributiveFactoring: factored 1 group" in report
+               or "DistributiveFactoring: factored 0 group(s), eliminated 0 contraction(s); 1 declined as unprofitable" in report)
+    assert reached, report
+    graph.execute()
+    np.testing.assert_allclose(np.asarray(outputs[0]), expected, rtol=1e-10, atol=1e-12)
+
+
+def _factoring_alone_pass():
+    return _G.DistributiveFactoring(_G.Factor.Always)
+
+
+def _reused_sum_program(between, summed_view=False):
+    """Two groups summing ``B1 + B2``, the second reusing the first's sum, with @p between in the middle.
+
+    ``R1 += A B1 + A B2``, then @p between, then ``R2 += A B1 + A B2``. With @p summed_view both
+    groups read B1 through one whole-extent view of it. Returns the builder and the expected R1
+    and R2.
+    """
+    rng = np.random.default_rng(119)
+    n = 3
+    a, b1, b2, w, c1, c2, r1, r2 = (rng.standard_normal((n, n)) for _ in range(8))
+    e1 = r1 + a @ b1 + a @ b2
+    b1_later = b1.copy()
+    if between == "view":
+        b1_later[0:2, 0:2] += 0.5 * w[0:2, 0:2]
+    else:
+        b1_later += a @ c1 + a @ c2
+    e2 = r2 + a @ b1_later + a @ b2
+
+    def build(graph, held):
+        A, B1, B2, W, C1, C2, R1, R2 = (einsums.asarray(x) for x in (a, b1, b2, w[0:2, 0:2].copy(), c1, c2, r1, r2))
+        with cg.capture(graph):
+            S1 = cg.view(B1, [(0, n), (0, n)]) if summed_view else B1
+            einsums.einsum("ij <- ik ; kj", R1, A, S1, 1.0)
+            einsums.einsum("ij <- ik ; kj", R1, A, B2, 1.0)
+            if between == "view":
+                la.axpy(0.5, W, cg.view(B1, [(0, 2), (0, 2)]))
+            else:
+                einsums.einsum("ij <- ik ; kj", B1, A, C1, 1.0)
+                einsums.einsum("ij <- ik ; kj", B1, A, C2, 1.0)
+            einsums.einsum("ij <- ik ; kj", R2, A, S1, 1.0)
+            einsums.einsum("ij <- ik ; kj", R2, A, B2, 1.0)
+        held += [A, B1, B2, W, C1, C2, S1]
+        return [R1, R2]
+
+    return build, [e1, e2]
+
+
+@pytest.mark.parametrize("summed_view", [False, True], ids=["summed_tensor", "summed_view"])
+def test_factoring_does_not_reuse_a_sum_across_a_write_through_a_view(summed_view):
+    """A write through a view of B1 between two ``B1 + B2`` groups gives the second its own sum.
+
+    Defends against the reuse check comparing the ids a node writes with the summed operands'
+    ids: the view's id is not B1's, so the second group reused the sum built before the write,
+    and R2 missed the update (max abs error 1.6 on this data). ``summed_view`` sums B1 through a
+    view of it, so the check must compare buffers on the summed side as well.
+    """
+    build, expected = _reused_sum_program("view", summed_view)
+    _check(build, expected, "alone", _factoring_alone)
+
+
+def test_factoring_does_not_reuse_a_sum_across_another_groups_write():
+    """A factored group writing B1 between two ``B1 + B2`` groups gives the second its own sum.
+
+    ``B1 += A C1 + A C2`` in the middle is a group of its own, rewritten in the same run. Defends
+    against the reuse check skipping every node an earlier group removed: the middle group's
+    members were removed, but its factored contraction takes the first member's place and writes
+    B1 there, so the second ``B1 + B2`` group reused a sum of the old B1 (max abs error 4.8 on
+    this data).
+    """
+    build, expected = _reused_sum_program("group")
+    _check(build, expected, "alone", _factoring_alone)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# LinearCombinationContractionFolding
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _lccf_fired(the_pass):
+    return the_pass.num_groups == 1 and the_pass.num_eliminated == 1
+
+
+@pytest.mark.parametrize("how", ["alone", "default"])
+@pytest.mark.parametrize("where", ["operand", "shared", "transposed", "output", "all"])
+@pytest.mark.parametrize("captured", [False, True], ids=["eager_view", "captured_view"])
+def test_lccf_folds_a_transposed_pair_over_views(how, where, captured):
+    """``C = 0.5 C + 2 A B - A B^T`` folds into one contraction against ``L = 2 B - B^T`` over views.
+
+    @p where names the view: the folded operand B as a block of a larger tensor, the shared
+    operand A as one, B as the transpose of a tensor, the output C as a block of a larger
+    tensor the fold writes through, or all of them at once. L is built from B through its own
+    strides and the fused contraction reads A and writes C through theirs. This case used to be
+    declined by the pass's feature declaration.
+    """
+    rng = np.random.default_rng(120)
+    n = 4
+    big_b, big_a, big_c = rng.standard_normal((n + 2, n + 1)), rng.standard_normal((n + 1, n + 3)), rng.standard_normal((n + 3, n + 2))
+    views = {"operand": ("b",), "shared": ("a",), "transposed": ("bt",), "output": ("c",), "all": ("a", "b", "c")}[where]
+    a = big_a[1:, 3:] if "a" in views else big_a[:n, :n].copy()
+    b = big_b[2:, 1:] if "b" in views else big_b[:n, :n].T.copy() if "bt" in views else big_b[:n, :n].copy()
+    c0 = big_c[3:, 2:] if "c" in views else big_c[:n, :n].copy()
+    expected_c = 0.5 * c0 + 2.0 * a @ b - a @ b.T
+
+    def build(graph, held):
+        BigA, BigB, BigC = (einsums.asarray(x) for x in (big_a, big_b, big_c))
+        A0, B0, C0 = (einsums.asarray(x) for x in (a, b, c0))
+        held += [BigA, BigB, BigC, A0, B0, C0]
+        slices = {"a": (BigA, [(1, n + 1), (3, n + 3)]), "b": (BigB, [(2, n + 2), (1, n + 1)]), "c": (BigC, [(3, n + 3), (2, n + 2)])}
+
+        def operand(key, plain):
+            if key == "bt":
+                square = einsums.asarray(big_b[:n, :n].copy())
+                held.append(square)
+                return cg.permute_view(square, [1, 0])
+            if key not in views:
+                return plain
+            parent, ranges = slices[key]
+            if captured:
+                return cg.view(parent, ranges)
+            (r0, r1), (q0, q1) = ranges
+            return parent[r0:r1, q0:q1]
+
+        with cg.capture(graph):
+            A = operand("a", A0)
+            B = operand("bt" if "bt" in views else "b", B0)
+            C = operand("c", C0)
+            einsums.einsum("ij <- ik ; kj", C, A, B, c_pf=0.5, ab_pf=2.0)
+            einsums.einsum("ij <- ik ; jk", C, A, B, c_pf=1.0, ab_pf=-1.0)
+        held += [A, B, C]
+        return [BigC if "c" in views else C0]
+
+    expected = big_c.copy() if "c" in views else expected_c
+    if "c" in views:
+        expected[3:, 2:] = expected_c
+    _check_fires(build, [expected], how, _G.LinearCombinationContractionFolding, _lccf_fired,
+                 "LinearCombinationContractionFolding: folded 1 group(s)")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -719,7 +1100,8 @@ def test_element_wise_fusion_declines_when_x_aliases_y(how, eager_view):
 
     X is a full view of Y, so the first axpby changes X. Defends against the pass checking
     ``x == y`` by raw id and composing the pair as if X were constant: the true result is 4Y,
-    and the composed scalars (alpha = a2 + b2 a1, beta = b1 b2) gave 3Y.
+    and the composed scalars (alpha = a2 + b2 a1, beta = b1 b2) gave 3Y. The pass used to be
+    kept off this pair by its feature declaration; it is now the buffer comparison.
     """
     rng = np.random.default_rng(108)
     n = 4
@@ -738,3 +1120,62 @@ def test_element_wise_fusion_declines_when_x_aliases_y(how, eager_view):
         return [R]
 
     _check(build, [4 * y0], how, lambda: _manager(_G.ElementWiseFusion()))
+
+
+@pytest.mark.parametrize("how", ["alone", "default", "O1", "O2"])
+def test_element_wise_fusion_declines_two_views_of_one_block(how):
+    """ElementWiseFusion declines ``Y = X/2 + Y`` twice when X and Y are two views of one block.
+
+    Both are rows 1..4 of P, taken by two ``cg.view`` calls, so neither is the other's parent
+    and neither id names the storage both land in. Defends the comparison of the two operands'
+    buffers: composing the pair read the X the first update had already changed, and scaled the
+    block by 2 where the program scales it by 2.25.
+    """
+    rng = np.random.default_rng(115)
+    n = 4
+    p0 = rng.standard_normal((n + 1, n))
+    expected = p0.copy()
+    expected[1:] *= 1.5 * 1.5
+
+    def build(graph, held):
+        P = einsums.asarray(p0)
+        with cg.capture(graph):
+            X = cg.view(P, [(1, n + 1), (0, n)])
+            Y = cg.view(P, [(1, n + 1), (0, n)])
+            la.axpby(0.5, X, 1.0, Y)
+            la.axpby(0.5, X, 1.0, Y)
+        held += [P, X, Y]
+        return [P]
+
+    _check(build, [expected], how, lambda: _manager(_G.ElementWiseFusion()))
+
+
+@pytest.mark.parametrize("how", ["alone", "default"])
+@pytest.mark.parametrize("eager_view", [False, True], ids=["captured_view", "eager_view"])
+def test_element_wise_fusion_composes_axpbys_on_views(how, eager_view):
+    """ElementWiseFusion composes two axpbys whose X and Y are views of different tensors.
+
+    ``Y = 2X + Y`` then ``Y = -X + 3Y`` with X a block of Q and Y a block of P, the shape of an
+    update on a slice of a residual. The two operands land in different buffers, so the second
+    update reads the same X. This case used to be declined by the pass's feature declaration.
+    """
+    rng = np.random.default_rng(116)
+    n = 4
+    p0, q0 = rng.standard_normal((n + 2, n)), rng.standard_normal((n, n + 1))
+    x = q0[:, 1:]
+    expected = p0.copy()
+    expected[2:] = -x + 3.0 * (2.0 * x + p0[2:])
+
+    def build(graph, held):
+        P, Q = einsums.asarray(p0), einsums.asarray(q0)
+        X, Y = (Q[0:n, 1:n + 1], P[2:n + 2, 0:n]) if eager_view else (None, None)
+        with cg.capture(graph):
+            if not eager_view:
+                X = cg.view(Q, [(0, n), (1, n + 1)])
+                Y = cg.view(P, [(2, n + 2), (0, n)])
+            la.axpby(2.0, X, 1.0, Y)
+            la.axpby(-1.0, X, 3.0, Y)
+        held += [P, Q, X, Y]
+        return [P]
+
+    _check_fires(build, [expected], how, _G.ElementWiseFusion, lambda p: p.num_fused == 1, "ElementWiseFusion: fused 1")

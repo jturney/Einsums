@@ -135,13 +135,13 @@ enum class APIARY_EXPOSE APIARY_MODULE("graph") Factor : std::uint8_t{
  * - Reuse only looks within one graph level. A sum built in a loop body is not
  *   offered to the enclosing graph or to a sibling branch.
  * - Non-shared operands must all be **distinct** tensors of identical shape and
- *   dtype; the shared operand may not alias any non-shared operand (the
- *   slot-redirect trick cannot separate two reads of one tensor).
+ *   dtype, and the shared operand may not be one of them.
  * - The factoring math is real-valued: `conj_a`/`conj_b` einsums are skipped, and
  *   a prefactor with a nonzero imaginary part declines the node.
- * - Every summed operand must be the same tensor kind (all runtime, or all
- *   compile-time) so the accumulator dispatches correctly - a mismatch rank-errors
- *   at execute.
+ * - Operands may be runtime tensors, typed `Tensor<T, Rank>` or views of either,
+ *   mixed freely: the summed intermediate is a runtime tensor, and every rebuilt
+ *   node reads its operands through their rank-erased geometry. The output may
+ *   not be a view.
  * - Placement/interference gate: the combined node takes the first member's slot,
  *   so no node between the first and last member may read/write the output or
  *   write a factor operand, and any `Loop`/`Conditional` in the span disqualifies
@@ -180,11 +180,13 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
      */
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
     /// @copydoc OptimizerPass::understood_features
-    /// Not permutation operators, views, bare scalars or redirected slots: the rebuilt contraction carries no operators and the summed
-    /// operand is assumed a dense tensor.
+    /// Not permutation operators, bare scalars, redirected slots or a node that writes a view: the rebuilt contraction carries no
+    /// operators, the summed operand is assumed a tensor, and a view output is not a case the rewrite has been checked against.
+    /// Reading through views is understood: the rebuilt nodes read each operand through its own strides, and the interference and
+    /// reuse checks compare the buffers operands land in.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
-        return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
-               NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled;
+        return NodeFeatures{} | NodeFeature::Views | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
+               NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled;
     }
 
     /// @copydoc OptimizerPass::tier

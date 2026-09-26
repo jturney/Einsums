@@ -124,8 +124,11 @@ bool ElementWiseFusion::run(Graph &graph) {
 
         TensorId const y = nodes[i].outputs[0];
         TensorId const x = nodes[i].inputs[0];
-        if (x == y) {
-            continue; // Y = (a+b)*Y is its own shape; not worth a special case
+        // By buffer: two views of one tensor are different ids, and when they overlap the first
+        // update changes the X the second one reads. Y = (a+b)*Y itself is its own shape and not
+        // worth a special case.
+        if (graph.buffer_of(x) == graph.buffer_of(y)) {
+            continue;
         }
 
         for (size_t j = i + 1; j < nodes.size(); j++) {

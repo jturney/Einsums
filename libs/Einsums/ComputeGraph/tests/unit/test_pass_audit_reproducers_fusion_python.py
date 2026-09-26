@@ -33,10 +33,10 @@ the reason is recorded here so nobody re-derives it:
   the next member on a later dependency level (the hazard scan resolves aliases), and the pass
   only groups members that share a level, so the raw-id check is never the last line of defence.
 * Type confusion on a view in SymmetrizedAccumulation: reached before the pass declared its
-  features (a ``cg.view`` destination was folded; it is now declined), but the fold only calls
-  ``string_permute``, which reads the operand through the virtual ``impl()``, and that dispatches
-  to the view's own override. The source cannot be a view,
-  because ``einsums.permute`` binds owning runtime tensors only.
+  features (a ``cg.view`` destination was folded; it is now declined), but the folded node reads
+  its operands through the virtual ``impl()``, which dispatches to the view's own override. The
+  source cannot be a view from Python, because ``einsums.permute`` binds owning runtime tensors
+  only; the C++ rewrite tests fold a view source.
 * TiledExpansion's tiled-dot cast (a view result, or a result of another dtype): not expressible
   from Python. The binding takes the result as a ``RuntimeTensor`` of the operands' own dtype.
 * Redirect-blind reads inside one in-memory pipeline: every ``Graph::redirect_slot`` caller (CSE,
@@ -62,6 +62,7 @@ import numpy as np
 import pytest
 
 import einsums
+import einsums._core.graph as _G
 import einsums.graph as cg
 from _fuzz_diff_common import _apply_one_pass
 from _permutation_operators import apply_operator, shaped_operator
@@ -253,42 +254,76 @@ def test_stream_fusion_drops_a_members_permutation_operator(how):
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def _symacc_program(operator, beta):
-    """``R += tmp; tmpP = P(tmp); R = beta*R + 0.5*tmpP``, the matched site shape."""
+def _symacc_program(operator, beta, alpha=1.0, s2=0.5, dtype="float64"):
+    """``R += tmp; tmpP = alpha P(tmp); R = beta*R + s2*tmpP``, the matched site shape."""
     rng = np.random.default_rng(3)
     n = 4
     x0 = rng.standard_normal((n, n))
     r0 = rng.standard_normal((n, n))
+    if dtype.startswith("complex"):
+        x0 = x0 + 1j * rng.standard_normal((n, n))
+        r0 = r0 + 1j * rng.standard_normal((n, n))
     permuted = x0.T
     if operator:
         permuted = apply_operator(shaped_operator(0, ("i", "j")), ["j", "i"], permuted)
-    expected = beta * (r0 + x0) + 0.5 * permuted
+    expected = beta * (r0 + x0) + s2 * alpha * permuted
 
     def build(graph):
         R, X = _tensor("R", r0), _tensor("X", x0)
         # Graph-owned scratch: the pass only folds a permuted result nothing outside the graph
         # reads, so caller-held tensors here would make it decline before the defended check.
-        tmp, tmp_p = graph.scratch("tmp", [n, n], "float64"), graph.scratch("tmpP", [n, n], "float64")
+        tmp, tmp_p = graph.scratch("tmp", [n, n], dtype), graph.scratch("tmpP", [n, n], dtype)
         with cg.capture(graph):
             einsums.linalg.axpby(1.0, X, 0.0, tmp)
             einsums.linalg.axpy(1.0, tmp, R)
-            einsums.permute(f"j,i <- {'P(i/j) ' if operator else ''}i,j", tmp_p, tmp, c_pf=0.0, a_pf=1.0)
-            einsums.linalg.axpby(0.5, tmp_p, beta, R)
+            einsums.permute(f"j,i <- {'P(i/j) ' if operator else ''}i,j", tmp_p, tmp, c_pf=0.0, a_pf=alpha)
+            einsums.linalg.axpby(s2, tmp_p, beta, R)
         return [R]
 
     return build, expected
 
 
-@pytest.mark.parametrize("how", ["alone", "O2"])
+def _check_symacc_folds(build, expected, how, folded=1):
+    """Like @ref _check for SymmetrizedAccumulation, asserting how many sites it folded.
+
+    ``alone`` reads the pass's counter; ``default`` looks for its line in the default
+    pipeline's explanation, which is where a pass in a pipeline says what it did.
+    """
+    graph = cg.Graph("audit")
+    outputs = build(graph)
+    if how == "alone":
+        sa = _G.SymmetrizedAccumulation()
+        pm = cg.PassManager()
+        pm.add(sa)
+        graph.apply(pm)
+        _apply_one_pass(graph, "Materialization")
+        assert sa.num_rewritten == folded, sa.skip_reasons
+    else:
+        pm = cg.default_pass_manager()
+        graph.apply(pm)
+        report = pm.explain()
+        if folded:
+            assert f"SymmetrizedAccumulation: folded {folded} " in report, report
+        else:
+            assert "SymmetrizedAccumulation: folded" not in report, report
+    graph.execute()
+    for got, want in zip(outputs, expected):
+        np.testing.assert_allclose(np.asarray(got), want, rtol=RTOL, atol=ATOL)
+
+
+@pytest.mark.parametrize("how", ["alone", "default", "O2"])
 def test_symacc_drops_the_permutes_operator(how):
     """SymmetrizedAccumulation keeps the operator of ``tmpP = P(i/j) tmp^T``.
 
     Defends against the folded executor's spec being rebuilt from the permute's c/a index lists
     alone (``pspec``), which folded it as a plain transpose and lost the antisymmetrizer's second
-    term. AntisymmetrizerExpansion lowers only einsums, so O2 reached it too.
+    term. AntisymmetrizerExpansion lowers only einsums, so O2 reached it too. The site folds.
     """
     build, expected = _symacc_program(operator=True, beta=1.0)
-    _check(build, [expected], how, "SymmetrizedAccumulation")
+    if how == "O2":
+        _check(build, [expected], how, "SymmetrizedAccumulation")
+    else:
+        _check_symacc_folds(build, [expected], how)
 
 
 @pytest.mark.parametrize("how", ["alone", "O2"])
@@ -303,44 +338,56 @@ def test_symacc_drops_the_accumulates_beta(how):
     _check(build, [expected], how, "SymmetrizedAccumulation")
 
 
-@pytest.mark.parametrize("how", ["alone", "O2"])
-@pytest.mark.parametrize("feature", ["view", "complex"])
-def test_symacc_leaves_an_accumulate_it_does_not_understand(how, feature):
-    """SymmetrizedAccumulation does not fold the second accumulate when it carries a view or a complex alpha.
 
-    ``R += tmp; tmpP = tmp^T; R += s tmpP``, with R either a ``cg.view`` of a larger tensor or
-    accumulated with ``s = 0.5j``. The pass declares neither Views nor ComplexPrefactor. Defends
-    the ``understands`` check on that accumulate: without it the pass folded it into the permute
-    and removed it. The fold happens to compute the right numbers for both (see the note on a
-    view destination above), so what fails without the check is the pass audit
-    (``EINSUMS_PASS_VERIFY``), which refuses the removal of a node carrying either feature.
+
+@pytest.mark.parametrize("how", ["alone", "default"])
+@pytest.mark.parametrize("operator", [False, True], ids=["transpose", "operator"])
+@pytest.mark.parametrize("alpha, s2, dtype", [
+    (2.0, 0.5, "float64"),
+    (1.0, 0.5j, "complex128"),
+    (0.25 - 1.5j, 0.5j, "complex128"),
+], ids=["scaled", "complex-accumulate", "complex-both"])
+def test_symacc_folds_a_scaled_permute_and_complex_scalars(how, operator, alpha, s2, dtype):
+    """SymmetrizedAccumulation folds ``R += s2 * (alpha P(tmp))`` into one permute.
+
+    The permute's own ``alpha``, its ``P(i/j)`` and a complex ``s2`` all travel into the folded
+    node, which is built from the matched permute's descriptor: ``r2 += (s2 alpha) P(tmp)``.
+    These used to be declined by a hand-built rebuild that knew none of them.
+    """
+    build, expected = _symacc_program(operator=operator, beta=1.0, alpha=alpha, s2=s2, dtype=dtype)
+    _check_symacc_folds(build, [expected], how)
+
+
+@pytest.mark.parametrize("how", ["alone", "default"])
+def test_symacc_leaves_an_accumulate_into_a_view(how):
+    """SymmetrizedAccumulation does not fold the second accumulate when it writes a view.
+
+    ``R += tmp; tmpP = tmp^T; R += 0.5 tmpP``, with R a ``cg.view`` of a larger tensor. The pass
+    reads through views and does not rewrite a node that writes one. Defends the ``understands``
+    check on that accumulate: without it the pass folded it into the permute and removed it. The
+    fold happens to compute the right numbers here, so what fails without the check is the pass
+    audit (``EINSUMS_PASS_VERIFY``), which refuses the removal of a node writing a view.
     """
     rng = np.random.default_rng(7)
     n = 4
-    dtype = "complex128" if feature == "complex" else "float64"
     x0 = rng.standard_normal((n, n))
     r0 = rng.standard_normal((n + 1, n + 1))
-    if feature == "complex":
-        x0 = x0 + 1j * rng.standard_normal((n, n))
-        r0 = r0[:n, :n] + 1j * rng.standard_normal((n, n))
-    s = 0.5j if feature == "complex" else 0.5
     expected = r0.copy()
-    block = (slice(1, n + 1), slice(0, n)) if feature == "view" else (slice(None), slice(None))
-    expected[block] += x0 + s * x0.T
+    expected[1:n + 1, 0:n] += x0 + 0.5 * x0.T
 
     def build(graph):
         Rt, X = _tensor("R", r0), _tensor("X", x0)
         # Graph-owned scratch: the pass only folds a permuted result nothing outside the graph reads.
-        tmp, tmp_p = graph.scratch("tmp", [n, n], dtype), graph.scratch("tmpP", [n, n], dtype)
+        tmp, tmp_p = graph.scratch("tmp", [n, n], "float64"), graph.scratch("tmpP", [n, n], "float64")
         with cg.capture(graph):
-            R = cg.view(Rt, [(1, n + 1), (0, n)]) if feature == "view" else Rt
+            R = cg.view(Rt, [(1, n + 1), (0, n)])
             einsums.linalg.axpby(1.0, X, 0.0, tmp)
             einsums.linalg.axpy(1.0, tmp, R)
             einsums.permute("j,i <- i,j", tmp_p, tmp)
-            einsums.linalg.axpby(s, tmp_p, 1.0, R)
+            einsums.linalg.axpby(0.5, tmp_p, 1.0, R)
         return [Rt]
 
-    _check(build, [expected], how, "SymmetrizedAccumulation")
+    _check_symacc_folds(build, [expected], how, folded=0)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -614,9 +661,10 @@ def test_inplace_optimization_leaves_a_consumer_reading_a_redirected_slot():
     A saved ``B = X; C = B * B; R = B; Y = C`` chain, edited so that the product's first operand
     and R's source name B2, a duplicate of B whose slot is redirected to B. By raw id B has one
     reader, the product, so B looks like it dies there; through the redirect R still reads B
-    afterwards. The pass does not declare RedirectedSlot. Defends the ``understands`` check on the
-    consumer: without it the pass wrote C into B's storage, and R read ``X * X`` instead of X
-    (max abs error 72 on this data).
+    afterwards. Defends the pass counting reads per buffer: first by an ``understands`` check
+    that kept it off redirected slots, now by counting B2's readers as B's. Without either the
+    pass wrote C into B's storage, and R read ``X * X`` instead of X (max abs error 72 on this
+    data).
     """
     n = 3
     x0 = np.arange(1.0, 10.0).reshape(n, n)
@@ -660,3 +708,108 @@ def test_inplace_optimization_leaves_a_consumer_reading_a_redirected_slot():
         _run_file(edited, ops, pass_name)
         np.testing.assert_allclose(np.asarray(ops["R"]), x0, rtol=RTOL, atol=ATOL)
         np.testing.assert_allclose(np.asarray(ops["Y"]), x0 * x0, rtol=RTOL, atol=ATOL)
+
+
+def _inplace_redirect_case():
+    """A saved ``B = X Y; C = 2 (B2 * D); R = C Y`` chain, where B2's slot is redirected to B.
+
+    B's only reader is the product, through B2, so B dies there and C can take its storage.
+    """
+    rng = np.random.default_rng(34)
+    n = 4
+    x, y, d = rng.standard_normal((n, n)), rng.standard_normal((n, n)), 2.0 + rng.random((n, n))
+    expected = (2.0 * (x @ y) * d) @ y
+
+    def operands():
+        return {"X": _tensor("X", x), "Y": _tensor("Y", y), "D": _tensor("D", d), "R": _tensor("R", np.zeros((n, n)))}
+
+    ops = operands()
+    graph = cg.Graph("redirect")
+    # Declared without a zero: Materialization zero-initializes a declared zero tensor with an
+    # Initialize node, and a destination carrying one is declined.
+    b = graph.declare_tensor("B", [n, n], True)
+    c = graph.declare_tensor("C", [n, n], True)
+    with cg.capture(graph):
+        einsums.einsum("ij <- ik ; kj", b, ops["X"], ops["Y"], c_pf=0.0, ab_pf=1.0)
+        einsums.linalg.direct_product(2.0, b, ops["D"], 0.0, c)
+        einsums.einsum("ij <- ik ; kj", ops["R"], c, ops["Y"], c_pf=0.0, ab_pf=1.0)
+    return _redirected_file(graph, "B", "B2"), operands, expected
+
+
+@pytest.mark.parametrize("how", ["alone", "default"])
+def test_inplace_optimization_merges_through_a_redirected_slot(how):
+    """InplaceOptimization reuses the storage a redirected slot reads when that storage dies.
+
+    The product reads B only through B2, whose slot is redirected to B, and nothing else reads
+    B, so C takes B's storage and the product writes where it reads, element by element. This
+    shape used to be declined by the pass's feature declaration.
+    """
+    path, operands, expected = _inplace_redirect_case()
+    ops = operands()
+    loaded = cg.load_graph(path)
+    for name in loaded.manifest_names():
+        loaded.bind(name, ops[name])
+    if how == "alone":
+        inplace = _G.InplaceOptimization()
+        manager = cg.PassManager()
+        manager.add(inplace)
+        loaded.apply(manager)
+        assert inplace.num_merged == 1, inplace.skip_reasons
+        _apply_one_pass(loaded, "Materialization")
+    else:
+        manager = cg.default_pass_manager()
+        loaded.apply(manager)
+        assert "InplaceOptimization: merged 1 buffer(s)" in manager.explain(), manager.explain()
+    for _ in range(2):
+        loaded.execute()
+        np.testing.assert_allclose(np.asarray(ops["R"]), expected, rtol=RTOL, atol=ATOL)
+
+
+
+def test_inplace_optimization_sees_a_consumer_read_its_destination_through_a_redirected_slot():
+    """``D = 2 S * D2``, D2's slot redirected to D, keeps D's own storage.
+
+    A saved ``S = X Y; D = 2 S * D; R = D`` program, edited so the product reads its own
+    destination through D2, a duplicate whose slot is redirected to D. D is declared with a zero,
+    so the product computes zero. Defends the destination check comparing buffers: by raw id the
+    product does not read D, so the pass put D in the dying S's storage, D2 followed the redirect
+    there, and the product computed ``2 S * S``.
+    """
+    rng = np.random.default_rng(35)
+    n = 4
+    x, y = rng.standard_normal((n, n)), rng.standard_normal((n, n))
+
+    def operands():
+        return {"X": _tensor("X", x), "Y": _tensor("Y", y), "R": _tensor("R", np.ones((n, n)))}
+
+    ops = operands()
+    graph = cg.Graph("redirect")
+    s, d = (graph.declare_zero_tensor(name, [n, n], True) for name in ("S", "D"))
+    with cg.capture(graph):
+        einsums.einsum("ij <- ik ; kj", s, ops["X"], ops["Y"], c_pf=0.0, ab_pf=1.0)
+        einsums.linalg.direct_product(2.0, s, d, 0.0, d)
+        einsums.linalg.axpby(1.0, d, 0.0, ops["R"])
+
+    scratch = tempfile.mkdtemp()
+    path = os.path.join(scratch, "saved.eig.json")
+    cg.save_graph(graph, path)
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    kept = next(tn for tn in doc["tensors"] if tn["name"] == "D")
+    dup = dict(kept)
+    dup["id"] = max(tn["id"] for tn in doc["tensors"] + doc["manifest"]) + 1
+    dup["name"] = "D2"
+    doc["tensors"].append(dup)
+    doc["slot_redirects"] = [{"from": dup["id"], "to": kept["id"]}]
+    product = next(node for node in doc["nodes"] if node["kind"] == "DirectProduct")
+    product["inputs"] = [dup["id"] if i == kept["id"] else i for i in product["inputs"]]
+    edited = os.path.join(scratch, "redirected.eig.json")
+    with open(edited, "w", encoding="utf-8") as f:
+        json.dump(doc, f)
+    assert cg.validate_graph_ir(edited) is None
+
+    for pass_name in (None, "InplaceOptimization"):
+        ops = operands()
+        _run_file(edited, ops, pass_name)
+        np.testing.assert_allclose(np.asarray(ops["R"]), np.zeros((n, n)), rtol=RTOL, atol=ATOL)
+

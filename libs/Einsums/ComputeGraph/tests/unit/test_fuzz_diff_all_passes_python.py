@@ -104,14 +104,19 @@ _GUARD_CORPORA = ((440_000, 2, 6), (450_000, 0, 10))
 #: pass must decline on, so they catch a motif that stopped producing its
 #: shape rather than ordinary drift. AntisymmetrizerFolding is low by construction: it
 #: needs AntisymmetryInference ahead of it and AntisymmetrizerExpansion behind
-#: it, one shuffled order in six.
+#: it, one shuffled order in six. Once the fold carried a scaled operator and a
+#: conjugated contraction it measured 0.09 and its floor rose with it; the
+#: symmetrization sites that accumulate through a view, which the pass leaves
+#: alone, brought SymmetrizedAccumulation to 0.13. The fold and factoring motifs'
+#: view variants, and the repeated sum, left LinearCombinationContractionFolding
+#: at 0.15 and DistributiveFactoring at 0.15.
 _FIRE_FLOORS = {
     "ProvenancePropagation": 0.065,
     "DeltaElimination": 0.09,
     "AntisymmetryDetection": 0.23,
     "AntisymmetrizerLinearity": 0.06,
     "AntisymmetryInference": 0.22,
-    "AntisymmetrizerFolding": 0.03,
+    "AntisymmetrizerFolding": 0.045,
     "SymmetrizedAccumulation": 0.11,
     "LinearCombinationContractionFolding": 0.11,
     "DistributiveFactoring": 0.09,
@@ -166,7 +171,7 @@ def test_every_motif_is_drawn():
             prog = allpass_program(np.random.default_rng(base + seed), depth, max_stmts)
             walk(prog)
             slots |= allpass_named_slots(prog)
-    for opcode in ("aperm", "dot", "ddiv", "leinsum", "perm", "axpby", "einsum"):
+    for opcode in ("aperm", "dot", "dotc", "ddiv", "leinsum", "perm", "axpby", "einsum", "xeinsum"):
         assert opcode in opcodes, f"no program in the guard corpus holds a {opcode!r} statement"
     for role, by_shape in ALLPASS_XM_BY.items():
         role_slots = {s for group in by_shape.values() for s in group}
@@ -191,8 +196,9 @@ class _FixedOrder:
 
 
 def _pinned(prog, order, label, dtype="float64", runs=1, seed=3):
+    """Run @p prog through @p order and check it; returns the passes that fired."""
     arrays = allpass_seed_arrays(np.random.default_rng(seed), dtype)
-    check_program_all_passes(prog, arrays, label, _FixedOrder(order), dtype=dtype, runs=runs)
+    return check_program_all_passes(prog, arrays, label, _FixedOrder(order), dtype=dtype, runs=runs)
 
 
 def _xm1(role, shape, k=0):
@@ -341,13 +347,14 @@ def test_antisymmetrizer_folding_keeps_the_operator_prefactor():
 
     Defends against the fold repointing the dot at the permute's source and
     scaling by the term count without reading the permute's own ``alpha``,
-    which left the result off by exactly that factor.
+    which left the result off by exactly that factor. The contraction is folded.
     """
     W, V = _xm1("foldscr", (3, 3), 0), _xm1("foldscr", (3, 3), 1)
     prog = [("aperm", "m", _OP_IJ, 2.0, _M33[0], 0.0, W),
             ("aperm", "m", _OP_IJ, 3.0, _M33[1], 0.0, V),
             ("dot", "m", VEC_BY_LEN[1][0], W, V)]
-    _pinned(prog, ["AntisymmetryInference", "AntisymmetrizerFolding"], "fold_alpha")
+    fired = _pinned(prog, ["AntisymmetryInference", "AntisymmetrizerFolding"], "fold_alpha")
+    assert "AntisymmetrizerFolding" in fired
 
 
 def test_antisymmetrizer_folding_sees_its_source_overwritten():

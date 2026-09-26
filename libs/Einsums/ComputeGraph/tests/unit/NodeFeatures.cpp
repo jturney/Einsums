@@ -14,6 +14,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 
+#include <algorithm>
 #include <complex>
 #include <optional>
 #include <stdexcept>
@@ -140,7 +141,24 @@ TEST_CASE("features_of names what a node carries", "[ComputeGraph][NodeFeatures]
         }
         auto const &contraction = graph.nodes().back();
         REQUIRE(contraction.kind == cg::OpKind::Einsum);
-        CHECK(cg::features_of(graph, contraction).covers(cg::NodeFeature::Views));
+        CHECK(cg::features_of(graph, contraction) == cg::NodeFeature::Views);
+        // The View node writes the slice it makes.
+        auto const &making = graph.nodes().front();
+        REQUIRE(making.kind == cg::OpKind::View);
+        CHECK(cg::features_of(graph, making) == (cg::NodeFeature::Views | cg::NodeFeature::WritesView));
+    }
+    SECTION("a write through a view") {
+        auto      D = create_zero_tensor<double>("D", 4, 3);
+        cg::Graph graph("view write");
+        {
+            cg::CaptureGuard const guard(graph);
+            auto                  &slice = cg::view(D, cg::ViewAxis::range(1, 4), cg::ViewAxis::full());
+            cg::einsum("ik;kj->ij", &slice, A, B);
+        }
+        auto const &contraction = graph.nodes().back();
+        REQUIRE(contraction.kind == cg::OpKind::Einsum);
+        CHECK(cg::features_of(graph, contraction) == (cg::NodeFeature::Views | cg::NodeFeature::WritesView));
+        CHECK(cg::describe_features(cg::features_of(graph, contraction)) == "views, view write");
     }
     SECTION("control flow") {
         cg::Graph graph("loop");
@@ -209,6 +227,25 @@ TEST_CASE("a pass that touches a node it does not understand is caught", "[Compu
         manager.add(std::make_shared<EinsumRemover>(cg::NodeFeatures{cg::NodeFeature::PermutationOperators}, /*asks=*/false));
         CHECK(manager.run(graph));
         CHECK(graph.nodes().empty());
+    }
+
+    SECTION("a pass that reads through views leaves a view's writer alone") {
+        auto      D = create_random_tensor<double>("D", 3, 3);
+        auto      E = create_zero_tensor<double>("E", 4, 3);
+        cg::Graph graph("reads views");
+        {
+            cg::CaptureGuard const guard(graph);
+            auto                  &read  = cg::view(D, cg::ViewAxis::full(), cg::ViewAxis::full());
+            auto                  &write = cg::view(E, cg::ViewAxis::range(1, 4), cg::ViewAxis::full());
+            cg::einsum("ik;kj->ij", &C, read, A);
+            cg::einsum("ik;kj->ij", &write, A, A);
+        }
+        cg::PassManager manager;
+        manager.add(std::make_shared<EinsumRemover>(cg::NodeFeatures{cg::NodeFeature::Views}, /*asks=*/true));
+        CHECK(manager.run(graph));
+        REQUIRE(graph.nodes().back().kind == cg::OpKind::Einsum);
+        CHECK(cg::features_of(graph, graph.nodes().back()).covers(cg::NodeFeature::WritesView));
+        CHECK(std::ranges::count(graph.nodes(), cg::OpKind::Einsum, &cg::Node::kind) == 1);
     }
 
     SECTION("a pass that declares nothing is not checked") {

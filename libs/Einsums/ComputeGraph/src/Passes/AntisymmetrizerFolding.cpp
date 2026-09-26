@@ -39,10 +39,11 @@ namespace {
 
 /// What a node carrying a permutation operator offers this pass.
 struct OperatorProducer {
-    TensorId                         source{0}; ///< the operand the operator is applied to
-    std::vector<PermutationOperator> operators; ///< the operators, as written
-    std::vector<std::string>         c_indices; ///< the output index list they permute
-    std::size_t                      terms{0};  ///< the expansion's term count, the factor N
+    TensorId                         source{0};  ///< the operand the operator is applied to
+    std::vector<PermutationOperator> operators;  ///< the operators, as written
+    std::vector<std::string>         c_indices;  ///< the output index list they permute
+    std::size_t                      terms{0};   ///< the expansion's term count, the factor N
+    PrefactorScalar                  alpha{1.0}; ///< the producer's own scale, C = alpha P(A)
     bool                             overwrites{false};
 };
 
@@ -54,13 +55,12 @@ std::optional<OperatorProducer> read_producer(Node const &node) {
         if (desc == nullptr || desc->operators.empty() || node.inputs.size() != 1) {
             return std::nullopt;
         }
-        // The fold replaces the permuted tensor by its source and multiplies by the term count, so
-        // it only describes `C = P(A)`. A scaled permute `C = alpha P(A)` would lose alpha; the
-        // LIVE value, since a pass that folded a scale into the permute wrote it there.
-        bool const unscaled = desc->params != nullptr ? is_one(desc->params->alpha) : desc->alpha == std::complex<double>{1.0, 0.0};
-        if (!unscaled) {
-            return std::nullopt;
-        }
+        // The fold replaces the permuted tensor by its source and multiplies by the term count
+        // AND by the permute's own scale, `C = alpha P(A)`. The LIVE value, since a pass that
+        // folded a scale into the permute wrote it there.
+        out.alpha      = desc->params != nullptr     ? desc->params->alpha
+                         : desc->alpha.imag() == 0.0 ? PrefactorScalar{desc->alpha.real()}
+                                                     : PrefactorScalar{desc->alpha};
         out.source     = node.inputs[0];
         out.operators  = desc->operators;
         out.c_indices  = desc->c_indices;
@@ -284,6 +284,25 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
         auto const result_dtype = result_handle->dtype;
         auto const result_rank  = result_handle->rank;
 
+        // The dot is bilinear, or sesquilinear with its first operand conjugated, and the
+        // operator's signs are real: <W, alpha P V> = alpha N <W, V>, and alpha comes out
+        // conjugated from the conjugated slot. A real result cannot carry an imaginary alpha,
+        // which the captured producer refuses at execute; the fold keeps that refusal where it is.
+        auto const           *dot_desc   = graph.nodes()[site.dot_index].op_data.get_if<DotDescriptor>();
+        bool const            conjugated = dot_desc != nullptr && dot_desc->conjugated;
+        PrefactorScalar const alpha =
+            conjugated && site.slot == 0 ? PrefactorScalar{std::conj(as<std::complex<double>>(site.producer.alpha))} : site.producer.alpha;
+        bool const complex_result =
+            result_dtype == packed_gemm::ScalarType::Complex64 || result_dtype == packed_gemm::ScalarType::Complex128;
+        if (!complex_result && !is_real_valued(alpha)) {
+            note_skip("the operator carries a complex scale and the contraction's result is real",
+                      fmt::format("dot #{}", graph.nodes()[site.dot_index].id));
+            continue;
+        }
+        auto const            terms = static_cast<double>(site.producer.terms);
+        PrefactorScalar const factor =
+            complex_result ? multiply_prefactors(PrefactorScalar{terms}, alpha) : PrefactorScalar{terms * as_real<double>(alpha)};
+
         Node &dot             = graph.nodes()[site.dot_index];
         dot.inputs[site.slot] = site.producer.source;
         dot.label             = fmt::format("{} (antisymmetrizer folded, x{})", dot.label, site.producer.terms);
@@ -299,14 +318,14 @@ bool AntisymmetrizerFolding::run(Graph &graph) {
                                      std::span<TensorId const>{dot.outputs});
 
         ScaleDescriptor desc;
-        desc.factor        = PrefactorScalar{static_cast<double>(site.producer.terms)};
+        desc.factor        = factor;
         desc.params        = std::make_shared<ElementwiseParams>();
         desc.params->alpha = desc.factor;
 
         Node scale;
         scale.id      = graph.reserve_node_id();
         scale.kind    = OpKind::Scale;
-        scale.label   = fmt::format("antisymmetrizer fold: x{}", site.producer.terms);
+        scale.label   = fmt::format("antisymmetrizer fold: x{}", to_string(factor));
         scale.inputs  = {site.result};
         scale.outputs = {site.result};
         scale.op_data = OpData(std::move(desc));

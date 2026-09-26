@@ -7,11 +7,13 @@
 #include <Einsums/ComputeGraph/Passes/AntisymmetrizerFolding.hpp>
 #include <Einsums/ComputeGraph/Passes/AntisymmetryDetection.hpp>
 #include <Einsums/ComputeGraph/Passes/AntisymmetryInference.hpp>
+#include <Einsums/ComputeGraph/Passes/DeadNodeElimination.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/SymmetryOps.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 
+#include <complex>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -132,6 +134,41 @@ TEST_CASE("AntisymmetrizerFolding - declines without an established premise", "[
     CHECK(fold->num_candidates() >= 1);
     CHECK(fold->num_folded() == 0);
     CHECK(fold->explain().empty());
+}
+
+// A real contraction under an operator scaled by i, as a loaded file can carry it. As captured,
+// the replay refuses the scale where the operator applies it. The fold would move that scale onto
+// the result, where a real result cannot hold it, and once DeadNodeElimination drops the operator
+// node nothing refuses any more: the fold must leave the contraction alone.
+TEST_CASE("AntisymmetrizerFolding - a real result is not folded under an imaginary scale", "[ComputeGraph][AntisymmetrizerFolding]") {
+    size_t const              n = 3;
+    std::vector<size_t> const dims{n, n, n};
+    auto                      w_typed = create_random_tensor<double>("wsrc", n, n, n);
+    auto                      v_typed = create_random_tensor<double>("vsrc", n, n, n);
+    RuntimeTensor<double>     wsrc(w_typed);
+    RuntimeTensor<double>     vsrc(v_typed);
+
+    RuntimeTensor<double> result("r", {1});
+    cg::Graph             graph("imaginary_scale");
+    capture_energy(graph, "i,j,k <- P(i/j/k) i,j,k", dims, wsrc, vsrc, result);
+    // Both operator nodes, so the fold has no unscaled operand to pick instead.
+    for (auto &node : graph.nodes()) {
+        if (auto *pd = node.op_data.get_if<cg::PermuteDescriptor>(); pd != nullptr) {
+            pd->alpha         = std::complex<double>{0.0, 1.0};
+            pd->params->alpha = cg::PrefactorScalar{std::complex<double>{0.0, 1.0}};
+        }
+    }
+
+    auto            fold = std::make_shared<cg::passes::AntisymmetrizerFolding>();
+    cg::PassManager manager;
+    manager.add(std::make_shared<cg::passes::AntisymmetryInference>());
+    manager.add(fold);
+    manager.add(std::make_shared<cg::passes::DeadNodeElimination>());
+    graph.apply(manager);
+
+    CHECK(fold->num_candidates() >= 1);
+    CHECK(fold->num_folded() == 0);
+    CHECK_THROWS(graph.execute());
 }
 
 TEST_CASE("AntisymmetrizerFolding - a graph with no operator is untouched", "[ComputeGraph][AntisymmetrizerFolding]") {

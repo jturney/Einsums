@@ -13,6 +13,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import einsums
+import einsums._core.graph as _G
+import einsums.graph as cg
 from _fuzz_diff_common import *  # shared fuzz/differential harness
 
 
@@ -149,3 +152,114 @@ def test_fuzz_cse_redundant(seed):
 
     prog = dup + [consumer]
     _check_cse(prog, pool, [], [], f"cse_redundant{seed}", dead_m={C2})
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Diamonds over views.
+#
+# The duplicates read their operands through views of larger matrices, and the
+# duplicate's output is graph scratch, so the merge is reachable (the pool
+# diamonds above write caller tensors, which Guard C keeps). Each view is made
+# once and read by both duplicates, as a caller slicing ``X[a:b]`` once and
+# using it twice would; the xeinsum references above make a new view per
+# statement, whose distinct ids never meet in one bucket. What varies is the
+# alias shape each guard exists for: an operand block rescaled through its view
+# between the two products (Guard A), a reader that reaches the duplicate's
+# output through a view of it rather than by its id, and a duplicate that
+# writes a view of its output instead of the whole tensor. Each program is
+# compared against numpy after CSE alone and after the default pipeline.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _view_diamond(seed):
+    """Build and check one view diamond; True when CSE alone merged it."""
+    rng = np.random.default_rng(118_000 + seed)
+    n = int(rng.choice(DIMS[1:]))
+    la = einsums.linalg
+
+    def operand(name):
+        """A block of a larger matrix (sliced eagerly or captured), or a whole matrix."""
+        roll = rng.random()
+        if roll < 0.35:
+            return ("whole", rng.standard_normal((n, n)), None)
+        rows, cols = n + int(rng.integers(0, 3)), n + int(rng.integers(0, 3))
+        r0, c0 = int(rng.integers(0, rows - n + 1)), int(rng.integers(0, cols - n + 1))
+        box = (slice(r0, r0 + n), slice(c0, c0 + n))
+        return ("eager" if roll < 0.7 else "captured", rng.standard_normal((rows, cols)), box)
+
+    ops = [operand("A"), operand("B")]
+    e = rng.standard_normal((n, n))
+    rescale = _scalar(rng) if ops[0][0] != "whole" and rng.random() < 0.2 else None
+    write_view = rng.random() < 0.15
+    read_view = rng.random() < 0.25
+
+    # numpy: the program as written.
+    arrays = [p.copy() for _, p, _ in ops]
+    blocks = [a if box is None else a[box] for (_, _, box), a in zip(ops, arrays)]
+    c1 = blocks[0] @ blocks[1]
+    if rescale is not None:
+        blocks[0][...] *= rescale
+    c2 = blocks[0] @ blocks[1]
+    expected = [a.copy() for a in arrays] + [c1 @ e, c2 @ e]
+
+    def run(how):
+        held = []
+        graph = cg.Graph(f"cse_view{seed}_{how}")
+        parents = [einsums.asarray(p.copy()) for _, p, _ in ops]
+        E, F, D = einsums.asarray(e), einsums.zeros([n, n]), einsums.zeros([n, n])
+        C1 = graph.create_zero_tensor("C1", [n, n])
+        C2 = graph.create_zero_tensor("C2", [n, n])
+        views = [None if kind == "captured" else P if box is None else P[box[0].start:box[0].stop, box[1].start:box[1].stop]
+                 for (kind, _, box), P in zip(ops, parents)]
+        out2 = C2[0:n, 0:n] if write_view else C2
+        read2 = C2[0:n, 0:n] if read_view else C2
+        with cg.capture(graph):
+            for i, ((kind, _, box), P) in enumerate(zip(ops, parents)):
+                if kind == "captured":
+                    views[i] = cg.view(P, [(box[0].start, box[0].stop), (box[1].start, box[1].stop)])
+            A, B = views
+            einsums.einsum("ij <- ik ; kj", C1, A, B)
+            if rescale is not None:
+                la.scale(rescale, A)
+            einsums.einsum("ij <- ik ; kj", out2, A, B)
+            einsums.einsum("ij <- ik ; kj", F, C1, E)
+            einsums.einsum("ij <- ik ; kj", D, read2, E)
+        held += [views, out2, read2]
+        merged = False
+        if how == "alone":
+            cse = _G.CSE()
+            pm = cg.PassManager()
+            pm.add(cse)
+            graph.apply(pm)
+            merged = cse.num_eliminated > 0
+        else:
+            graph.apply(cg.default_pass_manager())
+        graph.execute()
+        got = [np.asarray(P) for P in parents] + [np.asarray(F), np.asarray(D)]
+        for idx, (g, w) in enumerate(zip(got, expected)):
+            assert np.allclose(g, w, rtol=RTOL, atol=ATOL), (
+                f"CSE-VIEW-{how} seed={seed} output {idx}: ops={[k for k, _, _ in ops]} rescale={rescale} "
+                f"write_view={write_view} read_view={read_view}\ngot=\n{g}\nwant=\n{w}")
+        return merged
+
+    merged = run("alone")
+    run("default")
+    return merged
+
+
+@pytest.mark.parametrize("seed", fuzz_seeds(200))
+def test_fuzz_cse_view_diamonds(seed):
+    _view_diamond(seed)
+
+
+def test_cse_view_diamonds_merge():
+    """The view diamonds are not vacuous: CSE merges a fair share of them.
+
+    About half of the corpus is mergeable (the operand block stable, the
+    duplicate writing its whole output, the reader naming it); the floor sits
+    well under that, so it catches a guard that started refusing reads through
+    views rather than drift.
+    """
+    seeds = range(60)
+    merged = sum(_view_diamond(seed) for seed in seeds)
+    assert merged >= 0.3 * len(seeds), f"CSE merged {merged} of {len(seeds)} view diamonds"

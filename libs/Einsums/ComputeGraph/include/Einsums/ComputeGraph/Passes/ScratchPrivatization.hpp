@@ -85,9 +85,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// Every feature today: a rebuilt node keeps its operators, conjugation and live prefactors, and any view, redirect or body access
     /// disqualifies the buffer.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
-        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::Conjugation |
-               NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow |
-               NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::WritesView |
+               NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped |
+               NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar | NodeFeature::RedirectedSlot;
     }
 
     /// @copydoc OptimizerPass::phase

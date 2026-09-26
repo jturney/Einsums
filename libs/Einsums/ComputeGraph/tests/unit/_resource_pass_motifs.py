@@ -753,6 +753,117 @@ class SpaceChain(Motif):
         return super().describe() + f" dims={self.ov} conflict={self.conflict} cpf={self.cpf}"
 
 
+class InplaceMerge(Motif):
+    """Graph-owned scratch dying at an element-wise consumer, the shape InplaceOptimization merges.
+
+    ``S_i = A_i B_i`` into scratch, then ``T_i = f(S_i)`` by a product, a quotient or an axpby,
+    one node per member or one grouped node for all of them, then ``R_i (+)= T_i C_i`` into the
+    caller's tensors. Each S_i dies at the consumer and each T_i is pure-written there, so every
+    member is a merge. Draws the pass must decline ride along: a read of T_0 ahead of the
+    consumer, which sees the T_0 the last replay left
+    (``test_inplace_optimization_keeps_a_destination_read_before_its_writer``); a consumer reading
+    S_0 through a view; and a grouped axpby whose first member reads the next member's
+    destination (``test_inplace_optimization_keeps_a_member_whose_destination_an_earlier_member_reads``).
+    Scratch a hazard reads before its writer is created eagerly, since only then does it hold a
+    defined value; the rest is created or declared without a zero. Never in a loop body: the pass
+    leaves a graph holding control flow alone, and a body sees the parent's scratch as operands
+    rather than as its own intermediates, so a looped draw would only ever be declined.
+    """
+
+    kind = "inplace"
+
+    def __init__(self, rng, dtype, tag):
+        super().__init__(rng, dtype, tag)
+        n = int(rng.integers(2, 6))
+        self.n = n
+        self.count = int(rng.integers(1, 4))
+        self.op = str(rng.choice(["product", "division", "axpby"]))
+        self.grouped = self.count > 1 and rng.random() < 0.6
+        self.alphas = [_scalar(rng) for _ in range(self.count)]
+        self.cpf = float(rng.choice([0.0, 1.0]))
+        self.read_early = bool(rng.random() < 0.2)
+        self.view_src = not self.grouped and rng.random() < 0.15
+        self.cross = self.grouped and self.op == "axpby" and rng.random() < 0.3
+        self.declared = not (self.read_early or self.cross) and rng.random() < 0.4
+        for i in range(self.count):
+            self.np[f"A{i}"] = _rand(rng, (n, n), dtype)
+            self.np[f"B{i}"] = _rand(rng, (n, n), dtype)
+            self.np[f"C{i}"] = _rand(rng, (n, n), dtype)
+            self.np[f"D{i}"] = (2.0 + rng.random((n, n))).astype(np.dtype(dtype))
+            self.np[f"R{i}"] = _rand(rng, (n, n), dtype)
+        if self.read_early or self.cross:
+            self.np["RE"] = _rand(rng, (n, n), dtype)
+
+    def build(self, g, target):
+        self.t = {k: _tensor(f"{self.tag}_{k}", v) for k, v in self.np.items()}
+        n, count = self.n, self.count
+
+        def scratch(name):
+            if self.declared:
+                return g.declare_tensor(f"{self.tag}_{name}", [n, n], intermediate=True, dtype=self.dtype)
+            return g.create_zero_tensor(f"{self.tag}_{name}", [n, n], intermediate=True, dtype=self.dtype)
+
+        S = [scratch(f"S{i}") for i in range(count)]
+        T = [scratch(f"T{i}") for i in range(count)]
+        E = scratch("E") if self.read_early or self.cross else None
+        self._keep = S + T + ([E] if E is not None else [])
+        t = self.t
+        la = einsums.linalg
+        with cg.capture(target):
+            for i in range(count):
+                einsums.einsum("ij <- ik ; kj", S[i], t[f"A{i}"], t[f"B{i}"], c_pf=0.0, ab_pf=1.0)
+            if self.read_early:
+                la.axpby(1.0, T[0], 0.0, E)
+            src = [cg.view(S[0], [(0, n), (0, n)])] + S[1:] if self.view_src else S
+            D = [t[f"D{i}"] for i in range(count)]
+            if self.grouped:
+                zeros = [0.0] * count
+                if self.op == "product":
+                    la.grouped_direct_product(self.alphas, src, D, zeros, T)
+                elif self.op == "division":
+                    la.grouped_direct_division(self.alphas, src, D, zeros, T)
+                elif self.cross:
+                    la.grouped_axpby([1.0] + self.alphas, [T[1]] + src, [0.0] + zeros, [E] + T)
+                else:
+                    la.grouped_axpby(self.alphas, src, zeros, T)
+            else:
+                for i in range(count):
+                    if self.op == "product":
+                        la.direct_product(self.alphas[i], src[i], D[i], 0.0, T[i])
+                    elif self.op == "division":
+                        la.direct_division(self.alphas[i], src[i], D[i], 0.0, T[i])
+                    else:
+                        la.axpby(self.alphas[i], src[i], 0.0, T[i])
+            for i in range(count):
+                einsums.einsum("ij <- ik ; kj", t[f"R{i}"], T[i], t[f"C{i}"], c_pf=self.cpf, ab_pf=1.0)
+            if E is not None:
+                la.axpby(1.0, E, 0.0, t["RE"])
+
+    def step(self, a):
+        zero = np.zeros((self.n, self.n), dtype=np.dtype(self.dtype))
+        S = [a[f"A{i}"] @ a[f"B{i}"] for i in range(self.count)]
+        if self.read_early:
+            a["_E"] = a.get("_T0", zero).copy()
+        if self.cross:
+            a["_E"] = a.get("_T1", zero).copy()
+        for i in range(self.count):
+            if self.op == "product":
+                a[f"_T{i}"] = self.alphas[i] * S[i] * a[f"D{i}"]
+            elif self.op == "division":
+                a[f"_T{i}"] = self.alphas[i] * S[i] / a[f"D{i}"]
+            else:
+                a[f"_T{i}"] = self.alphas[i] * S[i]
+        for i in range(self.count):
+            a[f"R{i}"] = self.cpf * a[f"R{i}"] + a[f"_T{i}"] @ a[f"C{i}"]
+        if self.read_early or self.cross:
+            a["RE"] = a["_E"].copy()
+
+    def describe(self):
+        return super().describe() + (f" n={self.n} count={self.count} op={self.op} grouped={self.grouped}"
+                                     f" read_early={self.read_early} view_src={self.view_src} cross={self.cross}"
+                                     f" declared={self.declared} cpf={self.cpf}")
+
+
 class GpuGemm(Motif):
     """A float32 GEMM chain large enough for GPUPlacement's cost model to offload.
 
@@ -815,7 +926,7 @@ class GpuGemm(Motif):
 
 
 MOTIFS = {m.kind: m for m in (StreamJK, LayoutChain, ScratchReuse, BigScratch, TiledChain, TiledAcrossLoop, DiskLoad,
-                              DiskRoundTrip, SpaceChain, GpuGemm)}
+                              DiskRoundTrip, SpaceChain, GpuGemm, InplaceMerge)}
 
 #: The motif each pass needs in order to fire.
 MOTIF_FOR_PASS = {

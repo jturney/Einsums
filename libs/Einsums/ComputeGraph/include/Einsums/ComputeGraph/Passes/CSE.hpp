@@ -62,9 +62,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * with cg.capture(g):
  *     einsums.einsum("ij <- ik ; kj", C, A, B)           # C = A·B
  *     einsums.einsum("ij <- ik ; kj", D, A, B)           # D = A·B  -- duplicate
- * pm = cg.PassManager(); pm.add(cg.CSE())
+ * cse = cg.CSE()
+ * pm = cg.PassManager(); pm.add(cse)
  * g.apply(pm)                                            # or cg.default_pass_manager()
- * # CSE exposes no result counter; the duplicate node is simply removed from g.
+ * # cse.num_eliminated -> 1   (the duplicate node is removed from g)
  * @endcode
  *
  * @par Limitations
@@ -72,7 +73,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   `beta == 0`. Accumulating ops (nonzero destination prefactor) and scale/axpy/element-transform (whose scalar coefficients
  *   are not carried in `op_data`, so equality can't be decided) are never merged.
  * - The duplicate's outputs must be graph-owned intermediates that are **not** views (`is_intermediate && aliases == 0`); a
- *   user-visible output is left in place because the user reads that tensor directly, not through an executor slot.
+ *   user-visible output is left in place because the user reads that tensor directly, not through an executor slot. A node
+ *   that writes a view is never a candidate at all.
+ * - Every reader of the duplicate's output must name the output itself. `Graph::redirect_slot` repoints the duplicate's own
+ *   slot, so a reader reaching the same storage through a view of it, or through a slot redirected onto it, is left reading a
+ *   buffer no node writes any more.
  * - Every merged output buffer must have **exactly one writer** in the whole graph (Guard B), and the shared inputs must not be
  *   overwritten by any node between the two candidates (Guard A); either condition would make the reused value stale.
  * - Neither output may be a buffer a control-flow node's sub-graph reads or writes (Guard D). A Loop/Conditional node's own
@@ -108,10 +113,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
     /// @copydoc OptimizerPass::understood_features
-    /// Not views or redirected slots: the aliasing guards compare tensor objects rather than buffers.
+    /// Not a node that writes a view: the merge repoints the duplicate's own slot, and a view's writes land in its parent's
+    /// storage, which other ids read. Reading through views and redirected slots is understood, because the aliasing guards
+    /// compare the buffers their operands land in.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
-        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
-               NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
+        return NodeFeatures::all().without(NodeFeature::WritesView);
     }
 
     /// @copydoc OptimizerPass::tier
@@ -148,6 +154,9 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// no difference has proved the pass is faithful OR that it never fired, and without a
     /// count it cannot tell those apart. Reset at the top of @ref run.
     APIARY_EXPOSE APIARY_GETTER("num_eliminated") [[nodiscard]] size_t num_eliminated() const { return _num_eliminated; }
+
+    /// @copydoc OptimizerPass::explain
+    [[nodiscard]] std::vector<std::string> explain() const override;
 
   private:
     /// One graph of the tree. @p tree_context is an opaque handle to the

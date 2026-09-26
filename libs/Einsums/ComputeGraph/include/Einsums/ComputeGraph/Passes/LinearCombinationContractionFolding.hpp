@@ -87,9 +87,11 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   A stray overwrite in the tail rejects the group.
  * - Conjugated einsums (`conj_a`/`conj_b`) are skipped; conjugation is not
  *   threaded through the rewrite (they still execute correctly, just unfolded).
- * - Output, shared and non-shared operands must all be **runtime** tensors of one
- *   dtype; typed `Tensor<T,Rank>` captures or a mixed-dtype triple decline (a blind
- *   cast in the fused kernel would be type confusion / a segfault).
+ * - Output, shared and non-shared operands must share one dtype; a mixed-dtype triple
+ *   declines. Each may be a runtime tensor, a typed `Tensor<T,Rank>` or a view: the
+ *   @f$L@f$ build and the fused contraction read every operand through its rank-erased
+ *   geometry, strides included, and the output may be a view the fused contraction
+ *   writes through.
  * - On a real dtype, every member's `ab_prefactor` and node-0's `c_prefactor` must
  *   be real-valued; complex prefactors fold only on complex dtypes.
  * - Interference guard: between the first and last member, no other node may
@@ -99,7 +101,6 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @par Future improvements
  * - Make the fold conj-aware (thread `conj_a`/`conj_b` through the @f$L@f$ build) if
  *   the conjugated variant shows up hot (see the `TODO` in the source).
- * - Extend to statically-typed `Tensor<T,Rank>` captures, not only runtime tensors.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT LinearCombinationContractionFolding
     : public OptimizerPass {
@@ -111,11 +112,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
     /// @copydoc OptimizerPass::understood_features
-    /// Not permutation operators, views or redirected slots: the fused contraction is rebuilt without operators over owning runtime
-    /// tensors.
+    /// Not permutation operators: the fused contraction is rebuilt without them. Not redirected slots, which only a loaded file puts on
+    /// a node the pass sees. Views are understood, read or written: the interference scan compares the buffers the operands land in,
+    /// and both rebuilt nodes read and write through each operand's own geometry.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
-        return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision |
-               NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
+        return NodeFeatures{} | NodeFeature::Views | NodeFeature::WritesView | NodeFeature::Conjugation | NodeFeature::ComplexPrefactor |
+               NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
     }
 
     /// @copydoc OptimizerPass::tier

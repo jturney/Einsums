@@ -13,12 +13,12 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
 /**
  * @brief InplaceOptimization pass: in-place storage merging for elementwise consumers.
  *
- * When an element-aligned elementwise node (DirectProduct, DirectDivision, Axpby with beta == 0)
- * pure-overwrites a graph-owned intermediate while reading another graph-owned intermediate for the
- * LAST time, the output reuses the dying input's storage: the graph metadata merges the two ids
- * (CSE-style rewrite), the output's lifecycle nodes are dropped, and its executor slot is durably
- * redirected. One buffer allocation and its write-traffic disappear per merge - the CC amplitude-update
- * pattern (R -> Tnew = R * invD) is the canonical win.
+ * When an element-aligned elementwise node (DirectProduct, DirectDivision, Axpby with beta == 0, or a
+ * member of their grouped forms) pure-overwrites a graph-owned intermediate while reading another
+ * graph-owned intermediate for the LAST time, the output reuses the dying input's storage: the graph
+ * metadata merges the two ids (CSE-style rewrite), the output's lifecycle nodes are dropped, and its
+ * executor slot is durably redirected. One buffer allocation and its write-traffic disappear per merge -
+ * the CC amplitude-update pattern (R -> Tnew = R * invD) is the canonical win.
  *
  * This pass is in the default pipeline, run before FreeInsertion / MemoryPlanning so each merge removes
  * a buffer and shortens the intervals those liveness passes then work with.
@@ -26,10 +26,14 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @par Soundness guards
  * - Consumer whitelist: only ops whose out[i] depends solely on element i of the inputs may alias
  *   output with input (contractions and permutes never qualify). Pure overwrite is detected via the
- *   out-tensor-as-input recording convention.
- * - Both tensors: graph-owned intermediates, not viewed by anyone, identical dims and byte size; the
- *   source has exactly one producer and dies at the consumer; the destination has exactly one writer
- *   and no Initialize.
+ *   out-tensor-as-input recording convention. A grouped member may only reuse one of its own inputs,
+ *   and no member of the node may read the destination, because the members run at once.
+ * - Both tensors: graph-owned intermediates owning their storage (not views, not redirected onto another
+ *   tensor, not viewed by anyone), identical dims, dtype and byte size. The source has exactly one
+ *   producer, which runs before the consumer, and dies at the consumer; the destination has exactly one
+ *   writer, no Initialize, and no reader ahead of the consumer.
+ * - Reads and writes are counted per buffer (Graph::buffer_of), so a node reading a tensor through a
+ *   redirected slot counts as a reader of the storage the slot was redirected to.
  * - Graphs containing control flow at this level are skipped (bodies reference parent tensors invisibly
  *   to plain use-counts); bodies are processed on their own recursion level. GPU-placed graphs are
  *   skipped (device shadows swap buffers behind the slots).
@@ -70,9 +74,9 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * @endcode
  *
  * @par Limitations
- * - Only the element-aligned elementwise consumers DirectProduct, DirectDivision and Axpby(beta == 0)
- *   may alias output with a dying input; contractions (Einsum/Gemm/BatchedGemm) and permutes are
- *   excluded and never merge.
+ * - Only the element-aligned elementwise consumers DirectProduct, DirectDivision and Axpby(beta == 0), and
+ *   the grouped forms of the three, may alias output with a dying input; contractions
+ *   (Einsum/Gemm/BatchedGemm) and permutes, grouped or not, are excluded and never merge.
  * - Both tensors must be graph-owned intermediates, non-viewed, with identical dims and byte size; the
  *   source needs exactly one producer and this node as its only reader, the destination exactly one
  *   writer and a pure overwrite (destination not read).
@@ -91,11 +95,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
 
     [[nodiscard]] std::string name() const override { return "InplaceOptimization"; }
     /// @copydoc OptimizerPass::understood_features
-    /// Not mixed precision, grouped readers or redirected slots: source and destination are matched on byte size and uses are counted by
-    /// id.
+    /// Not mixed precision: a source and a destination of different element types are different storage, and the dtype gate is the
+    /// only thing between such a pair and a merge.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
-        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::Conjugation |
-               NodeFeature::ComplexPrefactor | NodeFeature::ControlFlow | NodeFeature::Tiled | NodeFeature::RawScalar;
+        return NodeFeatures::all().without(NodeFeature::MixedPrecision);
     }
 
     /// @copydoc OptimizerPass::phase

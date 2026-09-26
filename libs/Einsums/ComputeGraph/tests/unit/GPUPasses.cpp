@@ -1477,6 +1477,40 @@ TEST_CASE("GPU runtime fallback when dispatch is not applicable", "[ComputeGraph
     }
 }
 
+TEST_CASE("GPU dispatch leaves a GEMM-shaped einsum with a permutation operator to the host", "[ComputeGraph][GPU]") {
+    EINSUMS_SKIP_WITHOUT_GPU();
+    // C = P(i/j) A B = A B - (A B)^T has the index pattern of one GEMM, and the
+    // operator makes it a signed sum of two. GPUPlacement never places it (its
+    // feature declaration leaves operators alone), so the node is placed by hand,
+    // the way StridedBatchedGemm's GPU test forces its route.
+    constexpr size_t n = 32;
+    auto             A = create_random_tensor<float>("A", n, n);
+    auto             B = create_random_tensor<float>("B", n, n);
+    auto             C = create_zero_tensor<float>("C", n, n);
+
+    Tensor<float, 2> AB("AB", n, n);
+    AB.zero();
+    reference_einsum("ij <- ik ; kj", 0.0f, &AB, 1.0f, A, B);
+
+    cg::Graph graph("gpu-operator-gemm");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0f, &C, 1.0f, A, B);
+    }
+    REQUIRE(graph.num_nodes() == 1);
+    graph.nodes()[0].target = cg::Target::GPU;
+
+    graph.execute();
+
+    // Defends against try_gpu_gemm reading only the index lists: the plain GEMM it
+    // issued for this node wrote A B and dropped the transposed term.
+    for (size_t ii = 0; ii < n; ii++) {
+        for (size_t jj = 0; jj < n; jj++) {
+            REQUIRE(C(ii, jj) == Catch::Approx(AB(ii, jj) - AB(jj, ii)).margin(1e-4f));
+        }
+    }
+}
+
 TEST_CASE("StreamAssignment - transfers get stream 1, compute gets stream 0", "[ComputeGraph][GPU]") {
     EINSUMS_SKIP_WITHOUT_GPU();
     auto A = create_random_tensor<float>("A", 128, 128);

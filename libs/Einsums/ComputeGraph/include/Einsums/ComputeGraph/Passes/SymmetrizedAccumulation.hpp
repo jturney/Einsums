@@ -31,9 +31,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *
  * The pass detects each such site (structural match + involutive permutation +
  * accumulate gate + interference guard) and rewrites it (Level 1, permute
- * reuse): the permute node is made to accumulate DIRECTLY into the output -
- * @f$r2 = r2 + s_2\,P(t)@f$ via the existing string_permute kernel with beta = 1
- * - and the second axpby and the @c tmpP buffer are deleted. The first axpby
+ * reuse). The permute node is made to accumulate DIRECTLY into the output,
+ * @f$r2 = r2 + s_2\,\alpha\,P(t)@f$, rebuilt as an ordinary permute node with
+ * beta = 1 that keeps the permute's own alpha and permutation operators, and
+ * the second axpby and the @c tmpP buffer are deleted. The first axpby
  * (@f$r2 \mathrel{+}= s_1 t@f$) is untouched. This drops the O(o^2 v^2) @c tmpP
  * storage and one full sweep per site with no new kernel or OpKind. See
  * @c docs/symmetrized_accumulation_design.md.
@@ -48,7 +49,7 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *     cg::permute("jiba <- ijab", 0.0, &tmpP, 1.0, tmp);     // tmpP = P(tmp)
  *     cg::axpby(0.5, tmpP, 1.0, &r2);                        // r2 += 0.5*P(tmp)
  * }
- * graph.apply(cg::PassManager::create_default());  // fires on RuntimeTensor operands
+ * graph.apply(cg::PassManager::create_default());
  * // tmpP and the second axpby are gone; the permute now does r2 += 0.5*P(tmp).
  * @endcode
  *
@@ -72,8 +73,12 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  * into loop bodies: the CCSD residual is captured as a loop body.
  *
  * @par Limitations
- * - Fires only on RUNTIME tensors of one dtype; typed @c Tensor<T,Rank> captures
- *   are left folded-out, and only when the matched permute's alpha == 1.
+ * - The source and the output must hold one element type, and a real output is
+ *   never folded under a complex factor.
+ * - The source may be read through a view, but the output and @c tmpP may not be
+ *   views: the folded node would write the output's parent storage, and @c tmpP
+ *   must be storage no other id names. The source may not share the output's
+ *   storage either, since the folded node reads one while writing the other.
  * - Level 1 keeps the transpose (the accumulating permute), so REPLAY TIME is
  *   ~compute-neutral (a few %, transpose-bound). The win is eliminating the
  *   O(o^2 v^2) @c tmpP buffer (peak memory), not compute.
@@ -91,6 +96,8 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
  *   (@f$r2 \mathrel{+}= s_1 t + s_2 P(t)@f$ in one pass), profiling-gated — drops
  *   the second sweep as well, not just the buffer.
  * - Generalize beyond involutive permutations and allow @f$s_1 \neq s_2@f$.
+ * - Accept a view as the output: the folded node reaches it through its impl, so
+ *   what is left is proving the interference guard sees every other view of it.
  */
 class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUMS_EXPORT SymmetrizedAccumulation : public OptimizerPass {
   public:
@@ -101,10 +108,11 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// @copydoc OptimizerPass::phase
     [[nodiscard]] PassPhase phase() const override { return PassPhase::StructuralAlgebraic; }
     /// @copydoc OptimizerPass::understood_features
-    /// Not permutation operators, views, complex prefactors or redirected slots: the rebuilt permute drops operators and its executor casts
-    /// the operands to owning tensors.
+    /// Not a node that writes a view, nor a redirected slot. The folded permute is built from the matched one's descriptor, operators
+    /// and scalars included, and reads its operands through their impls, so a view read and a complex prefactor are understood.
     [[nodiscard]] std::optional<NodeFeatures> understood_features() const override {
-        return NodeFeatures{} | NodeFeature::Conjugation | NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow |
+        return NodeFeatures{} | NodeFeature::PermutationOperators | NodeFeature::Views | NodeFeature::Conjugation |
+               NodeFeature::ComplexPrefactor | NodeFeature::MixedPrecision | NodeFeature::Grouped | NodeFeature::ControlFlow |
                NodeFeature::Tiled | NodeFeature::RawScalar;
     }
 
@@ -135,8 +143,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_HOLDER(std::shared_ptr) EINSUM
     /// that are safe to fold.
     APIARY_EXPOSE APIARY_GETTER("num_matched") [[nodiscard]] size_t num_matched() const { return _num_matched; }
 
-    /// Sites actually rewritten (num_matched that also passed the runtime-tensor
-    /// / uniform-dtype gate). Each eliminates one axpby and one tmpP buffer.
+    /// Sites actually rewritten (num_matched that also passed the dtype and
+    /// operand gates). Each eliminates one axpby and one tmpP buffer.
     APIARY_EXPOSE APIARY_GETTER("num_rewritten") [[nodiscard]] size_t num_rewritten() const { return _num_rewritten; }
 
   private:

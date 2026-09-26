@@ -584,6 +584,18 @@ bool CSE::run_on_graph(Graph &graph, void const *tree_context, bool is_subgraph)
                                   fmt::format("node '{}': {}", nodes[k].label, describe_features(features_of(graph, nodes[k]))));
                         readers_understood = false;
                     }
+                    // Every reader must name the output itself. The merge repoints j's own slots,
+                    // so a reader reaching the same storage by another id (a view of the output,
+                    // or a slot redirected onto it) would keep reading a buffer nothing writes any
+                    // more.
+                    auto const indirect = [&](TensorId in) {
+                        return outputs.contains(graph.buffer_of(in)) && std::ranges::find(nodes[j].outputs, in) == nodes[j].outputs.end();
+                    };
+                    if (*readers_understood && std::ranges::any_of(nodes[k].inputs, indirect)) {
+                        note_skip("a reader of the duplicate reaches its output through another id",
+                                  fmt::format("node '{}'", nodes[k].label));
+                        readers_understood = false;
+                    }
                 }
             }
             if (!*readers_understood)
@@ -685,6 +697,13 @@ bool CSE::run(Graph &graph) {
     graph.for_each_subgraph(descend);
 
     return modified;
+}
+
+std::vector<std::string> CSE::explain() const {
+    if (_num_eliminated == 0) {
+        return {};
+    }
+    return {fmt::format("CSE: eliminated {} duplicate node(s)", _num_eliminated)};
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::passes)

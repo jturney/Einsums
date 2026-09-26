@@ -726,6 +726,19 @@ bool ContractionPlanning::run(Graph &graph) {
                         }
                     }
                 }
+                // The final output must not share storage with any leaf either. Left to right, an
+                // early member reads its leaves before the last member writes; the rebuilt tree can
+                // read one of them in the GEMM that writes the output, as `A = (A*B)*L` does once
+                // re-parenthesized to `A = A*(B*L)`, and the GEMM then reads what it is writing.
+                if (!interior_observable) {
+                    TensorId const final_buffer = graph.buffer_of(chain.back().output_tid);
+                    for (auto const leaf : leaves) {
+                        if (graph.buffer_of(leaf) == final_buffer) {
+                            interior_observable = true;
+                            break;
+                        }
+                    }
+                }
                 if (!interior_observable) {
                     auto const &all_nodes = graph.nodes();
                     for (size_t idx = 0; idx < all_nodes.size() && !interior_observable; idx++) {

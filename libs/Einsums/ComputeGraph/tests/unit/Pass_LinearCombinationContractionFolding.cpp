@@ -7,19 +7,20 @@
 /// @brief C++ tests for LCCF. The behavioral matrix lives in the Python
 ///        mirror (test_pass_linear_combination_contraction_folding_python.py);
 ///        this file pins two things Python cannot reach:
-///        - the consumer-bearing topology, where the fused Custom node's
-///          PLACEMENT is load-bearing (the node-position hazard - position is
-///          program order in this IR), and
-///        - statically-typed Tensor<T, Rank> captures, which the fused
-///          executor must NOT touch (it casts the user operands to
+///        - the consumer-bearing topology, where the fused node's PLACEMENT is
+///          load-bearing (the node-position hazard - position is program order
+///          in this IR), and
+///        - statically-typed Tensor<T, Rank> captures, which the fold reads
+///          through their rank-erased geometry (it once cast every operand to
 ///          GeneralRuntimeTensor<T>, so folding a typed capture was type
-///          confusion and a segfault).
+///          confusion and a segfault, and typed captures were declined).
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <fmt/format.h>
 
@@ -152,11 +153,12 @@ TEST_CASE("LCCF - complex prefactors on complex tensors fold exactly", "[Compute
     }
 }
 
-TEST_CASE("LCCF - statically-typed captures are not folded (and stay correct)", "[ComputeGraph][Passes][LCCF]") {
-    // Regression guard: the fused executor casts the user operands to
-    // GeneralRuntimeTensor<T>. Folding a Tensor<T, Rank> capture was type
-    // confusion (segfault in the fused axpy). The pass must skip these and
-    // the unfused graph must still execute correctly.
+TEST_CASE("LCCF - statically-typed captures fold and stay correct", "[ComputeGraph][Passes][LCCF]") {
+    // The fold reads every operand through its TensorImpl, so a Tensor<T, Rank>
+    // capture folds like a runtime one. It used to cast the operands to
+    // GeneralRuntimeTensor<T>, which was type confusion (a segfault in the fused
+    // axpy) on a typed capture, and typed captures were declined for it.
+    using einsums::testing::reference_einsum;
     auto A   = create_random_tensor<double>("A", 4);
     auto B   = create_random_tensor<double>("B", 4, 3, 3);
     auto E   = create_random_tensor<double>("E", 3, 3);
@@ -164,32 +166,61 @@ TEST_CASE("LCCF - statically-typed captures are not folded (and stay correct)", 
     auto D   = create_zero_tensor<double>("D", 3, 3);
 
     Tensor<double, 2> out_ref("out_ref", 3, 3), D_ref("D_ref", 3, 3);
-    reference(out_ref, D_ref, A, B, E);
+    out_ref.zero();
+    D_ref.zero();
+    reference_einsum("i,j <- k ; k,i,j", 0.0, &out_ref, 2.0, A, B);
+    reference_einsum("i,j <- k ; k,j,i", 1.0, &out_ref, -1.0, A, B);
+    reference_einsum("i,k <- i,j ; j,k", 0.0, &D_ref, 1.0, out_ref, E);
 
     cg::Graph graph("lccf_typed");
     capture_program(graph, out, D, A, B, E);
 
     auto [modified, pass] = graph.apply<cg::passes::LinearCombinationContractionFolding>();
-    CHECK_FALSE(modified);
-    CHECK(pass.num_groups() == 0);
+    REQUIRE(modified);
+    CHECK(pass.num_groups() == 1);
+    CHECK(pass.num_eliminated() == 1);
 
-    // The pass declining is correct, but silence about WHY cost real debugging
-    // time: a graph that looks un-optimizable is indistinguishable from one
-    // rejected by a gate the caller could have satisfied. The skip tally has to
-    // name the runtime-tensor gate, and explain() must stay empty because
-    // nothing was applied.
-    auto const reasons = pass.skip_reasons();
-    REQUIRE(reasons.size() == 1);
-    CHECK(reasons[0].second == 1);
-    CHECK_THAT(reasons[0].first, Catch::Matchers::ContainsSubstring("RuntimeTensor"));
-    CHECK(pass.explain().empty());
+    for (int run = 0; run < 2; ++run) {
+        graph.execute();
+        for (size_t ii = 0; ii < 3; ii++) {
+            for (size_t jj = 0; jj < 3; jj++) {
+                REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-11);
+                REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < 1e-11);
+            }
+        }
+    }
+}
+
+TEST_CASE("LCCF - a folded operand read through a strided view", "[ComputeGraph][Passes][LCCF]") {
+    // B is a block of a larger typed tensor, so its TensorImpl has strides that are
+    // not its extents; the L build must read it through them.
+    using einsums::testing::reference_einsum;
+    auto              A     = create_random_tensor<double>("A", 4);
+    auto              Bbig  = create_random_tensor<double>("Bbig", 5, 4, 5);
+    auto              out   = create_zero_tensor<double>("out", 3, 3);
+    auto              Bview = Bbig(Range{1, 5}, Range{0, 3}, Range{2, 5});
+    Tensor<double, 3> B_copy(Bview);
+
+    Tensor<double, 2> out_ref("out_ref", 3, 3);
+    out_ref.zero();
+    reference_einsum("i,j <- k ; k,i,j", 0.0, &out_ref, 2.0, A, B_copy);
+    reference_einsum("i,j <- k ; k,j,i", 1.0, &out_ref, -1.0, A, B_copy);
+
+    cg::Graph graph("lccf_view");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- k ; k,i,j", 0.0, &out, 2.0, A, Bview);
+        cg::einsum("i,j <- k ; k,j,i", 1.0, &out, -1.0, A, Bview);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::LinearCombinationContractionFolding>();
+    REQUIRE(modified);
+    CHECK(pass.num_groups() == 1);
 
     graph.execute();
-
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {
             REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-11);
-            REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < 1e-11);
         }
     }
 }
