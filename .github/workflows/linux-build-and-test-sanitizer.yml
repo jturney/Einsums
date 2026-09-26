@@ -1,11 +1,7 @@
 name: Sanitizers
 
 on:
-  # full_matrix is offered on dispatch as well as on call because the
-  # address,leak,undefined leg it selects is no longer run by anything on a
-  # schedule - see the comment on the nightly's `sanitizers` job. Manual
-  # dispatch is the only way left to reach it, and it is the way to iterate on
-  # the runner-shutdown problem that took it off the nightly.
+  # Dispatch is the only way to reach the address,leak,undefined leg; the nightly no longer runs it.
   workflow_dispatch:
     inputs:
       full_matrix:
@@ -42,13 +38,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # compiler = default, implies the default compiler for the platform. for linux, this is gcc/g++
         compiler: [ default ]
         blas: [ openblas ]
         build_type: [ Debug ]
         variant: [ default ]
-        # Two spellings: `flags` for -DEINSUMS_WITH_SANITIZERS, `slug` for the
-        # cache key, which actions/cache will not accept with a comma in it.
+        # `slug` exists because actions/cache rejects a comma in the key.
         sanitizer: ${{ fromJSON(inputs.full_matrix && '[{"flags":"address,leak,undefined","slug":"asan-lsan-ubsan"},{"flags":"thread","slug":"tsan"}]' || '[{"flags":"thread","slug":"tsan"}]') }}
 
     name: "${{ matrix.sanitizer.flags }} • ${{ matrix.compiler }} • ${{ matrix.blas }} • ${{ matrix.build_type }} • ${{ matrix.variant }}"
@@ -66,8 +60,7 @@ jobs:
           ref: ${{ inputs.build_ref }}
           path: src
 
-      # The sanitizer must be in the key, or the full matrix's two legs share
-      # one entry, overwrite each other, and both miss completely.
+      # The sanitizer must be in the key, or the two legs overwrite each other's cache.
       - name: Cache Build Cache
         uses: actions/cache@v6
         with:
@@ -83,28 +76,8 @@ jobs:
           source-dir: src
 
       - name: Configure CMake
-        # The only leg in CI that builds debug info: a sanitizer report needs
-        # line numbers, and -g1 is all the runtimes symbolize through.
-        #
-        # Build the Python bindings on the ThreadSanitizer leg so the Python
-        # test suite (registered as ctest "*Python" entries) runs under TSan.
-        # This is the path that exercises kernels multithreaded: a single-node
-        # capture graph executes its op on the MAIN thread (omp = ncores),
-        # whereas the C++ unit-test TUs frequently instantiate the same
-        # templates in a context that runs serially. A data race in e.g.
-        # impl_gemv_noncontiguous is therefore only reachable through Python
-        # — see bug-dropped-view-gemv-flaky-element.
-        #
-        # On for address/leak/undefined too, as of 2026-08. It was off because
-        # "ASan+Python needs its own libasan preload dance", which
-        # einsums_add_python_unit_test has since grown
-        # (EINSUMS_PYTEST_SANITIZER_PRELOAD, plus detect_leaks=0 for CPython's
-        # deliberate shutdown leaks). That left the binding layer — the
-        # generated pybind TUs and their glue — as the one part of the tree
-        # checked for races but never for memory errors, which is backwards:
-        # it is where lifetimes are managed by hand across the numpy buffer
-        # protocol rather than by RAII. This leg is nightly-only, so the extra
-        # build costs no PR time.
+        # -g1: sanitizer reports need line numbers. Python is ON so the Python suite runs
+        # instrumented; some kernels only run multithreaded through Python-driven graphs.
         run: |
           cmake \
             -G Ninja \
@@ -125,34 +98,8 @@ jobs:
 
       - name: Build and Install
         run: |
-          # -j1 caps ninja parallelism: GitHub Linux runners have 16GB RAM and
-          # sanitizer-instrumented compiles are even heavier than -O2 (TSan/ASan
-          # add ~2-3x peak per TU). Ninja's default (nproc+2 = 6) puts us over
-          # the line and the runner OOM-kills the build.
-          #
-          # -j2 was the previous cap, on the reasoning that two workers stayed
-          # well under budget. That reasoning was never measured, and the ASan
-          # nightly then had the runner vanish mid-build on two consecutive
-          # nights, on a commit that had built clean the night before. One
-          # worker is the conservative answer while the /usr/bin/time -v figure
-          # below establishes what a single edge actually costs. The leg already
-          # takes about two hours; a slower build that reports beats a faster
-          # one that dies.
-          #
-          # /usr/bin/time -v reports "Maximum resident set size" across the
-          # process tree, so this captures the heaviest single edge - compile or
-          # link. How much a sanitizer edge costs has never been measured on
-          # this leg, and it is the number the whole resource budget rests on:
-          # the ASan runs of 2026-08-09 and 2026-08-10 both had the runner
-          # vanish mid-build (SIGTERM / "lost communication"), on the same
-          # commit that built clean on 08-08. Disk is already ruled out - the
-          # intel leg's probes measured a complete build at ~13GB with 74GB
-          # free - which leaves memory, and nothing here can currently see it.
-          # Once there is a figure, the cap above can be set from evidence
-          # rather than from caution.
-          #
-          # GNU time prints its report even when the command fails, so a build
-          # that dies still yields the number that explains why.
+          # -j1: sanitizer compiles peak 2-3x higher, and wider builds lose the runner mid-build.
+          # GNU time -v records peak RSS, even when the build fails.
           BUILD=(cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j1)
           if [ -x /usr/bin/time ]; then
             /usr/bin/time -v "${BUILD[@]}"
@@ -161,8 +108,6 @@ jobs:
             "${BUILD[@]}"
           fi
 
-      # `if: always()`, because the reading that matters most is the one taken
-      # on the run that died.
       - name: Resources - after build
         if: always()
         run: |
@@ -176,14 +121,8 @@ jobs:
 
       - name: Test (CTest) - C++ unit tests
         working-directory: "${{ github.workspace }}/build"
-        # UBSan is recoverable by default: it prints "runtime error:" and continues
-        # with exit 0, so a finding would NOT fail ctest. halt_on_error=1 turns every
-        # UB report into an abort -> non-zero exit -> red CI. ASan/LSan already abort.
-        #
-        # Exclude the Python-binding tests here: they load the instrumented
-        # _core.so into a non-instrumented interpreter and need a runtime
-        # preload (handled in the dedicated step below). The filter is a no-op
-        # on the address/leak/undefined leg, where Python isn't built.
+        # UBSan exits 0 on findings unless halt_on_error=1.
+        # Python tests need the runtime preload and run in the step below.
         env:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1:report_error_type=1
           ASAN_OPTIONS: abort_on_error=1:print_stacktrace=1
@@ -193,19 +132,11 @@ jobs:
       - name: Test (CTest) - Python unit tests under ThreadSanitizer
         if: ${{ matrix.sanitizer.slug == 'tsan' }}
         working-directory: "${{ github.workspace }}/build"
-        # The Python interpreter is not TSan-instrumented but dlopen's an
-        # instrumented _core.so, so the TSan runtime must be preloaded into the
-        # interpreter (otherwise it aborts with "interceptors not installed").
-        # GCC's OpenMP runtime (libgomp) is also uninstrumented and TSan does
-        # not model its barriers/reductions, so some OpenMP-internal reports are
-        # false positives — quiet known ones via the committed suppressions
-        # file; a genuine race in our own kernels (the target of this leg) still
-        # fails because halt_on_error=1.
+        # The uninstrumented interpreter needs libtsan preloaded to load _core.so.
+        # tsan.supp silences libgomp false positives (TSan does not model its barriers).
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:report_thread_leaks=0:suppressions=${{ github.workspace }}/src/devtools/sanitizers/tsan.supp
-          # Stacks of every thread when a python test stops making progress, in
-          # the one leg where a deadlock is most likely to be caught in the act.
-          # See the root conftest.py; ctest discards a timed-out test's output.
+          # Hung python tests dump thread stacks here (root conftest.py); ctest drops a timed-out test's output.
           EINSUMS_TEST_STACKDUMP_DIR: "${{ github.workspace }}/stackdumps"
         run: |
           libtsan="$(gcc -print-file-name=libtsan.so)"

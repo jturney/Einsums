@@ -1,16 +1,12 @@
 name: Pre-Commit Checks
 on:
   pull_request:
-  # Without this the workflow only ever fires on pull requests, so a fork whose
-  # development happens as direct pushes to main never runs it at all - which
-  # was the case here: zero runs on the fork, and none anywhere since
-  # 2026-06-06.
+  # Push too, so forks that develop on main still run it.
   push:
     branches: [ main ]
   workflow_dispatch:
 
 concurrency:
-  #  Cancel a currently running workflow from the same PR or commit hash.
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
@@ -24,8 +20,6 @@ jobs:
     needs: [ detect_changes ]
     if: ${{ contains(needs.detect_changes.outputs.filters, 'cmake') || contains(needs.detect_changes.outputs.filters, 'cpp') }}
     runs-on: ubuntu-latest
-    # Read-only. The write permissions this job used to carry existed solely to
-    # push an auto-format commit back onto the contributor's branch.
 
     steps:
       - uses: actions/checkout@v7
@@ -44,22 +38,8 @@ jobs:
       - name: Install pre-commit
         run: pip install pre-commit
 
-      # Report, do not repair. This used to rewrite the files and push a bot
-      # commit back to the branch, which:
-      #
-      #   - only worked for same-repo PRs, so fork contributors already got a
-      #     plain failure and a different experience for the same mistake;
-      #   - moved the contributor's branch under them, so their next push
-      #     needed a pull first;
-      #   - could land a commit after review approval, changing what was
-      #     reviewed; and
-      #   - assumed every hook REWRITES files. A checking hook that merely
-      #     reports (cmake-audit, the namespace-macro guard) left nothing
-      #     staged, so `git commit` failed with "nothing to commit" and buried
-      #     the real diagnosis.
-      #
-      # Installing the hooks locally is already the documented workflow; see
-      # docs/sphinx/contributors/style.rst.
+      # Report, do not auto-fix and push: that fails for forks, moves the branch under the author,
+      # and breaks on check-only hooks.
       - name: Run pre-commit hooks
         run: |
           if ! pre-commit run --all-files --show-diff-on-failure; then

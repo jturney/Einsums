@@ -1,8 +1,8 @@
 name: "Set up Einsums conda environment"
 description: >
   Installs Miniforge, generates a conda environment file with merge_yml.py for
-  the requested compiler/BLAS combination, restores it from cache (or creates
-  it on a miss), and leaves it activated for subsequent build steps.
+  the requested compiler/BLAS combination, creates the environment fresh, and
+  leaves it activated for subsequent build steps.
 
 inputs:
   compiler:
@@ -43,7 +43,6 @@ inputs:
 runs:
   using: "composite"
   steps:
-    # From https://github.com/conda-incubator/setup-miniconda#caching-environments
     - name: Setup Miniforge
       uses: conda-incubator/setup-miniconda@v4
       with:
@@ -67,11 +66,7 @@ runs:
         if [ "${{ inputs.gpu }}" != "none" ]; then gpu_flag="--gpu ${{ inputs.gpu }}"; fi
         python merge_yml.py ${docs_flag} ${ft_flag} ${gpu_flag} ${{ inputs.compiler }} ${{ inputs.blas }}
 
-    # The conda env is deliberately NOT cached. The env tarballs weighed
-    # ~1GB each (per OS/compiler/blas/week/yml-hash, duplicated per branch)
-    # and pinned the repo at GitHub's 10GB cache cap, LRU-evicting the ccache
-    # build caches - trading ~60s of env solve for 30-45 min of cold compile
-    # per leg. Creating the env fresh costs about a minute.
+    # Not cached on purpose: ~1GB env caches evict the ccache build caches from the 10GB repo quota.
     - name: Update environment
       shell: bash -el {0}
       run: |

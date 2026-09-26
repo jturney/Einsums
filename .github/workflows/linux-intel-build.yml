@@ -1,14 +1,7 @@
 name: Linux intel build and test workflow
 
-# Intel/icpx is gated to manual runs only (called from cmake.yml on
-# workflow_dispatch). History: icx/icpx 2026.0.0 was unusable here -- it ICE'd
-# in X86 TLS lowering on our headers AND its per-TU memory peaks blew past
-# ubuntu-latest's 16GB even at Debug + -j1. merge_yml.py now pins 2025.2.0,
-# which has neither problem: it compiles and links the whole tree well under
-# 16GB (validated with BUILD_PYTHON=OFF). The gate stays until a manual run
-# confirms the full BUILD_PYTHON=ON build green on a real runner (the heavy
-# ComputeGraph pybind TU is the last unvalidated piece); then drop the
-# workflow_dispatch condition in cmake.yml to run it on every push/PR.
+# Manual only (gated in cmake.yml): icpx per-TU memory is at the edge of the 16GB runner.
+# Drop the gate once a full EINSUMS_BUILD_PYTHON=ON build is confirmed green.
 
 on:
   workflow_call:
@@ -35,9 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # All intel variants share build_type=Debug — -O0 skips the template
-        # instantiation optimizer passes that drive peak memory. Variant is the
-        # MKL integer interface (default = unset, lp64, ilp64 + extended prec).
+        # Debug (-O0) keeps icpx peak memory down. Variant is the MKL integer interface.
         compiler: [ intel ]
         blas: [ mkl ]
         build_type: [ Debug ]
@@ -86,15 +77,7 @@ jobs:
           key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-${{ github.sha }}
           restore-keys: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}-
 
-      # Resource probe. The gate on this leg records that icx 2026.0.0 "blew
-      # past ubuntu-latest's 16GB even at Debug + -j1" - but a hosted Ubuntu
-      # runner ships only ~14GB of FREE DISK against those 16GB of RAM, and
-      # oneAPI plus MKL in a conda env is several GB before a single object
-      # file exists. Runner death from ENOSPC and from OOM look much alike from
-      # the outside, so measure both rather than infer either.
-      #
-      # Cheap enough to leave in: four short commands on a manually-dispatched
-      # leg.
+      # Runner death from ENOSPC and from OOM look alike, so measure both.
       - name: Resources - after checkout
         run: |
           echo "### disk"; df -h / /home/runner 2>/dev/null || df -h /
@@ -134,19 +117,8 @@ jobs:
 
       - name: Build and Install
         run: |
-          # -j1, conservatively: icx 2025.2 is far lighter than 2026 (the core
-          # tree builds at -j2 under 8GB with BUILD_PYTHON=OFF), but this leg is
-          # BUILD_PYTHON=ON and the ComputeGraph pybind TU is the heaviest in the
-          # build. Keep -j1 until a manual run confirms -j2 fits the 16GB runner
-          # with bindings on, then bump it.
-          # /usr/bin/time -v reports "Maximum resident set size" across the
-          # process tree, so this captures the heaviest single TU - the figure
-          # the gate's memory claim rests on and the one thing the df/free
-          # probes structurally cannot see, since they sample the gaps between
-          # compiles rather than the peaks during them.
-          #
-          # GNU time prints its report even when the command fails, so a build
-          # that dies still yields the number that explains why.
+          # -j1 until a run confirms -j2 fits 16GB with the bindings on.
+          # GNU time -v records peak RSS, even when the build fails.
           BUILD=(cmake --build "${{ github.workspace }}/build" --config ${{ matrix.build_type }} --target install -j1)
           if [ -x /usr/bin/time ]; then
             /usr/bin/time -v "${BUILD[@]}"
@@ -155,9 +127,6 @@ jobs:
             "${BUILD[@]}"
           fi
 
-      # `if: always()` so an exhausted disk is still reported when the build is
-      # what died. That is the whole point: the reading we most need is the one
-      # taken on the failing run.
       - name: Resources - after build
         if: always()
         run: |

@@ -17,16 +17,13 @@ on:
       build_configure_extra_args:
         type: string
         required: false
-  # Manual rehearsal: builds and deploys a full miniature site (version dir,
-  # root redirect, switcher) under /dev-preview/ without touching the real
-  # versions or the site root.
+  # Rehearses the full deploy under /dev-preview/ without touching the real site.
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  # Build job
   build:
     defaults:
       run:
@@ -76,12 +73,7 @@ jobs:
             ${{ inputs.build_configure_extra_args }}
 
       - name: Build Documentation
-        # The docs are generated statically from the headers by the apiary
-        # libclang tool; the `docs` target pulls in that tool and the codegen, so
-        # there is no need to compile/link the Einsums library or the PyEinsums
-        # (_core) extension first. EINSUMS_BUILD_PYTHON stays ON because the docs
-        # include a Python API reference (apiary --emit-docs-json per module);
-        # docs/CMakeLists.txt errors without it.
+        # EINSUMS_BUILD_PYTHON stays ON: the Python API reference needs it, though nothing is compiled.
         run: |
           cmake --build "${{ github.workspace }}/build" --config Debug --target docs -j4
 
@@ -90,28 +82,26 @@ jobs:
           mkdir -p ${{ github.workspace }}/share/Einsums/docs/html
           cp -rv ${{ github.workspace }}/build/share/Einsums/docs/html/* ${{ github.workspace }}/share/Einsums/docs/html
 
-      # The site is versioned: main deploys to /latest/, tags to /vX.Y.Z/, and
-      # the root gets a redirect page plus a switcher.json regenerated from
-      # every version directory present on gh-pages. A workflow_dispatch run
-      # rehearses the whole layout under /dev-preview/ instead.
       - name: Compute deploy target
         id: target
         if: github.repository == 'Einsums/Einsums' && ( github.event_name == 'workflow_dispatch' || ( github.event_name == 'push' && ( startsWith( github.ref, 'refs/tags/' ) || github.ref == 'refs/heads/main' ) ) )
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "version=latest" >> "$GITHUB_OUTPUT"
-            echo "html_folder=dev-preview/latest" >> "$GITHUB_OUTPUT"
-            echo "root_folder=dev-preview" >> "$GITHUB_OUTPUT"
-          else
-            if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-              echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-              echo "html_folder=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          {
+            if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+              echo "version=latest"
+              echo "html_folder=dev-preview/latest"
+              echo "root_folder=dev-preview"
             else
-              echo "version=latest" >> "$GITHUB_OUTPUT"
-              echo "html_folder=latest" >> "$GITHUB_OUTPUT"
+              if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+                echo "version=${GITHUB_REF_NAME}"
+                echo "html_folder=${GITHUB_REF_NAME}"
+              else
+                echo "version=latest"
+                echo "html_folder=latest"
+              fi
+              echo "root_folder=."
             fi
-            echo "root_folder=." >> "$GITHUB_OUTPUT"
-          fi
+          } >> "$GITHUB_OUTPUT"
 
       - name: Assemble site root (redirect + switcher)
         if: steps.target.outputs.version
@@ -132,8 +122,7 @@ jobs:
           folder: ${{ github.workspace }}/share/Einsums/docs/html
           target-folder: ${{ steps.target.outputs.html_folder }}
 
-      # clean: false so this touches only the three root files and never
-      # deletes the other version directories.
+      # clean: false, or the deploy deletes the other version directories.
       - name: Deploy site root
         uses: JamesIves/github-pages-deploy-action@v4
         if: steps.target.outputs.version

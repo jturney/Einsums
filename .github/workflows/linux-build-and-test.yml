@@ -16,10 +16,7 @@ on:
       build_configure_extra_args:
         type: string
         required: false
-      # The nightly sets this. Every fuzz and property test runs again, on one
-      # leg, with its sample counts multiplied (see _sanitizer_scaling.py): the
-      # per-PR counts are sized for speed, and some defects only appear past
-      # them.
+      # Nightly only: reruns fuzz/property tests on one leg with scaled-up sample counts.
       long_fuzz:
         type: boolean
         required: false
@@ -32,73 +29,39 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # compiler = default implies the default compiler for the platform; for linux this is gcc/g++.
-        # clang is also available; merge_yml.py injects the matching conda toolchain.
-        # intel (icx/icpx) lives in linux-intel-build.yml — it's gated to manual
-        # runs because icpx's per-TU memory blows past the 16GB ubuntu-latest
-        # runner even at -O0 -j1.
+        # default = gcc. Intel lives in linux-intel-build.yml (manual only, see there).
         compiler: [ default, clang ]
         blas: [ openblas, mkl ]
         build_type: [ RelWithDebInfo ]
         variant: [ default ]
         include:
-          # blas matters here: keyed on compiler alone this merges into both
-          # default legs and runs coverage twice.
+          # Keyed on blas too, or coverage merges into both default legs and runs twice.
           - compiler: default
             blas: openblas
             cmake_extra: >
               -DEINSUMS_WITH_COVERAGE=ON
-          # EinsumsExperimental is OFF by default, so no other leg builds it, and
-          # it went seven weeks unbuildable (its library took libEinsums' file
-          # name) before anyone noticed. Keyed on compiler and blas alone, so it
-          # joins the gcc/MKL leg rather than adding a job.
+          # Experimental is OFF by default and nothing else builds it; rides the gcc/MKL leg.
           - compiler: default
             blas: mkl
             cmake_extra: >
               -DEINSUMS_WITH_EXPERIMENTAL=ON
-          # EINSUMS_WITH_PROFILER=OFF swaps the whole instrumentation API for
-          # no-op shims, so nothing in the default matrix compiles that branch.
-          # One leg is enough to keep it from rotting again.
+          # The only leg that compiles the PROFILER=OFF no-op shims.
           - compiler: clang
             blas: openblas
             build_type: RelWithDebInfo
             variant: no-profiler
             cmake_extra: >
               -DEINSUMS_WITH_PROFILER=OFF
-          # The mock GPU backend as a DISCRETE device. Guards the host/device
-          # transfer path in the ComputeGraph executor, which is compiled out
-          # everywhere else: gpu::has_unified_memory is true for the ordinary
-          # mock, so ~75 lines of shadow allocation, upload, copy-back and
-          # pointer swapping never run. Worse, the plain mock routes every
-          # gpu::blas call to CPU BLAS over malloc'd memory, so it is
-          # numerically correct no matter what the real CUDA path does - a
-          # backend whose gemv, complex gemm and entire solver were silent
-          # no-ops passed the full suite.
-          #
-          # This leg needs no GPU and no CUDA toolkit, so it runs on an ordinary
-          # runner. Python must stay ON: the graphs that use Setup closures and
-          # nested subgraph replay are Python tests, and that is where the
-          # ownership bugs between host and device copies actually showed up.
+          # Discrete mock GPU: the only leg that runs the executor's host/device transfer path
+          # (the unified mock skips it). Keep Python ON; the transfer-ownership tests are Python.
           - compiler: default
             blas: openblas
             build_type: RelWithDebInfo
             variant: mock-discrete
             cmake_extra: >
               -DEINSUMS_WITH_GPU_MOCK_DISCRETE=ON
-          # Free-threaded CPython (cp314t). Guards two distinct things: that the
-          # tree still compiles and links against the `t` ABI, and that nothing in
-          # the bindings assumes the GIL exists. The second needs PYTHON_GIL=0 —
-          # without it CPython re-enables the GIL on import, because _core does not
-          # declare Py_MOD_GIL_NOT_USED, and the leg would silently test nothing new.
-          #
-          # Python_FIND_ABI's 4th field is the free-threaded flag (CMake 3.30+).
-          # Without it FindPython refuses the t-build and quietly falls back to
-          # another interpreter on the runner.
-          #
-          # Note this leg drives einsums from ONE python thread, so it does not
-          # cover concurrent callers; the OpenMP-OpenBLAS hazard that free-threading
-          # exposes needs a threaded caller to reproduce. See
-          # docs/sphinx/building/blas_threading.rst.
+          # Free-threaded CPython. Python_FIND_ABI's 4th field selects the t-build;
+          # without it FindPython silently falls back to another interpreter.
           - compiler: default
             blas: openblas
             build_type: RelWithDebInfo
@@ -109,7 +72,6 @@ jobs:
               -DPython_ROOT_DIR="$CONDA_PREFIX"
               -DPython_FIND_STRATEGY=LOCATION
         exclude:
-          # clang leg is openblas-only (mkl pairs with the intel toolchain).
           - compiler: clang
             blas: mkl
 
@@ -163,46 +125,23 @@ jobs:
 
       - name: Build and Install
         run: |
-          # -j3 fits the 16GB runner; heavy TUs peak at ~3-4GB and ninja's
-          # default (nproc+2) OOM-kills the link.
+          # -j3: ninja's default parallelism OOM-kills the 16GB runner.
           cmake --build "${{ github.workspace }}/build" --config Release --target install -j3
 
-      # - name: Linked dependencies, otool (M)
-      #   if: runner.os == 'macOS'
-      #   run: otool -L objdir/stage/lib/psi4/core.*.so
-
-      # - name: Linked dependencies, objdump (W)
-      #   if: runner.os == 'Windows'
-      #   shell: cmd /C CALL {0}
-      #   run: objdump.exe -p objdir\stage\lib\psi4\core.*.pyd | grep dll
-
-      # The Python test suite is registered as ctest entries (labelled PYTHON)
-      # by einsums_add_python_unit_test, so this single ctest run exercises both
-      # the C++ and the Python bindings — no separate pytest step is needed.
       - name: ccache statistics
         run: ccache -sv 2>/dev/null || ccache -s
 
       - name: Test (CTest) - Unit Tests
         working-directory: "${{ github.workspace }}/build"
         env:
-          # A python test that stops making progress dumps every thread's stack
-          # here (see the root conftest.py). ctest discards the output of a test
-          # it kills on timeout, so a hang is otherwise reported as a stopwatch
-          # reading and nothing else. Empty dumps delete themselves, so this
-          # directory stays absent on a healthy run.
+          # Hung python tests dump thread stacks here (root conftest.py); ctest drops a timed-out test's output.
           EINSUMS_TEST_STACKDUMP_DIR: "${{ github.workspace }}/stackdumps"
-          # Which Part 5.1 tier a pass belongs to cannot be settled on one
-          # machine: a pass can be bit-identical against one BLAS and a ULP off
-          # against another. So each leg writes its own measurement here and the
-          # step below uploads it; unset, the test writes nothing.
+          # Per-leg pass tier measurement: bit-identity differs between BLAS libraries.
           EINSUMS_TIER_REPORT_DIR: "${{ github.workspace }}/tier-reports"
           EINSUMS_TIER_LABEL: "linux-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}"
         run: ctest --rerun-failed --output-on-failure -j4
 
-      # One leg only: the clang/OpenBLAS default build, which has neither the
-      # coverage instrumentation nor a variant switch to slow it or narrow it.
-      # Hypothesis prints the falsifying example and the seed to reproduce it,
-      # which is what this step's log is for.
+      # One leg only, the one without coverage instrumentation or a variant switch.
       - name: Test (CTest) - Long fuzz
         if: inputs.long_fuzz && matrix.compiler == 'clang' && matrix.blas == 'openblas' && matrix.variant == 'default'
         working-directory: "${{ github.workspace }}/build"
@@ -211,23 +150,16 @@ jobs:
           EINSUMS_TEST_STACKDUMP_DIR: "${{ github.workspace }}/stackdumps"
         run: ctest -L PYTHON -R "Fuzz|Hyp" --output-on-failure -j4 --timeout 7200
 
-      # if: always() - a dump exists precisely when the step above failed.
-      # if-no-files-found: ignore keeps a green run quiet.
       - name: Upload hung-test stack dumps
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          # Every matrix leg of this workflow uploads, and upload-artifact
-          # rejects a duplicate name within a run, so the leg's own coordinates
-          # go in the name rather than the workflow-level cache suffix.
+          # upload-artifact rejects duplicate names within a run, so name by matrix coordinates.
           name: linux-stackdumps-${{ matrix.compiler }}-${{ matrix.blas }}-${{ matrix.variant }}
           path: "${{ github.workspace }}/stackdumps"
           if-no-files-found: ignore
           retention-days: 14
 
-      # One JSON per leg, naming what each structural-algebraic pass did to the
-      # numbers on this toolchain. Evidence for the tier classification rather
-      # than a gate, so it never fails a run.
       - name: Upload tier measurement
         if: always()
         uses: actions/upload-artifact@v7
@@ -237,36 +169,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      # The run above imports einsums with the GIL auto-re-enabled: CPython does
-      # that for any extension that has not declared Py_MOD_GIL_NOT_USED, and
-      # announces it with a RuntimeWarning. So by itself it only proves the tree
-      # works against the `t` ABI. PYTHON_GIL=0 overrides the fallback and runs
-      # the bindings with no GIL at all, which is the state declaring the opt-in
-      # would make permanent.
+      # Without PYTHON_GIL=0 CPython re-enables the GIL on import (_core lacks Py_MOD_GIL_NOT_USED).
       - name: Test (CTest) - Python suite with the GIL disabled
         if: ${{ matrix.variant == 'free-threaded' }}
         working-directory: "${{ github.workspace }}/build"
-        # PYTHON_GIL is deliberately NOT a step-level env var. The step shell is
-        # `bash -el`, a LOGIN shell, so it sources the profile and conda's
-        # activation runs Python before any of this script does. With the
-        # variable set for the whole step that startup Python aborts with
-        #   Fatal Python error: config_read_gil: Disabling the GIL is not
-        #   supported by this build
-        # and the step dies before reaching the command it was meant for. Scope
-        # it to the two processes that should see it instead.
+        # PYTHON_GIL is not a step env var: the login shell's conda activation runs a non-t Python,
+        # which aborts with it set.
         run: |
-          # Use the interpreter CMake resolved, not whatever `python` is on
-          # PATH. FindPython picks the t-build via Python_FIND_ABI, but the
-          # conda env's default `python` can be the regular-ABI one, and
-          # PYTHON_GIL=0 on that aborts rather than being ignored:
-          #   Fatal Python error: config_read_gil: Disabling the GIL is not
-          #   supported by this build
-          # It is also the interpreter the ctest Python tests launch.
+          # The interpreter CMake resolved: the env's default `python` may be non-t and abort under PYTHON_GIL=0.
           PY=$(grep '^Python_EXECUTABLE:' CMakeCache.txt | cut -d= -f2-)
           echo "using $PY"
-          # Assert after the import, not just at startup: the point is that
-          # loading _core did not flip the GIL back on and reduce this to a
-          # duplicate of the run above.
           PYTHONPATH="${{ github.workspace }}/build/lib" PYTHON_GIL=0 "$PY" -c "
           import sys, einsums
           assert not sys._is_gil_enabled(), 'importing einsums re-enabled the GIL'
@@ -279,77 +191,22 @@ jobs:
         if: ${{ matrix.compiler == 'default' && matrix.blas == 'openblas' && matrix.variant == 'default' }}
         working-directory: "${{github.workspace}}/build"
         run: |
-          # Conda's gcc installs gcov as <arch>-conda-linux-gnu-gcov
-          # (e.g. x86_64-conda-linux-gnu-gcov), NOT bare 'gcov'.
-          # Hardcoding ${CONDA_PREFIX}/bin/gcov broke the step with
-          # "geninfo: ERROR: need tool .../bin/gcov!" — that path doesn't
-          # exist. Discover the arch-prefixed binary instead.
-          GCOV=$(ls "${CONDA_PREFIX}"/bin/*-conda-linux-gnu-gcov 2>/dev/null | head -1)
+          # Conda's gcov is arch-prefixed; there is no bare ${CONDA_PREFIX}/bin/gcov.
+          GCOV=""
+          for candidate in "${CONDA_PREFIX}"/bin/*-conda-linux-gnu-gcov; do
+              if [[ -x "$candidate" ]]; then GCOV="$candidate"; break; fi
+          done
           if [[ -z "$GCOV" ]]; then
               echo "::error::Could not find conda's gcov under ${CONDA_PREFIX}/bin/" >&2
-              ls "${CONDA_PREFIX}/bin/" | grep -i gcov >&2 || true
+              find "${CONDA_PREFIX}/bin/" -maxdepth 1 -iname '*gcov*' >&2 || true
               exit 1
           fi
           echo "Using gcov: $GCOV"
 
-          # A standalone gcov pass used to run here over every .gcno. It exited
-          # 1, wrote no .gcov files, and nothing consumed one: the Codecov step
-          # uploads coverage.info with disable_search, and lcov --capture runs
-          # gcov itself. It only echoed several thousand paths into the log.
-          #
-          # Force lcov to use the conda env's gcov: the build is gcc 15 (.gcda
-          # format "B52*"), but lcov can pick up the runner's system gcov 13.3
-          # ("B33*") by default and bail with "geninfo: ERROR: GCOV failed ...
-          # prefer version 'B33*'". Pinning --gcov-tool keeps the toolchain
-          # consistent.
-          # --ignore-errors inconsistent: lcov 2.x hard-errors on gcov line
-          # ranges it considers inconsistent, and gcc emits one for the
-          # registration symbol Catch2's TEMPLATE_TEST_CASE generates
-          # ("mismatched end line for ..._reg_test<std::complex<double>>").
-          # It is a defect in the coverage data for compiler-generated code,
-          # not in the code under test, and it would fail the whole leg over a
-          # line range in a test registrar. Demoted to a warning so a real
-          # capture failure still stops us.
-          # --parallel: geninfo defaults to one worker (lcovrc documents
-          # "parallel = 1", and the log says "chunkSize: 1, nchunks:565"), so
-          # the capture ran single-threaded for about twelve minutes.
-          #
-          # The worker count is PINNED rather than read from nproc, and that is
-          # the memory guard. Bounding concurrency bounds the peak directly,
-          # where --memory only bounds an estimate: lcovutil.pm requires the
-          # optional Memory::Process module as soon as parallelism is on AND a
-          # memory limit is defined, that module is not in the conda env, and
-          # the capture died with exit 255 before reading a data file. Do not
-          # reach for memory_percentage=0 instead; Perl's defined(0) is true, so
-          # a zero arms the same requirement.
-          #
-          # Four is the hosted runner's core count, confirmed from the geninfo
-          # command line a run echoes back. Deriving it from nproc would let a
-          # larger runner class silently multiply the workers, which is the
-          # unbounded case the pin exists to prevent. The step has the box to
-          # itself, since the build and the tests are done by the time it runs.
-          #
-          # Measured, so the next person knows what to expect before spending an
-          # hour on it: 11m49s sequential to 9m31s at four workers, about 19%.
-          # Not the 4x the core count suggests. Parallel mode gzips its
-          # intermediates, which adds per-file work the sequential path does not
-          # do, and 559 files split into 6 chunks across 4 workers leaves the
-          # second round half idle. Per-file cost is what dominates now, and
-          # lcov names the reason itself on every run: it falls back to the pure
-          # Perl JSON::PP because neither JSON::XS nor Cpanel::JSON::XS is
-          # packaged on conda-forge. That is the ceiling until one of them is.
-          #
-          # Excluding the tests is a REPORTING change, not a speed one, and the
-          # measurement said so: the data-file count moved 565 to 559, because
-          # geninfo reads every .gcda and filters afterwards. It is here anyway
-          # so the two platforms measure one set, and because coverage is meant
-          # to say how much of the library the tests reach rather than how much
-          # of itself a test reaches. It moved the number 90.0% to 82.7% of a
-          # line count that halved, which is the honest library-only figure.
-          #
-          # Cutting the FILES would mean not instrumenting the test targets at
-          # all: einsums_setup_target applies the coverage flags to every target
-          # it touches. That is a CMake change, not a workflow one.
+          # --gcov-tool: the runner's system gcov is older than the conda gcc and rejects its .gcda files.
+          # --ignore-errors inconsistent: lcov 2.x errors on gcc's line ranges for Catch2 template registrars.
+          # --parallel 4 is pinned, not nproc, to bound peak memory: lcov's --memory limit needs Memory::Process,
+          # which conda lacks.
           lcov --gcov-tool "$GCOV" --ignore-errors inconsistent --capture --directory . --output-file coverage.info \
             --parallel 4 \
             --exclude \*/_deps/\* --exclude /usr/\* --exclude \*/einsums-env/\* \

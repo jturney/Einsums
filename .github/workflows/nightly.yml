@@ -1,29 +1,7 @@
 name: Nightly
 
-# Everything the per-PR CMake workflow runs, plus the expensive legs that are
-# too slow to run per-PR: the macOS Debug build (~35 min) and the sanitizers.
-# Runs against main every night; dispatch manually to aim it at a branch.
-#
-# The address/leak/undefined sanitizer leg used to run here too and no longer
-# does; the `sanitizers` job below records why and how to get it back.
-#
-# The job list here must stay a superset of cmake.yml's. It did not, and the
-# gap cost real time: Windows was missing, so a Windows-only regression had
-# nothing watching for it between PRs. If you add a leg to cmake.yml, add it
-# here too (and vice versa) - nothing enforces this automatically.
-#
-# Two deliberate differences from cmake.yml, both of which should stay:
-#
-#   * No detect_changes gating. That workflow skips legs whose paths did not
-#     change, which is the right economy for a PR and the wrong one for a
-#     nightly: the point of running against main every night is to catch what
-#     a path filter would not have predicted - an apiary bump, a toolchain
-#     update on the runner image, a latent bug a fuzzer finally reaches.
-#
-#   * No Linux/intel leg. icpx's per-TU memory exceeds ubuntu-latest's 16GB
-#     even at -O0 -j1 and OOM-kills the runner, which is why cmake.yml gates
-#     it to workflow_dispatch. It is not part of a regular PR run, and on a
-#     schedule it would simply fail every night.
+# Must stay a superset of cmake.yml; nothing enforces it. Deliberate differences:
+# no path filtering (a nightly should catch what filters miss), and no intel leg (manual only).
 on:
   schedule:
     - cron: "17 7 * * *"
@@ -52,41 +30,14 @@ jobs:
     with:
       full_matrix: true
 
-  # ThreadSanitizer only. The address,leak,undefined leg is DISABLED on the
-  # schedule: the runner is killed mid-build, and it has taken every nightly
-  # red with it since 2026-08-09 (08-08 was the last green run).
-  #
-  # It is not a build error. The job dies with "The runner has received a
-  # shutdown signal" and exit 143 - SIGTERM to the whole process tree - after
-  # about 70 minutes, having reached roughly 150 of 738 edges. TSan, the same
-  # workflow with a different -fsanitize list, finishes in 24. Dropping ninja
-  # from -j2 to -j1 (02f45e0bc) did not help, and the /usr/bin/time -v
-  # instrumentation added to measure peak RSS (35f98103b) cannot report,
-  # because SIGTERM takes GNU time down with the build. So the resource
-  # ceiling this leg is hitting is still unmeasured; that reaching only a
-  # fifth of the edges in three times TSan's total runtime suggests swapping
-  # is the strongest evidence there is, and it is circumstantial.
-  #
-  # Turning it off buys back a signal rather than losing one: a nightly that
-  # is red every morning for a known infrastructure reason is a nightly nobody
-  # reads, and the other legs were being ignored along with it. The leg stays
-  # runnable on demand - dispatch the Sanitizers workflow with full_matrix
-  # true - so whoever picks the memory question back up can still iterate on
-  # it without reinstating a broken schedule.
+  # TSan only: the address,leak,undefined leg loses its runner mid-build (unexplained, likely memory).
+  # Run it by dispatching the Sanitizers workflow with full_matrix.
   sanitizers:
     name: Sanitizers
     uses: ./.github/workflows/linux-build-and-test-sanitizer.yml
 
-  # Build only. The deploy steps are gated on the upstream repository and on a
-  # push or manual dispatch, so a scheduled run publishes nothing - it just
-  # proves the generator still walks the whole header surface, which a
-  # dependency bump can break without matching any path filter.
-  #
-  # The write permission is granted here rather than at the top of the file so
-  # every other leg stays read-only. docs.yml declares `contents: write` for
-  # its deploy steps, and a called workflow cannot hold more than its caller
-  # grants: under this workflow's `read-all` the run fails at startup, before
-  # any job begins, whether or not those steps would have been reached.
+  # Build only; deploys are gated to push/dispatch. docs.yml needs contents: write, and a called
+  # workflow cannot exceed its caller's permissions, so grant it here, not file-wide.
   documentation:
     name: Documentation
     permissions:

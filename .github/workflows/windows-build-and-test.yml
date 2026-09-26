@@ -19,11 +19,8 @@ on:
       ctest_args:
         type: string
         required: false
-  # Windows-only failures cannot be reproduced on any other runner, and the
-  # full CMake matrix costs an order of magnitude more than this one leg. The
-  # dispatch trigger runs it alone, on any branch, while chasing them. The
-  # inputs are repeated because workflow_dispatch does not inherit the
-  # workflow_call defaults - ${{ inputs.x }} would be empty otherwise.
+  # Runs this leg alone for chasing Windows-only failures. The inputs are repeated
+  # because workflow_dispatch does not inherit the workflow_call defaults.
   workflow_dispatch:
     inputs:
       build_cache_suffix:
@@ -37,21 +34,8 @@ on:
       build_configure_extra_args:
         type: string
         required: false
-      # Appended to the ctest command line. Hunting an intermittent crash is
-      # what this is for:
-      #
-      #   ctest_args: -R CcsdTiled --repeat until-fail:300
-      #
-      # Pair it with a build that can symbolize the result, which the default
-      # configure deliberately cannot - it builds no debug info at all so
-      # ccache can cache an MSVC-style compile:
-      #
-      #   build_configure_extra_args: -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
-      #   build_cache_suffix: crashhunt
-      #
-      # Embedded is /Z7, the one debug format ccache tolerates here (a shared
-      # PDB is what it refuses). The separate cache suffix keeps those fatter
-      # objects out of the nightly's 2G budget.
+      # For crash hunts, e.g. `-R CcsdTiled --repeat until-fail:300`. For symbols, also pass
+      # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded (/Z7, the only format ccache caches) and a separate cache suffix.
       ctest_args:
         type: string
         required: false
@@ -68,8 +52,7 @@ jobs:
     name: "clang-cl • openblas • ${{ matrix.build_type }}"
     runs-on: windows-2022
     env:
-      # ${{ }} form, not "$GITHUB_WORKSPACE": the other legs lean on ccache's
-      # own $-expansion, which is a POSIX assumption in a cmd.exe step.
+      # ${{ }} form, not "$GITHUB_WORKSPACE": ccache's own $-expansion does not happen in cmd.exe steps.
       CCACHE_DIR: ${{ github.workspace }}\build_cache_${{ inputs.build_cache_suffix }}
       CCACHE_MAXSIZE: ${{ inputs.build_cache_size }}
     defaults:
@@ -82,38 +65,6 @@ jobs:
           ref: ${{ inputs.build_ref }}
           path: src
 
-      # ---- Conda environment setup ----
-      # Mirrors .github/actions/setup-conda-env, but the activation and every
-      # build step below must run in cmd: conda-forge's vs2022 activation is a
-      # .bat script (the PowerShell counterpart selects clang/clang++ instead
-      # of clang-cl), and the generator variables it exports must be UNSET
-      # before a Ninja configure - see devtools/configure_windows.bat for the
-      # full story.
-      - name: Setup Miniforge
-        uses: conda-incubator/setup-miniconda@v4
-        with:
-          miniforge-version: latest
-          activate-environment: einsums-env
-          conda-remove-defaults: "true"
-
-      - name: Install ruamel.yaml
-        run: conda install -y -c conda-forge ruamel.yaml
-
-      - name: Merge Conda YAML files
-        working-directory: src/devtools/conda-envs
-        run: python merge_yml.py default openblas
-
-      - name: Cache Conda env
-        uses: actions/cache@v6
-        with:
-          path: ${{ env.CONDA }}/envs
-          key: conda-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/devtools/conda-envs/conda.yml') }}
-        id: cache
-
-      - name: Update environment
-        run: conda env update -n einsums-env -f src/devtools/conda-envs/conda.yml
-        if: steps.cache.outputs.cache-hit != 'true'
-
       - name: Cache Build Cache
         uses: actions/cache@v6
         with:
@@ -121,24 +72,19 @@ jobs:
           key: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-clang-cl-openblas-${{ github.sha }}
           restore-keys: einsums-${{ runner.os }}-${{ matrix.build_type }}-${{ inputs.build_cache_suffix }}-clang-cl-openblas-
 
-      - name: Conda Environment
-        run: |
-          conda info
-          conda list
+      - name: Set up conda environment
+        uses: ./src/.github/actions/setup-conda-env
+        with:
+          compiler: default
+          blas: openblas
+          source-dir: src
 
-      # ---- Configure, Build, Test ----
-      # CMAKE_PREFIX_PATH carries both halves of the env: conda puts compiled
-      # packages (LLVM/Clang for the apiary codegen, HDF5, MKL) under
-      # %CONDA_PREFIX%\Library, but noarch python packages keep their unix
-      # layout at the env root, which is where pybind11-global's
-      # share\cmake\pybind11 lives.
+      # Env-dependent steps run in cmd: only conda-forge's .bat vs2022 activation selects clang-cl
+      # and puts ccache on PATH (see devtools/configure_windows.bat).
       #
-      # Two more traps below. An empty CMAKE_MSVC_DEBUG_INFORMATION_FORMAT means "no
-      # debug info" under CMP0141, which also drops the /Zi shared PDB that
-      # ccache cannot cache. And the optimization flags must ride on the
-      # PER-CONFIG variable: CMAKE_CXX_FLAGS is where MSVC's defaults live
-      # (/DWIN32 /D_WINDOWS /W3 /GR /EHsc), so setting it replaces them and the
-      # build fails in spdlog with "cannot use 'throw' with exceptions disabled".
+      # CMAKE_PREFIX_PATH needs both %CONDA_PREFIX%\Library (compiled packages) and the env root (noarch pybind11).
+      # Empty CMAKE_MSVC_DEBUG_INFORMATION_FORMAT drops the /Zi shared PDB ccache cannot cache.
+      # Optimization flags go on the per-config variable: setting CMAKE_CXX_FLAGS drops MSVC's /EHsc default.
       - name: Configure CMake
         shell: cmd
         run: |
@@ -158,30 +104,9 @@ jobs:
           set "CC=%CONDA_PREFIX%\Library\bin\clang-cl.exe"
           set "CXX=%CONDA_PREFIX%\Library\bin\clang-cl.exe"
 
-          rem EINSUMS_WITH_BACKTRACES is OFF below on purpose, and not to save
-          rem build time. This leg carries no debug info at all, so cpptrace has
-          rem nearly nothing to symbolize - while linking it adds a static
-          rem library with its own initializers and destructors and defines
-          rem EINSUMS_HAVE_BACKTRACES, which Config/ABI.hpp keys on too. The open
-          rem failure here is a teardown segfault, which is a
-          rem static-destruction-order problem, so perturbing static init order
-          rem is the one thing a build hunting it must not do.
-          rem
-          rem The crash handler does not need it: the exception code, the
-          rem faulting module and offset, and the minidump all come out without
-          rem cpptrace, and the module name is the question worth answering. A
-          rem hunt that does want symbols turns both back on through
-          rem build_configure_extra_args.
-          rem
-          rem These rem lines live ABOVE the cmake call, not among its arguments.
-          rem Every line of that call ends in ^, so a rem placed inside it is a
-          rem continuation rather than a comment, and its words reach cmake as
-          rem arguments - which shows up as cmake warning that it is ignoring an
-          rem extra path from the command line, naming a word from the prose.
-          rem
-          rem That warning text is paraphrased rather than quoted here on
-          rem purpose: spelled out verbatim it matches a grep for the real thing
-          rem and makes this comment look like the failure it is describing.
+          rem BACKTRACES=OFF: without debug info cpptrace symbolizes nothing, and its static init
+          rem would perturb the teardown-order crash this leg hunts.
+          rem Keep rem lines out of the ^-continued cmake call: there they become cmake arguments.
           cmake -G Ninja ^
             -S "%GITHUB_WORKSPACE%\src" ^
             -B "%GITHUB_WORKSPACE%\build" ^
@@ -210,18 +135,13 @@ jobs:
           if errorlevel 1 exit /b %ERRORLEVEL%
           cmake --build "%GITHUB_WORKSPACE%\build" --config ${{ matrix.build_type }}
 
-      # cmd, like the other env-dependent steps: only the .bat activation puts
-      # ccache on PATH.
       - name: ccache statistics
         shell: cmd
         run: |
           call conda activate einsums-env
           ccache -sv || ccache -s
 
-      # Diagnostic: ctest reports a bare 0xc0000135 (STATUS_DLL_NOT_FOUND) and
-      # hides which DLL. Run one test exe directly so the loader prints the
-      # missing DLL by name, and dump its import table as a reliable fallback.
-      # Never fails the job (exit /b 0) so the real Test step still runs.
+      # ctest reports a bare 0xc0000135 (DLL not found); running one exe directly names the DLL.
       - name: Diagnose missing DLL
         shell: cmd
         working-directory: ${{ github.workspace }}/build
@@ -237,30 +157,12 @@ jobs:
           echo ==== import table (fallback) ====
           llvm-readobj --coff-imports "%TESTEXE%" 2>nul || dumpbin /dependents "%TESTEXE%" 2>nul || echo "(no llvm-readobj/dumpbin on PATH)"
           echo ==== Einsums DLL imports ====
-          rem Glob rather than a fixed name: the DLL carries the ABI generation
-          rem (Einsums-abi1.dll), which changes on an ABI break.
+          rem Glob: the DLL name carries the ABI generation.
           for /f "delims=" %%D in ('dir /b /s "RelWithDebInfo\Einsums-abi*.dll" 2^>nul') do llvm-readobj --coff-imports "%%D" 2>nul || dumpbin /dependents "%%D" 2>nul
           exit /b 0
 
-      # Two independent ways to catch a hard crash, because they fail in
-      # different places.
-      #
-      # einsums' own handler (--einsums:debug:crash-handler, on by default) runs
-      # in-process: it prints the faulting module and writes its own dump. That
-      # is the one a user gets, and it needs nothing configured here beyond
-      # telling it where to write.
-      #
-      # WER LocalDumps runs OUT of process, which is what makes it the backstop.
-      # An in-process handler is least reliable exactly when the fault came from
-      # teardown under the loader lock, and it is bypassed outright by fail-fast
-      # paths - heap corruption and stack-cookie failures never consult it. The
-      # registry write is a CI-only affordance: this is a throwaway VM where the
-      # job is already admin. Nothing ships to users this way.
-      #
-      # cmd rather than the job's default bash: Git Bash mangles the "/v" style
-      # switches reg.exe takes into paths, and the key name is full of
-      # backslashes. Never fails the job - a missing dump is a worse run, not a
-      # broken one.
+      # WER LocalDumps is the out-of-process backstop for crashes einsums' in-process handler
+      # cannot catch (loader-lock teardown, fail-fast paths). cmd: Git Bash mangles reg.exe's /v switches.
       - name: Arm crash dump capture
         shell: cmd
         run: |
@@ -275,18 +177,9 @@ jobs:
         shell: cmd
         working-directory: ${{ github.workspace }}/build
         env:
-          # Reads as --einsums:debug:crash-dump-dir. Without it each test drops
-          # its dump in its own working directory and the upload below has to
-          # guess where to look.
           EINSUMS_DEBUG_CRASH_DUMP_DIR: ${{ github.workspace }}\dumps
-          # Same directory, so the upload below carries both. A python test that
-          # stops making progress writes every thread's stack here (see the root
-          # conftest.py); ctest discards the output of a test it kills on
-          # timeout, so a hang leaves nothing else behind.
+          # Hung python tests dump thread stacks here (root conftest.py); ctest drops a timed-out test's output.
           EINSUMS_TEST_STACKDUMP_DIR: ${{ github.workspace }}\dumps
-          # The tier measurement, per leg. This one is the only leg that varies
-          # the compiler and runtime rather than the BLAS underneath the same
-          # one, which is what makes it worth a seventh report.
           EINSUMS_TIER_REPORT_DIR: ${{ github.workspace }}\tier-reports
           EINSUMS_TIER_LABEL: windows-clang-cl-openblas-${{ matrix.build_type }}
         run: |
@@ -294,8 +187,6 @@ jobs:
           if errorlevel 1 exit /b %ERRORLEVEL%
           ctest --output-on-failure -j3 ${{ inputs.ctest_args }}
 
-      # if: always() - the dumps are worth having precisely when the step above
-      # failed. if-no-files-found: ignore keeps a clean run quiet.
       - name: Upload crash dumps
         if: always()
         uses: actions/upload-artifact@v7
