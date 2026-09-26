@@ -260,6 +260,10 @@ std::vector<LoadedTensor> build_frame(Graph &root, Graph &graph, std::vector<IrT
             // The live blocks a captured node carries, seeded from the loaded snapshot the
             // way every builder seeds them. Restoring them is not cosmetic: a loaded graph is
             // optimized after loading, and a pass that rewrites a prefactor writes through them.
+            // The link, target and all-index lists are derived data. A file written before the
+            // target list followed C's order holds it sorted, so they are derived again here and
+            // a loaded contraction describes itself exactly as the same one captured would.
+            detail::derive_index_roles(einsum->spec);
             detail::attach_live_state(*einsum);
             if (einsum->gemm_hint != nullptr) {
                 if (spec.hint_ids.size() != 3) {

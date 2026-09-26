@@ -198,6 +198,14 @@ TEST_CASE("ParsedEinsumSpec - target_indices", "[ComputeGraph][EinsumSpec]") {
     REQUIRE(targets[1] == "j");
 }
 
+TEST_CASE("ParsedEinsumSpec - target_indices follow C's order", "[ComputeGraph][EinsumSpec]") {
+    // The descriptor's target list used to be SORTED while the list the dispatcher hands PackedGemm
+    // follows C, so one contraction was described two ways. A sorted list reads "i,j" here.
+    auto const result = parse_einsum_spec("j,i <- i,k ; k,j");
+    REQUIRE(result.has_value());
+    CHECK(result.value().target_indices() == std::vector<std::string>{"j", "i"});
+}
+
 TEST_CASE("ParsedEinsumSpec - link_indices multi-char", "[ComputeGraph][EinsumSpec]") {
     auto result = parse_einsum_spec("mu,nu <- mu,rho ; rho,nu");
     REQUIRE(result.has_value());
@@ -527,7 +535,16 @@ TEST_CASE("parse_einsum_spec - an output index must come from an operand", "[Com
 TEST_CASE("parse_permute_spec - index labels are alphanumeric and come from the input", "[ComputeGraph][EinsumSpec]") {
     auto const bad_char = parse_permute_spec("j@ <- @j");
     REQUIRE_FALSE(bad_char.has_value());
-    REQUIRE_THAT(bad_char.error().message, Catch::Matchers::ContainsSubstring("non-letter character"));
+    REQUIRE_THAT(bad_char.error().message, Catch::Matchers::ContainsSubstring("other than a letter, a digit or '_'"));
+
+    // '_' names an index in a permute spec, as it does in tensor_permute's own specs; an einsum
+    // spec still refuses it.
+    auto const underscored = parse_permute_spec("mu_1,nu_1 <- nu_1,mu_1");
+    REQUIRE(underscored.has_value());
+    CHECK(underscored.value().c_indices == std::vector<std::string>{"mu_1", "nu_1"});
+    STATIC_REQUIRE(validate_permute_spec("mu_1,nu_1 <- nu_1,mu_1"));
+    CHECK_FALSE(parse_einsum_spec("mu_1 <- mu_1,k ; k").has_value());
+    STATIC_REQUIRE_FALSE(validate_einsum_spec("mu_1 <- mu_1,k ; k"));
 
     auto const stray = parse_permute_spec("ik <- ij");
     REQUIRE_FALSE(stray.has_value());

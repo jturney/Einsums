@@ -898,6 +898,27 @@ TEST_CASE("SaveLoad - a negative id or size is a problem and never a silent zero
     }
 }
 
+TEST_CASE("SaveLoad - a file with a sorted target list loads in C's order", "[ComputeGraph][SaveLoad]") {
+    // Files written before the target list followed C's order hold it sorted. The loader derives
+    // the role lists again, so such a file describes its contraction as a fresh capture does.
+    auto A = create_random_tensor<double>("A", 3, 4);
+    auto B = create_random_tensor<double>("B", 4, 5);
+    auto C = create_zero_tensor<double>("C", 5, 3);
+
+    cg::Graph graph("target_order");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("j,i <- i,k ; k,j", &C, A, B);
+    }
+    std::string const text = must_save(graph, cg::SaveOptions{.pretty = false});
+    REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring(R"("target_indices":["j","i"])"));
+
+    cg::Graph const loaded = must_load(patched(text, R"("target_indices":["j","i"])", R"("target_indices":["i","j"])"));
+    auto const     *desc   = loaded.nodes()[0].op_data.get_if<cg::EinsumDescriptor>();
+    REQUIRE(desc != nullptr);
+    CHECK(desc->spec.target_indices == std::vector<std::string>{"j", "i"});
+}
+
 // ── Tier 3: content hash and renumbering ───────────────────────────────────
 
 TEST_CASE("SaveLoad - content_hash covers structure and nothing else", "[ComputeGraph][SaveLoad]") {

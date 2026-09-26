@@ -1218,6 +1218,10 @@ EINSUMS_EXPORT EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &
 /// when empty.
 [[nodiscard]] EINSUMS_EXPORT std::shared_ptr<EinsumIndices> make_live_indices(EinsumDescriptor const &desc, std::string raw = {});
 
+/// Set @p spec's link, target and all-index lists from its three index lists, which are the only
+/// ones it states: the other three are derived, and every builder derives them this one way.
+EINSUMS_EXPORT void derive_index_roles(packed_gemm::ContractionSpec &spec);
+
 /// Give @p desc fresh live params, indices and packed-GEMM site, all seeded from its snapshot.
 ///
 /// Every builder of an einsum node goes through this: capture, @ref Graph::make_einsum_node and the

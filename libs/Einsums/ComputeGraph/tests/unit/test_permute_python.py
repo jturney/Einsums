@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 import einsums
+import einsums.graph as cg
 from einsums.testing import ALL_DTYPES, COMPLEX_DTYPES, assert_close
 
 
@@ -115,3 +116,22 @@ def test_mixed_index_lengths():
     einsums.permute("alpha,i <- i,alpha", C, A)
 
     np.testing.assert_allclose(np.asarray(C), np.asarray(A).T)
+
+
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_underscore_index_names(dtype):
+    # '_' names an index in a permute spec, as it does in tensor_permute's own specs. The parser
+    # used to refuse it, so a name like mu_1 could not be written at all.
+    A = einsums.create_random_tensor("A", [3, 5, 2], dtype=dtype)
+    expected = np.transpose(np.asarray(A), (1, 2, 0))
+
+    C = einsums.create_zero_tensor("C", [5, 2, 3], dtype=dtype)
+    einsums.permute("nu_1,k,mu_1 <- mu_1,nu_1,k", C, A)
+    assert_close(C, expected)
+
+    captured = einsums.create_zero_tensor("captured", [5, 2, 3], dtype=dtype)
+    graph = cg.Graph("underscore_permute")
+    with cg.capture(graph):
+        einsums.permute("nu_1,k,mu_1 <- mu_1,nu_1,k", captured, A)
+    graph.execute()
+    assert_close(captured, expected)

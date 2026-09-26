@@ -12,9 +12,8 @@
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph)
 
-namespace {
+namespace detail {
 
-/// The link, target and all-index lists a contraction spec derives from its three index lists.
 void derive_index_roles(packed_gemm::ContractionSpec &spec) {
     ParsedEinsumSpec lists;
     lists.c_indices     = spec.c_indices;
@@ -26,7 +25,7 @@ void derive_index_roles(packed_gemm::ContractionSpec &spec) {
     spec.all_indices.insert(spec.all_indices.end(), spec.link_indices.begin(), spec.link_indices.end());
 }
 
-} // namespace
+} // namespace detail
 
 std::optional<SpaceId> EinsumDescriptor::space_for_letter(std::string_view letter) const {
     for (auto const &entry : letter_spaces) {
@@ -84,7 +83,7 @@ void set_operand_indices(EinsumDescriptor &desc, EinsumOperand operand, std::vec
     };
     slot(desc.spec) = indices;
 
-    derive_index_roles(desc.spec);
+    detail::derive_index_roles(desc.spec);
 
     if (desc.indices != nullptr) {
         slot(desc.indices->spec)   = std::move(indices);
@@ -252,7 +251,7 @@ EinsumDescriptor build_einsum_descriptor(ParsedEinsumSpec const &parsed, Prefact
     desc.spec.c_indices = parsed.c_indices;
     desc.spec.a_indices = parsed.a_indices;
     desc.spec.b_indices = parsed.b_indices;
-    derive_index_roles(desc.spec);
+    detail::derive_index_roles(desc.spec);
     return desc;
 }
 

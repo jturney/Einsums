@@ -177,7 +177,9 @@ struct EINSUMS_EXPORT ParsedEinsumSpec {
     /// Compute link indices (in both A and B, not in C).
     [[nodiscard]] std::vector<std::string> link_indices() const;
 
-    /// Compute target indices (unique indices in C).
+    /// Compute target indices: C's unique indices, in the order C first names them. That is the
+    /// order PackedGemm's target space takes them in, so a descriptor built from this list and the
+    /// spec the dispatcher hands PackedGemm describe one contraction the same way.
     [[nodiscard]] std::vector<std::string> target_indices() const;
 };
 
@@ -320,14 +322,15 @@ constexpr bool wrappers_well_formed(std::string_view spec) {
 
 /// The structural check both validators share: every character is one a spec may use, the wrappers
 /// are well formed, there is exactly one arrow, and there are @p semicolons operand separators.
-constexpr bool validate_spec_structure(std::string_view spec, std::size_t semicolons) {
+/// @p underscore admits ``_`` in index names, which a permute spec allows and an einsum spec does not.
+constexpr bool validate_spec_structure(std::string_view spec, std::size_t semicolons, bool underscore = false) {
     if (!wrappers_well_formed(spec)) {
         return false;
     }
     std::size_t arrows = 0;
     std::size_t semis  = 0;
     for (std::size_t i = 0; i < spec.size(); ++i) {
-        if (!is_einsum_char(spec[i])) {
+        if (!is_einsum_char(spec[i]) && !(underscore && spec[i] == '_')) {
             return false;
         }
         std::string_view const rest = spec.substr(i);
@@ -444,10 +447,11 @@ struct ParsedPermuteSpec {
 /**
  * @brief Validate a permute specification string at compile time.
  *
- * Checks structural validity: presence of exactly one arrow, no semicolons.
+ * Checks structural validity: presence of exactly one arrow, no semicolons. Index names may use
+ * ``_`` (``mu_1,nu_1 <- nu_1,mu_1``), as tensor_permute's own specs may.
  */
 constexpr bool validate_permute_spec(std::string_view spec) {
-    return detail::validate_spec_structure(spec, 0);
+    return detail::validate_spec_structure(spec, 0, /*underscore=*/true);
 }
 
 /**

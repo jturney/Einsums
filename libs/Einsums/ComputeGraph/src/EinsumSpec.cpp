@@ -293,9 +293,9 @@ expected<ArrowSides, GraphError> split_arrow(std::string_view stripped, std::str
 /// Letters plus digits allow numbered names like "i1"/"i2". A comma-less operand
 /// is char-split, so without this a stray '@' / '$' / '.' silently becomes an
 /// index label and the operation runs on a malformed spec.
-std::optional<std::string> first_non_alphanumeric(std::vector<std::string> const &group) {
+std::optional<std::string> first_non_alphanumeric(std::vector<std::string> const &group, bool underscore = false) {
     for (auto const &idx : group) {
-        if (!std::ranges::all_of(idx, [](unsigned char ch) { return std::isalnum(ch) != 0; })) {
+        if (!std::ranges::all_of(idx, [underscore](unsigned char ch) { return std::isalnum(ch) != 0 || (underscore && ch == '_'); })) {
             return idx;
         }
     }
@@ -491,8 +491,13 @@ std::vector<std::string> ParsedEinsumSpec::link_indices() const {
 }
 
 std::vector<std::string> ParsedEinsumSpec::target_indices() const {
-    std::set<std::string> c_set(c_indices.begin(), c_indices.end());
-    return {c_set.begin(), c_set.end()};
+    std::vector<std::string> out;
+    for (auto const &letter : c_indices) {
+        if (std::ranges::find(out, letter) == out.end()) {
+            out.push_back(letter);
+        }
+    }
+    return out;
 }
 
 IndexRole index_role(std::string_view letter, std::vector<std::string> const &c, std::vector<std::string> const &a,
@@ -576,9 +581,9 @@ expected<ParsedPermuteSpec, GraphError> parse_permute_spec(std::string_view spec
         return unexpected(GraphError::parse(fmt::format("permute spec '{}': output has no indices", spec)));
     }
     for (auto const &[group, which] : {std::pair{std::cref(result.c_indices), "output"}, std::pair{std::cref(result.a_indices), "input"}}) {
-        if (auto const bad = first_non_alphanumeric(group)) {
-            return unexpected(
-                GraphError::parse(fmt::format("permute spec '{}': {} index '{}' has a non-letter character", spec, which, *bad)));
+        if (auto const bad = first_non_alphanumeric(group, /*underscore=*/true)) {
+            return unexpected(GraphError::parse(
+                fmt::format("permute spec '{}': {} index '{}' has a character other than a letter, a digit or '_'", spec, which, *bad)));
         }
     }
     if (result.c_indices.size() != result.a_indices.size()) {
