@@ -84,3 +84,5 @@ if(EINSUMS_BUILD_PYTHON)
   )
   unset(_einsums_test_profiler)
 endif()
+
+einsums_add_python_unit_test("Modules.Einsums.Runtime" AbortReport SCRIPT test_abort_report_python.py)

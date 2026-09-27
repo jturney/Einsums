@@ -218,22 +218,6 @@ constexpr unsigned int backtrace_timeout_seconds = 10;
 }
 #endif
 
-static bool exit_called = false;
-
-void on_exit() noexcept {
-    exit_called = true;
-}
-
-void on_abort(int) noexcept {
-    exit_called = true;
-    // _Exit, not exit: this runs from a SIGABRT handler, where exit() would run
-    // the static destructors. On a process already on its way down that reaches
-    // ~Profiler with other threads still live, and a destructor that throws
-    // there turns the abort into a std::terminate inside fwrite, waiting on a
-    // stdio lock. Leave without unwinding anything.
-    std::_Exit(-1);
-}
-
 void set_signal_handlers() {
 #if defined(EINSUMS_WINDOWS)
     SetConsoleCtrlHandler(termination_handler, TRUE);

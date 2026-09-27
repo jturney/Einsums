@@ -77,6 +77,13 @@ if _stackdump_seconds > 0:
         # run; the dump is a diagnostic, not a subject.
         _stackdump_file = None
     if _stackdump_file is not None:
+        # Say whose file this is. A process that dies without hanging never
+        # reaches the cleanup below, so its file is left behind, and without a
+        # header it would be an empty file that names no test. With one, a file
+        # holding only the header says "this run died abruptly": look for its
+        # report in that test's ctest output.
+        _stackdump_file.write(f"# pid {os.getpid()}: {' '.join(sys.argv)}\n")
+        _stackdump_header_size = _stackdump_file.tell()
         faulthandler.dump_traceback_later(
             _stackdump_seconds, repeat=True, file=_stackdump_file, exit=False
         )
@@ -93,7 +100,7 @@ if _stackdump_seconds > 0:
             """
             faulthandler.cancel_dump_traceback_later()
             try:
-                empty = _stackdump_file.tell() == 0
+                empty = _stackdump_file.tell() == _stackdump_header_size
                 _stackdump_file.close()
                 if empty:
                     os.unlink(_stackdump_file.name)

@@ -23,7 +23,6 @@
 
 #include <H5Epublic.h>
 #include <H5version.h>
-#include <csignal>
 #include <cstdlib>
 #include <functional>
 #include <spdlog/spdlog.h>
@@ -171,12 +170,12 @@ int run_impl(std::function<int()> f, std::vector<std::string> const &argv, InitP
         pass_argv = &dummy_argv;
     }
 
-    // register default handlers
-    [[maybe_unused]] auto signal_handler = std::signal(SIGABRT, on_abort);
-    [[maybe_unused]] auto exit_result    = std::atexit(on_exit);
-#if defined(EINSUMS_HAVE_CXX11_STD_QUICK_EXIT)
-    [[maybe_unused]] auto quick_exit_result = std::at_quick_exit(on_exit);
-#endif
+    // SIGABRT keeps its default disposition, whatever install-signal-handlers
+    // says. Answering it with a handler that exits turns an abort into an
+    // ordinary exit status: whatever the abort printed into a buffer is lost,
+    // ctest reports "Failed" instead of "Subprocess aborted", and in a Python
+    // process the interpreter's faulthandler, which owns SIGABRT there, never
+    // gets to say where the abort came from.
     return run(f, *pass_argv, params, blocking);
 }
 

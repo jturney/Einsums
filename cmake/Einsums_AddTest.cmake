@@ -326,8 +326,16 @@ function(einsums_add_python_unit_test subcategory name)
   # PyEinsums lives in ``${CMAKE_BINARY_DIR}/lib/einsums/_core.*.so`` as
   # part of the einsums Python package. PYTHONPATH points at the *parent*
   # directory so ``import einsums`` resolves the package.
-  set(_pyt_args -m pytest -q --tb=short)
-  set(_pyt_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib")
+  # A test that kills the process must still leave a trace in the ctest log.
+  # pytest's default capture points file descriptors 1 and 2 at temporary files
+  # while each test runs and prints them only once the test has finished, so
+  # whatever native code writes as the process dies (a sanitizer report, a
+  # std::terminate message) goes down with it. --capture=sys captures Python's
+  # own streams as before and leaves the descriptors alone. Unbuffered output
+  # keeps the progress already made, and faulthandler names the Python frame
+  # that was running when a fatal signal arrived.
+  set(_pyt_args -m pytest -q --tb=short --capture=sys)
+  set(_pyt_env "PYTHONPATH=${CMAKE_BINARY_DIR}/lib" "PYTHONUNBUFFERED=1" "PYTHONFAULTHANDLER=1")
   # The C++ test executables disable the runtime's signal handler and
   # debugger-attach prompt via ``--einsums:debug:no-{install-signal-handlers,
   # attach-debugger}`` (see einsums_add_unit_test). The Python tests have no
