@@ -106,6 +106,20 @@ class EINSUMS_EXPORT DistributedTensorFile {
 
     void write_at(uint64_t offset, void const *data, size_t bytes);
     void read_at(uint64_t offset, void *data, size_t bytes) const;
+
+    /// Write every element of @p tensor at @p offset, in the file's column-major order.
+    template <typename T, size_t Rank>
+    void write_elements(uint64_t offset, Tensor<T, Rank> const &tensor) {
+        detail::write_elements([this](uint64_t off, void const *data, size_t bytes) { write_at(off, data, bytes); }, offset,
+                               reinterpret_cast<char const *>(tensor.data()), detail::memory_layout<T>(tensor, Rank), 0, tensor.size());
+    }
+
+    /// Read every element of @p tensor, already sized to the entry, from @p offset.
+    template <typename T, size_t Rank>
+    void read_elements(uint64_t offset, Tensor<T, Rank> &tensor) const {
+        detail::read_elements([this](uint64_t off, void *data, size_t bytes) { read_at(off, data, bytes); }, offset,
+                              reinterpret_cast<char *>(tensor.data()), detail::memory_layout<T>(tensor, Rank), 0, tensor.size());
+    }
     void write_metadata();
     void read_metadata();
 
@@ -138,7 +152,7 @@ void DistributedTensorFile::write(std::string_view name, Tensor<T, Rank> const &
 
     // Only rank 0 writes the data
     if (_my_rank == 0) {
-        write_at(entry.data_offset, tensor.data(), data_bytes);
+        write_elements<T>(entry.data_offset, tensor);
     }
 
     _entries.push_back(entry);
@@ -164,7 +178,7 @@ void DistributedTensorFile::write_local(std::string_view name, Tensor<T, Rank> c
     entry.owning_rank = static_cast<uint32_t>(_my_rank);
 
     // Each rank writes its own data at its own offset
-    write_at(my_offset, tensor.data(), local_bytes);
+    write_elements<T>(my_offset, tensor);
 
     _entries.push_back(entry);
 
@@ -183,7 +197,7 @@ void DistributedTensorFile::read(std::string_view name, Tensor<T, Rank> &tensor)
             for (size_t d = 0; d < Rank; d++)
                 dims[d] = entry.dims[d];
             tensor.resize(dims);
-            read_at(entry.data_offset, tensor.data(), entry.data_size);
+            read_elements<T>(entry.data_offset, tensor);
             return;
         }
     }
@@ -201,7 +215,7 @@ void DistributedTensorFile::read_local(std::string_view name, Tensor<T, Rank> &t
             for (size_t d = 0; d < Rank; d++)
                 dims[d] = entry.dims[d];
             tensor.resize(dims);
-            read_at(entry.data_offset, tensor.data(), entry.data_size);
+            read_elements<T>(entry.data_offset, tensor);
             return;
         }
     }

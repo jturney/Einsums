@@ -235,3 +235,90 @@ def test_slice_ranges_must_lie_inside_the_entry(etn_path, dtype):
     with pytest.raises(ValueError):
         f.read_slice("X", slab, [(2, 1), (0, 3)])
     del f
+
+
+# A process started with --einsums:row-major (here through its environment
+# variable) builds every tensor row-major. The transfers used to copy memory
+# order byte for byte, so such a process wrote transposed files, read
+# column-major files transposed, and put slices in the wrong place even in its
+# own files. The file holds column-major data whoever wrote it.
+_ROW_MAJOR_CHILD = r"""
+import sys
+import numpy as np
+import einsums
+
+path, dtype, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+probe = einsums.create_zero_tensor("probe", [2, 3], dtype=dtype)
+assert np.asarray(probe, copy=False).flags["C_CONTIGUOUS"], "the child is not row-major"
+expected = np.arange(24, dtype=np.float64).reshape(2, 3, 4)
+if np.dtype(dtype).kind == "c":
+    expected = expected - 0.5j * expected
+expected = expected.astype(dtype)
+
+if mode == "write":
+    A = einsums.create_zero_tensor("A", [2, 3, 4], dtype=dtype)
+    np.asarray(A, copy=False)[...] = expected
+    f = einsums.io.TensorFile(path, einsums.io.Mode.ReadWrite)
+    f.write("A", A)
+    # A slab written from row-major memory lands at its logical position.
+    patch = einsums.create_zero_tensor("patch", [1, 2, 2], dtype=dtype)
+    np.asarray(patch, copy=False)[...] = expected[1:2, 1:3, 2:4]
+    f.write("B", einsums.create_zero_tensor("B", [2, 3, 4], dtype=dtype))
+    f.write_slice("B", patch, [(1, 2), (1, 3), (2, 4)])
+    del f
+else:
+    f = einsums.io.TensorFile(path, einsums.io.Mode.Read)
+    back = einsums.create_zero_tensor("back", [2, 3, 4], dtype=dtype)
+    f.read("A", back)
+    np.testing.assert_array_equal(np.asarray(back, copy=False), expected)
+    slab = einsums.create_zero_tensor("slab", [2, 2, 3], dtype=dtype)
+    f.read_slice("A", slab, [(0, 2), (1, 3), (1, 4)])
+    np.testing.assert_array_equal(np.asarray(slab, copy=False), expected[:, 1:3, 1:4])
+    del f
+"""
+
+
+def _run_row_major_child(path, dtype, mode):
+    import subprocess
+    import sys
+
+    env = dict(os.environ, EINSUMS_ROW_MAJOR="1")
+    result = subprocess.run(
+        [sys.executable, "-c", _ROW_MAJOR_CHILD, path, dtype, mode],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _pattern(dtype):
+    values = np.arange(24, dtype=np.float64).reshape(2, 3, 4)
+    if np.dtype(dtype).kind == "c":
+        values = values - 0.5j * values
+    return values.astype(dtype)
+
+
+def test_row_major_process_writes_a_column_major_file(etn_path, dtype):
+    _run_row_major_child(etn_path, dtype, "write")
+    expected = _pattern(dtype)
+
+    f = einsums.io.TensorFile(etn_path, einsums.io.Mode.Read)
+    back = einsums.create_zero_tensor("back", [2, 3, 4], dtype=dtype)
+    assert np.asarray(back, copy=False).flags["F_CONTIGUOUS"]
+    f.read("A", back)
+    np.testing.assert_array_equal(np.asarray(back, copy=False), expected)
+
+    patched = np.zeros((2, 3, 4), dtype=dtype)
+    patched[1:2, 1:3, 2:4] = expected[1:2, 1:3, 2:4]
+    f.read("B", back)
+    np.testing.assert_array_equal(np.asarray(back, copy=False), patched)
+    del f
+
+
+def test_row_major_process_reads_a_column_major_file(etn_path, dtype):
+    A = einsums.create_zero_tensor("A", [2, 3, 4], dtype=dtype)
+    np.asarray(A, copy=False)[...] = _pattern(dtype)
+    einsums.io.write(etn_path, "A", A)
+
+    _run_row_major_child(etn_path, dtype, "read")

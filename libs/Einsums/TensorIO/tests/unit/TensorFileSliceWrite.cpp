@@ -227,3 +227,31 @@ TEMPLATE_LIST_TEST_CASE("TensorFile RuntimeTensor read_slice + write_slice", "[T
         REQUIRE(slab.data()[i] == value<TestType>(9.0));
     }
 }
+
+// A scalar entry's only slab is the empty one, and it holds the scalar. The
+// slab walker used to emit a zero-byte run for it, so read_slice returned the
+// destination untouched and write_slice silently wrote nothing.
+TEMPLATE_LIST_TEST_CASE("TensorFile RuntimeTensor slices of a scalar entry move the scalar", "[TensorIO][runtime][slice]",
+                        testing::AllScalarTypes) {
+    TempFile const tmp("rt_scalar.etn");
+
+    GeneralRuntimeTensor<TestType, std::allocator<TestType>> scalar("s", std::vector<size_t>{});
+    scalar.data()[0] = value<TestType>(3.5);
+    {
+        TensorFile out(tmp.path, TensorFile::Mode::Write);
+        out.write("S", scalar);
+        out.write("T", scalar);
+        GeneralRuntimeTensor<TestType, std::allocator<TestType>> patch("p", std::vector<size_t>{});
+        patch.data()[0] = value<TestType>(-2.0);
+        out.write_slice("T", patch, {});
+    }
+
+    TensorFile                                               in(tmp.path, TensorFile::Mode::Read);
+    GeneralRuntimeTensor<TestType, std::allocator<TestType>> back("b", std::vector<size_t>{});
+    back.data()[0] = TestType{0};
+    in.read_slice("S", back, {});
+    REQUIRE(back.data()[0] == value<TestType>(3.5));
+
+    in.read("T", back);
+    REQUIRE(back.data()[0] == value<TestType>(-2.0));
+}

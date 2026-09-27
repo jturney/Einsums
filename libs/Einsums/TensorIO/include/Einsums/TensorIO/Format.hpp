@@ -25,6 +25,14 @@
 /// Putting the entry table at the end allows appending without shifting
 /// existing data. Files written through the distributed path are standard
 /// binary, so they can be read back without MPI.
+///
+/// A data region holds its tensor's elements in column-major order: the first
+/// index varies fastest, whatever layout the tensor had in memory. The slab
+/// offsets used by slice reads and writes depend on that order, and a file
+/// carries no layout flag, so a reader can only interpret the bytes one way.
+/// Reading into or writing from a row-major tensor therefore reorders the
+/// elements on the way through; a file is the same whether a column-major or
+/// a row-major process wrote it.
 
 #include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Config/Namespace.hpp>
@@ -250,6 +258,84 @@ EINSUMS_EXPORT void check_entry_type(std::string_view path, std::string_view ope
 /// @throws std::out_of_range if a range runs past the stored dimension.
 EINSUMS_EXPORT void check_slab_ranges(std::string_view path, std::string_view operation, TensorEntry const &entry,
                                       std::vector<std::pair<size_t, size_t>> const &ranges);
+
+/// Dims and element strides of a tensor in memory, as the element transfers below need them.
+struct MemoryLayout {
+    std::vector<size_t> dims;
+    std::vector<size_t> strides;          ///< In elements.
+    size_t              elem_size{0};     ///< In bytes.
+    bool                file_order{true}; ///< Memory already holds the elements in the file's column-major order.
+};
+
+/// Whether memory with these dims and strides holds its elements densely in column-major order,
+/// which is the order of an .etn data region. Dimensions of extent one place no constraint.
+[[nodiscard]] EINSUMS_EXPORT bool is_file_order(std::vector<size_t> const &dims, std::vector<size_t> const &strides);
+
+/// Describe a dense tensor's memory for the transfers below.
+template <typename T, typename TensorType>
+[[nodiscard]] MemoryLayout memory_layout(TensorType const &tensor, size_t rank) {
+    MemoryLayout layout;
+    layout.elem_size = sizeof(T);
+    layout.dims.resize(rank);
+    layout.strides.resize(rank);
+    for (size_t d = 0; d < rank; ++d) {
+        layout.dims[d]    = tensor.dim(static_cast<int>(d));
+        layout.strides[d] = tensor.stride(static_cast<int>(d));
+    }
+    layout.file_order = is_file_order(layout.dims, layout.strides);
+    return layout;
+}
+
+/// Copy @p count elements, starting at column-major linear index @p first, out of a strided
+/// tensor into @p dst, which receives them in column-major order.
+EINSUMS_EXPORT void gather_file_order(char *dst, char const *tensor, MemoryLayout const &layout, size_t first, size_t count);
+
+/// Copy @p count elements held in column-major order in @p src into a strided tensor, starting at
+/// column-major linear index @p first.
+EINSUMS_EXPORT void scatter_file_order(char *tensor, char const *src, MemoryLayout const &layout, size_t first, size_t count);
+
+/// Bytes staged at a time when a transfer has to reorder elements.
+inline constexpr size_t REORDER_CHUNK_BYTES = size_t{1} << 20;
+
+/// Read the elements with column-major linear indices [first, first + count) of a tensor from
+/// the file bytes starting at @p file_offset, which hold those elements in column-major order.
+/// @p read_at is the file's (offset, destination, bytes) reader.
+template <typename ReadAt>
+void read_elements(ReadAt &&read_at, uint64_t file_offset, char *tensor, MemoryLayout const &layout, size_t first, size_t count) {
+    size_t const es = layout.elem_size;
+    if (layout.file_order) {
+        read_at(file_offset, tensor + first * es, count * es);
+        return;
+    }
+    size_t const      chunk = std::max<size_t>(1, REORDER_CHUNK_BYTES / es);
+    std::vector<char> staging(std::min(count, chunk) * es);
+    for (size_t done = 0; done < count;) {
+        size_t const n = std::min(chunk, count - done);
+        read_at(file_offset + done * es, staging.data(), n * es);
+        scatter_file_order(tensor, staging.data(), layout, first + done, n);
+        done += n;
+    }
+}
+
+/// Write the elements with column-major linear indices [first, first + count) of a tensor to the
+/// file bytes starting at @p file_offset, in column-major order. @p write_at is the file's
+/// (offset, source, bytes) writer.
+template <typename WriteAt>
+void write_elements(WriteAt &&write_at, uint64_t file_offset, char const *tensor, MemoryLayout const &layout, size_t first, size_t count) {
+    size_t const es = layout.elem_size;
+    if (layout.file_order) {
+        write_at(file_offset, tensor + first * es, count * es);
+        return;
+    }
+    size_t const      chunk = std::max<size_t>(1, REORDER_CHUNK_BYTES / es);
+    std::vector<char> staging(std::min(count, chunk) * es);
+    for (size_t done = 0; done < count;) {
+        size_t const n = std::min(chunk, count - done);
+        gather_file_order(staging.data(), tensor, layout, first + done, n);
+        write_at(file_offset + done * es, staging.data(), n * es);
+        done += n;
+    }
+}
 
 } // namespace detail
 

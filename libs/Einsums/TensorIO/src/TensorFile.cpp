@@ -77,6 +77,66 @@ void check_slab_ranges(std::string_view path, std::string_view operation, Tensor
     }
 }
 
+bool is_file_order(std::vector<size_t> const &dims, std::vector<size_t> const &strides) {
+    size_t expected = 1;
+    for (size_t d = 0; d < dims.size(); ++d) {
+        if (dims[d] > 1 && strides[d] != expected) {
+            return false;
+        }
+        expected *= dims[d];
+    }
+    return true;
+}
+
+namespace {
+
+/// Walk @p count elements in column-major order from linear index @p first, calling
+/// @p visit(memory_offset_in_elements) for each.
+template <typename Visit>
+void walk_file_order(MemoryLayout const &layout, size_t first, size_t count, Visit &&visit) {
+    if (count == 0) {
+        return;
+    }
+    size_t const        rank = layout.dims.size();
+    std::vector<size_t> index(rank);
+    size_t              offset    = 0;
+    size_t              remaining = first;
+    for (size_t d = 0; d < rank; ++d) {
+        index[d] = remaining % layout.dims[d];
+        remaining /= layout.dims[d];
+        offset += index[d] * layout.strides[d];
+    }
+    for (size_t n = 0; n < count; ++n) {
+        visit(offset);
+        for (size_t d = 0; d < rank; ++d) {
+            if (++index[d] < layout.dims[d]) {
+                offset += layout.strides[d];
+                break;
+            }
+            offset -= (layout.dims[d] - 1) * layout.strides[d];
+            index[d] = 0;
+        }
+    }
+}
+
+} // namespace
+
+void gather_file_order(char *dst, char const *tensor, MemoryLayout const &layout, size_t first, size_t count) {
+    size_t const es = layout.elem_size;
+    walk_file_order(layout, first, count, [&](size_t offset) {
+        std::memcpy(dst, tensor + offset * es, es);
+        dst += es;
+    });
+}
+
+void scatter_file_order(char *tensor, char const *src, MemoryLayout const &layout, size_t first, size_t count) {
+    size_t const es = layout.elem_size;
+    walk_file_order(layout, first, count, [&](size_t offset) {
+        std::memcpy(tensor + offset * es, src, es);
+        src += es;
+    });
+}
+
 } // namespace detail
 
 TensorFile::TensorFile(std::string path, Mode mode) : _path(std::move(path)), _mode(mode) {
