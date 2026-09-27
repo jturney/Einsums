@@ -55,6 +55,7 @@ namespace cgd = einsums::compute_graph::dispatch;
 namespace {
 
 bool g_direct = false;
+bool g_verify = false;
 
 double now() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -244,6 +245,22 @@ void run_case(Case const &c, std::vector<int> const &threads, int rounds, char c
             rows[ti].engine = std::string("packed:") + einsums::packed_gemm::last_packed_engine();
         }
         gemm();
+        if (g_verify && g_direct) {
+            // The library's own string einsum is the reference: it runs the engine as the library
+            // was built, so a difference is the direct build's doing.
+            std::vector<T> got(C.data(), C.data() + C.size());
+            bool const     saved = g_direct;
+            g_direct             = false;
+            run();
+            g_direct    = saved;
+            double diff = 0, mag = 0;
+            for (size_t e = 0; e < got.size(); e++) {
+                diff = std::max(diff, static_cast<double>(std::abs(got[e] - C.data()[e])));
+                mag  = std::max(mag, static_cast<double>(std::abs(C.data()[e])));
+            }
+            std::fprintf(stderr, "verify %s %c t=%d: max |diff| / max |C| = %.2e\n", c.name.c_str(), c.precision, threads[ti],
+                         diff / std::max(mag, 1e-300));
+        }
     }
     for (int r = 0; r < rounds; r++) {
         for (size_t step = 0; step < threads.size(); step++) {
@@ -303,6 +320,8 @@ int main(int argc, char **argv) {
             batched = true;
         } else if (a == "--direct") {
             g_direct = true;
+        } else if (a == "--verify") {
+            g_verify = true;
         }
     }
     char *fake[] = {argv[0], nullptr};
