@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <numeric>
 #include <string>
 #include <string_view>
@@ -1822,6 +1823,28 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // The step is lcm(segment, MR) so the block stays whole in the register
         // tile too; a segment that cannot reach a whole step inside the block is
         // left alone rather than shrunk to one.
+        // A team's members claim M blocks (see TeamState), which balances only if each has several
+        // to claim. The block raises below and above can make MC thousands of rows: ao2mo's
+        // `abcd-ec-abed` raised it to its 8064-row C segment, a block or two per team, and ran at
+        // half the speed (0.45-0.64x) of the same contraction cut into cache-sized blocks. So on
+        // the team path the A block is held to twice the L2, the size BLIS's Zen blocking gives
+        // it (960 KiB), and the segment alignment below applies only to what is left. Holding it
+        // to one L2 instead cost the square ccsd shapes 6%, trimming blocks that were never too
+        // big. The A-ordered write-back sizes its block to whole rows of its own and is left as
+        // it is.
+        //
+        // The one raise past the cap is to a whole C segment (below), whose streamed write-back
+        // is worth more than balance while each thread still has blocks enough to share: on
+        // `abcd-ec-abed` the 8064-row segment left seven per thread at 12 threads and won there
+        // (1.15-1.24x of the capped block), three and a half at 24 and lost (0.45-0.70x). So on
+        // the team path a raise past the cap needs four blocks per thread; one within it (the
+        // square ccsd shapes raise 64 rows to 72) is taken as before.
+        int64_t const mc_cap_team =
+            (team_mode && !use_a_order)
+                ? std::max<int64_t>(MR, (((2 * cpu_config().l2_cache_size) / (KC_blk * static_cast<int64_t>(sizeof(ValueType)))) / MR) * MR)
+                : std::numeric_limits<int64_t>::max();
+        MC_blk = std::min(MC_blk, mc_cap_team);
+
         // Set when the block below is kept a whole number of C segments: its blocks must then also
         // START on a segment, so the thread grid cuts M only at whole blocks.
         bool span_aligned = false;
@@ -1839,7 +1862,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 span_aligned       = true;
                 if (step <= MC_blk) {
                     MC_blk = (MC_blk / step) * step;
-                } else if (step <= (mc_cap / MR) * MR && step <= M) {
+                } else if ((step <= mc_cap_team || M >= 4 * step * static_cast<int64_t>(n_threads)) && step <= (mc_cap / MR) * MR &&
+                           step <= M) {
                     // The block is SMALLER than one C segment, so every m run it
                     // cuts is partial and the span never forms at all - the
                     // write-back falls back to the column walk for the whole
