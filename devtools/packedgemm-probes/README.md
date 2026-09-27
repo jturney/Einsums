@@ -75,3 +75,15 @@ crosses the library boundary changes layout: adding one `bool` to `PackingPlan`
 made a probe read the field as false while the plan's M and N came through
 swapped, with wrong results, no crash and no warning. After any such change,
 `cmake --build build --target Einsums` first, then rebuild EVERY probe binary.
+
+## Added 2026-09-27 (x86 complex 1m)
+
+* `complex_1m_probe z|c [rounds]` times complex scatter contractions three ways, interleaved round by round: the packed engine as it ships (one vendor GEMM per cache block), the same call with `--einsums:packed-gemm:complex-1m` (the rung's real tile by the 1m method), and one plain vendor GEMM of the same M, N and K as the control.
+  It prints the median, min and max GF/s of each arm, the engine each packed arm reported, and how closely the two packed results agree.
+  Threads and pinning come from the environment, as with the other probes.
+* `compile_flags.txt` predates the TensorPermute module and no longer builds these probes.
+  Take the flags from the build instead, from any PackedGemm test's compile line:
+
+      ninja -C build -t commands libs/Einsums/PackedGemm/tests/unit/Complex1m_test | grep 'Complex1m.cpp'
+
+  Drop `-c`, `-o`, the source and the precompiled-header arguments, and link against the libraries on that target's link line, less Catch2.
