@@ -19,6 +19,17 @@
 
 using einsums::testing::reference_einsum;
 
+namespace {
+
+// Absolute bound on the order-one results these cases compare: the bound they were written with
+// for double, and the single precision default for float and complex<float>.
+template <typename T>
+constexpr double tol() {
+    return std::is_same_v<einsums::RemoveComplexT<T>, double> ? 1e-12 : einsums::tolerance<T>();
+}
+
+} // namespace
+
 using namespace einsums;
 namespace cg = einsums::compute_graph;
 
@@ -29,10 +40,11 @@ TEST_CASE("CSE - empty graph", "[ComputeGraph][CSE]") {
     CHECK_FALSE(modified);
 }
 
-TEST_CASE("CSE - single node graph", "[ComputeGraph][CSE]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
-    auto B = create_random_tensor<double>("B", 3, 3);
-    auto C = create_zero_tensor<double>("C", 3, 3);
+TEMPLATE_LIST_TEST_CASE("CSE - single node graph", "[ComputeGraph][CSE]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 3);
+    auto B  = create_random_tensor<T>("B", 3, 3);
+    auto C  = create_zero_tensor<T>("C", 3, 3);
 
     cg::Graph graph("cse_single");
     {
@@ -45,15 +57,16 @@ TEST_CASE("CSE - single node graph", "[ComputeGraph][CSE]") {
     CHECK(graph.num_nodes() == 1);
 }
 
-TEST_CASE("CSE - eliminates duplicate einsum", "[ComputeGraph][CSE]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
-    auto C = create_zero_tensor<double>("C", 4, 5);
+TEMPLATE_LIST_TEST_CASE("CSE - eliminates duplicate einsum", "[ComputeGraph][CSE]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
+    auto C  = create_zero_tensor<T>("C", 4, 5);
 
     cg::Graph graph("cse_test");
     // The duplicate's output must be graph-owned: user-visible outputs are a
     // contract (the user reads them directly) and are never elided.
-    auto &D = graph.create_tensor<double, 2>("D", 4, 5);
+    auto &D = graph.create_tensor<T, 2>("D", 4, 5);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B);
@@ -69,12 +82,12 @@ TEST_CASE("CSE - eliminates duplicate einsum", "[ComputeGraph][CSE]") {
 
     graph.execute();
 
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 5);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < tol<T>());
         }
     }
 }
@@ -109,15 +122,17 @@ TEST_CASE("CSE - keeps einsums whose outputs differ in element type", "[ComputeG
     CHECK(graph.num_nodes() == 4); // Alloc(F), Alloc(D) and both einsums
 }
 
-TEST_CASE("CSE - never elides a write to a user-visible tensor", "[ComputeGraph][CSE][UserVisible]") {
+TEMPLATE_LIST_TEST_CASE("CSE - never elides a write to a user-visible tensor", "[ComputeGraph][CSE][UserVisible]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // Regression for the silent-contract-break: both C and D are USER
     // tensors capturing the same computation. Folding D's producer would
     // redirect graph consumers but leave the user's D unwritten. CSE must
     // keep both producers, and both tensors must hold the result.
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
-    auto C = create_zero_tensor<double>("C", 4, 5);
-    auto D = create_zero_tensor<double>("D", 4, 5);
+    auto A = create_random_tensor<T>("A", 4, 3);
+    auto B = create_random_tensor<T>("B", 3, 5);
+    auto C = create_zero_tensor<T>("C", 4, 5);
+    auto D = create_zero_tensor<T>("D", 4, 5);
 
     cg::Graph graph("cse_user_visible");
     {
@@ -135,14 +150,16 @@ TEST_CASE("CSE - never elides a write to a user-visible tensor", "[ComputeGraph]
     double d_norm = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - D(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(C(ii, jj) - D(ii, jj)) < tol<T>());
             d_norm += std::abs(D(ii, jj));
         }
     }
     REQUIRE(d_norm > 1e-8);
 }
 
-TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivor", "[ComputeGraph][CSE]") {
+TEMPLATE_LIST_TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivor", "[ComputeGraph][CSE]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // Regression for the CSE soundness bug where folding a duplicate producer
     // corrupted a *downstream* consumer of that duplicate. Executor lambdas
     // resolve operands through their captured TensorSlot, not Node::inputs, so
@@ -154,14 +171,14 @@ TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivo
     // Diamond shape: C and D are identical products (D is eliminated); out reads
     // D. After CSE, D's producer is gone and out must resolve to C's buffer via
     // Graph::redirect_slot.
-    auto A   = create_random_tensor<double>("A", 4, 3);
-    auto B   = create_random_tensor<double>("B", 3, 5);
-    auto F   = create_random_tensor<double>("F", 5, 2);
-    auto C   = create_zero_tensor<double>("C", 4, 5);
-    auto out = create_zero_tensor<double>("out", 4, 2);
+    auto A   = create_random_tensor<T>("A", 4, 3);
+    auto B   = create_random_tensor<T>("B", 3, 5);
+    auto F   = create_random_tensor<T>("F", 5, 2);
+    auto C   = create_zero_tensor<T>("C", 4, 5);
+    auto out = create_zero_tensor<T>("out", 4, 2);
 
     cg::Graph graph("cse_surviving_consumer");
-    auto     &D = graph.create_tensor<double, 2>("D", 4, 5); // graph-owned duplicate
+    auto     &D = graph.create_tensor<T, 2>("D", 4, 5); // graph-owned duplicate
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B);   // survivor
@@ -179,36 +196,37 @@ TEST_CASE("CSE - surviving consumer of an eliminated duplicate reads the survivo
     graph.execute();
 
     // Reference: out = (A·B)·F
-    auto AB = create_zero_tensor<double>("AB", 4, 5);
+    auto AB = create_zero_tensor<T>("AB", 4, 5);
     reference_einsum("ij <- ik ; kj", &AB, A, B);
-    auto out_ref = create_zero_tensor<double>("OUTref", 4, 2);
+    auto out_ref = create_zero_tensor<T>("OUTref", 4, 2);
     reference_einsum("ij <- ik ; kj", &out_ref, AB, F);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 2; jj++) {
-            max_abs = std::max(max_abs, std::abs(out(ii, jj)));
-            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
+            max_abs = std::max<double>(max_abs, std::abs(out(ii, jj)));
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < tol<T>());
         }
     }
     // Guard against the failure mode being masked by an all-zero reference.
     REQUIRE(max_abs > 1e-10);
 }
 
-TEST_CASE("CSE - redirect survives a rebind of the survivor", "[ComputeGraph][CSE][Rebind]") {
+TEMPLATE_LIST_TEST_CASE("CSE - redirect survives a rebind of the survivor", "[ComputeGraph][CSE][Rebind]", testing::AllScalarTypes) {
+    using T = TestType;
     // Regression for the residual hole in the bug above: redirect_slot used to
     // be a one-time pointer copy, so rebinding the SURVIVOR after CSE left the
     // eliminated duplicate's consumers pointing at the survivor's old buffer.
     // The redirect must be durable: after rebind(C, C2) the producer writes C2
     // and out (captured against D's slot) must follow it there.
-    auto A   = create_random_tensor<double>("A", 4, 3);
-    auto B   = create_random_tensor<double>("B", 3, 5);
-    auto F   = create_random_tensor<double>("F", 5, 2);
-    auto C   = create_zero_tensor<double>("C", 4, 5);
-    auto out = create_zero_tensor<double>("out", 4, 2);
+    auto A   = create_random_tensor<T>("A", 4, 3);
+    auto B   = create_random_tensor<T>("B", 3, 5);
+    auto F   = create_random_tensor<T>("F", 5, 2);
+    auto C   = create_zero_tensor<T>("C", 4, 5);
+    auto out = create_zero_tensor<T>("out", 4, 2);
 
     cg::Graph graph("cse_rebind_survivor");
-    auto     &D = graph.create_tensor<double, 2>("D", 4, 5); // graph-owned duplicate
+    auto     &D = graph.create_tensor<T, 2>("D", 4, 5); // graph-owned duplicate
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B);   // survivor
@@ -222,38 +240,39 @@ TEST_CASE("CSE - redirect survives a rebind of the survivor", "[ComputeGraph][CS
 
     // Rebind the survivor to a fresh buffer. C's old buffer stays zero, so a
     // stale (snapshot) redirect would make out read zeros.
-    auto C2 = create_zero_tensor<double>("C2", 4, 5);
+    auto C2 = create_zero_tensor<T>("C2", 4, 5);
     graph.rebind(C, C2);
 
     graph.execute();
 
-    auto AB = create_zero_tensor<double>("AB", 4, 5);
+    auto AB = create_zero_tensor<T>("AB", 4, 5);
     reference_einsum("ij <- ik ; kj", &AB, A, B);
-    auto out_ref = create_zero_tensor<double>("OUTref", 4, 2);
+    auto out_ref = create_zero_tensor<T>("OUTref", 4, 2);
     reference_einsum("ij <- ik ; kj", &out_ref, AB, F);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 2; jj++) {
-            max_abs = std::max(max_abs, std::abs(out(ii, jj)));
-            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < 1e-12);
+            max_abs = std::max<double>(max_abs, std::abs(out(ii, jj)));
+            REQUIRE(std::abs(out(ii, jj) - out_ref(ii, jj)) < tol<T>());
         }
     }
     REQUIRE(max_abs > 1e-10);
     // The producer must have written the new buffer, and the old one must
     // still be zero (proves the whole graph moved, not just the consumer).
-    REQUIRE(std::abs(C2(0, 0) - AB(0, 0)) < 1e-12);
-    REQUIRE(C(0, 0) == 0.0);
+    REQUIRE(std::abs(C2(0, 0) - AB(0, 0)) < tol<T>());
+    REQUIRE(C(0, 0) == T{0});
 }
 
-TEST_CASE("CSE - three identical einsums reduces to one", "[ComputeGraph][CSE]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
-    auto C = create_zero_tensor<double>("C", 4, 5);
+TEMPLATE_LIST_TEST_CASE("CSE - three identical einsums reduces to one", "[ComputeGraph][CSE]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
+    auto C  = create_zero_tensor<T>("C", 4, 5);
 
     cg::Graph graph("cse_triple");
-    auto     &D = graph.create_tensor<double, 2>("D", 4, 5);
-    auto     &E = graph.create_tensor<double, 2>("E", 4, 5);
+    auto     &D = graph.create_tensor<T, 2>("D", 4, 5);
+    auto     &E = graph.create_tensor<T, 2>("E", 4, 5);
     (void)D;
     (void)E;
     {
@@ -271,17 +290,20 @@ TEST_CASE("CSE - three identical einsums reduces to one", "[ComputeGraph][CSE]")
     CHECK(graph.num_nodes() == 3); // 2 Allocs + the surviving einsum
 }
 
-TEST_CASE("CSE - does not eliminate different operations", "[ComputeGraph][CSE]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
-    auto B = create_random_tensor<double>("B", 3, 3);
-    auto C = create_zero_tensor<double>("C", 3, 3);
-    auto D = create_zero_tensor<double>("D", 3, 3);
+TEMPLATE_LIST_TEST_CASE("CSE - does not eliminate different operations", "[ComputeGraph][CSE]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 3);
+    auto B  = create_random_tensor<T>("B", 3, 3);
+    auto C  = create_zero_tensor<T>("C", 3, 3);
+    auto D  = create_zero_tensor<T>("D", 3, 3);
 
     cg::Graph graph("cse_no_match");
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B);
-        cg::einsum("ik;kj->ij", 0.0, &D, 2.0, A, B);
+        // Conjugate prefactors on a complex type: a comparison that kept only
+        // the real part would call these one computation.
+        cg::einsum("ik;kj->ij", 0.0, &C, testing::prefactor<T>(1.0, 0.3), A, B);
+        cg::einsum("ik;kj->ij", 0.0, &D, testing::prefactor<T>(IsComplexV<T> ? 1.0 : 2.0, -0.3), A, B);
     }
 
     auto [modified, pass] = graph.apply<cg::passes::CSE>();
@@ -290,11 +312,12 @@ TEST_CASE("CSE - does not eliminate different operations", "[ComputeGraph][CSE]"
     REQUIRE(graph.num_nodes() == 2);
 }
 
-TEST_CASE("CSE - does not eliminate different inputs", "[ComputeGraph][CSE]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
-    auto B = create_random_tensor<double>("B", 3, 3);
-    auto C = create_zero_tensor<double>("C", 3, 3);
-    auto D = create_zero_tensor<double>("D", 3, 3);
+TEMPLATE_LIST_TEST_CASE("CSE - does not eliminate different inputs", "[ComputeGraph][CSE]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 3);
+    auto B  = create_random_tensor<T>("B", 3, 3);
+    auto C  = create_zero_tensor<T>("C", 3, 3);
+    auto D  = create_zero_tensor<T>("D", 3, 3);
 
     cg::Graph graph("cse_diff_inputs");
     {
@@ -309,19 +332,21 @@ TEST_CASE("CSE - does not eliminate different inputs", "[ComputeGraph][CSE]") {
     REQUIRE(graph.num_nodes() == 2);
 }
 
-TEST_CASE("CSE - keeps a duplicate whose output a loop body reads", "[ComputeGraph][CSE][ControlFlow]") {
+TEMPLATE_LIST_TEST_CASE("CSE - keeps a duplicate whose output a loop body reads", "[ComputeGraph][CSE][ControlFlow]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // A control-flow node's Node::inputs do not list what its body reads (that
     // is what Graph::effective_io reconstructs), so the reader scan saw nobody
     // reading D and merged its producer away. Graph::redirect_slot only repoints
     // the parent's slot table, so the body kept reading D's own -- now never
     // written -- buffer and summed zeros.
-    auto A   = create_random_tensor<double>("A", 4, 3);
-    auto B   = create_random_tensor<double>("B", 3, 5);
-    auto C   = create_zero_tensor<double>("C", 4, 5);
-    auto out = create_zero_tensor<double>("out", 4, 5);
+    auto A   = create_random_tensor<T>("A", 4, 3);
+    auto B   = create_random_tensor<T>("B", 3, 5);
+    auto C   = create_zero_tensor<T>("C", 4, 5);
+    auto out = create_zero_tensor<T>("out", 4, 5);
 
     cg::Graph graph("cse_loop_body_reader");
-    auto     &D = graph.create_zero_tensor<double, 2>("D", 4, 5); // graph-owned duplicate
+    auto     &D = graph.create_zero_tensor<T, 2>("D", 4, 5); // graph-owned duplicate
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B); // survivor
@@ -338,13 +363,13 @@ TEST_CASE("CSE - keeps a duplicate whose output a loop body reads", "[ComputeGra
 
     graph.execute();
 
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 5);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     double out_norm = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(out(ii, jj) - C_ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(out(ii, jj) - C_ref(ii, jj)) < tol<T>());
             out_norm += std::abs(out(ii, jj));
         }
     }
@@ -355,22 +380,23 @@ TEST_CASE("CSE - keeps a duplicate whose output a loop body reads", "[ComputeGra
 // Inside loop bodies (CSE descends the tree itself)
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("CSE - merges a duplicate inside a loop body", "[ComputeGraph][CSE][ControlFlow]") {
+TEMPLATE_LIST_TEST_CASE("CSE - merges a duplicate inside a loop body", "[ComputeGraph][CSE][ControlFlow]", testing::AllScalarTypes) {
+    using T = TestType;
     // Iterative workloads capture EVERYTHING into a loop body, so until CSE
     // descended the tree it did nothing at all on them. The scratch is created
     // on the parent (the usual pattern) and used only by the body, which is
     // what makes it eliminable: the body's own handle for it reports
     // is_intermediate == false, so the check has to be answered at the root.
-    auto A   = create_random_tensor<double>("A", 4, 3);
-    auto B   = create_random_tensor<double>("B", 3, 5);
-    auto out = create_zero_tensor<double>("out", 4, 5);
+    auto A   = create_random_tensor<T>("A", 4, 3);
+    auto B   = create_random_tensor<T>("B", 3, 5);
+    auto out = create_zero_tensor<T>("out", 4, 5);
 
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 5);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("cse_in_body");
-    auto     &P    = graph.create_zero_tensor<double, 2>("P", 4, 5);
-    auto     &Q    = graph.create_zero_tensor<double, 2>("Q", 4, 5);
+    auto     &P    = graph.create_zero_tensor<T, 2>("P", 4, 5);
+    auto     &Q    = graph.create_zero_tensor<T, 2>("Q", 4, 5);
     auto     &body = graph.add_loop("once", 1, [](size_t iter) { return iter < 1; });
     {
         cg::CaptureGuard const guard(body);
@@ -388,28 +414,30 @@ TEST_CASE("CSE - merges a duplicate inside a loop body", "[ComputeGraph][CSE][Co
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            max_abs = std::max(max_abs, std::abs(out(ii, jj)));
-            REQUIRE(std::abs(out(ii, jj) - C_ref(ii, jj) * C_ref(ii, jj)) < 1e-12);
+            max_abs = std::max<double>(max_abs, std::abs(out(ii, jj)));
+            REQUIRE(std::abs(out(ii, jj) - C_ref(ii, jj) * C_ref(ii, jj)) < tol<T>());
         }
     }
     REQUIRE(max_abs > 1e-10);
 }
 
-TEST_CASE("CSE - keeps a body duplicate whose output the parent reads", "[ComputeGraph][CSE][ControlFlow]") {
+TEMPLATE_LIST_TEST_CASE("CSE - keeps a body duplicate whose output the parent reads", "[ComputeGraph][CSE][ControlFlow]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // Guard F. Graph::redirect_slot repoints only the slot table of the graph
     // it is called on, so a merge inside the body cannot fix up a reader in the
     // parent: that reader would keep reading the eliminated duplicate's buffer,
     // which nothing writes any more.
-    auto A    = create_random_tensor<double>("A", 4, 3);
-    auto B    = create_random_tensor<double>("B", 3, 5);
-    auto seen = create_zero_tensor<double>("seen", 4, 5);
+    auto A    = create_random_tensor<T>("A", 4, 3);
+    auto B    = create_random_tensor<T>("B", 3, 5);
+    auto seen = create_zero_tensor<T>("seen", 4, 5);
 
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 5);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("cse_body_escapes");
-    auto     &P    = graph.create_zero_tensor<double, 2>("P", 4, 5);
-    auto     &Q    = graph.create_zero_tensor<double, 2>("Q", 4, 5);
+    auto     &P    = graph.create_zero_tensor<T, 2>("P", 4, 5);
+    auto     &Q    = graph.create_zero_tensor<T, 2>("Q", 4, 5);
     auto     &body = graph.add_loop("once", 1, [](size_t iter) { return iter < 1; });
     {
         cg::CaptureGuard const guard(body);
@@ -427,31 +455,33 @@ TEST_CASE("CSE - keeps a body duplicate whose output the parent reads", "[Comput
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(seen(ii, jj) - C_ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(seen(ii, jj) - C_ref(ii, jj)) < tol<T>());
         }
     }
 }
 
-TEST_CASE("CSE - body axpby copies that later diverge are not merged", "[ComputeGraph][CSE][ControlFlow]") {
+TEMPLATE_LIST_TEST_CASE("CSE - body axpby copies that later diverge are not merged", "[ComputeGraph][CSE][ControlFlow]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The SCF-body case the pass used to name as its reason for never running
     // on bodies: axpby(1,H,0,F) and axpby(1,H,0,sum_HF), where F and sum_HF
     // then diverge. Guard B (single writer) is what actually rules it out -
     // both destinations are written twice - so recursing is safe here.
-    auto H = create_random_tensor<double>("H", 4, 4);
-    auto G = create_random_tensor<double>("G", 4, 4);
+    auto H = create_random_tensor<T>("H", 4, 4);
+    auto G = create_random_tensor<T>("G", 4, 4);
 
-    auto F_ref = Tensor<double, 2>("Fref", 4, 4);
-    auto S_ref = Tensor<double, 2>("Sref", 4, 4);
+    auto F_ref = Tensor<T, 2>("Fref", 4, 4);
+    auto S_ref = Tensor<T, 2>("Sref", 4, 4);
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            F_ref(ii, jj) = H(ii, jj) + G(ii, jj);       // F  = H then F += G
-            S_ref(ii, jj) = H(ii, jj) + 2.0 * G(ii, jj); // sum = H then sum += 2G
+            F_ref(ii, jj) = H(ii, jj) + G(ii, jj);          // F  = H then F += G
+            S_ref(ii, jj) = H(ii, jj) + T(2.0) * G(ii, jj); // sum = H then sum += 2G
         }
     }
 
     cg::Graph graph("cse_body_diverge");
-    auto     &F    = graph.create_zero_tensor<double, 2>("F", 4, 4);
-    auto     &S    = graph.create_zero_tensor<double, 2>("S", 4, 4);
+    auto     &F    = graph.create_zero_tensor<T, 2>("F", 4, 4);
+    auto     &S    = graph.create_zero_tensor<T, 2>("S", 4, 4);
     auto     &body = graph.add_loop("once", 1, [](size_t iter) { return iter < 1; });
     {
         cg::CaptureGuard const guard(body);
@@ -467,24 +497,26 @@ TEST_CASE("CSE - body axpby copies that later diverge are not merged", "[Compute
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(F(ii, jj) - F_ref(ii, jj)) < 1e-12);
-            REQUIRE(std::abs(S(ii, jj) - S_ref(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(F(ii, jj) - F_ref(ii, jj)) < tol<T>());
+            REQUIRE(std::abs(S(ii, jj) - S_ref(ii, jj)) < tol<T>());
         }
     }
 }
 
-TEST_CASE("CSE - does not merge permutes with different index orders", "[ComputeGraph][CSE][Permute]") {
+TEMPLATE_LIST_TEST_CASE("CSE - does not merge permutes with different index orders", "[ComputeGraph][CSE][Permute]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // Regression: permute_desc_equal compared only alpha and beta, so two
     // permutes of the SAME source with the same scalars but DIFFERENT index
     // orders looked like the same computation. CSE merged them and the second
     // transpose was never computed - its consumers read the first one's buffer.
     // Both outputs are 3x3x3, so the failure is silent wrong values, not a
     // shape error.
-    auto A = create_random_tensor<double>("A", 3, 3, 3);
+    auto A = create_random_tensor<T>("A", 3, 3, 3);
 
     cg::Graph graph("cse_permute_orders");
-    auto     &P1 = graph.create_zero_tensor<double, 3>("P1", 3, 3, 3);
-    auto     &P2 = graph.create_zero_tensor<double, 3>("P2", 3, 3, 3);
+    auto     &P1 = graph.create_zero_tensor<T, 3>("P1", 3, 3, 3);
+    auto     &P2 = graph.create_zero_tensor<T, 3>("P2", 3, 3, 3);
     {
         cg::CaptureGuard const guard(graph);
         cg::permute("j,i,k <- i,j,k", 0.0, &P1, 1.0, A);
@@ -499,18 +531,20 @@ TEST_CASE("CSE - does not merge permutes with different index orders", "[Compute
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {
             for (size_t kk = 0; kk < 3; kk++) {
-                REQUIRE(std::abs(P1(jj, ii, kk) - A(ii, jj, kk)) < 1e-12);
-                REQUIRE(std::abs(P2(ii, kk, jj) - A(ii, jj, kk)) < 1e-12);
+                REQUIRE(std::abs(P1(jj, ii, kk) - A(ii, jj, kk)) < tol<T>());
+                REQUIRE(std::abs(P2(ii, kk, jj) - A(ii, jj, kk)) < tol<T>());
             }
         }
     }
 }
 
-TEST_CASE("CSE - does not merge permutes differing only in the imaginary prefactor", "[ComputeGraph][CSE][Permute][Complex]") {
+TEMPLATE_LIST_TEST_CASE("CSE - does not merge permutes differing only in the imaginary prefactor", "[ComputeGraph][CSE][Permute][Complex]",
+                        testing::ComplexScalarTypes) {
+    using T = TestType;
     // Companion to the index-order case: PermuteDescriptor recorded alpha as a
     // `double` taken from alpha.real(), so 1+3i and 1-3i both stored as 1.0 and
     // these two permutes compared equal.
-    using Complex = std::complex<double>;
+    using Complex = T;
     auto A        = create_random_tensor<Complex>("A", 3, 3);
 
     cg::Graph graph("cse_permute_complex_alpha");
@@ -529,8 +563,8 @@ TEST_CASE("CSE - does not merge permutes differing only in the imaginary prefact
 
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {
-            REQUIRE(std::abs(P1(jj, ii) - Complex{1.0, 3.0} * A(ii, jj)) < 1e-12);
-            REQUIRE(std::abs(P2(jj, ii) - Complex{1.0, -3.0} * A(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(P1(jj, ii) - Complex{1.0, 3.0} * A(ii, jj)) < tol<T>());
+            REQUIRE(std::abs(P2(jj, ii) - Complex{1.0, -3.0} * A(ii, jj)) < tol<T>());
         }
     }
 }
@@ -539,16 +573,18 @@ TEST_CASE("CSE - does not merge permutes differing only in the imaginary prefact
 // Proportional duplicates: same computation up to one real scalar
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("CSE - merges a proportional duplicate and folds the factor into its readers", "[ComputeGraph][CSE][Prefactor]") {
-    auto A    = create_random_tensor<double>("A", 4, 3);
-    auto B    = create_random_tensor<double>("B", 3, 5);
-    auto F    = create_random_tensor<double>("F", 5, 2);
-    auto out1 = create_zero_tensor<double>("out1", 4, 2);
-    auto out2 = create_zero_tensor<double>("out2", 4, 2);
+TEMPLATE_LIST_TEST_CASE("CSE - merges a proportional duplicate and folds the factor into its readers", "[ComputeGraph][CSE][Prefactor]",
+                        testing::AllScalarTypes) {
+    using T   = TestType;
+    auto A    = create_random_tensor<T>("A", 4, 3);
+    auto B    = create_random_tensor<T>("B", 3, 5);
+    auto F    = create_random_tensor<T>("F", 5, 2);
+    auto out1 = create_zero_tensor<T>("out1", 4, 2);
+    auto out2 = create_zero_tensor<T>("out2", 4, 2);
 
     cg::Graph graph("cse_proportional");
-    auto     &P = graph.create_zero_tensor<double, 2>("P", 4, 5); // survivor
-    auto     &Q = graph.create_zero_tensor<double, 2>("Q", 4, 5); // 0.5 * P
+    auto     &P = graph.create_zero_tensor<T, 2>("P", 4, 5); // survivor
+    auto     &Q = graph.create_zero_tensor<T, 2>("Q", 4, 5); // 0.5 * P
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", 0.0, &P, 1.0, A, B);
@@ -564,33 +600,92 @@ TEST_CASE("CSE - merges a proportional duplicate and folds the factor into its r
 
     graph.execute();
 
-    auto AB = create_zero_tensor<double>("AB", 4, 5);
+    auto AB = create_zero_tensor<T>("AB", 4, 5);
     reference_einsum("ij <- ik ; kj", &AB, A, B);
-    auto ref = create_zero_tensor<double>("ref", 4, 2);
+    auto ref = create_zero_tensor<T>("ref", 4, 2);
     reference_einsum("ij <- ik ; kj", &ref, AB, F);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 2; jj++) {
-            max_abs = std::max(max_abs, std::abs(ref(ii, jj)));
-            REQUIRE(std::abs(out1(ii, jj) - ref(ii, jj)) < 1e-12);
-            REQUIRE(std::abs(out2(ii, jj) - 0.5 * ref(ii, jj)) < 1e-12);
+            max_abs = std::max<double>(max_abs, std::abs(ref(ii, jj)));
+            REQUIRE(std::abs(out1(ii, jj) - ref(ii, jj)) < tol<T>());
+            REQUIRE(std::abs(out2(ii, jj) - T(0.5) * ref(ii, jj)) < tol<T>());
         }
     }
     REQUIRE(max_abs > 1e-10);
 }
 
-TEST_CASE("CSE - declines a ratio that is not an exact power of two", "[ComputeGraph][CSE][Prefactor]") {
+TEMPLATE_LIST_TEST_CASE("CSE - complex prefactors merge by an exact real ratio only", "[ComputeGraph][CSE][Prefactor][Complex]",
+                        testing::ComplexScalarTypes) {
+    // A proportional duplicate with genuinely complex prefactors. Q = (z / 2) * AB
+    // is exactly half of P = z * AB, so the merge is a real rescale of Q's
+    // readers exactly as in the real-ratio case above. Q = (i z) * AB differs by
+    // the exact complex factor i, which no real rescale of a reader expresses,
+    // so it is declined and computed separately.
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
+    auto F  = create_random_tensor<T>("F", 5, 2);
+
+    T const z = testing::prefactor<T>(0.75, 1.25);
+
+    auto AB = create_zero_tensor<T>("AB", 4, 5);
+    reference_einsum("ij <- ik ; kj", &AB, A, B);
+    auto ref = create_zero_tensor<T>("ref", 4, 2);
+    reference_einsum("ij <- ik ; kj", &ref, AB, F);
+
+    auto check = [&](T const q_factor, bool const merges) {
+        auto out1 = create_zero_tensor<T>("out1", 4, 2);
+        auto out2 = create_zero_tensor<T>("out2", 4, 2);
+
+        cg::Graph graph("cse_complex_ratio");
+        auto     &P = graph.create_zero_tensor<T, 2>("P", 4, 5);
+        auto     &Q = graph.create_zero_tensor<T, 2>("Q", 4, 5);
+        {
+            cg::CaptureGuard const guard(graph);
+            cg::einsum("ik;kj->ij", 0.0, &P, z, A, B);
+            cg::einsum("ik;kj->ij", 0.0, &Q, q_factor, A, B);
+            cg::einsum("ik;kj->ij", 0.0, &out1, 1.0, P, F);
+            cg::einsum("ik;kj->ij", 0.0, &out2, 1.0, Q, F);
+        }
+
+        auto [modified, pass] = graph.apply<cg::passes::CSE>();
+        CHECK(modified == merges);
+
+        graph.execute();
+        for (size_t ii = 0; ii < 4; ii++) {
+            for (size_t jj = 0; jj < 2; jj++) {
+                REQUIRE(std::abs(out1(ii, jj) - z * ref(ii, jj)) < tol<T>());
+                REQUIRE(std::abs(out2(ii, jj) - q_factor * ref(ii, jj)) < tol<T>());
+            }
+        }
+    };
+
+    SECTION("an exact duplicate merges") {
+        check(z, true);
+    }
+    SECTION("an exact real ratio merges") {
+        check(z * T(0.5), true);
+    }
+    SECTION("an exact imaginary ratio is declined") {
+        check(z * T(0.0, 1.0), false);
+    }
+}
+
+TEMPLATE_LIST_TEST_CASE("CSE - declines a ratio that is not an exact power of two", "[ComputeGraph][CSE][Prefactor]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // 3x is exactly representable, but folding it would make the result depend
     // on which of the two proportional nodes the pass kept.
-    auto A    = create_random_tensor<double>("A", 4, 3);
-    auto B    = create_random_tensor<double>("B", 3, 5);
-    auto F    = create_random_tensor<double>("F", 5, 2);
-    auto out2 = create_zero_tensor<double>("out2", 4, 2);
+    auto A    = create_random_tensor<T>("A", 4, 3);
+    auto B    = create_random_tensor<T>("B", 3, 5);
+    auto F    = create_random_tensor<T>("F", 5, 2);
+    auto out2 = create_zero_tensor<T>("out2", 4, 2);
 
     cg::Graph graph("cse_odd_ratio");
-    auto     &P = graph.create_zero_tensor<double, 2>("P", 4, 5);
-    auto     &Q = graph.create_zero_tensor<double, 2>("Q", 4, 5);
+    auto     &P = graph.create_zero_tensor<T, 2>("P", 4, 5);
+    auto     &Q = graph.create_zero_tensor<T, 2>("Q", 4, 5);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", 0.0, &P, 1.0, A, B);
@@ -604,16 +699,18 @@ TEST_CASE("CSE - declines a ratio that is not an exact power of two", "[ComputeG
     CHECK(graph.num_nodes() == n_before);
 }
 
-TEST_CASE("CSE - declines a proportional duplicate whose reader cannot take the factor", "[ComputeGraph][CSE][Prefactor]") {
+TEMPLATE_LIST_TEST_CASE("CSE - declines a proportional duplicate whose reader cannot take the factor", "[ComputeGraph][CSE][Prefactor]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // A permute bakes its prefactor into the executor closure, so there is
     // nowhere to put the factor; the duplicate has to stay.
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B  = create_random_tensor<double>("B", 3, 5);
-    auto QT = create_zero_tensor<double>("QT", 5, 4);
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
+    auto QT = create_zero_tensor<T>("QT", 5, 4);
 
     cg::Graph graph("cse_unfoldable_reader");
-    auto     &P = graph.create_zero_tensor<double, 2>("P", 4, 5);
-    auto     &Q = graph.create_zero_tensor<double, 2>("Q", 4, 5);
+    auto     &P = graph.create_zero_tensor<T, 2>("P", 4, 5);
+    auto     &Q = graph.create_zero_tensor<T, 2>("Q", 4, 5);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", 0.0, &P, 1.0, A, B);
@@ -628,27 +725,28 @@ TEST_CASE("CSE - declines a proportional duplicate whose reader cannot take the 
 
     graph.execute();
 
-    auto AB = create_zero_tensor<double>("AB", 4, 5);
+    auto AB = create_zero_tensor<T>("AB", 4, 5);
     reference_einsum("ij <- ik ; kj", &AB, A, B);
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(QT(jj, ii) - 0.5 * AB(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(QT(jj, ii) - T(0.5) * AB(ii, jj)) < tol<T>());
         }
     }
 }
 
-TEST_CASE("CSE - merges proportional axpby copies", "[ComputeGraph][CSE][Prefactor][Axpby]") {
+TEMPLATE_LIST_TEST_CASE("CSE - merges proportional axpby copies", "[ComputeGraph][CSE][Prefactor][Axpby]", testing::AllScalarTypes) {
+    using T = TestType;
     // Axpby had no arm in the descriptor comparison at all, so even identical
     // pure-overwrite copies never merged. `Y = alpha*X` is linear in alpha, so
     // the proportional case works the same way as einsum's.
-    auto X    = create_random_tensor<double>("X", 4, 5);
-    auto G    = create_random_tensor<double>("G", 5, 2);
-    auto out1 = create_zero_tensor<double>("out1", 4, 2);
-    auto out2 = create_zero_tensor<double>("out2", 4, 2);
+    auto X    = create_random_tensor<T>("X", 4, 5);
+    auto G    = create_random_tensor<T>("G", 5, 2);
+    auto out1 = create_zero_tensor<T>("out1", 4, 2);
+    auto out2 = create_zero_tensor<T>("out2", 4, 2);
 
     cg::Graph graph("cse_axpby_proportional");
-    auto     &Y1 = graph.create_zero_tensor<double, 2>("Y1", 4, 5);
-    auto     &Y2 = graph.create_zero_tensor<double, 2>("Y2", 4, 5);
+    auto     &Y1 = graph.create_zero_tensor<T, 2>("Y1", 4, 5);
+    auto     &Y2 = graph.create_zero_tensor<T, 2>("Y2", 4, 5);
     {
         cg::CaptureGuard const guard(graph);
         cg::axpby(2.0, X, 0.0, &Y1);
@@ -664,28 +762,29 @@ TEST_CASE("CSE - merges proportional axpby copies", "[ComputeGraph][CSE][Prefact
 
     graph.execute();
 
-    auto ref = create_zero_tensor<double>("ref", 4, 2);
+    auto ref = create_zero_tensor<T>("ref", 4, 2);
     reference_einsum("ij <- ik ; kj", &ref, X, G);
 
     double max_abs = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 2; jj++) {
-            max_abs = std::max(max_abs, std::abs(ref(ii, jj)));
-            REQUIRE(std::abs(out1(ii, jj) - 2.0 * ref(ii, jj)) < 1e-12);
-            REQUIRE(std::abs(out2(ii, jj) - ref(ii, jj)) < 1e-12);
+            max_abs = std::max<double>(max_abs, std::abs(ref(ii, jj)));
+            REQUIRE(std::abs(out1(ii, jj) - T(2.0) * ref(ii, jj)) < tol<T>());
+            REQUIRE(std::abs(out2(ii, jj) - ref(ii, jj)) < tol<T>());
         }
     }
     REQUIRE(max_abs > 1e-10);
 }
 
-TEST_CASE("CSE - does not merge scale with different factors", "[ComputeGraph][CSE]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
+TEMPLATE_LIST_TEST_CASE("CSE - does not merge scale with different factors", "[ComputeGraph][CSE]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 3);
 
     cg::Graph graph("cse_diff_scale");
     {
         cg::CaptureGuard const guard(graph);
-        cg::scale(2.0, &A);
-        cg::scale(3.0, &A);
+        cg::scale(testing::prefactor<T>(2.0, 0.5), &A);
+        cg::scale(testing::prefactor<T>(IsComplexV<T> ? 2.0 : 3.0, -0.5), &A);
     }
 
     auto [modified, pass] = graph.apply<cg::passes::CSE>();
@@ -693,13 +792,14 @@ TEST_CASE("CSE - does not merge scale with different factors", "[ComputeGraph][C
     CHECK(graph.num_nodes() == 2);
 }
 
-TEST_CASE("CSE + DeadNodeElimination composition", "[ComputeGraph][CSE]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
-    auto C = create_zero_tensor<double>("C", 4, 5);
+TEMPLATE_LIST_TEST_CASE("CSE + DeadNodeElimination composition", "[ComputeGraph][CSE]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
+    auto C  = create_zero_tensor<T>("C", 4, 5);
 
     cg::Graph graph("cse_dne");
-    auto     &D = graph.create_zero_tensor<double, 2>("D", 4, 5);
+    auto     &D = graph.create_zero_tensor<T, 2>("D", 4, 5);
 
     {
         cg::CaptureGuard const guard(graph);
@@ -719,15 +819,17 @@ TEST_CASE("CSE + DeadNodeElimination composition", "[ComputeGraph][CSE]") {
     (void)modified;
 }
 
-TEST_CASE("CSE - deduplicates rank-3 batched einsum nodes (col-major)", "[ComputeGraph][CSE][HigherRank]") {
+TEMPLATE_LIST_TEST_CASE("CSE - deduplicates rank-3 batched einsum nodes (col-major)", "[ComputeGraph][CSE][HigherRank]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // Two identical rank-3 strided-batched contractions, each an einsum node
     // taking the strided-batch route (col-major default, batch suffix).
-    auto A = create_random_tensor<double>("A", 3, 5, 4);
-    auto B = create_random_tensor<double>("B", 5, 6, 4);
-    auto C = create_zero_tensor<double>("C", 3, 6, 4);
+    auto A = create_random_tensor<T>("A", 3, 5, 4);
+    auto B = create_random_tensor<T>("B", 5, 6, 4);
+    auto C = create_zero_tensor<T>("C", 3, 6, 4);
 
     cg::Graph graph("cse_rank3_col");
-    auto     &D = graph.create_tensor<double, 3>("D", 3, 6, 4);
+    auto     &D = graph.create_tensor<T, 3>("D", 3, 6, 4);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ikb;kjb->ijb", &C, A, B);
@@ -753,14 +855,16 @@ TEST_CASE("CSE - deduplicates rank-3 batched einsum nodes (col-major)", "[Comput
     CHECK(batched_after == 1);
 }
 
-TEST_CASE("CSE - deduplicates rank-3 batched einsum nodes (row-major)", "[ComputeGraph][CSE][HigherRank]") {
+TEMPLATE_LIST_TEST_CASE("CSE - deduplicates rank-3 batched einsum nodes (row-major)", "[ComputeGraph][CSE][HigherRank]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // Same contraction, row-major tensors + batch-prefix pattern → triggers
     // the strided-batch route's row-major mode. Verifies CSE works across both
     // layout modes.
-    auto A = create_random_tensor<double>(/*row_major=*/true, "A", 4, 3, 5);
-    auto B = create_random_tensor<double>(/*row_major=*/true, "B", 4, 5, 6);
-    auto C = create_zero_tensor<double>(/*row_major=*/true, "C", 4, 3, 6);
-    auto D = create_zero_tensor<double>(/*row_major=*/true, "D", 4, 3, 6);
+    auto A = create_random_tensor<T>(/*row_major=*/true, "A", 4, 3, 5);
+    auto B = create_random_tensor<T>(/*row_major=*/true, "B", 4, 5, 6);
+    auto C = create_zero_tensor<T>(/*row_major=*/true, "C", 4, 3, 6);
+    auto D = create_zero_tensor<T>(/*row_major=*/true, "D", 4, 3, 6);
 
     cg::Graph graph("cse_rank3_row");
     {
@@ -799,19 +903,23 @@ TEST_CASE("CSE - deduplicates rank-3 batched einsum nodes (row-major)", "[Comput
 // diamond above - a consumer left reading a never-written buffer produces
 // silent zeros - and the axpy spelling could not even be classified as a
 // reader until it started recording as an Axpby.
-TEST_CASE("CSE - an axpy consumer of an eliminated duplicate reads the survivor", "[ComputeGraph][CSE]") {
-    auto A   = create_random_tensor<double>("A", 4, 3);
-    auto B   = create_random_tensor<double>("B", 3, 5);
-    auto C   = create_zero_tensor<double>("C", 4, 5);
-    auto acc = create_zero_tensor<double>("acc", 4, 5);
+TEMPLATE_LIST_TEST_CASE("CSE - an axpy consumer of an eliminated duplicate reads the survivor", "[ComputeGraph][CSE]",
+                        testing::AllScalarTypes) {
+    using T  = TestType;
+    auto A   = create_random_tensor<T>("A", 4, 3);
+    auto B   = create_random_tensor<T>("B", 3, 5);
+    auto C   = create_zero_tensor<T>("C", 4, 5);
+    auto acc = create_zero_tensor<T>("acc", 4, 5);
+
+    T const alpha = testing::prefactor<T>(2.0, 0.7);
 
     cg::Graph graph("cse_axpy_consumer");
-    auto     &D = graph.create_tensor<double, 2>("D", 4, 5); // graph-owned duplicate
+    auto     &D = graph.create_tensor<T, 2>("D", 4, 5); // graph-owned duplicate
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &C, A, B); // survivor
         cg::einsum("ik;kj->ij", &D, A, B); // duplicate (eliminated)
-        cg::axpy(2.0, D, &acc);            // consumer of the eliminated duplicate
+        cg::axpy(alpha, D, &acc);          // consumer of the eliminated duplicate
     }
 
     auto [modified, pass] = graph.apply<cg::passes::CSE>();
@@ -819,38 +927,40 @@ TEST_CASE("CSE - an axpy consumer of an eliminated duplicate reads the survivor"
 
     graph.execute();
 
-    // Reference: acc = 2 * (A·B). Zeros here would mean the axpy was left
+    // Reference: acc = alpha * (A·B). Zeros here would mean the axpy was left
     // pointed at D's never-written buffer.
-    auto AB = create_zero_tensor<double>("AB", 4, 5);
+    auto AB = create_zero_tensor<T>("AB", 4, 5);
     reference_einsum("ij <- ik ; kj", 0.0, &AB, 1.0, A, B);
 
     double magnitude = 0.0;
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(acc(ii, jj) - 2.0 * AB(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(acc(ii, jj) - alpha * AB(ii, jj)) < tol<T>());
             magnitude += std::abs(acc(ii, jj));
         }
     }
     REQUIRE(magnitude > 1e-6); // guard against the all-zeros false pass
 }
 
-TEST_CASE("CSE - merges duplicates that read a view whose bounds are parameters", "[ComputeGraph][CSE][Views]") {
+TEMPLATE_LIST_TEST_CASE("CSE - merges duplicates that read a view whose bounds are parameters", "[ComputeGraph][CSE][Views]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // A view's bounds move only where its View node runs, and that node precedes both readers.
     // Rebinding the parameter between the two products changes nothing either one reads, so
     // they are one computation over slab 1 of T and the second is merged into the first.
-    auto                  Tt = create_random_tensor<double>("T", 3, 4, 4);
-    RuntimeTensor<double> T(Tt);
-    auto                  B  = create_random_tensor<double>("B", 4, 4);
-    auto                  R1 = create_zero_tensor<double>("R1", 4, 4);
-    auto                  R2 = create_zero_tensor<double>("R2", 4, 4);
+    auto             Tt = create_random_tensor<T>("T", 3, 4, 4);
+    RuntimeTensor<T> Tr(Tt);
+    auto             B  = create_random_tensor<T>("B", 4, 4);
+    auto             R1 = create_zero_tensor<T>("R1", 4, 4);
+    auto             R2 = create_zero_tensor<T>("R2", 4, 4);
 
     cg::Graph graph("cse_param_view");
     graph.params_ptr()->set("k", 1);
-    auto &K1 = graph.create_tensor<double, 2>("K1", 4, 4);
-    auto &K2 = graph.create_tensor<double, 2>("K2", 4, 4);
+    auto &K1 = graph.create_tensor<T, 2>("K1", 4, 4);
+    auto &K2 = graph.create_tensor<T, 2>("K2", 4, 4);
     {
         cg::CaptureGuard const guard(graph);
-        auto                  &slab = cg::view_runtime(T, {cg::ViewAxis::drop("k"), cg::ViewAxis::full(), cg::ViewAxis::full()});
+        auto                  &slab = cg::view_runtime(Tr, {cg::ViewAxis::drop("k"), cg::ViewAxis::full(), cg::ViewAxis::full()});
         cg::einsum("ik;kj->ij", 0.0, &K1, 1.0, slab, B);
         cg::write_param("k", cg::BoundExpr(2));
         cg::einsum("ik;kj->ij", 0.0, &K2, 1.0, slab, B);
@@ -864,18 +974,18 @@ TEST_CASE("CSE - merges duplicates that read a view whose bounds are parameters"
 
     graph.execute();
 
-    auto S = create_zero_tensor<double>("S", 4, 4);
+    auto S = create_zero_tensor<T>("S", 4, 4);
     for (size_t i = 0; i < 4; i++) {
         for (size_t j = 0; j < 4; j++) {
             S(i, j) = Tt(1, i, j);
         }
     }
-    auto Rr = create_zero_tensor<double>("Rr", 4, 4);
+    auto Rr = create_zero_tensor<T>("Rr", 4, 4);
     reference_einsum("ij <- ik ; kj", 0.0, &Rr, 1.0, S, B);
     for (size_t i = 0; i < 4; i++) {
         for (size_t j = 0; j < 4; j++) {
-            CHECK(R1(i, j) == Catch::Approx(Rr(i, j)).margin(1e-12));
-            CHECK(R2(i, j) == Catch::Approx(Rr(i, j)).margin(1e-12));
+            CHECK(std::abs(R1(i, j) - Rr(i, j)) < tol<T>());
+            CHECK(std::abs(R2(i, j) - Rr(i, j)) < tol<T>());
         }
     }
 }

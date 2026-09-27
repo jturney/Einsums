@@ -70,27 +70,36 @@ std::optional<double> exact_ratio(double a, double b) {
     return r;
 }
 
-/// Same, for type-erased prefactors. Identical values match whatever their
-/// alternative; a real ratio is only sought between two real-valued scalars,
-/// so a complex pair still merges when it is an exact duplicate.
-std::optional<double> exact_ratio(PrefactorScalar const &a, PrefactorScalar const &b) {
-    if (a == b) {
-        return 1.0;
-    }
-    if (!is_real_valued(a) || !is_real_valued(b)) {
-        return std::nullopt;
-    }
-    return exact_ratio(as_real<double>(a), as_real<double>(b));
-}
-
+/// Same, for complex scalars. The ratio is still a real power of two, read
+/// off whichever part of @p a is non-zero, and it only counts when scaling
+/// BOTH parts of @p a by it gives @p b exactly: 0.5 * (3 - 1i) is exactly
+/// 1.5 - 0.5i, but (3 - 1i) and (6 - 1i) have no common real ratio.
 std::optional<double> exact_ratio(std::complex<double> a, std::complex<double> b) {
     if (a == b) {
         return 1.0;
     }
-    if (a.imag() != 0.0 || b.imag() != 0.0) {
+    if (a.imag() == 0.0 && b.imag() == 0.0) {
+        return exact_ratio(a.real(), b.real());
+    }
+    double const r = a.real() != 0.0 ? b.real() / a.real() : (a.imag() != 0.0 ? b.imag() / a.imag() : 0.0);
+    if (!is_exact_power_of_two(r) || a.real() * r != b.real() || a.imag() * r != b.imag()) {
         return std::nullopt;
     }
-    return exact_ratio(a.real(), b.real());
+    return r;
+}
+
+/// Same, for type-erased prefactors. Identical values match whatever their
+/// alternative. A pair of real-valued scalars takes the real ratio; a pair
+/// where either carries an imaginary part takes the complex one above, whose
+/// ratio is real too, so the fold into a reader stays a real rescale.
+std::optional<double> exact_ratio(PrefactorScalar const &a, PrefactorScalar const &b) {
+    if (a == b) {
+        return 1.0;
+    }
+    if (is_real_valued(a) && is_real_valued(b)) {
+        return exact_ratio(as_real<double>(a), as_real<double>(b));
+    }
+    return exact_ratio(as<std::complex<double>>(a), as<std::complex<double>>(b));
 }
 
 /// Every BatchedGemm field except the source prefactor.

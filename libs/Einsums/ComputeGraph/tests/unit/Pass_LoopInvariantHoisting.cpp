@@ -12,12 +12,31 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <complex>
+#include <limits>
+
 #include <Einsums/Testing.hpp>
 
 using einsums::testing::reference_einsum;
 
 using namespace einsums;
 namespace cg = einsums::compute_graph;
+
+namespace {
+
+template <typename T>
+T pf(double re, double im) {
+    return testing::prefactor<T>(re, im);
+}
+
+// Within a few ulps of the element type, relative to the expected value with a floor of one: the
+// checks here sum a handful of order-one products a few times over.
+template <typename T>
+bool near(T got, T want) {
+    return std::abs(got - want) <= 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon() * (1.0 + std::abs(want));
+}
+
+} // namespace
 
 TEST_CASE("LoopInvariantHoisting - empty loop body", "[ComputeGraph][Passes]") {
     cg::Graph graph("lih_empty");
@@ -28,9 +47,10 @@ TEST_CASE("LoopInvariantHoisting - empty loop body", "[ComputeGraph][Passes]") {
     CHECK(pass.num_hoisted() == 0);
 }
 
-TEST_CASE("LoopInvariantHoisting - nothing to hoist", "[ComputeGraph][Passes]") {
-    auto value = Tensor<double, 1>("value", 1);
-    value(0)   = 100.0;
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - nothing to hoist", "[ComputeGraph][Passes]", testing::AllScalarTypes) {
+    using T    = TestType;
+    auto value = Tensor<T, 1>("value", 1);
+    value(0)   = pf<T>(100.0, 1.0);
 
     cg::Graph graph("no_hoist");
 
@@ -44,14 +64,15 @@ TEST_CASE("LoopInvariantHoisting - nothing to hoist", "[ComputeGraph][Passes]") 
     REQUIRE_FALSE(modified);
 }
 
-TEST_CASE("LoopInvariantHoisting - hoists invariant node", "[ComputeGraph][Passes]") {
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - hoists invariant node", "[ComputeGraph][Passes]", testing::AllScalarTypes) {
+    using T = TestType;
     // C = A·B is invariant (A, B never written in the loop) and C is its only
     // writer, so it's safe to compute once before the loop; the body then
     // accumulates the invariant C into acc each iteration.
-    auto A   = create_random_tensor<double>("A", 3, 3);
-    auto B   = create_random_tensor<double>("B", 3, 3);
-    auto C   = create_zero_tensor<double>("C", 3, 3);
-    auto acc = create_zero_tensor<double>("acc", 3, 3);
+    auto A   = create_random_tensor<T>("A", 3, 3);
+    auto B   = create_random_tensor<T>("B", 3, 3);
+    auto C   = create_zero_tensor<T>("C", 3, 3);
+    auto acc = create_zero_tensor<T>("acc", 3, 3);
 
     cg::Graph graph("hoist_test");
 
@@ -77,23 +98,25 @@ TEST_CASE("LoopInvariantHoisting - hoists invariant node", "[ComputeGraph][Passe
     REQUIRE(loop_desc->body->num_nodes() == 1); // only the axpy remains
 }
 
-TEST_CASE("LoopInvariantHoisting - does NOT hoist a producer whose output is overwritten in-place", "[ComputeGraph][Passes]") {
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - does NOT hoist a producer whose output is overwritten in-place", "[ComputeGraph][Passes]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // C = A·B (invariant inputs) but C is then scaled in place every
     // iteration. Hoisting the einsum out would remove the per-iteration
     // reset, so the scale would compound: C, 0.9C, 0.81C, … instead of
     // 0.9·(A·B) every iteration. The single-writer guard must refuse the
     // hoist, and the executed result must be 0.9·(A·B).
     constexpr size_t N = 5;
-    auto             A = create_random_tensor<double>("A", 3, 3);
-    auto             B = create_random_tensor<double>("B", 3, 3);
-    auto             C = create_zero_tensor<double>("C", 3, 3);
+    auto             A = create_random_tensor<T>("A", 3, 3);
+    auto             B = create_random_tensor<T>("B", 3, 3);
+    auto             C = create_zero_tensor<T>("C", 3, 3);
 
     cg::Graph graph("no_hoist_overwrite");
     auto     &body = graph.add_loop("loop", N, [](size_t iter) { return iter + 1 < N; });
     {
         cg::CaptureGuard const guard(body);
         cg::einsum("ik;kj->ij", &C, A, B); // C = A·B
-        cg::scale(0.9, &C);                // C *= 0.9  (second writer of C)
+        cg::scale(pf<T>(0.9, 0.3), &C);    // C *= 0.9 (+0.3i)  (second writer of C)
     }
 
     auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
@@ -103,18 +126,19 @@ TEST_CASE("LoopInvariantHoisting - does NOT hoist a producer whose output is ove
     graph.execute();
 
     // Correct result: C = 0.9 * (A·B) (the reset runs every iteration).
-    auto C_ref = create_zero_tensor<double>("C_ref", 3, 3);
+    auto C_ref = create_zero_tensor<T>("C_ref", 3, 3);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     for (size_t k = 0; k < C.size(); ++k) {
-        CHECK(C.data()[k] == Catch::Approx(0.9 * C_ref.data()[k]));
+        CHECK(near(C.data()[k], pf<T>(0.9, 0.3) * C_ref.data()[k]));
     }
 }
 
-TEST_CASE("LoopInvariantHoisting - dependency chain partially hoists", "[ComputeGraph][Passes]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
-    auto B = create_random_tensor<double>("B", 3, 3);
-    auto C = create_random_tensor<double>("C", 3, 3);
-    auto D = create_zero_tensor<double>("D", 3, 3);
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - dependency chain partially hoists", "[ComputeGraph][Passes]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 3);
+    auto B  = create_random_tensor<T>("B", 3, 3);
+    auto C  = create_random_tensor<T>("C", 3, 3);
+    auto D  = create_zero_tensor<T>("D", 3, 3);
 
     cg::Graph graph("lih_dep_chain");
 
@@ -131,11 +155,12 @@ TEST_CASE("LoopInvariantHoisting - dependency chain partially hoists", "[Compute
     CHECK(pass.num_hoisted() == 1);
 }
 
-TEST_CASE("LoopInvariantHoisting - all nodes invariant", "[ComputeGraph][Passes]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
-    auto B = create_random_tensor<double>("B", 3, 3);
-    auto C = create_zero_tensor<double>("C", 3, 3);
-    auto D = create_zero_tensor<double>("D", 3, 3);
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - all nodes invariant", "[ComputeGraph][Passes]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 3);
+    auto B  = create_random_tensor<T>("B", 3, 3);
+    auto C  = create_zero_tensor<T>("C", 3, 3);
+    auto D  = create_zero_tensor<T>("D", 3, 3);
 
     cg::Graph graph("lih_all_invariant");
 
@@ -152,12 +177,14 @@ TEST_CASE("LoopInvariantHoisting - all nodes invariant", "[ComputeGraph][Passes]
     CHECK(pass.num_hoisted() == 2);
 }
 
-TEST_CASE("LoopInvariantHoisting - rank-3 batched einsum hoists", "[ComputeGraph][Passes][HigherRank]") {
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - rank-3 batched einsum hoists", "[ComputeGraph][Passes][HigherRank]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // Col-major batch-suffix pattern → a strided-batched einsum that's invariant.
-    auto A = create_random_tensor<double>("A", 3, 5, 4);
-    auto B = create_random_tensor<double>("B", 5, 6, 4);
-    auto C = create_zero_tensor<double>("C", 3, 6, 4);
-    auto D = create_random_tensor<double>("D", 3, 6, 4);
+    auto A = create_random_tensor<T>("A", 3, 5, 4);
+    auto B = create_random_tensor<T>("B", 5, 6, 4);
+    auto C = create_zero_tensor<T>("C", 3, 6, 4);
+    auto D = create_random_tensor<T>("D", 3, 6, 4);
 
     cg::Graph graph("lih_rank3");
 
@@ -188,19 +215,21 @@ TEST_CASE("LoopInvariantHoisting - rank-3 batched einsum hoists", "[ComputeGraph
     CHECK(pass.num_hoisted() == 1);
 }
 
-TEST_CASE("LoopInvariantHoisting - hoisted node with a deferred output stays materialized", "[ComputeGraph][Passes][Loop]") {
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - hoisted node with a deferred output stays materialized", "[ComputeGraph][Passes][Loop]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // LIH runs before MaterializationPass. If it hoists an invariant einsum
     // whose output is a workspace (deferred) tensor, the full pipeline must
     // still place the Materialize before the hoisted node, otherwise the
     // hoisted einsum would write unallocated storage. Verify via the full
     // default pipeline + a correctness check.
     constexpr size_t N = 4;
-    auto             A = create_random_tensor<double>("A", 3, 3); // eager, invariant
-    auto             B = create_random_tensor<double>("B", 3, 3);
+    auto             A = create_random_tensor<T>("A", 3, 3); // eager, invariant
+    auto             B = create_random_tensor<T>("B", 3, 3);
 
     cg::Workspace ws("ws");
-    auto         &W   = ws.declare_zero_tensor<double, 2>("W", 3, 3); // deferred output
-    auto         &acc = ws.declare_zero_tensor<double, 2>("acc", 3, 3);
+    auto         &W   = ws.declare_zero_tensor<T, 2>("W", 3, 3); // deferred output
+    auto         &acc = ws.declare_zero_tensor<T, 2>("acc", 3, 3);
 
     cg::Graph g("lih_deferred");
     auto     &body = g.add_loop("loop", N, [](size_t it) { return it + 1 < N; });
@@ -216,24 +245,26 @@ TEST_CASE("LoopInvariantHoisting - hoisted node with a deferred output stays mat
     REQUIRE_NOTHROW(g.execute());
 
     // acc = N * (A·B).
-    auto AB = create_zero_tensor<double>("AB", 3, 3);
+    auto AB = create_zero_tensor<T>("AB", 3, 3);
     reference_einsum("ij <- ik ; kj", &AB, A, B);
     for (size_t k = 0; k < acc.size(); ++k) {
-        CHECK(acc.data()[k] == Catch::Approx(static_cast<double>(N) * AB.data()[k]));
+        CHECK(near(acc.data()[k], static_cast<T>(N) * AB.data()[k]));
     }
 }
 
-TEST_CASE("LoopInvariantHoisting - inner-loop invariant hoists all the way to parent", "[ComputeGraph][Passes][Loop][Nested]") {
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - inner-loop invariant hoists all the way to parent", "[ComputeGraph][Passes][Loop][Nested]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // parent → outer(2 iters) → inner(2 iters). The inner body computes
     // W = A·A (A external, invariant w.r.t. BOTH loops) and acc += W·B.
     // Innermost-first hoisting lifts W's producer inner→outer body on the
     // outer-body sweep, then outer-body→parent on the parent sweep (a single
     // run() call). The producer must end up in the PARENT graph; neither loop
     // body may still contain it. acc = 4·(A·A)·B (4 = 2 outer × 2 inner).
-    auto A   = create_random_tensor<double>("A", 3, 3);
-    auto B   = create_random_tensor<double>("B", 3, 3);
-    auto W   = create_zero_tensor<double>("W", 3, 3);
-    auto acc = create_zero_tensor<double>("acc", 3, 3);
+    auto A   = create_random_tensor<T>("A", 3, 3);
+    auto B   = create_random_tensor<T>("B", 3, 3);
+    auto W   = create_zero_tensor<T>("W", 3, 3);
+    auto acc = create_zero_tensor<T>("acc", 3, 3);
 
     cg::Graph graph("lih_nested");
     auto     &outer_body = graph.add_loop("outer", 2, [](size_t it) { return it + 1 < 2; });
@@ -267,15 +298,15 @@ TEST_CASE("LoopInvariantHoisting - inner-loop invariant hoists all the way to pa
     CHECK(inner_desc->body->num_nodes() == 1); // just acc += W·B
 
     // Hand reference: acc = 4·(A·A)·B.
-    auto AA = create_zero_tensor<double>("AA", 3, 3);
+    auto AA = create_zero_tensor<T>("AA", 3, 3);
     reference_einsum("ij <- ik ; kj", &AA, A, A);
-    auto WB = create_zero_tensor<double>("WB", 3, 3);
+    auto WB = create_zero_tensor<T>("WB", 3, 3);
     reference_einsum("ij <- ik ; kj", &WB, AA, B);
 
     acc.zero();
     graph.execute();
     for (size_t idx = 0; idx < acc.size(); ++idx) {
-        CHECK(acc.data()[idx] == Catch::Approx(4.0 * WB.data()[idx]));
+        CHECK(near(acc.data()[idx], T{4} * WB.data()[idx]));
     }
 
     // Repeated parallel execution must match the sequential reference.
@@ -284,12 +315,14 @@ TEST_CASE("LoopInvariantHoisting - inner-loop invariant hoists all the way to pa
         cg::DataflowExecutor df;
         graph.execute(df);
         for (size_t idx = 0; idx < acc.size(); ++idx) {
-            CHECK(acc.data()[idx] == Catch::Approx(4.0 * WB.data()[idx]));
+            CHECK(near(acc.data()[idx], T{4} * WB.data()[idx]));
         }
     }
 }
 
-TEST_CASE("LoopInvariantHoisting - invariant w.r.t. inner loop only hoists exactly one level", "[ComputeGraph][Passes][Loop][Nested]") {
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - invariant w.r.t. inner loop only hoists exactly one level",
+                        "[ComputeGraph][Passes][Loop][Nested]", testing::AllScalarTypes) {
+    using T = TestType;
     // parent → outer(2 iters) → inner(2 iters). The inner body computes
     // W = M·M and acc += W·B, where M is a graph-owned tensor that the OUTER
     // body rewrites (M *= 2) after the inner loop. W is invariant w.r.t. the
@@ -302,15 +335,15 @@ TEST_CASE("LoopInvariantHoisting - invariant w.r.t. inner loop only hoists exact
     //   outer 0: W = M0·M0 = P;      acc += 2·(P·B);        M → 2·M0
     //   outer 1: W = (2M0)² = 4·P;   acc += 2·(4·P·B);      M → 4·M0
     //   acc = 10·(M0·M0)·B
-    auto M   = create_random_tensor<double>("M", 3, 3);
-    auto B   = create_random_tensor<double>("B", 3, 3);
-    auto W   = create_zero_tensor<double>("W", 3, 3);
-    auto acc = create_zero_tensor<double>("acc", 3, 3);
+    auto M   = create_random_tensor<T>("M", 3, 3);
+    auto B   = create_random_tensor<T>("B", 3, 3);
+    auto W   = create_zero_tensor<T>("W", 3, 3);
+    auto acc = create_zero_tensor<T>("acc", 3, 3);
 
     // Reference computed BEFORE execution mutates M and acc.
-    auto MM = create_zero_tensor<double>("MM", 3, 3);
+    auto MM = create_zero_tensor<T>("MM", 3, 3);
     reference_einsum("ij <- ik ; kj", &MM, M, M);
-    auto MMB = create_zero_tensor<double>("MMB", 3, 3);
+    auto MMB = create_zero_tensor<T>("MMB", 3, 3);
     reference_einsum("ij <- ik ; kj", &MMB, MM, B);
 
     cg::Graph graph("lih_inner_only");
@@ -350,20 +383,22 @@ TEST_CASE("LoopInvariantHoisting - invariant w.r.t. inner loop only hoists exact
     acc.zero();
     graph.execute();
     for (size_t idx = 0; idx < acc.size(); ++idx) {
-        CHECK(acc.data()[idx] == Catch::Approx(10.0 * MMB.data()[idx]));
+        CHECK(near(acc.data()[idx], T{10} * MMB.data()[idx]));
     }
 }
 
-TEST_CASE("LoopInvariantHoisting - does NOT hoist out of a conditional branch inside a loop", "[ComputeGraph][Passes][Loop][Conditional]") {
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - does NOT hoist out of a conditional branch inside a loop",
+                        "[ComputeGraph][Passes][Loop][Conditional]", testing::AllScalarTypes) {
+    using T = TestType;
     // A computation that is loop-invariant but lives inside a conditional
     // branch inside the loop must NOT be hoisted. Recursion descends into Loop
     // bodies ONLY, never Conditional branches: lifting a node out of a branch
     // would execute it unconditionally and change semantics when the predicate
     // is false. The single-level driver also never treats a Conditional as a
     // hoist candidate, so the producer stays exactly where it was written.
-    auto A   = create_random_tensor<double>("A", 3, 3);
-    auto W   = create_zero_tensor<double>("W", 3, 3);
-    auto acc = create_zero_tensor<double>("acc", 3, 3);
+    auto A   = create_random_tensor<T>("A", 3, 3);
+    auto W   = create_zero_tensor<T>("W", 3, 3);
+    auto acc = create_zero_tensor<T>("acc", 3, 3);
 
     cg::Graph graph("lih_cond_in_loop");
     auto     &body        = graph.add_loop("loop", 2, [](size_t it) { return it + 1 < 2; });
@@ -391,13 +426,13 @@ TEST_CASE("LoopInvariantHoisting - does NOT hoist out of a conditional branch in
     CHECK(then_g.num_nodes() == 2);           // W = A·A and acc += W stay in the branch
 
     // Predicate is always true → acc = 2·(A·A) over the two loop iterations.
-    auto AA = create_zero_tensor<double>("AA", 3, 3);
+    auto AA = create_zero_tensor<T>("AA", 3, 3);
     reference_einsum("ij <- ik ; kj", &AA, A, A);
 
     acc.zero();
     graph.execute();
     for (size_t idx = 0; idx < acc.size(); ++idx) {
-        CHECK(acc.data()[idx] == Catch::Approx(2.0 * AA.data()[idx]));
+        CHECK(near(acc.data()[idx], T{2} * AA.data()[idx]));
     }
 }
 
@@ -408,19 +443,21 @@ TEST_CASE("LoopInvariantHoisting - does NOT hoist out of a conditional branch in
 // beta. The identical pure-overwrite Permute hoisted fine, so an invariant
 // `L = alpha*g` written with axpby was silently rebuilt every iteration --
 // exactly the shape an integral-combination intermediate takes.
-TEST_CASE("LoopInvariantHoisting - hoists a pure-overwrite axpby", "[ComputeGraph][Passes]") {
-    auto A   = create_random_tensor<double>("A", 3, 3);
-    auto L   = create_zero_tensor<double>("L", 3, 3);
-    auto acc = create_zero_tensor<double>("acc", 3, 3);
-    auto d   = create_random_tensor<double>("d", 3, 3);
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - hoists a pure-overwrite axpby", "[ComputeGraph][Passes]", testing::AllScalarTypes) {
+    using T       = TestType;
+    auto    A     = create_random_tensor<T>("A", 3, 3);
+    auto    L     = create_zero_tensor<T>("L", 3, 3);
+    auto    acc   = create_zero_tensor<T>("acc", 3, 3);
+    auto    d     = create_random_tensor<T>("d", 3, 3);
+    T const alpha = pf<T>(2.0, -0.7);
 
     cg::Graph graph("lih_overwrite_axpby");
     {
         auto                  &body = graph.add_loop("loop", 3, [](size_t iter) { return iter < 2; });
         cg::CaptureGuard const guard(body);
-        cg::axpby(2.0, A, 0.0, &L); // L = 2*A -- invariant, pure overwrite
-        cg::axpy(1.0, L, &acc);     // acc += L -- varies (accumulates)
-        cg::axpy(1.0, d, &acc);     // keep the body non-trivial
+        cg::axpby(alpha, A, T{0}, &L); // L = alpha*A -- invariant, pure overwrite
+        cg::axpy(1.0, L, &acc);        // acc += L -- varies (accumulates)
+        cg::axpy(1.0, d, &acc);        // keep the body non-trivial
     }
 
     auto [modified, pass] = graph.apply<cg::passes::LoopInvariantHoisting>();
@@ -436,20 +473,21 @@ TEST_CASE("LoopInvariantHoisting - hoists a pure-overwrite axpby", "[ComputeGrap
     CHECK(loop_desc->body->num_nodes() == 2); // the two accumulations remain
     CHECK(graph.num_nodes() == 2);            // hoisted axpby + the loop
 
-    // 3 iterations: acc = 3*(2*A + d).
+    // 3 iterations: acc = 3*(alpha*A + d).
     acc.zero();
     graph.execute();
     for (size_t idx = 0; idx < acc.size(); ++idx) {
-        CHECK(acc.data()[idx] == Catch::Approx(3.0 * (2.0 * A.data()[idx] + d.data()[idx])));
+        CHECK(near(acc.data()[idx], T{3} * (alpha * A.data()[idx] + d.data()[idx])));
     }
 }
 
 // The converse must still hold: beta != 0 accumulates, so the per-iteration
 // update would be lost if it were hoisted.
-TEST_CASE("LoopInvariantHoisting - refuses an accumulating axpby", "[ComputeGraph][Passes]") {
-    auto A   = create_random_tensor<double>("A", 3, 3);
-    auto L   = create_zero_tensor<double>("L", 3, 3);
-    auto acc = create_zero_tensor<double>("acc", 3, 3);
+TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - refuses an accumulating axpby", "[ComputeGraph][Passes]", testing::AllScalarTypes) {
+    using T  = TestType;
+    auto A   = create_random_tensor<T>("A", 3, 3);
+    auto L   = create_zero_tensor<T>("L", 3, 3);
+    auto acc = create_zero_tensor<T>("acc", 3, 3);
 
     cg::Graph graph("lih_accumulating_axpby");
     {

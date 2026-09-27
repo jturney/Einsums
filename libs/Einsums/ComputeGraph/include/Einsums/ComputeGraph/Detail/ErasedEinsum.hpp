@@ -21,7 +21,10 @@
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/ExportDefinitions.hpp>
 #include <Einsums/Config/Namespace.hpp>
+#include <Einsums/Python/Annotations.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
+
+#include <string>
 
 EINSUMS_NAMESPACE_BEGIN(compute_graph::dispatch)
 
@@ -40,6 +43,20 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::dispatch)
 /// is every einsum node since @ref build_executor took over the lowering) would
 /// then write a slot no test executable can read.
 [[nodiscard]] EINSUMS_EXPORT char const *&last_dispatch_route();
+
+/**
+ * @brief The kernel route the most recent contraction on this thread took, as a string.
+ *
+ * A copy of @ref last_dispatch_route for the Python bindings, which cannot hold the
+ * thread-local slot itself. It serves the same purpose: a test asserts that a spec reached its
+ * fast path, since a fallback to the generic loop still computes the right values and only the
+ * route shows it. Read it on the thread that ran the contraction, straight after the call.
+ *
+ * @return The route name, or ``"none"`` if this thread has run no contraction.
+ * @versionadded{2.0.0}
+ */
+[[nodiscard]] APIARY_EXPOSE APIARY_MODULE("graph") APIARY_RENAME("last_dispatch_route") EINSUMS_EXPORT std::string
+last_dispatch_route_name();
 
 /// The character-index permute behind string specs. Defined in StringDispatch.hpp, which
 /// string_einsum needs it for, and explicitly instantiated in the library for the four element

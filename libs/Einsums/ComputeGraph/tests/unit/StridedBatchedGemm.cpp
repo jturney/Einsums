@@ -27,8 +27,10 @@
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cstring>
+#include <limits>
 #include <string>
 
 #include <Einsums/Testing.hpp>
@@ -44,7 +46,11 @@ std::string route() {
 
 constexpr char const *kStrided = "strided_batched_gemm";
 
-constexpr double kTol = 1e-10;
+/// A few ulps of @p T: every element here is a short sum of order-one products.
+template <typename T>
+double tol() {
+    return 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
+}
 
 template <typename T, size_t R>
 void require_close(Tensor<T, R> const &got, Tensor<T, R> const &ref) {
@@ -52,7 +58,7 @@ void require_close(Tensor<T, R> const &got, Tensor<T, R> const &ref) {
     T const *g = got.data();
     T const *r = ref.data();
     for (size_t i = 0; i < got.size(); i++)
-        REQUIRE(std::abs(g[i] - r[i]) < kTol);
+        REQUIRE(std::abs(g[i] - r[i]) <= tol<T>() * (1.0 + std::abs(r[i])));
 }
 
 } // namespace
@@ -65,11 +71,13 @@ void require_close(Tensor<T, R> const &got, Tensor<T, R> const &ref) {
 // graph refuses to save, so capturing "ijb;jkb->ikb" in the default layout made
 // the whole graph unsaveable. The node is now an einsum that picks the route
 // when its executor is built, so the loader reaches the same route.
-TEST_CASE("StridedBatchedGemm: col-major 3D ijb;jkb->ikb stays an einsum, runs batched and saves", "[ComputeGraph][StridedBatchedGemm]") {
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: col-major 3D ijb;jkb->ikb stays an einsum, runs batched and saves",
+                        "[ComputeGraph][StridedBatchedGemm]", testing::AllScalarTypes) {
+    using T            = TestType;
     constexpr size_t I = 3, J = 5, K = 2, B = 4;
-    auto             A  = create_random_tensor<double>("A", I, J, B);
-    auto             Bt = create_random_tensor<double>("B", J, K, B);
-    auto             C  = create_zero_tensor<double>("C", I, K, B);
+    auto             A  = create_random_tensor<T>("A", I, J, B);
+    auto             Bt = create_random_tensor<T>("B", J, K, B);
+    auto             C  = create_zero_tensor<T>("C", I, K, B);
 
     cg::Graph graph("strided3d_colmajor");
     {
@@ -81,43 +89,45 @@ TEST_CASE("StridedBatchedGemm: col-major 3D ijb;jkb->ikb stays an einsum, runs b
 
     graph.execute();
     CHECK(route() == kStrided);
-    auto const expected = Tensor<double, 3>(C);
+    auto const expected = Tensor<T, 3>(C);
 
     auto const text = cg::save_graph_string(graph);
     REQUIRE(text.has_value());
     auto loaded = cg::load_graph_string(*text);
     REQUIRE(loaded.has_value());
 
-    auto C2 = create_zero_tensor<double>("C2", I, K, B);
+    auto C2 = create_zero_tensor<T>("C2", I, K, B);
     loaded->bind("A", A, "B", Bt, "C", C2);
     loaded->execute();
     CHECK(route() == kStrided);
     require_close(C2, expected);
 }
 
-TEST_CASE("StridedBatchedGemm: col-major result matches slice-by-slice reference", "[ComputeGraph][StridedBatchedGemm]") {
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: col-major result matches slice-by-slice reference", "[ComputeGraph][StridedBatchedGemm]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
     constexpr size_t I = 4, J = 6, K = 3, B = 5;
-    auto             A  = create_random_tensor<double>("A", I, J, B);
-    auto             Bt = create_random_tensor<double>("B", J, K, B);
+    auto             A  = create_random_tensor<T>("A", I, J, B);
+    auto             Bt = create_random_tensor<T>("B", J, K, B);
 
     // Reference: slice-by-slice 2D einsum via the normal capture path.
     // Each batch slice occupies a contiguous I×J (or J×K, I×K) block of
     // the underlying column-major storage.
-    auto C_ref = create_zero_tensor<double>("C_ref", I, K, B);
+    auto C_ref = create_zero_tensor<T>("C_ref", I, K, B);
     {
         for (size_t b = 0; b < B; b++) {
             // For col-major with batch at axis 2: slice starts at
             // data() + b * (I * J) [for A], etc.
-            double const *a_slice = A.data() + b * I * J;
-            double const *b_slice = Bt.data() + b * J * K;
-            double       *c_slice = C_ref.data() + b * I * K;
+            T const *a_slice = A.data() + b * I * J;
+            T const *b_slice = Bt.data() + b * J * K;
+            T       *c_slice = C_ref.data() + b * I * K;
             // Compute C[i,k] = sum_j A[i,j] * B[j,k] for col-major storage:
             //   A[i,j] at a_slice[i + j*I]
             //   B[j,k] at b_slice[j + k*J]
             //   C[i,k] at c_slice[i + k*I]
             for (size_t k = 0; k < K; k++)
                 for (size_t i = 0; i < I; i++) {
-                    double s = 0.0;
+                    T s{0};
                     for (size_t j = 0; j < J; j++)
                         s += a_slice[i + j * I] * b_slice[j + k * J];
                     c_slice[i + k * I] = s;
@@ -125,7 +135,7 @@ TEST_CASE("StridedBatchedGemm: col-major result matches slice-by-slice reference
         }
     }
 
-    auto      C_cg = create_zero_tensor<double>("C_cg", I, K, B);
+    auto      C_cg = create_zero_tensor<T>("C_cg", I, K, B);
     cg::Graph graph("result");
     {
         cg::CaptureGuard const guard(graph);
@@ -139,66 +149,35 @@ TEST_CASE("StridedBatchedGemm: col-major result matches slice-by-slice reference
     require_close(C_cg, C_ref);
 }
 
-TEST_CASE("StridedBatchedGemm: float precision works", "[ComputeGraph][StridedBatchedGemm]") {
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: nonzero c_prefactor accumulates correctly", "[ComputeGraph][StridedBatchedGemm]",
+                        testing::AllScalarTypes) {
+    using T                = TestType;
+    T const          c_pf  = testing::prefactor<T>(0.5, 0.3);
+    T const          ab_pf = testing::prefactor<T>(2.1, -0.7);
     constexpr size_t I = 4, J = 5, K = 3, B = 3;
-    auto             A  = create_random_tensor<float>("A", I, J, B);
-    auto             Bt = create_random_tensor<float>("B", J, K, B);
+    auto             A  = create_random_tensor<T>("A", I, J, B);
+    auto             Bt = create_random_tensor<T>("B", J, K, B);
+    auto             C  = create_random_tensor<T>("C", I, K, B);
 
-    auto C_ref = create_zero_tensor<float>("C_ref", I, K, B);
+    // Reference: C = c_pf*C + ab_pf*A@B, slice by slice (col-major layout).
+    auto C_ref = Tensor<T, 3>(C);
     for (size_t b = 0; b < B; b++) {
-        float const *a_slice = A.data() + b * I * J;
-        float const *b_slice = Bt.data() + b * J * K;
-        float       *c_slice = C_ref.data() + b * I * K;
+        T const *a_slice = A.data() + b * I * J;
+        T const *b_slice = Bt.data() + b * J * K;
+        T       *c_slice = C_ref.data() + b * I * K;
         for (size_t k = 0; k < K; k++)
             for (size_t i = 0; i < I; i++) {
-                float s = 0.0f;
+                T s{0};
                 for (size_t j = 0; j < J; j++)
                     s += a_slice[i + j * I] * b_slice[j + k * J];
-                c_slice[i + k * I] = s;
-            }
-    }
-
-    auto      C_cg = create_zero_tensor<float>("C_cg", I, K, B);
-    cg::Graph graph("float");
-    {
-        cg::CaptureGuard const guard(graph);
-        cg::einsum("ijb;jkb->ikb", &C_cg, A, Bt);
-    }
-    REQUIRE(graph.num_nodes() == 1);
-
-    graph.execute();
-    CHECK(route() == kStrided);
-    float const *g = C_cg.data();
-    float const *r = C_ref.data();
-    for (size_t i = 0; i < C_cg.size(); i++)
-        REQUIRE(std::abs(g[i] - r[i]) < 1e-4f);
-}
-
-TEST_CASE("StridedBatchedGemm: nonzero c_prefactor accumulates correctly", "[ComputeGraph][StridedBatchedGemm]") {
-    constexpr size_t I = 4, J = 5, K = 3, B = 3;
-    auto             A  = create_random_tensor<double>("A", I, J, B);
-    auto             Bt = create_random_tensor<double>("B", J, K, B);
-    auto             C  = create_random_tensor<double>("C", I, K, B);
-
-    // Reference: C = 0.5*C + 2.0*A@B, slice by slice (col-major layout).
-    auto C_ref = Tensor<double, 3>(C);
-    for (size_t b = 0; b < B; b++) {
-        double const *a_slice = A.data() + b * I * J;
-        double const *b_slice = Bt.data() + b * J * K;
-        double       *c_slice = C_ref.data() + b * I * K;
-        for (size_t k = 0; k < K; k++)
-            for (size_t i = 0; i < I; i++) {
-                double s = 0.0;
-                for (size_t j = 0; j < J; j++)
-                    s += a_slice[i + j * I] * b_slice[j + k * J];
-                c_slice[i + k * I] = 0.5 * c_slice[i + k * I] + 2.0 * s;
+                c_slice[i + k * I] = c_pf * c_slice[i + k * I] + ab_pf * s;
             }
     }
 
     cg::Graph graph("beta");
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("ijb;jkb->ikb", 0.5, &C, 2.0, A, Bt);
+        cg::einsum("ijb;jkb->ikb", c_pf, &C, ab_pf, A, Bt);
     }
     graph.execute();
     CHECK(route() == kStrided);
@@ -208,11 +187,13 @@ TEST_CASE("StridedBatchedGemm: nonzero c_prefactor accumulates correctly", "[Com
 // The capture-time route copied the prefactors into its descriptor, so a later
 // update to the node's live scalars was ignored on replay. The route now reads
 // the live values on every call.
-TEST_CASE("StridedBatchedGemm: an updated prefactor is honored on replay", "[ComputeGraph][StridedBatchedGemm]") {
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: an updated prefactor is honored on replay", "[ComputeGraph][StridedBatchedGemm]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
     constexpr size_t I = 3, J = 4, K = 2, B = 3;
-    auto             A  = create_random_tensor<double>("A", I, J, B);
-    auto             Bt = create_random_tensor<double>("B", J, K, B);
-    auto             C  = create_zero_tensor<double>("C", I, K, B);
+    auto             A  = create_random_tensor<T>("A", I, J, B);
+    auto             Bt = create_random_tensor<T>("B", J, K, B);
+    auto             C  = create_zero_tensor<T>("C", I, K, B);
 
     cg::Graph graph("live_prefactor");
     {
@@ -220,13 +201,14 @@ TEST_CASE("StridedBatchedGemm: an updated prefactor is honored on replay", "[Com
         cg::einsum("ijb;jkb->ikb", &C, A, Bt);
     }
     graph.execute();
-    auto const once = Tensor<double, 3>(C);
+    auto const once = Tensor<T, 3>(C);
 
-    graph.update_prefactors(graph.nodes()[0].id, 0.0, 3.0);
+    T const scale = testing::prefactor<T>(3.0, -1.5);
+    graph.update_prefactors(graph.nodes()[0].id, T{0}, scale);
     graph.execute();
     CHECK(route() == kStrided);
     for (size_t n = 0; n < C.size(); ++n) {
-        REQUIRE(std::abs(C.data()[n] - 3.0 * once.data()[n]) < kTol);
+        REQUIRE(std::abs(C.data()[n] - scale * once.data()[n]) <= tol<T>() * (1.0 + std::abs(scale * once.data()[n])));
     }
 }
 
@@ -234,30 +216,34 @@ TEST_CASE("StridedBatchedGemm: an updated prefactor is honored on replay", "[Com
 // Fall-through: patterns NOT matching the fast path
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("StridedBatchedGemm: 3D einsum without batch index falls through to generic", "[ComputeGraph][StridedBatchedGemm]") {
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: 3D einsum without batch index falls through to generic", "[ComputeGraph][StridedBatchedGemm]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // pqr;rs->pqs has no batch index (p, q are targets only in A/C; r is link).
     // Not a batched-GEMM pattern, generic nested-loop executor handles it.
-    auto T = create_random_tensor<double>("T", 2, 3, 4);
-    auto M = create_random_tensor<double>("M", 4, 5);
-    auto C = create_zero_tensor<double>("C", 2, 3, 5);
+    auto X = create_random_tensor<T>("X", 2, 3, 4);
+    auto M = create_random_tensor<T>("M", 4, 5);
+    auto C = create_zero_tensor<T>("C", 2, 3, 5);
 
     cg::Graph graph("nonbatch");
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("pqr;rs->pqs", &C, T, M);
+        cg::einsum("pqr;rs->pqs", &C, X, M);
     }
     graph.execute();
     CHECK(route() != kStrided);
 }
 
-TEST_CASE("StridedBatchedGemm: col-major with batch at front falls through (interleaved)", "[ComputeGraph][StridedBatchedGemm]") {
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: col-major with batch at front falls through (interleaved)",
+                        "[ComputeGraph][StridedBatchedGemm]", testing::AllScalarTypes) {
+    using T = TestType;
     // In Einsums's default column-major layout, batch at position 0
     // interleaves slices in memory, cannot be strided-batched. Must
     // fall through to the generic path; correctness preserved.
     constexpr size_t B = 4, I = 3, J = 4, K = 5;
-    auto             A  = create_random_tensor<double>("A", B, I, J);
-    auto             Bt = create_random_tensor<double>("B", B, J, K);
-    auto             C  = create_zero_tensor<double>("C", B, I, K);
+    auto             A  = create_random_tensor<T>("A", B, I, J);
+    auto             Bt = create_random_tensor<T>("B", B, J, K);
+    auto             C  = create_zero_tensor<T>("C", B, I, K);
 
     cg::Graph graph("batch_front_colmajor");
     {
@@ -266,6 +252,53 @@ TEST_CASE("StridedBatchedGemm: col-major with batch at front falls through (inte
     }
     graph.execute();
     CHECK(route() != kStrided);
+}
+
+// A strided batch of plain GEMMs cannot conjugate, so a conjugated operand
+// leaves the route to the general dispatch, which conjugates while packing.
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: a conjugated operand falls through", "[ComputeGraph][StridedBatchedGemm]",
+                        testing::ComplexScalarTypes) {
+    using T            = TestType;
+    constexpr size_t I = 4, J = 5, K = 3, B = 3;
+    auto             A  = create_random_tensor<T>("A", I, J, B);
+    auto             Bt = create_random_tensor<T>("B", J, K, B);
+    auto             C  = create_zero_tensor<T>("C", I, K, B);
+
+    auto C_ref = create_zero_tensor<T>("C_ref", I, K, B);
+    testing::reference_einsum("ikb <- ijb ; jkb", T{0}, &C_ref, T{1}, A, Bt, /*conj_a=*/true);
+
+    cg::Graph graph("conj");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ikb <- conj(ijb) ; jkb", &C, A, Bt);
+    }
+    graph.execute();
+    CHECK(route() != kStrided);
+    require_close(C, C_ref);
+}
+
+// Conjugating a real operand is the identity, so the flag is dropped at capture
+// and the node keeps the strided route. It used to fall through with the
+// complex case above, to a slower route that computed the same values.
+TEMPLATE_LIST_TEST_CASE("StridedBatchedGemm: a conjugated real operand keeps the route", "[ComputeGraph][StridedBatchedGemm]",
+                        testing::RealScalarTypes) {
+    using T            = TestType;
+    constexpr size_t I = 4, J = 5, K = 3, B = 3;
+    auto             A  = create_random_tensor<T>("A", I, J, B);
+    auto             Bt = create_random_tensor<T>("B", J, K, B);
+    auto             C  = create_zero_tensor<T>("C", I, K, B);
+
+    auto C_ref = create_zero_tensor<T>("C_ref", I, K, B);
+    testing::reference_einsum("ikb <- ijb ; jkb", T{0}, &C_ref, T{1}, A, Bt);
+
+    cg::Graph graph("conj_real");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ikb <- conj(ijb) ; conj(jkb)", &C, A, Bt);
+    }
+    graph.execute();
+    CHECK(route() == kStrided);
+    require_close(C, C_ref);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

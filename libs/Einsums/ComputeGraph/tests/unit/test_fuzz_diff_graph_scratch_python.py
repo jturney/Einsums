@@ -222,14 +222,15 @@ def _assert_scratch_materialized(graph, scratch_names, label):
         assert sn in labels, f"{label}: scratch {sn} was not materialized (Materialize labels: {labels!r})"
 
 
-def _check_scratch_program(prog, m_arrays, n_scratch, n, label):
+def _check_scratch_program(prog, m_arrays, n_scratch, n, label, dtype):
     B = len(m_arrays)
-    om = [a.copy() for a in m_arrays] + [np.zeros((n, n)) for _ in range(n_scratch)]
+    om = [a.copy() for a in m_arrays] + [np.zeros((n, n), dtype=dtype) for _ in range(n_scratch)]
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        interp_np(prog, om, [], [], np.dtype("float64"))
-    if not _usable(om[:B], cap=_DTYPE_CAP["float64"]):
+        interp_np(prog, om, [], [], np.dtype(dtype))
+    if not _usable(om[:B], cap=_DTYPE_CAP[dtype]):
         pytest.skip("oracle overflowed — numerically degenerate program")
     oracle_ord = om[:B]
+    rtol, atol = _DTYPE_TOL[dtype]
 
     for ex_name, exec_cls in _CROSS_EXECUTORS:
         g = cg.Graph(f"{label}_{ex_name}")
@@ -241,9 +242,9 @@ def _check_scratch_program(prog, m_arrays, n_scratch, n, label):
         g.execute() if ex_name == "Sequential" else g.execute(exec_cls())
         for idx in range(B):
             got = np.asarray(mats[idx])
-            if not np.allclose(got, oracle_ord[idx], rtol=RTOL, atol=ATOL):
+            if not np.allclose(got, oracle_ord[idx], rtol=rtol, atol=atol):
                 raise AssertionError(
-                    f"GRAPH-SCRATCH {ex_name} disagrees on m{idx}\n"
+                    f"GRAPH-SCRATCH {ex_name} disagrees on m{idx} (dtype={dtype})\n"
                     f"program={prog!r}\ngot=\n{got}\noracle=\n{oracle_ord[idx]}"
                 )
 
@@ -374,10 +375,15 @@ def _box_slice(box):
     return (slice(box[0], box[1]), slice(box[2], box[3]))
 
 
-def _interp_eager(stmts, m):
+#: The prefactor positions of this arm's own opcodes, for ``complexify``.
+_EAGER_SCALAR_FIELDS = {"gvaxpy": (1,), "gvaxpby": (1, 4), "gvgemm": (1, 6)}
+
+
+def _interp_eager(stmts, m, dt):
     """numpy oracle: the local view-write opcodes here, everything else in
     ``interp_np``. Control flow recurses here so a loop body may hold both."""
     for s in stmts:
+        s = resolve_scalars(s, dt.kind == "c")
         k = s[0]
         if k == "gvaxpy":
             _, a, src, sbox, dst, dbox = s
@@ -392,9 +398,9 @@ def _interp_eager(stmts, m):
             m[dst][_box_slice(dbox)] = a * prod + b * m[dst][_box_slice(dbox)]
         elif k == "loop":
             for _ in range(s[1]):
-                _interp_eager(s[2], m)
+                _interp_eager(s[2], m, dt)
         else:
-            interp_np([s], m, [], [], np.dtype("float64"))
+            interp_np([s], m, [], [], dt)
 
 
 def _src_operand(t, box, n):
@@ -402,6 +408,7 @@ def _src_operand(t, box, n):
 
 
 def _emit_eager(s, m, n):
+    s = resolve_scalars(s, np.asarray(m[0]).dtype.kind == "c")
     k = s[0]
     if k == "gvaxpy":
         _, a, src, sbox, dst, dbox = s
@@ -441,26 +448,27 @@ def _build_eager(stmts, graph, m, n, tag):
     flush()
 
 
-def _check_eager_view_program(prog, m_arrays, e_arrays, n, label):
+def _check_eager_view_program(prog, m_arrays, e_arrays, n, label, dtype):
     B = len(m_arrays)
     om = [a.copy() for a in m_arrays] + [a.copy() for a in e_arrays]
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        _interp_eager(prog, om)
-    if not _usable(om[:B], cap=_DTYPE_CAP["float64"]):
+        _interp_eager(prog, om, np.dtype(dtype))
+    if not _usable(om[:B], cap=_DTYPE_CAP[dtype]):
         pytest.skip("oracle overflowed: numerically degenerate program")
+    rtol, atol = _DTYPE_TOL[dtype]
 
     for ex_name, exec_cls in _CROSS_EXECUTORS:
         tag = f"{label}_{ex_name}"
         g = cg.Graph(tag)
         mats = []
         for idx, arr in enumerate(m_arrays):
-            tn = einsums.create_zero_tensor(f"{tag}_m{idx}", [n, n], dtype="float64")
+            tn = einsums.create_zero_tensor(f"{tag}_m{idx}", [n, n], dtype=dtype)
             np.asarray(tn)[...] = arr
             mats.append(tn)
         for idx, arr in enumerate(e_arrays):
             # Graph-owned AND materialized: the only kind of tensor
             # ConstantFolding will evaluate a node over.
-            tn = g.create_zero_tensor(f"{tag}_e{idx}", [n, n], intermediate=True, dtype="float64")
+            tn = g.create_zero_tensor(f"{tag}_e{idx}", [n, n], intermediate=True, dtype=dtype)
             np.asarray(tn)[...] = arr
             mats.append(tn)
         _build_eager(prog, g, mats, n, tag)
@@ -469,9 +477,9 @@ def _check_eager_view_program(prog, m_arrays, e_arrays, n, label):
         g.execute() if ex_name == "Sequential" else g.execute(exec_cls())
         for idx in range(B):
             got = np.asarray(mats[idx])
-            if not np.allclose(got, om[idx], rtol=RTOL, atol=ATOL):
+            if not np.allclose(got, om[idx], rtol=rtol, atol=atol):
                 raise AssertionError(
-                    f"EAGER-VIEW {ex_name} disagrees on m{idx}\n"
+                    f"EAGER-VIEW {ex_name} disagrees on m{idx} (dtype={dtype})\n"
                     f"program={prog!r}\ngot=\n{got}\noracle=\n{om[idx]}"
                 )
 
@@ -491,12 +499,17 @@ def _eager_seed(rng, n):
 @pytest.mark.parametrize("seed", fuzz_seeds(60))
 def test_fuzz_eager_intermediate_written_through_views(seed):
     """Arm E: eager graph-owned intermediates written only through views, then
-    read whole (default pipeline, Sequential + parallel executors)."""
+    read whole (default pipeline, Sequential + parallel executors). The
+    dtype cycles with the seed, with complex prefactors on a complex pool."""
     rng = np.random.default_rng(190_000 + seed)
     n = _SCRATCH_N
     m_arrays, e_arrays, ords, eager = _eager_seed(rng, n)
     prog = _gen_eager_view_program(rng, ords, eager, n)
-    _check_eager_view_program(prog, m_arrays, e_arrays, n, f"eview{seed}")
+    dtype, side = seed_dtype(seed), np.random.default_rng((190_000, seed))
+    prog = complexify(prog, side, fields=_EAGER_SCALAR_FIELDS)
+    m_arrays = [typed_array(a, dtype, side) for a in m_arrays]
+    e_arrays = [typed_array(a, dtype, side) if np.any(a) else a.astype(dtype) for a in e_arrays]
+    _check_eager_view_program(prog, m_arrays, e_arrays, n, f"eview{seed}", dtype)
 
 
 def _all_owned_reader_inputs(s, eager):
@@ -552,7 +565,8 @@ def test_the_eager_view_corpus_reaches_the_fold_question():
 @pytest.mark.parametrize("seed", fuzz_seeds(60))
 def test_fuzz_graph_scratch_in_control_flow(seed):
     """Arm A: parent-declared scratch produced and consumed inside a loop /
-    conditional body (default pipeline, Sequential + parallel executors)."""
+    conditional body (default pipeline, Sequential + parallel executors). The
+    dtype cycles with the seed, with complex prefactors on a complex pool."""
     rng = np.random.default_rng(170_000 + seed)
     n = _SCRATCH_N
     m_arrays = [rng.standard_normal((n, n)) * 0.5 for _ in range(_SCRATCH_ORDS)]
@@ -560,13 +574,17 @@ def test_fuzz_graph_scratch_in_control_flow(seed):
     ords = list(range(_SCRATCH_ORDS))
     scratch = list(range(_SCRATCH_ORDS, _SCRATCH_ORDS + n_scratch))
     prog = _gen_scratch_body_program(rng, ords, scratch)
-    _check_scratch_program(prog, m_arrays, n_scratch, n, f"scr{seed}")
+    dtype, side = seed_dtype(seed), np.random.default_rng((170_000, seed))
+    prog = complexify(prog, side)
+    m_arrays = [typed_array(a, dtype, side) for a in m_arrays]
+    _check_scratch_program(prog, m_arrays, n_scratch, n, f"scr{seed}", dtype)
 
 
 @pytest.mark.parametrize("seed", fuzz_seeds(60))
 def test_fuzz_graph_scratch_after_conditional(seed):
     """Arm C: parent-declared scratch defined in both branches of a conditional
-    and consumed after it (default pipeline, Sequential + parallel executors)."""
+    and consumed after it (default pipeline, Sequential + parallel executors). The
+    dtype cycles with the seed, with complex prefactors on a complex pool."""
     rng = np.random.default_rng(180_000 + seed)
     n = _SCRATCH_N
     m_arrays = [rng.standard_normal((n, n)) * 0.5 for _ in range(_SCRATCH_ORDS)]
@@ -574,7 +592,10 @@ def test_fuzz_graph_scratch_after_conditional(seed):
     ords = list(range(_SCRATCH_ORDS))
     scratch = list(range(_SCRATCH_ORDS, _SCRATCH_ORDS + n_scratch))
     prog = _gen_scratch_after_cond_program(rng, ords, scratch)
-    _check_scratch_program(prog, m_arrays, n_scratch, n, f"scrc{seed}")
+    dtype, side = seed_dtype(seed), np.random.default_rng((180_000, seed))
+    prog = complexify(prog, side)
+    m_arrays = [typed_array(a, dtype, side) for a in m_arrays]
+    _check_scratch_program(prog, m_arrays, n_scratch, n, f"scrc{seed}", dtype)
 
 
 def test_the_scratch_corpus_takes_views_of_the_scratch():

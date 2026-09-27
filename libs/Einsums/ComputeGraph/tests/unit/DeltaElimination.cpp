@@ -123,7 +123,8 @@ std::shared_ptr<cg::passes::DeltaElimination> require_within_ulps(Build &&build,
     return require_rewrite(build, reset, read, [](auto const &expected, auto const &actual) {
         for (std::size_t i = 0; i < actual.size(); ++i) {
             INFO("element " << i);
-            double const bound = 8.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, std::abs(expected[i]));
+            using Real         = RemoveComplexT<std::remove_cvref_t<decltype(expected[i])>>;
+            double const bound = 8.0 * std::numeric_limits<Real>::epsilon() * std::max(1.0, static_cast<double>(std::abs(expected[i])));
             CHECK(std::abs(actual[i] - expected[i]) <= bound);
         }
     });
@@ -131,17 +132,19 @@ std::shared_ptr<cg::passes::DeltaElimination> require_within_ulps(Build &&build,
 
 } // namespace
 
-TEST_CASE("a delta contraction feeding another contraction disappears", "[ComputeGraph][DeltaElimination]") {
+TEMPLATE_LIST_TEST_CASE("a delta contraction feeding another contraction disappears", "[ComputeGraph][DeltaElimination]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The shape the pass exists for. tmp is a full GEMM against an identity matrix and its only
     // reader is the contraction below it, so both the node and the intermediate go.
-    auto A     = create_random_tensor<double>("A", 4, 5);
-    auto delta = create_identity_tensor<double>("delta", 5, 5);
-    auto D     = create_random_tensor<double>("D", 5, 3);
-    auto C     = create_zero_tensor<double>("C", 4, 3);
+    auto A     = create_random_tensor<T>("A", 4, 5);
+    auto delta = create_identity_tensor<T>("delta", 5, 5);
+    auto D     = create_random_tensor<T>("D", 5, 3);
+    auto C     = create_zero_tensor<T>("C", 4, 3);
 
     auto const build = [&](cg::Graph &graph) {
         graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
-        auto &tmp = graph.create_zero_runtime_tensor<double>("tmp", {4, 5}, true);
+        auto &tmp = graph.create_zero_runtime_tensor<T>("tmp", {4, 5}, true);
         {
             cg::CaptureGuard const guard(graph);
             cg::einsum("ik;kj->ij", &tmp, A, delta);
@@ -163,17 +166,19 @@ TEST_CASE("a delta contraction feeding another contraction disappears", "[Comput
     CHECK(after.num_nodes() < before_nodes);
 }
 
-TEST_CASE("a delta on the left of the contraction is eliminated too", "[ComputeGraph][DeltaElimination]") {
+TEMPLATE_LIST_TEST_CASE("a delta on the left of the contraction is eliminated too", "[ComputeGraph][DeltaElimination]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // Operand order is not part of the mathematics, and a pass that only looked at slot 1 would
     // silently miss half the candidates a real equation set produces.
-    auto delta = create_identity_tensor<double>("delta", 4, 4);
-    auto A     = create_random_tensor<double>("A", 4, 5);
-    auto D     = create_random_tensor<double>("D", 5, 3);
-    auto C     = create_zero_tensor<double>("C", 4, 3);
+    auto delta = create_identity_tensor<T>("delta", 4, 4);
+    auto A     = create_random_tensor<T>("A", 4, 5);
+    auto D     = create_random_tensor<T>("D", 5, 3);
+    auto C     = create_zero_tensor<T>("C", 4, 3);
 
     auto const build = [&](cg::Graph &graph) {
         graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
-        auto &tmp = graph.create_zero_runtime_tensor<double>("tmp", {4, 5}, true);
+        auto &tmp = graph.create_zero_runtime_tensor<T>("tmp", {4, 5}, true);
         {
             cg::CaptureGuard const guard(graph);
             cg::einsum("ik;kj->ij", &tmp, delta, A);
@@ -185,21 +190,22 @@ TEST_CASE("a delta on the left of the contraction is eliminated too", "[ComputeG
     CHECK(pass->num_eliminated() == 1);
 }
 
-TEST_CASE("a chain of deltas collapses in one visit", "[ComputeGraph][DeltaElimination]") {
+TEMPLATE_LIST_TEST_CASE("a chain of deltas collapses in one visit", "[ComputeGraph][DeltaElimination]", testing::AllScalarTypes) {
+    using T = TestType;
     // Dissolving one intermediate is what makes the next contraction eliminable, so a pass that
     // swept once would need to be run twice to finish. The fixpoint loop is what makes one apply
     // enough, and this is the case that would notice if it were removed.
-    auto A  = create_random_tensor<double>("A", 4, 5);
-    auto d1 = create_identity_tensor<double>("d1", 5, 5);
-    auto d2 = create_identity_tensor<double>("d2", 5, 5);
-    auto D  = create_random_tensor<double>("D", 5, 3);
-    auto C  = create_zero_tensor<double>("C", 4, 3);
+    auto A  = create_random_tensor<T>("A", 4, 5);
+    auto d1 = create_identity_tensor<T>("d1", 5, 5);
+    auto d2 = create_identity_tensor<T>("d2", 5, 5);
+    auto D  = create_random_tensor<T>("D", 5, 3);
+    auto C  = create_zero_tensor<T>("C", 4, 3);
 
     auto const build = [&](cg::Graph &graph) {
         graph.annotate_tag(d1, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
         graph.annotate_tag(d2, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
-        auto &t1 = graph.create_zero_runtime_tensor<double>("t1", {4, 5}, true);
-        auto &t2 = graph.create_zero_runtime_tensor<double>("t2", {4, 5}, true);
+        auto &t1 = graph.create_zero_runtime_tensor<T>("t1", {4, 5}, true);
+        auto &t2 = graph.create_zero_runtime_tensor<T>("t2", {4, 5}, true);
         {
             cg::CaptureGuard const guard(graph);
             cg::einsum("ik;kj->ij", &t1, A, d1);
@@ -213,12 +219,14 @@ TEST_CASE("a chain of deltas collapses in one visit", "[ComputeGraph][DeltaElimi
     CHECK(pass->num_dissolved() == 2);
 }
 
-TEST_CASE("a delta contraction writing a user tensor keeps a permute", "[ComputeGraph][DeltaElimination]") {
+TEMPLATE_LIST_TEST_CASE("a delta contraction writing a user tensor keeps a permute", "[ComputeGraph][DeltaElimination]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The escape rule deciding the outcome. C is the caller's, so it must still be written; the
     // contraction becomes a permute rather than disappearing, and the numbers stay identical.
-    auto A     = create_random_tensor<double>("A", 4, 5);
-    auto delta = create_identity_tensor<double>("delta", 5, 5);
-    auto C     = create_zero_tensor<double>("C", 4, 5);
+    auto A     = create_random_tensor<T>("A", 4, 5);
+    auto delta = create_identity_tensor<T>("delta", 5, 5);
+    auto C     = create_zero_tensor<T>("C", 4, 5);
 
     auto const build = [&](cg::Graph &graph) {
         graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
@@ -242,24 +250,30 @@ TEST_CASE("a delta contraction writing a user tensor keeps a permute", "[Compute
     CHECK(has_permute);
 }
 
-TEST_CASE("prefactors survive the rewrite exactly", "[ComputeGraph][DeltaElimination]") {
+TEMPLATE_LIST_TEST_CASE("prefactors survive the rewrite exactly", "[ComputeGraph][DeltaElimination]", testing::AllScalarTypes) {
+    using T = TestType;
     // A dropped prefactor is the single most likely way to get this wrong, and it produces a
     // result that is plausible, wrong, and off by a constant nobody notices in a residual.
-    auto A     = create_random_tensor<double>("A", 4, 5);
-    auto delta = create_identity_tensor<double>("delta", 5, 5);
-    auto C     = create_random_tensor<double>("C", 4, 5);
-    auto seed  = create_random_tensor<double>("seed", 4, 5);
+    auto A     = create_random_tensor<T>("A", 4, 5);
+    auto delta = create_identity_tensor<T>("delta", 5, 5);
+    auto C     = create_random_tensor<T>("C", 4, 5);
+    auto seed  = create_random_tensor<T>("seed", 4, 5);
     for (std::size_t i = 0; i < 4; ++i) {
         for (std::size_t j = 0; j < 5; ++j) {
             seed(i, j) = C(i, j);
         }
     }
 
+    // Complex where T is, so an imaginary part the rewrite dropped would show. Both parts are
+    // exact in single precision, because the descriptor check below compares them exactly.
+    T const c_pf  = testing::prefactor<T>(1.5, 0.25);
+    T const ab_pf = testing::prefactor<T>(2.5, -0.75);
+
     auto const build = [&](cg::Graph &graph) {
         graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
         cg::CaptureGuard const guard(graph);
-        // Accumulating, with a nonunit product prefactor: C = 1.5*C + 2.5*(A delta).
-        cg::einsum("ik;kj->ij", 1.5, &C, 2.5, A, delta);
+        // Accumulating, with a nonunit product prefactor: C = c_pf*C + ab_pf*(A delta).
+        cg::einsum("ik;kj->ij", c_pf, &C, ab_pf, A, delta);
     };
 
     auto const reset = [&] {
@@ -291,21 +305,22 @@ TEST_CASE("prefactors survive the rewrite exactly", "[ComputeGraph][DeltaElimina
         }
         auto const *desc = node.op_data.get_if<cg::PermuteDescriptor>();
         REQUIRE(desc != nullptr);
-        CHECK(desc->alpha == std::complex<double>{2.5, 0.0}); // the product prefactor
-        CHECK(desc->beta == std::complex<double>{1.5, 0.0});  // the accumulation prefactor
+        CHECK(desc->alpha == std::complex<double>(ab_pf)); // the product prefactor
+        CHECK(desc->beta == std::complex<double>(c_pf));   // the accumulation prefactor
         found_permute = true;
     }
     CHECK(found_permute);
 }
 
-TEST_CASE("an untagged identity matrix is left alone", "[ComputeGraph][DeltaElimination]") {
+TEMPLATE_LIST_TEST_CASE("an untagged identity matrix is left alone", "[ComputeGraph][DeltaElimination]", testing::AllScalarTypes) {
+    using T = TestType;
     // Recognition is DECLARED. A tensor that happens to hold an identity today is not a delta,
     // because this pass's output is what a saved graph keeps and a later bind may put something
     // else behind the same name. Reading the values would be the bug; this is the case that says
     // the pass does not.
-    auto A     = create_random_tensor<double>("A", 4, 5);
-    auto delta = create_identity_tensor<double>("delta", 5, 5); // an identity, but unannounced
-    auto C     = create_zero_tensor<double>("C", 4, 5);
+    auto A     = create_random_tensor<T>("A", 4, 5);
+    auto delta = create_identity_tensor<T>("delta", 5, 5); // an identity, but unannounced
+    auto C     = create_zero_tensor<T>("C", 4, 5);
 
     cg::Graph graph("untagged");
     {
@@ -322,12 +337,13 @@ TEST_CASE("an untagged identity matrix is left alone", "[ComputeGraph][DeltaElim
     CHECK(pass->num_eliminated() == 0);
 }
 
-TEST_CASE("a delta whose letters are both free is declined", "[ComputeGraph][DeltaElimination]") {
+TEMPLATE_LIST_TEST_CASE("a delta whose letters are both free is declined", "[ComputeGraph][DeltaElimination]", testing::AllScalarTypes) {
+    using T = TestType;
     // C[i,j] = A[i,j] delta[i,j] is a diagonal extraction, not a rename. Attempting it as one
     // would produce A verbatim and silently drop the masking.
-    auto A     = create_random_tensor<double>("A", 4, 4);
-    auto delta = create_identity_tensor<double>("delta", 4, 4);
-    auto C     = create_zero_tensor<double>("C", 4, 4);
+    auto A     = create_random_tensor<T>("A", 4, 4);
+    auto delta = create_identity_tensor<T>("delta", 4, 4);
+    auto C     = create_zero_tensor<T>("C", 4, 4);
 
     cg::Graph graph("diagonal");
     graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
@@ -396,13 +412,14 @@ TEST_CASE("the rewrite is not bitwise on non-finite input, and only ever improve
     CHECK_FALSE(std::isnan(rewritten_00));
 }
 
-TEST_CASE("a tag survives a save and a load", "[ComputeGraph][DeltaElimination][SaveLoad]") {
+TEMPLATE_LIST_TEST_CASE("a tag survives a save and a load", "[ComputeGraph][DeltaElimination][SaveLoad]", testing::AllScalarTypes) {
+    using T = TestType;
     // A tag is a statement about the mathematics that nothing can re-derive, so it is saved
     // structure rather than an annotation a load re-computes. A file that dropped it would come
     // back eliminable-in-principle and un-eliminable in fact.
-    auto A     = create_random_tensor<double>("A", 4, 5);
-    auto delta = create_identity_tensor<double>("delta", 5, 5);
-    auto C     = create_zero_tensor<double>("C", 4, 5);
+    auto A     = create_random_tensor<T>("A", 4, 5);
+    auto delta = create_identity_tensor<T>("delta", 5, 5);
+    auto C     = create_zero_tensor<T>("C", 4, 5);
 
     cg::Graph graph("tagged");
     graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity), .attributes = {{"over", "occ"}}});
@@ -439,12 +456,14 @@ TEST_CASE("a tag survives a save and a load", "[ComputeGraph][DeltaElimination][
     CHECK(*tag->attribute("over") == "occ");
 }
 
-TEST_CASE("a tag rides along a permute but not a slice", "[ComputeGraph][DeltaElimination][Provenance]") {
+TEMPLATE_LIST_TEST_CASE("a tag rides along a permute but not a slice", "[ComputeGraph][DeltaElimination][Provenance]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The propagation rule, and the trap in it. A transposed delta is still a delta. A SLICE of
     // one is an identity only when it is a square block on the diagonal, which nothing here can
     // know, so the tag deliberately stops at a view.
-    auto delta   = create_identity_tensor<double>("delta", 4, 4);
-    auto swapped = create_zero_tensor<double>("swapped", 4, 4);
+    auto delta   = create_identity_tensor<T>("delta", 4, 4);
+    auto swapped = create_zero_tensor<T>("swapped", 4, 4);
 
     cg::Graph graph("propagate");
     graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
@@ -468,11 +487,13 @@ TEST_CASE("a tag rides along a permute but not a slice", "[ComputeGraph][DeltaEl
     CHECK(tagged);
 }
 
-TEST_CASE("propagation never overrules a declaration", "[ComputeGraph][DeltaElimination][Provenance]") {
+TEMPLATE_LIST_TEST_CASE("propagation never overrules a declaration", "[ComputeGraph][DeltaElimination][Provenance]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // A declaration is authoritative. Two ends tagged differently means one of them is wrong,
     // and picking a winner silently would bury the mistake rather than report it.
-    auto delta = create_identity_tensor<double>("delta", 4, 4);
-    auto other = create_zero_tensor<double>("other", 4, 4);
+    auto delta = create_identity_tensor<T>("delta", 4, 4);
+    auto other = create_zero_tensor<T>("other", 4, 4);
 
     cg::Graph graph("conflict");
     graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
@@ -499,7 +520,9 @@ TEST_CASE("propagation never overrules a declaration", "[ComputeGraph][DeltaElim
     CHECK(reasons[0].first.find("already carries a different provenance tag") != std::string::npos);
 }
 
-TEST_CASE("the structural report says what the rewrite cost, before and after", "[ComputeGraph][DeltaElimination][Report]") {
+TEMPLATE_LIST_TEST_CASE("the structural report says what the rewrite cost, before and after", "[ComputeGraph][DeltaElimination][Report]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // Two defects live here, both found by reading the report rather than by a failing test.
     //
     // The first: a client that overrode `explain()` silently dropped the framework's half of it,
@@ -510,14 +533,14 @@ TEST_CASE("the structural report says what the rewrite cost, before and after", 
     // replaced in the arena because nothing renumbers indices mid-rewrite. So the before and
     // after were always equal, which is worse than reporting nothing: it is evidence that the
     // rewrite achieved nothing, printed on a rewrite that removed a contraction.
-    auto A     = create_random_tensor<double>("A", 4, 5);
-    auto delta = create_identity_tensor<double>("delta", 5, 5);
-    auto D     = create_random_tensor<double>("D", 5, 3);
-    auto C     = create_zero_tensor<double>("C", 4, 3);
+    auto A     = create_random_tensor<T>("A", 4, 5);
+    auto delta = create_identity_tensor<T>("delta", 5, 5);
+    auto D     = create_random_tensor<T>("D", 5, 3);
+    auto C     = create_zero_tensor<T>("C", 4, 3);
 
     cg::Graph graph("report");
     graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
-    auto &tmp = graph.create_zero_runtime_tensor<double>("tmp", {4, 5}, true);
+    auto &tmp = graph.create_zero_runtime_tensor<T>("tmp", {4, 5}, true);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &tmp, A, delta);
@@ -586,15 +609,17 @@ bool skip_mentions(std::vector<std::pair<std::string, std::size_t>> const &reaso
 
 } // namespace
 
-TEST_CASE("a contraction over disjoint spaces keeps only its prefactor", "[ComputeGraph][DeltaElimination][Spaces]") {
+TEMPLATE_LIST_TEST_CASE("a contraction over disjoint spaces keeps only its prefactor", "[ComputeGraph][DeltaElimination][Spaces]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     DisjointSpaces spaces;
 
     // A's second axis ranges over occ and B's first over virt, and the two share no element, so
     // the sum has no terms. B is zero, which is what makes that declaration true of the data and
     // lets the rewritten graph be compared bitwise against the captured one.
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_zero_tensor<double>("B", 4, 4);
-    auto C = create_random_tensor<double>("C", 4, 4);
+    auto A = create_random_tensor<T>("A", 4, 4);
+    auto B = create_zero_tensor<T>("B", 4, 4);
+    auto C = create_random_tensor<T>("C", 4, 4);
 
     auto build = [&](cg::Graph &graph) {
         graph.set_space_registry(spaces.registry);
@@ -606,7 +631,7 @@ TEST_CASE("a contraction over disjoint spaces keeps only its prefactor", "[Compu
         graph.annotate_spaces(B, {spaces.virt, spaces.aux});
     };
 
-    std::vector<double> const seed(C.data(), C.data() + C.size());
+    std::vector<T> const seed(C.data(), C.data() + C.size());
 
     cg::Graph plain("plain");
     build(plain);
@@ -638,7 +663,7 @@ TEST_CASE("a contraction over disjoint spaces keeps only its prefactor", "[Compu
     // coincidence between two runs of the same wrong thing.
     for (std::size_t i = 0; i < seed.size(); ++i) {
         INFO("element " << i);
-        CHECK(C.data()[i] == 2.0 * seed[i]);
+        CHECK(C.data()[i] == T(2.0) * seed[i]);
     }
 
     // The GEMM really is gone rather than merely cheaper.
@@ -649,15 +674,17 @@ TEST_CASE("a contraction over disjoint spaces keeps only its prefactor", "[Compu
     CHECK(contractions == 0);
 }
 
-TEST_CASE("a zero block into a buffer nothing reads leaves no node", "[ComputeGraph][DeltaElimination][Spaces]") {
+TEMPLATE_LIST_TEST_CASE("a zero block into a buffer nothing reads leaves no node", "[ComputeGraph][DeltaElimination][Spaces]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     DisjointSpaces spaces;
 
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_zero_tensor<double>("B", 4, 4);
+    auto A = create_random_tensor<T>("A", 4, 4);
+    auto B = create_zero_tensor<T>("B", 4, 4);
 
     cg::Graph graph("dead-zero");
     graph.set_space_registry(spaces.registry);
-    auto &tmp = graph.create_zero_runtime_tensor<double>("tmp", {4, 4}, true);
+    auto &tmp = graph.create_zero_runtime_tensor<T>("tmp", {4, 4}, true);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ik;kj->ij", &tmp, A, B);
@@ -682,16 +709,18 @@ TEST_CASE("a zero block into a buffer nothing reads leaves no node", "[ComputeGr
     CHECK(scales == 0);
 }
 
-TEST_CASE("an overwriting zero block assigns zero rather than multiplying by it", "[ComputeGraph][DeltaElimination][Spaces]") {
+TEMPLATE_LIST_TEST_CASE("an overwriting zero block assigns zero rather than multiplying by it", "[ComputeGraph][DeltaElimination][Spaces]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     DisjointSpaces spaces;
 
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_zero_tensor<double>("B", 4, 4);
-    auto C = create_random_tensor<double>("C", 4, 4);
+    auto A = create_random_tensor<T>("A", 4, 4);
+    auto B = create_zero_tensor<T>("B", 4, 4);
+    auto C = create_random_tensor<T>("C", 4, 4);
     // The destination holds an infinity going in. A rewrite that emitted `C *= 0` would leave a
     // NaN where the captured program leaves a clean zero, which is the direction this pass is
     // never allowed to move in.
-    C(0, 0) = std::numeric_limits<double>::infinity();
+    C(0, 0) = T(std::numeric_limits<RemoveComplexT<T>>::infinity());
 
     cg::Graph graph("assign-zero");
     graph.set_space_registry(spaces.registry);
@@ -710,17 +739,18 @@ TEST_CASE("an overwriting zero block assigns zero rather than multiplying by it"
 
     graph.execute();
     for (auto const value : flatten(C)) {
-        CHECK(value == 0.0);
+        CHECK(value == T{0});
     }
 }
 
-TEST_CASE("an unrelated pair of spaces is declined", "[ComputeGraph][DeltaElimination][Spaces]") {
+TEMPLATE_LIST_TEST_CASE("an unrelated pair of spaces is declined", "[ComputeGraph][DeltaElimination][Spaces]", testing::AllScalarTypes) {
+    using T = TestType;
     DisjointSpaces spaces;
 
     // occ and aux: nothing declared relates them, and Unknown is treated exactly as No.
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_random_tensor<double>("B", 4, 4);
-    auto C = create_zero_tensor<double>("C", 4, 4);
+    auto A = create_random_tensor<T>("A", 4, 4);
+    auto B = create_random_tensor<T>("B", 4, 4);
+    auto C = create_zero_tensor<T>("C", 4, 4);
 
     cg::Graph graph("unrelated");
     graph.set_space_registry(spaces.registry);
@@ -739,12 +769,14 @@ TEST_CASE("an unrelated pair of spaces is declined", "[ComputeGraph][DeltaElimin
     CHECK(skip_mentions(pass->skip_reasons(), "nothing declared makes a shared letter's two spaces disjoint"));
 }
 
-TEST_CASE("a letter annotated on one operand only is declined", "[ComputeGraph][DeltaElimination][Spaces]") {
+TEMPLATE_LIST_TEST_CASE("a letter annotated on one operand only is declined", "[ComputeGraph][DeltaElimination][Spaces]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     DisjointSpaces spaces;
 
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_random_tensor<double>("B", 4, 4);
-    auto C = create_zero_tensor<double>("C", 4, 4);
+    auto A = create_random_tensor<T>("A", 4, 4);
+    auto B = create_random_tensor<T>("B", 4, 4);
+    auto C = create_zero_tensor<T>("C", 4, 4);
 
     cg::Graph graph("half-annotated");
     graph.set_space_registry(spaces.registry);
@@ -763,14 +795,16 @@ TEST_CASE("a letter annotated on one operand only is declined", "[ComputeGraph][
     CHECK(skip_mentions(pass->skip_reasons(), "annotated on one operand and not the other"));
 }
 
-TEST_CASE("a batched letter over disjoint spaces is declined", "[ComputeGraph][DeltaElimination][Spaces]") {
+TEMPLATE_LIST_TEST_CASE("a batched letter over disjoint spaces is declined", "[ComputeGraph][DeltaElimination][Spaces]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     DisjointSpaces spaces;
 
     // 'b' is on both operands AND on the output, so it is walked rather than summed. Disjointness
     // then says the pairing is meaningless, which is a diagnosis, and NOT that the answer is zero.
-    auto A = create_random_tensor<double>("A", 3, 4, 4);
-    auto B = create_random_tensor<double>("B", 3, 4, 4);
-    auto C = create_zero_tensor<double>("C", 3, 4, 4);
+    auto A = create_random_tensor<T>("A", 3, 4, 4);
+    auto B = create_random_tensor<T>("B", 3, 4, 4);
+    auto C = create_zero_tensor<T>("C", 3, 4, 4);
 
     cg::Graph graph("batched");
     graph.set_space_registry(spaces.registry);
@@ -789,13 +823,14 @@ TEST_CASE("a batched letter over disjoint spaces is declined", "[ComputeGraph][D
     CHECK(skip_mentions(pass->skip_reasons(), "batched rather than summed"));
 }
 
-TEST_CASE("a contained pair of spaces is not disjoint", "[ComputeGraph][DeltaElimination][Spaces]") {
+TEMPLATE_LIST_TEST_CASE("a contained pair of spaces is not disjoint", "[ComputeGraph][DeltaElimination][Spaces]", testing::AllScalarTypes) {
+    using T = TestType;
     DisjointSpaces spaces;
 
     // pno lives inside virt, which is a restriction rather than an empty intersection.
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_random_tensor<double>("B", 4, 4);
-    auto C = create_zero_tensor<double>("C", 4, 4);
+    auto A = create_random_tensor<T>("A", 4, 4);
+    auto B = create_random_tensor<T>("B", 4, 4);
+    auto C = create_zero_tensor<T>("C", 4, 4);
 
     cg::Graph graph("contained");
     graph.set_space_registry(spaces.registry);
@@ -813,16 +848,18 @@ TEST_CASE("a contained pair of spaces is not disjoint", "[ComputeGraph][DeltaEli
     CHECK(pass->num_zero_blocks() == 0);
 }
 
-TEST_CASE("a graph with no declared disjointness never forms a region", "[ComputeGraph][DeltaElimination][Spaces]") {
+TEMPLATE_LIST_TEST_CASE("a graph with no declared disjointness never forms a region", "[ComputeGraph][DeltaElimination][Spaces]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The gate that keeps this pass free on every graph in the default pipeline. A registry with
     // spaces but no disjointness declared cannot produce a candidate, so nothing is raised.
     cg::SpaceRegistry registry;
     auto const        occ = registry.register_space(cg::IndexSpace{.name = "occ", .scale_symbol = "o", .typical_extent = 4.0});
     auto const        aux = registry.register_space(cg::IndexSpace{.name = "aux", .scale_symbol = "x", .typical_extent = 4.0});
 
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_random_tensor<double>("B", 4, 4);
-    auto C = create_zero_tensor<double>("C", 4, 4);
+    auto A = create_random_tensor<T>("A", 4, 4);
+    auto B = create_random_tensor<T>("B", 4, 4);
+    auto C = create_zero_tensor<T>("C", 4, 4);
 
     cg::Graph graph("no-relations");
     graph.set_space_registry(registry);
@@ -844,8 +881,9 @@ namespace {
 
 /// ``C := P(i/j) X`` over a square rank-2 tensor: the value less its transpose, entry by entry,
 /// with no code shared with either engine.
-std::vector<double> antisymmetrized(Tensor<double, 2> const &value) {
-    std::vector<double> out;
+template <typename T>
+std::vector<T> antisymmetrized(Tensor<T, 2> const &value) {
+    std::vector<T> out;
     out.reserve(value.dim(0) * value.dim(1));
     for (std::size_t i = 0; i < value.dim(0); ++i) {
         for (std::size_t j = 0; j < value.dim(1); ++j) {
@@ -868,11 +906,12 @@ bool has_operator_permute(cg::Graph const &graph) {
 // the operator. Before operators reached this pass the node was a barrier; now it is raised, and
 // a permute that dropped the operator would write A where the program asked for A less its
 // transpose.
-TEST_CASE("a delta contraction under a permutation operator keeps a permute that carries it",
-          "[ComputeGraph][DeltaElimination][PermutationOperators]") {
-    auto A     = create_random_tensor<double>("A", 5, 5);
-    auto delta = create_identity_tensor<double>("delta", 5, 5);
-    auto C     = create_zero_tensor<double>("C", 5, 5);
+TEMPLATE_LIST_TEST_CASE("a delta contraction under a permutation operator keeps a permute that carries it",
+                        "[ComputeGraph][DeltaElimination][PermutationOperators]", testing::AllScalarTypes) {
+    using T    = TestType;
+    auto A     = create_random_tensor<T>("A", 5, 5);
+    auto delta = create_identity_tensor<T>("delta", 5, 5);
+    auto C     = create_zero_tensor<T>("C", 5, 5);
 
     auto const build = [&](cg::Graph &graph) {
         graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
@@ -903,15 +942,17 @@ TEST_CASE("a delta contraction under a permutation operator keeps a permute that
 
 // Defends: an intermediate under an operator is not dissolved. Its target holds the operand less
 // its transpose, so handing the reader the operand in its place would drop the operator.
-TEST_CASE("an intermediate under a permutation operator is not dissolved", "[ComputeGraph][DeltaElimination][PermutationOperators]") {
-    auto A     = create_random_tensor<double>("A", 4, 4);
-    auto delta = create_identity_tensor<double>("delta", 4, 4);
-    auto D     = create_random_tensor<double>("D", 4, 3);
-    auto C     = create_zero_tensor<double>("C", 4, 3);
+TEMPLATE_LIST_TEST_CASE("an intermediate under a permutation operator is not dissolved",
+                        "[ComputeGraph][DeltaElimination][PermutationOperators]", testing::AllScalarTypes) {
+    using T    = TestType;
+    auto A     = create_random_tensor<T>("A", 4, 4);
+    auto delta = create_identity_tensor<T>("delta", 4, 4);
+    auto D     = create_random_tensor<T>("D", 4, 3);
+    auto C     = create_zero_tensor<T>("C", 4, 3);
 
     auto const build = [&](cg::Graph &graph) {
         graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
-        auto                  &tmp = graph.create_zero_tensor<double, 2>("tmp", 4, 4);
+        auto                  &tmp = graph.create_zero_tensor<T, 2>("tmp", 4, 4);
         cg::CaptureGuard const guard(graph);
         cg::einsum("i,j <- P(i/j) i,k ; k,j", 0.0, &tmp, 1.0, A, delta);
         cg::einsum("i,l <- i,j ; j,l", 0.0, &C, 1.0, tmp, D);
@@ -925,12 +966,14 @@ TEST_CASE("an intermediate under a permutation operator is not dissolved", "[Com
     auto const skew = antisymmetrized(A);
     for (std::size_t i = 0; i < 4; ++i) {
         for (std::size_t l = 0; l < 3; ++l) {
-            double expected = 0.0;
+            T expected{0};
             for (std::size_t j = 0; j < 4; ++j) {
                 expected += skew[i * 4 + j] * D(j, l);
             }
+            // About 450 ulps, which is the 1e-13 this bound was set at in double.
+            double const bound = 450.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
             INFO("element (" << i << "," << l << ")");
-            CHECK(std::abs(C(i, l) - expected) <= 1e-13 * std::max(1.0, std::abs(expected)));
+            CHECK(std::abs(C(i, l) - expected) <= bound * std::max(1.0, static_cast<double>(std::abs(expected))));
         }
     }
 }
@@ -938,15 +981,16 @@ TEST_CASE("an intermediate under a permutation operator is not dissolved", "[Com
 // Defends: a zero block under an operator. Every permutation of zero is zero, so what is left is
 // the destination's prefactor alone, and the Scale the statement becomes must not try to carry an
 // operator no Scale can apply.
-TEST_CASE("a contraction over disjoint spaces under a permutation operator keeps only its prefactor",
-          "[ComputeGraph][DeltaElimination][Spaces][PermutationOperators]") {
+TEMPLATE_LIST_TEST_CASE("a contraction over disjoint spaces under a permutation operator keeps only its prefactor",
+                        "[ComputeGraph][DeltaElimination][Spaces][PermutationOperators]", testing::AllScalarTypes) {
+    using T = TestType;
     DisjointSpaces spaces;
 
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_zero_tensor<double>("B", 4, 4);
-    auto C = create_random_tensor<double>("C", 4, 4);
+    auto A = create_random_tensor<T>("A", 4, 4);
+    auto B = create_zero_tensor<T>("B", 4, 4);
+    auto C = create_random_tensor<T>("C", 4, 4);
 
-    std::vector<double> const seed(C.data(), C.data() + C.size());
+    std::vector<T> const seed(C.data(), C.data() + C.size());
 
     cg::Graph graph("zero_block_operator");
     graph.set_space_registry(spaces.registry);
@@ -967,6 +1011,6 @@ TEST_CASE("a contraction over disjoint spaces under a permutation operator keeps
     graph.execute();
     for (std::size_t i = 0; i < seed.size(); ++i) {
         INFO("element " << i);
-        CHECK(C.data()[i] == 2.0 * seed[i]);
+        CHECK(C.data()[i] == T(2.0) * seed[i]);
     }
 }

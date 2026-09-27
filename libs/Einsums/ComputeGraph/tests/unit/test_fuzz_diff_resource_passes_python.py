@@ -61,7 +61,8 @@ import einsums.graph as cg
 import einsums._core.graph as _G
 
 import _resource_pass_motifs as R
-from _fuzz_diff_common import _apply_one_pass
+from _fuzz_diff_common import _apply_one_pass, typed_array
+from einsums.testing import assert_close
 from _sanitizer_scaling import fuzz_seeds
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -307,11 +308,16 @@ def _run_isolated(code):
                           timeout=300)
 
 
+def _value(re, im, dtype):
+    """``re + im*1j`` in a complex dtype, ``re`` in a real one."""
+    return complex(re, im) if np.dtype(dtype).kind == "c" else re
+
+
 def _kinds(g):
     return [(n["kind"], n.get("label", "")) for n in json.loads(g.to_json())["nodes"]]
 
 
-def test_disk_read_stays_after_a_disk_write_of_the_same_dataset():
+def test_disk_read_stays_after_a_disk_write_of_the_same_dataset(dtype):
     """A captured read of a dataset the same graph wrote stays behind the write.
 
     Defends against the capture recording a DiskRead with no inputs and a
@@ -325,23 +331,23 @@ def test_disk_read_stays_after_a_disk_write_of_the_same_dataset():
     """
     path = os.path.join(tempfile.gettempdir(), f"einsums_respass_{os.getpid()}_roundtrip.etn")
     try:
-        T = einsums.asarray(np.ones((2, 3)), name="rt_T")
+        T = einsums.asarray(np.ones((2, 3), dtype=dtype), name="rt_T")
         einsums.io.write(path, "T", T)  # the stale contents
-        Y = einsums.create_zero_tensor("rt_Y", [2, 3], dtype="float64")
+        Y = einsums.create_zero_tensor("rt_Y", [2, 3], dtype=dtype)
         g = cg.Graph("disk_roundtrip")
         with cg.capture(g):
-            einsums.linalg.scale(5.0, T)
+            einsums.linalg.scale(_value(5.0, 2.0, dtype), T)
             einsums.io.write(path, "T", T)
             einsums.io.read(path, "T", Y)
         _apply_one_pass(g, "IOPrefetch")
         g.execute()
-        np.testing.assert_allclose(np.asarray(Y), 5.0)
+        assert_close(Y, np.full((2, 3), _value(5.0, 2.0, dtype), dtype=dtype), dtype=dtype)
     finally:
         if os.path.exists(path):
             os.remove(path)
 
 
-def test_io_prefetch_hoist_resets_the_node_id():
+def test_io_prefetch_hoist_resets_the_node_id(dtype):
     """Hoisting a loop-invariant disk read out of a body gives the hoisted node a fresh id.
 
     Defends against ``hoist_reads_from_body`` (IOPrefetch.cpp) copying the
@@ -354,9 +360,10 @@ def test_io_prefetch_hoist_resets_the_node_id():
     """
     path = os.path.join(tempfile.gettempdir(), f"einsums_respass_{os.getpid()}_hoist.etn")
     try:
-        einsums.io.write(path, "X", einsums.asarray(np.arange(6.0).reshape(2, 3), name="hx_X"))
-        Y = einsums.create_zero_tensor("hx_Y", [2, 3], dtype="float64")
-        Z = einsums.create_zero_tensor("hx_Z", [2, 3], dtype="float64")
+        x = np.arange(6.0).reshape(2, 3) * _value(1.0, 0.5, dtype)
+        einsums.io.write(path, "X", einsums.asarray(x.astype(dtype), name="hx_X"))
+        Y = einsums.create_zero_tensor("hx_Y", [2, 3], dtype=dtype)
+        Z = einsums.create_zero_tensor("hx_Z", [2, 3], dtype=dtype)
         g = cg.Graph("io_hoist")
         body = g.add_loop("l", 2, lambda it: it < 1)
         with cg.capture(body):
@@ -364,7 +371,7 @@ def test_io_prefetch_hoist_resets_the_node_id():
             einsums.linalg.axpy(1.0, Y, Z)
         _apply_one_pass(g, "IOPrefetch")
         g.execute()
-        np.testing.assert_allclose(np.asarray(Z), 2 * np.arange(6.0).reshape(2, 3))
+        assert_close(Z, (2 * x).astype(dtype), dtype=dtype)
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -446,7 +453,7 @@ def test_gpu_gemm_into_freed_scratch_writes_the_old_buffer():
 
 
 def test_hoisted_producer_of_freed_eager_scratch_leaves_the_body_stale():
-    """LoopInvariantHoisting then FreeInsertion: on replay the body reads the scratch's live buffer.
+    """LoopInvariantHoisting then FreeInsertion: on replay the body reads the scratch's live buffer, in every dtype.
 
     Defends against the body going stale: the producer of an eager graph-owned
     scratch is lifted out of the loop, so it runs in the parent against the
@@ -465,34 +472,46 @@ def test_hoisted_producer_of_freed_eager_scratch_leaves_the_body_stale():
         """
         import numpy as np, einsums, einsums.graph as cg
         from _fuzz_diff_common import _apply_one_pass
-        m = 400
-        rng = np.random.default_rng(0)
-        a = rng.standard_normal((m, 1)); b = rng.standard_normal((1, m)); x = rng.standard_normal(m)
-        bad, held = 0, []
-        for trial in range(3):
-            A = einsums.asarray(a, name="A"); B = einsums.asarray(b, name="B"); X = einsums.asarray(x, name="x")
-            v = einsums.create_zero_tensor("v", [m], dtype="float64")
-            g = cg.Graph("lih_free")
-            big = g.create_zero_tensor("big", [m, m], intermediate=True, dtype="float64")
-            body = g.add_loop("l", 3, lambda it: it < 2)
-            with cg.capture(body):
-                einsums.einsum("ij <- ik ; kj", big, A, B)
-                einsums.einsum("i <- ij ; j", v, big, X, c_pf=1.0)
-            assert _apply_one_pass(g, "LoopInvariantHoisting")
-            assert _apply_one_pass(g, "FreeInsertion")
-            g.execute()
-            held.append(np.ones(m * m))  # takes the block the Free returned
-            g.execute()
-            bad += not np.allclose(np.asarray(v), 6 * ((a @ b) @ x))
-        assert bad == 0, f"{bad} of 3 replays read the stale buffer"
+        from einsums.testing import ALL_DTYPES
+        bad, held = [], []
+        for dtype in ALL_DTYPES:
+            # Just over FreeInsertion's 1 MiB floor, which is what makes the scratch freed.
+            m = 600 if dtype == "float32" else 400
+            rng = np.random.default_rng(0)
+            a, b, x = rng.standard_normal((m, 1)), rng.standard_normal((1, m)), rng.standard_normal(m)
+            if dtype.startswith("complex"):
+                a, b = a * (1 + 0.5j), b * (0.5 - 1j)
+            a, b, x = a.astype(dtype), b.astype(dtype), x.astype(dtype)
+            want = 6 * ((a.astype(complex) @ b.astype(complex)) @ x.astype(complex))
+            # A stale read is off by the whole product. Single precision rounds an
+            # m-term sum at about 1e-7 of its largest term, so its floor scales.
+            single = dtype in ("float32", "complex64")
+            rtol, atol = (1e-4, 1e-4 * np.max(np.abs(want))) if single else (1e-5, 1e-8)
+            for trial in range(3):
+                A = einsums.asarray(a, name="A"); B = einsums.asarray(b, name="B"); X = einsums.asarray(x, name="x")
+                v = einsums.create_zero_tensor("v", [m], dtype=dtype)
+                g = cg.Graph("lih_free")
+                big = g.create_zero_tensor("big", [m, m], intermediate=True, dtype=dtype)
+                body = g.add_loop("l", 3, lambda it: it < 2)
+                with cg.capture(body):
+                    einsums.einsum("ij <- ik ; kj", big, A, B)
+                    einsums.einsum("i <- ij ; j", v, big, X, c_pf=1.0)
+                assert _apply_one_pass(g, "LoopInvariantHoisting")
+                assert _apply_one_pass(g, "FreeInsertion")
+                g.execute()
+                held.append(np.ones(m * m, dtype=dtype))  # takes the block the Free returned
+                g.execute()
+                if not np.allclose(np.asarray(v), want, rtol=rtol, atol=atol):
+                    bad.append(f"{dtype} trial {trial}")
+        assert not bad, f"replays that read the stale buffer: {bad}"
         """
     )
     assert result.returncode == 0, f"the child failed (exit {result.returncode}):\n{result.stderr[-3000:]}"
 
 
 def _tiled_from(name, grid, value):
-    """A float64 tiled tensor over @p grid with every tile stored, holding @p value."""
-    t = einsums.TiledRuntimeTensorD(name, grid)
+    """A tiled tensor of @p value's dtype over @p grid with every tile stored, holding @p value."""
+    t = R._TILED[str(value.dtype)](name, grid)
     for tile in itertools.product(*[range(len(ax)) for ax in grid]):
         t.add_tile(list(tile))
     t.materialize()
@@ -531,10 +550,26 @@ _CROSS_GRAPH_ORDERS = [
 _OVER_BUDGET = [[1] * 17, [1] * 17]
 
 
+def _tiled_operands(rng, n, count, dtype):
+    """@p count genuinely complex (on a complex dtype) n x n operands for the tiled pins."""
+    return [typed_array(rng.standard_normal((n, n)), dtype, rng) for _ in range(count)]
+
+
+def _assert_tiled_close(got, expected, dtype, atol64):
+    """The 64-bit pins keep their absolute bound; single precision rounds each
+    contraction term at about 1e-7 of the operands, so its floor scales with
+    the result, and a dropped term is still off by O(1) of it."""
+    if dtype in ("float32", "complex64"):
+        rtol, atol = 1e-4, 1e-4 * max(1.0, float(np.max(np.abs(expected))))
+    else:
+        rtol, atol = 1e-7, atol64
+    np.testing.assert_allclose(got, expected, rtol=rtol, atol=atol, err_msg=f"dtype={dtype}")
+
+
 @pytest.mark.parametrize("order", [["LoopInvariantHoisting", "TiledExpansion"],
                                    ["TiledExpansion", "LoopInvariantHoisting", "TiledExpansion"],
                                    ["default", "default"]], ids=",".join)
-def test_tiled_consumer_of_a_hoisted_tiled_producer_expands_to_nothing(order):
+def test_tiled_consumer_of_a_hoisted_tiled_producer_expands_to_nothing(order, dtype):
     """LoopInvariantHoisting then TiledExpansion: a body permute of a tiled scratch keeps its terms.
 
     Defends against a hoist that stranded the body's consumer: once the
@@ -550,14 +585,15 @@ def test_tiled_consumer_of_a_hoisted_tiled_producer_expands_to_nothing(order):
     """
     grid = [[2], [2]]
     rng = np.random.default_rng(0)
-    a, b, e = (rng.standard_normal((2, 2)) for _ in range(3))
+    a, b, e = _tiled_operands(rng, 2, 3, dtype)
+    c_pf, a_pf = _value(0.5, 0.25, dtype), _value(2.0, -0.5, dtype)
     A, B, E = _tiled_from("th_A", grid, a), _tiled_from("th_B", grid, b), _tiled_from("th_E", grid, e)
     g = cg.Graph("tiled_hoist")
-    T = g.declare_zero_tiled_tensor("th_T", grid, intermediate=True, dtype="float64")
+    T = g.declare_zero_tiled_tensor("th_T", grid, intermediate=True, dtype=dtype)
     body = g.add_loop("l", 2, lambda it: it < 1)
     with cg.capture(body):
         einsums.einsum("ij <- ik ; kj", T, A, B, c_pf=0.0, ab_pf=1.0)
-        einsums.permute("j,i <- i,j", E, T, c_pf=0.5, a_pf=2.0)
+        einsums.permute("j,i <- i,j", E, T, c_pf=c_pf, a_pf=a_pf)
     if order[0] == "LoopInvariantHoisting":
         lih = _G.LoopInvariantHoisting()
         pm = cg.PassManager()
@@ -569,12 +605,12 @@ def test_tiled_consumer_of_a_hoisted_tiled_producer_expands_to_nothing(order):
     g.execute()
     expected = e.copy()
     for _ in range(2):
-        expected = 0.5 * expected + 2.0 * (a @ b).T
-    np.testing.assert_allclose(np.asarray(E.tile_view([0, 0])), expected, atol=1e-12)
+        expected = c_pf * expected + a_pf * (a @ b).T
+    _assert_tiled_close(np.asarray(E.tile_view([0, 0])), expected, dtype, 1e-12)
 
 
 @pytest.mark.parametrize("order", _CROSS_GRAPH_ORDERS, ids=",".join)
-def test_tiled_reader_after_a_loop_sees_the_tiles_its_body_creates(order):
+def test_tiled_reader_after_a_loop_sees_the_tiles_its_body_creates(order, dtype):
     """A parent permute after a loop reads the tiled scratch the loop body fills.
 
     Defends against the parent being planned before, and apart from, the body:
@@ -585,22 +621,23 @@ def test_tiled_reader_after_a_loop_sees_the_tiles_its_body_creates(order):
     """
     grid = [[2, 1], [2, 1]]
     rng = np.random.default_rng(1)
-    a, b, e = (rng.standard_normal((3, 3)) for _ in range(3))
+    a, b, e = _tiled_operands(rng, 3, 3, dtype)
+    c_pf, a_pf = _value(0.5, 0.25, dtype), _value(2.0, -0.5, dtype)
     A, B, E = _tiled_from("ra_A", grid, a), _tiled_from("ra_B", grid, b), _tiled_from("ra_E", grid, e)
     g = cg.Graph("tiled_reader_after_loop")
-    T = g.declare_zero_tiled_tensor("ra_T", grid, intermediate=True, dtype="float64")
+    T = g.declare_zero_tiled_tensor("ra_T", grid, intermediate=True, dtype=dtype)
     body = g.add_loop("l", 2, lambda it: it < 1)
     with cg.capture(body):
         einsums.einsum("ij <- ik ; kj", T, A, B, c_pf=0.0, ab_pf=1.0)
     with cg.capture(g):
-        einsums.permute("j,i <- i,j", E, T, c_pf=0.5, a_pf=2.0)
+        einsums.permute("j,i <- i,j", E, T, c_pf=c_pf, a_pf=a_pf)
     _apply_order(g, order)
     g.execute()
-    np.testing.assert_allclose(R._gather(E, "float64"), 0.5 * e + 2.0 * (a @ b).T, atol=1e-12)
+    _assert_tiled_close(R._gather(E, dtype), c_pf * e + a_pf * (a @ b).T, dtype, 1e-12)
 
 
 @pytest.mark.parametrize("order", _CROSS_GRAPH_ORDERS, ids=",".join)
-def test_loop_body_reading_an_opaque_parent_producer_keeps_its_terms(order):
+def test_loop_body_reading_an_opaque_parent_producer_keeps_its_terms(order, dtype):
     """A body permute reads a tiled scratch the parent writes with a contraction too big to expand.
 
     Defends against the body predicting its operand without the parent's
@@ -610,26 +647,27 @@ def test_loop_body_reading_an_opaque_parent_producer_keeps_its_terms(order):
     """
     n = 17
     rng = np.random.default_rng(2)
-    a, b, e = (rng.standard_normal((n, n)) for _ in range(3))
+    a, b, e = _tiled_operands(rng, n, 3, dtype)
+    c_pf, a_pf = _value(0.5, 0.25, dtype), _value(2.0, -0.5, dtype)
     A, B = _tiled_from("op_A", _OVER_BUDGET, a), _tiled_from("op_B", _OVER_BUDGET, b)
     E = _tiled_from("op_E", _OVER_BUDGET, e)
     g = cg.Graph("tiled_opaque_parent_producer")
-    T = g.declare_zero_tiled_tensor("op_T", _OVER_BUDGET, intermediate=True, dtype="float64")
+    T = g.declare_zero_tiled_tensor("op_T", _OVER_BUDGET, intermediate=True, dtype=dtype)
     with cg.capture(g):
         einsums.einsum("ij <- ik ; kj", T, A, B, c_pf=0.0, ab_pf=1.0)
     body = g.add_loop("l", 2, lambda it: it < 1)
     with cg.capture(body):
-        einsums.permute("j,i <- i,j", E, T, c_pf=0.5, a_pf=2.0)
+        einsums.permute("j,i <- i,j", E, T, c_pf=c_pf, a_pf=a_pf)
     _apply_order(g, order)
     g.execute()
     expected = e.copy()
     for _ in range(2):
-        expected = 0.5 * expected + 2.0 * (a @ b).T
-    np.testing.assert_allclose(R._gather(E, "float64"), expected, atol=1e-10)
+        expected = c_pf * expected + a_pf * (a @ b).T
+    _assert_tiled_close(R._gather(E, dtype), expected, dtype, 1e-10)
 
 
 @pytest.mark.parametrize("order", _CROSS_GRAPH_ORDERS, ids=",".join)
-def test_expanded_parent_writer_stays_ordered_before_a_loop_that_reads_it(order):
+def test_expanded_parent_writer_stays_ordered_before_a_loop_that_reads_it(order, dtype):
     """A parent axpy into X, then a loop whose body contracts X too big to expand.
 
     Defends against a missing dependency edge: the parent's axpy expanded into
@@ -640,18 +678,19 @@ def test_expanded_parent_writer_stays_ordered_before_a_loop_that_reads_it(order)
     """
     n = 17
     rng = np.random.default_rng(3)
-    a, x0, f, e = (rng.standard_normal((n, n)) for _ in range(4))
+    a, x0, f, e = _tiled_operands(rng, n, 4, dtype)
+    alpha = _value(1.5, -0.5, dtype)
     A, X = _tiled_from("oe_A", _OVER_BUDGET, a), _tiled_from("oe_X", _OVER_BUDGET, x0)
     F, E = _tiled_from("oe_F", _OVER_BUDGET, f), _tiled_from("oe_E", _OVER_BUDGET, e)
     g = cg.Graph("tiled_parent_writer_edge")
     with cg.capture(g):
-        einsums.linalg.axpy(1.5, A, X)
+        einsums.linalg.axpy(alpha, A, X)
     body = g.add_loop("l", 2, lambda it: it < 1)
     with cg.capture(body):
         einsums.einsum("ij <- ik ; kj", E, X, F, c_pf=1.0, ab_pf=1.0)
     _apply_order(g, order)
     g.execute()
-    np.testing.assert_allclose(R._gather(E, "float64"), e + 2.0 * ((x0 + 1.5 * a) @ f), atol=1e-10)
+    _assert_tiled_close(R._gather(E, dtype), e + 2.0 * ((x0 + alpha * a) @ f), dtype, 1e-10)
 
 
 def test_default_pipeline_reports_a_contraction_over_disjoint_spaces():

@@ -17,6 +17,9 @@
 
 #include <fmt/format.h>
 
+#include <complex>
+#include <limits>
+
 #include <Einsums/Testing.hpp>
 
 using namespace einsums;
@@ -34,9 +37,22 @@ size_t count_nodes(cg::Graph const &g, cg::OpKind kind) {
     return n;
 }
 
+template <typename T>
+T pf(double re, double im) {
+    return testing::prefactor<T>(re, im);
+}
+
+// Within a few ulps of the element type, relative to the expected value with a floor of one.
+template <typename T>
+auto near(T want) {
+    return CheckWithinRel(want, 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon());
+}
+
 } // namespace
 
-TEST_CASE("Materialization - body-declared deferred scratch hoists with a parent tid", "[ComputeGraph][Materialization][Loop][Dataflow]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - body-declared deferred scratch hoists with a parent tid",
+                        "[ComputeGraph][Materialization][Loop][Dataflow]", testing::AllScalarTypes) {
+    using T = TestType;
     // A deferred+zero scratch DECLARED INSIDE a loop body is hoisted to the
     // parent so it is allocated once per outer execution. Pre-fix the hoisted
     // Materialize / Initialize carried EMPTY outputs (owns_tid=false), so they
@@ -44,16 +60,16 @@ TEST_CASE("Materialization - body-declared deferred scratch hoists with a parent
     // before the buffer was materialized. They must now carry a parent
     // TensorId so a RAW edge orders them before the Loop.
     constexpr size_t n   = 8;
-    auto             A   = create_random_tensor<double>("A", n, n);
-    auto             acc = create_zero_tensor<double>("acc", n, n);
+    auto             A   = create_random_tensor<T>("A", n, n);
+    auto             acc = create_zero_tensor<T>("acc", n, n);
 
     cg::Graph g("body_scratch_mat");
     auto     &body = g.add_loop("iter", 2, [](size_t it) { return it < 2; });
     {
         cg::CaptureGuard const guard(body);
-        auto                  &W = body.scratch_zero<double, 2>("W", n, n); // deferred + intermediate + zero-init
-        cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, A);                        // W = A*A, recomputed per iteration
-        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, W, A);                      // acc += W*A
+        auto                  &W = body.template scratch_zero<T, 2>("W", n, n); // deferred + intermediate + zero-init
+        cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, A);                            // W = A*A, recomputed per iteration
+        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, W, A);                          // acc += W*A
     }
 
     cg::PassManager pm;
@@ -72,10 +88,15 @@ TEST_CASE("Materialization - body-declared deferred scratch hoists with a parent
     size_t mat_pos = SIZE_MAX, init_pos = SIZE_MAX, loop_pos = SIZE_MAX;
     for (size_t idx = 0; idx < g.nodes().size(); idx++) {
         switch (g.nodes()[idx].kind) {
-        case cg::OpKind::Materialize:
+        case cg::OpKind::Materialize: {
             mat_pos = idx;
             CHECK_FALSE(g.nodes()[idx].outputs.empty());
+            // The allocation is sized by the element type, which is what the four instantiations vary.
+            auto const *alloc = g.nodes()[idx].op_data.get_if<cg::AllocDescriptor>();
+            REQUIRE(alloc != nullptr);
+            CHECK(alloc->size_bytes == n * n * sizeof(T));
             break;
+        }
         case cg::OpKind::Initialize:
             init_pos = idx;
             CHECK_FALSE(g.nodes()[idx].outputs.empty());
@@ -94,17 +115,17 @@ TEST_CASE("Materialization - body-declared deferred scratch hoists with a parent
     REQUIRE(init_pos < loop_pos);
 
     // Hand reference: two iterations of acc += (A*A)*A.
-    Tensor<double, 2> ref("ref", n, n);
+    Tensor<T, 2> ref("ref", n, n);
     ref.zero();
     for (size_t ii = 0; ii < n; ii++) {
         for (size_t jj = 0; jj < n; jj++) {
-            double s = 0.0;
+            T s{0};
             for (size_t kk = 0; kk < n; kk++) {
                 for (size_t ll = 0; ll < n; ll++) {
                     s += A(ii, kk) * A(kk, ll) * A(ll, jj);
                 }
             }
-            ref(ii, jj) = 2.0 * s;
+            ref(ii, jj) = T{2} * s;
         }
     }
 
@@ -113,7 +134,7 @@ TEST_CASE("Materialization - body-declared deferred scratch hoists with a parent
     REQUIRE_NOTHROW(g.execute());
     for (size_t ii = 0; ii < n; ii++) {
         for (size_t jj = 0; jj < n; jj++) {
-            REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-11));
+            REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
         }
     }
 
@@ -125,14 +146,15 @@ TEST_CASE("Materialization - body-declared deferred scratch hoists with a parent
         g.execute(df);
         for (size_t ii = 0; ii < n; ii++) {
             for (size_t jj = 0; jj < n; jj++) {
-                REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-11));
+                REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
             }
         }
     }
 }
 
-TEST_CASE("Materialization - branch-declared deferred scratch hoists before the Conditional",
-          "[ComputeGraph][Materialization][ControlFlow][Dataflow]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - branch-declared deferred scratch hoists before the Conditional",
+                        "[ComputeGraph][Materialization][ControlFlow][Dataflow]", testing::AllScalarTypes) {
+    using T = TestType;
     // A deferred+zero scratch DECLARED INSIDE a conditional then-branch is
     // hoisted to the parent so it is materialized before the Conditional node
     // regardless of which branch runs. The hoisted Materialize must carry a
@@ -141,8 +163,8 @@ TEST_CASE("Materialization - branch-declared deferred scratch hoists before the 
     // execute cleanly: the false path skips the then-branch but the buffer is
     // still allocated (unused), which must not break execution.
     constexpr size_t n   = 8;
-    auto             A   = create_random_tensor<double>("A", n, n);
-    auto             acc = create_zero_tensor<double>("acc", n, n);
+    auto             A   = create_random_tensor<T>("A", n, n);
+    auto             acc = create_zero_tensor<T>("acc", n, n);
 
     cg::Graph g("branch_scratch_mat");
     bool      take_then = true;
@@ -150,9 +172,9 @@ TEST_CASE("Materialization - branch-declared deferred scratch hoists before the 
     auto [then_g, else_g] = g.add_conditional("branch", [&]() { return take_then; });
     {
         cg::CaptureGuard const guard(then_g);
-        auto                  &W = then_g.scratch_zero<double, 2>("W", n, n); // deferred + intermediate + zero
-        cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, A);                          // W = A*A
-        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, W, A);                        // acc += W*A
+        auto                  &W = then_g.template scratch_zero<T, 2>("W", n, n); // deferred + intermediate + zero
+        cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, A);                              // W = A*A
+        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, W, A);                            // acc += W*A
     }
     // else_g left empty.
 
@@ -191,11 +213,11 @@ TEST_CASE("Materialization - branch-declared deferred scratch hoists before the 
     REQUIRE(init_pos < cond_pos);
 
     // Hand reference for the true path: acc = (A*A)*A.
-    Tensor<double, 2> ref("ref", n, n);
+    Tensor<T, 2> ref("ref", n, n);
     ref.zero();
     for (size_t ii = 0; ii < n; ii++) {
         for (size_t jj = 0; jj < n; jj++) {
-            double s = 0.0;
+            T s{0};
             for (size_t kk = 0; kk < n; kk++) {
                 for (size_t ll = 0; ll < n; ll++) {
                     s += A(ii, kk) * A(kk, ll) * A(ll, jj);
@@ -211,7 +233,7 @@ TEST_CASE("Materialization - branch-declared deferred scratch hoists before the 
     REQUIRE_NOTHROW(g.execute());
     for (size_t ii = 0; ii < n; ii++) {
         for (size_t jj = 0; jj < n; jj++) {
-            REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-11));
+            REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
         }
     }
 
@@ -222,7 +244,7 @@ TEST_CASE("Materialization - branch-declared deferred scratch hoists before the 
     REQUIRE_NOTHROW(g.execute());
     for (size_t ii = 0; ii < n; ii++) {
         for (size_t jj = 0; jj < n; jj++) {
-            REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(0.0, 1e-14));
+            REQUIRE(acc(ii, jj) == T{0});
         }
     }
 
@@ -235,29 +257,31 @@ TEST_CASE("Materialization - branch-declared deferred scratch hoists before the 
         g.execute(df);
         for (size_t ii = 0; ii < n; ii++) {
             for (size_t jj = 0; jj < n; jj++) {
-                REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-11));
+                REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
             }
         }
     }
 }
 
-TEST_CASE("Materialization - inner-body deferred scratch hoists once and executes", "[ComputeGraph][Materialization][Loop][Dataflow]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - inner-body deferred scratch hoists once and executes",
+                        "[ComputeGraph][Materialization][Loop][Dataflow]", testing::AllScalarTypes) {
+    using T = TestType;
     // Companion to the structural "nested body-declared" test: scratch declared
     // in the INNER of two nested loop bodies and consumed there. Exactly one
     // lifecycle pair lands in the outermost parent, none in either body, and the
     // graph produces the right numerics both sequentially and concurrently.
     constexpr size_t n   = 6;
-    auto             A   = create_random_tensor<double>("A", n, n);
-    auto             acc = create_zero_tensor<double>("acc", n, n);
+    auto             A   = create_random_tensor<T>("A", n, n);
+    auto             acc = create_zero_tensor<T>("acc", n, n);
 
     cg::Graph g("inner_scratch_mat");
     auto     &outer = g.add_loop("outer", 2, [](size_t it) { return it < 2; });
     auto     &inner = outer.add_loop("inner", 2, [](size_t it) { return it < 2; });
     {
         cg::CaptureGuard const guard(inner);
-        auto                  &W = inner.scratch_zero<double, 2>("W", n, n); // deferred + intermediate + zero
-        cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, A);                         // W = A*A, recomputed per inner pass
-        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, W, A);                       // acc += W*A
+        auto                  &W = inner.template scratch_zero<T, 2>("W", n, n); // deferred + intermediate + zero
+        cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, A);                             // W = A*A, recomputed per inner pass
+        cg::einsum("ik;kj->ij", 1.0, &acc, 1.0, W, A);                           // acc += W*A
     }
 
     cg::PassManager pm;
@@ -297,17 +321,17 @@ TEST_CASE("Materialization - inner-body deferred scratch hoists once and execute
     REQUIRE(init_pos < loop_pos);
 
     // Hand reference: 2 outer x 2 inner = 4 passes of acc += (A*A)*A.
-    Tensor<double, 2> ref("ref", n, n);
+    Tensor<T, 2> ref("ref", n, n);
     ref.zero();
     for (size_t ii = 0; ii < n; ii++) {
         for (size_t jj = 0; jj < n; jj++) {
-            double s = 0.0;
+            T s{0};
             for (size_t kk = 0; kk < n; kk++) {
                 for (size_t ll = 0; ll < n; ll++) {
                     s += A(ii, kk) * A(kk, ll) * A(ll, jj);
                 }
             }
-            ref(ii, jj) = 4.0 * s;
+            ref(ii, jj) = T{4} * s;
         }
     }
 
@@ -315,7 +339,7 @@ TEST_CASE("Materialization - inner-body deferred scratch hoists once and execute
     REQUIRE_NOTHROW(g.execute());
     for (size_t ii = 0; ii < n; ii++) {
         for (size_t jj = 0; jj < n; jj++) {
-            REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-11));
+            REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
         }
     }
 
@@ -325,25 +349,27 @@ TEST_CASE("Materialization - inner-body deferred scratch hoists once and execute
         g.execute(df);
         for (size_t ii = 0; ii < n; ii++) {
             for (size_t jj = 0; jj < n; jj++) {
-                REQUIRE_THAT(acc(ii, jj), Catch::Matchers::WithinAbs(ref(ii, jj), 1e-11));
+                REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
             }
         }
     }
 }
 
-TEST_CASE("Materialization - nested body-declared deferred scratch each hoist once with tids", "[ComputeGraph][Materialization][Loop]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - nested body-declared deferred scratch each hoist once with tids",
+                        "[ComputeGraph][Materialization][Loop]", testing::AllScalarTypes) {
+    using T = TestType;
     // Two deferred scratch tensors, one in an outer body and one in an inner
     // (nested) body, are each hoisted exactly once to the outermost parent
     // with a distinct parent TensorId. Exercises collect_descendant_deferred
     // and the ptr-keyed dedup.
     constexpr size_t n = 5;
-    auto             A = create_random_tensor<double>("A", n, n);
+    auto             A = create_random_tensor<T>("A", n, n);
 
     cg::Graph g("nested_mat");
     auto     &outer = g.add_loop("outer", 1, [](size_t) { return false; });
-    auto     &W1    = outer.scratch_zero<double, 2>("W1", n, n);
+    auto     &W1    = outer.template scratch_zero<T, 2>("W1", n, n);
     auto     &inner = outer.add_loop("inner", 1, [](size_t) { return false; });
-    auto     &W2    = inner.scratch_zero<double, 2>("W2", n, n);
+    auto     &W2    = inner.template scratch_zero<T, 2>("W2", n, n);
     {
         cg::CaptureGuard const guard(outer);
         cg::einsum("ik;kj->ij", 0.0, &W1, 1.0, A, A);
@@ -376,14 +402,16 @@ TEST_CASE("Materialization - nested body-declared deferred scratch each hoist on
     CHECK(mat_tids[0] != mat_tids[1]);
 }
 
-TEST_CASE("Materialization - a graph-owned deferred tensor no node uses is left unallocated", "[ComputeGraph][Materialization]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - a graph-owned deferred tensor no node uses is left unallocated",
+                        "[ComputeGraph][Materialization]", testing::AllScalarTypes) {
+    using T = TestType;
     // What a structural rewrite leaves behind when it dissolves an intermediate: the declaration
     // stays, because a caller may still hold the handle, and the storage must not follow it.
     cg::Graph g("unused");
-    auto      A      = create_random_tensor<double>("A", 4, 4);
-    auto      R      = create_zero_tensor<double>("R", 4, 4);
-    auto     &used   = g.declare_runtime_tensor<double>("used", {4, 4}, /*intermediate=*/true);
-    auto     &unused = g.declare_runtime_tensor<double>("unused", {16, 16, 16, 16}, /*intermediate=*/true);
+    auto      A      = create_random_tensor<T>("A", 4, 4);
+    auto      R      = create_zero_tensor<T>("R", 4, 4);
+    auto     &used   = g.template declare_runtime_tensor<T>("used", {4, 4}, /*intermediate=*/true);
+    auto     &unused = g.template declare_runtime_tensor<T>("unused", {16, 16, 16, 16}, /*intermediate=*/true);
     {
         cg::CaptureGuard const guard(g);
         cg::einsum("ik;kj->ij", 0.0, &used, 1.0, A, A);
@@ -406,7 +434,7 @@ TEST_CASE("Materialization - a graph-owned deferred tensor no node uses is left 
 
     // A graph whose only deferred tensor is unused gets no node at all, and says so.
     cg::Graph none("nothing");
-    none.declare_runtime_tensor<double>("shell", {8, 8}, /*intermediate=*/true);
+    none.template declare_runtime_tensor<T>("shell", {8, 8}, /*intermediate=*/true);
     cg::passes::Materialization second;
     CHECK_FALSE(second.run(none));
     CHECK(second.num_materialized() == 0);
@@ -446,17 +474,19 @@ void plant_materialize(cg::Graph &graph, std::string const &name, cg::TensorId t
 
 } // namespace
 
-TEST_CASE("Materialization - the storage invariants hold across control flow and views", "[ComputeGraph][Materialization][audit]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - the storage invariants hold across control flow and views",
+                        "[ComputeGraph][Materialization][audit]", testing::AllScalarTypes) {
+    using T = TestType;
     // The shapes the audit has to see through: a scratch used only inside a loop body, whose
     // lifecycle is HOISTED to the parent and whose use is therefore in a different graph from its
     // Materialize; and a scratch written only through a view, whose use names a handle the
     // Materialize does not.
     constexpr size_t n = 6;
-    auto             A = create_random_tensor<double>("A", n, n);
-    auto             R = create_zero_tensor<double>("R", n, n);
+    auto             A = create_random_tensor<T>("A", n, n);
+    auto             R = create_zero_tensor<T>("R", n, n);
 
     cg::Graph g("audit_ok");
-    auto     &sliced = g.declare_zero_runtime_tensor<double>("sliced", {n, n}, /*intermediate=*/true);
+    auto     &sliced = g.template declare_zero_runtime_tensor<T>("sliced", {n, n}, /*intermediate=*/true);
     {
         cg::CaptureGuard const guard(g);
         auto                  &block = cg::view_runtime(sliced, {cg::ViewAxis::range(0, 2), cg::ViewAxis::full()});
@@ -465,7 +495,7 @@ TEST_CASE("Materialization - the storage invariants hold across control flow and
     auto &body = g.add_loop("iter", 2, [](size_t it) { return it < 2; });
     {
         cg::CaptureGuard const guard(body);
-        auto                  &W = body.scratch_zero<double, 2>("W", n, n);
+        auto                  &W = body.template scratch_zero<T, 2>("W", n, n);
         cg::einsum("ik;kj->ij", 0.0, &W, 1.0, A, A);
         cg::einsum("ik;kj->ij", 1.0, &R, 1.0, W, A);
     }
@@ -480,12 +510,14 @@ TEST_CASE("Materialization - the storage invariants hold across control flow and
     g.execute();
 }
 
-TEST_CASE("Materialization - the audit names a Materialize nothing uses", "[ComputeGraph][Materialization][audit]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - the audit names a Materialize nothing uses", "[ComputeGraph][Materialization][audit]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     cg::Graph g("audit_stranded");
-    auto      A      = create_random_tensor<double>("A", 4, 4);
-    auto      R      = create_zero_tensor<double>("R", 4, 4);
-    auto     &used   = g.declare_runtime_tensor<double>("used", {4, 4}, /*intermediate=*/true);
-    auto     &orphan = g.declare_runtime_tensor<double>("orphan", {4, 4}, /*intermediate=*/true);
+    auto      A      = create_random_tensor<T>("A", 4, 4);
+    auto      R      = create_zero_tensor<T>("R", 4, 4);
+    auto     &used   = g.template declare_runtime_tensor<T>("used", {4, 4}, /*intermediate=*/true);
+    auto     &orphan = g.template declare_runtime_tensor<T>("orphan", {4, 4}, /*intermediate=*/true);
     {
         cg::CaptureGuard const guard(g);
         cg::einsum("ik;kj->ij", 0.0, &used, 1.0, A, A);
@@ -507,11 +539,13 @@ TEST_CASE("Materialization - the audit names a Materialize nothing uses", "[Comp
     CHECK(cg::passes::duplicate_materializations(g).empty());
 }
 
-TEST_CASE("Materialization - the audit names a tensor with two Materialize nodes", "[ComputeGraph][Materialization][audit]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - the audit names a tensor with two Materialize nodes", "[ComputeGraph][Materialization][audit]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     cg::Graph g("audit_duplicate");
-    auto      A    = create_random_tensor<double>("A", 4, 4);
-    auto      R    = create_zero_tensor<double>("R", 4, 4);
-    auto     &used = g.declare_runtime_tensor<double>("used", {4, 4}, /*intermediate=*/true);
+    auto      A    = create_random_tensor<T>("A", 4, 4);
+    auto      R    = create_zero_tensor<T>("R", 4, 4);
+    auto     &used = g.template declare_runtime_tensor<T>("used", {4, 4}, /*intermediate=*/true);
     {
         cg::CaptureGuard const guard(g);
         cg::einsum("ik;kj->ij", 0.0, &used, 1.0, A, A);
@@ -528,8 +562,9 @@ TEST_CASE("Materialization - the audit names a tensor with two Materialize nodes
     CHECK(duplicated.front() == "used");
 }
 
-TEST_CASE("Materialization - a tensor another pass already gave a lifecycle gets no second one",
-          "[ComputeGraph][Materialization][ContractionPlanning]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - a tensor another pass already gave a lifecycle gets no second one",
+                        "[ComputeGraph][Materialization][ContractionPlanning]", testing::AllScalarTypes) {
+    using T = TestType;
     // ContractionPlanning emits a Materialize for the scratch it declares, so that applying it
     // standalone produces an executable graph, and this pass then found the same deferred
     // declaration and emitted another.
@@ -541,17 +576,17 @@ TEST_CASE("Materialization - a tensor another pass already gave a lifecycle gets
     // "who materializes this". Materialization now leaves a tensor that already has one alone,
     // which is what already_materialized_in was already doing for setup bodies.
     constexpr size_t n = 100;
-    auto             A = create_random_tensor<double>("A", n, n);
-    auto             B = create_random_tensor<double>("B", n, 1);
-    auto             C = create_random_tensor<double>("C", 1, n);
-    auto             R = create_zero_tensor<double>("R", n, n);
+    auto             A = create_random_tensor<T>("A", n, n);
+    auto             B = create_random_tensor<T>("B", n, 1);
+    auto             C = create_random_tensor<T>("C", 1, n);
+    auto             R = create_zero_tensor<T>("R", n, n);
 
     // Captured as (B C) A, which builds an n x n intermediate and then does an n^3 contraction;
     // B (C A) is two n^2 ones. So the pass has a reason to re-bracket and a scratch to declare for
     // it. The running product goes in the A slot of the later member, which is the shape the chain
     // finder recognizes.
     cg::Graph g("cp_then_materialization");
-    auto     &T1 = g.create_zero_tensor<double, 2>("T1", n, n);
+    auto     &T1 = g.template create_zero_tensor<T, 2>("T1", n, n);
     {
         cg::CaptureGuard const guard(g);
         cg::einsum("ik;kj->ij", 0.0, &T1, 1.0, B, C);
@@ -587,7 +622,9 @@ TEST_CASE("Materialization - a tensor another pass already gave a lifecycle gets
     g.execute();
 }
 
-TEST_CASE("Materialization - a setup body's output gets ONE lifecycle, not two", "[ComputeGraph][Passes][Materialization]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - a setup body's output gets ONE lifecycle, not two", "[ComputeGraph][Passes][Materialization]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // Two arms of this pass place a lifecycle inside a setup body: the one that follows a
     // parent-declared tensor to the node that writes it, and the one that covers the body's
     // own workspace. The second used to run first, and its comment says a body's copy of a
@@ -599,17 +636,17 @@ TEST_CASE("Materialization - a setup body's output gets ONE lifecycle, not two",
     // Fixed by running the workspace arm second, where its name-keyed guard sees the node the
     // first arm placed. That node is the one that has to survive: it is built from the
     // PARENT's handle, and the parent's readers hold the buffer it allocates.
-    auto out  = create_zero_tensor<double>("out", 3, 3);
-    auto one  = create_zero_tensor<double>("one", 3, 3);
-    one(0, 0) = 1.0;
+    auto out  = create_zero_tensor<T>("out", 3, 3);
+    auto one  = create_zero_tensor<T>("one", 3, 3);
+    one(0, 0) = pf<T>(1.0, 0.5);
 
     cg::Graph g("setup_lifecycle");
-    auto     &fitted = g.declare_runtime_tensor<double>("fitted", {3, 3}, /*intermediate=*/true);
+    auto     &fitted = g.template declare_runtime_tensor<T>("fitted", {3, 3}, /*intermediate=*/true);
     {
         auto                  &body = g.add_setup("fit");
         cg::CaptureGuard const guard(body);
         // A body-declared scratch beside the parent-declared output, so both arms have work.
-        auto &scratch = body.declare_runtime_tensor<double>("fit_scratch", {3, 3}, /*intermediate=*/true);
+        auto &scratch = body.template declare_runtime_tensor<T>("fit_scratch", {3, 3}, /*intermediate=*/true);
         cg::permute("ij <- ij", 0.0, &scratch, 1.0, one);
         cg::permute("ij <- ij", 0.0, &fitted, 1.0, scratch);
     }
@@ -625,11 +662,12 @@ TEST_CASE("Materialization - a setup body's output gets ONE lifecycle, not two",
     CHECK(cg::passes::stranded_materializations(g).empty());
 
     g.execute();
-    CHECK(out(0, 0) == Catch::Approx(1.0));
+    CHECK_THAT(out(0, 0), near(pf<T>(1.0, 0.5)));
 }
 
-TEST_CASE("Materialization - a setup nested in a loop body materializes its workspace inside itself",
-          "[ComputeGraph][Passes][Materialization]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - a setup nested in a loop body materializes its workspace inside itself",
+                        "[ComputeGraph][Passes][Materialization]", testing::AllScalarTypes) {
+    using T = TestType;
     // A fitting emitted into a loop body, which is what a re-fitted amplitude is, puts a setup
     // node inside the body, and that setup declares its own workspace. The hoist walk used to
     // descend into it and give the workspace a lifecycle in the outermost parent. The body's
@@ -638,19 +676,19 @@ TEST_CASE("Materialization - a setup nested in a loop body materializes its work
     // node had no edge to the loop, so whether it ran first was a matter of schedule order, and
     // the same program passed on three platforms and failed on the fourth. The workspace of a
     // setup body is materialized inside that body at any depth, and this case says where.
-    auto out  = create_zero_tensor<double>("out", 3, 3);
-    auto one  = create_zero_tensor<double>("one", 3, 3);
-    one(0, 0) = 1.0;
+    auto out  = create_zero_tensor<T>("out", 3, 3);
+    auto one  = create_zero_tensor<T>("one", 3, 3);
+    one(0, 0) = pf<T>(1.0, 0.5);
 
     cg::Graph g("nested_setup");
-    auto     &first  = g.declare_runtime_tensor<double>("first", {3, 3}, /*intermediate=*/true);
-    auto     &second = g.declare_runtime_tensor<double>("second", {3, 3}, /*intermediate=*/true);
+    auto     &first  = g.template declare_runtime_tensor<T>("first", {3, 3}, /*intermediate=*/true);
+    auto     &second = g.template declare_runtime_tensor<T>("second", {3, 3}, /*intermediate=*/true);
     {
         // A parent-level setup with a workspace of the same name, so the two are told apart by
         // identity and not by name.
         auto                  &body = g.add_setup("fit_parent");
         cg::CaptureGuard const guard(body);
-        auto                  &scratch = body.declare_runtime_tensor<double>("workspace", {3, 3}, /*intermediate=*/true);
+        auto                  &scratch = body.template declare_runtime_tensor<T>("workspace", {3, 3}, /*intermediate=*/true);
         cg::permute("ij <- ij", 0.0, &scratch, 1.0, one);
         cg::permute("ij <- ij", 0.0, &first, 1.0, scratch);
     }
@@ -660,7 +698,7 @@ TEST_CASE("Materialization - a setup nested in a loop body materializes its work
         auto &fit  = loop.add_setup("fit_nested");
         nested     = &fit;
         cg::CaptureGuard const guard(fit);
-        auto                  &scratch = fit.declare_runtime_tensor<double>("workspace", {3, 3}, /*intermediate=*/true);
+        auto                  &scratch = fit.template declare_runtime_tensor<T>("workspace", {3, 3}, /*intermediate=*/true);
         cg::permute("ij <- ij", 0.0, &scratch, 1.0, one);
         cg::permute("ij <- ij", 0.0, &second, 1.0, scratch);
     }
@@ -684,11 +722,12 @@ TEST_CASE("Materialization - a setup nested in a loop body materializes its work
     CHECK(cg::passes::stranded_materializations(g).empty());
 
     g.execute();
-    CHECK(out(0, 0) == Catch::Approx(2.0));
+    CHECK_THAT(out(0, 0), near(pf<T>(2.0, 1.0)));
 }
 
-TEST_CASE("Materialization - a factor's lifecycle follows the setup that writes it through a reorder",
-          "[ComputeGraph][Passes][Materialization][Reorder]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - a factor's lifecycle follows the setup that writes it through a reorder",
+                        "[ComputeGraph][Passes][Materialization][Reorder]", testing::AllScalarTypes) {
+    using T = TestType;
     // Two setups that share no tensor have no dependency between them, so Reorder is free to
     // put either first, and its memory heuristic does exactly that: the one whose body frees
     // the most is scheduled first whichever order the program declared them in. Every rule that
@@ -711,16 +750,16 @@ TEST_CASE("Materialization - a factor's lifecycle follows the setup that writes 
         std::size_t const dim_a = first_setup_is_large ? large : small;
         std::size_t const dim_b = first_setup_is_large ? small : large;
 
-        auto seed_a  = create_zero_tensor<double>("seed_a", dim_a, dim_a);
-        auto seed_b  = create_zero_tensor<double>("seed_b", dim_b, dim_b);
-        seed_a(0, 0) = 1.0;
-        seed_b(0, 0) = 1.0;
-        auto out_a   = create_zero_tensor<double>("out_a", dim_a, dim_a);
-        auto out_b   = create_zero_tensor<double>("out_b", dim_b, dim_b);
+        auto seed_a  = create_zero_tensor<T>("seed_a", dim_a, dim_a);
+        auto seed_b  = create_zero_tensor<T>("seed_b", dim_b, dim_b);
+        seed_a(0, 0) = pf<T>(1.0, 0.5);
+        seed_b(0, 0) = pf<T>(1.0, 0.5);
+        auto out_a   = create_zero_tensor<T>("out_a", dim_a, dim_a);
+        auto out_b   = create_zero_tensor<T>("out_b", dim_b, dim_b);
 
         cg::Graph g("two_setups");
-        auto     &factor_a = g.declare_runtime_tensor<double>("factor_a", {dim_a, dim_a}, /*intermediate=*/true);
-        auto     &factor_b = g.declare_runtime_tensor<double>("factor_b", {dim_b, dim_b}, /*intermediate=*/true);
+        auto     &factor_a = g.template declare_runtime_tensor<T>("factor_a", {dim_a, dim_a}, /*intermediate=*/true);
+        auto     &factor_b = g.template declare_runtime_tensor<T>("factor_b", {dim_b, dim_b}, /*intermediate=*/true);
 
         cg::Graph *body_a = nullptr;
         cg::Graph *body_b = nullptr;
@@ -730,7 +769,7 @@ TEST_CASE("Materialization - a factor's lifecycle follows the setup that writes 
             auto &body = g.add_setup("fit_a");
             body_a     = &body;
             cg::CaptureGuard const guard(body);
-            auto                  &scratch = body.declare_runtime_tensor<double>("workspace", {dim_a, dim_a}, /*intermediate=*/true);
+            auto                  &scratch = body.template declare_runtime_tensor<T>("workspace", {dim_a, dim_a}, /*intermediate=*/true);
             cg::permute("ij <- ij", 0.0, &scratch, 1.0, seed_a);
             cg::permute("ij <- ij", 0.0, &factor_a, 1.0, scratch);
         }
@@ -738,7 +777,7 @@ TEST_CASE("Materialization - a factor's lifecycle follows the setup that writes 
             auto &body = g.add_setup("fit_b");
             body_b     = &body;
             cg::CaptureGuard const guard(body);
-            auto                  &scratch = body.declare_runtime_tensor<double>("workspace", {dim_b, dim_b}, /*intermediate=*/true);
+            auto                  &scratch = body.template declare_runtime_tensor<T>("workspace", {dim_b, dim_b}, /*intermediate=*/true);
             cg::permute("ij <- ij", 0.0, &scratch, 1.0, seed_b);
             cg::permute("ij <- ij", 0.0, &factor_b, 1.0, scratch);
         }
@@ -803,16 +842,17 @@ TEST_CASE("Materialization - a factor's lifecycle follows the setup that writes 
         CHECK(cg::passes::stranded_materializations(g).empty());
 
         g.execute();
-        CHECK(out_a(0, 0) == Catch::Approx(1.0));
-        CHECK(out_b(0, 0) == Catch::Approx(1.0));
+        CHECK_THAT(out_a(0, 0), near(pf<T>(1.0, 0.5)));
+        CHECK_THAT(out_b(0, 0), near(pf<T>(1.0, 0.5)));
     };
 
     run_arm(true);
     run_arm(false);
 }
 
-TEST_CASE("Materialization - a top-level setup's chain intermediate is materialized inside the body",
-          "[ComputeGraph][Passes][Materialization][Setup]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - a top-level setup's chain intermediate is materialized inside the body",
+                        "[ComputeGraph][Passes][Materialization][Setup]", testing::AllScalarTypes) {
+    using T = TestType;
     // The shape a basis truncation's projection has: a setup body writes a parent-declared
     // tensor through a CHAIN, and the buffer between the two steps belongs to nobody the
     // parent's algebra names. It is not a setup output, because no parent node reads it, and
@@ -824,19 +864,19 @@ TEST_CASE("Materialization - a top-level setup's chain intermediate is materiali
     // note records: a lifecycle in the parent runs before the setup often enough that execute
     // says nothing about where it landed, and a body's own validation looks in its nodes and
     // its descendants and never in its ancestors.
-    auto out  = create_zero_tensor<double>("out", 3, 3);
-    auto one  = create_zero_tensor<double>("one", 3, 3);
-    one(0, 0) = 2.0;
+    auto out  = create_zero_tensor<T>("out", 3, 3);
+    auto one  = create_zero_tensor<T>("one", 3, 3);
+    one(0, 0) = pf<T>(2.0, 1.0);
 
     cg::Graph  g("chain_setup");
-    auto      &projected = g.declare_runtime_tensor<double>("projected", {3, 3}, /*intermediate=*/true);
+    auto      &projected = g.template declare_runtime_tensor<T>("projected", {3, 3}, /*intermediate=*/true);
     cg::Graph *body      = nullptr;
     {
         auto &fit = g.add_setup_at("project", 0);
         body      = &fit;
         // Declared BEFORE the guard, which is where a workspace of a setup body belongs: a
         // declaration is not a capture, and the buffer has to exist before the nodes reading it.
-        auto &half = fit.declare_runtime_tensor<double>("chain_half", {3, 3}, /*intermediate=*/true);
+        auto &half = fit.template declare_runtime_tensor<T>("chain_half", {3, 3}, /*intermediate=*/true);
 
         cg::CaptureGuard const guard(fit);
         cg::permute("ij <- ij", 0.0, &half, 0.5, one);
@@ -863,10 +903,12 @@ TEST_CASE("Materialization - a top-level setup's chain intermediate is materiali
     CHECK(cg::passes::stranded_materializations(g).empty());
 
     g.execute();
-    CHECK(out(0, 0) == Catch::Approx(1.0));
+    CHECK_THAT(out(0, 0), near(pf<T>(1.0, 0.5)));
 }
 
-TEST_CASE("Materialization - a body handle whose last use a rewrite removed gets no lifecycle", "[ComputeGraph][Materialization][audit]") {
+TEMPLATE_LIST_TEST_CASE("Materialization - a body handle whose last use a rewrite removed gets no lifecycle",
+                        "[ComputeGraph][Materialization][audit]", testing::AllScalarTypes) {
+    using T = TestType;
     // The program shape the region fuzz found: an intermediate written in the parent and read
     // only inside a loop body. Two of the default pipeline's rewrites then take the use away.
     // LoopInvariantHoisting moves the body's one statement up, because nothing in it varies with
@@ -880,12 +922,12 @@ TEST_CASE("Materialization - a body handle whose last use a rewrite removed gets
     // last use is gone, and so it hoisted a lifecycle for a tensor whose whole point was to stop
     // existing.
     constexpr size_t big = 64, small = 16;
-    auto             left  = create_random_tensor<double>("left", big, small);
-    auto             right = create_random_tensor<double>("right", small, big);
-    auto             out   = create_zero_tensor<double>("out", big, small);
+    auto             left  = create_random_tensor<T>("left", big, small);
+    auto             right = create_random_tensor<T>("right", small, big);
+    auto             out   = create_zero_tensor<T>("out", big, small);
 
     cg::Graph g("body_handle_without_a_use");
-    auto     &half = g.scratch<double, 2>("half", big, big);
+    auto     &half = g.template scratch<T, 2>("half", big, big);
     {
         cg::CaptureGuard const guard(g);
         cg::einsum("qp;ps->qs", 0.0, &half, 1.0, left, right);

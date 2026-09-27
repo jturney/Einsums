@@ -29,6 +29,13 @@ namespace cg = einsums::compute_graph;
 
 namespace {
 
+// Relative bound on each element of a re-associated result: the bound these cases were written
+// with for double, and the single precision default for float and complex<float>.
+template <typename T>
+constexpr double rel_tol() {
+    return std::is_same_v<RemoveComplexT<T>, double> ? 1e-10 : einsums::tolerance<T>();
+}
+
 /// A provider that offers nothing, which is all these cases need: the registry's job is to
 /// hold providers and hand back the ones claiming a tag, and it does that without ever
 /// calling propose.
@@ -146,9 +153,10 @@ namespace {
 /// factorization is - DF's saving comes from contracting the factors in the other order, and
 /// re-association is exactly what changes a floating-point result - so a provider test that
 /// demanded bit equality would be testing something no provider can deliver.
-class ExactLowRank : public cg::FactorizationProvider {
+template <typename T>
+class ExactLowRankT : public cg::FactorizationProvider {
   public:
-    ExactLowRank(Tensor<double, 3> &left, Tensor<double, 3> &right) : _left(&left), _right(&right) {}
+    ExactLowRankT(Tensor<T, 3> &left, Tensor<T, 3> &right) : _left(&left), _right(&right) {}
 
     [[nodiscard]] std::string name() const override { return "ExactLowRank"; }
     [[nodiscard]] std::string tag() const override { return "test_lowrank"; }
@@ -167,12 +175,12 @@ class ExactLowRank : public cg::FactorizationProvider {
                                                 .letters = {"Q", "m", "n"},
                                                 .dims    = {rank, handle->dims[0], handle->dims[1]},
                                                 .spaces  = {},
-                                                .dtype   = einsums::packed_gemm::ScalarType::Float64});
+                                                .dtype   = einsums::packed_gemm::get_scalar_type<T>()});
         plan.factors.push_back(cg::FactorTensor{.name    = "right",
                                                 .letters = {"Q", "p", "q"},
                                                 .dims    = {rank, handle->dims[2], handle->dims[3]},
                                                 .spaces  = {},
-                                                .dtype   = einsums::packed_gemm::ScalarType::Float64});
+                                                .dtype   = einsums::packed_gemm::get_scalar_type<T>()});
         // Exact, and recorded anyway: "this result is an exact low-rank form of the integrals"
         // is a statement about what the graph computes and belongs in the file with everything
         // else that is.
@@ -181,8 +189,8 @@ class ExactLowRank : public cg::FactorizationProvider {
         auto *left      = _left;
         auto *right     = _right;
         plan.emit_setup = [left, right](cg::Graph &parent, cg::Graph &body, std::vector<cg::TensorId> const &factors) {
-            auto                  *l = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[0]).tensor_ptr);
-            auto                  *r = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[1]).tensor_ptr);
+            auto                  *l = static_cast<einsums::RuntimeTensor<T> *>(parent.tensor(factors[0]).tensor_ptr);
+            auto                  *r = static_cast<einsums::RuntimeTensor<T> *>(parent.tensor(factors[1]).tensor_ptr);
             cg::CaptureGuard const guard(body);
             cg::permute("Q,m,n <- Q,m,n", 0.0, l, 1.0, *left);
             cg::permute("Q,p,q <- Q,p,q", 0.0, r, 1.0, *right);
@@ -191,22 +199,25 @@ class ExactLowRank : public cg::FactorizationProvider {
     }
 
   private:
-    Tensor<double, 3> *_left;
-    Tensor<double, 3> *_right;
+    Tensor<T, 3> *_left;
+    Tensor<T, 3> *_right;
 };
+
+using ExactLowRank = ExactLowRankT<double>;
 
 } // namespace
 
-TEST_CASE("Factorization - a tagged operand is replaced by its factors and the contraction re-associated",
-          "[ComputeGraph][Factorization]") {
+TEMPLATE_LIST_TEST_CASE("Factorization - a tagged operand is replaced by its factors and the contraction re-associated",
+                        "[ComputeGraph][Factorization]", testing::AllScalarTypes) {
+    using T                = TestType;
     std::size_t const n    = 4;
     std::size_t const rank = 3;
 
-    auto left  = create_random_tensor<double>("left", rank, n, n);
-    auto right = create_random_tensor<double>("right", rank, n, n);
-    auto M     = create_zero_tensor<double>("M", n, n, n, n);
-    auto T     = create_random_tensor<double>("T", n, n);
-    auto C     = create_zero_tensor<double>("C", n, n);
+    auto left  = create_random_tensor<T>("left", rank, n, n);
+    auto right = create_random_tensor<T>("right", rank, n, n);
+    auto M     = create_zero_tensor<T>("M", n, n, n, n);
+    auto Tm    = create_random_tensor<T>("T", n, n);
+    auto C     = create_zero_tensor<T>("C", n, n);
 
     // M is EXACTLY the product the provider will claim it is. Written out rather than
     // contracted, so the reference this test compares against owes nothing to the machinery
@@ -215,7 +226,7 @@ TEST_CASE("Factorization - a tagged operand is replaced by its factors and the c
         for (std::size_t nn = 0; nn < n; ++nn) {
             for (std::size_t p = 0; p < n; ++p) {
                 for (std::size_t q = 0; q < n; ++q) {
-                    double sum = 0.0;
+                    T sum{0};
                     for (std::size_t r = 0; r < rank; ++r) {
                         sum += left(r, m, nn) * right(r, p, q);
                     }
@@ -228,21 +239,21 @@ TEST_CASE("Factorization - a tagged operand is replaced by its factors and the c
     cg::Graph reference("reference");
     {
         cg::CaptureGuard const guard(reference);
-        cg::einsum("m,n,p,q ; p,q -> m,n", &C, M, T);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &C, M, Tm);
     }
     reference.execute();
     auto const expected = C;
 
-    auto      Cf = create_zero_tensor<double>("C", n, n);
+    auto      Cf = create_zero_tensor<T>("C", n, n);
     cg::Graph graph("factorized");
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("m,n,p,q ; p,q -> m,n", &Cf, M, T);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &Cf, M, Tm);
     }
     graph.annotate_tag(M, cg::ProvenanceTag{.name = "test_lowrank"});
 
     cg::FactorizationRegistry registry;
-    registry.add(std::make_shared<ExactLowRank>(left, right));
+    registry.add(std::make_shared<ExactLowRankT<T>>(left, right));
 
     cg::passes::FactorizationPass factorization(registry);
     cg::PassManager               pm;
@@ -273,7 +284,7 @@ TEST_CASE("Factorization - a tagged operand is replaced by its factors and the c
     // the re-associating tier and is what makes the factorization worth doing.
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t j = 0; j < n; ++j) {
-            REQUIRE(std::abs(Cf(i, j) - expected(i, j)) < 1e-10);
+            REQUIRE_THAT(Cf(i, j), CheckWithinRel(expected(i, j), rel_tol<T>()));
         }
     }
 
@@ -515,21 +526,23 @@ TEST_CASE("Factorization - an accuracy budget the split cannot fit refuses it", 
     REQUIRE(affordable.num_factorized() == 1);
 }
 
-TEST_CASE("Factorization - the fitting runs once and the replays skip it", "[ComputeGraph][Factorization]") {
+TEMPLATE_LIST_TEST_CASE("Factorization - the fitting runs once and the replays skip it", "[ComputeGraph][Factorization]",
+                        testing::AllScalarTypes) {
+    using T                = TestType;
     std::size_t const n    = 4;
     std::size_t const rank = 3;
 
-    auto left  = create_random_tensor<double>("left", rank, n, n);
-    auto right = create_random_tensor<double>("right", rank, n, n);
-    auto M     = create_zero_tensor<double>("M", n, n, n, n);
-    auto T     = create_random_tensor<double>("T", n, n);
-    auto C     = create_zero_tensor<double>("C", n, n);
+    auto left  = create_random_tensor<T>("left", rank, n, n);
+    auto right = create_random_tensor<T>("right", rank, n, n);
+    auto M     = create_zero_tensor<T>("M", n, n, n, n);
+    auto Tm    = create_random_tensor<T>("T", n, n);
+    auto C     = create_zero_tensor<T>("C", n, n);
 
     for (std::size_t m = 0; m < n; ++m) {
         for (std::size_t nn = 0; nn < n; ++nn) {
             for (std::size_t p = 0; p < n; ++p) {
                 for (std::size_t q = 0; q < n; ++q) {
-                    double sum = 0.0;
+                    T sum{0};
                     for (std::size_t r = 0; r < rank; ++r) {
                         sum += left(r, m, nn) * right(r, p, q);
                     }
@@ -542,12 +555,12 @@ TEST_CASE("Factorization - the fitting runs once and the replays skip it", "[Com
     cg::Graph graph("replayed");
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("m,n,p,q ; p,q -> m,n", &C, M, T);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &C, M, Tm);
     }
     graph.annotate_tag(M, cg::ProvenanceTag{.name = "test_lowrank"});
 
     cg::FactorizationRegistry registry;
-    registry.add(std::make_shared<ExactLowRank>(left, right));
+    registry.add(std::make_shared<ExactLowRankT<T>>(left, right));
     cg::passes::FactorizationPass factorization(registry);
     cg::PassManager               pm;
     pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
@@ -582,9 +595,10 @@ namespace {
 ///
 /// Deliberately synthetic. The chain a real method produces is the tensor hypercontraction one,
 /// and a test of the PASS should not need a fitting to run.
-class ExactChain : public cg::FactorizationProvider {
+template <typename T>
+class ExactChainT : public cg::FactorizationProvider {
   public:
-    ExactChain(Tensor<double, 3> &a, Tensor<double, 2> &d, Tensor<double, 3> &b) : _a(&a), _d(&d), _b(&b) {}
+    ExactChainT(Tensor<T, 3> &a, Tensor<T, 2> &d, Tensor<T, 3> &b) : _a(&a), _d(&d), _b(&b) {}
 
     [[nodiscard]] std::string name() const override { return "ExactChain"; }
     [[nodiscard]] std::string tag() const override { return "test_chain"; }
@@ -604,26 +618,26 @@ class ExactChain : public cg::FactorizationProvider {
                                                 .letters = {"Q", "m", "n"},
                                                 .dims    = {left_aux, handle->dims[0], handle->dims[1]},
                                                 .spaces  = {},
-                                                .dtype   = einsums::packed_gemm::ScalarType::Float64});
+                                                .dtype   = einsums::packed_gemm::get_scalar_type<T>()});
         plan.factors.push_back(cg::FactorTensor{.name    = "D",
                                                 .letters = {"Q", "R"},
                                                 .dims    = {left_aux, right_aux},
                                                 .spaces  = {},
-                                                .dtype   = einsums::packed_gemm::ScalarType::Float64});
+                                                .dtype   = einsums::packed_gemm::get_scalar_type<T>()});
         plan.factors.push_back(cg::FactorTensor{.name    = "B",
                                                 .letters = {"R", "p", "q"},
                                                 .dims    = {right_aux, handle->dims[2], handle->dims[3]},
                                                 .spaces  = {},
-                                                .dtype   = einsums::packed_gemm::ScalarType::Float64});
+                                                .dtype   = einsums::packed_gemm::get_scalar_type<T>()});
         plan.accuracy = cg::make_approximation_record(name(), cg::ApproximationEffect::NormRelative, 0.0, 0.0);
 
         auto *a         = _a;
         auto *d         = _d;
         auto *b         = _b;
         plan.emit_setup = [a, d, b](cg::Graph &parent, cg::Graph &body, std::vector<cg::TensorId> const &factors) {
-            auto                  *fa = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[0]).tensor_ptr);
-            auto                  *fd = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[1]).tensor_ptr);
-            auto                  *fb = static_cast<einsums::RuntimeTensor<double> *>(parent.tensor(factors[2]).tensor_ptr);
+            auto                  *fa = static_cast<einsums::RuntimeTensor<T> *>(parent.tensor(factors[0]).tensor_ptr);
+            auto                  *fd = static_cast<einsums::RuntimeTensor<T> *>(parent.tensor(factors[1]).tensor_ptr);
+            auto                  *fb = static_cast<einsums::RuntimeTensor<T> *>(parent.tensor(factors[2]).tensor_ptr);
             cg::CaptureGuard const guard(body);
             cg::permute("Q,m,n <- Q,m,n", 0.0, fa, 1.0, *a);
             cg::permute("Q,R <- Q,R", 0.0, fd, 1.0, *d);
@@ -633,10 +647,12 @@ class ExactChain : public cg::FactorizationProvider {
     }
 
   private:
-    Tensor<double, 3> *_a;
-    Tensor<double, 2> *_d;
-    Tensor<double, 3> *_b;
+    Tensor<T, 3> *_a;
+    Tensor<T, 2> *_d;
+    Tensor<T, 3> *_b;
 };
+
+using ExactChain = ExactChainT<double>;
 
 /// A provider whose fit READS the tagged tensor, which is what an amplitude fit is.
 ///
@@ -1140,17 +1156,19 @@ TEST_CASE("Factorization - what counts as an amplitude update, and what does not
     }
 }
 
-TEST_CASE("Factorization - a three-factor chain is substituted and binarized by the pass", "[ComputeGraph][Factorization][Chain]") {
+TEMPLATE_LIST_TEST_CASE("Factorization - a three-factor chain is substituted and binarized by the pass",
+                        "[ComputeGraph][Factorization][Chain]", testing::AllScalarTypes) {
+    using T                = TestType;
     std::size_t const n    = 6;
     std::size_t const left = 2;
     std::size_t const rght = 3;
 
-    auto A = create_random_tensor<double>("A", left, n, n);
-    auto D = create_random_tensor<double>("D", left, rght);
-    auto B = create_random_tensor<double>("B", rght, n, n);
-    auto M = create_zero_tensor<double>("M", n, n, n, n);
-    auto T = create_random_tensor<double>("T", n, n);
-    auto C = create_zero_tensor<double>("C", n, n);
+    auto A  = create_random_tensor<T>("A", left, n, n);
+    auto D  = create_random_tensor<T>("D", left, rght);
+    auto B  = create_random_tensor<T>("B", rght, n, n);
+    auto M  = create_zero_tensor<T>("M", n, n, n, n);
+    auto Tm = create_random_tensor<T>("T", n, n);
+    auto C  = create_zero_tensor<T>("C", n, n);
 
     // M is EXACTLY the chain the provider claims it is, written out rather than contracted so
     // the reference owes nothing to the machinery under test.
@@ -1158,7 +1176,7 @@ TEST_CASE("Factorization - a three-factor chain is substituted and binarized by 
         for (std::size_t nn = 0; nn < n; ++nn) {
             for (std::size_t p = 0; p < n; ++p) {
                 for (std::size_t q = 0; q < n; ++q) {
-                    double sum = 0.0;
+                    T sum{0};
                     for (std::size_t Q = 0; Q < left; ++Q) {
                         for (std::size_t R = 0; R < rght; ++R) {
                             sum += A(Q, m, nn) * D(Q, R) * B(R, p, q);
@@ -1173,21 +1191,21 @@ TEST_CASE("Factorization - a three-factor chain is substituted and binarized by 
     cg::Graph reference("chain_reference");
     {
         cg::CaptureGuard const guard(reference);
-        cg::einsum("m,n,p,q ; p,q -> m,n", &C, M, T);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &C, M, Tm);
     }
     reference.execute();
     auto const expected = C;
 
-    auto      Cf = create_zero_tensor<double>("C", n, n);
+    auto      Cf = create_zero_tensor<T>("C", n, n);
     cg::Graph graph("chain_factorized");
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("m,n,p,q ; p,q -> m,n", &Cf, M, T);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &Cf, M, Tm);
     }
     graph.annotate_tag(M, cg::ProvenanceTag{.name = "test_chain"});
 
     cg::FactorizationRegistry registry;
-    registry.add(std::make_shared<ExactChain>(A, D, B));
+    registry.add(std::make_shared<ExactChainT<T>>(A, D, B));
 
     cg::passes::FactorizationPass factorization(registry);
     // The cost line is what the report offers as evidence the rewrite paid, and it is derived
@@ -1224,7 +1242,7 @@ TEST_CASE("Factorization - a three-factor chain is substituted and binarized by 
 
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t j = 0; j < n; ++j) {
-            REQUIRE(std::abs(Cf(i, j) - expected(i, j)) < 1e-10);
+            REQUIRE_THAT(Cf(i, j), CheckWithinRel(expected(i, j), rel_tol<T>()));
         }
     }
 

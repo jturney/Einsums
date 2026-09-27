@@ -25,8 +25,8 @@ using namespace einsums::index;
 // DOT path gaps: conjugation, prefactors
 // ============================================================================
 
-TEST_CASE("dot_conjugation", "[dispatch][dot]") {
-    using T = std::complex<double>;
+TEMPLATE_LIST_TEST_CASE("dot_conjugation", "[dispatch][dot]", testing::ComplexScalarTypes) {
+    using T = TestType;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     size_t di = 8;
@@ -56,52 +56,58 @@ TEST_CASE("dot_conjugation", "[dispatch][dot]") {
     REQUIRE_THAT((T)C2, CheckWithinRel(ref2, 0.0001));
 }
 
-TEST_CASE("dot_prefactors", "[dispatch][dot]") {
+TEMPLATE_LIST_TEST_CASE("dot_prefactors", "[dispatch][dot]", testing::AllScalarTypes) {
+    using T                                       = TestType;
+    T const                                 c_pf  = testing::prefactor<T>(0.5, 0.3);
+    T const                                 ab_pf = testing::prefactor<T>(2.1, -0.7);
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     size_t di = 10;
-    auto   A  = create_random_tensor<double>("A", di);
-    auto   B  = create_random_tensor<double>("B", di);
+    auto   A  = create_random_tensor<T>("A", di);
+    auto   B  = create_random_tensor<T>("B", di);
 
     // C = 0.5*C + 2.0 * A.B
-    Tensor<double, 0> C("C");
-    (double &)C = 3.14;
+    Tensor<T, 0> C("C");
+    (T &)C = testing::prefactor<T>(3.14, 1.1);
 
-    double ref = 3.14 * 0.5;
+    T ref = testing::prefactor<T>(3.14, 1.1) * c_pf;
     for (size_t i0 = 0; i0 < di; i0++) {
-        ref += 2.0 * A(i0) * B(i0);
+        ref += ab_pf * A(i0) * B(i0);
     }
 
-    REQUIRE_NOTHROW(einsum(0.5, Indices{}, &C, 2.0, Indices{i}, A, Indices{i}, B, &alg_choice));
+    REQUIRE_NOTHROW(einsum(c_pf, Indices{}, &C, ab_pf, Indices{i}, A, Indices{i}, B, &alg_choice));
     REQUIRE(alg_choice == tensor_algebra::detail::DOT);
-    REQUIRE_THAT((double)C, Catch::Matchers::WithinRel(ref, 0.0001));
+    REQUIRE_THAT((T)C, CheckWithinRel(ref));
 }
 
 // ============================================================================
 // DIRECT path gaps: α≠1
 // ============================================================================
 
-TEST_CASE("direct_alpha", "[dispatch][direct]") {
+TEMPLATE_LIST_TEST_CASE("direct_alpha", "[dispatch][direct]", testing::AllScalarTypes) {
+    using T                                       = TestType;
+    T const                                 c_pf  = testing::prefactor<T>(0.5, 0.3);
+    T const                                 ab_pf = testing::prefactor<T>(2.1, -0.7);
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     size_t di = 5, dj = 6;
-    auto   A = create_random_tensor<double>("A", di, dj);
-    auto   B = create_random_tensor<double>("B", di, dj);
-    auto   C = create_random_tensor<double>("C", di, dj);
+    auto   A = create_random_tensor<T>("A", di, dj);
+    auto   B = create_random_tensor<T>("B", di, dj);
+    auto   C = create_random_tensor<T>("C", di, dj);
 
-    auto C_ref = Tensor<double, 2>("C_ref", di, dj);
+    auto C_ref = Tensor<T, 2>("C_ref", di, dj);
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t j0 = 0; j0 < dj; j0++) {
-            C_ref(i0, j0) = 0.5 * C(i0, j0) + 3.0 * A(i0, j0) * B(i0, j0);
+            C_ref(i0, j0) = c_pf * C(i0, j0) + ab_pf * A(i0, j0) * B(i0, j0);
         }
     }
 
-    REQUIRE_NOTHROW(einsum(0.5, Indices{i, j}, &C, 3.0, Indices{i, j}, A, Indices{i, j}, B, &alg_choice));
+    REQUIRE_NOTHROW(einsum(c_pf, Indices{i, j}, &C, ab_pf, Indices{i, j}, A, Indices{i, j}, B, &alg_choice));
     REQUIRE(alg_choice == tensor_algebra::detail::DIRECT);
 
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t j0 = 0; j0 < dj; j0++) {
-            REQUIRE_THAT(C(i0, j0), Catch::Matchers::WithinRel(C_ref(i0, j0), 0.0001));
+            REQUIRE_THAT(C(i0, j0), CheckWithinRel(C_ref(i0, j0)));
         }
     }
 }
@@ -110,33 +116,36 @@ TEST_CASE("direct_alpha", "[dispatch][direct]") {
 // GER path gaps: prefactors (β≠0, α≠1), conjugation
 // ============================================================================
 
-TEST_CASE("ger_prefactors", "[dispatch][ger]") {
+TEMPLATE_LIST_TEST_CASE("ger_prefactors", "[dispatch][ger]", testing::AllScalarTypes) {
+    using T                                       = TestType;
+    T const                                 c_pf  = testing::prefactor<T>(0.5, 0.3);
+    T const                                 ab_pf = testing::prefactor<T>(2.1, -0.7);
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     size_t di = 5, dj = 6;
-    auto   A = create_random_tensor<double>("A", di);
-    auto   B = create_random_tensor<double>("B", dj);
-    auto   C = create_random_tensor<double>("C", di, dj);
+    auto   A = create_random_tensor<T>("A", di);
+    auto   B = create_random_tensor<T>("B", dj);
+    auto   C = create_random_tensor<T>("C", di, dj);
 
-    auto C_ref = Tensor<double, 2>("C_ref", di, dj);
+    auto C_ref = Tensor<T, 2>("C_ref", di, dj);
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t j0 = 0; j0 < dj; j0++) {
-            C_ref(i0, j0) = 0.5 * C(i0, j0) + 3.0 * A(i0) * B(j0);
+            C_ref(i0, j0) = c_pf * C(i0, j0) + ab_pf * A(i0) * B(j0);
         }
     }
 
-    REQUIRE_NOTHROW(einsum(0.5, Indices{i, j}, &C, 3.0, Indices{i}, A, Indices{j}, B, &alg_choice));
+    REQUIRE_NOTHROW(einsum(c_pf, Indices{i, j}, &C, ab_pf, Indices{i}, A, Indices{j}, B, &alg_choice));
     REQUIRE(alg_choice == tensor_algebra::detail::GER);
 
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t j0 = 0; j0 < dj; j0++) {
-            REQUIRE_THAT(C(i0, j0), Catch::Matchers::WithinRel(C_ref(i0, j0), 0.0001));
+            REQUIRE_THAT(C(i0, j0), CheckWithinRel(C_ref(i0, j0)));
         }
     }
 }
 
-TEST_CASE("ger_conjugation", "[dispatch][ger]") {
-    using T = std::complex<double>;
+TEMPLATE_LIST_TEST_CASE("ger_conjugation", "[dispatch][ger]", testing::ComplexScalarTypes) {
+    using T = TestType;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     // C(j,i) = A(i) * conj(B(j)), ConjB with swap_AB=true (B targets at front of C)
@@ -197,17 +206,18 @@ TEMPLATE_TEST_CASE("gemv_complex", "[dispatch][gemv]", std::complex<float>, std:
     }
 }
 
-TEST_CASE("gemv_tensorview", "[dispatch][gemv]") {
+TEMPLATE_LIST_TEST_CASE("gemv_tensorview", "[dispatch][gemv]", testing::AllScalarTypes) {
+    using T = TestType;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     size_t di = 5, dj = 6;
-    auto   A_full = create_random_tensor<double>("A_full", di + 2, dj + 2);
-    auto   B_full = create_random_tensor<double>("B_full", dj + 2);
+    auto   A_full = create_random_tensor<T>("A_full", di + 2, dj + 2);
+    auto   B_full = create_random_tensor<T>("B_full", dj + 2);
     auto   A_view = A_full(Range{1, (int64_t)(di + 1)}, Range{1, (int64_t)(dj + 1)});
     auto   B_view = B_full(Range{1, (int64_t)(dj + 1)});
-    auto   C      = create_zero_tensor<double>("C", di);
+    auto   C      = create_zero_tensor<T>("C", di);
 
-    auto C_ref = create_zero_tensor<double>("C_ref", di);
+    auto C_ref = create_zero_tensor<T>("C_ref", di);
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t j0 = 0; j0 < dj; j0++) {
             C_ref(i0) += A_view(i0, j0) * B_view(j0);
@@ -218,12 +228,12 @@ TEST_CASE("gemv_tensorview", "[dispatch][gemv]") {
     REQUIRE(alg_choice == tensor_algebra::detail::GEMV);
 
     for (size_t i0 = 0; i0 < di; i0++) {
-        REQUIRE_THAT(C(i0), Catch::Matchers::WithinRel(C_ref(i0), 0.0001));
+        REQUIRE_THAT(C(i0), CheckWithinRel(C_ref(i0)));
     }
 }
 
-TEST_CASE("gemv_conjugation", "[dispatch][gemv]") {
-    using T = std::complex<double>;
+TEMPLATE_LIST_TEST_CASE("gemv_conjugation", "[dispatch][gemv]", testing::ComplexScalarTypes) {
+    using T = TestType;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     // C(i) = conj(A(j,i)) * B(j), ConjA with transpose
@@ -248,27 +258,30 @@ TEST_CASE("gemv_conjugation", "[dispatch][gemv]") {
     }
 }
 
-TEST_CASE("gemv_prefactors", "[dispatch][gemv]") {
+TEMPLATE_LIST_TEST_CASE("gemv_prefactors", "[dispatch][gemv]", testing::AllScalarTypes) {
+    using T                                       = TestType;
+    T const                                 c_pf  = testing::prefactor<T>(0.5, 0.3);
+    T const                                 ab_pf = testing::prefactor<T>(2.1, -0.7);
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     size_t di = 5, dj = 6;
-    auto   A = create_random_tensor<double>("A", di, dj);
-    auto   B = create_random_tensor<double>("B", dj);
-    auto   C = create_random_tensor<double>("C", di);
+    auto   A = create_random_tensor<T>("A", di, dj);
+    auto   B = create_random_tensor<T>("B", dj);
+    auto   C = create_random_tensor<T>("C", di);
 
-    auto C_ref = Tensor<double, 1>("C_ref", di);
+    auto C_ref = Tensor<T, 1>("C_ref", di);
     for (size_t i0 = 0; i0 < di; i0++) {
-        C_ref(i0) = 0.5 * C(i0);
+        C_ref(i0) = c_pf * C(i0);
         for (size_t j0 = 0; j0 < dj; j0++) {
-            C_ref(i0) += 2.0 * A(i0, j0) * B(j0);
+            C_ref(i0) += ab_pf * A(i0, j0) * B(j0);
         }
     }
 
-    REQUIRE_NOTHROW(einsum(0.5, Indices{i}, &C, 2.0, Indices{i, j}, A, Indices{j}, B, &alg_choice));
+    REQUIRE_NOTHROW(einsum(c_pf, Indices{i}, &C, ab_pf, Indices{i, j}, A, Indices{j}, B, &alg_choice));
     REQUIRE(alg_choice == tensor_algebra::detail::GEMV);
 
     for (size_t i0 = 0; i0 < di; i0++) {
-        REQUIRE_THAT(C(i0), Catch::Matchers::WithinRel(C_ref(i0), 0.0001));
+        REQUIRE_THAT(C(i0), CheckWithinRel(C_ref(i0)));
     }
 }
 
@@ -305,8 +318,8 @@ TEST_CASE("gemm_complex_double", "[dispatch][gemm]") {
     }
 }
 
-TEST_CASE("gemm_conjA_transposed", "[dispatch][gemm]") {
-    using T = std::complex<double>;
+TEMPLATE_LIST_TEST_CASE("gemm_conjA_transposed", "[dispatch][gemm]", testing::ComplexScalarTypes) {
+    using T = TestType;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     // C(i,j) = conj(A(k,i)) * B(k,j), ConjA with transposed A.
@@ -335,8 +348,8 @@ TEST_CASE("gemm_conjA_transposed", "[dispatch][gemm]") {
     }
 }
 
-TEST_CASE("gemm_conjA_nontransposed_falls_through", "[dispatch][gemm]") {
-    using T = std::complex<double>;
+TEMPLATE_LIST_TEST_CASE("gemm_conjA_nontransposed_falls_through", "[dispatch][gemm]", testing::ComplexScalarTypes) {
+    using T = TestType;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     // C(i,j) = conj(A(i,k)) * B(k,j), ConjA without transpose.
@@ -367,30 +380,33 @@ TEST_CASE("gemm_conjA_nontransposed_falls_through", "[dispatch][gemm]") {
     }
 }
 
-TEST_CASE("gemm_prefactors", "[dispatch][gemm]") {
+TEMPLATE_LIST_TEST_CASE("gemm_prefactors", "[dispatch][gemm]", testing::AllScalarTypes) {
+    using T                                       = TestType;
+    T const                                 c_pf  = testing::prefactor<T>(0.5, 0.3);
+    T const                                 ab_pf = testing::prefactor<T>(2.1, -0.7);
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     size_t di = 4, dj = 5, dk = 6;
-    auto   A = create_random_tensor<double>("A", di, dk);
-    auto   B = create_random_tensor<double>("B", dk, dj);
-    auto   C = create_random_tensor<double>("C", di, dj);
+    auto   A = create_random_tensor<T>("A", di, dk);
+    auto   B = create_random_tensor<T>("B", dk, dj);
+    auto   C = create_random_tensor<T>("C", di, dj);
 
-    auto C_ref = Tensor<double, 2>("C_ref", di, dj);
+    auto C_ref = Tensor<T, 2>("C_ref", di, dj);
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t j0 = 0; j0 < dj; j0++) {
-            C_ref(i0, j0) = 0.5 * C(i0, j0);
+            C_ref(i0, j0) = c_pf * C(i0, j0);
             for (size_t k0 = 0; k0 < dk; k0++) {
-                C_ref(i0, j0) += 2.0 * A(i0, k0) * B(k0, j0);
+                C_ref(i0, j0) += ab_pf * A(i0, k0) * B(k0, j0);
             }
         }
     }
 
-    REQUIRE_NOTHROW(einsum(0.5, Indices{i, j}, &C, 2.0, Indices{i, k}, A, Indices{k, j}, B, &alg_choice));
+    REQUIRE_NOTHROW(einsum(c_pf, Indices{i, j}, &C, ab_pf, Indices{i, k}, A, Indices{k, j}, B, &alg_choice));
     REQUIRE(alg_choice == tensor_algebra::detail::GEMM);
 
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t j0 = 0; j0 < dj; j0++) {
-            REQUIRE_THAT(C(i0, j0), Catch::Matchers::WithinRel(C_ref(i0, j0), 0.0001));
+            REQUIRE_THAT(C(i0, j0), CheckWithinRel(C_ref(i0, j0)));
         }
     }
 }
@@ -499,19 +515,20 @@ TEST_CASE("sort_gemm_complex_float", "[dispatch][sort_gemm]") {
 // GENERIC path gaps: TensorView, conjugation, prefactors
 // ============================================================================
 
-TEST_CASE("generic_tensorview", "[dispatch][generic]") {
+TEMPLATE_LIST_TEST_CASE("generic_tensorview", "[dispatch][generic]", testing::AllScalarTypes) {
+    using T = TestType;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     // Hadamard-like contraction via generic: C(i,j) = A(i,j,k) * B(i,j,k)
     // Uses Hadamard (repeated i,j in output), forces generic path.
     size_t di = 3, dj = 4, dk = 5;
-    auto   A_full = create_random_tensor<double>("A_full", di + 2, dj + 2, dk + 2);
-    auto   B_full = create_random_tensor<double>("B_full", di + 2, dj + 2, dk + 2);
+    auto   A_full = create_random_tensor<T>("A_full", di + 2, dj + 2, dk + 2);
+    auto   B_full = create_random_tensor<T>("B_full", di + 2, dj + 2, dk + 2);
     auto   A_view = A_full(Range{1, (int64_t)(di + 1)}, Range{1, (int64_t)(dj + 1)}, Range{1, (int64_t)(dk + 1)});
     auto   B_view = B_full(Range{1, (int64_t)(di + 1)}, Range{1, (int64_t)(dj + 1)}, Range{1, (int64_t)(dk + 1)});
-    auto   C      = create_zero_tensor<double>("C", di, dj);
+    auto   C      = create_zero_tensor<T>("C", di, dj);
 
-    auto C_ref = create_zero_tensor<double>("C_ref", di, dj);
+    auto C_ref = create_zero_tensor<T>("C_ref", di, dj);
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t j0 = 0; j0 < dj; j0++) {
             for (size_t k0 = 0; k0 < dk; k0++) {
@@ -526,13 +543,13 @@ TEST_CASE("generic_tensorview", "[dispatch][generic]") {
 
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t j0 = 0; j0 < dj; j0++) {
-            REQUIRE_THAT(C(i0, j0), Catch::Matchers::WithinRel(C_ref(i0, j0), 0.0001));
+            REQUIRE_THAT(C(i0, j0), CheckWithinRel(C_ref(i0, j0)));
         }
     }
 }
 
-TEST_CASE("generic_conjugation", "[dispatch][generic]") {
-    using T = std::complex<double>;
+TEMPLATE_LIST_TEST_CASE("generic_conjugation", "[dispatch][generic]", testing::ComplexScalarTypes) {
+    using T = TestType;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     // Hadamard contraction with conjugation; must go to generic.
@@ -554,24 +571,27 @@ TEST_CASE("generic_conjugation", "[dispatch][generic]") {
     }
 }
 
-TEST_CASE("generic_prefactors", "[dispatch][generic]") {
+TEMPLATE_LIST_TEST_CASE("generic_prefactors", "[dispatch][generic]", testing::AllScalarTypes) {
+    using T                                       = TestType;
+    T const                                 c_pf  = testing::prefactor<T>(0.5, 0.3);
+    T const                                 ab_pf = testing::prefactor<T>(2.1, -0.7);
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     // Hadamard + prefactors: C(i) = 0.5*C(i) + 2.0*A(i,i)*B(i,i)
     size_t di = 5;
-    auto   A  = create_random_tensor<double>("A", di, di);
-    auto   B  = create_random_tensor<double>("B", di, di);
-    auto   C  = create_random_tensor<double>("C", di);
+    auto   A  = create_random_tensor<T>("A", di, di);
+    auto   B  = create_random_tensor<T>("B", di, di);
+    auto   C  = create_random_tensor<T>("C", di);
 
-    auto C_ref = Tensor<double, 1>("C_ref", di);
+    auto C_ref = Tensor<T, 1>("C_ref", di);
     for (size_t i0 = 0; i0 < di; i0++) {
-        C_ref(i0) = 0.5 * C(i0) + 2.0 * A(i0, i0) * B(i0, i0);
+        C_ref(i0) = c_pf * C(i0) + ab_pf * A(i0, i0) * B(i0, i0);
     }
 
-    REQUIRE_NOTHROW(einsum(0.5, Indices{i}, &C, 2.0, Indices{i, i}, A, Indices{i, i}, B, &alg_choice));
+    REQUIRE_NOTHROW(einsum(c_pf, Indices{i}, &C, ab_pf, Indices{i, i}, A, Indices{i, i}, B, &alg_choice));
 
     for (size_t i0 = 0; i0 < di; i0++) {
-        REQUIRE_THAT(C(i0), Catch::Matchers::WithinRel(C_ref(i0), 0.0001));
+        REQUIRE_THAT(C(i0), CheckWithinRel(C_ref(i0)));
     }
 }
 
@@ -579,7 +599,8 @@ TEST_CASE("generic_prefactors", "[dispatch][generic]") {
 // Broadcast output indices must reach the generic algorithm
 // ============================================================================
 
-TEST_CASE("broadcast_output_index_reaches_generic", "[dispatch][generic][broadcast]") {
+TEMPLATE_LIST_TEST_CASE("broadcast_output_index_reaches_generic", "[dispatch][generic][broadcast]", testing::AllScalarTypes) {
+    using T = TestType;
     tensor_algebra::detail::AlgorithmChoice alg_choice;
 
     // Defect: an output index carried by neither operand is a broadcast, and
@@ -592,23 +613,23 @@ TEST_CASE("broadcast_output_index_reaches_generic", "[dispatch][generic][broadca
     // not in the arithmetic, so a fixed A and B pin it without a random draw.
     size_t const di = 2, dj = 3, dk = 4, dl = 3;
 
-    auto A = Tensor<double, 2>("A", di, dj);
-    auto B = Tensor<double, 2>("B", dj, dk);
+    auto A = Tensor<T, 2>("A", di, dj);
+    auto B = Tensor<T, 2>("B", dj, dk);
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t j0 = 0; j0 < dj; j0++) {
-            A(i0, j0) = 1.0 + static_cast<double>(i0 * dj + j0);
+            A(i0, j0) = T(1.0 + static_cast<double>(i0 * dj + j0));
         }
     }
     for (size_t j0 = 0; j0 < dj; j0++) {
         for (size_t k0 = 0; k0 < dk; k0++) {
-            B(j0, k0) = 1.0 + static_cast<double>(j0 * dk + k0);
+            B(j0, k0) = T(1.0 + static_cast<double>(j0 * dk + k0));
         }
     }
 
     // Seeded with a value the contraction never writes, so a slice the engine
     // skips stays visible instead of being mistaken for a correct zero.
-    auto C = Tensor<double, 3>("C", di, dk, dl);
-    C.set_all(-7.0);
+    auto C = Tensor<T, 3>("C", di, dk, dl);
+    C.set_all(T{-7});
 
     REQUIRE_NOTHROW(einsum(Indices{i, k, l}, &C, Indices{i, j}, A, Indices{j, k}, B, &alg_choice));
 
@@ -619,12 +640,12 @@ TEST_CASE("broadcast_output_index_reaches_generic", "[dispatch][generic][broadca
     // Every slice along l receives the same matrix product.
     for (size_t i0 = 0; i0 < di; i0++) {
         for (size_t k0 = 0; k0 < dk; k0++) {
-            double ref = 0.0;
+            T ref{0};
             for (size_t j0 = 0; j0 < dj; j0++) {
                 ref += A(i0, j0) * B(j0, k0);
             }
             for (size_t l0 = 0; l0 < dl; l0++) {
-                REQUIRE_THAT(C(i0, k0, l0), Catch::Matchers::WithinRel(ref, 1.0e-12));
+                REQUIRE_THAT(C(i0, k0, l0), CheckWithinRel(ref, 1.0e-12));
             }
         }
     }
@@ -634,57 +655,60 @@ TEST_CASE("broadcast_output_index_reaches_generic", "[dispatch][generic][broadca
 // letter out of the loop entirely, so it read only the letter's first slice: "i <- ij ; i" gave
 // A(i, 0) * B(i) instead of the row sum times B(i). The string engine had the same defect and had
 // it fixed; this engine did not, until the reference einsum compared the two.
-TEST_CASE("Dispatch - a letter summed over one input alone", "[einsum][dispatch]") {
+TEMPLATE_LIST_TEST_CASE("Dispatch - a letter summed over one input alone", "[einsum][dispatch]", testing::AllScalarTypes) {
+    using T = TestType;
+    // A few order-one terms per element, so a few ulps of the element type.
+    double const                            tol        = 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
     tensor_algebra::detail::AlgorithmChoice alg_choice = tensor_algebra::detail::INDETERMINATE;
 
     size_t constexpr di = 3, dj = 4, dk = 2;
-    auto A = create_random_tensor<double>("A", di, dj);
-    auto b = create_random_tensor<double>("b", di);
+    auto A = create_random_tensor<T>("A", di, dj);
+    auto b = create_random_tensor<T>("b", di);
 
     auto row_sum = [&](size_t i0) {
-        double sum = 0.0;
+        T sum{0};
         for (size_t j0 = 0; j0 < dj; j0++)
             sum += A(i0, j0);
         return sum;
     };
 
     SECTION("only in A") {
-        auto C = create_zero_tensor<double>("C", di);
+        auto C = create_zero_tensor<T>("C", di);
         einsum(Indices{i}, &C, Indices{i, j}, A, Indices{i}, b, &alg_choice);
         REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
         for (size_t i0 = 0; i0 < di; i0++)
-            REQUIRE_THAT(C(i0), Catch::Matchers::WithinRel(row_sum(i0) * b(i0), 1.0e-12));
+            REQUIRE_THAT(C(i0), CheckWithinRel(row_sum(i0) * b(i0), tol));
     }
 
     SECTION("only in B") {
-        auto C = create_zero_tensor<double>("C", di);
+        auto C = create_zero_tensor<T>("C", di);
         einsum(Indices{i}, &C, Indices{i}, b, Indices{i, j}, A, &alg_choice);
         REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
         for (size_t i0 = 0; i0 < di; i0++)
-            REQUIRE_THAT(C(i0), Catch::Matchers::WithinRel(b(i0) * row_sum(i0), 1.0e-12));
+            REQUIRE_THAT(C(i0), CheckWithinRel(b(i0) * row_sum(i0), tol));
     }
 
     SECTION("beside an outer product") {
-        auto c = create_random_tensor<double>("c", dk);
-        auto C = create_zero_tensor<double>("C", di, dk);
+        auto c = create_random_tensor<T>("c", dk);
+        auto C = create_zero_tensor<T>("C", di, dk);
         einsum(Indices{i, k}, &C, Indices{i, j}, A, Indices{k}, c, &alg_choice);
         REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
         for (size_t i0 = 0; i0 < di; i0++)
             for (size_t k0 = 0; k0 < dk; k0++)
-                REQUIRE_THAT(C(i0, k0), Catch::Matchers::WithinRel(row_sum(i0) * c(k0), 1.0e-12));
+                REQUIRE_THAT(C(i0, k0), CheckWithinRel(row_sum(i0) * c(k0), tol));
     }
 
     SECTION("repeated within that input") {
         // "i <- ijj ; i": the trace of each slice of T, times b.
-        auto T = create_random_tensor<double>("T", di, dj, dj);
-        auto C = create_zero_tensor<double>("C", di);
-        einsum(Indices{i}, &C, Indices{i, j, j}, T, Indices{i}, b, &alg_choice);
+        auto X = create_random_tensor<T>("X", di, dj, dj);
+        auto C = create_zero_tensor<T>("C", di);
+        einsum(Indices{i}, &C, Indices{i, j, j}, X, Indices{i}, b, &alg_choice);
         REQUIRE(alg_choice == tensor_algebra::detail::GENERIC);
         for (size_t i0 = 0; i0 < di; i0++) {
-            double trace = 0.0;
+            T trace{0};
             for (size_t j0 = 0; j0 < dj; j0++)
-                trace += T(i0, j0, j0);
-            REQUIRE_THAT(C(i0), Catch::Matchers::WithinRel(trace * b(i0), 1.0e-12));
+                trace += X(i0, j0, j0);
+            REQUIRE_THAT(C(i0), CheckWithinRel(trace * b(i0), tol));
         }
     }
 }
@@ -692,43 +716,44 @@ TEST_CASE("Dispatch - a letter summed over one input alone", "[einsum][dispatch]
 // An empty operand leaves nothing to contract, but the output prefactor still applies, once. The
 // engine ran no iteration for an empty link and so never applied c_pf: C came back unscaled. The
 // string engine had this rule already.
-TEST_CASE("Dispatch - an empty operand applies the output prefactor once", "[einsum][dispatch]") {
+TEMPLATE_LIST_TEST_CASE("Dispatch - an empty operand applies the output prefactor once", "[einsum][dispatch]", testing::AllScalarTypes) {
+    using T                                            = TestType;
     tensor_algebra::detail::AlgorithmChoice alg_choice = tensor_algebra::detail::INDETERMINATE;
 
     SECTION("an empty link scales C") {
-        auto A = create_zero_tensor<double>("A", 3, 0);
-        auto B = create_zero_tensor<double>("B", 0, 4);
-        auto C = create_zero_tensor<double>("C", 3, 4);
-        C.set_all(3.0);
-        einsum(2.0, Indices{i, j}, &C, 1.0, Indices{i, k}, A, Indices{k, j}, B, &alg_choice);
+        auto A = create_zero_tensor<T>("A", 3, 0);
+        auto B = create_zero_tensor<T>("B", 0, 4);
+        auto C = create_zero_tensor<T>("C", 3, 4);
+        C.set_all(T{3});
+        einsum(T{2}, Indices{i, j}, &C, T{1}, Indices{i, k}, A, Indices{k, j}, B, &alg_choice);
         REQUIRE(alg_choice == tensor_algebra::detail::EMPTY);
-        REQUIRE(C(0, 0) == 6.0);
-        REQUIRE(C(2, 3) == 6.0);
+        REQUIRE(C(0, 0) == T{6});
+        REQUIRE(C(2, 3) == T{6});
     }
 
     SECTION("c_pf == 0 assigns zero, whatever C held") {
-        auto A = create_zero_tensor<double>("A", 3, 0);
-        auto B = create_zero_tensor<double>("B", 0, 4);
-        auto C = create_zero_tensor<double>("C", 3, 4);
-        C.set_all(std::numeric_limits<double>::quiet_NaN());
-        einsum(0.0, Indices{i, j}, &C, 1.0, Indices{i, k}, A, Indices{k, j}, B, &alg_choice);
-        REQUIRE(C(1, 1) == 0.0);
+        auto A = create_zero_tensor<T>("A", 3, 0);
+        auto B = create_zero_tensor<T>("B", 0, 4);
+        auto C = create_zero_tensor<T>("C", 3, 4);
+        C.set_all(testing::prefactor<T>(std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()));
+        einsum(T{0}, Indices{i, j}, &C, T{1}, Indices{i, k}, A, Indices{k, j}, B, &alg_choice);
+        REQUIRE(C(1, 1) == T{0});
     }
 
     SECTION("an empty output is left alone") {
-        auto A = create_random_tensor<double>("A", 0, 5);
-        auto B = create_random_tensor<double>("B", 5, 4);
-        auto C = create_zero_tensor<double>("C", 0, 4);
-        REQUIRE_NOTHROW(einsum(2.0, Indices{i, j}, &C, 1.0, Indices{i, k}, A, Indices{k, j}, B, &alg_choice));
+        auto A = create_random_tensor<T>("A", 0, 5);
+        auto B = create_random_tensor<T>("B", 5, 4);
+        auto C = create_zero_tensor<T>("C", 0, 4);
+        REQUIRE_NOTHROW(einsum(T{2}, Indices{i, j}, &C, T{1}, Indices{i, k}, A, Indices{k, j}, B, &alg_choice));
         REQUIRE(alg_choice == tensor_algebra::detail::EMPTY);
     }
 
     SECTION("a scalar output") {
-        auto   x = create_zero_tensor<double>("x", 0);
-        auto   y = create_zero_tensor<double>("y", 0);
-        double c = 5.0;
-        einsum(2.0, Indices{}, &c, 1.0, Indices{i}, x, Indices{i}, y, &alg_choice);
+        auto x = create_zero_tensor<T>("x", 0);
+        auto y = create_zero_tensor<T>("y", 0);
+        T    c = T{5};
+        einsum(T{2}, Indices{}, &c, T{1}, Indices{i}, x, Indices{i}, y, &alg_choice);
         REQUIRE(alg_choice == tensor_algebra::detail::EMPTY);
-        REQUIRE(c == 10.0);
+        REQUIRE(c == T{10});
     }
 }

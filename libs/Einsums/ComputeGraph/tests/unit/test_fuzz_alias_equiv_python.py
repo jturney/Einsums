@@ -81,14 +81,18 @@ def _program(seed, depth=0, max_stmts=8):
     return rng, _gen_block(rng, depth=depth, max_stmts=max_stmts, rich_views=True)
 
 
-def _graph_for(prog, rng, name):
+def _graph_for(prog, rng, name, seed):
     """Build the program into a graph, without executing it.
 
     Nothing here runs a kernel: the property under test is a property of the
     dependence graph, and building one is far cheaper than replaying it, which
     is what lets this shard cover a wide corpus.
+
+    The pool's dtype cycles with @p seed. The pointer derivation works in bytes
+    (addresses, strides, overlap), so an element size the corpus never drew is
+    a stride arithmetic it never checked.
     """
-    g, _mats, _vecs, _r3 = _build(prog, *_seed_arrays(rng), name)
+    g, _mats, _vecs, _r3 = _build(prog, *_seed_arrays(rng, seed_dtype(seed)), name)
     return g
 
 
@@ -96,7 +100,7 @@ def _graph_for(prog, rng, name):
 def test_alias_derivations_schedule_identically(seed):
     """Tier: exact schedule equality over ``cg.view``-only alias relations."""
     rng, prog = _program(seed)
-    g = _graph_for(prog, rng, f"alias_flat{seed}")
+    g = _graph_for(prog, rng, f"alias_flat{seed}", seed)
 
     pointer = _pointer_schedule(g)
     structural = _structural_schedule(g)
@@ -116,7 +120,7 @@ def test_alias_derivations_schedule_identically_nested(seed):
     silently, which is invisible to a straight-line program.
     """
     rng, prog = _program(seed, depth=2, max_stmts=5)
-    g = _graph_for(prog, rng, f"alias_nested{seed}")
+    g = _graph_for(prog, rng, f"alias_nested{seed}", seed)
 
     pointer = _pointer_schedule(g)
     structural = _structural_schedule(g)
@@ -136,7 +140,7 @@ def test_pointer_derivation_adds_nothing_to_a_structural_graph(seed):
     the second pass moves the schedule.
     """
     rng, prog = _program(seed)
-    g = _graph_for(prog, rng, f"alias_bothways{seed}")
+    g = _graph_for(prog, rng, f"alias_bothways{seed}", seed)
 
     structural = _structural_schedule(g)
     g.link_alias_storage()
@@ -157,7 +161,7 @@ def test_structural_never_drops_an_edge_the_pointer_path_found(seed):
     one. That direction is the safety property; equality is the sharpness one.
     """
     rng, prog = _program(seed)
-    g = _graph_for(prog, rng, f"alias_direction{seed}")
+    g = _graph_for(prog, rng, f"alias_direction{seed}", seed)
 
     baseline_edges, _ = _pointer_schedule(g)
     structural_edges, _ = _structural_schedule(g)
@@ -180,8 +184,9 @@ def test_rich_view_programs_agree_with_the_numpy_oracle(seed):
     memory would pass every other test here.
     """
     rng = np.random.default_rng(seed)
-    prog = _gen_block(rng, depth=0, max_stmts=6, rich_views=True)
-    check_program(prog, *_seed_arrays(rng), f"alias_values{seed}")
+    dtype = seed_dtype(seed)
+    prog = complexify(_gen_block(rng, depth=0, max_stmts=6, rich_views=True), np.random.default_rng((1, seed)))
+    check_program(prog, *_seed_arrays(rng, dtype), f"alias_values{seed}", dtype=dtype)
 
 
 def test_rich_view_corpus_actually_draws_chained_views():
@@ -238,7 +243,7 @@ def test_no_hazard_edge_orders_two_disjoint_accesses(seed):
     oracle that can see it.
     """
     rng, prog = _program(seed)
-    g = _graph_for(prog, rng, f"alias_minimal{seed}")
+    g = _graph_for(prog, rng, f"alias_minimal{seed}", seed)
     g.link_alias_storage()
     unjustified = g.unjustified_hazard_edges()
     assert not unjustified, (
@@ -252,7 +257,7 @@ def test_no_hazard_edge_orders_two_disjoint_accesses_nested(seed):
     """The same, with loops and conditionals: a control-flow node's effective
     I/O is the subtree's, so a merged root inside a body reaches the parent."""
     rng, prog = _program(seed, depth=2, max_stmts=5)
-    g = _graph_for(prog, rng, f"alias_minimal_nested{seed}")
+    g = _graph_for(prog, rng, f"alias_minimal_nested{seed}", seed)
     g.link_alias_storage()
     unjustified = g.unjustified_hazard_edges()
     assert not unjustified, (
@@ -261,7 +266,7 @@ def test_no_hazard_edge_orders_two_disjoint_accesses_nested(seed):
     )
 
 
-def test_two_deferred_parents_are_not_ordered_against_each_other():
+def test_two_deferred_parents_are_not_ordered_against_each_other(dtype):
     """The shape the oracle exists for, pinned rather than left to the corpus.
 
     Two same-shaped deferred tensors sliced at the same offset. Their writers
@@ -271,9 +276,9 @@ def test_two_deferred_parents_are_not_ordered_against_each_other():
     every access to one was ordered against every access to the other.
     """
     graph = cg.Graph("two-deferred-parents")
-    first = graph.declare_zero_tensor("first", [2, 2, 3, 3], intermediate=True, dtype="float64")
-    second = graph.declare_zero_tensor("second", [2, 2, 3, 3], intermediate=True, dtype="float64")
-    src = einsums.create_zero_tensor("src", [3, 3], dtype="float64")
+    first = graph.declare_zero_tensor("first", [2, 2, 3, 3], intermediate=True, dtype=dtype)
+    second = graph.declare_zero_tensor("second", [2, 2, 3, 3], intermediate=True, dtype=dtype)
+    src = einsums.create_zero_tensor("src", [3, 3], dtype=dtype)
     np.asarray(src)[...] = np.arange(9.0).reshape(3, 3)
 
     drop_at_one = [(2, 1, 0), (2, 1, 0), (0, 0, 0), (0, 0, 0)]

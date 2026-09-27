@@ -6,6 +6,8 @@
 #include <Einsums/ComputeGraph/StringDispatch.hpp>
 #include <Einsums/Config/Namespace.hpp>
 
+#include <string>
+
 EINSUMS_NAMESPACE_BEGIN(compute_graph::dispatch)
 
 // One slot per thread for the whole PROCESS, which is why this is not inline.
@@ -13,6 +15,10 @@ EINSUMS_NAMESPACE_BEGIN(compute_graph::dispatch)
 char const *&last_dispatch_route() {
     thread_local char const *route = "none";
     return route;
+}
+
+std::string last_dispatch_route_name() {
+    return last_dispatch_route();
 }
 
 EINSUMS_NAMESPACE_END(compute_graph::dispatch)

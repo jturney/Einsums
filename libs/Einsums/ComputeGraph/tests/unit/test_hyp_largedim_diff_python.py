@@ -23,6 +23,7 @@ from hypothesis import strategies as st
 import einsums
 import einsums.graph as cg
 from einsums.testing import assert_exact, integer_data
+from _dtype_draws import DTYPES, assert_rounding_close, random_array, wide
 
 _ctr = itertools.count()
 _CAP = 50000
@@ -36,16 +37,10 @@ def _mk(a, dt):
     return t
 
 
-def _rnd(shape, cplx, rng):
-    if cplx:
-        return rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
-    return rng.standard_normal(shape)
-
-
 # Sizes around MR(4)/NR(6) multiples +/- 1 and across KC=64 (capped for CI speed).
 _SZ = st.sampled_from([1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 16, 17, 23, 24, 31, 32, 33, 48, 64])
 _SZK = st.sampled_from([1, 4, 6, 7, 8, 16, 17, 32, 63, 64, 65, 96])
-_DT = st.sampled_from(["float64", "complex128"])
+_DT = DTYPES
 
 
 # gemm/mm/multiN/multiK route through pack_A/pack_B + micro-kernel; einsum_lone
@@ -57,14 +52,21 @@ _OPS = ["gemm", "einsum_mm", "einsum_multiN", "einsum_multiK", "einsum_lone", "e
 
 def _run_largedim(op, m, n, k, p, dt, seed, exact):
     rng = np.random.default_rng(seed)
-    isc = (dt == "complex128")
-    gen = (lambda shape: integer_data(shape, dt, rng)) if exact else (lambda shape: _rnd(shape, isc, rng))
+    # Operands in dt, held in double precision so numpy's oracle does not round
+    # at dt as well.
+    gen = (lambda shape: integer_data(shape, dt, rng).astype(wide(dt))) if exact else (lambda shape: random_array(shape, dt, rng))
 
-    def check(Ct, oracle):
+    def check(Ct, np_spec, A0, B0):
+        oracle = np.einsum(np_spec, A0, B0)
+        scale = np.einsum(np_spec, np.abs(A0), np.abs(B0))
         if exact:
+            # Integer data stays exact while every partial sum does, which the
+            # sum of absolute terms bounds: 2**24 for single precision. These
+            # extents keep it near 2**15, so every dtype qualifies.
+            assert scale.max(initial=0.0) < 2.0**24
             assert_exact(np.asarray(Ct), oracle)
         else:
-            np.testing.assert_allclose(np.asarray(Ct), oracle, rtol=1e-6, atol=1e-7)
+            assert_rounding_close(Ct, oracle, dt, scale, err_msg=f"{op} m={m} n={n} k={k} p={p} dt={dt} seed={seed}")
 
     def run(spec, Ct, At, Bt):
         g = cg.Graph(f"ld{next(_ctr)}")
@@ -80,37 +82,37 @@ def _run_largedim(op, m, n, k, p, dt, seed, exact):
         with cg.capture(g):
             einsums.linalg.gemm(1.0, At, Bt, 0.0, Ct)
         g.execute()
-        check(Ct, A0 @ B0)
+        check(Ct, "ik,kj->ij", A0, B0)
     elif op == "einsum_mm":
         assume(m * k + k * n + m * n <= _CAP)
         A0, B0 = gen((m, k)), gen((k, n))
         At, Bt, Ct = _mk(A0, dt), _mk(B0, dt), _mk(np.zeros((m, n)), dt)
         run("ij <- ik ; kj", Ct, At, Bt)
-        check(Ct, A0 @ B0)
+        check(Ct, "ik,kj->ij", A0, B0)
     elif op == "einsum_multiN":  # N = {j, p}
         assume(m * k + k * n * p + m * n * p <= _CAP)
         A0, B0 = gen((m, k)), gen((k, n, p))
         At, Bt, Ct = _mk(A0, dt), _mk(B0, dt), _mk(np.zeros((m, n, p)), dt)
         run("ijp <- ik ; kjp", Ct, At, Bt)
-        check(Ct, np.einsum("ik,kjp->ijp", A0, B0))
+        check(Ct, "ik,kjp->ijp", A0, B0)
     elif op == "einsum_multiK":  # K = {k, p}
         assume(m * k * p + k * p * n + m * n <= _CAP)
         A0, B0 = gen((m, k, p)), gen((k, p, n))
         At, Bt, Ct = _mk(A0, dt), _mk(B0, dt), _mk(np.zeros((m, n)), dt)
         run("ij <- ikp ; kpj", Ct, At, Bt)
-        check(Ct, np.einsum("ikp,kpj->ij", A0, B0))
+        check(Ct, "ikp,kpj->ij", A0, B0)
     elif op == "einsum_lone":  # link k + lone p (in B only): C_ij = sum_k sum_p A_ik B_pkj
         assume(m * k + p * k * n + m * n <= _CAP)
         A0, B0 = gen((m, k)), gen((p, k, n))
         At, Bt, Ct = _mk(A0, dt), _mk(B0, dt), _mk(np.zeros((m, n)), dt)
         run("ij <- ik ; pkj", Ct, At, Bt)
-        check(Ct, np.einsum("ik,pkj->ij", A0, B0))
+        check(Ct, "ik,pkj->ij", A0, B0)
     else:  # einsum_diag: diagonal over p in A, then contract p with B
         assume(m * k * k + k * n + m * n <= _CAP)
         A0, B0 = gen((m, k, k)), gen((k, n))
         At, Bt, Ct = _mk(A0, dt), _mk(B0, dt), _mk(np.zeros((m, n)), dt)
         run("ij <- ipp ; pj", Ct, At, Bt)
-        check(Ct, np.einsum("ipp,pj->ij", A0, B0))
+        check(Ct, "ipp,pj->ij", A0, B0)
 
 
 @given(op=st.sampled_from(_OPS),

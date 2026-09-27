@@ -10,6 +10,7 @@
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <array>
+#include <limits>
 #include <string>
 
 #include <Einsums/Testing.hpp>
@@ -20,6 +21,16 @@ using einsums::testing::reference_einsum;
 
 using namespace einsums;
 namespace cg = einsums::compute_graph;
+
+namespace {
+
+/// Absolute tolerance for the BLAS-shaped cases: a few order-one terms, so a few ulps of @p T.
+template <typename T>
+double route_tolerance() {
+    return 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
+}
+
+} // namespace
 
 TEST_CASE("String einsum - arrow notation, direct execute", "[ComputeGraph][StringEinsum]") {
     auto A          = create_random_tensor<double>("A", 4, 3);
@@ -225,109 +236,139 @@ TEST_CASE("String einsum - transposed A", "[ComputeGraph][StringEinsum]") {
 // Phase 2: Non-GEMM dispatch patterns
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("String einsum - GEMV (matrix-vector)", "[ComputeGraph][StringEinsum][Phase2]") {
-    auto A          = create_random_tensor<double>("A", 4, 3);
-    auto x          = create_random_tensor<double>("x", 3);
-    auto y          = create_zero_tensor<double>("y", 4);
-    auto y_expected = create_zero_tensor<double>("ye", 4);
+TEMPLATE_LIST_TEST_CASE("String einsum - GEMV (matrix-vector)", "[ComputeGraph][StringEinsum][Phase2]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 4, 3);
+    auto x          = create_random_tensor<T>("x", 3);
+    auto y          = create_zero_tensor<T>("y", 4);
+    auto y_expected = create_zero_tensor<T>("ye", 4);
 
     reference_einsum("i <- ik ; k", &y_expected, A, x);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("i <- ik ; k", &y, A, x);
+    CHECK(std::string{cg::dispatch::last_dispatch_route()} == "gemv_mat_vec_runtime");
 
     for (size_t ii = 0; ii < 4; ii++) {
-        REQUIRE(std::abs(y(ii) - y_expected(ii)) < 1e-12);
+        REQUIRE(std::abs(y(ii) - y_expected(ii)) < route_tolerance<T>());
     }
 }
 
-TEST_CASE("String einsum - GEMV transposed", "[ComputeGraph][StringEinsum][Phase2]") {
-    auto A          = create_random_tensor<double>("A", 3, 4);
-    auto x          = create_random_tensor<double>("x", 3);
-    auto y          = create_zero_tensor<double>("y", 4);
-    auto y_expected = create_zero_tensor<double>("ye", 4);
+TEMPLATE_LIST_TEST_CASE("String einsum - GEMV transposed", "[ComputeGraph][StringEinsum][Phase2]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 3, 4);
+    auto x          = create_random_tensor<T>("x", 3);
+    auto y          = create_zero_tensor<T>("y", 4);
+    auto y_expected = create_zero_tensor<T>("ye", 4);
 
     reference_einsum("i <- ki ; k", &y_expected, A, x);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("i <- ki ; k", &y, A, x);
+    CHECK(std::string{cg::dispatch::last_dispatch_route()} == "gemv_mat_vec_runtime");
 
     for (size_t ii = 0; ii < 4; ii++) {
-        REQUIRE(std::abs(y(ii) - y_expected(ii)) < 1e-12);
+        REQUIRE(std::abs(y(ii) - y_expected(ii)) < route_tolerance<T>());
     }
 }
 
-TEST_CASE("String einsum - GEMV vector * matrix", "[ComputeGraph][StringEinsum][Phase2]") {
-    auto x          = create_random_tensor<double>("x", 3);
-    auto B          = create_random_tensor<double>("B", 3, 5);
-    auto y          = create_zero_tensor<double>("y", 5);
-    auto y_expected = create_zero_tensor<double>("ye", 5);
+TEMPLATE_LIST_TEST_CASE("String einsum - GEMV vector * matrix", "[ComputeGraph][StringEinsum][Phase2]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto x          = create_random_tensor<T>("x", 3);
+    auto B          = create_random_tensor<T>("B", 3, 5);
+    auto y          = create_zero_tensor<T>("y", 5);
+    auto y_expected = create_zero_tensor<T>("ye", 5);
 
     reference_einsum("j <- k ; kj", &y_expected, x, B);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("j <- k ; kj", &y, x, B);
+    CHECK(std::string{cg::dispatch::last_dispatch_route()} == "gemv_vec_mat_runtime");
 
     for (size_t jj = 0; jj < 5; jj++) {
-        REQUIRE(std::abs(y(jj) - y_expected(jj)) < 1e-12);
+        REQUIRE(std::abs(y(jj) - y_expected(jj)) < route_tolerance<T>());
     }
 }
 
-TEST_CASE("String einsum - GER (outer product)", "[ComputeGraph][StringEinsum][Phase2]") {
-    auto x          = create_random_tensor<double>("x", 4);
-    auto y          = create_random_tensor<double>("y", 5);
-    auto C          = create_zero_tensor<double>("C", 4, 5);
-    auto C_expected = create_zero_tensor<double>("Ce", 4, 5);
+TEMPLATE_LIST_TEST_CASE("String einsum - GER (outer product)", "[ComputeGraph][StringEinsum][Phase2]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto x          = create_random_tensor<T>("x", 4);
+    auto y          = create_random_tensor<T>("y", 5);
+    auto C          = create_zero_tensor<T>("C", 4, 5);
+    auto C_expected = create_zero_tensor<T>("Ce", 4, 5);
 
     reference_einsum("ij <- i ; j", &C_expected, x, y);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture, einsums-no-link-index)
     cg::einsum("ij <- i ; j", &C, x, y);
+    CHECK(std::string{cg::dispatch::last_dispatch_route()} == "ger_runtime");
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < route_tolerance<T>());
         }
     }
 }
 
-TEST_CASE("String einsum - DOT product", "[ComputeGraph][StringEinsum][Phase2]") {
-    auto x = create_random_tensor<double>("x", 10);
-    auto y = create_random_tensor<double>("y", 10);
+TEMPLATE_LIST_TEST_CASE("String einsum - DOT product", "[ComputeGraph][StringEinsum][Phase2]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto x  = create_random_tensor<T>("x", 10);
+    auto y  = create_random_tensor<T>("y", 10);
 
-    double const expected = linear_algebra::dot(x, y);
+    T const expected = linear_algebra::dot(x, y);
 
-    auto result = create_zero_tensor<double>("result", 1);
+    auto result = create_zero_tensor<T>("result", 1);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum(" <- i ; i", &result, x, y);
+    CHECK(std::string{cg::dispatch::last_dispatch_route()} == "dot_runtime");
 
-    REQUIRE(std::abs(result(0) - expected) < 1e-10);
+    REQUIRE(std::abs(result(0) - expected) < route_tolerance<T>());
+
+    // A conjugated operand keeps the scalar-output route, the one BLAS shape
+    // with a conjugating form: true_dot on a complex type, and the plain dot on
+    // a real one, where conjugation is the identity.
+    T conj_expected{0};
+    for (size_t n = 0; n < 10; n++) {
+        if constexpr (IsComplexV<T>) {
+            conj_expected += std::conj(x(n)) * y(n);
+        } else {
+            conj_expected += x(n) * y(n);
+        }
+    }
+    auto conj_result = create_zero_tensor<T>("conj_result", 1);
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum(" <- conj(i) ; i", &conj_result, x, y);
+    CHECK(std::string{cg::dispatch::last_dispatch_route()} == (IsComplexV<T> ? "true_dot_runtime" : "dot_runtime"));
+    REQUIRE(std::abs(conj_result(0) - conj_expected) < route_tolerance<T>());
 }
 
-TEST_CASE("String einsum - direct product (element-wise)", "[ComputeGraph][StringEinsum][Phase2]") {
-    auto A          = create_random_tensor<double>("A", 3, 4);
-    auto B          = create_random_tensor<double>("B", 3, 4);
-    auto C          = create_zero_tensor<double>("C", 3, 4);
-    auto C_expected = create_zero_tensor<double>("Ce", 3, 4);
+TEMPLATE_LIST_TEST_CASE("String einsum - direct product (element-wise)", "[ComputeGraph][StringEinsum][Phase2]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 3, 4);
+    auto B          = create_random_tensor<T>("B", 3, 4);
+    auto C          = create_zero_tensor<T>("C", 3, 4);
+    auto C_expected = create_zero_tensor<T>("Ce", 3, 4);
 
-    linear_algebra::direct_product(1.0, A, B, 0.0, &C_expected);
+    linear_algebra::direct_product(T{1}, A, B, T{0}, &C_expected);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
     cg::einsum("ij <- ij ; ij", &C, A, B);
+    CHECK(std::string{cg::dispatch::last_dispatch_route()} == "direct_product_runtime");
 
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < route_tolerance<T>());
         }
     }
 }
 
-TEST_CASE("String einsum - GEMV in graph capture", "[ComputeGraph][StringEinsum][Phase2]") {
-    auto A          = create_random_tensor<double>("A", 4, 3);
-    auto x          = create_random_tensor<double>("x", 3);
-    auto y          = create_zero_tensor<double>("y", 4);
-    auto y_expected = create_zero_tensor<double>("ye", 4);
+TEMPLATE_LIST_TEST_CASE("String einsum - GEMV in graph capture", "[ComputeGraph][StringEinsum][Phase2]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto A          = create_random_tensor<T>("A", 4, 3);
+    auto x          = create_random_tensor<T>("x", 3);
+    auto y          = create_zero_tensor<T>("y", 4);
+    auto y_expected = create_zero_tensor<T>("ye", 4);
 
     reference_einsum("i <- ik ; k", &y_expected, A, x);
 
@@ -340,15 +381,16 @@ TEST_CASE("String einsum - GEMV in graph capture", "[ComputeGraph][StringEinsum]
     graph.execute();
 
     for (size_t ii = 0; ii < 4; ii++) {
-        REQUIRE(std::abs(y(ii) - y_expected(ii)) < 1e-12);
+        REQUIRE(std::abs(y(ii) - y_expected(ii)) < route_tolerance<T>());
     }
 }
 
-TEST_CASE("String einsum - GER in graph capture", "[ComputeGraph][StringEinsum][Phase2]") {
-    auto x          = create_random_tensor<double>("x", 3);
-    auto y          = create_random_tensor<double>("y", 4);
-    auto C          = create_zero_tensor<double>("C", 3, 4);
-    auto C_expected = create_zero_tensor<double>("Ce", 3, 4);
+TEMPLATE_LIST_TEST_CASE("String einsum - GER in graph capture", "[ComputeGraph][StringEinsum][Phase2]", testing::AllScalarTypes) {
+    using T         = TestType;
+    auto x          = create_random_tensor<T>("x", 3);
+    auto y          = create_random_tensor<T>("y", 4);
+    auto C          = create_zero_tensor<T>("C", 3, 4);
+    auto C_expected = create_zero_tensor<T>("Ce", 3, 4);
 
     reference_einsum("ij <- i ; j", &C_expected, x, y);
 
@@ -363,7 +405,7 @@ TEST_CASE("String einsum - GER in graph capture", "[ComputeGraph][StringEinsum][
 
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < 1e-12);
+            REQUIRE(std::abs(C(ii, jj) - C_expected(ii, jj)) < route_tolerance<T>());
         }
     }
 }
@@ -746,18 +788,20 @@ TEST_CASE("String einsum - prefactors apply once, not once per term", "[ComputeG
     }
 }
 
-TEST_CASE("String einsum - the base contraction keeps its fast path", "[ComputeGraph][StringEinsum][Permutation]") {
+TEMPLATE_LIST_TEST_CASE("String einsum - the base contraction keeps its fast path", "[ComputeGraph][StringEinsum][Permutation]",
+                        testing::AllScalarTypes) {
+    using T         = TestType;
     size_t const no = 3, nv = 4;
-    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
-    auto         F  = create_random_tensor<double>("F", no, no);
-    auto         C  = create_zero_tensor<double>("C", no, no, nv, nv);
+    auto         t2 = create_random_tensor<T>("t2", no, no, nv, nv);
+    auto         F  = create_random_tensor<T>("F", no, no);
+    auto         C  = create_zero_tensor<T>("C", no, no, nv, nv);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("i,j,a,b <- i,m,a,b ; m,j", 0.0, &C, 1.0, t2, F);
+    cg::einsum("i,j,a,b <- i,m,a,b ; m,j", T{0}, &C, T{1}, t2, F);
     std::string const bare = cg::dispatch::last_dispatch_route();
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", 0.0, &C, 1.0, t2, F);
+    cg::einsum("i,j,a,b <- P(i/j) i,m,a,b ; m,j", T{0}, &C, T{1}, t2, F);
     std::string const wrapped = cg::dispatch::last_dispatch_route();
 
     // The route names the operator AND the kernel underneath it, so this asserts

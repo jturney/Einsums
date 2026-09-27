@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -339,7 +340,9 @@ TEST_CASE("ThreadWidth - moldability follows the kernel and the vendor", "[Compu
     REQUIRE_FALSE((blas::has_per_thread_control() && blas::threads_with_openmp()));
 }
 
-TEST_CASE("ThreadWidth - a node width sends a contraction to the packed loops", "[ComputeGraph][Executor][ThreadWidth]") {
+TEMPLATE_LIST_TEST_CASE("ThreadWidth - a node width sends a contraction to the packed loops", "[ComputeGraph][Executor][ThreadWidth]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The mechanism the (T)-shaped contractions depend on, checked one level
     // below the executor. A vendor GEMM issued under a node width is clamped to
     // one thread by the BLAS wrappers' fence, so PackedGemm's engine declines
@@ -357,10 +360,10 @@ TEST_CASE("ThreadWidth - a node width sends a contraction to the packed loops", 
     // shape, and after dim coalescing a single-M/N/K contraction - which is
     // exactly what the single-GEMM deferral picks up.
     constexpr size_t n     = 48;
-    auto             K     = create_random_tensor<double>("K_xvvv", n, n, n);
-    auto             t     = create_random_tensor<double>("t_kj", n, n);
-    auto             eager = create_zero_tensor<double>("eager", n, n, n);
-    auto             wide  = create_zero_tensor<double>("wide", n, n, n);
+    auto             K     = create_random_tensor<T>("K_xvvv", n, n, n);
+    auto             t     = create_random_tensor<T>("t_kj", n, n);
+    auto             eager = create_zero_tensor<T>("eager", n, n, n);
+    auto             wide  = create_zero_tensor<T>("wide", n, n, n);
 
     cg::einsum("abd;cd->abc", &eager, K, t);
     REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "packed_gemm");
@@ -377,9 +380,11 @@ TEST_CASE("ThreadWidth - a node width sends a contraction to the packed loops", 
     REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "packed_gemm");
     REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
 
-    // Two kernels, one answer. The sums are reassociated, nothing else.
+    // Two kernels, one answer. The sums are reassociated, nothing else, so
+    // they differ by rounding that grows with the n terms of each sum.
+    double const tol = 10.0 * static_cast<double>(n) * std::numeric_limits<RemoveComplexT<T>>::epsilon();
     for (size_t e = 0; e < eager.size(); e++) {
-        REQUIRE(std::abs(eager.data()[e] - wide.data()[e]) < 1e-10 * std::max(1.0, std::abs(eager.data()[e])));
+        REQUIRE(std::abs(eager.data()[e] - wide.data()[e]) <= tol * std::max(1.0, static_cast<double>(std::abs(eager.data()[e]))));
     }
 
     // Leaving the scope restores the route, so nothing about the eager path is
@@ -388,7 +393,9 @@ TEST_CASE("ThreadWidth - a node width sends a contraction to the packed loops", 
     REQUIRE(std::string(packed_gemm::last_contraction_route()) == "single_k_gemm");
 }
 
-TEST_CASE("ThreadWidth - a rank-2 GEMM under a width leaves the vendor route", "[ComputeGraph][Executor][ThreadWidth]") {
+TEMPLATE_LIST_TEST_CASE("ThreadWidth - a rank-2 GEMM under a width leaves the vendor route", "[ComputeGraph][Executor][ThreadWidth]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The other half of the same seam: a matrix times a matrix is taken by the
     // string dispatch's own gemm_direct route before PackedGemm ever sees it,
     // so the width has to be honored there instead.
@@ -400,10 +407,10 @@ TEST_CASE("ThreadWidth - a rank-2 GEMM under a width leaves the vendor route", "
     }
 
     constexpr size_t n     = 96;
-    auto             A     = create_random_tensor<double>("A", n, n);
-    auto             B     = create_random_tensor<double>("B", n, n);
-    auto             eager = create_zero_tensor<double>("C_eager", n, n);
-    auto             wide  = create_zero_tensor<double>("C_wide", n, n);
+    auto             A     = create_random_tensor<T>("A", n, n);
+    auto             B     = create_random_tensor<T>("B", n, n);
+    auto             eager = create_zero_tensor<T>("C_eager", n, n);
+    auto             wide  = create_zero_tensor<T>("C_wide", n, n);
 
     cg::einsum("ik;kj->ij", &eager, A, B);
     REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "gemm_direct_runtime");
@@ -416,8 +423,10 @@ TEST_CASE("ThreadWidth - a rank-2 GEMM under a width leaves the vendor route", "
     REQUIRE(std::string(cg::dispatch::last_dispatch_route()) == "packed_gemm");
     REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
 
+    // Reassociated sums of n terms each: they differ by rounding alone.
+    double const tol = 10.0 * static_cast<double>(n) * std::numeric_limits<RemoveComplexT<T>>::epsilon();
     for (size_t e = 0; e < eager.size(); e++) {
-        REQUIRE(std::abs(eager.data()[e] - wide.data()[e]) < 1e-10 * std::max(1.0, std::abs(eager.data()[e])));
+        REQUIRE(std::abs(eager.data()[e] - wide.data()[e]) <= tol * std::max(1.0, static_cast<double>(std::abs(eager.data()[e]))));
     }
 
     cg::einsum("ik;kj->ij", &eager, A, B);

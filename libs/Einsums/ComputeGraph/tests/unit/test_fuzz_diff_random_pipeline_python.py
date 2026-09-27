@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 # ----------------------------------------------------------------------------------------------
 
-"""Random pass-pipeline permutation fuzz (real dtypes), single + replay.
+"""Random pass-pipeline permutation fuzz, single + replay, over all four dtypes.
 
 Split out of the former monolithic test_fuzz_differential_python.py; the
 shared harness lives in _fuzz_diff_common.py."""
@@ -23,12 +23,14 @@ def test_fuzz_random_pipeline(seed):
     """Apply a random *permutation* of the individually-sound passes (rather than
     the curated default order) and demand the result still matches the oracle.
     This is the strongest interaction test: any ordering that miscompiles is a
-    real soundness bug or an undocumented ordering dependency."""
+    real soundness bug or an undocumented ordering dependency. The dtype cycles
+    with the seed, and on a complex pool about half the prefactors are complex."""
     rng = np.random.default_rng(30_000 + seed)
-    prog = _gen_block(rng, depth=3, max_stmts=6)
-    m, v, t = _seed_arrays(rng)
-    oracle = _oracle(prog, m, v, t)
-    if not _usable(*oracle):
+    dtype = seed_dtype(seed)
+    prog = complexify(_gen_block(rng, depth=3, max_stmts=6), np.random.default_rng((30_000, seed)))
+    m, v, t = _seed_arrays(rng, dtype)
+    oracle = _oracle(prog, m, v, t, dtype=dtype)
+    if not _usable(*oracle, cap=_DTYPE_CAP[dtype]):
         pytest.skip("oracle overflowed — numerically degenerate program")
 
     order = list(_SAFE_PASSES)
@@ -43,7 +45,7 @@ def test_fuzz_random_pipeline(seed):
     got = ([np.asarray(x).copy() for x in mats],
            [np.asarray(x).copy() for x in vecs],
            [np.asarray(x).copy() for x in r3])
-    _assert_pools(got, oracle, prog, "RANDOM-PIPELINE", extra=f"  order={order}")
+    _assert_pools(got, oracle, prog, "RANDOM-PIPELINE", extra=f"  order={order}", dtype=dtype)
 
 @pytest.mark.parametrize("seed", fuzz_seeds(300))
 def test_fuzz_random_pipeline_replay(seed):
@@ -52,10 +54,11 @@ def test_fuzz_random_pipeline_replay(seed):
     catches interaction bugs that only manifest on re-execution (e.g. a Free
     inserted by one pass ordering that a second run then needs)."""
     rng = np.random.default_rng(60_000 + seed)
-    prog = _gen_block(rng, depth=3, max_stmts=6)
-    m, v, t = _seed_arrays(rng)
-    oracle = _oracle(prog, m, v, t, runs=2)
-    if not _usable(*oracle):
+    dtype = seed_dtype(seed)
+    prog = complexify(_gen_block(rng, depth=3, max_stmts=6), np.random.default_rng((60_000, seed)))
+    m, v, t = _seed_arrays(rng, dtype)
+    oracle = _oracle(prog, m, v, t, runs=2, dtype=dtype)
+    if not _usable(*oracle, cap=_DTYPE_CAP[dtype]):
         pytest.skip("oracle overflowed — numerically degenerate program")
 
     order = list(_SAFE_PASSES)
@@ -71,4 +74,4 @@ def test_fuzz_random_pipeline_replay(seed):
     got = ([np.asarray(x).copy() for x in mats],
            [np.asarray(x).copy() for x in vecs],
            [np.asarray(x).copy() for x in r3])
-    _assert_pools(got, oracle, prog, "RANDOM-PIPELINE+REPLAY", extra=f"  order={order}")
+    _assert_pools(got, oracle, prog, "RANDOM-PIPELINE+REPLAY", extra=f"  order={order}", dtype=dtype)

@@ -166,18 +166,6 @@ std::vector<unsigned char> bytes_of_scalar(T const &value) {
     return out;
 }
 
-/// A value of @p T that is awkward enough to expose a rounding difference:
-/// none of these is representable in binary, so an executor that reaches a
-/// different kernel will not land on the same bits.
-template <typename T>
-T awkward(double re, double im) {
-    if constexpr (IsComplexV<T>) {
-        return T{static_cast<typename T::value_type>(re), static_cast<typename T::value_type>(im)};
-    } else {
-        return static_cast<T>(re);
-    }
-}
-
 } // namespace
 
 // ── Reconstructible set: monotonicity ───────────────────────────────────────
@@ -277,7 +265,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Scale is bitwise identical", "[Com
     cg::Graph graph("builder_scale");
     {
         cg::CaptureGuard const guard(graph);
-        cg::scale(awkward<T>(0.1, -0.3), &A);
+        cg::scale(testing::prefactor<T>(0.1, -0.3), &A);
     }
 
     graph.execute();
@@ -306,7 +294,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Permute is bitwise identical", "[C
         cg::CaptureGuard const guard(graph);
         // beta != 0 so the destination's prior contents participate: an
         // executor that zeroed instead of scaling would show up here.
-        cg::permute(cg::PermuteFormatString{"ji <- ij"}, awkward<T>(0.7, 0.2), &C, awkward<T>(0.3, -0.9), A);
+        cg::permute(cg::PermuteFormatString{"ji <- ij"}, testing::prefactor<T>(0.7, 0.2), &C, testing::prefactor<T>(0.3, -0.9), A);
     }
 
     graph.execute();
@@ -334,7 +322,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Permute is bitwise identical at ra
     cg::Graph graph("builder_permute3");
     {
         cg::CaptureGuard const guard(graph);
-        cg::permute(cg::PermuteFormatString{"kij <- ijk"}, awkward<T>(0.25, 0.5), &C, awkward<T>(1.1, -0.4), A);
+        cg::permute(cg::PermuteFormatString{"kij <- ijk"}, testing::prefactor<T>(0.25, 0.5), &C, testing::prefactor<T>(1.1, -0.4), A);
     }
 
     graph.execute();
@@ -454,7 +442,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Axpby is bitwise identical", "[Com
     cg::Graph graph("builder_axpby");
     {
         cg::CaptureGuard const guard(graph);
-        cg::axpby(awkward<T>(0.3, 0.1), X, awkward<T>(-0.7, 0.4), &Y);
+        cg::axpby(testing::prefactor<T>(0.3, 0.1), X, testing::prefactor<T>(-0.7, 0.4), &Y);
     }
 
     graph.execute();
@@ -507,7 +495,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt DirectProduct is bitwise identical
     cg::Graph graph("builder_direct_product");
     {
         cg::CaptureGuard const guard(graph);
-        cg::direct_product(awkward<T>(0.9, -0.2), A, B, awkward<T>(0.4, 0.6), &C);
+        cg::direct_product(testing::prefactor<T>(0.9, -0.2), A, B, testing::prefactor<T>(0.4, 0.6), &C);
     }
 
     graph.execute();
@@ -534,7 +522,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt DirectDivision is bitwise identica
     // kernel and not about how two paths spell an infinity.
     for (size_t i = 0; i < 4; i++) {
         for (size_t j = 0; j < 4; j++) {
-            B(i, j) = B(i, j) + awkward<T>(2.0, 0.5);
+            B(i, j) = B(i, j) + testing::prefactor<T>(2.0, 0.5);
         }
     }
 
@@ -545,7 +533,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt DirectDivision is bitwise identica
     cg::Graph graph("builder_direct_division");
     {
         cg::CaptureGuard const guard(graph);
-        cg::direct_division(awkward<T>(0.9, -0.2), A, B, awkward<T>(0.4, 0.6), &C);
+        cg::direct_division(testing::prefactor<T>(0.9, -0.2), A, B, testing::prefactor<T>(0.4, 0.6), &C);
     }
 
     graph.execute();
@@ -574,7 +562,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - a whole graph rebuilt from descriptor snap
 
     for (size_t i = 0; i < 4; i++) {
         for (size_t j = 0; j < 4; j++) {
-            B(i, j) = B(i, j) + awkward<T>(3.0, 0.25);
+            B(i, j) = B(i, j) + testing::prefactor<T>(3.0, 0.25);
         }
     }
 
@@ -586,11 +574,11 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - a whole graph rebuilt from descriptor snap
     cg::Graph graph("builder_snapshot_roundtrip");
     {
         cg::CaptureGuard const guard(graph);
-        cg::direct_product(awkward<T>(0.7, 0.3), A, B, awkward<T>(0.2, -0.1), &C);
-        cg::direct_division(awkward<T>(1.3, -0.6), C, B, awkward<T>(0.5, 0.25), &D);
-        cg::scale(awkward<T>(0.9, 0.4), &D);
-        cg::permute(cg::PermuteFormatString{"ji <- ij"}, awkward<T>(0.6, 0.1), &C, awkward<T>(0.8, -0.2), D);
-        cg::axpby(awkward<T>(0.35, 0.15), C, awkward<T>(-0.45, 0.05), &D);
+        cg::direct_product(testing::prefactor<T>(0.7, 0.3), A, B, testing::prefactor<T>(0.2, -0.1), &C);
+        cg::direct_division(testing::prefactor<T>(1.3, -0.6), C, B, testing::prefactor<T>(0.5, 0.25), &D);
+        cg::scale(testing::prefactor<T>(0.9, 0.4), &D);
+        cg::permute(cg::PermuteFormatString{"ji <- ij"}, testing::prefactor<T>(0.6, 0.1), &C, testing::prefactor<T>(0.8, -0.2), D);
+        cg::axpby(testing::prefactor<T>(0.35, 0.15), C, testing::prefactor<T>(-0.45, 0.05), &D);
     }
 
     graph.execute();
@@ -877,7 +865,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Einsum is bitwise identical for a 
     {
         cg::CaptureGuard const guard(graph);
         // beta != 0 so C's prior contents participate.
-        cg::einsum("ij <- ik ; kj", awkward<T>(0.4, -0.2), &C, awkward<T>(0.9, 0.3), A, B);
+        cg::einsum("ij <- ik ; kj", testing::prefactor<T>(0.4, -0.2), &C, testing::prefactor<T>(0.9, 0.3), A, B);
     }
 
     auto const *node = find_node(graph, cg::OpKind::Einsum);
@@ -917,7 +905,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Einsum is bitwise identical for a 
     cg::Graph graph("builder_einsum_rank3");
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("abc <- abd ; dc", awkward<T>(0.25, 0.75), &C, awkward<T>(1.1, -0.4), A, B);
+        cg::einsum("abc <- abd ; dc", testing::prefactor<T>(0.25, 0.75), &C, testing::prefactor<T>(1.1, -0.4), A, B);
     }
 
     graph.execute();
@@ -951,7 +939,8 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Einsum honors the conjugation flag
     cg::Graph graph("builder_einsum_conj");
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("ij <- ik ; kj", awkward<T>(0.3, 0.2), &C, awkward<T>(0.8, -0.5), A, B, /*conj_a=*/true, /*conj_b=*/false);
+        cg::einsum("ij <- ik ; kj", testing::prefactor<T>(0.3, 0.2), &C, testing::prefactor<T>(0.8, -0.5), A, B, /*conj_a=*/true,
+                   /*conj_b=*/false);
     }
 
     graph.execute();
@@ -985,7 +974,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Einsum keeps the repeated-letter r
     cg::Graph graph("builder_einsum_diagonal");
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("ij <- ii ; jj", awkward<T>(0.5, 0.1), &C, awkward<T>(0.7, -0.3), A, B);
+        cg::einsum("ij <- ii ; jj", testing::prefactor<T>(0.5, 0.1), &C, testing::prefactor<T>(0.7, -0.3), A, B);
     }
 
     graph.execute();
@@ -1023,9 +1012,9 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - an Einsum rebuilt from snapshots alone is 
     cg::Graph graph("builder_einsum_snapshot");
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("ij <- ik ; kj", awkward<T>(0.2, -0.4), &C, awkward<T>(1.3, 0.6), A, B);
-        cg::einsum("ij <- ik ; kj", awkward<T>(0.5, 0.25), &D, awkward<T>(0.35, -0.15), C, C);
-        cg::scale(awkward<T>(0.9, 0.4), &D);
+        cg::einsum("ij <- ik ; kj", testing::prefactor<T>(0.2, -0.4), &C, testing::prefactor<T>(1.3, 0.6), A, B);
+        cg::einsum("ij <- ik ; kj", testing::prefactor<T>(0.5, 0.25), &D, testing::prefactor<T>(0.35, -0.15), C, C);
+        cg::scale(testing::prefactor<T>(0.9, 0.4), &D);
     }
 
     graph.execute();
@@ -1441,7 +1430,8 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Trace is bitwise identical through
     RuntimeTensor<T> A("A", std::vector<size_t>{5, 5});
     for (size_t ii = 0; ii < 5; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            A(ii, jj) = awkward<T>(0.3 * static_cast<double>(ii + 1) - 0.125 * static_cast<double>(jj), 0.2 * static_cast<double>(jj + 1));
+            A(ii, jj) = testing::prefactor<T>(0.3 * static_cast<double>(ii + 1) - 0.125 * static_cast<double>(jj),
+                                              0.2 * static_cast<double>(jj + 1));
         }
     }
     RuntimeTensor<T> R("R", std::vector<size_t>{1});
@@ -1656,7 +1646,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Gemm is bitwise identical", "[Comp
         cg::CaptureGuard const guard(graph);
         // beta != 0 so C's prior contents participate, which also exercises the
         // RMW input list (C repeated as inputs[2]).
-        cg::gemm<false, false>(awkward<T>(0.6, -0.25), A, B, awkward<T>(0.35, 0.4), &C);
+        cg::gemm<false, false>(testing::prefactor<T>(0.6, -0.25), A, B, testing::prefactor<T>(0.35, 0.4), &C);
     }
 
     graph.execute();
@@ -1731,12 +1721,12 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Gemm honors a conjugate transpose"
     RuntimeTensor<T> C("C", std::vector<size_t>{3, 2});
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            A(ii, jj) = awkward<T>(0.1 * static_cast<double>(ii + 1), 0.3 * static_cast<double>(jj + 1));
+            A(ii, jj) = testing::prefactor<T>(0.1 * static_cast<double>(ii + 1), 0.3 * static_cast<double>(jj + 1));
         }
     }
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 2; jj++) {
-            B(ii, jj) = awkward<T>(0.7 * static_cast<double>(jj + 1), -0.2 * static_cast<double>(ii + 1));
+            B(ii, jj) = testing::prefactor<T>(0.7 * static_cast<double>(jj + 1), -0.2 * static_cast<double>(ii + 1));
         }
     }
     C.zero();

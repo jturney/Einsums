@@ -462,6 +462,14 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                    std::vector<std::string> const *precomputed_links = nullptr, packed_gemm::ContractionSite *pg_site = nullptr) {
     using T = typename AType::ValueType;
 
+    // Conjugation is the identity on a real type. Dropping the flags here keeps
+    // a real spec written with them on the BLAS routes below, which a set flag
+    // would otherwise skip for PackedGemm or the generic loop.
+    if constexpr (!IsComplexV<T>) {
+        conj_a = false;
+        conj_b = false;
+    }
+
     // A permutation operator contracts ONCE and accumulates the result into C
     // several times, transposed and signed. The contraction cannot go straight
     // into C, because the permuted accumulations would then read what they are
@@ -619,12 +627,10 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
                 temp = linear_algebra::dot(A, B);
             }
         } else {
-            // Conjugation is the identity on a real type, so the flags
-            // carry no meaning here and plain dot is already correct.
             temp = linear_algebra::dot(A, B);
         }
 
-        bool const conjugating = IsComplexV<T> && (conj_a || conj_b);
+        bool const conjugating = conj_a || conj_b;
         ProfileAnnotate("dispatch", conjugating ? "true_dot_runtime" : "dot_runtime");
         last_dispatch_route() = conjugating ? "true_dot_runtime" : "dot_runtime";
         C->data()[0]          = c_pf * C->data()[0] + ab_pf * temp;
@@ -635,8 +641,8 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // Each route passes the operands' TensorImpls straight to the rank-erased
     // linear_algebra kernels, which check the ranks at run time.
     //
-    // Conjugation skips them: none of these kernels conjugates. Conjugated
-    // contractions go to PackedGemm (native via spec.conj_a/conj_b) for
+    // Conjugation of a complex operand skips them: none of these kernels
+    // conjugates. Conjugated contractions go to PackedGemm (native via spec.conj_a/conj_b) for
     // gemm-shaped cases, else the conj-aware generic loop.
     //
     // The rank-2 GEMM route is the exception to taking the first fit: a matrix

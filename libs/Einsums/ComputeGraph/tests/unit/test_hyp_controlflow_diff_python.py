@@ -10,6 +10,11 @@ sequence(s) are replayed on numpy the matching number of times / for the chosen
 branch and every tensor is compared after ``g.execute()``. Passes may be applied;
 N (matrix size) includes the degenerate 1.
 
+Every example also draws one of the four dtypes, with a complex prefactor among
+the draws (its real part on a real dtype) and genuinely complex data on a complex
+one. The oracle replays the same stored inputs in double precision, so single
+precision is compared at a tolerance scaled to the largest value produced.
+
 The ``@example`` anchor pins the LoopInvariantHoisting miscompile: an accumulating
 ``direct_product(1, B, B, 1, C)`` (C += B**2) was hoisted out of the loop because
 its capture omitted C from the node inputs when beta != 0, so the pass didn't see
@@ -21,12 +26,13 @@ from __future__ import annotations
 import itertools
 
 import numpy as np
-from hypothesis import HealthCheck, example, given, settings
+from hypothesis import HealthCheck, assume, example, given, settings
 from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
 import einsums.graph as cg
+from einsums.testing import ALL_DTYPES
 
 _ctr = itertools.count()
 
@@ -36,13 +42,13 @@ def _nm():
 
 
 def _mk(a):
-    t = einsums.create_zero_tensor(_nm(), list(a.shape), dtype="float64")
+    t = einsums.create_zero_tensor(_nm(), list(a.shape), dtype=str(a.dtype))
     if a.size:
         np.asarray(t)[...] = a
     return t
 
 
-_SC = st.sampled_from([1.0, -0.5, 0.5])
+_SC = st.sampled_from([1.0, -0.5, 0.5, 0.5 + 0.25j])
 _BETA = st.sampled_from([0.0, 1.0])
 
 
@@ -81,6 +87,17 @@ def _program(draw):
             "niters": draw(st.integers(1, 5)), "pred": draw(st.booleans()),
             "passes": draw(st.booleans()), "seed": draw(st.integers(0, 2**31 - 1)),
             "ts": draw(_steps(ntens)), "es": draw(_steps(ntens))}
+
+
+def _typed_steps(steps, dtype):
+    """@p steps with each complex prefactor cut to its real part on a real dtype."""
+    if np.dtype(dtype).kind == "c":
+        return steps
+    return [tuple(f.real if isinstance(f, complex) else f for f in s) for s in steps]
+
+
+def _peak(arrs):
+    return max((float(np.max(np.abs(a))) for a in arrs if a.size), default=0.0)
 
 
 def _np_step(arrs, s):
@@ -122,23 +139,30 @@ _LIH = {"mode": "loop", "n": 1, "ntens": 2, "niters": 2, "pred": False, "passes"
         "ts": [("dirprod", 1.0, 1, 1, 1.0, 0)], "es": [("scale", 1.0, 0)]}
 
 
-@given(prog=_program())
+@given(prog=_program(), dtype=st.sampled_from(ALL_DTYPES))
 @settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
-@example(prog=_LIH)  # accumulating direct_product hoisted out of a loop
-def test_hyp_controlflow_diff(prog):
+@example(prog=_LIH, dtype="float64")  # accumulating direct_product hoisted out of a loop
+@example(prog=_LIH, dtype="complex64")
+def test_hyp_controlflow_diff(prog, dtype):
     mode, n, ntens, niters, pred, passes, seed = (prog["mode"], prog["n"], prog["ntens"],
                                                   prog["niters"], prog["pred"], prog["passes"], prog["seed"])
-    ts, es = prog["ts"], prog["es"]
+    ts, es = _typed_steps(prog["ts"], dtype), _typed_steps(prog["es"], dtype)
     rng = np.random.default_rng(seed)
     init = [rng.standard_normal((n, n)) for _ in range(ntens)]
-    arrs = [a.copy() for a in init]
+    if np.dtype(dtype).kind == "c":
+        init = [a + 1j * rng.standard_normal((n, n)) for a in init]
+    init = [a.astype(dtype) for a in init]
+    wide = np.complex128 if np.dtype(dtype).kind == "c" else np.float64
+    arrs = [a.astype(wide) for a in init]
+    peak = _peak(arrs)
     tens = [_mk(a) for a in init]
     g = cg.Graph(_nm())
     if mode == "loop":
         for _ in range(niters):
             for s in ts:
                 _np_step(arrs, s)
+                peak = max(peak, _peak(arrs))
         loop = g.add_loop("L", niters, lambda it, N=niters: it < N - 1)
         with cg.capture(loop):
             for s in ts:
@@ -146,6 +170,7 @@ def test_hyp_controlflow_diff(prog):
     elif mode == "cond":
         for s in (ts if pred else es):
             _np_step(arrs, s)
+            peak = max(peak, _peak(arrs))
         then_g, else_g = g.add_conditional("C", lambda P=pred: P)
         with cg.capture(then_g):
             for s in ts:
@@ -157,6 +182,7 @@ def test_hyp_controlflow_diff(prog):
         for _ in range(niters):
             for s in (ts if pred else es):
                 _np_step(arrs, s)
+                peak = max(peak, _peak(arrs))
         loop = g.add_loop("L", niters, lambda it, N=niters: it < N - 1)
         with cg.capture(loop):
             then_g, else_g = loop.add_conditional("C", lambda P=pred: P)
@@ -169,7 +195,15 @@ def test_hyp_controlflow_diff(prog):
     if passes:
         g.apply(cg.default_pass_manager())
     g.execute()
+    # Single precision: rounding in an n <= 3 dot product lands at about 1e-7
+    # of its operands, which a cancelled result can sit far below, so the
+    # absolute floor scales with the largest value any step produced.
+    # Repeated squaring leaves single precision's range (and its resolution
+    # relative to the tolerance) long before double's; such a program tests
+    # overflow, not the graph, as the differential fuzz shards' cap says.
+    assume(dtype not in ("float32", "complex64") or peak <= 1e4)
+    rtol, atol = (1e-4, 1e-4 * max(1.0, peak)) if dtype in ("float32", "complex64") else (1e-7, 1e-9)
     for i in range(ntens):
-        np.testing.assert_allclose(np.asarray(tens[i]), arrs[i], rtol=1e-7, atol=1e-9,
-            err_msg=f"tensor {i} mode={mode} n={n} ntens={ntens} niters={niters} pred={pred} "
+        np.testing.assert_allclose(np.asarray(tens[i]), arrs[i], rtol=rtol, atol=atol,
+            err_msg=f"tensor {i} mode={mode} n={n} ntens={ntens} dtype={dtype} niters={niters} pred={pred} "
                     f"passes={passes} seed={seed} ts={ts} es={es}")

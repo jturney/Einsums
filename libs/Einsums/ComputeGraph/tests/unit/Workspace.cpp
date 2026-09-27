@@ -9,12 +9,36 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <limits>
+
 #include <Einsums/Testing.hpp>
 
 using einsums::testing::reference_einsum;
 
 using namespace einsums;
 namespace cg = einsums::compute_graph;
+
+namespace {
+
+// The values here are short sums of order-one products, good to a few ulps of the element type.
+template <typename T>
+constexpr double value_tol() {
+    return 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
+}
+
+// A value with an imaginary part wherever the element type has one, exact in every type.
+template <typename T>
+constexpr T marker() {
+    return testing::prefactor<T>(42.0, -1.5);
+}
+
+// The contraction prefactor the capture cases use.
+template <typename T>
+constexpr T ab_prefactor() {
+    return testing::prefactor<T>(1.25, 0.5);
+}
+
+} // namespace
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Workspace basics
@@ -26,10 +50,11 @@ TEST_CASE("Workspace - construction", "[ComputeGraph][Workspace]") {
     CHECK(ws.size() == 0);
 }
 
-TEST_CASE("Workspace - declare_tensor creates shell", "[ComputeGraph][Workspace]") {
+TEMPLATE_LIST_TEST_CASE("Workspace - declare_tensor creates shell", "[ComputeGraph][Workspace]", testing::AllScalarTypes) {
+    using T = TestType;
     cg::Workspace ws("test");
 
-    auto &A = ws.declare_tensor<double, 2>("A", 10, 8);
+    auto &A = ws.declare_tensor<T, 2>("A", 10, 8);
 
     CHECK(ws.size() == 1);
     CHECK(A.name() == "A");
@@ -39,29 +64,32 @@ TEST_CASE("Workspace - declare_tensor creates shell", "[ComputeGraph][Workspace]
     CHECK(A.Rank == 2);
 }
 
-TEST_CASE("Workspace - declare_zero_tensor sets init kind", "[ComputeGraph][Workspace]") {
+TEMPLATE_LIST_TEST_CASE("Workspace - declare_zero_tensor sets init kind", "[ComputeGraph][Workspace]", testing::AllScalarTypes) {
+    using T = TestType;
     cg::Workspace ws("test");
 
-    auto &A = ws.declare_zero_tensor<double, 2>("A", 5, 5);
+    auto &A = ws.declare_zero_tensor<T, 2>("A", 5, 5);
 
     CHECK_FALSE(A.is_materialized());
     CHECK(ws.tensor_handles().back().init_kind == cg::InitKind::Zero);
     CHECK(ws.tensor_handles().back().alloc_state == cg::AllocState::Deferred);
 }
 
-TEST_CASE("Workspace - declare_random_tensor sets init kind", "[ComputeGraph][Workspace]") {
+TEMPLATE_LIST_TEST_CASE("Workspace - declare_random_tensor sets init kind", "[ComputeGraph][Workspace]", testing::AllScalarTypes) {
+    using T = TestType;
     cg::Workspace ws("test");
 
-    auto &A = ws.declare_random_tensor<double, 2>("A", 5, 5);
+    auto &A = ws.declare_random_tensor<T, 2>("A", 5, 5);
 
     CHECK_FALSE(A.is_materialized());
     CHECK(ws.tensor_handles().back().init_kind == cg::InitKind::Random);
 }
 
-TEST_CASE("Workspace - shell tensor materializes", "[ComputeGraph][Workspace]") {
+TEMPLATE_LIST_TEST_CASE("Workspace - shell tensor materializes", "[ComputeGraph][Workspace]", testing::AllScalarTypes) {
+    using T = TestType;
     cg::Workspace ws("test");
 
-    auto &A = ws.declare_tensor<double, 2>("A", 4, 3);
+    auto &A = ws.declare_tensor<T, 2>("A", 4, 3);
 
     CHECK_FALSE(A.is_materialized());
 
@@ -74,14 +102,15 @@ TEST_CASE("Workspace - shell tensor materializes", "[ComputeGraph][Workspace]") 
     CHECK(A.dim(1) == 3);
 
     // Can write to it
-    A(0, 0) = 42.0;
-    CHECK(A(0, 0) == 42.0);
+    A(0, 0) = marker<T>();
+    CHECK(A(0, 0) == marker<T>());
 }
 
-TEST_CASE("Workspace - materialize_fn works", "[ComputeGraph][Workspace]") {
+TEMPLATE_LIST_TEST_CASE("Workspace - materialize_fn works", "[ComputeGraph][Workspace]", testing::AllScalarTypes) {
+    using T = TestType;
     cg::Workspace ws("test");
 
-    auto &A = ws.declare_tensor<double, 2>("A", 3, 3);
+    auto &A = ws.declare_tensor<T, 2>("A", 3, 3);
 
     // materialize_fn is set by declare_tensor
     auto const &handle = ws.tensor_handles().back();
@@ -121,10 +150,11 @@ TEST_CASE("Workspace - multiple tensors", "[ComputeGraph][Workspace]") {
     CHECK(ws.tensor_handles()[2].init_kind == cg::InitKind::Random);
 }
 
-TEST_CASE("Workspace - tensor handle has correct alloc state", "[ComputeGraph][Workspace]") {
+TEMPLATE_LIST_TEST_CASE("Workspace - tensor handle has correct alloc state", "[ComputeGraph][Workspace]", testing::AllScalarTypes) {
+    using T = TestType;
     cg::Workspace ws("test");
 
-    ws.declare_tensor<double, 2>("A", 4, 4);
+    ws.declare_tensor<T, 2>("A", 4, 4);
 
     auto const &h = ws.tensor_handles().back();
     CHECK(h.alloc_state == cg::AllocState::Deferred);
@@ -132,10 +162,11 @@ TEST_CASE("Workspace - tensor handle has correct alloc state", "[ComputeGraph][W
     CHECK(h.data_ptr == nullptr);   // No data yet
 }
 
-TEST_CASE("Workspace - tensor dims preserved after materialize", "[ComputeGraph][Workspace]") {
+TEMPLATE_LIST_TEST_CASE("Workspace - tensor dims preserved after materialize", "[ComputeGraph][Workspace]", testing::AllScalarTypes) {
+    using T = TestType;
     cg::Workspace ws("test");
 
-    auto &A = ws.declare_tensor<double, 4>("T", 2, 3, 4, 5);
+    auto &A = ws.declare_tensor<T, 4>("T", 2, 3, 4, 5);
 
     CHECK(A.dim(0) == 2);
     CHECK(A.dim(1) == 3);
@@ -155,31 +186,33 @@ TEST_CASE("Workspace - tensor dims preserved after materialize", "[ComputeGraph]
 // Graph::declare_tensor
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("Graph declare_tensor - creates deferred intermediate", "[ComputeGraph][DeclaredTensor]") {
+TEMPLATE_LIST_TEST_CASE("Graph declare_tensor - creates deferred intermediate", "[ComputeGraph][DeclaredTensor]", testing::AllScalarTypes) {
+    using T = TestType;
     cg::Graph graph("test_graph");
-    auto     &T = graph.declare_tensor<double, 2>(std::string("T"), 5, 4);
+    auto     &D = graph.declare_tensor<T, 2>(std::string("T"), 5, 4);
 
-    CHECK(T.dim(0) == 5);
-    CHECK(T.dim(1) == 4);
-    CHECK_FALSE(T.is_materialized());
+    CHECK(D.dim(0) == 5);
+    CHECK(D.dim(1) == 4);
+    CHECK_FALSE(D.is_materialized());
 
     // Materialize and verify
-    T.materialize();
-    CHECK(T.is_materialized());
-    T(0, 0) = 42.0;
-    CHECK(T(0, 0) == 42.0);
+    D.materialize();
+    CHECK(D.is_materialized());
+    D(0, 0) = marker<T>();
+    CHECK(D(0, 0) == marker<T>());
 }
 
-TEST_CASE("Graph declare_zero_tensor - sets init kind", "[ComputeGraph][DeclaredTensor]") {
+TEMPLATE_LIST_TEST_CASE("Graph declare_zero_tensor - sets init kind", "[ComputeGraph][DeclaredTensor]", testing::AllScalarTypes) {
+    using T = TestType;
     cg::Graph graph("test_graph");
-    auto     &T = graph.declare_zero_tensor<double, 2>(std::string("T"), 3, 3);
+    auto     &D = graph.declare_zero_tensor<T, 2>(std::string("T"), 3, 3);
 
-    CHECK_FALSE(T.is_materialized());
+    CHECK_FALSE(D.is_materialized());
 
     // Check handle has correct init_kind
     bool found = false;
     for (auto const &[tid, handle] : graph.tensors_map()) {
-        if (handle.tensor_ptr == &T) {
+        if (handle.tensor_ptr == &D) {
             CHECK(handle.init_kind == cg::InitKind::Zero);
             CHECK(handle.alloc_state == cg::AllocState::Deferred);
             CHECK_FALSE(handle.is_intermediate); // declare_tensor is user-visible
@@ -190,17 +223,18 @@ TEST_CASE("Graph declare_zero_tensor - sets init kind", "[ComputeGraph][Declared
     CHECK(found);
 }
 
-TEST_CASE("Graph declare_tensor - usable in capture and execute", "[ComputeGraph][DeclaredTensor]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
+TEMPLATE_LIST_TEST_CASE("Graph declare_tensor - usable in capture and execute", "[ComputeGraph][DeclaredTensor]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
 
     // Reference
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 5);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("declared_graph");
     // Use declare_tensor for the intermediate, deferred allocation
-    auto &C = graph.declare_tensor<double, 2>(std::string("C"), 4, 5);
+    auto &C = graph.declare_tensor<T, 2>(std::string("C"), 4, 5);
 
     {
         cg::CaptureGuard const guard(graph);
@@ -215,16 +249,17 @@ TEST_CASE("Graph declare_tensor - usable in capture and execute", "[ComputeGraph
 
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            CHECK(C(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+            REQUIRE_THAT(C(ii, jj), CheckWithinRel(C_ref(ii, jj), value_tol<T>()));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Pipeline::declare_tensor
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("Pipeline declare_tensor - creates deferred tensor", "[ComputeGraph][DeclaredTensor]") {
+TEMPLATE_LIST_TEST_CASE("Pipeline declare_tensor - creates deferred tensor", "[ComputeGraph][DeclaredTensor]", testing::AllScalarTypes) {
+    using T = TestType;
     cg::Pipeline pipeline("test_pipeline");
-    auto        &F = pipeline.declare_zero_tensor<double, 2>(std::string("F"), 6, 6);
+    auto        &F = pipeline.declare_zero_tensor<T, 2>(std::string("F"), 6, 6);
 
     CHECK(F.dim(0) == 6);
     CHECK(F.dim(1) == 6);
@@ -234,17 +269,18 @@ TEST_CASE("Pipeline declare_tensor - creates deferred tensor", "[ComputeGraph][D
     CHECK(pipeline.declared_handles()[0].init_kind == cg::InitKind::Zero);
 }
 
-TEST_CASE("Pipeline declare_tensor - usable in stages", "[ComputeGraph][DeclaredTensor]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
+TEMPLATE_LIST_TEST_CASE("Pipeline declare_tensor - usable in stages", "[ComputeGraph][DeclaredTensor]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
 
     // Reference
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 5);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
-    linear_algebra::scale(2.0, &C_ref);
+    linear_algebra::scale(testing::prefactor<T>(2.0, -0.75), &C_ref);
 
     cg::Pipeline pipeline("declared_pipeline");
-    auto        &C = pipeline.declare_tensor<double, 2>(std::string("C"), 4, 5);
+    auto        &C = pipeline.declare_tensor<T, 2>(std::string("C"), 4, 5);
 
     // Stage 1: compute
     {
@@ -257,7 +293,7 @@ TEST_CASE("Pipeline declare_tensor - usable in stages", "[ComputeGraph][Declared
     {
         auto                  &stage = pipeline.add_stage("scale");
         cg::CaptureGuard const guard(stage);
-        cg::scale(2.0, &C);
+        cg::scale(testing::prefactor<T>(2.0, -0.75), &C);
     }
 
     // Materialize before execution
@@ -268,17 +304,18 @@ TEST_CASE("Pipeline declare_tensor - usable in stages", "[ComputeGraph][Declared
 
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            CHECK(C(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+            REQUIRE_THAT(C(ii, jj), CheckWithinRel(C_ref(ii, jj), value_tol<T>()));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Workspace + Pipeline integration
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("Shell tensor - materialize inside a lambda", "[ComputeGraph][DeclaredTensor]") {
+TEMPLATE_LIST_TEST_CASE("Shell tensor - materialize inside a lambda", "[ComputeGraph][DeclaredTensor]", testing::AllScalarTypes) {
+    using T = TestType;
     // Verify materialize works when called from a lambda (like a node executor)
-    using TensorType = Tensor<double, 2>;
-    auto *ptr        = new TensorType(TensorType::DeferredAlloc{}, "test", 4, 5);
+    using TensorType = Tensor<T, 2>;
+    auto *ptr        = new TensorType(typename TensorType::DeferredAlloc{}, "test", 4, 5);
 
     CHECK_FALSE(ptr->is_materialized());
     CHECK(ptr->dim(0) == 4);
@@ -290,21 +327,22 @@ TEST_CASE("Shell tensor - materialize inside a lambda", "[ComputeGraph][Declared
 
     CHECK(ptr->is_materialized());
     CHECK(ptr->data() != nullptr);
-    (*ptr)(0, 0) = 42.0;
-    CHECK((*ptr)(0, 0) == 42.0);
+    (*ptr)(0, 0) = marker<T>();
+    CHECK((*ptr)(0, 0) == marker<T>());
 
     delete ptr;
 }
 
-TEST_CASE("Graph declare + Materialization only + execute", "[ComputeGraph][DeclaredTensor]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
+TEMPLATE_LIST_TEST_CASE("Graph declare + Materialization only + execute", "[ComputeGraph][DeclaredTensor]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
 
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 5);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("deferred_mat_only");
-    auto     &C = graph.declare_tensor<double, 2>(std::string("C"), 4, 5);
+    auto     &C = graph.declare_tensor<T, 2>(std::string("C"), 4, 5);
     CHECK_FALSE(C.is_materialized());
 
     {
@@ -329,18 +367,20 @@ TEST_CASE("Graph declare + Materialization only + execute", "[ComputeGraph][Decl
     CHECK(C.is_materialized());
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            CHECK(C(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+            REQUIRE_THAT(C(ii, jj), CheckWithinRel(C_ref(ii, jj), value_tol<T>()));
 }
 
-TEST_CASE("Graph declare + create_default + execute - full deferred path", "[ComputeGraph][DeclaredTensor]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
+TEMPLATE_LIST_TEST_CASE("Graph declare + create_default + execute - full deferred path", "[ComputeGraph][DeclaredTensor]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
 
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 5);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
 
     cg::Graph graph("deferred_full");
-    auto     &C = graph.declare_tensor<double, 2>(std::string("C"), 4, 5);
+    auto     &C = graph.declare_tensor<T, 2>(std::string("C"), 4, 5);
 
     {
         cg::CaptureGuard const guard(graph);
@@ -354,19 +394,21 @@ TEST_CASE("Graph declare + create_default + execute - full deferred path", "[Com
     CHECK(C.is_materialized());
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            CHECK(C(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+            REQUIRE_THAT(C(ii, jj), CheckWithinRel(C_ref(ii, jj), value_tol<T>()));
 }
 
-TEST_CASE("Pipeline declare + create_default + execute - full deferred path", "[ComputeGraph][DeclaredTensor]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
+TEMPLATE_LIST_TEST_CASE("Pipeline declare + create_default + execute - full deferred path", "[ComputeGraph][DeclaredTensor]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
 
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 5);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 5);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
-    linear_algebra::scale(2.0, &C_ref);
+    linear_algebra::scale(testing::prefactor<T>(2.0, -0.75), &C_ref);
 
     cg::Pipeline pipeline("deferred_pipeline");
-    auto        &C = pipeline.declare_zero_tensor<double, 2>(std::string("C"), 4, 5);
+    auto        &C = pipeline.declare_zero_tensor<T, 2>(std::string("C"), 4, 5);
 
     {
         auto                  &stage = pipeline.add_stage("compute");
@@ -376,7 +418,7 @@ TEST_CASE("Pipeline declare + create_default + execute - full deferred path", "[
     {
         auto                  &stage = pipeline.add_stage("scale");
         cg::CaptureGuard const guard(stage);
-        cg::scale(2.0, &C);
+        cg::scale(testing::prefactor<T>(2.0, -0.75), &C);
     }
 
     auto pm = cg::PassManager::create_default();
@@ -386,15 +428,16 @@ TEST_CASE("Pipeline declare + create_default + execute - full deferred path", "[
     CHECK(C.is_materialized());
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            CHECK(C(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+            REQUIRE_THAT(C(ii, jj), CheckWithinRel(C_ref(ii, jj), value_tol<T>()));
 }
 
-TEST_CASE("Workspace - materialize_all", "[ComputeGraph][Workspace]") {
+TEMPLATE_LIST_TEST_CASE("Workspace - materialize_all", "[ComputeGraph][Workspace]", testing::AllScalarTypes) {
+    using T = TestType;
     cg::Workspace ws("mat_all");
 
-    auto &A = ws.declare_tensor<double, 2>("A", 4, 4);
-    auto &B = ws.declare_zero_tensor<double, 2>("B", 3, 3);
-    auto &C = ws.declare_random_tensor<double, 2>("C", 5, 5);
+    auto &A = ws.declare_tensor<T, 2>("A", 4, 4);
+    auto &B = ws.declare_zero_tensor<T, 2>("B", 3, 3);
+    auto &C = ws.declare_random_tensor<T, 2>("C", 5, 5);
 
     CHECK_FALSE(A.is_materialized());
     CHECK_FALSE(B.is_materialized());
@@ -414,13 +457,13 @@ TEST_CASE("Workspace - materialize_all", "[ComputeGraph][Workspace]") {
     // Zero-initialized tensor should be zero
     for (size_t ii = 0; ii < 3; ii++)
         for (size_t jj = 0; jj < 3; jj++)
-            CHECK(B(ii, jj) == 0.0);
+            CHECK(B(ii, jj) == T{0});
 
     // Random-initialized tensor should have non-zero data (statistically)
     bool has_nonzero = false;
     for (size_t ii = 0; ii < 5 && !has_nonzero; ii++)
         for (size_t jj = 0; jj < 5 && !has_nonzero; jj++)
-            if (C(ii, jj) != 0.0)
+            if (C(ii, jj) != T{0})
                 has_nonzero = true;
     CHECK(has_nonzero);
 
@@ -433,15 +476,17 @@ TEST_CASE("Workspace - materialize_all", "[ComputeGraph][Workspace]") {
     CHECK(A.is_materialized());
 }
 
-TEST_CASE("Workspace + Pipeline - materialize_all before execute", "[ComputeGraph][DeclaredTensor]") {
-    auto B = create_random_tensor<double>("B", 4, 3);
+TEMPLATE_LIST_TEST_CASE("Workspace + Pipeline - materialize_all before execute", "[ComputeGraph][DeclaredTensor]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto B  = create_random_tensor<T>("B", 4, 3);
 
     // Reference
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
-    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 4);
+    reference_einsum("ij <- ik ; jk", T{0}, &C_ref, ab_prefactor<T>(), B, B);
 
     cg::Workspace ws("ws");
-    auto         &A = ws.declare_zero_tensor<double, 2>("A", 4, 4);
+    auto         &A = ws.declare_zero_tensor<T, 2>("A", 4, 4);
 
     cg::Pipeline pipeline("pipe");
     pipeline.set_workspace(ws);
@@ -449,7 +494,7 @@ TEST_CASE("Workspace + Pipeline - materialize_all before execute", "[ComputeGrap
     {
         auto                  &stage = pipeline.add_stage("compute");
         cg::CaptureGuard const guard(stage);
-        cg::einsum("ik;jk->ij", 0.0, &A, 1.0, B, B);
+        cg::einsum("ik;jk->ij", T{0}, &A, ab_prefactor<T>(), B, B);
     }
 
     auto pm = cg::PassManager::create_default();
@@ -460,7 +505,7 @@ TEST_CASE("Workspace + Pipeline - materialize_all before execute", "[ComputeGrap
     CHECK(A.is_materialized());
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 4; jj++)
-            CHECK(A(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+            REQUIRE_THAT(A(ii, jj), CheckWithinRel(C_ref(ii, jj), value_tol<T>()));
 }
 
 TEST_CASE("Workspace + Pipeline - tensor survives across pipelines", "[ComputeGraph][DeclaredTensor]") {
@@ -496,26 +541,27 @@ TEST_CASE("Workspace + Pipeline - tensor survives across pipelines", "[ComputeGr
 // Lambda façade: cg::make_pipeline / cg::run / Pipeline::run
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("Pipeline::run() applies defaults + materializes + executes", "[ComputeGraph][Facade]") {
+TEMPLATE_LIST_TEST_CASE("Pipeline::run() applies defaults + materializes + executes", "[ComputeGraph][Facade]", testing::AllScalarTypes) {
+    using T = TestType;
     // Reference computation via the classic four-step ritual.
-    auto B     = create_random_tensor<double>("B_ref", 4, 4);
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
-    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
+    auto B     = create_random_tensor<T>("B_ref", 4, 4);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 4);
+    reference_einsum("ij <- ik ; jk", T{0}, &C_ref, ab_prefactor<T>(), B, B);
 
     cg::Workspace ws("ws");
-    auto         &A = ws.declare_zero_tensor<double, 2>("A", 4, 4);
+    auto         &A = ws.declare_zero_tensor<T, 2>("A", 4, 4);
 
     cg::Pipeline pipeline("pipe");
     pipeline.set_workspace(ws);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    pipeline.add_stage("compute", [&] { cg::einsum("ik;jk->ij", 0.0, &A, 1.0, B, B); });
+    pipeline.add_stage("compute", [&] { cg::einsum("ik;jk->ij", T{0}, &A, ab_prefactor<T>(), B, B); });
 
     pipeline.run();
 
     CHECK(A.is_materialized());
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 4; jj++)
-            CHECK(A(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+            REQUIRE_THAT(A(ii, jj), CheckWithinRel(C_ref(ii, jj), value_tol<T>()));
 }
 
 TEST_CASE("Pipeline::run() throws without workspace", "[ComputeGraph][Facade]") {
@@ -524,48 +570,53 @@ TEST_CASE("Pipeline::run() throws without workspace", "[ComputeGraph][Facade]") 
     CHECK_THROWS_AS(pipeline.run(), std::runtime_error);
 }
 
-TEST_CASE("cg::make_pipeline builds then returns by value", "[ComputeGraph][Facade]") {
-    auto B     = create_random_tensor<double>("B_ref", 4, 4);
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
-    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
+TEMPLATE_LIST_TEST_CASE("cg::make_pipeline builds then returns by value", "[ComputeGraph][Facade]", testing::AllScalarTypes) {
+    using T    = TestType;
+    auto B     = create_random_tensor<T>("B_ref", 4, 4);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 4);
+    reference_einsum("ij <- ik ; jk", T{0}, &C_ref, ab_prefactor<T>(), B, B);
 
     cg::Workspace ws("ws");
-    auto         &A = ws.declare_zero_tensor<double, 2>("A", 4, 4);
+    auto         &A = ws.declare_zero_tensor<T, 2>("A", 4, 4);
 
     auto pipeline = cg::make_pipeline(
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-        "pipe", ws, [&](cg::Pipeline &p) { p.add_stage("compute", [&] { cg::einsum("ik;jk->ij", 0.0, &A, 1.0, B, B); }); });
+        "pipe", ws, [&](cg::Pipeline &p) { p.add_stage("compute", [&] { cg::einsum("ik;jk->ij", T{0}, &A, ab_prefactor<T>(), B, B); }); });
     CHECK(pipeline.num_stages() == 1);
     CHECK(pipeline.stage_name(0) == "compute");
 
     pipeline.run();
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 4; jj++)
-            CHECK(A(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+            REQUIRE_THAT(A(ii, jj), CheckWithinRel(C_ref(ii, jj), value_tol<T>()));
 }
 
-TEST_CASE("cg::run does build + run in one expression", "[ComputeGraph][Facade]") {
-    auto B     = create_random_tensor<double>("B_ref", 4, 4);
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
-    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
+TEMPLATE_LIST_TEST_CASE("cg::run does build + run in one expression", "[ComputeGraph][Facade]", testing::AllScalarTypes) {
+    using T    = TestType;
+    auto B     = create_random_tensor<T>("B_ref", 4, 4);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 4);
+    reference_einsum("ij <- ik ; jk", T{0}, &C_ref, ab_prefactor<T>(), B, B);
 
     cg::Workspace ws("ws");
-    auto         &A = ws.declare_zero_tensor<double, 2>("A", 4, 4);
+    auto         &A = ws.declare_zero_tensor<T, 2>("A", 4, 4);
 
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::run("pipe", ws, [&](cg::Pipeline &p) { p.add_stage("compute", [&] { cg::einsum("ik;jk->ij", 0.0, &A, 1.0, B, B); }); });
+    cg::run("pipe", ws,
+            [&](cg::Pipeline &p) { p.add_stage("compute", [&] { cg::einsum("ik;jk->ij", T{0}, &A, ab_prefactor<T>(), B, B); }); });
 
     CHECK(A.is_materialized());
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 4; jj++)
-            CHECK(A(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+            REQUIRE_THAT(A(ii, jj), CheckWithinRel(C_ref(ii, jj), value_tol<T>()));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Loop-aware Materialization
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("Materialization hoists workspace tensors used inside a loop body", "[ComputeGraph][Materialization][Loop]") {
+TEMPLATE_LIST_TEST_CASE("Materialization hoists workspace tensors used inside a loop body", "[ComputeGraph][Materialization][Loop]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // A workspace-declared tensor that is only referenced inside a loop
     // body would historically remain Deferred after a Materialization
     // pass run on the parent graph, the pass scanned only the parent's
@@ -573,17 +624,17 @@ TEST_CASE("Materialization hoists workspace tensors used inside a loop body", "[
     // hoists Materialize/Initialize nodes to the parent just before the
     // owning Loop node, so allocation happens once per outer execution
     // (not per iteration).
-    auto B = create_random_tensor<double>("B", 4, 4);
+    auto B = create_random_tensor<T>("B", 4, 4);
 
     cg::Workspace ws("ws");
     // A is a body-only intermediate. No parent-level op references it.
-    auto &A = ws.declare_zero_tensor<double, 2>("A", 4, 4);
+    auto &A = ws.declare_zero_tensor<T, 2>("A", 4, 4);
 
     cg::Graph g("loop_parent");
     auto     &body = g.add_loop("compute", /*max_iterations=*/1, [](size_t) { return false; });
     {
         cg::CaptureGuard const guard(body);
-        cg::einsum("ik;jk->ij", 0.0, &A, 1.0, B, B);
+        cg::einsum("ik;jk->ij", T{0}, &A, ab_prefactor<T>(), B, B);
     }
 
     REQUIRE_FALSE(A.is_materialized());
@@ -628,18 +679,19 @@ TEST_CASE("Materialization hoists workspace tensors used inside a loop body", "[
     CHECK(A.is_materialized());
 
     // Reference: A = B B^T
-    Tensor<double, 2> C_ref{"Cref", 4, 4};
+    Tensor<T, 2> C_ref{"Cref", 4, 4};
     C_ref.zero();
-    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
+    reference_einsum("ij <- ik ; jk", T{0}, &C_ref, ab_prefactor<T>(), B, B);
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 4; jj++) {
-            CHECK(A(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+            REQUIRE_THAT(A(ii, jj), CheckWithinRel(C_ref(ii, jj), value_tol<T>()));
         }
     }
 }
 
-TEST_CASE("Workspace declare_zero_tensor propagates pending_init through capture (Step 2.5)",
-          "[ComputeGraph][Materialization][Loop][Init]") {
+TEMPLATE_LIST_TEST_CASE("Workspace declare_zero_tensor propagates pending_init through capture (Step 2.5)",
+                        "[ComputeGraph][Materialization][Loop][Init]", testing::AllScalarTypes) {
+    using T = TestType;
     // Without init_kind propagation, body's capture-time handle for a
     // workspace-declared tensor was missing init_kind, so the hoisted
     // Materialize would allocate but not zero, the body had to
@@ -648,17 +700,17 @@ TEST_CASE("Workspace declare_zero_tensor propagates pending_init through capture
     // body handle gets ``InitKind::Zero`` + ``zero_fn``, and the
     // Materialization pass emits both Materialize and Initialize at the
     // parent level.
-    auto B = create_random_tensor<double>("B", 3, 3);
+    auto B = create_random_tensor<T>("B", 3, 3);
 
     cg::Workspace ws("ws");
-    auto         &A = ws.declare_zero_tensor<double, 2>("A_init_check", 3, 3);
+    auto         &A = ws.declare_zero_tensor<T, 2>("A_init_check", 3, 3);
     REQUIRE(A.pending_init() == PendingInit::Zero);
 
     cg::Graph g("loop_with_zero_init");
     auto     &body = g.add_loop("body", 1, [](size_t) { return false; });
     {
         cg::CaptureGuard const guard(body);
-        cg::einsum("ik;jk->ij", 0.0, &A, 1.0, B, B);
+        cg::einsum("ik;jk->ij", T{0}, &A, ab_prefactor<T>(), B, B);
     }
 
     // After capture, body's handle for A should also reflect the
@@ -689,12 +741,12 @@ TEST_CASE("Workspace declare_zero_tensor propagates pending_init through capture
     g.execute();
     CHECK(A.is_materialized());
 
-    Tensor<double, 2> C_ref{"Cref", 3, 3};
+    Tensor<T, 2> C_ref{"Cref", 3, 3};
     C_ref.zero();
-    reference_einsum("ij <- ik ; jk", &C_ref, B, B);
+    reference_einsum("ij <- ik ; jk", T{0}, &C_ref, ab_prefactor<T>(), B, B);
     for (size_t ii = 0; ii < 3; ii++) {
         for (size_t jj = 0; jj < 3; jj++) {
-            CHECK(A(ii, jj) == Catch::Approx(C_ref(ii, jj)).margin(1e-10));
+            REQUIRE_THAT(A(ii, jj), CheckWithinRel(C_ref(ii, jj), value_tol<T>()));
         }
     }
 }

@@ -76,6 +76,7 @@ import pytest
 import einsums
 import einsums.graph as cg
 import einsums._core.graph as _G  # pass classes / Workspace, re-exported for shards
+from einsums.testing import ALL_DTYPES
 from _permutation_operators import P_SHAPES, apply_operator, operator_prefix, shaped_operator
 from _sanitizer_scaling import fuzz_seeds  # seed-count scaling under sanitizers
 
@@ -277,6 +278,91 @@ def _dtype_scalar(a, dtype):
     if isinstance(a, tuple) and a[0] == "cx":
         return complex(a[1], a[2]) if np.dtype(dtype).kind == "c" else a[1]
     return a
+
+
+def seed_dtype(seed):
+    """The dtype a seed-indexed trial runs in: ``ALL_DTYPES`` cycled by seed.
+
+    A shard too slow to run every seed in every dtype cycles instead, so its
+    corpus covers all four dtypes at the seed count it always had, and a seed
+    names one dtype wherever it is rerun.
+    """
+    return ALL_DTYPES[seed % len(ALL_DTYPES)]
+
+
+def typed_array(a, dtype, rng):
+    """@p a as @p dtype. A complex dtype gets an imaginary part drawn from @p rng
+    at the scale of @p a, so the data is genuinely complex rather than real
+    values in a complex buffer, which would hide a dropped conjugation."""
+    dt = np.dtype(dtype)
+    if dt.kind == "c":
+        scale = np.max(np.abs(a)) if np.size(a) else 1.0
+        a = a + 1j * (rng.standard_normal(np.shape(a)) * (scale if scale > 0 else 1.0))
+    return np.asarray(a).astype(dt)
+
+
+#: The positions of the prefactors in each primitive, for ``complexify``.
+SCALAR_FIELDS = {
+    "scale": (1,), "axpy": (1,), "axpby": (1, 3), "gemm": (1, 4), "einsum": (2, 5), "beinsum": (2, 5),
+    "leinsum": (2, 5), "perm": (1, 2), "gemv": (1, 4), "ger": (1,), "vgemm": (1, 8), "vscale": (1,),
+    "vaxpy": (1,), "vvscale": (1,), "tvscale": (1,), "ivscale": (1,), "ivaxpy": (1,), "i3scale": (1,),
+    "i3axpy": (1,), "xeinsum": (3, 6), "aperm": (3, 5), "ddiv": (1, 4),
+}
+
+
+def complexify(prog, rng, p=0.5, fields=None):
+    """@p prog with some of its prefactors made complex.
+
+    Each nonzero real prefactor becomes ``("cx", re, im)`` with probability
+    @p p: complex on a complex pool and ``re`` on a real one (``_dtype_scalar``),
+    so the program is unchanged in a real dtype and one program serves every
+    dtype. A zero stays a plain zero, because a zero C prefactor is structure
+    (an overwrite, which CSE and the folds key on), not a value. @p rng should
+    be a stream of its own, so the program the generator drew for a seed does
+    not change. @p fields extends ``SCALAR_FIELDS`` with a shard's own opcodes.
+    """
+    table = SCALAR_FIELDS if fields is None else {**SCALAR_FIELDS, **fields}
+    out = []
+    for stmt in prog:
+        kind = stmt[0]
+        if kind == "loop":
+            out.append((kind, stmt[1], complexify(stmt[2], rng, p, fields)))
+            continue
+        if kind == "cond":
+            out.append((kind, stmt[1], complexify(stmt[2], rng, p, fields), complexify(stmt[3], rng, p, fields)))
+            continue
+        stmt = list(stmt)
+        for pos in table.get(kind, ()):
+            value = stmt[pos]
+            if isinstance(value, float) and value != 0.0 and rng.random() < p:
+                stmt[pos] = ("cx", value, _scalar(rng) or 0.5)
+        out.append(tuple(stmt))
+    return out
+
+
+def _has_cx(stmt):
+    return any(isinstance(f, tuple) and f[:1] == ("cx",) for f in stmt)
+
+
+def _pools_complex(*pools):
+    """Whether the pools hold complex elements, read off the first tensor that has storage."""
+    for pool in pools:
+        for x in pool:
+            if x is None:
+                continue
+            try:
+                return np.asarray(x).dtype.kind == "c"
+            except Exception:  # a deferred tensor has no buffer yet
+                continue
+    return False
+
+
+def resolve_scalars(stmt, is_complex):
+    """@p stmt with every ``("cx", re, im)`` prefactor replaced by its value in the pool's element type."""
+    if not _has_cx(stmt):
+        return stmt
+    dtype = "complex128" if is_complex else "float64"
+    return tuple(_dtype_scalar(f, dtype) if isinstance(f, tuple) and f[:1] == ("cx",) else f for f in stmt)
 
 
 def _d(rng, dims=DIMS):
@@ -870,6 +956,8 @@ def interp_np(stmts, m, v, t, dt=None):
     # already-typed destination array, so only the rebinding ops need a cast.
     cast = (lambda x: np.asarray(x).astype(dt, copy=False)) if dt is not None else (lambda x: x)
     for s in stmts:
+        if _has_cx(s):
+            s = resolve_scalars(s, dt.kind == "c" if dt is not None else _pools_complex(m, v, t))
         k = s[0]
         if k == "scale":
             _, a, x = s
@@ -987,6 +1075,8 @@ def interp_np(stmts, m, v, t, dt=None):
 
 
 def _emit_primitive(s, m, v, t):
+    if _has_cx(s):
+        s = resolve_scalars(s, _pools_complex(m, v, t))
     k = s[0]
     if k == "scale":
         _, a, x = s
@@ -1356,8 +1446,8 @@ def _square_seed_arrays(rng, n_mats=4, n_vecs=3, n=3, n_r3=2):
 _SQ = "ij <- ik ; kj"  # square-friendly einsum (A@B); any pattern works on n×n
 
 
-def _sq_pool(rng, count, n=3):
-    return [rng.standard_normal((n, n)) for _ in range(count)]
+def _sq_pool(rng, count, n=3, dtype="float64"):
+    return [typed_array(rng.standard_normal((n, n)), dtype, rng) for _ in range(count)]
 
 # Passes exposed to Python that are individually sound and (should be)
 # order-independent for correctness on eager tensors. A random permutation that
@@ -1723,15 +1813,17 @@ def check_program_roundtrip(prog, m_arrays, v_arrays, t_arrays, label, dtype="fl
     _assert_pools(got, (om, ov, ot), prog, "ROUND-TRIPPED")
 
 
-def _oracle(prog, m, v, t, runs=1):
+def _oracle(prog, m, v, t, runs=1, dtype=None):
+    """The numpy oracle; with @p dtype it is kept in that precision (see ``interp_np``)."""
     om = [a.copy() for a in m]
     ov = [a.copy() for a in v]
     ot = [a.copy() for a in t]
+    dt = np.dtype(dtype) if dtype is not None else None
     # Overflow/NaN in a degenerate program is expected and handled by _usable;
     # don't spam warnings for it.
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         for _ in range(runs):
-            interp_np(prog, om, ov, ot)
+            interp_np(prog, om, ov, ot, dt)
     return om, ov, ot
 
 
@@ -1742,12 +1834,13 @@ def _build(prog, m, v, t, name):
     return g, mats, vecs, r3
 
 
-def _assert_pools(got, oracle, prog, label, extra=""):
+def _assert_pools(got, oracle, prog, label, extra="", dtype=None):
+    rtol, atol = _DTYPE_TOL[dtype] if dtype is not None else (RTOL, ATOL)
     for kind, gs, os in zip("mvt", got, oracle):
         for idx in range(len(os)):
-            if not np.allclose(gs[idx], os[idx], rtol=RTOL, atol=ATOL):
+            if not np.allclose(gs[idx], os[idx], rtol=rtol, atol=atol):
                 raise AssertionError(
-                    f"{label} disagrees with oracle on {kind}{idx}{extra}\n"
+                    f"{label} disagrees with oracle on {kind}{idx}{extra}{f' (dtype={dtype})' if dtype else ''}\n"
                     f"program={prog!r}\ngot=\n{gs[idx]}\noracle=\n{os[idx]}"
                 )
 
@@ -3032,6 +3125,13 @@ def run_program_all_passes_default(prog, arrays, label, dtype="float64", level=N
 
 __all__ = [
     'fuzz_seeds',
+    'ALL_DTYPES',
+    'seed_dtype',
+    'typed_array',
+    'SCALAR_FIELDS',
+    'complexify',
+    'resolve_scalars',
+    '_dtype_scalar',
     'check_program_region_pipeline',
     'region_pass_manager',
     'DIMS',

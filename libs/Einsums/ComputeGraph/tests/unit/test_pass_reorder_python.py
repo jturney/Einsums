@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 # ----------------------------------------------------------------------------------------------
 
-"""One-to-one Python mirror of Pass_Reorder.cpp."""
+"""One-to-one Python mirror of Pass_Reorder.cpp, over every dtype."""
 
 from __future__ import annotations
 
@@ -23,6 +23,11 @@ def _run(pass_obj, g):
     return pm.run(g)
 
 
+def _pf(dtype, re, im):
+    """A prefactor for ``dtype``: both parts for a complex dtype, the real part otherwise."""
+    return complex(re, im) if np.dtype(dtype).kind == "c" else re
+
+
 def _count_kind(g, kind):
     return sum(1 for n in json.loads(g.to_json()).get("nodes", []) if n.get("kind") == kind)
 
@@ -33,10 +38,10 @@ def test_reorder_empty_graph():
     assert not _run(pass_inst, g)
 
 
-def test_reorder_single_node():
-    A = einsums.create_random_tensor("A", [3, 3])
-    B = einsums.create_random_tensor("B", [3, 3])
-    C = einsums.create_zero_tensor("C", [3, 3])
+def test_reorder_single_node(dtype):
+    A = einsums.create_random_tensor("A", [3, 3], dtype=dtype)
+    B = einsums.create_random_tensor("B", [3, 3], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [3, 3], dtype=dtype)
 
     g = cg.Graph("reorder_single")
     with cg.capture(g):
@@ -46,11 +51,11 @@ def test_reorder_single_node():
     assert not _run(pass_inst, g)
 
 
-def test_reorder_produces_valid_topological_order():
-    A = einsums.create_random_tensor("A", [5, 5])
-    B = einsums.create_random_tensor("B", [5, 5])
-    C = einsums.create_zero_tensor("C", [5, 5])
-    D = einsums.create_zero_tensor("D", [5, 5])
+def test_reorder_produces_valid_topological_order(dtype):
+    A = einsums.create_random_tensor("A", [5, 5], dtype=dtype)
+    B = einsums.create_random_tensor("B", [5, 5], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [5, 5], dtype=dtype)
+    D = einsums.create_zero_tensor("D", [5, 5], dtype=dtype)
 
     C_ref = np.asarray(A) @ np.asarray(B)
     D_ref = np.asarray(A) @ np.asarray(B)
@@ -67,11 +72,11 @@ def test_reorder_produces_valid_topological_order():
     assert_close(D, D_ref)
 
 
-def test_reorder_preserves_data_dependencies():
-    A = einsums.create_random_tensor("A", [5, 5])
-    B = einsums.create_random_tensor("B", [5, 5])
-    C = einsums.create_zero_tensor("C", [5, 5])
-    D = einsums.create_zero_tensor("D", [5, 5])
+def test_reorder_preserves_data_dependencies(dtype):
+    A = einsums.create_random_tensor("A", [5, 5], dtype=dtype)
+    B = einsums.create_random_tensor("B", [5, 5], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [5, 5], dtype=dtype)
+    D = einsums.create_zero_tensor("D", [5, 5], dtype=dtype)
 
     C_ref = np.asarray(A) @ np.asarray(B)
     D_ref = C_ref @ np.asarray(B)
@@ -88,20 +93,27 @@ def test_reorder_preserves_data_dependencies():
     assert_close(D, D_ref)
 
 
-def test_reorder_memory_aware_frees_large_tensor_early():
-    """Smoke test: just verify the pass runs and execute() succeeds."""
-    A = einsums.create_random_tensor("A", [128, 128])
-    B = einsums.create_random_tensor("B", [128, 128])
-    C = einsums.create_zero_tensor("C", [128, 128])
-    D = einsums.create_random_tensor("D", [4, 4])
+def test_reorder_memory_aware_frees_large_tensor_early(dtype):
+    """The pass runs on a large and a small independent node, and both still compute."""
+    A = einsums.create_random_tensor("A", [128, 128], dtype=dtype)
+    B = einsums.create_random_tensor("B", [128, 128], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [128, 128], dtype=dtype)
+    D = einsums.create_random_tensor("D", [4, 4], dtype=dtype)
+
+    factor = _pf(dtype, 2.0, -0.5)
+    C_ref = np.asarray(A) @ np.asarray(B)
+    D_ref = factor * np.asarray(D)
 
     g = cg.Graph("reorder_memory")
     with cg.capture(g):
-        einsums.linalg.scale(2.0, D)
+        einsums.linalg.scale(factor, D)
         einsums.einsum("ij <- ik ; kj", C, A, B)
 
     _run(cg.Reorder(), g)
     g.execute()
+
+    assert_close(D, D_ref)
+    assert_close(C, C_ref)
 
 
 @pytest.mark.skip(
@@ -112,12 +124,12 @@ def test_reorder_preserves_rank3_batched_gemm_chain_row_major():
     """C++ test uses row-major + batch-prefix to hit row_mode fast path."""
 
 
-def test_reorder_preserves_rank3_batched_gemm_dependency_chain():
+def test_reorder_preserves_rank3_batched_gemm_dependency_chain(dtype):
     """Col-major batch-suffix → each stage takes the strided-batch route; Reorder must preserve the chain."""
-    A = einsums.create_random_tensor("A", [3, 3, 4])
-    B = einsums.create_random_tensor("B", [3, 3, 4])
-    C = einsums.create_zero_tensor("C", [3, 3, 4])
-    D = einsums.create_zero_tensor("D", [3, 3, 4])
+    A = einsums.create_random_tensor("A", [3, 3, 4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [3, 3, 4], dtype=dtype)
+    C = einsums.create_zero_tensor("C", [3, 3, 4], dtype=dtype)
+    D = einsums.create_zero_tensor("D", [3, 3, 4], dtype=dtype)
 
     g = cg.Graph("reorder_rank3")
     with cg.capture(g):

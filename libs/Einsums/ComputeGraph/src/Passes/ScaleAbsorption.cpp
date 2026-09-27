@@ -147,15 +147,8 @@ bool ScaleAbsorption::run(Graph &graph) {
         if (scale_desc == nullptr || scale_node.outputs.size() != 1) {
             continue;
         }
-        // The fold below moves a REAL scalar onto a following op. A complex
-        // factor is left alone rather than projected onto its real part: the
-        // descriptor used to be a plain double filled from `factor.real()`, so
-        // a complex scale folded a wrong value here with nothing to warn on.
-        if (!is_real_valued(live_factor(*scale_desc))) {
-            continue;
-        }
         TensorId const scaled_tensor = scale_node.outputs[0];
-        auto const     scale_factor  = as_real<double>(live_factor(*scale_desc));
+        auto const    &live_scale    = live_factor(*scale_desc);
 
         // Scan the window [sc+1, next-writer-of-scaled_tensor): who observes the
         // scaled value? A `scale` is IN-PLACE, so the tensor's own value is
@@ -224,12 +217,24 @@ bool ScaleAbsorption::run(Graph &graph) {
             // it, so the scale's result is discarded. Drop the Scale node.
             remove[sc] = true;
             ++_num_absorbed;
-            EINSUMS_LOG_INFO("ScaleAbsorption: removed dead scale({}) of a tensor overwritten by {} node {}", scale_factor,
-                             nodes[writer].kind, nodes[writer].id);
-            report(2, fmt::format("remove dead scale({}); {} node {} overwrites the tensor without reading it", scale_factor,
+            EINSUMS_LOG_INFO("ScaleAbsorption: removed dead scale of a tensor overwritten by {} node {}", nodes[writer].kind,
+                             nodes[writer].id);
+            report(2, fmt::format("remove dead scale node {}; {} node {} overwrites the tensor without reading it", scale_node.id,
                                   nodes[writer].kind, nodes[writer].id));
             continue;
         }
+
+        // The fold below moves a REAL scalar onto a following op. A complex
+        // factor is left alone rather than projected onto its real part: the
+        // descriptor used to be a plain double filled from `factor.real()`, so
+        // a complex scale folded a wrong value here with nothing to warn on.
+        // The check sits after the dead-scale removal above, which discards
+        // the factor whatever its value.
+        if (!is_real_valued(live_scale)) {
+            note_skip("a complex scale factor is not folded into its readers", fmt::format("scale node {}", scale_node.id));
+            continue;
+        }
+        auto const scale_factor = as_real<double>(live_scale);
 
         // Fold: every node that observes the scaled value before it dies has to
         // take the factor. A reader that reads the tensor as an operand scales

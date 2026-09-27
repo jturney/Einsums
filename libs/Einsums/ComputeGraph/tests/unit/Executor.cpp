@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <thread>
 
 #include <Einsums/Testing.hpp>
@@ -23,11 +24,34 @@ using einsums::testing::reference_einsum;
 using namespace einsums;
 namespace cg = einsums::compute_graph;
 
-TEST_CASE("SequentialExecutor - matches default execute()", "[ComputeGraph][Executor]") {
-    auto A = create_random_tensor<double>("A", 4, 3);
-    auto B = create_random_tensor<double>("B", 3, 5);
-    auto C = create_zero_tensor<double>("C", 4, 5);
-    auto D = create_zero_tensor<double>("D", 4, 5);
+namespace {
+
+// The values here are sums of a few order-one products, good to a few ulps of the element
+// type; a thousand leaves room for summation order without admitting a wrong term.
+template <typename T>
+constexpr double value_tol() {
+    return 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
+}
+
+template <typename T>
+void require_close(Tensor<T, 2> const &got, Tensor<T, 2> const &want) {
+    REQUIRE(got.dim(0) == want.dim(0));
+    REQUIRE(got.dim(1) == want.dim(1));
+    for (size_t ii = 0; ii < static_cast<size_t>(want.dim(0)); ii++) {
+        for (size_t jj = 0; jj < static_cast<size_t>(want.dim(1)); jj++) {
+            REQUIRE_THAT(got(ii, jj), CheckWithinRel(want(ii, jj), value_tol<T>()));
+        }
+    }
+}
+
+} // namespace
+
+TEMPLATE_LIST_TEST_CASE("SequentialExecutor - matches default execute()", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
+    auto C  = create_zero_tensor<T>("C", 4, 5);
+    auto D  = create_zero_tensor<T>("D", 4, 5);
 
     // Default execute
     cg::Graph graph1("default");
@@ -46,49 +70,43 @@ TEST_CASE("SequentialExecutor - matches default execute()", "[ComputeGraph][Exec
     cg::SequentialExecutor seq;
     graph2.execute(seq);
 
-    for (size_t ii = 0; ii < 4; ii++) {
-        for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - D(ii, jj)) < 1e-12);
-        }
-    }
+    require_close(D, C);
 }
 
-TEST_CASE("OpenMPExecutor - produces correct results", "[ComputeGraph][Executor]") {
-    auto A = create_random_tensor<double>("A", 6, 4);
-    auto B = create_random_tensor<double>("B", 4, 5);
-    auto C = create_zero_tensor<double>("C", 6, 5);
-    auto D = create_zero_tensor<double>("D", 6, 5);
+TEMPLATE_LIST_TEST_CASE("OpenMPExecutor - produces correct results", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 6, 4);
+    auto B  = create_random_tensor<T>("B", 4, 5);
+    auto C  = create_zero_tensor<T>("C", 6, 5);
+    auto D  = create_zero_tensor<T>("D", 6, 5);
 
     // Reference: eager
-    reference_einsum("ij <- ik ; kj", &C, A, B);
-    linear_algebra::scale(2.0, &C);
+    T const alpha = testing::prefactor<T>(2.0, 0.3);
+    reference_einsum("ij <- ik ; kj", T{0}, &C, alpha, A, B);
 
     // OpenMP executor
     cg::Graph omp_graph("openmp");
     {
         cg::CaptureGuard const guard(omp_graph);
         cg::einsum("ik;kj->ij", &D, A, B);
-        cg::scale(2.0, &D);
+        cg::scale(alpha, &D);
     }
     cg::OpenMPExecutor omp;
     omp_graph.execute(omp);
 
-    for (size_t ii = 0; ii < 6; ii++) {
-        for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - D(ii, jj)) < 1e-12);
-        }
-    }
+    require_close(D, C);
 }
 
-TEST_CASE("OpenMPExecutor - independent nodes", "[ComputeGraph][Executor]") {
+TEMPLATE_LIST_TEST_CASE("OpenMPExecutor - independent nodes", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T = TestType;
     // Two independent operations, can run in parallel
-    auto A = create_random_tensor<double>("A", 5, 5);
-    auto B = create_random_tensor<double>("B", 5, 5);
-    auto C = create_zero_tensor<double>("C", 5, 5);
-    auto D = create_zero_tensor<double>("D", 5, 5);
+    auto A = create_random_tensor<T>("A", 5, 5);
+    auto B = create_random_tensor<T>("B", 5, 5);
+    auto C = create_zero_tensor<T>("C", 5, 5);
+    auto D = create_zero_tensor<T>("D", 5, 5);
 
-    auto C_ref = create_zero_tensor<double>("Cref", 5, 5);
-    auto D_ref = create_zero_tensor<double>("Dref", 5, 5);
+    auto C_ref = create_zero_tensor<T>("Cref", 5, 5);
+    auto D_ref = create_zero_tensor<T>("Dref", 5, 5);
 
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     reference_einsum("ij <- ik ; kj", &D_ref, B, A);
@@ -103,23 +121,20 @@ TEST_CASE("OpenMPExecutor - independent nodes", "[ComputeGraph][Executor]") {
     cg::OpenMPExecutor omp;
     graph.execute(omp);
 
-    for (size_t ii = 0; ii < 5; ii++) {
-        for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < 1e-12);
-            REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < 1e-12);
-        }
-    }
+    require_close(C, C_ref);
+    require_close(D, D_ref);
 }
 
-TEST_CASE("OpenMPExecutor - dependent chain", "[ComputeGraph][Executor]") {
+TEMPLATE_LIST_TEST_CASE("OpenMPExecutor - dependent chain", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T = TestType;
     // Chain: C = A*B, then D = C*A, must execute in order
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_random_tensor<double>("B", 4, 4);
-    auto C = create_zero_tensor<double>("C", 4, 4);
-    auto D = create_zero_tensor<double>("D", 4, 4);
+    auto A = create_random_tensor<T>("A", 4, 4);
+    auto B = create_random_tensor<T>("B", 4, 4);
+    auto C = create_zero_tensor<T>("C", 4, 4);
+    auto D = create_zero_tensor<T>("D", 4, 4);
 
-    auto C_ref = create_zero_tensor<double>("Cref", 4, 4);
-    auto D_ref = create_zero_tensor<double>("Dref", 4, 4);
+    auto C_ref = create_zero_tensor<T>("Cref", 4, 4);
+    auto D_ref = create_zero_tensor<T>("Dref", 4, 4);
 
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     reference_einsum("ij <- ik ; kj", &D_ref, C_ref, A);
@@ -134,20 +149,19 @@ TEST_CASE("OpenMPExecutor - dependent chain", "[ComputeGraph][Executor]") {
     cg::OpenMPExecutor omp;
     graph.execute(omp);
 
-    for (size_t ii = 0; ii < 4; ii++) {
-        for (size_t jj = 0; jj < 4; jj++) {
-            REQUIRE(std::abs(C(ii, jj) - C_ref(ii, jj)) < 1e-12);
-            REQUIRE(std::abs(D(ii, jj) - D_ref(ii, jj)) < 1e-12);
-        }
-    }
+    require_close(C, C_ref);
+    require_close(D, D_ref);
 }
 
-TEST_CASE("OpenMPExecutor - pipeline with executor", "[ComputeGraph][Executor]") {
-    auto A   = create_random_tensor<double>("A", 3, 3);
-    auto B   = create_random_tensor<double>("B", 3, 3);
-    auto acc = create_zero_tensor<double>("acc", 3, 3);
+TEMPLATE_LIST_TEST_CASE("OpenMPExecutor - pipeline with executor", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T  = TestType;
+    auto A   = create_random_tensor<T>("A", 3, 3);
+    auto B   = create_random_tensor<T>("B", 3, 3);
+    auto acc = create_zero_tensor<T>("acc", 3, 3);
 
-    auto C = create_zero_tensor<double>("C", 3, 3);
+    auto C = create_zero_tensor<T>("C", 3, 3);
+
+    T const alpha = testing::prefactor<T>(0.7, -0.4);
 
     cg::Pipeline pipeline("omp_pipeline");
 
@@ -164,7 +178,7 @@ TEST_CASE("OpenMPExecutor - pipeline with executor", "[ComputeGraph][Executor]")
             return iter < 2;
         });
         cg::CaptureGuard const guard(loop);
-        cg::axpy(1.0, C, &acc);
+        cg::axpy(alpha, C, &acc);
     }
 
     cg::OpenMPExecutor omp;
@@ -172,14 +186,10 @@ TEST_CASE("OpenMPExecutor - pipeline with executor", "[ComputeGraph][Executor]")
 
     REQUIRE(count == 3);
 
-    auto C_ref = create_zero_tensor<double>("Cref", 3, 3);
-    reference_einsum("ij <- ik ; kj", &C_ref, A, B);
-
-    for (size_t ii = 0; ii < 3; ii++) {
-        for (size_t jj = 0; jj < 3; jj++) {
-            REQUIRE(std::abs(acc(ii, jj) - 3.0 * C_ref(ii, jj)) < 1e-12);
-        }
-    }
+    // Three accumulations of alpha * A B.
+    auto C_ref = create_zero_tensor<T>("Cref", 3, 3);
+    reference_einsum("ij <- ik ; kj", T{0}, &C_ref, T{3} * alpha, A, B);
+    require_close(acc, C_ref);
 }
 
 TEST_CASE("DependencyInfo - correct structure", "[ComputeGraph][Executor]") {
@@ -209,21 +219,24 @@ TEST_CASE("DependencyInfo - correct structure", "[ComputeGraph][Executor]") {
 
 // ── DataflowExecutor tests ───────────────────────────────────────────────────
 
-TEST_CASE("DataflowExecutor - matches sequential results", "[ComputeGraph][Executor]") {
-    auto A = create_random_tensor<double>("A", 5, 4);
-    auto B = create_random_tensor<double>("B", 4, 6);
-    auto C = create_zero_tensor<double>("C", 5, 6);
-    auto D = create_zero_tensor<double>("D", 5, 6);
+TEMPLATE_LIST_TEST_CASE("DataflowExecutor - matches sequential results", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 5, 4);
+    auto B  = create_random_tensor<T>("B", 4, 6);
+    auto C  = create_zero_tensor<T>("C", 5, 6);
+    auto D  = create_zero_tensor<T>("D", 5, 6);
+
+    T const alpha = testing::prefactor<T>(2.0, -0.6);
 
     // Sequential reference
     cg::Graph graph_seq("seq");
     {
         cg::CaptureGuard const guard(graph_seq);
         cg::einsum("ik;kj->ij", &C, A, B);
-        cg::scale(2.0, &C);
+        cg::scale(alpha, &C);
     }
     graph_seq.execute();
-    auto C_ref = Tensor<double, 2>(C);
+    auto C_ref = Tensor<T, 2>(C);
 
     // DataflowExecutor
     C.zero();
@@ -231,45 +244,44 @@ TEST_CASE("DataflowExecutor - matches sequential results", "[ComputeGraph][Execu
     {
         cg::CaptureGuard const guard(graph_df);
         cg::einsum("ik;kj->ij", &D, A, B);
-        cg::scale(2.0, &D);
+        cg::scale(alpha, &D);
     }
 
     cg::DataflowExecutor df;
     graph_df.execute(df);
 
-    for (size_t ii = 0; ii < 5; ii++)
-        for (size_t jj = 0; jj < 6; jj++)
-            REQUIRE_THAT(D(ii, jj), Catch::Matchers::WithinRel(C_ref(ii, jj), 1e-12));
+    require_close(D, C_ref);
 }
 
-TEST_CASE("DataflowExecutor - diamond DAG", "[ComputeGraph][Executor]") {
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_zero_tensor<double>("B", 4, 4);
-    auto C = create_zero_tensor<double>("C", 4, 4);
-    auto D = create_zero_tensor<double>("D", 4, 4);
+TEMPLATE_LIST_TEST_CASE("DataflowExecutor - diamond DAG", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 4);
+    auto B  = create_zero_tensor<T>("B", 4, 4);
+    auto C  = create_zero_tensor<T>("C", 4, 4);
+    auto D  = create_zero_tensor<T>("D", 4, 4);
 
-    // B = 2*A, C = A^T (independent), D = B + C (depends on both)
+    // B = alpha*A, C = A^T (independent), D = B + beta*C (depends on both)
+    T const   alpha = testing::prefactor<T>(2.0, 0.5);
+    T const   beta  = testing::prefactor<T>(1.0, -0.25);
     cg::Graph graph("diamond");
     {
         cg::CaptureGuard const guard(graph);
-        cg::permute("ij <- ij", 0.0, &B, 2.0, A);
-        cg::permute("ji <- ij", 0.0, &C, 1.0, A);
-        cg::axpy(1.0, B, &D);
-        cg::axpy(1.0, C, &D);
+        cg::permute("ij <- ij", T{0}, &B, alpha, A);
+        cg::permute("ji <- ij", T{0}, &C, T{1}, A);
+        cg::axpy(T{1}, B, &D);
+        cg::axpy(beta, C, &D);
     }
 
     // Reference
-    auto D_ref = create_zero_tensor<double>("D_ref", 4, 4);
+    auto D_ref = create_zero_tensor<T>("D_ref", 4, 4);
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 4; jj++)
-            D_ref(ii, jj) = 2.0 * A(ii, jj) + A(jj, ii);
+            D_ref(ii, jj) = alpha * A(ii, jj) + beta * A(jj, ii);
 
     cg::DataflowExecutor df;
     graph.execute(df);
 
-    for (size_t ii = 0; ii < 4; ii++)
-        for (size_t jj = 0; jj < 4; jj++)
-            REQUIRE_THAT(D(ii, jj), Catch::Matchers::WithinRel(D_ref(ii, jj), 1e-12));
+    require_close(D, D_ref);
 }
 
 TEST_CASE("DataflowExecutor - empty graph", "[ComputeGraph][Executor]") {
@@ -315,72 +327,78 @@ TEST_CASE("OpenMPExecutor - empty graph", "[ComputeGraph][Executor]") {
     REQUIRE_NOTHROW(graph.execute(omp));
 }
 
-TEST_CASE("SequentialExecutor - single node", "[ComputeGraph][Executor]") {
-    auto A     = create_random_tensor<double>("A", 3, 3);
-    auto A_ref = Tensor<double, 2>(A);
-    linear_algebra::scale(2.0, &A_ref);
+TEMPLATE_LIST_TEST_CASE("SequentialExecutor - single node", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T       = TestType;
+    auto    A     = create_random_tensor<T>("A", 3, 3);
+    T const alpha = testing::prefactor<T>(2.0, 0.7);
+    auto    A_ref = Tensor<T, 2>(A);
+    for (size_t ii = 0; ii < A_ref.size(); ii++)
+        A_ref.data()[ii] *= alpha;
 
     cg::Graph graph("seq_single");
     {
         cg::CaptureGuard const guard(graph);
-        cg::scale(2.0, &A);
+        cg::scale(alpha, &A);
     }
     cg::SequentialExecutor seq;
     graph.execute(seq);
 
-    for (size_t ii = 0; ii < 3; ii++)
-        for (size_t jj = 0; jj < 3; jj++)
-            REQUIRE(std::abs(A(ii, jj) - A_ref(ii, jj)) < 1e-12);
+    require_close(A, A_ref);
 }
 
-TEST_CASE("OpenMPExecutor - single node", "[ComputeGraph][Executor]") {
-    auto A     = create_random_tensor<double>("A", 3, 3);
-    auto A_ref = Tensor<double, 2>(A);
-    linear_algebra::scale(2.0, &A_ref);
+TEMPLATE_LIST_TEST_CASE("OpenMPExecutor - single node", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T       = TestType;
+    auto    A     = create_random_tensor<T>("A", 3, 3);
+    T const alpha = testing::prefactor<T>(2.0, 0.7);
+    auto    A_ref = Tensor<T, 2>(A);
+    for (size_t ii = 0; ii < A_ref.size(); ii++)
+        A_ref.data()[ii] *= alpha;
 
     cg::Graph graph("omp_single");
     {
         cg::CaptureGuard const guard(graph);
-        cg::scale(2.0, &A);
+        cg::scale(alpha, &A);
     }
     cg::OpenMPExecutor omp;
     graph.execute(omp);
 
-    for (size_t ii = 0; ii < 3; ii++)
-        for (size_t jj = 0; jj < 3; jj++)
-            REQUIRE(std::abs(A(ii, jj) - A_ref(ii, jj)) < 1e-12);
+    require_close(A, A_ref);
 }
 
-TEST_CASE("DataflowExecutor - single node", "[ComputeGraph][Executor]") {
-    auto A     = create_random_tensor<double>("A", 3, 3);
-    auto A_ref = Tensor<double, 2>(A);
-    linear_algebra::scale(2.0, &A_ref);
+TEMPLATE_LIST_TEST_CASE("DataflowExecutor - single node", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T       = TestType;
+    auto    A     = create_random_tensor<T>("A", 3, 3);
+    T const alpha = testing::prefactor<T>(2.0, 0.7);
+    auto    A_ref = Tensor<T, 2>(A);
+    for (size_t ii = 0; ii < A_ref.size(); ii++)
+        A_ref.data()[ii] *= alpha;
 
     cg::Graph graph("df_single");
     {
         cg::CaptureGuard const guard(graph);
-        cg::scale(2.0, &A);
+        cg::scale(alpha, &A);
     }
     cg::DataflowExecutor df;
     graph.execute(df);
 
-    for (size_t ii = 0; ii < 3; ii++)
-        for (size_t jj = 0; jj < 3; jj++)
-            REQUIRE(std::abs(A(ii, jj) - A_ref(ii, jj)) < 1e-12);
+    require_close(A, A_ref);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Replay (execute twice on same graph)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("SequentialExecutor - replay", "[ComputeGraph][Executor]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
-    auto B = create_zero_tensor<double>("B", 3, 3);
+TEMPLATE_LIST_TEST_CASE("SequentialExecutor - replay", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 3);
+    auto B  = create_zero_tensor<T>("B", 3, 3);
+
+    T const alpha = testing::prefactor<T>(1.5, -0.5);
 
     cg::Graph graph("seq_replay");
     {
         cg::CaptureGuard const guard(graph);
-        cg::axpy(1.0, A, &B); // B += A each execute
+        cg::axpy(alpha, A, &B); // B += alpha A each execute
     }
     cg::SequentialExecutor seq;
     graph.execute(seq);
@@ -388,17 +406,20 @@ TEST_CASE("SequentialExecutor - replay", "[ComputeGraph][Executor]") {
 
     for (size_t ii = 0; ii < 3; ii++)
         for (size_t jj = 0; jj < 3; jj++)
-            REQUIRE(std::abs(B(ii, jj) - 2.0 * A(ii, jj)) < 1e-12);
+            REQUIRE_THAT(B(ii, jj), CheckWithinRel(T{2} * alpha * A(ii, jj), value_tol<T>()));
 }
 
-TEST_CASE("OpenMPExecutor - replay", "[ComputeGraph][Executor]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
-    auto B = create_zero_tensor<double>("B", 3, 3);
+TEMPLATE_LIST_TEST_CASE("OpenMPExecutor - replay", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 3);
+    auto B  = create_zero_tensor<T>("B", 3, 3);
+
+    T const alpha = testing::prefactor<T>(1.5, -0.5);
 
     cg::Graph graph("omp_replay");
     {
         cg::CaptureGuard const guard(graph);
-        cg::axpy(1.0, A, &B);
+        cg::axpy(alpha, A, &B);
     }
     cg::OpenMPExecutor omp;
     graph.execute(omp);
@@ -406,17 +427,20 @@ TEST_CASE("OpenMPExecutor - replay", "[ComputeGraph][Executor]") {
 
     for (size_t ii = 0; ii < 3; ii++)
         for (size_t jj = 0; jj < 3; jj++)
-            REQUIRE(std::abs(B(ii, jj) - 2.0 * A(ii, jj)) < 1e-12);
+            REQUIRE_THAT(B(ii, jj), CheckWithinRel(T{2} * alpha * A(ii, jj), value_tol<T>()));
 }
 
-TEST_CASE("DataflowExecutor - replay", "[ComputeGraph][Executor]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
-    auto B = create_zero_tensor<double>("B", 3, 3);
+TEMPLATE_LIST_TEST_CASE("DataflowExecutor - replay", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 3);
+    auto B  = create_zero_tensor<T>("B", 3, 3);
+
+    T const alpha = testing::prefactor<T>(1.5, -0.5);
 
     cg::Graph graph("df_replay");
     {
         cg::CaptureGuard const guard(graph);
-        cg::axpy(1.0, A, &B);
+        cg::axpy(alpha, A, &B);
     }
     cg::DataflowExecutor df;
     graph.execute(df);
@@ -424,21 +448,22 @@ TEST_CASE("DataflowExecutor - replay", "[ComputeGraph][Executor]") {
 
     for (size_t ii = 0; ii < 3; ii++)
         for (size_t jj = 0; jj < 3; jj++)
-            REQUIRE(std::abs(B(ii, jj) - 2.0 * A(ii, jj)) < 1e-12);
+            REQUIRE_THAT(B(ii, jj), CheckWithinRel(T{2} * alpha * A(ii, jj), value_tol<T>()));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DiskRead/DiskWrite with mock I/O
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("SequentialExecutor - DiskRead mock", "[ComputeGraph][Executor][IO]") {
-    auto src = create_random_tensor<double>("src", 4, 4);
-    auto dst = create_zero_tensor<double>("dst", 4, 4);
+TEMPLATE_LIST_TEST_CASE("SequentialExecutor - DiskRead mock", "[ComputeGraph][Executor][IO]", testing::AllScalarTypes) {
+    using T  = TestType;
+    auto src = create_random_tensor<T>("src", 4, 4);
+    auto dst = create_zero_tensor<T>("dst", 4, 4);
 
     cg::Graph graph("seq_io");
     {
         cg::CaptureGuard const guard(graph);
-        cg::read("mock load", "fake.h5", "/data", &dst, [&]() { std::memcpy(dst.data(), src.data(), 16 * sizeof(double)); });
+        cg::read("mock load", "fake.h5", "/data", &dst, [&]() { std::memcpy(dst.data(), src.data(), 16 * sizeof(T)); });
     }
 
     cg::SequentialExecutor seq;
@@ -449,14 +474,15 @@ TEST_CASE("SequentialExecutor - DiskRead mock", "[ComputeGraph][Executor][IO]") 
             REQUIRE(dst(ii, jj) == src(ii, jj));
 }
 
-TEST_CASE("OpenMPExecutor - DiskRead mock", "[ComputeGraph][Executor][IO]") {
-    auto src = create_random_tensor<double>("src", 4, 4);
-    auto dst = create_zero_tensor<double>("dst", 4, 4);
+TEMPLATE_LIST_TEST_CASE("OpenMPExecutor - DiskRead mock", "[ComputeGraph][Executor][IO]", testing::AllScalarTypes) {
+    using T  = TestType;
+    auto src = create_random_tensor<T>("src", 4, 4);
+    auto dst = create_zero_tensor<T>("dst", 4, 4);
 
     cg::Graph graph("omp_io");
     {
         cg::CaptureGuard const guard(graph);
-        cg::read("mock load", "fake.h5", "/data", &dst, [&]() { std::memcpy(dst.data(), src.data(), 16 * sizeof(double)); });
+        cg::read("mock load", "fake.h5", "/data", &dst, [&]() { std::memcpy(dst.data(), src.data(), 16 * sizeof(T)); });
     }
 
     cg::OpenMPExecutor omp;
@@ -467,14 +493,15 @@ TEST_CASE("OpenMPExecutor - DiskRead mock", "[ComputeGraph][Executor][IO]") {
             REQUIRE(dst(ii, jj) == src(ii, jj));
 }
 
-TEST_CASE("DataflowExecutor - DiskRead mock", "[ComputeGraph][Executor][IO]") {
-    auto src = create_random_tensor<double>("src", 4, 4);
-    auto dst = create_zero_tensor<double>("dst", 4, 4);
+TEMPLATE_LIST_TEST_CASE("DataflowExecutor - DiskRead mock", "[ComputeGraph][Executor][IO]", testing::AllScalarTypes) {
+    using T  = TestType;
+    auto src = create_random_tensor<T>("src", 4, 4);
+    auto dst = create_zero_tensor<T>("dst", 4, 4);
 
     cg::Graph graph("df_io");
     {
         cg::CaptureGuard const guard(graph);
-        cg::read("mock load", "fake.h5", "/data", &dst, [&]() { std::memcpy(dst.data(), src.data(), 16 * sizeof(double)); });
+        cg::read("mock load", "fake.h5", "/data", &dst, [&]() { std::memcpy(dst.data(), src.data(), 16 * sizeof(T)); });
     }
 
     cg::DataflowExecutor df;
@@ -485,17 +512,20 @@ TEST_CASE("DataflowExecutor - DiskRead mock", "[ComputeGraph][Executor][IO]") {
             REQUIRE(dst(ii, jj) == src(ii, jj));
 }
 
-TEST_CASE("DiskRead then compute - correct ordering", "[ComputeGraph][Executor][IO]") {
-    auto src    = create_random_tensor<double>("src", 4, 4);
-    auto data   = create_zero_tensor<double>("data", 4, 4);
-    auto result = create_zero_tensor<double>("result", 4, 4);
+TEMPLATE_LIST_TEST_CASE("DiskRead then compute - correct ordering", "[ComputeGraph][Executor][IO]", testing::AllScalarTypes) {
+    using T     = TestType;
+    auto src    = create_random_tensor<T>("src", 4, 4);
+    auto data   = create_zero_tensor<T>("data", 4, 4);
+    auto result = create_zero_tensor<T>("result", 4, 4);
+
+    T const alpha = testing::prefactor<T>(2.0, 0.25);
 
     cg::Graph graph("io_then_compute");
     {
         cg::CaptureGuard const guard(graph);
-        cg::read("load data", "fake.h5", "/data", &data, [&]() { std::memcpy(data.data(), src.data(), 16 * sizeof(double)); });
-        cg::scale(2.0, &data);
-        cg::axpy(1.0, data, &result);
+        cg::read("load data", "fake.h5", "/data", &data, [&]() { std::memcpy(data.data(), src.data(), 16 * sizeof(T)); });
+        cg::scale(alpha, &data);
+        cg::axpy(T{1}, data, &result);
     }
 
     cg::DataflowExecutor df;
@@ -503,16 +533,20 @@ TEST_CASE("DiskRead then compute - correct ordering", "[ComputeGraph][Executor][
 
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 4; jj++)
-            REQUIRE(std::abs(result(ii, jj) - 2.0 * src(ii, jj)) < 1e-12);
+            REQUIRE_THAT(result(ii, jj), CheckWithinRel(alpha * src(ii, jj), value_tol<T>()));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Async I/O with DataflowExecutor
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("DataflowExecutor - async read correctness", "[ComputeGraph][Executor][IO]") {
-    auto data   = create_zero_tensor<double>("data", 4, 4);
-    auto result = create_zero_tensor<double>("result", 4, 4);
+TEMPLATE_LIST_TEST_CASE("DataflowExecutor - async read correctness", "[ComputeGraph][Executor][IO]", testing::AllScalarTypes) {
+    using T     = TestType;
+    auto data   = create_zero_tensor<T>("data", 4, 4);
+    auto result = create_zero_tensor<T>("result", 4, 4);
+
+    // Exact in every element type, and with an imaginary part where there is one.
+    auto loaded = [](size_t idx) { return testing::prefactor<T>(static_cast<double>(idx + 1), -0.5 * static_cast<double>(idx)); };
 
     cg::Graph graph("async_read");
     {
@@ -525,15 +559,15 @@ TEST_CASE("DataflowExecutor - async read correctness", "[ComputeGraph][Executor]
             [&]() {
                 // Fill data with known values
                 for (size_t idx = 0; idx < data.size(); idx++)
-                    data.data()[idx] = static_cast<double>(idx + 1);
+                    data.data()[idx] = loaded(idx);
             },
             /*sync*/
             [&]() {
                 for (size_t idx = 0; idx < data.size(); idx++)
-                    data.data()[idx] = static_cast<double>(idx + 1);
+                    data.data()[idx] = loaded(idx);
             });
 
-        cg::axpy(1.0, data, &result);
+        cg::axpy(T{1}, data, &result);
     }
 
     cg::DataflowExecutor df;
@@ -541,11 +575,12 @@ TEST_CASE("DataflowExecutor - async read correctness", "[ComputeGraph][Executor]
 
     // Verify data was loaded correctly
     for (size_t idx = 0; idx < 16; idx++)
-        REQUIRE(result.data()[idx] == static_cast<double>(idx + 1));
+        REQUIRE(result.data()[idx] == loaded(idx));
 }
 
-TEST_CASE("SequentialExecutor - async read falls back to sync", "[ComputeGraph][Executor][IO]") {
-    auto data = create_zero_tensor<double>("data", 4, 4);
+TEMPLATE_LIST_TEST_CASE("SequentialExecutor - async read falls back to sync", "[ComputeGraph][Executor][IO]", testing::AllScalarTypes) {
+    using T   = TestType;
+    auto data = create_zero_tensor<T>("data", 4, 4);
 
     std::atomic<bool> sync_called{false};
     std::atomic<bool> start_called{false};
@@ -562,7 +597,7 @@ TEST_CASE("SequentialExecutor - async read falls back to sync", "[ComputeGraph][
             [&]() {
                 sync_called = true;
                 for (size_t idx = 0; idx < data.size(); idx++)
-                    data.data()[idx] = 42.0;
+                    data.data()[idx] = testing::prefactor<T>(42.0, 0.5);
             });
     }
 
@@ -572,7 +607,7 @@ TEST_CASE("SequentialExecutor - async read falls back to sync", "[ComputeGraph][
 
     CHECK(sync_called);
     CHECK_FALSE(start_called); // async_start is NOT called by Sequential
-    CHECK(data(0, 0) == 42.0);
+    CHECK(data(0, 0) == testing::prefactor<T>(42.0, 0.5));
 }
 
 TEST_CASE("DataflowExecutor - async read overlap with compute", "[ComputeGraph][Executor][IO]") {
@@ -1124,22 +1159,26 @@ TEST_CASE("IOPrefetch - within-graph prefetch is idempotent", "[ComputeGraph][Pa
 // Wide fan-out
 // ═══════════════════════════════════════════════════════════════════════════════
 
-TEST_CASE("DataflowExecutor - wide fan-out", "[ComputeGraph][Executor]") {
-    auto                             A = create_random_tensor<double>("A", 4, 4);
-    constexpr size_t                 N = 8;
-    std::array<Tensor<double, 2>, N> outputs;
+TEMPLATE_LIST_TEST_CASE("DataflowExecutor - wide fan-out", "[ComputeGraph][Executor]", testing::AllScalarTypes) {
+    using T                       = TestType;
+    auto                        A = create_random_tensor<T>("A", 4, 4);
+    constexpr size_t            N = 8;
+    std::array<Tensor<T, 2>, N> outputs;
     for (size_t idx = 0; idx < N; idx++)
-        outputs[idx] = create_zero_tensor<double>(fmt::format("out_{}", idx), 4, 4);
+        outputs[idx] = create_zero_tensor<T>(fmt::format("out_{}", idx), 4, 4);
 
-    auto A_scaled = Tensor<double, 2>(A);
-    linear_algebra::scale(3.0, &A_scaled);
+    T const alpha    = testing::prefactor<T>(3.0, 1.25);
+    T const beta     = testing::prefactor<T>(0.5, -0.75);
+    auto    A_scaled = Tensor<T, 2>(A);
+    for (size_t ii = 0; ii < A_scaled.size(); ii++)
+        A_scaled.data()[ii] *= alpha * beta;
 
     cg::Graph graph("fanout");
     {
         cg::CaptureGuard const guard(graph);
-        cg::scale(3.0, &A); // 1 producer
+        cg::scale(alpha, &A); // 1 producer
         for (size_t idx = 0; idx < N; idx++) {
-            cg::axpy(1.0, A, &outputs[idx]); // N consumers
+            cg::axpy(beta, A, &outputs[idx]); // N consumers
         }
     }
 
@@ -1147,9 +1186,7 @@ TEST_CASE("DataflowExecutor - wide fan-out", "[ComputeGraph][Executor]") {
     graph.execute(df);
 
     for (size_t idx = 0; idx < N; idx++) {
-        for (size_t r = 0; r < 4; r++)
-            for (size_t c = 0; c < 4; c++)
-                REQUIRE(std::abs(outputs[idx](r, c) - A_scaled(r, c)) < 1e-12);
+        require_close(outputs[idx], A_scaled);
     }
 }
 

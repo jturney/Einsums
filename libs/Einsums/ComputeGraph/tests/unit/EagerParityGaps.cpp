@@ -15,6 +15,8 @@
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
+#include <limits>
+
 #include <Einsums/Testing.hpp>
 
 using einsums::testing::reference_einsum;
@@ -470,17 +472,22 @@ TEST_CASE("cg aliasing - A and B sharing a tensor is allowed", "[ComputeGraph][E
 // losing orders of magnitude of performance - this is the tripwire.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("cg dispatch route - every route in the cascade fires where intended", "[ComputeGraph][EagerParity][dispatch-route]") {
+TEMPLATE_LIST_TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
+                        "[ComputeGraph][EagerParity][dispatch-route]", testing::AllScalarTypes) {
     namespace cgd = einsums::compute_graph::dispatch;
+    using T       = TestType;
+
+    // Value checks: a handful of order-one terms, so a few ulps of the element type.
+    double const tol = 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
 
     // last_dispatch_route() is thread-local and set by the call just made.
     auto route = []() { return std::string{cgd::last_dispatch_route()}; };
 
     // ── Zero-extent quick paths ─────────────────────────────────────────────
     SECTION("empty_output_noop") {
-        auto A = create_random_tensor<double>(std::string("A"), size_t{2}, size_t{3});
-        auto B = create_random_tensor<double>(std::string("B"), size_t{3}, size_t{0});
-        auto C = create_zero_tensor<double>(std::string("C"), size_t{2}, size_t{0});
+        auto A = create_random_tensor<T>(std::string("A"), size_t{2}, size_t{3});
+        auto B = create_random_tensor<T>(std::string("B"), size_t{3}, size_t{0});
+        auto C = create_zero_tensor<T>(std::string("C"), size_t{2}, size_t{0});
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ik ; kj", &C, A, B);
         CHECK(route() == "empty_output_noop");
@@ -490,9 +497,9 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         // The explicit std::string keeps the call unambiguous for GCC, which
         // otherwise also considers the (bool row_major, ...) overload via the
         // const char* -> bool conversion.
-        auto A = create_random_tensor<double>(std::string("A"), size_t{2}, size_t{0});
-        auto B = create_random_tensor<double>(std::string("B"), size_t{0}, size_t{3});
-        auto C = create_zero_tensor<double>("C", 2, 3);
+        auto A = create_random_tensor<T>(std::string("A"), size_t{2}, size_t{0});
+        auto B = create_random_tensor<T>(std::string("B"), size_t{0}, size_t{3});
+        auto C = create_zero_tensor<T>("C", 2, 3);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ik ; kj", &C, A, B);
         CHECK(route() == "empty_input_scale_only");
@@ -500,9 +507,9 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
 
     // ── Generic-loop-only shapes, claimed before any fast path ──────────────
     SECTION("generic_loop_repeated_indices") {
-        auto S = create_random_tensor<double>("S", 4, 4);
-        auto R = create_random_tensor<double>("R", 4, 4);
-        auto H = create_zero_tensor<double>("H", 4, 4);
+        auto S = create_random_tensor<T>("S", 4, 4);
+        auto R = create_random_tensor<T>("R", 4, 4);
+        auto H = create_zero_tensor<T>("H", 4, 4);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ii ; jj", &H, S, R);
         CHECK(route() == "generic_loop_repeated_indices");
@@ -511,9 +518,9 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
     SECTION("generic_loop_lone_summed") {
         // `l` lives in A only and is absent from C and from the links, so it is
         // a single-operand reduction no BLAS or PackedGemm call can express.
-        auto A = create_random_tensor<double>("A", 3, 2, 4);
-        auto B = create_random_tensor<double>("B", 2, 5);
-        auto C = create_zero_tensor<double>("C", 3, 5);
+        auto A = create_random_tensor<T>("A", 3, 2, 4);
+        auto B = create_random_tensor<T>("B", 2, 5);
+        auto C = create_zero_tensor<T>("C", 3, 5);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ikl ; kj", &C, A, B);
         CHECK(route() == "generic_loop_lone_summed");
@@ -524,9 +531,9 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
     // does, so typed operands take the same routes as runtime-rank ones and
     // report the _runtime names; the kernels are the same.
     SECTION("dot") {
-        auto x = create_random_tensor<double>("x", 6);
-        auto y = create_random_tensor<double>("y", 6);
-        auto s = create_zero_tensor<double>("s", 1);
+        auto x = create_random_tensor<T>("x", 6);
+        auto y = create_random_tensor<T>("y", 6);
+        auto s = create_zero_tensor<T>("s", 1);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- i ; i", &s, x, y);
         CHECK(route() == "dot_runtime");
@@ -534,53 +541,53 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         // The scalar-output spec form is not exercised anywhere else, so pin
         // the value too: a route assertion alone would pass on a path that
         // fires correctly and computes nothing.
-        double want = 0.0;
+        T want{0};
         for (size_t n = 0; n < 6; n++) {
             want += x.data()[n] * y.data()[n];
         }
-        CHECK(std::abs(s.data()[0] - want) <= 1e-12 * (1.0 + std::abs(want)));
+        CHECK(std::abs(s.data()[0] - want) <= tol * (1.0 + std::abs(want)));
     }
 
     SECTION("gemv_mat_vec") {
-        auto A = create_random_tensor<double>("A", 4, 3);
-        auto x = create_random_tensor<double>("x", 3);
-        auto y = create_zero_tensor<double>("y", 4);
+        auto A = create_random_tensor<T>("A", 4, 3);
+        auto x = create_random_tensor<T>("x", 3);
+        auto y = create_zero_tensor<T>("y", 4);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("i <- ij ; j", &y, A, x);
         CHECK(route() == "gemv_mat_vec_runtime");
     }
 
     SECTION("gemv_vec_mat") {
-        auto x = create_random_tensor<double>("x", 4);
-        auto A = create_random_tensor<double>("A", 4, 3);
-        auto y = create_zero_tensor<double>("y", 3);
+        auto x = create_random_tensor<T>("x", 4);
+        auto A = create_random_tensor<T>("A", 4, 3);
+        auto y = create_zero_tensor<T>("y", 3);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("j <- i ; ij", &y, x, A);
         CHECK(route() == "gemv_vec_mat_runtime");
     }
 
     SECTION("ger") {
-        auto x = create_random_tensor<double>("x", 6);
-        auto y = create_random_tensor<double>("y", 6);
-        auto G = create_zero_tensor<double>("G", 6, 6);
+        auto x = create_random_tensor<T>("x", 6);
+        auto y = create_random_tensor<T>("y", 6);
+        auto G = create_zero_tensor<T>("G", 6, 6);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- i ; j", &G, x, y);
         CHECK(route() == "ger_runtime");
     }
 
     SECTION("gemm_direct") {
-        auto A = create_random_tensor<double>("A", 4, 3);
-        auto B = create_random_tensor<double>("B", 3, 5);
-        auto C = create_zero_tensor<double>("C", 4, 5);
+        auto A = create_random_tensor<T>("A", 4, 3);
+        auto B = create_random_tensor<T>("B", 3, 5);
+        auto C = create_zero_tensor<T>("C", 4, 5);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ik ; kj", &C, A, B);
         CHECK(route() == "gemm_direct_runtime");
     }
 
     SECTION("direct_product") {
-        auto A = create_random_tensor<double>("A", 4, 5);
-        auto B = create_random_tensor<double>("B", 4, 5);
-        auto C = create_zero_tensor<double>("C", 4, 5);
+        auto A = create_random_tensor<T>("A", 4, 5);
+        auto B = create_random_tensor<T>("B", 4, 5);
+        auto C = create_zero_tensor<T>("C", 4, 5);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ij ; ij", &C, A, B);
         CHECK(route() == "direct_product_runtime");
@@ -590,60 +597,60 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
     // RuntimeTensor operands reach the same routes under the same names; the
     // mixed typed/runtime case is a separate test.
     SECTION("dot_runtime") {
-        auto                  x_t = create_random_tensor<double>("x", 6);
-        auto                  y_t = create_random_tensor<double>("y", 6);
-        auto                  s_t = create_zero_tensor<double>("s", 1);
-        RuntimeTensor<double> x(x_t), y(y_t), s(s_t);
+        auto             x_t = create_random_tensor<T>("x", 6);
+        auto             y_t = create_random_tensor<T>("y", 6);
+        auto             s_t = create_zero_tensor<T>("s", 1);
+        RuntimeTensor<T> x(x_t), y(y_t), s(s_t);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- i ; i", &s, x, y);
         CHECK(route() == "dot_runtime");
     }
 
     SECTION("gemv_mat_vec_runtime") {
-        auto                  A_t = create_random_tensor<double>("A", 4, 3);
-        auto                  x_t = create_random_tensor<double>("x", 3);
-        auto                  y_t = create_zero_tensor<double>("y", 4);
-        RuntimeTensor<double> A(A_t), x(x_t), y(y_t);
+        auto             A_t = create_random_tensor<T>("A", 4, 3);
+        auto             x_t = create_random_tensor<T>("x", 3);
+        auto             y_t = create_zero_tensor<T>("y", 4);
+        RuntimeTensor<T> A(A_t), x(x_t), y(y_t);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("i <- ij ; j", &y, A, x);
         CHECK(route() == "gemv_mat_vec_runtime");
     }
 
     SECTION("gemv_vec_mat_runtime") {
-        auto                  x_t = create_random_tensor<double>("x", 4);
-        auto                  A_t = create_random_tensor<double>("A", 4, 3);
-        auto                  y_t = create_zero_tensor<double>("y", 3);
-        RuntimeTensor<double> x(x_t), A(A_t), y(y_t);
+        auto             x_t = create_random_tensor<T>("x", 4);
+        auto             A_t = create_random_tensor<T>("A", 4, 3);
+        auto             y_t = create_zero_tensor<T>("y", 3);
+        RuntimeTensor<T> x(x_t), A(A_t), y(y_t);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("j <- i ; ij", &y, x, A);
         CHECK(route() == "gemv_vec_mat_runtime");
     }
 
     SECTION("ger_runtime") {
-        auto                  x_t = create_random_tensor<double>("x", 6);
-        auto                  y_t = create_random_tensor<double>("y", 6);
-        auto                  G_t = create_zero_tensor<double>("G", 6, 6);
-        RuntimeTensor<double> x(x_t), y(y_t), G(G_t);
+        auto             x_t = create_random_tensor<T>("x", 6);
+        auto             y_t = create_random_tensor<T>("y", 6);
+        auto             G_t = create_zero_tensor<T>("G", 6, 6);
+        RuntimeTensor<T> x(x_t), y(y_t), G(G_t);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- i ; j", &G, x, y);
         CHECK(route() == "ger_runtime");
     }
 
     SECTION("gemm_direct_runtime") {
-        auto                  A_t = create_random_tensor<double>("A", 4, 3);
-        auto                  B_t = create_random_tensor<double>("B", 3, 5);
-        auto                  C_t = create_zero_tensor<double>("C", 4, 5);
-        RuntimeTensor<double> A(A_t), B(B_t), C(C_t);
+        auto             A_t = create_random_tensor<T>("A", 4, 3);
+        auto             B_t = create_random_tensor<T>("B", 3, 5);
+        auto             C_t = create_zero_tensor<T>("C", 4, 5);
+        RuntimeTensor<T> A(A_t), B(B_t), C(C_t);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ik ; kj", &C, A, B);
         CHECK(route() == "gemm_direct_runtime");
     }
 
     SECTION("direct_product_runtime") {
-        auto                  A_t = create_random_tensor<double>("A", 4, 5);
-        auto                  B_t = create_random_tensor<double>("B", 4, 5);
-        auto                  C_t = create_zero_tensor<double>("C", 4, 5);
-        RuntimeTensor<double> A(A_t), B(B_t), C(C_t);
+        auto             A_t = create_random_tensor<T>("A", 4, 5);
+        auto             B_t = create_random_tensor<T>("B", 4, 5);
+        auto             C_t = create_zero_tensor<T>("C", 4, 5);
+        RuntimeTensor<T> A(A_t), B(B_t), C(C_t);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ij ; ij", &C, A, B);
         CHECK(route() == "direct_product_runtime");
@@ -653,9 +660,9 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
     SECTION("packed_gemm") {
         // Two M indices and two N indices, so the single-M/N/K deferral to a
         // direct BLAS GEMM does not apply and PackedGemm forms the contraction.
-        auto A = create_random_tensor<double>("A", 3, 4, 2);
-        auto B = create_random_tensor<double>("B", 2, 5, 6);
-        auto C = create_zero_tensor<double>("C", 3, 4, 5, 6);
+        auto A = create_random_tensor<T>("A", 3, 4, 2);
+        auto B = create_random_tensor<T>("B", 2, 5, 6);
+        auto C = create_zero_tensor<T>("C", 3, 4, 5, 6);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ijkl <- ijm ; mkl", &C, A, B);
         CHECK(route() == "packed_gemm");
@@ -665,123 +672,134 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
     // Every one of these was measured falling through to the serial odometer
     // loop before the routes below existed; they are the phase-2.2 additions.
     SECTION("scalar-output full contraction, rank 2") {
-        auto A = create_random_tensor<double>("A", 4, 5);
-        auto B = create_random_tensor<double>("B", 4, 5);
-        auto s = create_zero_tensor<double>("s", 1);
+        auto A = create_random_tensor<T>("A", 4, 5);
+        auto B = create_random_tensor<T>("B", 4, 5);
+        auto s = create_zero_tensor<T>("s", 1);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- ij ; ij", &s, A, B);
         CHECK(route() == "dot_runtime");
 
-        double want = 0.0;
+        T want{0};
         for (size_t n = 0; n < A.size(); n++) {
             want += A.data()[n] * B.data()[n];
         }
-        CHECK(std::abs(s.data()[0] - want) <= 1e-12 * (1.0 + std::abs(want)));
+        CHECK(std::abs(s.data()[0] - want) <= tol * (1.0 + std::abs(want)));
     }
 
     SECTION("scalar-output full contraction, runtime rank") {
-        auto                  A_t = create_random_tensor<double>("A", 4, 5);
-        auto                  B_t = create_random_tensor<double>("B", 4, 5);
-        auto                  s_t = create_zero_tensor<double>("s", 1);
-        RuntimeTensor<double> A(A_t), B(B_t), s(s_t);
+        auto             A_t = create_random_tensor<T>("A", 4, 5);
+        auto             B_t = create_random_tensor<T>("B", 4, 5);
+        auto             s_t = create_zero_tensor<T>("s", 1);
+        RuntimeTensor<T> A(A_t), B(B_t), s(s_t);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- ij ; ij", &s, A, B);
         CHECK(route() == "dot_runtime");
     }
 
     SECTION("elementwise at rank 1") {
-        auto A = create_random_tensor<double>("A", 7);
-        auto B = create_random_tensor<double>("B", 7);
-        auto C = create_zero_tensor<double>("C", 7);
+        auto A = create_random_tensor<T>("A", 7);
+        auto B = create_random_tensor<T>("B", 7);
+        auto C = create_zero_tensor<T>("C", 7);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("i <- i ; i", &C, A, B);
         CHECK(route() == "direct_product_runtime");
         for (size_t n = 0; n < C.size(); n++) {
-            CHECK(std::abs(C.data()[n] - A.data()[n] * B.data()[n]) <= 1e-12);
+            CHECK(std::abs(C.data()[n] - A.data()[n] * B.data()[n]) <= tol);
         }
     }
 
     SECTION("elementwise at rank 3") {
-        auto A = create_random_tensor<double>("A", 3, 4, 5);
-        auto B = create_random_tensor<double>("B", 3, 4, 5);
-        auto C = create_zero_tensor<double>("C", 3, 4, 5);
+        auto A = create_random_tensor<T>("A", 3, 4, 5);
+        auto B = create_random_tensor<T>("B", 3, 4, 5);
+        auto C = create_zero_tensor<T>("C", 3, 4, 5);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ijk <- ijk ; ijk", &C, A, B);
         CHECK(route() == "direct_product_runtime");
         for (size_t n = 0; n < C.size(); n++) {
-            CHECK(std::abs(C.data()[n] - A.data()[n] * B.data()[n]) <= 1e-12);
+            CHECK(std::abs(C.data()[n] - A.data()[n] * B.data()[n]) <= tol);
         }
     }
 
     SECTION("elementwise at rank 3, runtime rank") {
-        auto                  A_t = create_random_tensor<double>("A", 3, 4, 5);
-        auto                  B_t = create_random_tensor<double>("B", 3, 4, 5);
-        auto                  C_t = create_zero_tensor<double>("C", 3, 4, 5);
-        RuntimeTensor<double> A(A_t), B(B_t), C(C_t);
+        auto             A_t = create_random_tensor<T>("A", 3, 4, 5);
+        auto             B_t = create_random_tensor<T>("B", 3, 4, 5);
+        auto             C_t = create_zero_tensor<T>("C", 3, 4, 5);
+        RuntimeTensor<T> A(A_t), B(B_t), C(C_t);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ijk <- ijk ; ijk", &C, A, B);
         CHECK(route() == "direct_product_runtime");
     }
 
     SECTION("conjugated full contraction") {
-        auto x = create_random_tensor<std::complex<double>>("x", 6);
-        auto y = create_random_tensor<std::complex<double>>("y", 6);
+        // The scalar-output route is the one BLAS shape with a conjugating
+        // form, so it sits ahead of the conjugation gate. On a real type
+        // conjugation is the identity and the plain dot answers.
+        auto        x         = create_random_tensor<T>("x", 6);
+        auto        y         = create_random_tensor<T>("y", 6);
+        char const *dot_route = IsComplexV<T> ? "true_dot_runtime" : "dot_runtime";
+        auto        cj        = [](T v) -> T {
+            if constexpr (IsComplexV<T>) {
+                return std::conj(v);
+            } else {
+                return v;
+            }
+        };
 
-        auto s = create_zero_tensor<std::complex<double>>("s", 1);
+        auto s = create_zero_tensor<T>("s", 1);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- conj(i) ; i", &s, x, y);
-        CHECK(route() == "true_dot_runtime");
+        CHECK(route() == dot_route);
 
-        std::complex<double> want{};
+        T want{};
         for (size_t n = 0; n < x.size(); n++) {
-            want += std::conj(x.data()[n]) * y.data()[n];
+            want += cj(x.data()[n]) * y.data()[n];
         }
-        CHECK(std::abs(s.data()[0] - want) <= 1e-12 * (1.0 + std::abs(want)));
+        CHECK(std::abs(s.data()[0] - want) <= tol * (1.0 + std::abs(want)));
 
         // conj on B instead: sum A * conj(B).
-        auto s2 = create_zero_tensor<std::complex<double>>("s2", 1);
+        auto s2 = create_zero_tensor<T>("s2", 1);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- i ; conj(i)", &s2, x, y);
-        CHECK(route() == "true_dot_runtime");
+        CHECK(route() == dot_route);
 
-        std::complex<double> want2{};
+        T want2{};
         for (size_t n = 0; n < x.size(); n++) {
-            want2 += x.data()[n] * std::conj(y.data()[n]);
+            want2 += x.data()[n] * cj(y.data()[n]);
         }
-        CHECK(std::abs(s2.data()[0] - want2) <= 1e-12 * (1.0 + std::abs(want2)));
+        CHECK(std::abs(s2.data()[0] - want2) <= tol * (1.0 + std::abs(want2)));
 
         // Both conjugated: conj of the plain dot.
-        auto s3 = create_zero_tensor<std::complex<double>>("s3", 1);
+        auto s3 = create_zero_tensor<T>("s3", 1);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("<- conj(i) ; conj(i)", &s3, x, y);
-        CHECK(route() == "true_dot_runtime");
+        CHECK(route() == dot_route);
 
-        std::complex<double> want3{};
+        T want3{};
         for (size_t n = 0; n < x.size(); n++) {
-            want3 += std::conj(x.data()[n]) * std::conj(y.data()[n]);
+            want3 += cj(x.data()[n]) * cj(y.data()[n]);
         }
-        CHECK(std::abs(s3.data()[0] - want3) <= 1e-12 * (1.0 + std::abs(want3)));
+        CHECK(std::abs(s3.data()[0] - want3) <= tol * (1.0 + std::abs(want3)));
     }
 
     SECTION("mixed typed/runtime operand triple") {
         // One typed and one runtime-rank operand satisfied neither ladder, so
         // a plain matmul reached PackedGemm - which defers single-M/N/K back
         // to direct BLAS - and ended up on the serial generic loop.
-        auto                  A   = create_random_tensor<double>("A", 4, 3);
-        auto                  B_t = create_random_tensor<double>("B", 3, 5);
-        auto                  C   = create_zero_tensor<double>("C", 4, 5);
-        RuntimeTensor<double> B(B_t);
+        auto             A   = create_random_tensor<T>("A", 4, 3);
+        auto             B_t = create_random_tensor<T>("B", 3, 5);
+        auto             C   = create_zero_tensor<T>("C", 4, 5);
+        RuntimeTensor<T> B(B_t);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ik ; kj", &C, A, B);
         CHECK(route() == "gemm_direct_runtime");
 
         for (size_t r = 0; r < 4; r++) {
             for (size_t c = 0; c < 5; c++) {
-                double want = 0.0;
+                T want{0};
                 for (size_t k = 0; k < 3; k++) {
                     want += A(r, k) * B_t(k, c);
                 }
-                CHECK(std::abs(C(r, c) - want) <= 1e-12 * (1.0 + std::abs(want)));
+                CHECK(std::abs(C(r, c) - want) <= tol * (1.0 + std::abs(want)));
             }
         }
     }
@@ -792,44 +810,71 @@ TEST_CASE("cg dispatch route - every route in the cascade fires where intended",
         // of different ranks do not, so any eager einsum over such a triple failed to compile,
         // whatever its spec: this contraction included. The runtime-rank routes now call the
         // rank-erased kernels, which check ranks at run time, so no such constraint is left.
-        auto const            A = create_random_tensor<double>("A", 4, 3, 5);
-        auto const            b = create_random_tensor<double>("b", 5);
-        RuntimeTensor<double> C("C", std::vector<size_t>{4, 3});
+        auto const       A = create_random_tensor<T>("A", 4, 3, 5);
+        auto const       b = create_random_tensor<T>("b", 5);
+        RuntimeTensor<T> C("C", std::vector<size_t>{4, 3});
         C.zero();
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ijk ; k", &C, A, b);
 
         for (size_t i = 0; i < 4; i++) {
             for (size_t j = 0; j < 3; j++) {
-                double want = 0.0;
+                T want{0};
                 for (size_t k = 0; k < 5; k++) {
                     want += A(i, j, k) * b(k);
                 }
-                CHECK(std::abs(C(i, j) - want) <= 1e-12 * (1.0 + std::abs(want)));
+                CHECK(std::abs(C(i, j) - want) <= tol * (1.0 + std::abs(want)));
             }
         }
     }
 
-    SECTION("conjugated gemv already reaches PackedGemm") {
+    SECTION("conjugated gemv reaches PackedGemm, or plain GEMV on a real type") {
         // Not a gap: the conjugating gate skips the BLAS ladder, but PackedGemm
         // conjugates natively during packing, so gemm- and gemv-shaped
         // conjugated contractions never saw the generic loop. Pinned so a
         // future change to the conj gate cannot quietly send them there.
-        auto A = create_random_tensor<std::complex<double>>("A", 4, 3);
-        auto v = create_random_tensor<std::complex<double>>("v", 3);
-        auto w = create_zero_tensor<std::complex<double>>("w", 4);
+        //
+        // On a real type conjugation is the identity, so the flag is dropped
+        // and the contraction keeps the GEMV route it would take unwritten.
+        // It used to skip the BLAS ladder too, for PackedGemm.
+        auto A = create_random_tensor<T>("A", 4, 3);
+        auto v = create_random_tensor<T>("v", 3);
+        auto w = create_zero_tensor<T>("w", 4);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("i <- conj(ij) ; j", &w, A, v);
-        CHECK(route() == "packed_gemm");
+        CHECK(route() == (IsComplexV<T> ? "packed_gemm" : "gemv_mat_vec_runtime"));
+
+        auto want = create_zero_tensor<T>("want", 4);
+        reference_einsum("i <- ij ; j", T{0}, &want, T{1}, A, v, IsComplexV<T>, false);
+        for (size_t i = 0; i < 4; i++) {
+            CHECK(std::abs(w(i) - want(i)) <= tol * (1.0 + std::abs(want(i))));
+        }
+    }
+
+    SECTION("conjugated gemm reaches PackedGemm, or plain GEMM on a real type") {
+        auto A = create_random_tensor<T>("A", 4, 3);
+        auto B = create_random_tensor<T>("B", 3, 5);
+        auto C = create_zero_tensor<T>("C", 4, 5);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- conj(ik) ; conj(kj)", &C, A, B);
+        CHECK(route() == (IsComplexV<T> ? "packed_gemm" : "gemm_direct_runtime"));
+
+        auto want = create_zero_tensor<T>("want", 4, 5);
+        reference_einsum("ij <- ik ; kj", T{0}, &want, T{1}, A, B, IsComplexV<T>, IsComplexV<T>);
+        for (size_t i = 0; i < 4; i++) {
+            for (size_t j = 0; j < 5; j++) {
+                CHECK(std::abs(C(i, j) - want(i, j)) <= tol * (1.0 + std::abs(want(i, j))));
+            }
+        }
     }
 
     SECTION("generic_loop") {
         // A small rank-3 outer product: no link indices, and below the ~4k
         // output elements where PackedGemm's fixed setup starts to pay off, so
         // it declines and the runtime nested loop is what is left.
-        auto A = create_random_tensor<double>("A", 2, 3);
-        auto B = create_random_tensor<double>("B", 4);
-        auto C = create_zero_tensor<double>("C", 2, 3, 4);
+        auto A = create_random_tensor<T>("A", 2, 3);
+        auto B = create_random_tensor<T>("B", 4);
+        auto C = create_zero_tensor<T>("C", 2, 3, 4);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ijk <- ij ; k", &C, A, B);
         CHECK(route() == "generic_loop");

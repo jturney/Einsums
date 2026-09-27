@@ -253,6 +253,7 @@ set(ComputeGraphTests
     test_hyp_program_diff_python.py
     test_hyp_region_passes_python.py
     test_hyp_symmgemm_diff_python.py
+    test_dispatch_route_python.py
     test_hyp_tiled_diff_python.py
     test_lapack_python.py
     test_linalg_new_python.py

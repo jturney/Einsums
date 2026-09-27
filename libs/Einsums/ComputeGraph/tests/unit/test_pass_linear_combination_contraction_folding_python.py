@@ -7,6 +7,10 @@
 
 Folds transpose-paired contractions that reuse the SAME operand tensor with
 permuted index patterns into one contraction against L = sum_k a_k * P_k(B).
+
+Every test runs over every dtype. The pass folds the a_k as ratios to the first
+term's prefactor, so a complex dtype takes complex a_k: a ratio formed in the
+wrong type, or a coefficient conjugated on the way into L, then shows.
 """
 
 from __future__ import annotations
@@ -26,22 +30,36 @@ def _run(g):
     return pm.run(g)
 
 
+def _pf(dtype, re, im):
+    """A prefactor for ``dtype``: both parts for a complex dtype, the real part otherwise."""
+    return complex(re, im) if np.dtype(dtype).kind == "c" else re
+
+
+def _normal(rng, shape, dtype):
+    """Standard normal data in ``dtype``, with an imaginary part for a complex dtype."""
+    data = rng.standard_normal(shape)
+    if np.dtype(dtype).kind == "c":
+        data = data + 1j * rng.standard_normal(shape)
+    return data.astype(dtype)
+
+
 def _count_kind(g, kind):
     return sum(1 for n in json.loads(g.to_json()).get("nodes", []) if n.get("kind") == kind)
 
 
-def test_folds_transpose_pair():
-    A = einsums.create_random_tensor("A", [4])
-    B = einsums.create_random_tensor("B", [4, 3, 3])
-    out = einsums.create_zero_tensor("out", [3, 3])
+def test_folds_transpose_pair(dtype):
+    A = einsums.create_random_tensor("A", [4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 3, 3], dtype=dtype)
+    out = einsums.create_zero_tensor("out", [3, 3], dtype=dtype)
 
     a = np.asarray(A); b = np.asarray(B)
-    ref = 2.0 * np.einsum("k,kij->ij", a, b) - np.einsum("k,kji->ij", a, b)
+    p1, p2 = _pf(dtype, 2.0, 0.5), _pf(dtype, -1.0, 0.75)
+    ref = p1 * np.einsum("k,kij->ij", a, b) + p2 * np.einsum("k,kji->ij", a, b)
 
     g = cg.Graph("fold_pair")
     with cg.capture(g):
-        einsums.einsum("i,j <- k ; k,i,j", out, A, B, c_pf=0.0, ab_pf=2.0)
-        einsums.einsum("i,j <- k ; k,j,i", out, A, B, c_pf=1.0, ab_pf=-1.0)
+        einsums.einsum("i,j <- k ; k,i,j", out, A, B, c_pf=0.0, ab_pf=p1)
+        einsums.einsum("i,j <- k ; k,j,i", out, A, B, c_pf=1.0, ab_pf=p2)
     assert _count_kind(g, "Einsum") == 2
 
     assert _run(g)
@@ -56,13 +74,13 @@ def test_folds_transpose_pair():
     assert_close(out, ref)
 
 
-def test_no_fold_for_different_tensors():
+def test_no_fold_for_different_tensors(dtype):
     # Same index pattern but DIFFERENT operand tensors is DistributiveFactoring's
     # job, not ours, we require the same tensor read with permuted indices.
-    A = einsums.create_random_tensor("A", [4])
-    B = einsums.create_random_tensor("B", [4, 3, 3])
-    C = einsums.create_random_tensor("C", [4, 3, 3])
-    out = einsums.create_zero_tensor("out", [3, 3])
+    A = einsums.create_random_tensor("A", [4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 3, 3], dtype=dtype)
+    C = einsums.create_random_tensor("C", [4, 3, 3], dtype=dtype)
+    out = einsums.create_zero_tensor("out", [3, 3], dtype=dtype)
 
     g = cg.Graph("no_fold_diff_tensor")
     with cg.capture(g):
@@ -73,11 +91,11 @@ def test_no_fold_for_different_tensors():
     assert g.num_nodes() == 2
 
 
-def test_no_fold_for_identical_specs():
+def test_no_fold_for_identical_specs(dtype):
     # Same tensor, same index order on both = pure duplicate, no permutation.
-    A = einsums.create_random_tensor("A", [4])
-    B = einsums.create_random_tensor("B", [4, 3, 3])
-    out = einsums.create_zero_tensor("out", [3, 3])
+    A = einsums.create_random_tensor("A", [4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 3, 3], dtype=dtype)
+    out = einsums.create_zero_tensor("out", [3, 3], dtype=dtype)
 
     g = cg.Graph("no_fold_identical")
     with cg.capture(g):
@@ -88,12 +106,12 @@ def test_no_fold_for_identical_specs():
     assert g.num_nodes() == 2
 
 
-def test_interference_guard_blocks_fold():
+def test_interference_guard_blocks_fold(dtype):
     # An intervening op that reads the partial-sum output must block the fold.
-    A = einsums.create_random_tensor("A", [4])
-    B = einsums.create_random_tensor("B", [4, 3, 3])
-    out = einsums.create_zero_tensor("out", [3, 3])
-    snap = einsums.create_zero_tensor("snap", [3, 3])
+    A = einsums.create_random_tensor("A", [4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 3, 3], dtype=dtype)
+    out = einsums.create_zero_tensor("out", [3, 3], dtype=dtype)
+    snap = einsums.create_zero_tensor("snap", [3, 3], dtype=dtype)
 
     g = cg.Graph("fold_interference")
     with cg.capture(g):
@@ -105,22 +123,23 @@ def test_interference_guard_blocks_fold():
     assert g.num_nodes() == 3
 
 
-def test_fold_three_terms():
+def test_fold_three_terms(dtype):
     # 2*B[kij] - B[kji] + 0.5*B[kij] folds via one canonical + permuted terms.
-    A = einsums.create_random_tensor("A", [4])
-    B = einsums.create_random_tensor("B", [4, 3, 3])
-    out = einsums.create_zero_tensor("out", [3, 3])
+    A = einsums.create_random_tensor("A", [4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 3, 3], dtype=dtype)
+    out = einsums.create_zero_tensor("out", [3, 3], dtype=dtype)
 
     a = np.asarray(A); b = np.asarray(B)
-    ref = (2.0 * np.einsum("k,kij->ij", a, b)
-           - 1.0 * np.einsum("k,kji->ij", a, b)
-           + 0.5 * np.einsum("k,kij->ij", a, b))
+    p1, p2, p3 = _pf(dtype, 2.0, 0.5), _pf(dtype, -1.0, 0.75), _pf(dtype, 0.5, -0.25)
+    ref = (p1 * np.einsum("k,kij->ij", a, b)
+           + p2 * np.einsum("k,kji->ij", a, b)
+           + p3 * np.einsum("k,kij->ij", a, b))
 
     g = cg.Graph("fold_three")
     with cg.capture(g):
-        einsums.einsum("i,j <- k ; k,i,j", out, A, B, c_pf=0.0, ab_pf=2.0)
-        einsums.einsum("i,j <- k ; k,j,i", out, A, B, c_pf=1.0, ab_pf=-1.0)
-        einsums.einsum("i,j <- k ; k,i,j", out, A, B, c_pf=1.0, ab_pf=0.5)
+        einsums.einsum("i,j <- k ; k,i,j", out, A, B, c_pf=0.0, ab_pf=p1)
+        einsums.einsum("i,j <- k ; k,j,i", out, A, B, c_pf=1.0, ab_pf=p2)
+        einsums.einsum("i,j <- k ; k,i,j", out, A, B, c_pf=1.0, ab_pf=p3)
     assert _count_kind(g, "Einsum") == 3
 
     assert _run(g)
@@ -132,19 +151,20 @@ def test_fold_three_terms():
     assert_close(out, ref)
 
 
-def test_verbosity_setting():
+def test_verbosity_setting(dtype):
     # set_verbosity propagates from PassManager to passes and narrates folds to
     # stderr without affecting correctness.
-    A = einsums.create_random_tensor("A", [4])
-    B = einsums.create_random_tensor("B", [4, 3, 3])
-    out = einsums.create_zero_tensor("out", [3, 3])
+    A = einsums.create_random_tensor("A", [4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 3, 3], dtype=dtype)
+    out = einsums.create_zero_tensor("out", [3, 3], dtype=dtype)
     a = np.asarray(A); b = np.asarray(B)
-    ref = 2.0 * np.einsum("k,kij->ij", a, b) - np.einsum("k,kji->ij", a, b)
+    p1, p2 = _pf(dtype, 2.0, 0.5), _pf(dtype, -1.0, 0.75)
+    ref = p1 * np.einsum("k,kij->ij", a, b) + p2 * np.einsum("k,kji->ij", a, b)
 
     g = cg.Graph("verbose_fold")
     with cg.capture(g):
-        einsums.einsum("i,j <- k ; k,i,j", out, A, B, c_pf=0.0, ab_pf=2.0)
-        einsums.einsum("i,j <- k ; k,j,i", out, A, B, c_pf=1.0, ab_pf=-1.0)
+        einsums.einsum("i,j <- k ; k,i,j", out, A, B, c_pf=0.0, ab_pf=p1)
+        einsums.einsum("i,j <- k ; k,j,i", out, A, B, c_pf=1.0, ab_pf=p2)
 
     p = cg.LinearCombinationContractionFolding()
     assert p.verbosity == 0  # silent by default
@@ -158,19 +178,20 @@ def test_verbosity_setting():
     assert_close(out, ref)
 
 
-def test_fold_inside_loop_body():
-    A = einsums.create_random_tensor("A", [4])
-    B = einsums.create_random_tensor("B", [4, 3, 3])
-    out = einsums.create_zero_tensor("out", [3, 3])
+def test_fold_inside_loop_body(dtype):
+    A = einsums.create_random_tensor("A", [4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 3, 3], dtype=dtype)
+    out = einsums.create_zero_tensor("out", [3, 3], dtype=dtype)
 
     a = np.asarray(A); b = np.asarray(B)
-    one_iter = 2.0 * np.einsum("k,kij->ij", a, b) - np.einsum("k,kji->ij", a, b)
+    p1, p2 = _pf(dtype, 2.0, 0.5), _pf(dtype, -1.0, 0.75)
+    one_iter = p1 * np.einsum("k,kij->ij", a, b) + p2 * np.einsum("k,kji->ij", a, b)
 
     pipeline = cg.Pipeline("fold_loop")
     body = pipeline.add_loop("iter", 3, lambda it: it < 2)
     with cg.capture(body):
-        einsums.einsum("i,j <- k ; k,i,j", out, A, B, c_pf=0.0, ab_pf=2.0)
-        einsums.einsum("i,j <- k ; k,j,i", out, A, B, c_pf=1.0, ab_pf=-1.0)
+        einsums.einsum("i,j <- k ; k,i,j", out, A, B, c_pf=0.0, ab_pf=p1)
+        einsums.einsum("i,j <- k ; k,j,i", out, A, B, c_pf=1.0, ab_pf=p2)
 
     pm = cg.PassManager()
     pm.add(cg.LinearCombinationContractionFolding())
@@ -185,7 +206,7 @@ def _kinds(graph):
     return [n["kind"] for n in json.loads(graph.to_json())["nodes"]]
 
 
-def test_default_pipeline_folds_and_hoists_the_l_builder():
+def test_default_pipeline_folds_and_hoists_the_l_builder(dtype):
     """LCCF is in populate_default, ordered before LoopInvariantHoisting.
 
     The two together are the point: LCCF emits the L construction as its own
@@ -197,26 +218,27 @@ def test_default_pipeline_folds_and_hoists_the_l_builder():
     """
     o, v, niters = 2, 3, 4
     rng = np.random.default_rng(7)
-    g_np = rng.standard_normal((o, v, v, v))   # loop-invariant integral
-    d_np = rng.standard_normal((o, v))         # per-iteration t1 increment
+    g_np = _normal(rng, (o, v, v, v), dtype)   # loop-invariant integral
+    d_np = _normal(rng, (o, v), dtype)         # per-iteration t1 increment
+    p1, p2 = _pf(dtype, 2.0, 0.5), _pf(dtype, -1.0, 0.75)
 
     integral = einsums.asarray(np.ascontiguousarray(g_np), name="g")
     incr = einsums.asarray(np.ascontiguousarray(d_np), name="d")
-    t1 = einsums.create_zero_tensor("t1", [o, v], dtype="float64")
-    Fae = einsums.create_zero_tensor("Fae", [v, v], dtype="float64")
+    t1 = einsums.create_zero_tensor("t1", [o, v], dtype=dtype)
+    Fae = einsums.create_zero_tensor("Fae", [v, v], dtype=dtype)
 
     # Oracle: t1 gains d AFTER each iteration's contraction.
-    t1_ref, ref = np.zeros((o, v)), np.zeros((v, v))
+    t1_ref, ref = np.zeros((o, v), dtype), np.zeros((v, v), dtype)
     for _ in range(niters):
-        ref = ref + 2.0 * np.einsum("mf,mafe->ae", t1_ref, g_np)
-        ref = ref - 1.0 * np.einsum("mf,maef->ae", t1_ref, g_np)
+        ref = ref + p1 * np.einsum("mf,mafe->ae", t1_ref, g_np)
+        ref = ref + p2 * np.einsum("mf,maef->ae", t1_ref, g_np)
         t1_ref = t1_ref + d_np
 
     g = cg.Graph("ccsd_spin_adaptation")
     body = g.add_loop("iter", niters, lambda it, N=niters: it < N - 1)
     with cg.capture(body):
-        einsums.einsum("a,e <- m,f ; m,a,f,e", Fae, t1, integral, c_pf=1.0, ab_pf=2.0)
-        einsums.einsum("a,e <- m,f ; m,a,e,f", Fae, t1, integral, c_pf=1.0, ab_pf=-1.0)
+        einsums.einsum("a,e <- m,f ; m,a,f,e", Fae, t1, integral, c_pf=1.0, ab_pf=p1)
+        einsums.einsum("a,e <- m,f ; m,a,e,f", Fae, t1, integral, c_pf=1.0, ab_pf=p2)
         einsums.linalg.axpby(1.0, incr, 1.0, t1)
 
     assert _kinds(body).count("Einsum") == 2, _kinds(body)

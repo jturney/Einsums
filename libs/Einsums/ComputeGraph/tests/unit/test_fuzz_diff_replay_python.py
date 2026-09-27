@@ -3,7 +3,7 @@
 # Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 # ----------------------------------------------------------------------------------------------
 
-"""Re-execution and double-optimize idempotence fuzz.
+"""Re-execution and double-optimize idempotence fuzz, the dtype cycling with the seed.
 
 Split out of the former monolithic test_fuzz_differential_python.py; the
 shared harness lives in _fuzz_diff_common.py."""
@@ -25,10 +25,11 @@ def test_fuzz_reexecution(seed):
     pass that frees a still-needed buffer or corrupts state on replay must fail
     here even though a single execution passes."""
     rng = np.random.default_rng(20_000 + seed)
-    prog = _gen_block(rng, depth=3, max_stmts=6)
-    m, v, t = _seed_arrays(rng)
-    oracle = _oracle(prog, m, v, t, runs=2)
-    if not _usable(*oracle):
+    dtype = seed_dtype(seed)
+    prog = complexify(_gen_block(rng, depth=3, max_stmts=6), np.random.default_rng((20_000, seed)))
+    m, v, t = _seed_arrays(rng, dtype)
+    oracle = _oracle(prog, m, v, t, runs=2, dtype=dtype)
+    if not _usable(*oracle, cap=_DTYPE_CAP[dtype]):
         pytest.skip("oracle overflowed — numerically degenerate program")
 
     g, mats, vecs, r3 = _build(prog, m, v, t, f"replay{seed}")
@@ -38,7 +39,7 @@ def test_fuzz_reexecution(seed):
     got = ([np.asarray(x).copy() for x in mats],
            [np.asarray(x).copy() for x in vecs],
            [np.asarray(x).copy() for x in r3])
-    _assert_pools(got, oracle, prog, "REEXECUTED")
+    _assert_pools(got, oracle, prog, "REEXECUTED", dtype=dtype)
 
 @pytest.mark.parametrize("seed", fuzz_seeds(200))
 def test_fuzz_double_optimize(seed):
@@ -46,10 +47,11 @@ def test_fuzz_double_optimize(seed):
     pass (one that doesn't reach a fixpoint, or that mis-handles its own prior
     output) would diverge on the second application."""
     rng = np.random.default_rng(40_000 + seed)
-    prog = _gen_block(rng, depth=3, max_stmts=4)
-    m, v, t = _seed_arrays(rng)
-    oracle = _oracle(prog, m, v, t)
-    if not _usable(*oracle):
+    dtype = seed_dtype(seed)
+    prog = complexify(_gen_block(rng, depth=3, max_stmts=4), np.random.default_rng((40_000, seed)))
+    m, v, t = _seed_arrays(rng, dtype)
+    oracle = _oracle(prog, m, v, t, dtype=dtype)
+    if not _usable(*oracle, cap=_DTYPE_CAP[dtype]):
         pytest.skip("oracle overflowed — numerically degenerate program")
 
     g, mats, vecs, r3 = _build(prog, m, v, t, f"dblopt{seed}")
@@ -59,4 +61,4 @@ def test_fuzz_double_optimize(seed):
     got = ([np.asarray(x).copy() for x in mats],
            [np.asarray(x).copy() for x in vecs],
            [np.asarray(x).copy() for x in r3])
-    _assert_pools(got, oracle, prog, "DOUBLE-OPTIMIZE")
+    _assert_pools(got, oracle, prog, "DOUBLE-OPTIMIZE", dtype=dtype)

@@ -4,7 +4,7 @@
 """Hypothesis differential: graph-captured element-wise family vs numpy.
 
 Covers scale / axpy / axpby / direct_product / direct_division with
-non-contiguous view operands, degenerate (size-1) dims, real/complex dtypes,
+non-contiguous view operands, degenerate (size-1) dims, all four dtypes,
 prefactors (incl. accumulation), and the optional default pass manager.
 
 This is the TensorImpl vectorization surface (get_incx / is_totally_vectorable /
@@ -26,6 +26,7 @@ from hypothesis import strategies as st
 
 import einsums
 import einsums.graph as cg
+from _dtype_draws import DTYPES, assert_rounding_close, is_complex, random_array
 
 _ctr = itertools.count()
 
@@ -52,9 +53,16 @@ def _mkv(arr, use_view, dt, rng):
 
 
 def _rnd(shape, dt, rng):
-    if dt == "complex128":
-        return rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
-    return rng.standard_normal(shape)
+    return random_array(shape, dt, rng)
+
+
+def _shift_from_zero(B0, dt):
+    """Move each element of ``B0`` two units away from zero.
+
+    Rounded to ``dt`` again, so the tensor holds the divisor the oracle divides by.
+    """
+    shifted = B0 + 2 * np.sign(B0.real if is_complex(dt) else B0)
+    return shifted.astype(dt).astype(B0.dtype)
 
 
 @st.composite
@@ -65,7 +73,7 @@ def _shape(draw):
 
 @given(op=st.sampled_from(["scale", "axpy", "axpby", "direct_product", "direct_division"]),
        shape=_shape(), alpha=st.sampled_from([1.0, -2.0, 0.5]), beta=st.sampled_from([0.0, 1.0, -1.5]),
-       dt=st.sampled_from(["float64", "complex128"]),
+       dt=DTYPES,
        va=st.booleans(), vb=st.booleans(), vc=st.booleans(), passes=st.booleans())
 @settings(max_examples=sanitizer_examples(300), deadline=None,
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
@@ -77,6 +85,7 @@ def test_hyp_elementwise_diff(op, shape, alpha, beta, dt, va, vb, vc, passes):
     if op == "scale":
         A0 = _rnd(shape, dt, rng)
         oracle = alpha * A0
+        scale = np.abs(oracle)
         At = _mkv(A0, va, dt, rng)
         with cg.capture(g):
             einsums.linalg.scale(alpha, At)
@@ -85,6 +94,7 @@ def test_hyp_elementwise_diff(op, shape, alpha, beta, dt, va, vb, vc, passes):
         X0 = _rnd(shape, dt, rng)
         Y0 = _rnd(shape, dt, rng)
         oracle = Y0 + alpha * X0
+        scale = np.abs(Y0) + abs(alpha) * np.abs(X0)
         Xt, Yt = _mkv(X0, va, dt, rng), _mkv(Y0, vb, dt, rng)
         with cg.capture(g):
             einsums.linalg.axpy(alpha, Xt, Yt)
@@ -93,6 +103,7 @@ def test_hyp_elementwise_diff(op, shape, alpha, beta, dt, va, vb, vc, passes):
         X0 = _rnd(shape, dt, rng)
         Y0 = _rnd(shape, dt, rng)
         oracle = alpha * X0 + beta * Y0
+        scale = abs(alpha) * np.abs(X0) + abs(beta) * np.abs(Y0)
         Xt, Yt = _mkv(X0, va, dt, rng), _mkv(Y0, vb, dt, rng)
         with cg.capture(g):
             einsums.linalg.axpby(alpha, Xt, beta, Yt)
@@ -102,6 +113,7 @@ def test_hyp_elementwise_diff(op, shape, alpha, beta, dt, va, vb, vc, passes):
         B0 = _rnd(shape, dt, rng)
         C0 = _rnd(shape, dt, rng)
         oracle = alpha * A0 * B0 + beta * C0
+        scale = abs(alpha) * np.abs(A0 * B0) + abs(beta) * np.abs(C0)
         At, Bt, Ct = _mkv(A0, va, dt, rng), _mkv(B0, vb, dt, rng), _mkv(C0, vc, dt, rng)
         with cg.capture(g):
             einsums.linalg.direct_product(alpha, At, Bt, beta, Ct)
@@ -109,9 +121,10 @@ def test_hyp_elementwise_diff(op, shape, alpha, beta, dt, va, vb, vc, passes):
     else:  # direct_division -- keep |B| >= ~1 to avoid blow-up
         A0 = _rnd(shape, dt, rng)
         B0 = _rnd(shape, dt, rng)
-        B0 = B0 + 2 * np.sign(B0.real if dt == "complex128" else B0)
+        B0 = _shift_from_zero(B0, dt)
         C0 = _rnd(shape, dt, rng)
         oracle = alpha * A0 / B0 + beta * C0
+        scale = abs(alpha) * np.abs(A0 / B0) + abs(beta) * np.abs(C0)
         At, Bt, Ct = _mkv(A0, va, dt, rng), _mkv(B0, vb, dt, rng), _mkv(C0, vc, dt, rng)
         with cg.capture(g):
             einsums.linalg.direct_division(alpha, At, Bt, beta, Ct)
@@ -119,7 +132,7 @@ def test_hyp_elementwise_diff(op, shape, alpha, beta, dt, va, vb, vc, passes):
     if passes:
         g.apply(cg.default_pass_manager())
     g.execute()
-    np.testing.assert_allclose(
-        np.asarray(out), oracle, rtol=1e-9, atol=1e-9,
+    assert_rounding_close(
+        out, oracle, dt, scale,
         err_msg=f"op={op} shape={shape} alpha={alpha} beta={beta} dt={dt} "
                 f"va={va} vb={vb} vc={vc} passes={passes}")

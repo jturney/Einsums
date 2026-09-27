@@ -5,7 +5,7 @@
 
 op(A) = A or A^T (square m x m); op(B) = B or B^T (m x q); C is q x q. Sweeps the
 trans_a/trans_b flags, view operands for A/B/C, degenerate (size-1) and larger
-sizes, and real/complex dtypes. The product uses a plain transpose (B^T, not B^H)
+sizes, and all four dtypes. The product uses a plain transpose (B^T, not B^H)
 for complex, matching the op() convention. numpy is the oracle.
 
 Complements the fixed-case test_symm_gemm_views_python.py with randomized
@@ -21,6 +21,7 @@ from _sanitizer_scaling import sanitizer_examples
 from hypothesis import strategies as st
 
 import einsums
+from _dtype_draws import DTYPES, assert_rounding_close, random_array
 
 _ctr = itertools.count()
 
@@ -42,14 +43,8 @@ def _mkv(arr, use_view, dt, rng):
     return _mk(np.ascontiguousarray(np.transpose(arr, perm)), dt).permute_view(list(np.argsort(perm)))
 
 
-def _rnd(shape, cplx, rng):
-    if cplx:
-        return rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
-    return rng.standard_normal(shape)
-
-
 _SZ = st.sampled_from([1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 24])
-_DT = st.sampled_from(["float64", "complex128"])
+_DT = DTYPES
 
 
 @given(m=_SZ, q=_SZ, ta=st.booleans(), tb=st.booleans(), dt=_DT, conj=st.booleans(),
@@ -58,17 +53,17 @@ _DT = st.sampled_from(["float64", "complex128"])
           suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large, HealthCheck.filter_too_much])
 def test_hyp_symmgemm_diff(m, q, ta, tb, dt, conj, va, vb, vc, seed):
     rng = np.random.default_rng(seed)
-    cplx = (dt == "complex128")
-    A0 = _rnd((m, m), cplx, rng)
-    B0 = _rnd((q, m) if tb else (m, q), cplx, rng)  # op(B) is m x q
+    A0 = random_array((m, m), dt, rng)
+    B0 = random_array((q, m) if tb else (m, q), dt, rng)  # op(B) is m x q
     opA = A0.T if ta else A0
     opB = B0.T if tb else B0
     # conjugate=True is the Hermitian congruence op(B)^H op(A) op(B); default is op(B)^T ...
     outer = opB.conj().T if conj else opB.T
     oracle = outer @ opA @ opB
+    scale = np.abs(outer) @ np.abs(opA) @ np.abs(opB)
     At = _mkv(A0, va, dt, rng)
     Bt = _mkv(B0, vb, dt, rng)
     Ct = _mkv(np.zeros((q, q)), vc, dt, rng)
     einsums.linalg.symm_gemm(At, Bt, Ct, trans_a=ta, trans_b=tb, conjugate=conj)
-    np.testing.assert_allclose(np.asarray(Ct), oracle, rtol=1e-6, atol=1e-7,
+    assert_rounding_close(Ct, oracle, dt, scale,
         err_msg=f"m={m} q={q} ta={ta} tb={tb} dt={dt} conj={conj} va={va} vb={vb} vc={vc} s={seed}")

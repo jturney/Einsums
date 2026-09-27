@@ -67,18 +67,23 @@ def test_fuzz_all_passes(seed, dtype):
     _trial(410_000, seed, dtype, depth=2, max_stmts=6)
 
 
-@pytest.mark.parametrize("dtype", ["float64", "complex128"])
-@pytest.mark.parametrize("seed", fuzz_seeds(150))
-def test_fuzz_all_passes_flat(seed, dtype):
-    """Long flat programs, where a region holds several motifs at once."""
-    _trial(420_000, seed, dtype, depth=0, max_stmts=10)
+@pytest.mark.parametrize("seed", fuzz_seeds(300))
+def test_fuzz_all_passes_flat(seed):
+    """Long flat programs, where a region holds several motifs at once.
+
+    The dtype cycles with the seed, so the arm draws twice the programs it did
+    as two fixed dtypes, at the same number of trials, and covers all four.
+    """
+    _trial(420_000, seed, seed_dtype(seed), depth=0, max_stmts=10)
 
 
-@pytest.mark.parametrize("dtype", ["float64", "complex64"])
-@pytest.mark.parametrize("seed", fuzz_seeds(100))
-def test_fuzz_all_passes_replay(seed, dtype):
-    """Deeper nesting, executed twice: a rewrite that holds for one execute only shows here."""
-    _trial(430_000, seed, dtype, depth=3, max_stmts=6, runs=2)
+@pytest.mark.parametrize("seed", fuzz_seeds(200))
+def test_fuzz_all_passes_replay(seed):
+    """Deeper nesting, executed twice: a rewrite that holds for one execute only shows here.
+
+    The dtype cycles with the seed, as in the flat arm.
+    """
+    _trial(430_000, seed, seed_dtype(seed), depth=3, max_stmts=6, runs=2)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -93,6 +98,11 @@ _GUARD_SEEDS = range(120)
 #: re-bracketing passes and the fold on a region holding a whole motif.
 _GUARD_CORPORA = ((440_000, 2, 6), (450_000, 0, 10))
 
+#: The guard corpus runs in float64. The same 240 programs in each of the other
+#: three dtypes fire every pass at the float64 share to within 0.04 (measured
+#: when the fuzz arms began drawing all four), so a per-dtype guard would cost
+#: four times the trials to say the same; the arms above still run every dtype.
+#:
 #: Floor per added pass, as a share of usable guard trials. Measured over the
 #: guard corpus (240 float64 programs) once the motifs drew every pinned shape:
 #: ProvenancePropagation 0.14, DeltaElimination 0.21, AntisymmetryDetection
@@ -214,14 +224,21 @@ _A32, _B23 = MAT_BY_SHAPE[(3, 2)][0], MAT_BY_SHAPE[(2, 3)][0]
 _OP_IJ = ([["i"], ["j"]], 0, ["i", "j"])
 
 
-def _symacc_site(tmp, tmpP, r2, s=0.5):
+#: Prefactors the pinned programs use where a pass reasons about the scalar:
+#: complex on a complex pool, so a rewrite that drops or conjugates the
+#: imaginary part shows, and the real part alone on a real one.
+def _cx(re, im):
+    return ("cx", re, im)
+
+
+def _symacc_site(tmp, tmpP, r2, s=_cx(0.5, 0.2)):
     return [("einsum", "ij <- ik ; kj", 1.0, _A32, _B23, 0.0, tmp, False, False),
             ("axpby", s, tmp, 1.0, r2),
             ("perm", 1.0, 0.0, tmp, tmpP),
             ("axpby", s, tmpP, 1.0, r2)]
 
 
-def test_symmetrized_accumulation_keeps_a_caller_held_transpose():
+def test_symmetrized_accumulation_keeps_a_caller_held_transpose(dtype):
     """``tmpP = tmp^T`` into a USER tensor, then both halves accumulated into r2.
 
     Defends against the rewrite pointing the transpose at r2 and deleting the
@@ -231,10 +248,10 @@ def test_symmetrized_accumulation_keeps_a_caller_held_transpose():
     CSE, PermuteFusion and DeadNodeElimination do before removing a write.
     """
     tmp = _xm1("scratch", (3, 3))
-    _pinned(_symacc_site(tmp, _M33[0], _M33[1]), ["SymmetrizedAccumulation"], "sa_user_tmpP")
+    _pinned(_symacc_site(tmp, _M33[0], _M33[1]), ["SymmetrizedAccumulation"], "sa_user_tmpP", dtype=dtype)
 
 
-def test_symmetrized_accumulation_sees_a_later_accumulate_into_the_transpose():
+def test_symmetrized_accumulation_sees_a_later_accumulate_into_the_transpose(dtype):
     """The site, then ``tmpP += X`` and a read of tmpP.
 
     Defends against the pass ending tmpP's generation at the next node listing
@@ -244,10 +261,10 @@ def test_symmetrized_accumulation_sees_a_later_accumulate_into_the_transpose():
     """
     tmp, tmpP = _xm1("scratch", (3, 3)), _xm1("symacc", (3, 3))
     prog = _symacc_site(tmp, tmpP, _M33[1]) + [("axpy", 1.0, _M33[2], tmpP), ("axpy", 1.0, tmpP, _M33[0])]
-    _pinned(prog, ["SymmetrizedAccumulation"], "sa_rmw_after")
+    _pinned(prog, ["SymmetrizedAccumulation"], "sa_rmw_after", dtype=dtype)
 
 
-def test_symmetrized_accumulation_sees_a_loop_between_the_halves():
+def test_symmetrized_accumulation_sees_a_loop_between_the_halves(dtype):
     """The transpose, a loop that reads r2, then the two accumulates.
 
     Defends against the rewrite moving the second half's contribution up to
@@ -260,10 +277,10 @@ def test_symmetrized_accumulation_sees_a_loop_between_the_halves():
     tmp, tmpP = _xm1("scratch", (3, 3)), _xm1("symacc", (3, 3))
     e, a1, p, a2 = _symacc_site(tmp, tmpP, _M33[1])
     prog = [e, p, ("loop", 1, [("axpy", 1.0, _M33[1], _M33[0])]), a1, a2]
-    _pinned(prog, ["SymmetrizedAccumulation"], "sa_loop_between")
+    _pinned(prog, ["SymmetrizedAccumulation"], "sa_loop_between", dtype=dtype)
 
 
-def test_delta_elimination_after_symmetrized_accumulation_keeps_the_accumulate():
+def test_delta_elimination_after_symmetrized_accumulation_keeps_the_accumulate(dtype):
     """A symmetrized accumulation, then any contraction against a declared identity.
 
     Defends against SymmetrizedAccumulation turning the transpose into
@@ -278,11 +295,11 @@ def test_delta_elimination_after_symmetrized_accumulation_keeps_the_accumulate()
     delta = _xm1("delta", (3, 3))
     prog = _symacc_site(tmp, tmpP, _M33[1]) + [("einsum", "ij <- ik ; kj", 1.0, _M33[2], delta, 0.0, _M33[0],
                                                  False, False)]
-    _pinned(prog, ["SymmetrizedAccumulation", "DeltaElimination"], "sa_then_delta")
+    _pinned(prog, ["SymmetrizedAccumulation", "DeltaElimination"], "sa_then_delta", dtype=dtype)
 
 
 @pytest.mark.parametrize("shape", ["overwritten", "scaled", "accumulated"])
-def test_provenance_propagation_tags_only_a_plain_copy(shape):
+def test_provenance_propagation_tags_only_a_plain_copy(shape, dtype):
     """``S = delta^T`` is not tagged an identity when S is not one.
 
     Defends against the pass carrying the tag across any Permute node onto its
@@ -304,10 +321,10 @@ def test_provenance_propagation_tags_only_a_plain_copy(shape):
         prog = [("perm", 0.5, 0.0, delta, S), use]
     else:
         prog = [("axpy", 1.0, _M33[0], S), ("perm", 1.0, 1.0, delta, S), use]
-    _pinned(prog, ["ProvenancePropagation", "DeltaElimination"], f"prov_{shape}")
+    _pinned(prog, ["ProvenancePropagation", "DeltaElimination"], f"prov_{shape}", dtype=dtype)
 
 
-def test_multi_term_factorization_sizes_a_reused_letter_by_its_own_statement():
+def test_multi_term_factorization_sizes_a_reused_letter_by_its_own_statement(dtype):
     """``T = B D`` then ``R = A T``, both spelled ``ij <- ik ; kj``.
 
     Letters are scoped to a statement, and here ``i`` is 12 in the first and 3
@@ -323,10 +340,10 @@ def test_multi_term_factorization_sizes_a_reused_letter_by_its_own_statement():
     T = _xm1("scratch", (L, L))
     prog = [("einsum", "ij <- ik ; kj", 1.0, B, D, 0.0, T, False, False),
             ("einsum", "ij <- ik ; kj", 0.5, A, T, 0.0, _xm1("mtfout", (s, L)), False, False)]
-    _pinned(prog, ["MultiTermFactorization"], "mtf_letters")
+    _pinned(prog, ["MultiTermFactorization"], "mtf_letters", dtype=dtype)
 
 
-def test_multi_term_factorization_shares_after_a_factor_is_written():
+def test_multi_term_factorization_shares_after_a_factor_is_written(dtype):
     """``B *= 1/2``, then two chains sharing ``A B``.
 
     Defends against the shared ``A B`` being emitted at the front of the
@@ -340,13 +357,13 @@ def test_multi_term_factorization_shares_after_a_factor_is_written():
     R1, R2 = _xm1("mtfout", (s, L), 0), _xm1("mtfout", (s, L), 1)
     prog = [("scale", 0.5, B),
             ("einsum", "pr <- pq ; qr", 1.0, A, B, 0.0, T1, False, False),
-            ("einsum", "ps <- pr ; rs", 0.7, T1, C, 1.0, R1, False, False),
+            ("einsum", "ps <- pr ; rs", _cx(0.7, 0.2), T1, C, 1.0, R1, False, False),
             ("einsum", "pr <- pq ; qr", 1.0, A, B, 0.0, T1b, False, False),
-            ("einsum", "ps <- pr ; rs", -0.4, T1b, D, 1.0, R2, False, False)]
-    _pinned(prog, ["MultiTermFactorization"], "mtf_write_before_share")
+            ("einsum", "ps <- pr ; rs", _cx(-0.4, 0.5), T1b, D, 1.0, R2, False, False)]
+    _pinned(prog, ["MultiTermFactorization"], "mtf_write_before_share", dtype=dtype)
 
 
-def test_antisymmetrizer_folding_keeps_the_operator_prefactor():
+def test_antisymmetrizer_folding_keeps_the_operator_prefactor(dtype):
     """``W = 2 P(i/j) X``, ``V = 3 P(i/j) Y``, ``r = <W, V>``.
 
     Defends against the fold repointing the dot at the permute's source and
@@ -354,14 +371,14 @@ def test_antisymmetrizer_folding_keeps_the_operator_prefactor():
     which left the result off by exactly that factor. The contraction is folded.
     """
     W, V = _xm1("foldscr", (3, 3), 0), _xm1("foldscr", (3, 3), 1)
-    prog = [("aperm", "m", _OP_IJ, 2.0, _M33[0], 0.0, W),
-            ("aperm", "m", _OP_IJ, 3.0, _M33[1], 0.0, V),
+    prog = [("aperm", "m", _OP_IJ, _cx(2.0, 0.5), _M33[0], 0.0, W),
+            ("aperm", "m", _OP_IJ, _cx(3.0, -1.0), _M33[1], 0.0, V),
             ("dot", "m", VEC_BY_LEN[1][0], W, V)]
-    fired = _pinned(prog, ["AntisymmetryInference", "AntisymmetrizerFolding"], "fold_alpha")
+    fired = _pinned(prog, ["AntisymmetryInference", "AntisymmetrizerFolding"], "fold_alpha", dtype=dtype)
     assert "AntisymmetrizerFolding" in fired
 
 
-def test_antisymmetrizer_folding_sees_its_source_overwritten():
+def test_antisymmetrizer_folding_sees_its_source_overwritten(dtype):
     """``W = P X``, ``V = P Y``, ``Y *= 1/2``, ``r = <V, W>``.
 
     Defends against the fold replacing V by its source Y in the dot, which then
@@ -374,10 +391,10 @@ def test_antisymmetrizer_folding_sees_its_source_overwritten():
             ("aperm", "m", _OP_IJ, 1.0, _M33[1], 0.0, V),
             ("scale", 0.5, _M33[1]),
             ("dot", "m", VEC_BY_LEN[1][0], V, W)]
-    _pinned(prog, ["AntisymmetryInference", "AntisymmetrizerFolding"], "fold_source_written")
+    _pinned(prog, ["AntisymmetryInference", "AntisymmetrizerFolding"], "fold_source_written", dtype=dtype)
 
 
-def test_antisymmetrizer_linearity_sees_a_write_between_the_operators():
+def test_antisymmetrizer_linearity_sees_a_write_between_the_operators(dtype):
     """``Y = a P(A)``, ``B *= 1/2``, ``X = c P(B)``, ``Y += s X``.
 
     Defends against the merged sum ``a A + s c B`` being built at Y's operator,
@@ -387,15 +404,15 @@ def test_antisymmetrizer_linearity_sees_a_write_between_the_operators():
     in the fuzz.
     """
     X, Y = _xm1("scratch", (3, 3), 0), _xm1("scratch", (3, 3), 1)
-    prog = [("aperm", "m", _OP_IJ, 0.8, _M33[0], 0.0, Y),
+    prog = [("aperm", "m", _OP_IJ, _cx(0.8, 0.3), _M33[0], 0.0, Y),
             ("scale", 0.5, _M33[1]),
-            ("aperm", "m", _OP_IJ, 0.25, _M33[1], 0.0, X),
-            ("axpby", 0.75, X, 1.0, Y),
+            ("aperm", "m", _OP_IJ, _cx(0.25, -0.6), _M33[1], 0.0, X),
+            ("axpby", _cx(0.75, 0.1), X, 1.0, Y),
             ("dot", "m", VEC_BY_LEN[1][0], Y, _M33[2])]
-    _pinned(prog, ["AntisymmetrizerLinearity"], "lin_write_between")
+    _pinned(prog, ["AntisymmetrizerLinearity"], "lin_write_between", dtype=dtype)
 
 
-def test_distributive_factoring_sees_a_view_write_between_the_members():
+def test_distributive_factoring_sees_a_view_write_between_the_members(dtype):
     """``C += A1^T B``, a write into a block of A2, ``C += A2^T B``.
 
     Defends against the sum ``A1 + A2`` being built at the first member, before
@@ -405,13 +422,13 @@ def test_distributive_factoring_sees_a_view_write_between_the_members():
     """
     A1, A2 = MAT_BY_SHAPE[(3, 2)][1], MAT_BY_SHAPE[(3, 2)][0]
     B, C, src = MAT_BY_SHAPE[(3, 4)][0], MAT_BY_SHAPE[(2, 4)][0], MAT_BY_SHAPE[(1, 2)][0]
-    prog = [("einsum", "ij <- ki ; kj", 0.8, A1, B, 1.0, C, False, False),
+    prog = [("einsum", "ij <- ki ; kj", _cx(0.8, 0.3), A1, B, 1.0, C, False, False),
             ("vaxpy", 0.75, src, A2, 0, 1, 0, 2),
-            ("einsum", "ij <- ki ; kj", -0.5, A2, B, 1.0, C, False, False)]
-    _pinned(prog, ["DistributiveFactoring"], "df_view_between")
+            ("einsum", "ij <- ki ; kj", _cx(-0.5, 0.4), A2, B, 1.0, C, False, False)]
+    _pinned(prog, ["DistributiveFactoring"], "df_view_between", dtype=dtype)
 
 
-def test_distributive_factoring_keeps_two_groups_in_program_order():
+def test_distributive_factoring_keeps_two_groups_in_program_order(dtype):
     """Two groups into one output, the second right after the first, both headed by ``C *= 1/2``.
 
     Defends against the replacements landing out of program order: once the
@@ -424,15 +441,15 @@ def test_distributive_factoring_keeps_two_groups_in_program_order():
     X1, X2 = _xm1("dfsrc", (3, 2), 1), S2
     Y1, Y2, Y3 = (_xm1("dfsrc", (3, 3), k) for k in range(3))
     C = _xm1("dfout", (3, 2))
-    prog = [("einsum", "ij <- ik ; jk", -0.6, X1, S1, 0.5, C, False, False),
-            ("einsum", "ij <- ik ; jk", 0.45, X2, S1, 1.0, C, False, False),
-            ("einsum", "ij <- ik ; kj", -0.4, Y1, S2, 0.5, C, False, False),
+    prog = [("einsum", "ij <- ik ; jk", _cx(-0.6, 0.2), X1, S1, 0.5, C, False, False),
+            ("einsum", "ij <- ik ; jk", _cx(0.45, -0.3), X2, S1, 1.0, C, False, False),
+            ("einsum", "ij <- ik ; kj", _cx(-0.4, 0.7), Y1, S2, 0.5, C, False, False),
             ("einsum", "ij <- ik ; kj", 0.06, Y2, S2, 1.0, C, False, False),
-            ("einsum", "ij <- ik ; kj", 0.99, Y3, S2, 1.0, C, False, False)]
-    _pinned(prog, ["DistributiveFactoring"], "df_two_groups")
+            ("einsum", "ij <- ik ; kj", _cx(0.99, 0.1), Y3, S2, 1.0, C, False, False)]
+    _pinned(prog, ["DistributiveFactoring"], "df_two_groups", dtype=dtype)
 
 
-def test_linear_combination_folding_sees_a_loop_between_the_members():
+def test_linear_combination_folding_sees_a_loop_between_the_members(dtype):
     """``C = a J``, a loop that rescales C, ``C += b K``.
 
     Defends against the fold computing ``C = a J + b K`` at the first member,
@@ -443,13 +460,13 @@ def test_linear_combination_folding_sees_a_loop_between_the_members():
     T = ALLPASS_XT_BY["lccft"][(2, 3, 3)][0]
     vec = ALLPASS_XV_BY["lccfv"][(2,)][0]
     C = _xm1("lccfout", (3, 3))
-    prog = [("leinsum", "kij", 0.7, vec, T, 0.0, C),
+    prog = [("leinsum", "kij", _cx(0.7, 0.2), vec, T, 0.0, C),
             ("loop", 1, [("scale", 0.5, C)]),
-            ("leinsum", "kji", -0.4, vec, T, 1.0, C)]
-    _pinned(prog, ["LinearCombinationContractionFolding"], "lccf_loop_between")
+            ("leinsum", "kji", _cx(-0.4, 0.5), vec, T, 1.0, C)]
+    _pinned(prog, ["LinearCombinationContractionFolding"], "lccf_loop_between", dtype=dtype)
 
 
-def test_antisymmetrizer_folding_guard_reads_only_materialized_tensors():
+def test_antisymmetrizer_folding_guard_reads_only_materialized_tensors(dtype):
     """A rank-2 fold, and a transposed accumulation of ``tmp = A A``, after an early Materialization.
 
     Defends against AntisymmetrizerFolding's "antisymmetry premise guard", a
@@ -472,11 +489,11 @@ def test_antisymmetrizer_folding_guard_reads_only_materialized_tensors():
             ("axpby", 0.5, tmp, 1.0, r2),
             ("axpby", 0.5, tmpP, 1.0, r2)]
     _pinned(prog, ["Materialization", "SymmetryPropagation", "AntisymmetryInference", "SymmetrizedAccumulation",
-                   "AntisymmetrizerFolding"], "fold_guard_deferred")
+                   "AntisymmetrizerFolding"], "fold_guard_deferred", dtype=dtype)
 
 
 @pytest.mark.parametrize("where", ["loop", "cond"])
-def test_a_second_materialization_keeps_a_tensor_a_loop_body_reads(where):
+def test_a_second_materialization_keeps_a_tensor_a_loop_body_reads(where, dtype):
     """``D += X`` at the top, then a loop (or branch) reading D, materialized twice.
 
     The first Materialization puts D's Materialize and zero Initialize ahead of
@@ -487,12 +504,12 @@ def test_a_second_materialization_keeps_a_tensor_a_loop_body_reads(where):
     the graph directly, so the shape does not depend on what the arm's builder
     happens to draw.
     """
-    x = np.full((2, 2), 3.0)
-    X = einsums.create_zero_tensor("mat2_X", [2, 2], dtype="float64")
-    R = einsums.create_zero_tensor("mat2_R", [2, 2], dtype="float64")
+    x = np.full((2, 2), _dtype_scalar(_cx(3.0, 1.5), dtype), dtype=dtype)
+    X = einsums.create_zero_tensor("mat2_X", [2, 2], dtype=dtype)
+    R = einsums.create_zero_tensor("mat2_R", [2, 2], dtype=dtype)
     np.asarray(X)[...] = x
     g = cg.Graph(f"mat2_{where}")
-    D = g.declare_zero_tensor("mat2_D", [2, 2], intermediate=True, dtype="float64")
+    D = g.declare_zero_tensor("mat2_D", [2, 2], intermediate=True, dtype=dtype)
     with cg.capture(g):
         einsums.linalg.axpy(1.0, X, D)
     if where == "loop":
@@ -511,7 +528,7 @@ def test_a_second_materialization_keeps_a_tensor_a_loop_body_reads(where):
 
 @pytest.mark.skipif(os.environ.get("EINSUMS_PASS_VERIFY", "1").lower() in ("0", "false", "off", "no"),
                     reason="only the per-pass graph verifier can see this defect")
-def test_a_second_materialization_names_a_tensor_the_graph_holds():
+def test_a_second_materialization_names_a_tensor_the_graph_holds(dtype):
     """A deferred tensor only a loop body touches, in a body that also makes two views.
 
     Defends against the second Materialization hoisting the tensor's
@@ -521,13 +538,13 @@ def test_a_second_materialization_names_a_tensor_the_graph_holds():
     only the verifier sees it; without the verifier this instance happened to
     execute correctly, and nothing guaranteed the id was unused in general.
     """
-    ones = np.ones((3, 3))
+    ones = np.ones((3, 3), dtype=dtype)
     g = cg.Graph("mat2v")
-    D = g.declare_zero_tensor("mat2v_D", [2, 2], intermediate=True, dtype="float64")
-    R = einsums.create_zero_tensor("mat2v_R", [2, 2], dtype="float64")
+    D = g.declare_zero_tensor("mat2v_D", [2, 2], intermediate=True, dtype=dtype)
+    R = einsums.create_zero_tensor("mat2v_R", [2, 2], dtype=dtype)
     views = []
     for k in range(2):
-        M = einsums.create_zero_tensor(f"mat2v_M{k}", [3, 3], dtype="float64")
+        M = einsums.create_zero_tensor(f"mat2v_M{k}", [3, 3], dtype=dtype)
         np.asarray(M)[...] = ones
         views.append(M)
     body = g.add_loop("mat2v_loop", 1, lambda it: False)
@@ -542,14 +559,14 @@ def test_a_second_materialization_names_a_tensor_the_graph_holds():
     g.execute()
 
 
-def test_a_single_materialization_keeps_a_tensor_a_loop_body_reads():
+def test_a_single_materialization_keeps_a_tensor_a_loop_body_reads(dtype):
     """The control for the case above: one Materialization is right."""
-    x = np.full((2, 2), 3.0)
-    X = einsums.create_zero_tensor("mat1_X", [2, 2], dtype="float64")
-    R = einsums.create_zero_tensor("mat1_R", [2, 2], dtype="float64")
+    x = np.full((2, 2), _dtype_scalar(_cx(3.0, 1.5), dtype), dtype=dtype)
+    X = einsums.create_zero_tensor("mat1_X", [2, 2], dtype=dtype)
+    R = einsums.create_zero_tensor("mat1_R", [2, 2], dtype=dtype)
     np.asarray(X)[...] = x
     g = cg.Graph("mat1")
-    D = g.declare_zero_tensor("mat1_D", [2, 2], intermediate=True, dtype="float64")
+    D = g.declare_zero_tensor("mat1_D", [2, 2], intermediate=True, dtype=dtype)
     with cg.capture(g):
         einsums.linalg.axpy(1.0, X, D)
     body = g.add_loop("mat1_loop", 1, lambda it: False)

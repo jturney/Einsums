@@ -13,6 +13,17 @@
 
 using einsums::testing::reference_einsum;
 
+namespace {
+
+// Relative bound on each element: the bound these cases were written with for double, and the
+// single precision default for float and complex<float>.
+template <typename T>
+constexpr double rel_tol() {
+    return std::is_same_v<einsums::RemoveComplexT<T>, double> ? 1e-10 : einsums::tolerance<T>();
+}
+
+} // namespace
+
 using namespace einsums;
 namespace cg = einsums::compute_graph;
 
@@ -32,18 +43,20 @@ static cg::CostModel favors_factoring() {
     return cm;
 }
 
-TEST_CASE("DistributiveFactoring - rewrites 2 terms sharing operand A", "[ComputeGraph][DistributiveFactoring]") {
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - rewrites 2 terms sharing operand A", "[ComputeGraph][DistributiveFactoring]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
 
     // Reference: R_ref = A*B1 + A*B2
-    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
 
     // Graph version
-    auto      R = create_zero_tensor<double>("R", 4, 5);
+    auto      R = create_zero_tensor<T>("R", 4, 5);
     cg::Graph graph("factor2");
     {
         cg::CaptureGuard const guard(graph);
@@ -62,23 +75,24 @@ TEST_CASE("DistributiveFactoring - rewrites 2 terms sharing operand A", "[Comput
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
         }
     }
 }
 
-TEST_CASE("DistributiveFactoring - rewrites 3 terms", "[ComputeGraph][DistributiveFactoring]") {
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
-    auto B3 = create_random_tensor<double>("B3", 3, 5);
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - rewrites 3 terms", "[ComputeGraph][DistributiveFactoring]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
+    auto B3 = create_random_tensor<T>("B3", 3, 5);
 
-    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B3);
 
-    auto      R = create_zero_tensor<double>("R", 4, 5);
+    auto      R = create_zero_tensor<T>("R", 4, 5);
     cg::Graph graph("factor3");
     {
         cg::CaptureGuard const guard(graph);
@@ -95,17 +109,19 @@ TEST_CASE("DistributiveFactoring - rewrites 3 terms", "[ComputeGraph][Distributi
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
         }
     }
 }
 
-TEST_CASE("DistributiveFactoring - no rewrite when shapes differ", "[ComputeGraph][DistributiveFactoring]") {
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 7);
-    auto R1 = create_zero_tensor<double>("R1", 4, 5);
-    auto R2 = create_zero_tensor<double>("R2", 4, 7);
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - no rewrite when shapes differ", "[ComputeGraph][DistributiveFactoring]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 7);
+    auto R1 = create_zero_tensor<T>("R1", 4, 5);
+    auto R2 = create_zero_tensor<T>("R2", 4, 7);
 
     cg::Graph graph("no_factor");
     {
@@ -119,11 +135,13 @@ TEST_CASE("DistributiveFactoring - no rewrite when shapes differ", "[ComputeGrap
     REQUIRE(pass.num_groups() == 0);
 }
 
-TEST_CASE("DistributiveFactoring - no rewrite for non-accumulating", "[ComputeGraph][DistributiveFactoring]") {
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
-    auto R  = create_zero_tensor<double>("R", 4, 5);
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - no rewrite for non-accumulating", "[ComputeGraph][DistributiveFactoring]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
+    auto R  = create_zero_tensor<T>("R", 4, 5);
 
     cg::Graph graph("no_accum");
     {
@@ -136,16 +154,18 @@ TEST_CASE("DistributiveFactoring - no rewrite for non-accumulating", "[ComputeGr
     REQUIRE_FALSE(modified);
 }
 
-TEST_CASE("DistributiveFactoring - shared operand on B side", "[ComputeGraph][DistributiveFactoring]") {
-    auto A1 = create_random_tensor<double>("A1", 4, 3);
-    auto A2 = create_random_tensor<double>("A2", 4, 3);
-    auto B  = create_random_tensor<double>("B", 3, 5);
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - shared operand on B side", "[ComputeGraph][DistributiveFactoring]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A1 = create_random_tensor<T>("A1", 4, 3);
+    auto A2 = create_random_tensor<T>("A2", 4, 3);
+    auto B  = create_random_tensor<T>("B", 3, 5);
 
-    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A1, B);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A2, B);
 
-    auto      R = create_zero_tensor<double>("R", 4, 5);
+    auto      R = create_zero_tensor<T>("R", 4, 5);
     cg::Graph graph("factor_b_shared");
     {
         cg::CaptureGuard const guard(graph);
@@ -160,21 +180,22 @@ TEST_CASE("DistributiveFactoring - shared operand on B side", "[ComputeGraph][Di
 
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
         }
     }
 }
 
-TEST_CASE("DistributiveFactoring - rank-4 contraction", "[ComputeGraph][DistributiveFactoring]") {
-    auto g  = create_random_tensor<double>("g", 3, 3, 2, 2);
-    auto T1 = create_random_tensor<double>("T1", 2, 2, 4, 4);
-    auto T2 = create_random_tensor<double>("T2", 2, 2, 4, 4);
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - rank-4 contraction", "[ComputeGraph][DistributiveFactoring]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto g  = create_random_tensor<T>("g", 3, 3, 2, 2);
+    auto T1 = create_random_tensor<T>("T1", 2, 2, 4, 4);
+    auto T2 = create_random_tensor<T>("T2", 2, 2, 4, 4);
 
-    auto R_ref = create_zero_tensor<double>("R_ref", 3, 3, 4, 4);
+    auto R_ref = create_zero_tensor<T>("R_ref", 3, 3, 4, 4);
     reference_einsum("ijab <- ijkl ; klab", 1.0, &R_ref, 1.0, g, T1);
     reference_einsum("ijab <- ijkl ; klab", 1.0, &R_ref, 1.0, g, T2);
 
-    auto      R = create_zero_tensor<double>("R", 3, 3, 4, 4);
+    auto      R = create_zero_tensor<T>("R", 3, 3, 4, 4);
     cg::Graph graph("factor_rank4");
     {
         cg::CaptureGuard const guard(graph);
@@ -191,22 +212,24 @@ TEST_CASE("DistributiveFactoring - rank-4 contraction", "[ComputeGraph][Distribu
         for (size_t jj = 0; jj < 3; jj++)
             for (size_t aa = 0; aa < 4; aa++)
                 for (size_t bb = 0; bb < 4; bb++)
-                    REQUIRE_THAT(R(ii, jj, aa, bb), Catch::Matchers::WithinRel(R_ref(ii, jj, aa, bb), 1e-10));
+                    REQUIRE_THAT(R(ii, jj, aa, bb), CheckWithinRel(R_ref(ii, jj, aa, bb), rel_tol<T>()));
 }
 
 // ── Edge case tests ──────────────────────────────────────────────────────────
 
-TEST_CASE("DistributiveFactoring - different ab_prefactors", "[ComputeGraph][DistributiveFactoring]") {
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - different ab_prefactors", "[ComputeGraph][DistributiveFactoring]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
 
     // Reference: R = 0.5*A*B1 + 2.0*A*B2
-    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 0.5, A, B1);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 2.0, A, B2);
 
-    auto      R = create_zero_tensor<double>("R", 4, 5);
+    auto      R = create_zero_tensor<T>("R", 4, 5);
     cg::Graph graph("mixed_prefactors");
     {
         cg::CaptureGuard const guard(graph);
@@ -221,24 +244,26 @@ TEST_CASE("DistributiveFactoring - different ab_prefactors", "[ComputeGraph][Dis
 
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
 }
 
-TEST_CASE("DistributiveFactoring - downstream reader keeps program order", "[ComputeGraph][DistributiveFactoring]") {
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
-    auto E  = create_random_tensor<double>("E", 5, 2);
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - downstream reader keeps program order", "[ComputeGraph][DistributiveFactoring]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
+    auto E  = create_random_tensor<T>("E", 5, 2);
 
     // Reference: R = A*B1 + A*B2 ; S = R*E (S reads the factored output R)
-    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
-    auto S_ref = create_zero_tensor<double>("S_ref", 4, 2);
+    auto S_ref = create_zero_tensor<T>("S_ref", 4, 2);
     reference_einsum("il <- ij ; jl", 0.0, &S_ref, 1.0, R_ref, E);
 
-    auto      R = create_zero_tensor<double>("R", 4, 5);
-    auto      S = create_zero_tensor<double>("S", 4, 2);
+    auto      R = create_zero_tensor<T>("R", 4, 5);
+    auto      S = create_zero_tensor<T>("S", 4, 2);
     cg::Graph graph("factor_downstream");
     {
         cg::CaptureGuard const guard(graph);
@@ -257,22 +282,23 @@ TEST_CASE("DistributiveFactoring - downstream reader keeps program order", "[Com
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t ll = 0; ll < 2; ll++)
-            REQUIRE_THAT(S(ii, ll), Catch::Matchers::WithinRel(S_ref(ii, ll), 1e-10));
+            REQUIRE_THAT(S(ii, ll), CheckWithinRel(S_ref(ii, ll), rel_tol<T>()));
 }
 
-TEST_CASE("DistributiveFactoring - idempotent", "[ComputeGraph][DistributiveFactoring]") {
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - idempotent", "[ComputeGraph][DistributiveFactoring]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
 
-    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
 
-    auto      R = create_zero_tensor<double>("R", 4, 5);
+    auto      R = create_zero_tensor<T>("R", 4, 5);
     cg::Graph graph("factor_idempotent");
     {
         cg::CaptureGuard const guard(graph);
@@ -293,19 +319,20 @@ TEST_CASE("DistributiveFactoring - idempotent", "[ComputeGraph][DistributiveFact
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
 }
 
-TEST_CASE("DistributiveFactoring - replay factored graph", "[ComputeGraph][DistributiveFactoring]") {
-    auto A  = create_random_tensor<double>("A", 3, 2);
-    auto B1 = create_random_tensor<double>("B1", 2, 4);
-    auto B2 = create_random_tensor<double>("B2", 2, 4);
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - replay factored graph", "[ComputeGraph][DistributiveFactoring]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 2);
+    auto B1 = create_random_tensor<T>("B1", 2, 4);
+    auto B2 = create_random_tensor<T>("B2", 2, 4);
 
-    auto R_ref = create_zero_tensor<double>("R_ref", 3, 4);
+    auto R_ref = create_zero_tensor<T>("R_ref", 3, 4);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
 
-    auto      R = create_zero_tensor<double>("R", 3, 4);
+    auto      R = create_zero_tensor<T>("R", 3, 4);
     cg::Graph graph("replay_factored");
     {
         cg::CaptureGuard const guard(graph);
@@ -319,31 +346,33 @@ TEST_CASE("DistributiveFactoring - replay factored graph", "[ComputeGraph][Distr
     graph.execute();
     for (size_t ii = 0; ii < 3; ii++)
         for (size_t jj = 0; jj < 4; jj++)
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
 
     // Replay
     R.zero();
     graph.execute();
     for (size_t ii = 0; ii < 3; ii++)
         for (size_t jj = 0; jj < 4; jj++)
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
 }
 
-TEST_CASE("DistributiveFactoring - declines a member accumulating with c_pf != 1", "[ComputeGraph][DistributiveFactoring]") {
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - declines a member accumulating with c_pf != 1", "[ComputeGraph][DistributiveFactoring]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The factored form applies the output prefactor once, so a member whose
     // c_pf is not 1 rescales the partial sum its predecessors wrote. Folding it
     // silently produced a wrong answer before this was gated.
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
-    auto R0 = create_random_tensor<double>("R0", 4, 5);
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
+    auto R0 = create_random_tensor<T>("R0", 4, 5);
 
     // R_ref = 2*(R0 + A*B1) + A*B2, the sequential meaning of the two nodes.
-    auto R_ref = Tensor<double, 2>(R0);
+    auto R_ref = Tensor<T, 2>(R0);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
     reference_einsum("ij <- ik ; kj", 2.0, &R_ref, 1.0, A, B2);
 
-    auto      R = Tensor<double, 2>(R0);
+    auto      R = Tensor<T, 2>(R0);
     cg::Graph graph("non_unit_accumulate");
     {
         cg::CaptureGuard const guard(graph);
@@ -358,21 +387,23 @@ TEST_CASE("DistributiveFactoring - declines a member accumulating with c_pf != 1
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++) {
         for (size_t jj = 0; jj < 5; jj++) {
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
         }
     }
 }
 
-TEST_CASE("DistributiveFactoring - emits ordinary nodes, not one opaque node", "[ComputeGraph][DistributiveFactoring]") {
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - emits ordinary nodes, not one opaque node", "[ComputeGraph][DistributiveFactoring]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The rewrite used to fuse the sum and the contraction into a single
     // OpKind::Custom node whose executor swapped a slot pointer. That hid the
     // intermediate from every other pass. Keep the lowering visible: one zeroing
     // Scale, one Axpy per summed operand, one Einsum.
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
-    auto B3 = create_random_tensor<double>("B3", 3, 5);
-    auto R  = create_zero_tensor<double>("R", 4, 5);
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
+    auto B3 = create_random_tensor<T>("B3", 3, 5);
+    auto R  = create_zero_tensor<T>("R", 4, 5);
 
     cg::Graph graph("explicit_nodes");
     {
@@ -411,24 +442,26 @@ TEST_CASE("DistributiveFactoring - emits ordinary nodes, not one opaque node", "
     REQUIRE(num_einsum == 1);
 }
 
-TEST_CASE("DistributiveFactoring - two consumers share one summed intermediate", "[ComputeGraph][DistributiveFactoring]") {
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - two consumers share one summed intermediate", "[ComputeGraph][DistributiveFactoring]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The CCSD tau shape: several intermediates contract the SAME sum of operands
     // against the same shared operand. Building it once is what makes tau a named
     // quantity rather than one buffer per consumer.
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
-    auto C  = create_random_tensor<double>("C", 6, 3);
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
+    auto C  = create_random_tensor<T>("C", 6, 3);
 
-    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
-    auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
+    auto S_ref = create_zero_tensor<T>("S_ref", 6, 5);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
     reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 1.0, C, B1);
     reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 1.0, C, B2);
 
-    auto      R = create_zero_tensor<double>("R", 4, 5);
-    auto      S = create_zero_tensor<double>("S", 6, 5);
+    auto      R = create_zero_tensor<T>("R", 4, 5);
+    auto      S = create_zero_tensor<T>("S", 6, 5);
     cg::Graph graph("shared_sum");
     {
         cg::CaptureGuard const guard(graph);
@@ -459,29 +492,31 @@ TEST_CASE("DistributiveFactoring - two consumers share one summed intermediate",
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
     for (size_t ll = 0; ll < 6; ll++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
+            REQUIRE_THAT(S(ll, jj), CheckWithinRel(S_ref(ll, jj), rel_tol<T>()));
 }
 
-TEST_CASE("DistributiveFactoring - sums differing only in a prefactor are not shared", "[ComputeGraph][DistributiveFactoring]") {
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - sums differing only in a prefactor are not shared",
+                        "[ComputeGraph][DistributiveFactoring]", testing::AllScalarTypes) {
+    using T = TestType;
     // CCSD's tau and tau-tilde sum the same operands and differ by one
     // coefficient, so they are different tensors. Sharing them would be wrong.
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
-    auto C  = create_random_tensor<double>("C", 6, 3);
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
+    auto C  = create_random_tensor<T>("C", 6, 3);
 
-    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
-    auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
+    auto S_ref = create_zero_tensor<T>("S_ref", 6, 5);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
     reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 1.0, C, B1);
     reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 0.5, C, B2);
 
-    auto      R = create_zero_tensor<double>("R", 4, 5);
-    auto      S = create_zero_tensor<double>("S", 6, 5);
+    auto      R = create_zero_tensor<T>("R", 4, 5);
+    auto      S = create_zero_tensor<T>("S", 6, 5);
     cg::Graph graph("tau_vs_tau_tilde");
     {
         cg::CaptureGuard const guard(graph);
@@ -506,13 +541,15 @@ TEST_CASE("DistributiveFactoring - sums differing only in a prefactor are not sh
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
     for (size_t ll = 0; ll < 6; ll++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
+            REQUIRE_THAT(S(ll, jj), CheckWithinRel(S_ref(ll, jj), rel_tol<T>()));
 }
 
-TEST_CASE("DistributiveFactoring - a rewritten operand blocks the second group", "[ComputeGraph][DistributiveFactoring]") {
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - a rewritten operand blocks the second group", "[ComputeGraph][DistributiveFactoring]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // A summed operand overwritten between two consumers of the same sum must not
     // let the second read the first's intermediate, which was built from the old
     // value.
@@ -522,23 +559,23 @@ TEST_CASE("DistributiveFactoring - a rewritten operand blocks the second group",
     // a FRESH build from the post-overwrite operands, while the staleness scan
     // keeps it from reusing the first group's intermediate. The numeric checks
     // below are what pin the property; the structural counts pin the shape.
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
-    auto Bs = create_random_tensor<double>("Bs", 3, 5);
-    auto C  = create_random_tensor<double>("C", 6, 3);
-    auto Cs = create_random_tensor<double>("Cs", 6, 3);
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
+    auto Bs = create_random_tensor<T>("Bs", 3, 5);
+    auto C  = create_random_tensor<T>("C", 6, 3);
+    auto Cs = create_random_tensor<T>("Cs", 6, 3);
 
-    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
-    auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
+    auto S_ref = create_zero_tensor<T>("S_ref", 6, 5);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
     // B2 = Bs and C = Cs happen in between, so S sees the new values.
     reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 1.0, Cs, B1);
     reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 1.0, Cs, Bs);
 
-    auto      R = create_zero_tensor<double>("R", 4, 5);
-    auto      S = create_zero_tensor<double>("S", 6, 5);
+    auto      R = create_zero_tensor<T>("R", 4, 5);
+    auto      S = create_zero_tensor<T>("S", 6, 5);
     cg::Graph graph("stale_operand");
     {
         cg::CaptureGuard const guard(graph);
@@ -570,32 +607,33 @@ TEST_CASE("DistributiveFactoring - a rewritten operand blocks the second group",
 
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
     for (size_t ll = 0; ll < 6; ll++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
+            REQUIRE_THAT(S(ll, jj), CheckWithinRel(S_ref(ll, jj), rel_tol<T>()));
 }
 
-TEST_CASE("DistributiveFactoring - a proportional sum reuses the build and scales the contraction",
-          "[ComputeGraph][DistributiveFactoring]") {
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - a proportional sum reuses the build and scales the contraction",
+                        "[ComputeGraph][DistributiveFactoring]", testing::AllScalarTypes) {
+    using T = TestType;
     // The second consumer wants the same sum at half strength. Building it twice
     // would cost a whole extra buffer and axpy chain; the ratio rides on the
     // contraction's ab_pf instead. CCSD consumes tau with 1/4 in W_mnij and
     // W_abef and with 1/2 in the T2 equation, so this is the ordinary case.
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
-    auto C  = create_random_tensor<double>("C", 6, 3);
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
+    auto C  = create_random_tensor<T>("C", 6, 3);
 
-    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
-    auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
+    auto S_ref = create_zero_tensor<T>("S_ref", 6, 5);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
     reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 0.5, C, B1);
     reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 0.5, C, B2);
 
-    auto      R = create_zero_tensor<double>("R", 4, 5);
-    auto      S = create_zero_tensor<double>("S", 6, 5);
+    auto      R = create_zero_tensor<T>("R", 4, 5);
+    auto      S = create_zero_tensor<T>("S", 6, 5);
     cg::Graph graph("proportional_sum");
     {
         cg::CaptureGuard const guard(graph);
@@ -625,30 +663,32 @@ TEST_CASE("DistributiveFactoring - a proportional sum reuses the build and scale
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
     for (size_t ll = 0; ll < 6; ll++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
+            REQUIRE_THAT(S(ll, jj), CheckWithinRel(S_ref(ll, jj), rel_tol<T>()));
 }
 
-TEST_CASE("DistributiveFactoring - a ratio that is not a power of two is not shared", "[ComputeGraph][DistributiveFactoring]") {
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - a ratio that is not a power of two is not shared", "[ComputeGraph][DistributiveFactoring]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // Scaling the assembled sum only equals scaling each term when the factor is
     // a power of two, so a ratio of three declines and builds its own sum. The
     // answer is right either way; this pins the conservative choice.
-    auto A  = create_random_tensor<double>("A", 4, 3);
-    auto B1 = create_random_tensor<double>("B1", 3, 5);
-    auto B2 = create_random_tensor<double>("B2", 3, 5);
-    auto C  = create_random_tensor<double>("C", 6, 3);
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
+    auto C  = create_random_tensor<T>("C", 6, 3);
 
-    auto R_ref = create_zero_tensor<double>("R_ref", 4, 5);
-    auto S_ref = create_zero_tensor<double>("S_ref", 6, 5);
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
+    auto S_ref = create_zero_tensor<T>("S_ref", 6, 5);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B1);
     reference_einsum("ij <- ik ; kj", 1.0, &R_ref, 1.0, A, B2);
     reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 3.0, C, B1);
     reference_einsum("lj <- lk ; kj", 1.0, &S_ref, 3.0, C, B2);
 
-    auto      R = create_zero_tensor<double>("R", 4, 5);
-    auto      S = create_zero_tensor<double>("S", 6, 5);
+    auto      R = create_zero_tensor<T>("R", 4, 5);
+    auto      S = create_zero_tensor<T>("S", 6, 5);
     cg::Graph graph("odd_ratio");
     {
         cg::CaptureGuard const guard(graph);
@@ -672,10 +712,46 @@ TEST_CASE("DistributiveFactoring - a ratio that is not a power of two is not sha
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(R(ii, jj), Catch::Matchers::WithinRel(R_ref(ii, jj), 1e-10));
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
     for (size_t ll = 0; ll < 6; ll++)
         for (size_t jj = 0; jj < 5; jj++)
-            REQUIRE_THAT(S(ll, jj), Catch::Matchers::WithinRel(S_ref(ll, jj), 1e-10));
+            REQUIRE_THAT(S(ll, jj), CheckWithinRel(S_ref(ll, jj), rel_tol<T>()));
+}
+
+TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - a complex prefactor keeps its terms apart",
+                        "[ComputeGraph][DistributiveFactoring][Complex]", testing::ComplexScalarTypes) {
+    // The factoring arithmetic carries a member's ab_pf as a real ratio, so a
+    // member whose prefactor has an imaginary part is skipped rather than folded
+    // with the imaginary part dropped. This pins that rejection and the values
+    // it leaves; when the pass learns complex coefficients, replace the
+    // REQUIRE_FALSE with the rewrite "different ab_prefactors" asserts.
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 3);
+    auto B1 = create_random_tensor<T>("B1", 3, 5);
+    auto B2 = create_random_tensor<T>("B2", 3, 5);
+
+    T const p1 = testing::prefactor<T>(0.5, 0.3);
+    T const p2 = testing::prefactor<T>(2.0, -0.1);
+
+    auto R_ref = create_zero_tensor<T>("R_ref", 4, 5);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, p1, A, B1);
+    reference_einsum("ij <- ik ; kj", 1.0, &R_ref, p2, A, B2);
+
+    auto      R = create_zero_tensor<T>("R", 4, 5);
+    cg::Graph graph("complex_prefactors");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", 1.0, &R, p1, A, B1);
+        cg::einsum("ik;kj->ij", 1.0, &R, p2, A, B2);
+    }
+
+    auto [modified, pass] = graph.apply<cg::passes::DistributiveFactoring>(favors_factoring());
+    REQUIRE_FALSE(modified);
+
+    graph.execute();
+    for (size_t ii = 0; ii < 4; ii++)
+        for (size_t jj = 0; jj < 5; jj++)
+            REQUIRE_THAT(R(ii, jj), CheckWithinRel(R_ref(ii, jj), rel_tol<T>()));
 }
 
 // ── Profitability, priced against the DETECTED machine profile ───────────────

@@ -45,10 +45,13 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <variant>
 #include <vector>
 
 #include <Einsums/Testing.hpp>
@@ -175,11 +178,12 @@ cg::Graph capture_shift(Tensor<double, 2> const &A, Tensor<double, 2> &C) {
 
 // ── Tier 1: round trip per kind family ─────────────────────────────────────
 
-TEST_CASE("SaveLoad - dense element-wise kinds round-trip bitwise", "[ComputeGraph][SaveLoad]") {
-    auto A = create_random_tensor<double>("A", 4, 5);
-    auto B = create_random_tensor<double>("B", 4, 5);
-    auto C = create_zero_tensor<double>("C", 4, 5);
-    auto D = create_zero_tensor<double>("D", 5, 4);
+TEMPLATE_LIST_TEST_CASE("SaveLoad - dense element-wise kinds round-trip bitwise", "[ComputeGraph][SaveLoad]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 5);
+    auto B  = create_random_tensor<T>("B", 4, 5);
+    auto C  = create_zero_tensor<T>("C", 4, 5);
+    auto D  = create_zero_tensor<T>("D", 5, 4);
 
     auto const A0 = bytes_of(A);
     auto const B0 = bytes_of(B);
@@ -187,11 +191,14 @@ TEST_CASE("SaveLoad - dense element-wise kinds round-trip bitwise", "[ComputeGra
     cg::Graph graph("elementwise");
     {
         cg::CaptureGuard const guard(graph);
-        cg::scale(0.375, &A);
-        cg::axpby(0.25, A, 0.5, &B);
-        cg::direct_product(1.5, A, B, 0.0, &C);
-        cg::direct_division(2.0, A, B, 0.25, &C);
-        cg::permute("ji <- ij", 0.0, &D, 3.25, C);
+        // Prefactors with no exact binary representation, complex where the type is: a
+        // loader that rounded one through another precision, or dropped its imaginary
+        // part, reaches different bits.
+        cg::scale(testing::prefactor<T>(0.375, 0.1), &A);
+        cg::axpby(testing::prefactor<T>(0.25, -0.3), A, testing::prefactor<T>(0.5, 0.7), &B);
+        cg::direct_product(testing::prefactor<T>(1.5, 0.2), A, B, T{0}, &C);
+        cg::direct_division(testing::prefactor<T>(2.0, -0.1), A, B, testing::prefactor<T>(0.25, 0.3), &C);
+        cg::permute("ji <- ij", T{0}, &D, testing::prefactor<T>(3.25, -1.1), C);
     }
     graph.execute();
     auto const expected_a = bytes_of(A);
@@ -203,10 +210,10 @@ TEST_CASE("SaveLoad - dense element-wise kinds round-trip bitwise", "[ComputeGra
     cg::Graph         loaded = must_load(text);
 
     // Fresh storage, seeded exactly as the captured run started.
-    auto A2 = create_zero_tensor<double>("A2", 4, 5);
-    auto B2 = create_zero_tensor<double>("B2", 4, 5);
-    auto C2 = create_zero_tensor<double>("C2", 4, 5);
-    auto D2 = create_zero_tensor<double>("D2", 5, 4);
+    auto A2 = create_zero_tensor<T>("A2", 4, 5);
+    auto B2 = create_zero_tensor<T>("B2", 4, 5);
+    auto C2 = create_zero_tensor<T>("C2", 4, 5);
+    auto D2 = create_zero_tensor<T>("D2", 5, 4);
     std::memcpy(A2.data(), A0.data(), A0.size());
     std::memcpy(B2.data(), B0.data(), B0.size());
 
@@ -220,24 +227,31 @@ TEST_CASE("SaveLoad - dense element-wise kinds round-trip bitwise", "[ComputeGra
     REQUIRE(bytes_of(D2) == expected_d);
 }
 
-TEMPLATE_TEST_CASE("SaveLoad - einsum round-trips bitwise", "[ComputeGraph][SaveLoad]", double, std::complex<double>) {
+TEMPLATE_LIST_TEST_CASE("SaveLoad - einsum round-trips bitwise", "[ComputeGraph][SaveLoad]", testing::AllScalarTypes) {
     using T = TestType;
 
     auto A = create_random_tensor<T>("A", 6, 4);
     auto B = create_random_tensor<T>("B", 4, 5);
-    auto C = create_zero_tensor<T>("C", 6, 5);
-    auto E = create_zero_tensor<T>("E", 6, 4, 5);
+    auto C = create_random_tensor<T>("C", 6, 5);
+    auto E = create_random_tensor<T>("E", 6, 4, 5);
 
     auto const A0 = bytes_of(A);
     auto const B0 = bytes_of(B);
+    auto const C0 = bytes_of(C);
+    auto const E0 = bytes_of(E);
+
+    // Both prefactors in play, complex where the type is, and neither exact in binary: the file
+    // has to carry every bit of each part for the replay to land on the captured bits.
+    T const c_pf  = testing::prefactor<T>(0.3, -0.7);
+    T const ab_pf = testing::prefactor<T>(1.1, 0.45);
 
     cg::Graph graph("einsum");
     {
         cg::CaptureGuard const guard(graph);
         // A GEMM-shaped contraction, so the node carries a gemm_hint; and an
         // outer product, which does not.
-        cg::einsum("ij <- ik ; kj", T{0}, &C, T{1}, A, B);
-        cg::einsum("ikj <- ik ; kj", T{0}, &E, T{1}, A, B);
+        cg::einsum("ij <- ik ; kj", c_pf, &C, ab_pf, A, B);
+        cg::einsum("ikj <- ik ; kj", c_pf, &E, ab_pf, A, B);
     }
     graph.execute();
     auto const expected_c = bytes_of(C);
@@ -251,11 +265,18 @@ TEMPLATE_TEST_CASE("SaveLoad - einsum round-trips bitwise", "[ComputeGraph][Save
 
     bool hinted = false;
     for (auto const &node : loaded.nodes()) {
-        if (auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr && desc->gemm_hint != nullptr) {
-            hinted = true;
-            REQUIRE(desc->gemm_hint->m == 6);
-            REQUIRE(desc->gemm_hint->n == 5);
-            REQUIRE(desc->gemm_hint->k == 4);
+        if (auto const *desc = node.op_data.get_if<cg::EinsumDescriptor>(); desc != nullptr) {
+            // The prefactors come back as the same values of the same type, not widened.
+            REQUIRE(std::holds_alternative<T>(desc->c_prefactor));
+            REQUIRE(std::holds_alternative<T>(desc->ab_prefactor));
+            REQUIRE(bytes_of_scalar(std::get<T>(desc->c_prefactor)) == bytes_of_scalar(c_pf));
+            REQUIRE(bytes_of_scalar(std::get<T>(desc->ab_prefactor)) == bytes_of_scalar(ab_pf));
+            if (desc->gemm_hint != nullptr) {
+                hinted = true;
+                REQUIRE(desc->gemm_hint->m == 6);
+                REQUIRE(desc->gemm_hint->n == 5);
+                REQUIRE(desc->gemm_hint->k == 4);
+            }
         }
     }
     REQUIRE(hinted);
@@ -266,29 +287,40 @@ TEMPLATE_TEST_CASE("SaveLoad - einsum round-trips bitwise", "[ComputeGraph][Save
     auto E2 = create_zero_tensor<T>("E2", 6, 4, 5);
     std::memcpy(A2.data(), A0.data(), A0.size());
     std::memcpy(B2.data(), B0.data(), B0.size());
+    std::memcpy(C2.data(), C0.data(), C0.size());
+    std::memcpy(E2.data(), E0.data(), E0.size());
 
     loaded.bind("A", A2, "B", B2, "C", C2, "E", E2);
     loaded.execute();
 
     REQUIRE(bytes_of(C2) == expected_c);
     REQUIRE(bytes_of(E2) == expected_e);
+
+    // The saved element type is part of the contract: an operand of another type of the same
+    // rank would run the node on the wrong bytes, so binding one is refused.
+    using Other     = std::conditional_t<std::is_same_v<T, double>, float, double>;
+    cg::Graph again = must_load(text);
+    auto      wrong = create_random_tensor<Other>("wrong", 6, 4);
+    CHECK_THROWS_AS(again.bind("A", wrong), std::invalid_argument);
 }
 
-TEST_CASE("SaveLoad - gemm, transpose, dot and trace round-trip bitwise", "[ComputeGraph][SaveLoad]") {
-    auto A = create_random_tensor<double>("A", 4, 4);
-    auto B = create_random_tensor<double>("B", 4, 4);
-    auto C = create_zero_tensor<double>("C", 4, 4);
+TEMPLATE_LIST_TEST_CASE("SaveLoad - gemm, transpose, dot and trace round-trip bitwise", "[ComputeGraph][SaveLoad]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 4, 4);
+    auto B  = create_random_tensor<T>("B", 4, 4);
+    auto C  = create_zero_tensor<T>("C", 4, 4);
 
     auto const A0 = bytes_of(A);
     auto const B0 = bytes_of(B);
 
-    double captured_dot   = 0.0;
-    double captured_trace = 0.0;
+    T captured_dot{0};
+    T captured_trace{0};
 
     cg::Graph graph("blas");
     {
         cg::CaptureGuard const guard(graph);
-        cg::gemm<false, false>(1.25, A, B, 0.0, &C);
+        cg::gemm<false, false>(testing::prefactor<T>(1.25, -0.35), A, B, T{0}, &C);
         cg::dot(&captured_dot, A, B);
         cg::trace(&captured_trace, C);
     }
@@ -299,14 +331,14 @@ TEST_CASE("SaveLoad - gemm, transpose, dot and trace round-trip bitwise", "[Comp
 
     cg::Graph loaded = must_load(must_save(graph));
 
-    auto A2 = create_zero_tensor<double>("A2", 4, 4);
-    auto B2 = create_zero_tensor<double>("B2", 4, 4);
-    auto C2 = create_zero_tensor<double>("C2", 4, 4);
+    auto A2 = create_zero_tensor<T>("A2", 4, 4);
+    auto B2 = create_zero_tensor<T>("B2", 4, 4);
+    auto C2 = create_zero_tensor<T>("C2", 4, 4);
     std::memcpy(A2.data(), A0.data(), A0.size());
     std::memcpy(B2.data(), B0.data(), B0.size());
 
-    double loaded_dot   = 0.0;
-    double loaded_trace = 0.0;
+    T loaded_dot{0};
+    T loaded_trace{0};
 
     loaded.bind("A", A2, "B", B2, "C", C2);
     // A raw scalar destination is rank 0 and has no tensor to bind; bind_scalar
@@ -325,13 +357,14 @@ namespace {
 
 /// A symmetric matrix with well-separated eigenvalues, so LAPACK's ordering of
 /// the eigenvectors is not a coin toss between two runs of the same build.
-Tensor<double, 2> symmetric_matrix() {
-    auto out = create_zero_tensor<double>("A", 4, 4);
+template <typename T>
+Tensor<T, 2> symmetric_matrix() {
+    auto out = create_zero_tensor<T>("A", 4, 4);
     for (size_t i = 0; i < 4; ++i) {
         for (size_t j = i; j < 4; ++j) {
-            double const value = 1.0 / (1.0 + static_cast<double>(i + j)) + (i == j ? 3.0 * static_cast<double>(i + 1) : 0.0);
-            out(i, j)          = value;
-            out(j, i)          = value;
+            auto const value = static_cast<T>(1.0 / (1.0 + static_cast<double>(i + j)) + (i == j ? 3.0 * static_cast<double>(i + 1) : 0.0));
+            out(i, j)        = value;
+            out(j, i)        = value;
         }
     }
     return out;
@@ -339,13 +372,15 @@ Tensor<double, 2> symmetric_matrix() {
 
 } // namespace
 
-TEST_CASE("SaveLoad - a symmetric eigendecomposition round-trips bitwise", "[ComputeGraph][SaveLoad]") {
+TEMPLATE_LIST_TEST_CASE("SaveLoad - a symmetric eigendecomposition round-trips bitwise", "[ComputeGraph][SaveLoad]",
+                        testing::RealScalarTypes) {
+    using T = TestType;
     // A is decomposed IN PLACE, so the node lists it as an input AND an output, and the
     // matrix the loaded graph must be handed is the ORIGINAL rather than the eigenvectors
     // the capture-time execute left in it. The snapshot below is taken before any execute
     // for exactly that reason.
-    auto A = symmetric_matrix();
-    auto W = create_zero_tensor<double>("W", 4);
+    auto A = symmetric_matrix<T>();
+    auto W = create_zero_tensor<T>("W", 4);
 
     auto const A0 = bytes_of(A);
 
@@ -364,8 +399,8 @@ TEST_CASE("SaveLoad - a symmetric eigendecomposition round-trips bitwise", "[Com
 
     cg::Graph loaded = must_load(text);
 
-    auto A2 = create_zero_tensor<double>("A2", 4, 4);
-    auto W2 = create_zero_tensor<double>("W2", 4);
+    auto A2 = create_zero_tensor<T>("A2", 4, 4);
+    auto W2 = create_zero_tensor<T>("W2", 4);
     std::memcpy(A2.data(), A0.data(), A0.size());
     loaded.bind("A", A2, "W", W2);
     loaded.execute();
@@ -374,13 +409,15 @@ TEST_CASE("SaveLoad - a symmetric eigendecomposition round-trips bitwise", "[Com
     REQUIRE(bytes_of(W2) == expected_values);
 }
 
-TEST_CASE("SaveLoad - an eigenvalues-only decomposition stays eigenvalues-only", "[ComputeGraph][SaveLoad]") {
+TEMPLATE_LIST_TEST_CASE("SaveLoad - an eigenvalues-only decomposition stays eigenvalues-only", "[ComputeGraph][SaveLoad]",
+                        testing::RealScalarTypes) {
+    using T = TestType;
     // ComputeEigenvectors is a TEMPLATE argument at the capture site, so it is the one part
     // of a syev that a file has to carry explicitly. Getting it wrong is not a slower answer:
     // LAPACK's jobz='n' leaves A holding the tridiagonal reduction's scratch, so a loaded
     // graph that guessed 'v' would hand every downstream consumer a different matrix.
-    auto A = symmetric_matrix();
-    auto W = create_zero_tensor<double>("W", 4);
+    auto A = symmetric_matrix<T>();
+    auto W = create_zero_tensor<T>("W", 4);
 
     auto const A0 = bytes_of(A);
 
@@ -401,8 +438,8 @@ TEST_CASE("SaveLoad - an eigenvalues-only decomposition stays eigenvalues-only",
     REQUIRE(descriptor != nullptr);
     REQUIRE_FALSE(descriptor->compute_eigenvectors);
 
-    auto A2 = create_zero_tensor<double>("A2", 4, 4);
-    auto W2 = create_zero_tensor<double>("W2", 4);
+    auto A2 = create_zero_tensor<T>("A2", 4, 4);
+    auto W2 = create_zero_tensor<T>("W2", 4);
     std::memcpy(A2.data(), A0.data(), A0.size());
     loaded.bind("A", A2, "W", W2);
     loaded.execute();
@@ -411,8 +448,8 @@ TEST_CASE("SaveLoad - an eigenvalues-only decomposition stays eigenvalues-only",
 
     // And the eigenvectors are NOT what came back, which is what makes the flag observable
     // in the numbers as well as in the descriptor.
-    auto      V  = symmetric_matrix();
-    auto      Wv = create_zero_tensor<double>("Wv", 4);
+    auto      V  = symmetric_matrix<T>();
+    auto      Wv = create_zero_tensor<T>("Wv", 4);
     cg::Graph vectors("with_vectors");
     {
         cg::CaptureGuard const guard(vectors);
@@ -422,10 +459,11 @@ TEST_CASE("SaveLoad - an eigenvalues-only decomposition stays eigenvalues-only",
     REQUIRE(bytes_of(A2) != bytes_of(V));
 }
 
-TEST_CASE("SaveLoad - a named element transform round-trips", "[ComputeGraph][SaveLoad]") {
-    auto A = create_random_tensor<double>("A", 3, 3);
+TEMPLATE_LIST_TEST_CASE("SaveLoad - a named element transform round-trips", "[ComputeGraph][SaveLoad]", testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_random_tensor<T>("A", 3, 3);
     for (size_t i = 0; i < A.size(); ++i) {
-        A.data()[i] += 2.0; // keep the reciprocal well away from zero
+        A.data()[i] += T{2}; // keep the reciprocal well away from zero
     }
     auto const A0 = bytes_of(A);
 
@@ -441,7 +479,7 @@ TEST_CASE("SaveLoad - a named element transform round-trips", "[ComputeGraph][Sa
     REQUIRE_THAT(text, Catch::Matchers::ContainsSubstring("\"recip\""));
 
     cg::Graph loaded = must_load(text);
-    auto      A2     = create_zero_tensor<double>("A2", 3, 3);
+    auto      A2     = create_zero_tensor<T>("A2", 3, 3);
     std::memcpy(A2.data(), A0.data(), A0.size());
     loaded.bind("A", A2);
     loaded.execute();
@@ -475,11 +513,13 @@ TEST_CASE("SaveLoad - write_param and a parameter table round-trip", "[ComputeGr
     REQUIRE(loaded.params_ptr()->get("literal") == 7);
 }
 
-TEST_CASE("SaveLoad - a loop and a conditional round-trip with their bodies", "[ComputeGraph][SaveLoad]") {
-    auto A = create_zero_tensor<double>("A", 2, 2);
-    auto B = create_zero_tensor<double>("B", 2, 2);
+TEMPLATE_LIST_TEST_CASE("SaveLoad - a loop and a conditional round-trip with their bodies", "[ComputeGraph][SaveLoad]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
+    auto A  = create_zero_tensor<T>("A", 2, 2);
+    auto B  = create_zero_tensor<T>("B", 2, 2);
     for (size_t i = 0; i < A.size(); ++i) {
-        A.data()[i] = 1.0 + static_cast<double>(i);
+        A.data()[i] = testing::prefactor<T>(1.0 + static_cast<double>(i), 0.5 - static_cast<double>(i));
     }
     auto const A0 = bytes_of(A);
 
@@ -496,29 +536,29 @@ TEST_CASE("SaveLoad - a loop and a conditional round-trip with their bodies", "[
         cg::Graph &body = graph.add_loop("iters", 10, cg::PredExpr::iteration(cg::CmpOp::Lt, cg::BoundExpr{std::string("limit")}));
         {
             cg::CaptureGuard const guard(body);
-            cg::axpby(1.0, A, 1.0, &B);
+            cg::axpby(testing::prefactor<T>(1.0, 0.1), A, T{1}, &B);
         }
     }
     {
         auto [taken, skipped] = graph.add_conditional_flag("gate0", gates, 0);
         {
             cg::CaptureGuard const guard(taken);
-            cg::scale(2.0, &B);
+            cg::scale(testing::prefactor<T>(2.0, -0.3), &B);
         }
         {
             cg::CaptureGuard const guard(skipped);
-            cg::scale(0.0, &B);
+            cg::scale(T{0}, &B);
         }
     }
     {
         auto [taken, skipped] = graph.add_conditional_flag("gate1", gates, 1);
         {
             cg::CaptureGuard const guard(taken);
-            cg::scale(100.0, &B);
+            cg::scale(testing::prefactor<T>(100.0, 1.0), &B);
         }
         {
             cg::CaptureGuard const guard(skipped);
-            cg::scale(0.5, &B);
+            cg::scale(testing::prefactor<T>(0.5, 0.7), &B);
         }
     }
     graph.execute();
@@ -535,8 +575,8 @@ TEST_CASE("SaveLoad - a loop and a conditional round-trip with their bodies", "[
     loaded_gates.set(1, false);
     REQUIRE(loaded.params_ptr()->get("limit") == 3);
 
-    auto A2 = create_zero_tensor<double>("A2", 2, 2);
-    auto B2 = create_zero_tensor<double>("B2", 2, 2);
+    auto A2 = create_zero_tensor<T>("A2", 2, 2);
+    auto B2 = create_zero_tensor<T>("B2", 2, 2);
     std::memcpy(A2.data(), A0.data(), A0.size());
     loaded.bind("A", A2, "B", B2);
     loaded.execute();
@@ -544,7 +584,8 @@ TEST_CASE("SaveLoad - a loop and a conditional round-trip with their bodies", "[
     REQUIRE(bytes_of(B2) == expected_b);
 }
 
-TEST_CASE("SaveLoad - spaces, dim symbols and a re-bind at a new size", "[ComputeGraph][SaveLoad]") {
+TEMPLATE_LIST_TEST_CASE("SaveLoad - spaces, dim symbols and a re-bind at a new size", "[ComputeGraph][SaveLoad]", testing::AllScalarTypes) {
+    using T = TestType;
     // register_space is idempotent for an identical declaration and hands back
     // the id, so the ids come from the registration rather than from a lookup
     // that would then have to be checked.
@@ -552,9 +593,9 @@ TEST_CASE("SaveLoad - spaces, dim symbols and a re-bind at a new size", "[Comput
     cg::SpaceId const occ      = registry.register_space(cg::IndexSpace{.name = "saveload_occ"});
     cg::SpaceId const virt     = registry.register_space(cg::IndexSpace{.name = "saveload_virt"});
 
-    auto F = create_random_tensor<double>("F", 3, 4);
-    auto G = create_random_tensor<double>("G", 4, 3);
-    auto H = create_zero_tensor<double>("H", 3, 3);
+    auto F = create_random_tensor<T>("F", 3, 4);
+    auto G = create_random_tensor<T>("G", 4, 3);
+    auto H = create_zero_tensor<T>("H", 3, 3);
 
     cg::Graph          graph("symbolic");
     cg::TensorId const f_id = graph.register_operand(F);
@@ -568,7 +609,7 @@ TEST_CASE("SaveLoad - spaces, dim symbols and a re-bind at a new size", "[Comput
     graph.annotate_dims(h_id, {"no", "no"});
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("ij <- ia ; aj", 0.0, &H, 1.0, F, G);
+        cg::einsum("ij <- ia ; aj", T{0}, &H, T{1}, F, G);
     }
     graph.execute();
 
@@ -584,24 +625,26 @@ TEST_CASE("SaveLoad - spaces, dim symbols and a re-bind at a new size", "[Comput
 
     // The payoff: a saved graph is valid for a FAMILY of sizes, not for the one
     // geometry it was captured at.
-    auto F2 = create_random_tensor<double>("F2", 5, 6);
-    auto G2 = create_random_tensor<double>("G2", 6, 5);
-    auto H2 = create_zero_tensor<double>("H2", 5, 5);
+    auto F2 = create_random_tensor<T>("F2", 5, 6);
+    auto G2 = create_random_tensor<T>("G2", 6, 5);
+    auto H2 = create_zero_tensor<T>("H2", 5, 5);
     loaded.bind("F", F2, "G", G2, "H", H2);
     loaded.execute();
 
     // Checked against the reference to a tolerance, not bitwise: the reference sums in its own order,
     // and the property under test is that the rebound graph computes this product at all.
-    auto expected = create_zero_tensor<double>("expected", 5, 5);
+    auto expected = create_zero_tensor<T>("expected", 5, 5);
     reference_einsum("ij <- ia ; aj", &expected, F2, G2);
     for (size_t i = 0; i < 5; ++i) {
         for (size_t j = 0; j < 5; ++j) {
-            REQUIRE_THAT(H2(i, j), Catch::Matchers::WithinAbs(expected(i, j), 1.0e-12));
+            REQUIRE_THAT(H2(i, j), CheckWithinRel(expected(i, j), 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon()));
         }
     }
 }
 
-TEST_CASE("SaveLoad - a deferred intermediate comes back deferred and rebinds", "[ComputeGraph][SaveLoad][Symbolic]") {
+TEMPLATE_LIST_TEST_CASE("SaveLoad - a deferred intermediate comes back deferred and rebinds", "[ComputeGraph][SaveLoad][Symbolic]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // The sibling test above proves a re-bind at a new size for a graph whose every tensor is
     // a manifest entry. Every real graph also has SCRATCH, and that case was broken in a way
     // no test could see: AllocState was not serialized, so a loaded intermediate came back
@@ -610,11 +653,12 @@ TEST_CASE("SaveLoad - a deferred intermediate comes back deferred and rebinds", 
     cg::SpaceId const occ      = registry.register_space(cg::IndexSpace{.name = "sl_occ", .scale_symbol = "o", .dim_symbol = "sl_no"});
     cg::SpaceId const virt     = registry.register_space(cg::IndexSpace{.name = "sl_virt", .scale_symbol = "v", .dim_symbol = "sl_nv"});
 
-    RuntimeTensor<double> amp("amp", std::vector<std::size_t>{4, 6});
-    RuntimeTensor<double> out("out", std::vector<std::size_t>{4, 4});
+    RuntimeTensor<T> amp("amp", std::vector<std::size_t>{4, 6});
+    RuntimeTensor<T> out("out", std::vector<std::size_t>{4, 4});
     for (std::size_t i = 0; i < 4; ++i) {
         for (std::size_t a = 0; a < 6; ++a) {
-            amp(i, a) = 0.25 * static_cast<double>(i + 1) - 0.125 * static_cast<double>(a);
+            amp(i, a) = testing::prefactor<T>(0.25 * static_cast<double>(i + 1) - 0.125 * static_cast<double>(a),
+                                              0.5 - 0.25 * static_cast<double>(i));
         }
     }
 
@@ -623,7 +667,7 @@ TEST_CASE("SaveLoad - a deferred intermediate comes back deferred and rebinds", 
     graph.annotate_dims(amp, {"sl_no", "sl_nv"});
     graph.annotate_spaces(out, {occ, occ});
     graph.annotate_dims(out, {"sl_no", "sl_no"});
-    auto &tmp = graph.declare_zero_runtime_tensor<double>("tmp", {cg::SpaceDim{occ}, cg::SpaceDim{virt}}, true);
+    auto &tmp = graph.declare_zero_runtime_tensor<T>("tmp", {cg::SpaceDim{occ}, cg::SpaceDim{virt}}, true);
     {
         cg::CaptureGuard const guard(graph);
         cg::einsum("ia;ia->ia", &tmp, amp, amp);
@@ -637,11 +681,12 @@ TEST_CASE("SaveLoad - a deferred intermediate comes back deferred and rebinds", 
     cg::Graph loaded = must_load(text);
 
     // Bind the loaded graph to a DIFFERENT problem and let it re-derive the scratch.
-    RuntimeTensor<double> amp2("amp2", std::vector<std::size_t>{3, 5});
-    RuntimeTensor<double> out2("out2", std::vector<std::size_t>{3, 3});
+    RuntimeTensor<T> amp2("amp2", std::vector<std::size_t>{3, 5});
+    RuntimeTensor<T> out2("out2", std::vector<std::size_t>{3, 3});
     for (std::size_t i = 0; i < 3; ++i) {
         for (std::size_t a = 0; a < 5; ++a) {
-            amp2(i, a) = 0.5 * static_cast<double>(i) - 0.0625 * static_cast<double>(a + 2);
+            amp2(i, a) =
+                testing::prefactor<T>(0.5 * static_cast<double>(i) - 0.0625 * static_cast<double>(a + 2), 0.125 * static_cast<double>(a));
         }
     }
     REQUIRE_NOTHROW(loaded.bind("amp", amp2, "out", out2));
@@ -653,9 +698,9 @@ TEST_CASE("SaveLoad - a deferred intermediate comes back deferred and rebinds", 
 
     // The reference: capture the same thing at the new size and compare bitwise, which is
     // what "valid for a family of problems" has to mean.
-    RuntimeTensor<double> ref("ref", std::vector<std::size_t>{3, 3});
-    cg::Graph             fresh("scratch_reuse_fresh");
-    auto                 &fresh_tmp = fresh.declare_zero_runtime_tensor<double>("tmp", std::vector<std::size_t>{3, 5}, true);
+    RuntimeTensor<T> ref("ref", std::vector<std::size_t>{3, 3});
+    cg::Graph        fresh("scratch_reuse_fresh");
+    auto            &fresh_tmp = fresh.declare_zero_runtime_tensor<T>("tmp", std::vector<std::size_t>{3, 5}, true);
     {
         cg::CaptureGuard const guard(fresh);
         cg::einsum("ia;ia->ia", &fresh_tmp, amp2, amp2);
@@ -955,6 +1000,29 @@ TEST_CASE("SaveLoad - content_hash covers structure and nothing else", "[Compute
         REQUIRE(hash_a != hash_b);
     }
 
+    SECTION("the element type is structure") {
+        // The same program over another element type computes something else, so a cache
+        // keyed on the hash must not hand one's compiled plan to the other.
+        auto const typed = [](auto zero) {
+            using T     = decltype(zero);
+            auto      A = create_zero_tensor<T>("A", 3, 3);
+            cg::Graph graph("same");
+            {
+                cg::CaptureGuard const guard(graph);
+                cg::scale(T{2}, &A);
+            }
+            return graph.content_hash();
+        };
+        std::uint64_t const f32  = typed(float{});
+        std::uint64_t const f64  = typed(double{});
+        std::uint64_t const c64  = typed(std::complex<float>{});
+        std::uint64_t const c128 = typed(std::complex<double>{});
+        REQUIRE(f32 != f64);
+        REQUIRE(f32 != c64);
+        REQUIRE(f64 != c128);
+        REQUIRE(c64 != c128);
+    }
+
     SECTION("the graph name is structure") {
         auto const [hash_a, text_a] = build("one", 2.0);
         auto const [hash_b, text_b] = build("two", 2.0);
@@ -1141,26 +1209,31 @@ TEST_CASE("SaveLoad - a partial space annotation crosses the file with its hole 
     CHECK(loaded.space_registry().name_of(spaces[1]) == "saveload_partial_aux");
 }
 
-TEST_CASE("SaveLoad - a permutation operator crosses the file intact", "[ComputeGraph][SaveLoad][Permutation]") {
+TEMPLATE_LIST_TEST_CASE("SaveLoad - a permutation operator crosses the file intact", "[ComputeGraph][SaveLoad][Permutation]",
+                        testing::AllScalarTypes) {
+    using T = TestType;
     // An operator is ALGEBRA: it names terms the contraction does not otherwise
     // have, so a file that drops it describes a residual short of three of its
     // four terms and a replay of it converges to the wrong answer. That is why
     // the key is written for the einsum and the permute alike, and why a
     // malformed one is dropped loudly rather than half-read.
     size_t const no = 3, nv = 4;
-    auto         t2 = create_random_tensor<double>("t2", no, no, nv, nv);
-    auto         F  = create_random_tensor<double>("F", no, no);
-    auto         C  = create_zero_tensor<double>("C", no, no, nv, nv);
+    auto         t2 = create_random_tensor<T>("t2", no, no, nv, nv);
+    auto         F  = create_random_tensor<T>("F", no, no);
+    auto         C  = create_zero_tensor<T>("C", no, no, nv, nv);
+
+    T const ab_pf = testing::prefactor<T>(1.0, -0.4);
 
     cg::Graph graph("permutation_operator");
     {
         cg::CaptureGuard const guard(graph);
-        cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,b ; m,j", 0.0, &C, 1.0, t2, F);
+        cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,b ; m,j", T{0}, &C, ab_pf, t2, F);
     }
 
     auto const saved = cg::save_graph_string(graph);
     REQUIRE(saved.has_value());
-    if (std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
+    // The golden is the double capture, whose prefactor is the 1.0 it was written with.
+    if (std::is_same_v<T, double> && std::getenv("EINSUMS_WRITE_GOLDEN") != nullptr) {
         std::ofstream out(std::filesystem::path{EINSUMS_GRAPH_IR_GOLDEN_DIR} / "v1_7_0_permutation_operator.eig.json", std::ios::binary);
         out << *saved;
     }
@@ -1173,11 +1246,11 @@ TEST_CASE("SaveLoad - a permutation operator crosses the file intact", "[Compute
     CHECK(desc->operators[1].groups == std::vector<std::vector<std::string>>{{"a"}, {"b"}});
 
     // The reloaded graph must COMPUTE the operator, not merely carry it.
-    auto eager = create_zero_tensor<double>("eager", no, no, nv, nv);
+    auto eager = create_zero_tensor<T>("eager", no, no, nv, nv);
     // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
-    cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,b ; m,j", 0.0, &eager, 1.0, t2, F);
+    cg::einsum("i,j,a,b <- P(ij) P(ab) i,m,a,b ; m,j", T{0}, &eager, ab_pf, t2, F);
 
-    auto replayed = create_zero_tensor<double>("replayed", no, no, nv, nv);
+    auto replayed = create_zero_tensor<T>("replayed", no, no, nv, nv);
     loaded.bind("t2", t2);
     loaded.bind("F", F);
     loaded.bind("C", replayed);
@@ -1187,7 +1260,8 @@ TEST_CASE("SaveLoad - a permutation operator crosses the file intact", "[Compute
         for (size_t jj = 0; jj < no; jj++) {
             for (size_t aa = 0; aa < nv; aa++) {
                 for (size_t bb = 0; bb < nv; bb++) {
-                    REQUIRE_THAT(replayed(ii, jj, aa, bb), Catch::Matchers::WithinAbs(eager(ii, jj, aa, bb), 1e-12));
+                    REQUIRE_THAT(replayed(ii, jj, aa, bb),
+                                 CheckWithinRel(eager(ii, jj, aa, bb), 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon()));
                 }
             }
         }
@@ -1545,9 +1619,10 @@ TEMPLATE_TEST_CASE("SaveLoad - a mixed-precision einsum round-trips bitwise", "[
 namespace {
 
 /// ``e = sum_ij A_ij A_ij`` into a rank-0 tensor object.
-void capture_scalar_einsum(cg::Graph &graph, RuntimeTensor<double> &e, RuntimeTensor<double> const &A) {
+template <typename T>
+void capture_scalar_einsum(cg::Graph &graph, RuntimeTensor<T> &e, RuntimeTensor<T> const &A) {
     cg::CaptureGuard const guard(graph);
-    cg::einsum(" <- i,j ; i,j", 0.0, &e, 1.0, A, A);
+    cg::einsum(" <- i,j ; i,j", T{0}, &e, testing::prefactor<T>(1.0, 0.5), A, A);
 }
 
 } // namespace
@@ -1555,9 +1630,11 @@ void capture_scalar_einsum(cg::Graph &graph, RuntimeTensor<double> &e, RuntimeTe
 // Defends: a rank-0 tensor object saves as one and loads as one. The record used to say only
 // "rank 0", which the loader read as a bare element with no slot, so a saved scalar einsum was
 // refused by the file it had just written ("operand C exposes no rank-erased geometry").
-TEST_CASE("SaveLoad - a rank-0 tensor object loads, binds and computes", "[ComputeGraph][SaveLoad][Rank0]") {
-    RuntimeTensor<double> A = create_random_tensor<double>("A", 3, 4);
-    RuntimeTensor<double> e("e", std::vector<size_t>{});
+TEMPLATE_LIST_TEST_CASE("SaveLoad - a rank-0 tensor object loads, binds and computes", "[ComputeGraph][SaveLoad][Rank0]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
+    RuntimeTensor<T> A = create_random_tensor<T>("A", 3, 4);
+    RuntimeTensor<T> e("e", std::vector<size_t>{});
     e.zero();
 
     cg::Graph graph("scalar_einsum");
@@ -1566,16 +1643,16 @@ TEST_CASE("SaveLoad - a rank-0 tensor object loads, binds and computes", "[Compu
     std::string const text = must_save(graph);
     CHECK(text.find(R"("rank0": "tensor")") != std::string::npos);
 
-    cg::Graph             loaded = must_load(text);
-    RuntimeTensor<double> A2     = create_random_tensor<double>("A2", 3, 4);
-    RuntimeTensor<double> e2("e2", std::vector<size_t>{});
+    cg::Graph        loaded = must_load(text);
+    RuntimeTensor<T> A2     = create_random_tensor<T>("A2", 3, 4);
+    RuntimeTensor<T> e2("e2", std::vector<size_t>{});
     e2.zero();
     loaded.bind("A", A2, "e", e2);
     loaded.execute();
 
-    RuntimeTensor<double> expected("expected", std::vector<size_t>{});
-    reference_einsum(" <- ij ; ij", 0.0, &expected, 1.0, A2, A2);
-    CHECK(std::abs(e2.data()[0] - expected.data()[0]) <= 1e-12 * std::abs(expected.data()[0]));
+    RuntimeTensor<T> expected("expected", std::vector<size_t>{});
+    reference_einsum(" <- ij ; ij", T{0}, &expected, testing::prefactor<T>(1.0, 0.5), A2, A2);
+    CHECK_THAT(e2.data()[0], CheckWithinRel(expected.data()[0], 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon()));
 }
 
 // Defends: the two rank-0 kinds are not interchangeable at bind. A bare-scalar slot is written

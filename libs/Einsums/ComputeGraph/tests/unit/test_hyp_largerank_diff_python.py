@@ -5,7 +5,7 @@
 
 Pushes more indices per role (batch / M / N / K) than the baseline einsum harness
 -- operands up to ~rank 6-7 -- with permuted (transposed) orders, small extents
-(1..4, total size bounded), real/complex dtypes and accumulation, optionally a
+(1..4, total size bounded), all four dtypes and accumulation, optionally a
 lone reduction index summed in one operand only (weighted trace, empty link).
 Exercises the multi-K flatten / batched-gather / pack paths at depth, plus the
 lone-summed path at rank. numpy.einsum is the oracle.
@@ -24,6 +24,7 @@ from hypothesis import strategies as st
 import einsums
 import einsums.graph as cg
 from einsums.testing import assert_exact, integer_data
+from _dtype_draws import DTYPES, assert_rounding_close, random_array, wide
 
 _ctr = itertools.count()
 _LETTERS = "ijklmnpqrs"
@@ -35,12 +36,6 @@ def _mk(a, dt):
     if a.size:
         np.asarray(t)[...] = a
     return t
-
-
-def _rnd(shape, cplx, rng):
-    if cplx:
-        return rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
-    return rng.standard_normal(shape)
 
 
 def _mkview(arr, use_view, dt, rng):
@@ -85,7 +80,7 @@ def _prob(draw):
         else:
             ins = draw(st.integers(0, len(b)))
             b = b[:ins] + [ln] + b[ins:]
-    return (a, b, c, ext, draw(st.sampled_from(["float64", "complex128"])),
+    return (a, b, c, ext, draw(DTYPES),
             draw(st.sampled_from([0.0, 1.0])), draw(st.sampled_from([1.0, -2.0])),
             draw(st.booleans()), draw(st.booleans()))
 
@@ -93,19 +88,21 @@ def _prob(draw):
 def _run_largerank(prob, exact):
     """Execute one deep-rank contraction and compare to numpy.
 
-    largerank already draws only float64/complex128 with integer prefactors, so
-    exact mode simply swaps random floats for integer_data and compares with
-    assert_exact (bit-exact) instead of a tolerance.
+    largerank draws integer prefactors, so exact mode simply swaps random floats
+    for integer_data and compares with assert_exact (bit-exact) instead of a
+    tolerance. Every dtype qualifies: at these extents the partial sums stay far
+    below 2**24, where single precision stops holding integers exactly.
     """
     a_idx, b_idx, c_idx, ext, dt, c_pf, ab_pf, va, vb = prob
-    cplx = (dt == "complex128")
     rng = np.random.default_rng(0)
     assume(int(np.prod([ext[x] for x in set(a_idx) | set(b_idx) | set(c_idx)])) <= 20000)
-    gen = (lambda idx: integer_data([ext[x] for x in idx], dt, rng)) if exact \
-        else (lambda idx: _rnd([ext[x] for x in idx], cplx, rng))
+    # Operands in dt, held in double precision so numpy's oracle does not round at dt as well.
+    gen = (lambda idx: integer_data([ext[x] for x in idx], dt, rng).astype(wide(dt))) if exact \
+        else (lambda idx: random_array([ext[x] for x in idx], dt, rng))
     A0, B0, C0 = gen(a_idx), gen(b_idx), gen(c_idx)
     np_spec = f"{''.join(a_idx)},{''.join(b_idx)}->{''.join(c_idx)}"
     oracle = c_pf * C0 + ab_pf * np.einsum(np_spec, A0, B0)
+    scale = abs(c_pf) * np.abs(C0) + abs(ab_pf) * np.einsum(np_spec, np.abs(A0), np.abs(B0))
     es = f"{''.join(c_idx)} <- {''.join(a_idx)} ; {''.join(b_idx)}"
     At = _mkview(A0, va, dt, rng)
     Bt = _mkview(B0, vb, dt, rng)
@@ -115,9 +112,10 @@ def _run_largerank(prob, exact):
         einsums.einsum(es, Ct, At, Bt, c_pf=c_pf, ab_pf=ab_pf)
     g.execute()
     if exact:
+        assert scale.max(initial=0.0) < 2.0**24
         assert_exact(np.asarray(Ct), oracle)
     else:
-        np.testing.assert_allclose(np.asarray(Ct), oracle, rtol=1e-8, atol=1e-9,
+        assert_rounding_close(Ct, oracle, dt, scale,
             err_msg=f"{es} ext={ext} dt={dt} c_pf={c_pf} ab_pf={ab_pf} va={va} vb={vb}")
 
 

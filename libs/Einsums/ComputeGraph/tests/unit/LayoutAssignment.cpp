@@ -21,8 +21,10 @@
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <cmath>
+#include <complex>
 #include <limits>
 #include <memory>
 #include <string>
@@ -41,9 +43,10 @@ constexpr size_t kI = 6, kJ = 5, kX = 7, kK = 3, kY = 4;
 /// The two-node chain of the file note, with `W` declared in @p w_dims order.
 /// The caller supplies the letters so a test can capture the same arithmetic under a different
 /// storage order without duplicating the builder.
-void capture_chain(cg::Graph &graph, RuntimeTensor<double> &R, RuntimeTensor<double> const &A, RuntimeTensor<double> const &B,
-                   RuntimeTensor<double> const &D, std::string const &w_spec, size_t d0, size_t d1, size_t d2) {
-    auto &W = graph.declare_runtime_tensor<double>("W", {d0, d1, d2}, /*intermediate=*/true);
+template <typename T>
+void capture_chain(cg::Graph &graph, RuntimeTensor<T> &R, RuntimeTensor<T> const &A, RuntimeTensor<T> const &B, RuntimeTensor<T> const &D,
+                   std::string const &w_spec, size_t d0, size_t d1, size_t d2) {
+    auto &W = graph.declare_runtime_tensor<T>("W", {d0, d1, d2}, /*intermediate=*/true);
 
     // Built at run time so one builder serves both storage orders, which means the runtime
     // string_view constructor rather than the consteval literal one.
@@ -63,20 +66,21 @@ void capture_chain(cg::Graph &graph, RuntimeTensor<double> &R, RuntimeTensor<dou
 /// which fails first when a different toolchain orders the fused multiply-adds differently. The
 /// element-wise form of this test passed on two platforms and failed on Windows at 2.8e-12, on an
 /// element of magnitude 3.5e-4, for a rewrite that was behaving.
-double norm_relative_gap(RuntimeTensor<double> const &got, RuntimeTensor<double> const &want) {
+template <typename T>
+double norm_relative_gap(RuntimeTensor<T> const &got, RuntimeTensor<T> const &want) {
     REQUIRE(got.size() == want.size());
     double error = 0.0, reference = 0.0;
     for (size_t i = 0; i < want.size(); i++) {
-        double const difference = got.data()[i] - want.data()[i];
-        error += difference * difference;
-        reference += want.data()[i] * want.data()[i];
+        error += std::norm(got.data()[i] - want.data()[i]);
+        reference += std::norm(want.data()[i]);
     }
     return reference > 0.0 ? std::sqrt(error) / std::sqrt(reference) : std::sqrt(error);
 }
 
 /// @brief The bound this tier declares, which is the number the pass is validated against.
+template <typename T>
 double re_associating_bound() {
-    return cg::tier_bound(cg::PassTier::ReAssociating, std::numeric_limits<double>::epsilon());
+    return cg::tier_bound(cg::PassTier::ReAssociating, std::numeric_limits<RemoveComplexT<T>>::epsilon());
 }
 
 std::shared_ptr<cg::passes::LayoutAssignment> only_layout(cg::Graph &graph) {
@@ -106,10 +110,11 @@ std::vector<std::vector<std::string>> spec_of(cg::Graph const &graph, size_t whi
 }
 
 /// Run the chain to completion and hand back R.
-RuntimeTensor<double> run_chain(std::string const &w_spec, size_t d0, size_t d1, size_t d2, RuntimeTensor<double> const &A,
-                                RuntimeTensor<double> const &B, RuntimeTensor<double> const &D, bool with_layout) {
-    RuntimeTensor<double> R = create_zero_tensor<double>("R", kI, kX, kY);
-    cg::Graph             graph("chain");
+template <typename T>
+RuntimeTensor<T> run_chain(std::string const &w_spec, size_t d0, size_t d1, size_t d2, RuntimeTensor<T> const &A, RuntimeTensor<T> const &B,
+                           RuntimeTensor<T> const &D, bool with_layout) {
+    RuntimeTensor<T> R = create_zero_tensor<T>("R", kI, kX, kY);
+    cg::Graph        graph("chain");
     capture_chain(graph, R, A, B, D, w_spec, d0, d1, d2);
 
     cg::PassManager pm;
@@ -124,11 +129,13 @@ RuntimeTensor<double> run_chain(std::string const &w_spec, size_t d0, size_t d1,
 
 } // namespace
 
-TEST_CASE("LayoutAssignment - both contractions are made to read flat", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> A = create_random_tensor<double>("A", kI, kK);
-    RuntimeTensor<double> B = create_random_tensor<double>("B", kK, kX, kJ);
-    RuntimeTensor<double> D = create_random_tensor<double>("D", kJ, kY);
-    RuntimeTensor<double> R = create_zero_tensor<double>("R", kI, kX, kY);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - both contractions are made to read flat", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
+    RuntimeTensor<T> A = create_random_tensor<T>("A", kI, kK);
+    RuntimeTensor<T> B = create_random_tensor<T>("B", kK, kX, kJ);
+    RuntimeTensor<T> D = create_random_tensor<T>("D", kJ, kY);
+    RuntimeTensor<T> R = create_zero_tensor<T>("R", kI, kX, kY);
 
     cg::Graph graph("flat");
     capture_chain(graph, R, A, B, D, "i,j,x", kI, kJ, kX);
@@ -161,10 +168,11 @@ TEST_CASE("LayoutAssignment - both contractions are made to read flat", "[Comput
     CHECK(w->dims == std::vector<size_t>{kI, kX, kJ});
 }
 
-TEST_CASE("LayoutAssignment - the answer does not change", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> A = create_random_tensor<double>("A", kI, kK);
-    RuntimeTensor<double> B = create_random_tensor<double>("B", kK, kX, kJ);
-    RuntimeTensor<double> D = create_random_tensor<double>("D", kJ, kY);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - the answer does not change", "[ComputeGraph][LayoutAssignment]", testing::AllScalarTypes) {
+    using T            = TestType;
+    RuntimeTensor<T> A = create_random_tensor<T>("A", kI, kK);
+    RuntimeTensor<T> B = create_random_tensor<T>("B", kK, kX, kJ);
+    RuntimeTensor<T> D = create_random_tensor<T>("D", kJ, kY);
 
     auto const plain  = run_chain("i,j,x", kI, kJ, kX, A, B, D, /*with_layout=*/false);
     auto const relaid = run_chain("i,j,x", kI, kJ, kX, A, B, D, /*with_layout=*/true);
@@ -174,15 +182,24 @@ TEST_CASE("LayoutAssignment - the answer does not change", "[ComputeGraph][Layou
 
     // Norm-relative against the tier's own bound; see norm_relative_gap for why an element-wise
     // relative check is the wrong instrument for a pass in this tier.
-    CHECK(norm_relative_gap(relaid, plain) <= re_associating_bound());
-    CHECK(norm_relative_gap(by_hand, plain) <= re_associating_bound());
+    CHECK(norm_relative_gap(relaid, plain) <= re_associating_bound<T>());
+    CHECK(norm_relative_gap(by_hand, plain) <= re_associating_bound<T>());
+
+    // And against the naive oracle, so the three agreeing is not the engine agreeing with itself.
+    RuntimeTensor<T> W = create_zero_tensor<T>("W", kI, kJ, kX);
+    RuntimeTensor<T> R = create_zero_tensor<T>("R", kI, kX, kY);
+    testing::reference_einsum("i,j,x <- i,k ; k,x,j", &W, A, B);
+    testing::reference_einsum("i,x,y <- i,j,x ; j,y", &R, W, D);
+    CHECK(norm_relative_gap(plain, R) <= re_associating_bound<T>());
 }
 
-TEST_CASE("LayoutAssignment - the chosen order is already the best one", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> A = create_random_tensor<double>("A", kI, kK);
-    RuntimeTensor<double> B = create_random_tensor<double>("B", kK, kX, kJ);
-    RuntimeTensor<double> D = create_random_tensor<double>("D", kJ, kY);
-    RuntimeTensor<double> R = create_zero_tensor<double>("R", kI, kX, kY);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - the chosen order is already the best one", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
+    RuntimeTensor<T> A = create_random_tensor<T>("A", kI, kK);
+    RuntimeTensor<T> B = create_random_tensor<T>("B", kK, kX, kJ);
+    RuntimeTensor<T> D = create_random_tensor<T>("D", kJ, kY);
+    RuntimeTensor<T> R = create_zero_tensor<T>("R", kI, kX, kY);
 
     cg::Graph graph("already-flat");
     capture_chain(graph, R, A, B, D, "i,x,j", kI, kX, kJ);
@@ -192,14 +209,16 @@ TEST_CASE("LayoutAssignment - the chosen order is already the best one", "[Compu
     CHECK(pass->explain().empty());
 }
 
-TEST_CASE("LayoutAssignment - a caller's tensor keeps the caller's axes", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> A = create_random_tensor<double>("A", kI, kK);
-    RuntimeTensor<double> B = create_random_tensor<double>("B", kK, kX, kJ);
-    RuntimeTensor<double> D = create_random_tensor<double>("D", kJ, kY);
-    RuntimeTensor<double> R = create_zero_tensor<double>("R", kI, kX, kY);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - a caller's tensor keeps the caller's axes", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
+    RuntimeTensor<T> A = create_random_tensor<T>("A", kI, kK);
+    RuntimeTensor<T> B = create_random_tensor<T>("B", kK, kX, kJ);
+    RuntimeTensor<T> D = create_random_tensor<T>("D", kJ, kY);
+    RuntimeTensor<T> R = create_zero_tensor<T>("R", kI, kX, kY);
     // The same chain, except W is the caller's tensor rather than the graph's. Its axis order is
     // part of what the caller asked for, so the copies stay.
-    RuntimeTensor<double> W = create_zero_tensor<double>("W", kI, kJ, kX);
+    RuntimeTensor<T> W = create_zero_tensor<T>("W", kI, kJ, kX);
 
     cg::Graph graph("user-owned");
     {
@@ -213,18 +232,19 @@ TEST_CASE("LayoutAssignment - a caller's tensor keeps the caller's axes", "[Comp
     CHECK(spec_of(graph, 0)[0] == std::vector<std::string>{"i", "j", "x"});
 }
 
-TEST_CASE("LayoutAssignment - rank two is left alone", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> A = create_random_tensor<double>("A", kI, kK);
-    RuntimeTensor<double> B = create_random_tensor<double>("B", kK, kJ);
-    RuntimeTensor<double> D = create_random_tensor<double>("D", kJ, kY);
-    RuntimeTensor<double> R = create_zero_tensor<double>("R", kI, kY);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - rank two is left alone", "[ComputeGraph][LayoutAssignment]", testing::AllScalarTypes) {
+    using T            = TestType;
+    RuntimeTensor<T> A = create_random_tensor<T>("A", kI, kK);
+    RuntimeTensor<T> B = create_random_tensor<T>("B", kK, kJ);
+    RuntimeTensor<T> D = create_random_tensor<T>("D", kJ, kY);
+    RuntimeTensor<T> R = create_zero_tensor<T>("R", kI, kY);
 
     cg::Graph graph("rank-two");
     {
-        auto                  &T = graph.declare_runtime_tensor<double>("T", {kI, kJ}, /*intermediate=*/true);
+        auto                  &Tt = graph.declare_runtime_tensor<T>("T", {kI, kJ}, /*intermediate=*/true);
         cg::CaptureGuard const guard(graph);
-        cg::einsum("i,j <- i,k ; k,j", 0.0, &T, 1.0, A, B);
-        cg::einsum("i,y <- i,j ; j,y", 0.0, &R, 1.0, T, D);
+        cg::einsum("i,j <- i,k ; k,j", 0.0, &Tt, 1.0, A, B);
+        cg::einsum("i,y <- i,j ; j,y", 0.0, &R, 1.0, Tt, D);
     }
 
     // A matrix has two readings and BLAS takes either one through `transa`, so there is nothing
@@ -233,16 +253,18 @@ TEST_CASE("LayoutAssignment - rank two is left alone", "[ComputeGraph][LayoutAss
     CHECK(pass->num_relaid_out() == 0);
 }
 
-TEST_CASE("LayoutAssignment - a use it cannot rewrite pins the tensor", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> A  = create_random_tensor<double>("A", kI, kK);
-    RuntimeTensor<double> B  = create_random_tensor<double>("B", kK, kX, kJ);
-    RuntimeTensor<double> D  = create_random_tensor<double>("D", kJ, kY);
-    RuntimeTensor<double> R  = create_zero_tensor<double>("R", kI, kX, kY);
-    RuntimeTensor<double> Wc = create_zero_tensor<double>("Wc", kI, kJ, kX);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - a use it cannot rewrite pins the tensor", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T             = TestType;
+    RuntimeTensor<T> A  = create_random_tensor<T>("A", kI, kK);
+    RuntimeTensor<T> B  = create_random_tensor<T>("B", kK, kX, kJ);
+    RuntimeTensor<T> D  = create_random_tensor<T>("D", kJ, kY);
+    RuntimeTensor<T> R  = create_zero_tensor<T>("R", kI, kX, kY);
+    RuntimeTensor<T> Wc = create_zero_tensor<T>("Wc", kI, kJ, kX);
 
     cg::Graph graph("pinned");
     {
-        auto                  &W = graph.declare_runtime_tensor<double>("W", {kI, kJ, kX}, /*intermediate=*/true);
+        auto                  &W = graph.declare_runtime_tensor<T>("W", {kI, kJ, kX}, /*intermediate=*/true);
         cg::CaptureGuard const guard(graph);
         cg::einsum("i,j,x <- i,k ; k,x,j", 0.0, &W, 1.0, A, B);
         cg::einsum("i,x,y <- i,j,x ; j,y", 0.0, &R, 1.0, W, D);
@@ -256,16 +278,18 @@ TEST_CASE("LayoutAssignment - a use it cannot rewrite pins the tensor", "[Comput
     CHECK(spec_of(graph, 0)[0] == std::vector<std::string>{"i", "j", "x"});
 }
 
-TEST_CASE("LayoutAssignment - per-axis annotations follow their axes", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> A = create_random_tensor<double>("A", kI, kK);
-    RuntimeTensor<double> B = create_random_tensor<double>("B", kK, kX, kJ);
-    RuntimeTensor<double> D = create_random_tensor<double>("D", kJ, kY);
-    RuntimeTensor<double> R = create_zero_tensor<double>("R", kI, kX, kY);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - per-axis annotations follow their axes", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
+    RuntimeTensor<T> A = create_random_tensor<T>("A", kI, kK);
+    RuntimeTensor<T> B = create_random_tensor<T>("B", kK, kX, kJ);
+    RuntimeTensor<T> D = create_random_tensor<T>("D", kJ, kY);
+    RuntimeTensor<T> R = create_zero_tensor<T>("R", kI, kX, kY);
 
     cg::Graph    graph("symbols");
     cg::TensorId w_id{0};
     {
-        auto                  &W = graph.declare_runtime_tensor<double>("W", {kI, kJ, kX}, /*intermediate=*/true);
+        auto                  &W = graph.declare_runtime_tensor<T>("W", {kI, kJ, kX}, /*intermediate=*/true);
         cg::CaptureGuard const guard(graph);
         cg::einsum("i,j,x <- i,k ; k,x,j", 0.0, &W, 1.0, A, B);
         cg::einsum("i,x,y <- i,j,x ; j,y", 0.0, &R, 1.0, W, D);
@@ -284,17 +308,19 @@ TEST_CASE("LayoutAssignment - per-axis annotations follow their axes", "[Compute
     CHECK(w->dims == std::vector<size_t>{kI, kX, kJ});
 }
 
-TEST_CASE("LayoutAssignment - the same graph gets the same assignment", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> A = create_random_tensor<double>("A", kI, kK);
-    RuntimeTensor<double> B = create_random_tensor<double>("B", kK, kX, kJ);
-    RuntimeTensor<double> D = create_random_tensor<double>("D", kJ, kY);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - the same graph gets the same assignment", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
+    RuntimeTensor<T> A = create_random_tensor<T>("A", kI, kK);
+    RuntimeTensor<T> B = create_random_tensor<T>("B", kK, kX, kJ);
+    RuntimeTensor<T> D = create_random_tensor<T>("D", kJ, kY);
 
     // A search whose answer varies between runs makes every layout downstream of it vary too,
     // which is the Kahn-FIFO lesson applied to a pass that picks one candidate out of several.
     std::vector<std::string> first;
     for (int trial = 0; trial < 3; trial++) {
-        RuntimeTensor<double> R = create_zero_tensor<double>("R", kI, kX, kY);
-        cg::Graph             graph("determinism");
+        RuntimeTensor<T> R = create_zero_tensor<T>("R", kI, kX, kY);
+        cg::Graph        graph("determinism");
         capture_chain(graph, R, A, B, D, "i,j,x", kI, kJ, kX);
         only_layout(graph);
         auto const chosen = spec_of(graph, 0)[0];
@@ -333,25 +359,28 @@ size_t count_permutes(cg::Graph const &graph) {
 }
 
 /// The permuted chain above, with @p copy_is_the_callers deciding who owns T.
-void capture_permuted_chain(cg::Graph &graph, RuntimeTensor<double> &R1, RuntimeTensor<double> &R2, RuntimeTensor<double> const &X,
-                            RuntimeTensor<double> const &U, RuntimeTensor<double> const &V, RuntimeTensor<double> *callers_copy = nullptr) {
-    RuntimeTensor<double> *T =
-        callers_copy != nullptr ? callers_copy : &graph.declare_runtime_tensor<double>("T", {kJ, kX, kI}, /*intermediate=*/true);
+template <typename T>
+void capture_permuted_chain(cg::Graph &graph, RuntimeTensor<T> &R1, RuntimeTensor<T> &R2, RuntimeTensor<T> const &X,
+                            RuntimeTensor<T> const &U, RuntimeTensor<T> const &V, RuntimeTensor<T> *callers_copy = nullptr) {
+    RuntimeTensor<T> *copy =
+        callers_copy != nullptr ? callers_copy : &graph.declare_runtime_tensor<T>("T", {kJ, kX, kI}, /*intermediate=*/true);
 
     cg::CaptureGuard const guard(graph);
-    cg::permute("jxi <- ijx", T, X);
-    cg::einsum("iy <- jxi ; jxy", 0.0, &R1, 1.0, *T, U);
-    cg::einsum("iz <- jxi ; jxz", 0.0, &R2, 1.0, *T, V);
+    cg::permute("jxi <- ijx", copy, X);
+    cg::einsum("iy <- jxi ; jxy", 0.0, &R1, 1.0, *copy, U);
+    cg::einsum("iz <- jxi ; jxz", 0.0, &R2, 1.0, *copy, V);
 }
 
 } // namespace
 
-TEST_CASE("LayoutAssignment - a permute the layout choice makes redundant is deleted", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> X  = create_random_tensor<double>("X", kI, kJ, kX);
-    RuntimeTensor<double> U  = create_random_tensor<double>("U", kJ, kX, kY);
-    RuntimeTensor<double> V  = create_random_tensor<double>("V", kJ, kX, kZ);
-    RuntimeTensor<double> R1 = create_zero_tensor<double>("R1", kI, kY);
-    RuntimeTensor<double> R2 = create_zero_tensor<double>("R2", kI, kZ);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - a permute the layout choice makes redundant is deleted", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T             = TestType;
+    RuntimeTensor<T> X  = create_random_tensor<T>("X", kI, kJ, kX);
+    RuntimeTensor<T> U  = create_random_tensor<T>("U", kJ, kX, kY);
+    RuntimeTensor<T> V  = create_random_tensor<T>("V", kJ, kX, kZ);
+    RuntimeTensor<T> R1 = create_zero_tensor<T>("R1", kI, kY);
+    RuntimeTensor<T> R2 = create_zero_tensor<T>("R2", kI, kZ);
 
     cg::Graph graph("fold");
     capture_permuted_chain(graph, R1, R2, X, U, V);
@@ -375,15 +404,17 @@ TEST_CASE("LayoutAssignment - a permute the layout choice makes redundant is del
     }
 }
 
-TEST_CASE("LayoutAssignment - the folded chain computes what the captured one did", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> X = create_random_tensor<double>("X", kI, kJ, kX);
-    RuntimeTensor<double> U = create_random_tensor<double>("U", kJ, kX, kY);
-    RuntimeTensor<double> V = create_random_tensor<double>("V", kJ, kX, kZ);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - the folded chain computes what the captured one did", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
+    RuntimeTensor<T> X = create_random_tensor<T>("X", kI, kJ, kX);
+    RuntimeTensor<T> U = create_random_tensor<T>("U", kJ, kX, kY);
+    RuntimeTensor<T> V = create_random_tensor<T>("V", kJ, kX, kZ);
 
     auto run = [&](bool with_layout) {
-        RuntimeTensor<double> R1 = create_zero_tensor<double>("R1", kI, kY);
-        RuntimeTensor<double> R2 = create_zero_tensor<double>("R2", kI, kZ);
-        cg::Graph             graph("fold-run");
+        RuntimeTensor<T> R1 = create_zero_tensor<T>("R1", kI, kY);
+        RuntimeTensor<T> R2 = create_zero_tensor<T>("R2", kI, kZ);
+        cg::Graph        graph("fold-run");
         capture_permuted_chain(graph, R1, R2, X, U, V);
         cg::PassManager pm;
         if (with_layout) {
@@ -397,21 +428,23 @@ TEST_CASE("LayoutAssignment - the folded chain computes what the captured one di
 
     auto const [plain1, plain2]   = run(false);
     auto const [folded1, folded2] = run(true);
-    CHECK(norm_relative_gap(folded1, plain1) <= re_associating_bound());
-    CHECK(norm_relative_gap(folded2, plain2) <= re_associating_bound());
+    CHECK(norm_relative_gap(folded1, plain1) <= re_associating_bound<T>());
+    CHECK(norm_relative_gap(folded2, plain2) <= re_associating_bound<T>());
 }
 
-TEST_CASE("LayoutAssignment - a permute that already copies in place is deleted", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> X = create_random_tensor<double>("X", kI, kJ, kX);
-    RuntimeTensor<double> U = create_random_tensor<double>("U", kJ, kX, kY);
-    RuntimeTensor<double> R = create_zero_tensor<double>("R", kI, kY);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - a permute that already copies in place is deleted", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T            = TestType;
+    RuntimeTensor<T> X = create_random_tensor<T>("X", kI, kJ, kX);
+    RuntimeTensor<T> U = create_random_tensor<T>("U", kJ, kX, kY);
+    RuntimeTensor<T> R = create_zero_tensor<T>("R", kI, kY);
 
     cg::Graph graph("identity-permute");
     {
-        auto                  &T = graph.declare_runtime_tensor<double>("T", {kI, kJ, kX}, /*intermediate=*/true);
+        auto                  &Tt = graph.declare_runtime_tensor<T>("T", {kI, kJ, kX}, /*intermediate=*/true);
         cg::CaptureGuard const guard(graph);
-        cg::permute("ijx <- ijx", &T, X);
-        cg::einsum("iy <- ijx ; jxy", 0.0, &R, 1.0, T, U);
+        cg::permute("ijx <- ijx", &Tt, X);
+        cg::einsum("iy <- ijx ; jxy", 0.0, &R, 1.0, Tt, U);
     }
 
     auto pass = only_layout(graph);
@@ -423,38 +456,42 @@ TEST_CASE("LayoutAssignment - a permute that already copies in place is deleted"
     CHECK(pass->estimated_saving_us() > 0.0);
 }
 
-TEST_CASE("LayoutAssignment - a copy the caller owns is not dissolved", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> X  = create_random_tensor<double>("X", kI, kJ, kX);
-    RuntimeTensor<double> U  = create_random_tensor<double>("U", kJ, kX, kY);
-    RuntimeTensor<double> V  = create_random_tensor<double>("V", kJ, kX, kZ);
-    RuntimeTensor<double> R1 = create_zero_tensor<double>("R1", kI, kY);
-    RuntimeTensor<double> R2 = create_zero_tensor<double>("R2", kI, kZ);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - a copy the caller owns is not dissolved", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T             = TestType;
+    RuntimeTensor<T> X  = create_random_tensor<T>("X", kI, kJ, kX);
+    RuntimeTensor<T> U  = create_random_tensor<T>("U", kJ, kX, kY);
+    RuntimeTensor<T> V  = create_random_tensor<T>("V", kJ, kX, kZ);
+    RuntimeTensor<T> R1 = create_zero_tensor<T>("R1", kI, kY);
+    RuntimeTensor<T> R2 = create_zero_tensor<T>("R2", kI, kZ);
     // The caller holds T and expects the permuted copy in it, so the node stays even though the
     // contractions would be no worse without it. This is one of the cases PermuteFusion still
     // owns rather than a case both passes decline.
-    RuntimeTensor<double> T = create_zero_tensor<double>("T", kJ, kX, kI);
+    RuntimeTensor<T> Tt = create_zero_tensor<T>("T", kJ, kX, kI);
 
     cg::Graph graph("user-copy");
-    capture_permuted_chain(graph, R1, R2, X, U, V, &T);
+    capture_permuted_chain(graph, R1, R2, X, U, V, &Tt);
 
     auto pass = only_layout(graph);
     CHECK(pass->num_permutes_folded() == 0);
     CHECK(count_permutes(graph) == 1);
 }
 
-TEST_CASE("LayoutAssignment - a source written after the copy pins the permute", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> X  = create_random_tensor<double>("X", kI, kJ, kX);
-    RuntimeTensor<double> U  = create_random_tensor<double>("U", kJ, kX, kY);
-    RuntimeTensor<double> A  = create_random_tensor<double>("A", kI, kK);
-    RuntimeTensor<double> B  = create_random_tensor<double>("B", kK, kJ, kX);
-    RuntimeTensor<double> R1 = create_zero_tensor<double>("R1", kI, kY);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - a source written after the copy pins the permute", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T             = TestType;
+    RuntimeTensor<T> X  = create_random_tensor<T>("X", kI, kJ, kX);
+    RuntimeTensor<T> U  = create_random_tensor<T>("U", kJ, kX, kY);
+    RuntimeTensor<T> A  = create_random_tensor<T>("A", kI, kK);
+    RuntimeTensor<T> B  = create_random_tensor<T>("B", kK, kJ, kX);
+    RuntimeTensor<T> R1 = create_zero_tensor<T>("R1", kI, kY);
 
     cg::Graph graph("source-rewritten");
     {
-        auto                  &T = graph.declare_runtime_tensor<double>("T", {kJ, kX, kI}, /*intermediate=*/true);
+        auto                  &Tt = graph.declare_runtime_tensor<T>("T", {kJ, kX, kI}, /*intermediate=*/true);
         cg::CaptureGuard const guard(graph);
-        cg::permute("jxi <- ijx", &T, X);
-        cg::einsum("iy <- jxi ; jxy", 0.0, &R1, 1.0, T, U);
+        cg::permute("jxi <- ijx", &Tt, X);
+        cg::einsum("iy <- jxi ; jxy", 0.0, &R1, 1.0, Tt, U);
         // A copy is a snapshot and its source is not. Reading X where the program reads T would
         // hand the contraction the value written here.
         cg::einsum("ijx <- ik ; kjx", 0.0, &X, 1.0, A, B);
@@ -465,19 +502,21 @@ TEST_CASE("LayoutAssignment - a source written after the copy pins the permute",
     CHECK(count_permutes(graph) == 1);
 }
 
-TEST_CASE("LayoutAssignment - a reader with no index list pins the copy", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> X  = create_random_tensor<double>("X", kI, kJ, kX);
-    RuntimeTensor<double> U  = create_random_tensor<double>("U", kJ, kX, kY);
-    RuntimeTensor<double> R1 = create_zero_tensor<double>("R1", kI, kY);
-    RuntimeTensor<double> Tc = create_zero_tensor<double>("Tc", kJ, kX, kI);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - a reader with no index list pins the copy", "[ComputeGraph][LayoutAssignment]",
+                        testing::AllScalarTypes) {
+    using T             = TestType;
+    RuntimeTensor<T> X  = create_random_tensor<T>("X", kI, kJ, kX);
+    RuntimeTensor<T> U  = create_random_tensor<T>("U", kJ, kX, kY);
+    RuntimeTensor<T> R1 = create_zero_tensor<T>("R1", kI, kY);
+    RuntimeTensor<T> Tc = create_zero_tensor<T>("Tc", kJ, kX, kI);
 
     cg::Graph graph("pinned-copy");
     {
-        auto                  &T = graph.declare_runtime_tensor<double>("T", {kJ, kX, kI}, /*intermediate=*/true);
+        auto                  &Tt = graph.declare_runtime_tensor<T>("T", {kJ, kX, kI}, /*intermediate=*/true);
         cg::CaptureGuard const guard(graph);
-        cg::permute("jxi <- ijx", &T, X);
-        cg::einsum("iy <- jxi ; jxy", 0.0, &R1, 1.0, T, U);
-        cg::axpby(1.0, T, 0.0, &Tc);
+        cg::permute("jxi <- ijx", &Tt, X);
+        cg::einsum("iy <- jxi ; jxy", 0.0, &R1, 1.0, Tt, U);
+        cg::axpby(1.0, Tt, 0.0, &Tc);
     }
 
     auto pass = only_layout(graph);
@@ -485,11 +524,12 @@ TEST_CASE("LayoutAssignment - a reader with no index list pins the copy", "[Comp
     CHECK(count_permutes(graph) == 1);
 }
 
-TEST_CASE("LayoutAssignment - it reports what it did", "[ComputeGraph][LayoutAssignment]") {
-    RuntimeTensor<double> A = create_random_tensor<double>("A", kI, kK);
-    RuntimeTensor<double> B = create_random_tensor<double>("B", kK, kX, kJ);
-    RuntimeTensor<double> D = create_random_tensor<double>("D", kJ, kY);
-    RuntimeTensor<double> R = create_zero_tensor<double>("R", kI, kX, kY);
+TEMPLATE_LIST_TEST_CASE("LayoutAssignment - it reports what it did", "[ComputeGraph][LayoutAssignment]", testing::AllScalarTypes) {
+    using T            = TestType;
+    RuntimeTensor<T> A = create_random_tensor<T>("A", kI, kK);
+    RuntimeTensor<T> B = create_random_tensor<T>("B", kK, kX, kJ);
+    RuntimeTensor<T> D = create_random_tensor<T>("D", kJ, kY);
+    RuntimeTensor<T> R = create_zero_tensor<T>("R", kI, kX, kY);
 
     cg::Graph graph("report");
     capture_chain(graph, R, A, B, D, "i,j,x", kI, kJ, kX);

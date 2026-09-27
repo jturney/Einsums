@@ -5449,7 +5449,8 @@ void validate_einsum_dims(ParsedEinsumSpec const &parsed, AType const &A, BType 
 /// The checks every cg::einsum runs before it records or computes anything: operand ranks against
 /// the spec, the parse, conjugation spelled in the spec, and one size per index name. Shared by the
 /// single-type and the mixed-precision overloads, so both reject the same mistakes the same way.
-/// Returns the parsed spec; ORs the spec's conj(...) wrappers into @p conj_a and @p conj_b.
+/// Returns the parsed spec; ORs the spec's conj(...) wrappers into @p conj_a and @p conj_b, and clears
+/// the flag of a real operand in both.
 template <typename AType, typename BType, typename CType>
 ParsedEinsumSpec prepare_einsum(EinsumFormatString const &spec, AType const &A, BType const &B, CType const &C, bool &conj_a,
                                 bool &conj_b) {
@@ -5479,9 +5480,13 @@ ParsedEinsumSpec prepare_einsum(EinsumFormatString const &spec, AType const &A, 
                                 parsed.raw, parsed.c_indices.size());
     }
 
-    // A ``conj(...)`` wrapper in the spec ORs with the conj_a / conj_b kwargs.
-    conj_a = conj_a || parsed.conj_a;
-    conj_b = conj_b || parsed.conj_b;
+    // A ``conj(...)`` wrapper in the spec ORs with the conj_a / conj_b kwargs. Conjugating a real operand
+    // is the identity, so its flag is dropped here: the recorded node and every pass that declines a
+    // conjugated contraction then see the plain contraction it is.
+    conj_a        = IsComplexV<typename AType::ValueType> && (conj_a || parsed.conj_a);
+    conj_b        = IsComplexV<typename BType::ValueType> && (conj_b || parsed.conj_b);
+    parsed.conj_a = conj_a;
+    parsed.conj_b = conj_b;
 
     validate_einsum_dims(parsed, A, B, C);
     return parsed;

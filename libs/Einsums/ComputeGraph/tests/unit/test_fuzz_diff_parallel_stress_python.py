@@ -44,18 +44,21 @@ _PARALLEL_EXECUTORS = [("OpenMP", cg.OpenMPExecutor), ("Dataflow", cg.DataflowEx
 @pytest.mark.parametrize("seed", fuzz_seeds(40))
 def test_fuzz_parallel_executor_stress(seed):
     rng = np.random.default_rng(110_000 + seed)
-    prog = _gen_block(rng, depth=2, max_stmts=12)
-    m_arrays, v_arrays, t_arrays = _seed_arrays(rng, "float64")
+    # The dtype cycles with the seed rather than multiplying the seeds: each
+    # trial already replays sixty times.
+    dtype = seed_dtype(seed)
+    prog = complexify(_gen_block(rng, depth=2, max_stmts=12), np.random.default_rng((110_000, seed)))
+    m_arrays, v_arrays, t_arrays = _seed_arrays(rng, dtype)
 
     om = [a.copy() for a in m_arrays]
     ov = [a.copy() for a in v_arrays]
     ot = [a.copy() for a in t_arrays]
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        interp_np(prog, om, ov, ot, np.dtype("float64"))
-    if not _usable(om, ov, ot, cap=_DTYPE_CAP["float64"]):
+        interp_np(prog, om, ov, ot, np.dtype(dtype))
+    if not _usable(om, ov, ot, cap=_DTYPE_CAP[dtype]):
         pytest.skip("oracle overflowed — numerically degenerate program")
 
-    rtol, atol = _DTYPE_TOL["float64"]
+    rtol, atol = _DTYPE_TOL[dtype]
     for ex_name, exec_cls in _PARALLEL_EXECUTORS:
         for optimize in (False, True):
             for rep in range(_STRESS_REPS):
@@ -65,7 +68,7 @@ def test_fuzz_parallel_executor_stress(seed):
                     for idx in range(len(oracle)):
                         if not np.allclose(got[idx], oracle[idx], rtol=rtol, atol=atol):
                             raise AssertionError(
-                                f"{ex_name}/{'opt' if optimize else 'raw'} rep {rep} "
+                                f"{ex_name}/{'opt' if optimize else 'raw'} rep {rep} dtype={dtype} "
                                 f"diverged on {kind}{idx}\nprogram={prog!r}\n"
                                 f"got=\n{got[idx]}\noracle=\n{oracle[idx]}"
                             )
@@ -94,34 +97,40 @@ def test_fuzz_parallel_executor_stress(seed):
 # the optimized graph contains Free nodes before executing anything.
 # ──────────────────────────────────────────────────────────────────────────
 
-_FREE_N = 385  # 385*385*8 B = 1.13 MiB: over FreeInsertion's 1 MiB floor
+#: Matrix order per dtype: just over FreeInsertion's 1 MiB floor in each
+#: (385*385*8 B = 1.13 MiB; single precision needs 545 to clear it).
+_FREE_N = {"float32": 545, "float64": 385, "complex64": 385, "complex128": 385}
 _FREE_REPS = 8
 
 
 @pytest.mark.parametrize("seed", fuzz_seeds(6))
 def test_fuzz_free_lifecycle_parallel_stress(seed):
     rng = np.random.default_rng(150_000 + seed)
-    n = _FREE_N
-    A_np = rng.standard_normal((n, n)) * 0.1  # scaled so chains stay bounded
+    dtype = seed_dtype(seed)
+    n = _FREE_N[dtype]
+    A_np = typed_array(rng.standard_normal((n, n)) * 0.1, dtype, rng)  # scaled so chains stay bounded
     steps = int(rng.integers(3, 7))
     # rhs_pick[s] chooses the right operand of step s: 0 = A, k>0 = mid k-1.
     rhs_pick = [int(rng.integers(0, s + 1)) for s in range(steps)]
 
     # numpy oracle
     mids_np = []
-    cur = A_np
+    A_wide = A_np.astype(np.complex128 if np.iscomplexobj(A_np) else np.float64)
+    cur = A_wide
     for s in range(steps):
-        rhs = A_np if rhs_pick[s] == 0 else mids_np[rhs_pick[s] - 1]
+        rhs = A_wide if rhs_pick[s] == 0 else mids_np[rhs_pick[s] - 1]
         cur = cur @ rhs
         mids_np.append(cur)
+    # The oracle in double precision from the same inputs, so single precision
+    # is measured against the exact product rather than its own rounding.
     oracle = mids_np[-1]
 
     for ex_name, exec_cls in _PARALLEL_EXECUTORS:
         A = einsums.asarray(A_np.copy(), name=f"free_A_{seed}_{ex_name}")
-        C = einsums.asarray(np.zeros((n, n)), name=f"free_C_{seed}_{ex_name}")
+        C = einsums.asarray(np.zeros((n, n), dtype=dtype), name=f"free_C_{seed}_{ex_name}")
 
         g = cg.Graph(f"free_stress_{seed}_{ex_name}")
-        mids = [g.declare_zero_tensor(f"mid{k}", [n, n], dtype="float64", intermediate=True) for k in range(steps - 1)]
+        mids = [g.declare_zero_tensor(f"mid{k}", [n, n], dtype=dtype, intermediate=True) for k in range(steps - 1)]
         with cg.capture(g):
             lhs = A
             for s in range(steps):
@@ -150,13 +159,19 @@ def test_fuzz_free_lifecycle_parallel_stress(seed):
         # 1e-10 tolerance. That made rep-to-rep fp noise (max abs err ~1.4e-9)
         # read as a "divergence". A genuine free-lifecycle corruption (a read of
         # freed/reused arena bytes) differs by O(1), still far outside 1e-5.
-        rtol, atol = _DTYPE_TOL["float64"]
+        #
+        # Single precision rounds each of the n-term sums at about 1e-7 of the
+        # operand scale, not of the element, so its absolute floor scales with
+        # the largest element; a read of freed bytes is still off by O(1) of it.
+        rtol, atol = _DTYPE_TOL[dtype]
+        if dtype in ("float32", "complex64"):
+            atol *= max(1.0, float(np.max(np.abs(oracle))))
         for rep in range(_FREE_REPS):
             g.execute(exec_cls())
             got = np.asarray(C)
             if not np.allclose(got, oracle, rtol=rtol, atol=atol):
                 raise AssertionError(
-                    f"{ex_name} rep {rep} diverged (seed {seed}, steps {steps}, rhs_pick {rhs_pick})\n"
+                    f"{ex_name} rep {rep} diverged (seed {seed}, dtype {dtype}, steps {steps}, rhs_pick {rhs_pick})\n"
                     f"max abs err = {np.abs(got - oracle).max()}"
                 )
 
