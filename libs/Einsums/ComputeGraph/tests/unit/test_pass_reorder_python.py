@@ -14,7 +14,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
-from einsums.testing import assert_close
+from einsums.testing import assert_close, tolerance_for
 
 
 def _run(pass_obj, g):
@@ -101,7 +101,15 @@ def test_reorder_memory_aware_frees_large_tensor_early(dtype):
     D = einsums.create_random_tensor("D", [4, 4], dtype=dtype)
 
     factor = _pf(dtype, 2.0, -0.5)
-    C_ref = np.asarray(A) @ np.asarray(B)
+    # A 128-term dot product rounds at about eps of |A|@|B|, not of its result,
+    # so an entry that cancelled toward zero misses a relative bound in single
+    # precision. The floor scales with the operand magnitudes; the reference is
+    # taken in double so numpy's own single-precision rounding is not in it.
+    wide = np.complex128 if np.dtype(dtype).kind == "c" else np.float64
+    a, b = np.asarray(A).astype(wide), np.asarray(B).astype(wide)
+    C_ref = a @ b
+    C_rtol, _ = tolerance_for(dtype)
+    C_atol = C_rtol * float((np.abs(a) @ np.abs(b)).max())
     D_ref = factor * np.asarray(D)
 
     g = cg.Graph("reorder_memory")
@@ -113,7 +121,7 @@ def test_reorder_memory_aware_frees_large_tensor_early(dtype):
     g.execute()
 
     assert_close(D, D_ref)
-    assert_close(C, C_ref)
+    assert_close(C, C_ref, dtype=dtype, rtol=C_rtol, atol=C_atol)
 
 
 @pytest.mark.skip(

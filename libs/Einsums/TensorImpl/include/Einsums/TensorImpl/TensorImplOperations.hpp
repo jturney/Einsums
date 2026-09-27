@@ -512,6 +512,9 @@ void impl_axpy_noncontiguous(int depth, int rank, T alpha, Dims const &dims, TOt
     }
 }
 
+template <typename T, typename U>
+void impl_scal(U alpha, TensorImpl<T> &out);
+
 template <typename T, typename TOther, typename U>
 void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     LabeledSection0();
@@ -522,6 +525,18 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
     if (in.dims() != out.dims()) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not add two tensors with different sizes!");
+    }
+
+    // An operand that IS its destination (same buffer, same layout) makes this
+    // out = (1 + alpha) * out. BLAS ?axpy forbids x and y overlapping, and a
+    // complex kernel writes Re(y) before it reads Re(x) for Im(y), so a complex
+    // alpha came back with the wrong imaginary part. Real and pure-real alpha
+    // have no cross term, which is why only complex prefactors showed it.
+    if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>>) {
+        if (static_cast<void const *>(in.data()) == static_cast<void const *>(out.data()) && in.strides() == out.strides()) {
+            impl_scal(T{1} + static_cast<T>(alpha), out);
+            return;
+        }
     }
 
     if (in.strides() != out.strides()) {

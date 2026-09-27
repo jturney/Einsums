@@ -96,6 +96,20 @@ TEST_CASE("RuntimeTensor axpy — complex<double>", "[linear-algebra][runtime]")
     CHECK(Y(2) == C{34, 4});
 }
 
+TEMPLATE_TEST_CASE("RuntimeTensor axpy — complex alpha onto its own input", "[linear-algebra][runtime]", std::complex<float>,
+                   std::complex<double>) {
+    // Y += alpha*Y is (1 + alpha)*Y. It used to reach ?axpy with x == y, which
+    // BLAS forbids: the complex kernel stored Re(y) before reading Re(x) for
+    // Im(y), so (1+2i) + (0.5-0.75i)(1+2i) came back 3+0.75i. A real or
+    // pure-real alpha has no cross term, which kept it hidden.
+    using C = TestType;
+    RuntimeTensor<C> Y("Y", {2, 2});
+    fill_runtime(Y, {C{1, 2}, C{-2, 1}, C{0, -4}, C{4, 0}});
+
+    linear_algebra::axpy(C{0.5, -0.75}, Y, &Y);
+    CHECK_THAT(runtime_data(Y), Catch::Matchers::Equals(std::vector<C>{C{3, 2.25}, C{-2.25, 3}, C{-3, -6}, C{6, -3}}));
+}
+
 TEST_CASE("RuntimeTensor dot — complex<double> conjugate-aware", "[linear-algebra][runtime]") {
     // linear_algebra::dot computes X^T * Y (not the Hermitian-conjugating
     // version; that's true_dot). Verify with hand-computed values.
