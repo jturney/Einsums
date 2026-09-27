@@ -229,7 +229,7 @@ endfunction(einsums_add_test_and_deps_test)
 #:    ``einsums_sanitizer_test_environment(<out_var>)``
 function(einsums_sanitizer_test_environment out_var)
   set(${out_var}
-      "TSAN_OPTIONS=ignore_noninstrumented_modules=1:suppressions=${PROJECT_SOURCE_DIR}/devtools/sanitizers/tsan.supp"
+      "TSAN_OPTIONS=ignore_noninstrumented_modules=1:halt_on_error=1:second_deadlock_stack=1:report_thread_leaks=0:suppressions=${PROJECT_SOURCE_DIR}/devtools/sanitizers/tsan.supp"
       "LSAN_OPTIONS=suppressions=${PROJECT_SOURCE_DIR}/devtools/lsan.supp"
       "EINSUMS_PASS_VERIFY=1"
       PARENT_SCOPE
@@ -258,9 +258,8 @@ endfunction()
 #:       einsums_set_test_properties(Tests.Unit.TensorOps "UNIT_ONLY")
 function(einsums_set_test_properties name labels)
   # ENVIRONMENT clobbers the parent shell's env vars for the test, so every
-  # per-test option is baked in here. The CI workflow's job-level
-  # TSAN_OPTIONS=...:suppressions=tsan.supp would otherwise be erased. The
-  # sanitizer options come from the shared helper so their suppression-file paths
+  # per-test option is baked in here: a TSAN_OPTIONS exported by the caller never
+  # reaches a test. The sanitizer options come from the shared helper so they
   # cannot drift from the SIMD-rung and Python test paths.
   set(_san_env "") # out-param, populated by the helper below
   einsums_sanitizer_test_environment(_san_env)

@@ -126,16 +126,13 @@ jobs:
         env:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1:report_error_type=1
           ASAN_OPTIONS: abort_on_error=1:print_stacktrace=1
-          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:suppressions=${{ github.workspace }}/src/devtools/sanitizers/tsan.supp
         run: ctest --output-on-failure -E '[Pp]ython'
 
       - name: Test (CTest) - Python unit tests under ThreadSanitizer
         if: ${{ matrix.sanitizer.slug == 'tsan' }}
         working-directory: "${{ github.workspace }}/build"
         # The uninstrumented interpreter needs libtsan preloaded to load _core.so.
-        # tsan.supp silences libgomp false positives (TSan does not model its barriers).
         env:
-          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:report_thread_leaks=0:suppressions=${{ github.workspace }}/src/devtools/sanitizers/tsan.supp
           # Hung python tests dump thread stacks here (root conftest.py); ctest drops a timed-out test's output.
           EINSUMS_TEST_STACKDUMP_DIR: "${{ github.workspace }}/stackdumps"
         run: |
