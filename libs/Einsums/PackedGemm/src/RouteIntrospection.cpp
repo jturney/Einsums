@@ -23,6 +23,11 @@ char const *&last_packed_engine() {
     return engine;
 }
 
+int &last_team_size() {
+    thread_local int size = 1;
+    return size;
+}
+
 KernelRoute &last_route_pin() {
     thread_local KernelRoute pin = KernelRoute::Adaptive;
     return pin;

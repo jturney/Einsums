@@ -168,6 +168,16 @@ struct CpuConfig {
     /// than hardcoded, because the region cost differs by an order of magnitude
     /// across thread counts and OpenMP runtimes.
     int64_t min_parallel_flops;
+
+    /// Physical cores sharing one L3 (a Zen CCX, say), 1 where the topology cannot be read.
+    ///
+    /// The packed loops' threads form teams of this size that share one packed B panel in their
+    /// common L3 (see blis_contraction). Measured on a Zen+ CCX, the tile kernel held 27.5 GF/s per
+    /// core with twelve cores busy when its B block was a third of an L3 share, against 20.7 at the
+    /// 4.2 MB block a thread packed for itself; one shared panel is what makes the block that small
+    /// without re-packing A for every narrow N block.
+    int cores_per_l3;
+    // Last, so a binary built against the struct without it still reads every other field.
 };
 
 // ---------------------------------------------------------------------------

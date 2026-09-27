@@ -21,9 +21,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <sstream>
+#include <string>
 #include <unordered_map>
 
 #if defined(__APPLE__)
@@ -62,6 +65,52 @@ size_t hash_vec_i64(std::vector<int64_t> const &v) {
     return h;
 }
 
+/// Logical CPUs named by a sysfs cpu list such as "0-2,24-26", or 0 if it cannot be read.
+int count_cpu_list(char const *path) {
+    std::ifstream in(path);
+    std::string   list;
+    if (!in || !std::getline(in, list)) {
+        return 0;
+    }
+    int               count = 0;
+    std::stringstream ss(list);
+    std::string       range;
+    while (std::getline(ss, range, ',')) {
+        auto const dash = range.find('-');
+        try {
+            if (dash == std::string::npos) {
+                std::stoi(range);
+                ++count;
+            } else {
+                count += std::stoi(range.substr(dash + 1)) - std::stoi(range.substr(0, dash)) + 1;
+            }
+        } catch (...) {
+            return 0;
+        }
+    }
+    return count;
+}
+
+/// Physical cores sharing CPU 0's L3, from sysfs; 1 where that cannot be read.
+int detect_cores_per_l3() {
+#if defined(__linux__)
+    for (int idx = 0; idx <= 4; ++idx) {
+        std::string const base = "/sys/devices/system/cpu/cpu0/cache/index" + std::to_string(idx) + "/";
+        std::ifstream     level(base + "level");
+        int               lv = 0;
+        if (!(level >> lv) || lv != 3) {
+            continue;
+        }
+        int const cpus     = count_cpu_list((base + "shared_cpu_list").c_str());
+        int const siblings = count_cpu_list("/sys/devices/system/cpu/cpu0/topology/thread_siblings_list");
+        if (cpus > 0 && siblings > 0) {
+            return std::max(1, cpus / siblings);
+        }
+    }
+#endif
+    return 1;
+}
+
 } // anonymous namespace
 
 CpuConfig const &cpu_config() {
@@ -77,6 +126,7 @@ CpuConfig const &cpu_config() {
         c.l1_cache_size   = cache.l1;
         c.l2_cache_size   = cache.l2;
         c.l3_cache_size   = cache.l3;
+        c.cores_per_l3    = detect_cores_per_l3();
 
         // Single measured source, shared with the elementwise kernels (Config).
         c.omp_region_cost_ns = einsums::hardware::omp_region_cost_ns();
@@ -87,12 +137,11 @@ CpuConfig const &cpu_config() {
         // be inferred from observed block sizes: the rung the kernels dispatch to,
         // the vector width that rung has, and the width the library itself was
         // compiled for (which is what VL used to be taken from).
-        EINSUMS_LOG_INFO(
-            "cpu_config: rung={}, VL={} doubles (compiled width {}), MR={}, NR={}, L1={}K, L2={}K, L3={}K, omp_region={:.2f}us, "
-            "min_parallel_flops={}",
-            einsums::simd::to_string(einsums::simd::selected_arch()), c.VL, einsums::hardware::cpu_info().compiled_simd_width_f64, c.MR,
-            c.NR, c.l1_cache_size / 1024, c.l2_cache_size / 1024, c.l3_cache_size / 1024, c.omp_region_cost_ns / 1000.0,
-            c.min_parallel_flops);
+        EINSUMS_LOG_INFO("cpu_config: rung={}, VL={} doubles (compiled width {}), MR={}, NR={}, L1={}K, L2={}K, L3={}K shared by {} cores, "
+                         "omp_region={:.2f}us, min_parallel_flops={}",
+                         einsums::simd::to_string(einsums::simd::selected_arch()), c.VL,
+                         einsums::hardware::cpu_info().compiled_simd_width_f64, c.MR, c.NR, c.l1_cache_size / 1024, c.l2_cache_size / 1024,
+                         c.l3_cache_size / 1024, c.cores_per_l3, c.omp_region_cost_ns / 1000.0, c.min_parallel_flops);
         return c;
     }();
     return cfg;

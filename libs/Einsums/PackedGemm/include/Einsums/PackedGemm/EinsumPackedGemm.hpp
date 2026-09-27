@@ -23,6 +23,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -30,6 +31,7 @@
 #include <numeric>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -326,6 +328,11 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 /// they did. Defined out of line for the same reason.
 [[nodiscard]] EINSUMS_EXPORT char const *&last_packed_engine();
 
+/// Threads per team in the most recent packed contraction on this thread: 1 when every thread
+/// packs its own B panel, the cores sharing an L3 when they share one (see blis_contraction).
+/// Test introspection only, like @ref last_packed_engine.
+[[nodiscard]] EINSUMS_EXPORT int &last_team_size();
+
 /// The route pin the most recent route decision on this thread read.
 ///
 /// Test introspection ONLY, alongside @ref last_contraction_route: that one
@@ -481,6 +488,62 @@ inline ThreadGrid choose_thread_grid(int threads, int64_t M, int64_t N, int64_t 
     }
     return best;
 }
+
+/// @brief A spin barrier for the few threads of one team.
+///
+/// OpenMP has no barrier for a subset of a parallel region's threads, and the team that shares a
+/// packed B panel is exactly such a subset. Its threads meet twice per K block, after packing the
+/// panel and before overwriting it, and a sense-reversing counter costs a few hundred cycles where
+/// the work between meetings is milliseconds. The arriving thread's release and the waiters'
+/// acquire order the panel's writes before any member reads it.
+struct alignas(64) TeamBarrier {
+    std::atomic<int> arrived{0};
+    std::atomic<int> generation{0};
+    int              size = 1;
+
+    void wait() {
+        int const gen = generation.load(std::memory_order_acquire);
+        if (arrived.fetch_add(1, std::memory_order_acq_rel) + 1 == size) {
+            arrived.store(0, std::memory_order_relaxed);
+            generation.store(gen + 1, std::memory_order_release);
+            return;
+        }
+        for (int spins = 0; generation.load(std::memory_order_acquire) == gen; ++spins) {
+            if (spins < 4096) {
+#if defined(__x86_64__) || defined(__i386__)
+                __builtin_ia32_pause();
+#elif defined(__aarch64__)
+                asm volatile("yield");
+#endif
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    }
+};
+
+/// @brief What one team shares besides its panel: the barrier its members meet at, and the counter
+///        they claim M blocks from.
+///
+/// Members claim blocks instead of each taking a fixed share of rows: equal shares measured up to
+/// 15% apart in kernel time on a CCX, and which member was slowest changed from one K block to the
+/// next, so the others waited at every barrier - 11% of a 24-thread call on the TCB's rank-4 ccsd
+/// double. The counter only rises, and every member steps its view of where the current K block's
+/// blocks begin identically, so no reset is needed between K blocks or items.
+struct TeamState {
+    TeamBarrier barrier;
+    alignas(64) std::atomic<int64_t> next_block{0};
+};
+
+/// @brief One team member's view of the B panel its team shares (see blis_contraction).
+template <typename T>
+struct TeamPanel {
+    T         *bp;     ///< the team's packed B panel; null for a team of one, which packs its own
+    TeamState *state;  ///< the team's barrier and block counter; null for a team of one
+    int        member; ///< this thread's index within the team
+    int        size;   ///< threads in the team
+    int64_t   *base;   ///< where this member's view of the current K block's blocks begins
+};
 
 /// @brief Copy @p n elements to @p dst without first fetching its cache lines.
 ///
@@ -1567,7 +1630,43 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // cache-derived blk.KC inflates the panels for a small contraction. That
         // stayed hidden while the L2 was being under-detected; correcting the L2
         // made blk.KC bigger and the small shapes paid for it.
-        int64_t const KC_blk = std::min<int64_t>((kc_hint > 0) ? std::max<int64_t>(kc_hint, blk.KC) : blk.KC, K);
+        // Teams: with several threads, the threads that share an L3 (a Zen CCX, say) share one
+        // packed B panel in it, packing it together and each computing its own rows against it.
+        // Each thread packing its own panel is what the loops did, and a private panel per thread
+        // either overflows the shared L3 (three 4.2 MB panels in a CCX's 8 MB cost the tile kernel
+        // a third of its speed with twelve cores busy) or, cut narrow enough to fit, re-packs A for
+        // every narrow N block. Only the tile path shares: the block-GEMM and 1m strategies keep
+        // panels of their own. One thread, a region already inside a parallel one, or a thread
+        // count that does not divide into whole teams keeps the loops exactly as they were.
+        int n_threads = 1;
+        int team_size = 1;
+#ifdef _OPENMP
+        n_threads = omp_get_max_threads();
+        if (n_threads > 1 && !omp_in_parallel() && !parallel_batch && !(scatter_c && shape.block_gemm) && !(is_complex && shape.use_1m) &&
+            2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K) >=
+                static_cast<double>(cpu_config().min_parallel_flops)) {
+            int const per_l3 = cpu_config().cores_per_l3;
+            if (per_l3 > 1 && n_threads % per_l3 == 0) {
+                team_size = per_l3;
+            }
+        }
+#endif
+        bool const    team_mode         = team_size > 1;
+        int64_t const team_panel_budget = std::max<int64_t>(cpu_config().l3_cache_size / 2, int64_t{256} << 10);
+
+        // A shared panel is KC x NC, and A is re-packed once per N block while C is swept once per
+        // K block, so under a fixed panel budget the K block that moves the least is
+        // sqrt(2 * budget / element size): 1024 doubles or 1448 floats in a 4 MB half of an 8 MB
+        // L3, where the cache model alone grows KC to 2592 and 3528 on the TCB's rank-4 ccsd
+        // shapes. It never shrinks below what the cache model gives a single thread.
+        int64_t KC_blk = std::min<int64_t>((kc_hint > 0) ? std::max<int64_t>(kc_hint, blk.KC) : blk.KC, K);
+        if (team_mode) {
+            auto const    es = static_cast<double>(sizeof(ValueType));
+            int64_t const kc_team =
+                std::max<int64_t>(64, (static_cast<int64_t>(std::sqrt(2.0 * static_cast<double>(team_panel_budget) / es)) / 8) * 8);
+            int64_t const kc_base = compute_blocking(static_cast<int64_t>(sizeof(ValueType)), MR, NR).KC;
+            KC_blk                = std::min(KC_blk, std::min(K, std::max(kc_team, kc_base)));
+        }
         // Bound the A panel at ~4 MiB, which is what the paragraph above promises.
         //
         // This used to be gated on KC_blk > blk.KC, a comparison between two K values
@@ -1910,7 +2009,14 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 #ifdef _OPENMP
         if (parallel_nc) {
             int const nthreads = omp_get_max_threads();
-            if (nthreads > 1) {
+            if (nthreads > 1 && team_mode) {
+                // The grid's units are teams, and a team's N block is its shared panel, sized to
+                // the panel budget at this KC. Members split each team's rows among themselves.
+                int64_t const panel_nc =
+                    std::max<int64_t>(NR, ((team_panel_budget / (KC_blk * static_cast<int64_t>(sizeof(ValueType)))) / NR) * NR);
+                grid   = choose_thread_grid(nthreads / team_size, M, N, m_unit * team_size, NR, panel_nc);
+                NC_blk = grid.nc_blk;
+            } else if (nthreads > 1) {
                 grid   = choose_thread_grid(nthreads, M, N, m_unit, NR, blk.NC);
                 NC_blk = grid.nc_blk;
             }
@@ -1950,96 +2056,249 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
         {
             LabeledSection("C++ packing and kernel");
-#ifdef _OPENMP
-            // Only parallelize the NC loop if the batch loop is NOT parallel (to
-            // avoid nested parallelism / oversubscription) AND the contraction is
-            // big enough to pay for the region.
-#    pragma omp parallel for schedule(static) if (parallel_nc)
-#endif
-            for (int64_t item = 0; item < n_nc_blocks * m_groups; ++item) {
-                // One N block and one M group of it. Consecutive items share the N block, so the
-                // threads that pack the same B columns run side by side.
-                int64_t const                              nc      = (item / m_groups) * NC_blk;
-                int64_t const                              m_group = item % m_groups;
-                int64_t const                              m_lo    = std::min(M, ((m_group * n_m_units) / m_groups) * m_unit);
-                int64_t const                              m_hi    = std::min(M, (((m_group + 1) * n_m_units) / m_groups) * m_unit);
-                static thread_local std::vector<ValueType> tls_Ap, tls_Bp, tls_Ct;
-                bool                                       streamed_c = false;
-                tls_Ap.resize(ap_buf_elems);
-                tls_Bp.resize(bp_buf_elems);
-                ValueType    *Ap     = tls_Ap.data();
-                ValueType    *Bp     = tls_Bp.data();
-                int64_t const nc_len = std::min(NC_blk, N - nc);
+            // The work items are the grid's: N blocks by M groups, each group taken by one team.
+            int64_t const n_items    = n_nc_blocks * m_groups;
+            auto const    group_rows = [&](int64_t item, int64_t part, int64_t parts, int64_t &m_lo, int64_t &m_hi) {
+                int64_t const g  = item % m_groups;
+                int64_t const u0 = (g * n_m_units) / m_groups;
+                int64_t const u1 = ((g + 1) * n_m_units) / m_groups;
+                m_lo             = std::min(M, (u0 + ((u1 - u0) * part) / parts) * m_unit);
+                m_hi             = std::min(M, (u0 + ((u1 - u0) * (part + 1)) / parts) * m_unit);
+            };
 
-                // Scatter path: precompute the C offset tables (one entry per
-                // flat index) instead of paying a div/mod chain per element in
-                // the beta prescale and tile scatter loops below. n-offsets are
-                // invariant for the whole nc block; m-offsets are refreshed per
-                // mc block inside the kc loop.
-                static thread_local std::vector<int64_t> c_n_offsets, c_m_offsets;
-                if (needs_c_scatter || (is_complex && shape.use_1m)) {
-                    precompute_offsets(nc, nc_len, plan.c_n_dims, c_n_offsets);
+            // Every thread count runs the same loop: teams of team_size consecutive threads, which
+            // is one thread per team unless the threads that share an L3 are sharing panels, and
+            // one team of one when the contraction runs serially. A team of one packs into the
+            // thread-local panel the loops have always used, so a single thread runs exactly the
+            // loop it always ran. A larger team's panel lives in a buffer the CALLING thread owns,
+            // one stretch per team, first touched by the members that pack it, on their own node.
+            int const    run_threads = parallel_nc ? n_threads : 1;
+            int const    members     = parallel_nc ? team_size : 1;
+            int const    n_teams     = run_threads / members;
+            size_t const stride      = (bp_buf_elems + 15) & ~size_t{15};
+            last_team_size()         = members;
+            static thread_local std::vector<ValueType> team_panels;
+            std::vector<TeamState>                     states;
+            if (members > 1) {
+                team_panels.resize(stride * static_cast<size_t>(n_teams));
+                states = std::vector<TeamState>(static_cast<size_t>(n_teams));
+                for (auto &st : states) {
+                    st.barrier.size = members;
                 }
+            }
+            // Taken here, on the calling thread: a thread_local named inside the region below would
+            // be each worker's own, empty, instance.
+            ValueType *const panels = members > 1 ? team_panels.data() : nullptr;
+#ifdef _OPENMP
+#    pragma omp parallel num_threads(run_threads) if (run_threads > 1)
+#endif
+            {
+                // Which team this thread is in and which member of it. The runtime can give fewer
+                // threads than asked for, and then the teams are not whole: each thread works
+                // alone, on a panel of its own.
+                int tid = 0;
+                int got = 1;
+#ifdef _OPENMP
+                tid = omp_get_thread_num();
+                got = omp_get_num_threads();
+#endif
+                bool const                 whole   = got == run_threads;
+                int const                  team_id = whole ? tid / members : tid;
+                int const                  teams   = whole ? n_teams : got;
+                int64_t                    base    = 0;
+                TeamPanel<ValueType> const ctx =
+                    (whole && members > 1) ? TeamPanel<ValueType>{panels + stride * static_cast<size_t>(team_id),
+                                                                  &states[static_cast<size_t>(team_id)], tid % members, members, &base}
+                                           : TeamPanel<ValueType>{nullptr, nullptr, 0, 1, &base};
+                TeamPanel<ValueType> const *const team = &ctx;
+                LabeledSectionInternal("team: all items of one thread");
 
-                // ---- 1m complex strategy (rungs with a real matrix kernel) ----
-                // Complex tile work runs on the REAL kernel via Van Zee's 1m
-                // method: A packs 1e, B packs 1r, and the real (2M x N) output
-                // is interleaved complex, scattered directly. Working extents
-                // double (Mh = 2M, Kh = 2K); MR/NR here are the real kernel's
-                // geometry (see MicroKernelShape::use_1m). Conjugation folds
-                // into the packing signs; the complex alpha applies at the
-                // scatter. Measured 1.74x over Sort+GEMM for complex<double>
-                // on the M4 SME rung, with no operand-sized temporaries.
-                if constexpr (is_complex) {
-                    if (shape.use_1m) {
-                        using RealT                           = RemoveComplexT<ValueType>;
-                        MicroKernelFn<RealT> const micro_real = micro_kernel_entry<RealT>();
-                        int64_t const              Mh         = 2 * M;
-                        int64_t const              Kh         = 2 * K;
-                        // The K and M blocks, in real units. A rung that fixes the K
-                        // block (the SME rung, whose ZA tiles hold C for the whole K
-                        // loop) keeps its deep one and the M block it was tuned with.
-                        // A register kernel instead needs its B micro-panel, NR * KHC
-                        // reals, to stay in L1 across the M sweep, which a deep K block
-                        // breaks (NR = 6 by 4096 doubles is 192 KiB), so it takes the
-                        // cache model's blocking for the real kernel on the real extents.
-                        // Both must be even, so that a block never splits a complex
-                        // element's (re, im) pair: Kh is even, compute_blocking rounds
-                        // KC to a multiple of 8 and MC to one of MR, and MR is a whole
-                        // number of vectors.
-                        int64_t KHC = 0;
-                        int64_t MHC = 0;
-                        if (shape.kc > 0) {
-                            KHC = std::min<int64_t>(shape.kc, Kh);
-                            MHC = 256;
-                        } else {
-                            BlockingParams const blk_1m = compute_blocking(static_cast<int64_t>(sizeof(RealT)), MR, NR, Mh, N, Kh);
-                            KHC                         = std::min<int64_t>(blk_1m.KC, Kh);
-                            MHC                         = blk_1m.MC;
+                // One work item: an N block and one M group of it, the group's M blocks claimed by
+                // the members of the team that takes it. Every thread owns the buffer it packs A
+                // into and the region of C its blocks cover. The team owns the B panel: a team of
+                // one packs it alone, lazily, into the thread-local panel the loops always used; a
+                // larger team packs it together and meets around it.
+                for (int64_t item = team_id; item < n_items; item += teams) {
+                    int64_t m_lo = 0, m_hi = 0;
+                    group_rows(item, 0, 1, m_lo, m_hi);
+                    int64_t const                              nc = (item / m_groups) * NC_blk;
+                    static thread_local std::vector<ValueType> tls_Ap, tls_Bp, tls_Ct;
+                    bool                                       streamed_c = false;
+                    tls_Ap.resize(ap_buf_elems);
+                    if (team->bp == nullptr) {
+                        tls_Bp.resize(bp_buf_elems);
+                    }
+                    ValueType    *Ap     = tls_Ap.data();
+                    ValueType    *Bp     = team->bp != nullptr ? team->bp : tls_Bp.data();
+                    int64_t const nc_len = std::min(NC_blk, N - nc);
+
+                    // Scatter path: precompute the C offset tables (one entry per
+                    // flat index) instead of paying a div/mod chain per element in
+                    // the beta prescale and tile scatter loops below. n-offsets are
+                    // invariant for the whole nc block; m-offsets are refreshed per
+                    // mc block inside the kc loop.
+                    static thread_local std::vector<int64_t> c_n_offsets, c_m_offsets;
+                    if (needs_c_scatter || (is_complex && shape.use_1m)) {
+                        precompute_offsets(nc, nc_len, plan.c_n_dims, c_n_offsets);
+                    }
+
+                    // ---- 1m complex strategy (rungs with a real matrix kernel) ----
+                    // Complex tile work runs on the REAL kernel via Van Zee's 1m
+                    // method: A packs 1e, B packs 1r, and the real (2M x N) output
+                    // is interleaved complex, scattered directly. Working extents
+                    // double (Mh = 2M, Kh = 2K); MR/NR here are the real kernel's
+                    // geometry (see MicroKernelShape::use_1m). Conjugation folds
+                    // into the packing signs; the complex alpha applies at the
+                    // scatter. Measured 1.74x over Sort+GEMM for complex<double>
+                    // on the M4 SME rung, with no operand-sized temporaries.
+                    if constexpr (is_complex) {
+                        if (shape.use_1m) {
+                            using RealT                           = RemoveComplexT<ValueType>;
+                            MicroKernelFn<RealT> const micro_real = micro_kernel_entry<RealT>();
+                            int64_t const              Mh         = 2 * M;
+                            int64_t const              Kh         = 2 * K;
+                            // The K and M blocks, in real units. A rung that fixes the K
+                            // block (the SME rung, whose ZA tiles hold C for the whole K
+                            // loop) keeps its deep one and the M block it was tuned with.
+                            // A register kernel instead needs its B micro-panel, NR * KHC
+                            // reals, to stay in L1 across the M sweep, which a deep K block
+                            // breaks (NR = 6 by 4096 doubles is 192 KiB), so it takes the
+                            // cache model's blocking for the real kernel on the real extents.
+                            // Both must be even, so that a block never splits a complex
+                            // element's (re, im) pair: Kh is even, compute_blocking rounds
+                            // KC to a multiple of 8 and MC to one of MR, and MR is a whole
+                            // number of vectors.
+                            int64_t KHC = 0;
+                            int64_t MHC = 0;
+                            if (shape.kc > 0) {
+                                KHC = std::min<int64_t>(shape.kc, Kh);
+                                MHC = 256;
+                            } else {
+                                BlockingParams const blk_1m = compute_blocking(static_cast<int64_t>(sizeof(RealT)), MR, NR, Mh, N, Kh);
+                                KHC                         = std::min<int64_t>(blk_1m.KC, Kh);
+                                MHC                         = blk_1m.MC;
+                            }
+                            KHC                      = std::max<int64_t>(2, KHC - KHC % 2);
+                            MHC                      = std::max<int64_t>(2, MHC - MHC % 2);
+                            int64_t const num_ir_max = (MHC + MR - 1) / MR;
+                            int64_t const num_jr_max = (nc_len + NR - 1) / NR;
+
+                            static thread_local std::vector<RealT> tls_Ap1, tls_Bp1, tls_Cb1;
+                            tls_Ap1.resize(static_cast<size_t>(num_ir_max * MR * KHC));
+                            tls_Bp1.resize(static_cast<size_t>(num_jr_max * NR * KHC));
+                            tls_Cb1.resize(static_cast<size_t>(MHC) * static_cast<size_t>(nc_len));
+
+                            for (int64_t kh = 0; kh < Kh; kh += KHC) {
+                                int64_t const kh_len = std::min(KHC, Kh - kh);
+                                pack_B_1m_panels<RealT>(tls_Bp1.data(), B_data, plan, kh, kh_len, nc, nc_len, NR, conj_b);
+
+                                for (int64_t mh = 2 * m_lo; mh < 2 * m_hi; mh += MHC) {
+                                    int64_t const mh_len = std::min(MHC, 2 * m_hi - mh);
+                                    precompute_offsets(mh / 2, mh_len / 2, plan.c_m_dims, c_m_offsets);
+
+                                    // Beta prescale once per (mh, nc) block on the first kh slice.
+                                    // Skipped entirely when the scatter below stores.
+                                    bool const store_c = overwrite_c && kh == 0;
+                                    if (kh == 0 && beta != ValueType{1} && !overwrite_c) {
+                                        for (int64_t mi = 0; mi < mh_len / 2; ++mi) {
+                                            int64_t const m_off = c_m_offsets[static_cast<size_t>(mi)];
+                                            for (int64_t ni = 0; ni < nc_len; ++ni) {
+                                                C_data[m_off + c_n_offsets[static_cast<size_t>(ni)]] *= beta;
+                                            }
+                                        }
+                                    }
+
+                                    pack_A_1m_panels<RealT>(tls_Ap1.data(), A_data, plan, mh, mh_len, kh, kh_len, MR, conj_a);
+
+                                    std::fill(tls_Cb1.begin(), tls_Cb1.begin() + static_cast<size_t>(mh_len) * nc_len, RealT{0});
+                                    int64_t const num_jr = (nc_len + NR - 1) / NR;
+                                    int64_t const num_ir = (mh_len + MR - 1) / MR;
+                                    for (int64_t jr = 0; jr < num_jr; ++jr) {
+                                        int64_t const nr_eff = std::min<int64_t>(NR, nc_len - jr * NR);
+                                        for (int64_t ir = 0; ir < num_ir; ++ir) {
+                                            int64_t const mr_eff = std::min<int64_t>(MR, mh_len - ir * MR);
+                                            micro_real(MR, NR, kh_len, RealT{1}, tls_Ap1.data() + ir * MR * kh_len,
+                                                       tls_Bp1.data() + jr * NR * kh_len, mr_eff, nr_eff,
+                                                       tls_Cb1.data() + (jr * NR) * mh_len + ir * MR, 1, mh_len);
+                                        }
+                                    }
+
+                                    // Complex scatter: even/odd real row pairs are re/im.
+                                    for (int64_t j = 0; j < nc_len; ++j) {
+                                        int64_t const n_off = c_n_offsets[static_cast<size_t>(j)];
+                                        RealT const  *src   = tls_Cb1.data() + j * mh_len;
+                                        if (store_c) {
+                                            for (int64_t ii = 0; ii < mh_len; ii += 2) {
+                                                C_data[c_m_offsets[static_cast<size_t>(ii / 2)] + n_off] =
+                                                    alpha * ValueType{src[ii], src[ii + 1]};
+                                            }
+                                            continue;
+                                        }
+                                        for (int64_t ii = 0; ii < mh_len; ii += 2) {
+                                            C_data[c_m_offsets[static_cast<size_t>(ii / 2)] + n_off] +=
+                                                alpha * ValueType{src[ii], src[ii + 1]};
+                                        }
+                                    }
+                                }
+                            }
+                            continue; // next nc block
                         }
-                        KHC                      = std::max<int64_t>(2, KHC - KHC % 2);
-                        MHC                      = std::max<int64_t>(2, MHC - MHC % 2);
-                        int64_t const num_ir_max = (MHC + MR - 1) / MR;
-                        int64_t const num_jr_max = (nc_len + NR - 1) / NR;
+                    }
 
-                        static thread_local std::vector<RealT> tls_Ap1, tls_Bp1, tls_Cb1;
-                        tls_Ap1.resize(static_cast<size_t>(num_ir_max * MR * KHC));
-                        tls_Bp1.resize(static_cast<size_t>(num_jr_max * NR * KHC));
-                        tls_Cb1.resize(static_cast<size_t>(MHC) * static_cast<size_t>(nc_len));
+                    // ---- Block-GEMM scatter strategy ----
+                    // One vendor GEMM per (mc, kc) block: pack A to a plain
+                    // column-major mc_len x kc_len matrix and B to k-major
+                    // kc_len x nc_len, GEMM into a contiguous C block, then
+                    // scatter-accumulate through the offset tables. Vendor
+                    // libraries run cache-blocked GEMMs of this size at full
+                    // speed (including matrix units the tile kernels cannot
+                    // reach, e.g. Accelerate's AMX/SME), while the packed blocks
+                    // and C temp stay cache-sized and thread-local - no
+                    // operand-sized temporaries, unlike Sort+GEMM.
+                    if (needs_c_scatter && shape.block_gemm) {
+                        // NOLINTNEXTLINE(readability-identifier-naming)
+                        using blas_int = einsums::blas::int_t;
+                        static thread_local std::vector<ValueType> tls_Af, tls_Bf, tls_Cb;
+                        bool const                                 use_3m = is_complex && shape.use_3m;
+                        if (!use_3m) {
+                            tls_Af.resize(static_cast<size_t>(MC_blk * KC_blk));
+                            tls_Bf.resize(static_cast<size_t>(nc_len) * static_cast<size_t>(KC_blk));
+                            tls_Cb.resize(static_cast<size_t>(MC_blk) * static_cast<size_t>(nc_len));
+                        }
 
-                        for (int64_t kh = 0; kh < Kh; kh += KHC) {
-                            int64_t const kh_len = std::min(KHC, Kh - kh);
-                            pack_B_1m_panels<RealT>(tls_Bp1.data(), B_data, plan, kh, kh_len, nc, nc_len, NR, conj_b);
+                        // 3m buffers: three real splits of A, B, and the block
+                        // product, laid out as consecutive segments.
+                        using Real3m = RemoveComplexT<ValueType>;
+                        static thread_local std::vector<Real3m> tls_A3, tls_B3, tls_T3;
+                        if (use_3m) {
+                            tls_A3.resize(3 * static_cast<size_t>(MC_blk * KC_blk));
+                            tls_B3.resize(3 * static_cast<size_t>(nc_len) * static_cast<size_t>(KC_blk));
+                            tls_T3.resize(3 * static_cast<size_t>(MC_blk) * static_cast<size_t>(nc_len));
+                        }
 
-                            for (int64_t mh = 2 * m_lo; mh < 2 * m_hi; mh += MHC) {
-                                int64_t const mh_len = std::min(MHC, 2 * m_hi - mh);
-                                precompute_offsets(mh / 2, mh_len / 2, plan.c_m_dims, c_m_offsets);
+                        for (int64_t kc = 0; kc < K; kc += KC_blk) {
+                            int64_t const kc_len = std::min(KC_blk, K - kc);
+                            if constexpr (is_complex) {
+                                if (use_3m) {
+                                    size_t const bseg = static_cast<size_t>(nc_len) * static_cast<size_t>(kc_len);
+                                    pack_B_3m_flat<Real3m>(tls_B3.data(), tls_B3.data() + bseg, tls_B3.data() + 2 * bseg, B_data, plan, kc,
+                                                           kc_len, nc, nc_len, conj_b);
+                                }
+                            }
+                            if (!use_3m) {
+                                pack_B_flat(tls_Bf.data(), B_data, plan, kc, kc_len, nc, nc_len, conj_b);
+                            }
 
-                                // Beta prescale once per (mh, nc) block on the first kh slice.
-                                // Skipped entirely when the scatter below stores.
-                                bool const store_c = overwrite_c && kh == 0;
-                                if (kh == 0 && beta != ValueType{1} && !overwrite_c) {
-                                    for (int64_t mi = 0; mi < mh_len / 2; ++mi) {
+                            for (int64_t mc = m_lo; mc < m_hi; mc += MC_blk) {
+                                int64_t const mc_len = std::min(MC_blk, m_hi - mc);
+                                precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);
+
+                                // Beta prescale once per (mc, nc) block on the first kc slice.
+                                // Skipped entirely when the scatters below store.
+                                bool const store_c = overwrite_c && kc == 0;
+                                if (kc == 0 && beta != ValueType{1} && !overwrite_c) {
+                                    LabeledSectionInternal("C beta prescale");
+                                    for (int64_t mi = 0; mi < mc_len; ++mi) {
                                         int64_t const m_off = c_m_offsets[static_cast<size_t>(mi)];
                                         for (int64_t ni = 0; ni < nc_len; ++ni) {
                                             C_data[m_off + c_n_offsets[static_cast<size_t>(ni)]] *= beta;
@@ -2047,504 +2306,119 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     }
                                 }
 
-                                pack_A_1m_panels<RealT>(tls_Ap1.data(), A_data, plan, mh, mh_len, kh, kh_len, MR, conj_a);
-
-                                std::fill(tls_Cb1.begin(), tls_Cb1.begin() + static_cast<size_t>(mh_len) * nc_len, RealT{0});
-                                int64_t const num_jr = (nc_len + NR - 1) / NR;
-                                int64_t const num_ir = (mh_len + MR - 1) / MR;
-                                for (int64_t jr = 0; jr < num_jr; ++jr) {
-                                    int64_t const nr_eff = std::min<int64_t>(NR, nc_len - jr * NR);
-                                    for (int64_t ir = 0; ir < num_ir; ++ir) {
-                                        int64_t const mr_eff = std::min<int64_t>(MR, mh_len - ir * MR);
-                                        micro_real(MR, NR, kh_len, RealT{1}, tls_Ap1.data() + ir * MR * kh_len,
-                                                   tls_Bp1.data() + jr * NR * kh_len, mr_eff, nr_eff,
-                                                   tls_Cb1.data() + (jr * NR) * mh_len + ir * MR, 1, mh_len);
-                                    }
-                                }
-
-                                // Complex scatter: even/odd real row pairs are re/im.
-                                for (int64_t j = 0; j < nc_len; ++j) {
-                                    int64_t const n_off = c_n_offsets[static_cast<size_t>(j)];
-                                    RealT const  *src   = tls_Cb1.data() + j * mh_len;
-                                    if (store_c) {
-                                        for (int64_t ii = 0; ii < mh_len; ii += 2) {
-                                            C_data[c_m_offsets[static_cast<size_t>(ii / 2)] + n_off] =
-                                                alpha * ValueType{src[ii], src[ii + 1]};
+                                if constexpr (is_complex) {
+                                    if (use_3m) {
+                                        // ---- 3m: three real GEMMs, combined at the scatter ----
+                                        size_t const aseg = static_cast<size_t>(mc_len) * static_cast<size_t>(kc_len);
+                                        size_t const bseg = static_cast<size_t>(nc_len) * static_cast<size_t>(kc_len);
+                                        size_t const tseg = static_cast<size_t>(mc_len) * static_cast<size_t>(nc_len);
+                                        pack_A_3m_flat<Real3m>(tls_A3.data(), tls_A3.data() + aseg, tls_A3.data() + 2 * aseg, A_data, plan,
+                                                               mc, mc_len, kc, kc_len, conj_a);
+                                        for (int t = 0; t < 3; ++t) {
+                                            einsums::blas::gemm<Real3m>('N', 'T', static_cast<blas_int>(mc_len),
+                                                                        static_cast<blas_int>(nc_len), static_cast<blas_int>(kc_len),
+                                                                        Real3m{1}, tls_A3.data() + t * aseg, static_cast<blas_int>(mc_len),
+                                                                        tls_B3.data() + t * bseg, static_cast<blas_int>(nc_len), Real3m{0},
+                                                                        tls_T3.data() + t * tseg, static_cast<blas_int>(mc_len));
                                         }
-                                        continue;
-                                    }
-                                    for (int64_t ii = 0; ii < mh_len; ii += 2) {
-                                        C_data[c_m_offsets[static_cast<size_t>(ii / 2)] + n_off] += alpha * ValueType{src[ii], src[ii + 1]};
-                                    }
-                                }
-                            }
-                        }
-                        continue; // next nc block
-                    }
-                }
-
-                // ---- Block-GEMM scatter strategy ----
-                // One vendor GEMM per (mc, kc) block: pack A to a plain
-                // column-major mc_len x kc_len matrix and B to k-major
-                // kc_len x nc_len, GEMM into a contiguous C block, then
-                // scatter-accumulate through the offset tables. Vendor
-                // libraries run cache-blocked GEMMs of this size at full
-                // speed (including matrix units the tile kernels cannot
-                // reach, e.g. Accelerate's AMX/SME), while the packed blocks
-                // and C temp stay cache-sized and thread-local - no
-                // operand-sized temporaries, unlike Sort+GEMM.
-                if (needs_c_scatter && shape.block_gemm) {
-                    // NOLINTNEXTLINE(readability-identifier-naming)
-                    using blas_int = einsums::blas::int_t;
-                    static thread_local std::vector<ValueType> tls_Af, tls_Bf, tls_Cb;
-                    bool const                                 use_3m = is_complex && shape.use_3m;
-                    if (!use_3m) {
-                        tls_Af.resize(static_cast<size_t>(MC_blk * KC_blk));
-                        tls_Bf.resize(static_cast<size_t>(nc_len) * static_cast<size_t>(KC_blk));
-                        tls_Cb.resize(static_cast<size_t>(MC_blk) * static_cast<size_t>(nc_len));
-                    }
-
-                    // 3m buffers: three real splits of A, B, and the block
-                    // product, laid out as consecutive segments.
-                    using Real3m = RemoveComplexT<ValueType>;
-                    static thread_local std::vector<Real3m> tls_A3, tls_B3, tls_T3;
-                    if (use_3m) {
-                        tls_A3.resize(3 * static_cast<size_t>(MC_blk * KC_blk));
-                        tls_B3.resize(3 * static_cast<size_t>(nc_len) * static_cast<size_t>(KC_blk));
-                        tls_T3.resize(3 * static_cast<size_t>(MC_blk) * static_cast<size_t>(nc_len));
-                    }
-
-                    for (int64_t kc = 0; kc < K; kc += KC_blk) {
-                        int64_t const kc_len = std::min(KC_blk, K - kc);
-                        if constexpr (is_complex) {
-                            if (use_3m) {
-                                size_t const bseg = static_cast<size_t>(nc_len) * static_cast<size_t>(kc_len);
-                                pack_B_3m_flat<Real3m>(tls_B3.data(), tls_B3.data() + bseg, tls_B3.data() + 2 * bseg, B_data, plan, kc,
-                                                       kc_len, nc, nc_len, conj_b);
-                            }
-                        }
-                        if (!use_3m) {
-                            pack_B_flat(tls_Bf.data(), B_data, plan, kc, kc_len, nc, nc_len, conj_b);
-                        }
-
-                        for (int64_t mc = m_lo; mc < m_hi; mc += MC_blk) {
-                            int64_t const mc_len = std::min(MC_blk, m_hi - mc);
-                            precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);
-
-                            // Beta prescale once per (mc, nc) block on the first kc slice.
-                            // Skipped entirely when the scatters below store.
-                            bool const store_c = overwrite_c && kc == 0;
-                            if (kc == 0 && beta != ValueType{1} && !overwrite_c) {
-                                LabeledSectionInternal("C beta prescale");
-                                for (int64_t mi = 0; mi < mc_len; ++mi) {
-                                    int64_t const m_off = c_m_offsets[static_cast<size_t>(mi)];
-                                    for (int64_t ni = 0; ni < nc_len; ++ni) {
-                                        C_data[m_off + c_n_offsets[static_cast<size_t>(ni)]] *= beta;
-                                    }
-                                }
-                            }
-
-                            if constexpr (is_complex) {
-                                if (use_3m) {
-                                    // ---- 3m: three real GEMMs, combined at the scatter ----
-                                    size_t const aseg = static_cast<size_t>(mc_len) * static_cast<size_t>(kc_len);
-                                    size_t const bseg = static_cast<size_t>(nc_len) * static_cast<size_t>(kc_len);
-                                    size_t const tseg = static_cast<size_t>(mc_len) * static_cast<size_t>(nc_len);
-                                    pack_A_3m_flat<Real3m>(tls_A3.data(), tls_A3.data() + aseg, tls_A3.data() + 2 * aseg, A_data, plan, mc,
-                                                           mc_len, kc, kc_len, conj_a);
-                                    for (int t = 0; t < 3; ++t) {
-                                        einsums::blas::gemm<Real3m>('N', 'T', static_cast<blas_int>(mc_len), static_cast<blas_int>(nc_len),
-                                                                    static_cast<blas_int>(kc_len), Real3m{1}, tls_A3.data() + t * aseg,
-                                                                    static_cast<blas_int>(mc_len), tls_B3.data() + t * bseg,
-                                                                    static_cast<blas_int>(nc_len), Real3m{0}, tls_T3.data() + t * tseg,
-                                                                    static_cast<blas_int>(mc_len));
-                                    }
-                                    Real3m const *t1 = tls_T3.data();
-                                    Real3m const *t2 = tls_T3.data() + tseg;
-                                    Real3m const *t3 = tls_T3.data() + 2 * tseg;
-                                    for (int64_t j = 0; j < nc_len; ++j) {
-                                        int64_t const n_off = c_n_offsets[static_cast<size_t>(j)];
-                                        for (int64_t i2 = 0; i2 < mc_len; ++i2) {
-                                            size_t const idx = static_cast<size_t>(j * mc_len + i2);
-                                            Real3m const re  = t1[idx] - t2[idx];
-                                            Real3m const im  = t3[idx] - t1[idx] - t2[idx];
-                                            ValueType   *dst = C_data + c_m_offsets[static_cast<size_t>(i2)] + n_off;
-                                            if (store_c) {
-                                                *dst = alpha * ValueType{re, im};
-                                            } else {
-                                                *dst += alpha * ValueType{re, im};
+                                        Real3m const *t1 = tls_T3.data();
+                                        Real3m const *t2 = tls_T3.data() + tseg;
+                                        Real3m const *t3 = tls_T3.data() + 2 * tseg;
+                                        for (int64_t j = 0; j < nc_len; ++j) {
+                                            int64_t const n_off = c_n_offsets[static_cast<size_t>(j)];
+                                            for (int64_t i2 = 0; i2 < mc_len; ++i2) {
+                                                size_t const idx = static_cast<size_t>(j * mc_len + i2);
+                                                Real3m const re  = t1[idx] - t2[idx];
+                                                Real3m const im  = t3[idx] - t1[idx] - t2[idx];
+                                                ValueType   *dst = C_data + c_m_offsets[static_cast<size_t>(i2)] + n_off;
+                                                if (store_c) {
+                                                    *dst = alpha * ValueType{re, im};
+                                                } else {
+                                                    *dst += alpha * ValueType{re, im};
+                                                }
                                             }
+                                        }
+                                        continue; // next mc block
+                                    }
+                                }
+
+                                pack_A_flat(tls_Af.data(), A_data, plan, mc, mc_len, kc, kc_len, conj_a);
+
+                                {
+                                    LabeledSectionInternal("block GEMM (vendor)");
+                                    // Swapping the operands computes Bf * Af^T, whose (j, i) is the
+                                    // (i, j) of Af * Bf^T, so the block temp comes out transposed and
+                                    // the n-inner scatter reads it contiguously. Striding the temp
+                                    // instead is not an option here: it is MC by NC, far too large to
+                                    // sweep once per m index, unlike the tile path's MR by NR buffer.
+                                    if (scatter_n_inner) {
+                                        einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(nc_len),
+                                                                       static_cast<blas_int>(mc_len), static_cast<blas_int>(kc_len), alpha,
+                                                                       tls_Bf.data(), static_cast<blas_int>(nc_len), tls_Af.data(),
+                                                                       static_cast<blas_int>(mc_len), ValueType{0}, tls_Cb.data(),
+                                                                       static_cast<blas_int>(nc_len));
+                                    } else {
+                                        einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(mc_len),
+                                                                       static_cast<blas_int>(nc_len), static_cast<blas_int>(kc_len), alpha,
+                                                                       tls_Af.data(), static_cast<blas_int>(mc_len), tls_Bf.data(),
+                                                                       static_cast<blas_int>(nc_len), ValueType{0}, tls_Cb.data(),
+                                                                       static_cast<blas_int>(mc_len));
+                                    }
+                                }
+
+                                // Scatter-accumulate the contiguous block into C. When C's
+                                // stride along the fastest flat m coordinate is 1, the
+                                // destination decomposes into contiguous runs and the
+                                // accumulation vectorizes.
+                                LabeledSectionInternal("C block scatter");
+                                if (scatter_n_inner) {
+                                    // Mirror of the loop below with the roles of m and n exchanged.
+                                    // tls_Cb is nc_len x mc_len here (see the swapped GEMM above).
+                                    bool const    c_n_unit = plan.c_n_dims.back().tensor_stride == 1;
+                                    int64_t const c_n_fast = plan.c_n_dims.back().size;
+                                    for (int64_t i2 = 0; i2 < mc_len; ++i2) {
+                                        int64_t const    m_off = c_m_offsets[static_cast<size_t>(i2)];
+                                        ValueType const *src   = tls_Cb.data() + i2 * nc_len;
+                                        if (c_n_unit) {
+                                            int64_t pos = 0;
+                                            while (pos < nc_len) {
+                                                int64_t const    run = std::min(c_n_fast - ((nc + pos) % c_n_fast), nc_len - pos);
+                                                ValueType       *dst = C_data + m_off + c_n_offsets[static_cast<size_t>(pos)];
+                                                ValueType const *s   = src + pos;
+                                                if (store_c) {
+                                                    std::copy(s, s + run, dst);
+                                                } else {
+                                                    for (int64_t r = 0; r < run; ++r) {
+                                                        dst[r] += s[r];
+                                                    }
+                                                }
+                                                pos += run;
+                                            }
+                                            continue;
+                                        }
+                                        if (store_c) {
+                                            for (int64_t j = 0; j < nc_len; ++j) {
+                                                C_data[m_off + c_n_offsets[static_cast<size_t>(j)]] = src[j];
+                                            }
+                                            continue;
+                                        }
+                                        for (int64_t j = 0; j < nc_len; ++j) {
+                                            C_data[m_off + c_n_offsets[static_cast<size_t>(j)]] += src[j];
                                         }
                                     }
                                     continue; // next mc block
                                 }
-                            }
-
-                            pack_A_flat(tls_Af.data(), A_data, plan, mc, mc_len, kc, kc_len, conj_a);
-
-                            {
-                                LabeledSectionInternal("block GEMM (vendor)");
-                                // Swapping the operands computes Bf * Af^T, whose (j, i) is the
-                                // (i, j) of Af * Bf^T, so the block temp comes out transposed and
-                                // the n-inner scatter reads it contiguously. Striding the temp
-                                // instead is not an option here: it is MC by NC, far too large to
-                                // sweep once per m index, unlike the tile path's MR by NR buffer.
-                                if (scatter_n_inner) {
-                                    einsums::blas::gemm<ValueType>(
-                                        'N', 'T', static_cast<blas_int>(nc_len), static_cast<blas_int>(mc_len),
-                                        static_cast<blas_int>(kc_len), alpha, tls_Bf.data(), static_cast<blas_int>(nc_len), tls_Af.data(),
-                                        static_cast<blas_int>(mc_len), ValueType{0}, tls_Cb.data(), static_cast<blas_int>(nc_len));
-                                } else {
-                                    einsums::blas::gemm<ValueType>(
-                                        'N', 'T', static_cast<blas_int>(mc_len), static_cast<blas_int>(nc_len),
-                                        static_cast<blas_int>(kc_len), alpha, tls_Af.data(), static_cast<blas_int>(mc_len), tls_Bf.data(),
-                                        static_cast<blas_int>(nc_len), ValueType{0}, tls_Cb.data(), static_cast<blas_int>(mc_len));
-                                }
-                            }
-
-                            // Scatter-accumulate the contiguous block into C. When C's
-                            // stride along the fastest flat m coordinate is 1, the
-                            // destination decomposes into contiguous runs and the
-                            // accumulation vectorizes.
-                            LabeledSectionInternal("C block scatter");
-                            if (scatter_n_inner) {
-                                // Mirror of the loop below with the roles of m and n exchanged.
-                                // tls_Cb is nc_len x mc_len here (see the swapped GEMM above).
-                                bool const    c_n_unit = plan.c_n_dims.back().tensor_stride == 1;
-                                int64_t const c_n_fast = plan.c_n_dims.back().size;
-                                for (int64_t i2 = 0; i2 < mc_len; ++i2) {
-                                    int64_t const    m_off = c_m_offsets[static_cast<size_t>(i2)];
-                                    ValueType const *src   = tls_Cb.data() + i2 * nc_len;
-                                    if (c_n_unit) {
-                                        int64_t pos = 0;
-                                        while (pos < nc_len) {
-                                            int64_t const    run = std::min(c_n_fast - ((nc + pos) % c_n_fast), nc_len - pos);
-                                            ValueType       *dst = C_data + m_off + c_n_offsets[static_cast<size_t>(pos)];
-                                            ValueType const *s   = src + pos;
-                                            if (store_c) {
-                                                std::copy(s, s + run, dst);
-                                            } else {
-                                                for (int64_t r = 0; r < run; ++r) {
-                                                    dst[r] += s[r];
-                                                }
-                                            }
-                                            pos += run;
-                                        }
-                                        continue;
-                                    }
-                                    if (store_c) {
-                                        for (int64_t j = 0; j < nc_len; ++j) {
-                                            C_data[m_off + c_n_offsets[static_cast<size_t>(j)]] = src[j];
-                                        }
-                                        continue;
-                                    }
-                                    for (int64_t j = 0; j < nc_len; ++j) {
-                                        C_data[m_off + c_n_offsets[static_cast<size_t>(j)]] += src[j];
-                                    }
-                                }
-                                continue; // next mc block
-                            }
-                            bool const    c_m_unit = plan.c_m_dims.back().tensor_stride == 1;
-                            int64_t const c_m_fast = plan.c_m_dims.back().size;
-                            for (int64_t j = 0; j < nc_len; ++j) {
-                                int64_t const    n_off = c_n_offsets[static_cast<size_t>(j)];
-                                ValueType const *src   = tls_Cb.data() + j * mc_len;
-                                if (c_m_unit) {
-                                    int64_t pos = 0;
-                                    while (pos < mc_len) {
-                                        int64_t const    run = std::min(c_m_fast - ((mc + pos) % c_m_fast), mc_len - pos);
-                                        ValueType       *dst = C_data + c_m_offsets[static_cast<size_t>(pos)] + n_off;
-                                        ValueType const *s   = src + pos;
-                                        if (store_c) {
-                                            std::copy(s, s + run, dst);
-                                        } else {
-                                            for (int64_t r = 0; r < run; ++r) {
-                                                dst[r] += s[r];
-                                            }
-                                        }
-                                        pos += run;
-                                    }
-                                    continue;
-                                }
-                                if (store_c) {
-                                    for (int64_t i2 = 0; i2 < mc_len; ++i2) {
-                                        C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] = src[i2];
-                                    }
-                                    continue;
-                                }
-                                for (int64_t i2 = 0; i2 < mc_len; ++i2) {
-                                    C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] += src[i2];
-                                }
-                            }
-                        }
-                    }
-                    continue; // next nc block
-                }
-
-                for (int64_t kc = 0; kc < K; kc += KC_blk) {
-                    int64_t const kc_len = std::min(KC_blk, K - kc);
-
-                    bool bp_packed = false;
-
-                    for (int64_t mc = m_lo; mc < m_hi; mc += MC_blk) {
-                        int64_t const mc_len = std::min(MC_blk, m_hi - mc);
-
-                        if (needs_c_scatter) {
-                            precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);
-                        }
-
-                        // Beta prescale: apply once per (mc, nc) block on first kc tile.
-                        // The scatter branch stores on the first K block when beta == 0
-                        // (see overwrite_c) and so needs no prescale at all. The
-                        // direct-C branches still need one, because the micro-kernel
-                        // only ever accumulates into C - but clearing C is a write
-                        // where `*= 0` was a read-modify-write over the whole block.
-                        bool const store_c = overwrite_c && kc == 0 && needs_c_scatter;
-                        if (kc == 0 && beta != ValueType{1} && !store_c) {
-                            LabeledSectionInternal("C beta prescale");
-                            if (needs_c_scatter) {
-                                // Multi-M/N: element-by-element prescale via the offset tables
-                                for (int64_t mi = 0; mi < mc_len; ++mi) {
-                                    int64_t const m_off = c_m_offsets[static_cast<size_t>(mi)];
-                                    for (int64_t ni = 0; ni < nc_len; ++ni) {
-                                        C_data[m_off + c_n_offsets[static_cast<size_t>(ni)]] *= beta;
-                                    }
-                                }
-                            } else if (C_col_major) {
-                                for (int64_t ni = nc; ni < nc + nc_len; ++ni) {
-                                    ValueType *col = C_data + mc + ni * C_n_stride;
-                                    if (overwrite_c) {
-                                        std::fill(col, col + mc_len, ValueType{0});
-                                        continue;
-                                    }
-                                    for (int64_t i = 0; i < mc_len; ++i) {
-                                        col[i] *= beta;
-                                    }
-                                }
-                            } else {
-                                for (int64_t mi = mc; mi < mc + mc_len; ++mi) {
-                                    ValueType *row = C_data + mi * C_m_stride + nc;
-                                    if (overwrite_c) {
-                                        std::fill(row, row + nc_len, ValueType{0});
-                                        continue;
-                                    }
-                                    for (int64_t j = 0; j < nc_len; ++j) {
-                                        row[j] *= beta;
-                                    }
-                                }
-                            }
-                        }
-
-                        // BLAS fallback: pack + per-tile GEMM.
-                        if (!bp_packed) {
-                            pack_B(Bp, B_data, plan, kc, kc_len, nc, nc_len, NR, conj_b);
-                            bp_packed = true;
-                        }
-                        pack_A(Ap, A_data, plan, mc, mc_len, kc, kc_len, MR, conj_a);
-
-                        int64_t const num_jr = (nc_len + NR - 1) / NR;
-                        int64_t const num_ir = (mc_len + MR - 1) / MR;
-
-                        if (needs_c_scatter && !scatter_n_inner && (blk_compose || blk_runs_stream || use_a_order)) {
-                            LabeledSectionInternal("micro-kernel loop, C block");
-                            // ---- Cache-resident C block ----
-                            //
-                            // The tiles accumulate into one contiguous mc_len x
-                            // nc_len block and the block is written back to C
-                            // once, instead of every tile making its own trip to
-                            // a destination that may be hundreds of megabytes
-                            // wide. Two things come of it.
-                            //
-                            // The kernel's C operand is the block, so its row
-                            // stride is 1 whatever C's layout is, which is the
-                            // whole-vector store path rather than the stack tile
-                            // and MR*NR scalar stores.
-                            //
-                            // And the write-back's runs are as long as C's own
-                            // fastest index allows - up to that index's whole
-                            // extent - where the per-tile scatter could never
-                            // carry a run past MR, and paid an offset-table
-                            // lookup and a run computation for each of them.
-                            //
-                            // Only for the m-inner scatter. The n-inner variant
-                            // reads the block along its long stride, which undoes
-                            // the point; @ref mn_roles_should_swap has already
-                            // turned every n-inner case that HAS a contiguous
-                            // direction into an m-inner one, so what is left
-                            // there spends a cache line per element either way.
-                            // The accumulator is bounded by CHUNKING the N block,
-                            // not by shrinking it.
-                            //
-                            // Bounding NC instead is the obvious move and it is
-                            // wrong: A's DRAM traffic scales with 1/NC, so paying
-                            // for a cache-sized C block out of NC charges it to the
-                            // largest memory term in the contraction. Measured on
-                            // ccsd's rank-4 single, where the budget halved NC from
-                            // 2046 and A is 228 MB: every one of the twelve rows lost
-                            // 0.8 to 1.7 points of %GEMM, while the twelve double
-                            // rows - whose NC the budget did not reach - gained 0.5
-                            // to 3.0. The packed B block already covers the whole N
-                            // block, so a chunk costs no extra packing.
-                            // Half the L2, NOT the block strategy's c_temp_budget.
-                            //
-                            // That budget sizes a vendor GEMM's output buffer, where
-                            // the GEMM re-packs its own operands and the temp is the
-                            // only thing competing for L2. This accumulator competes
-                            // with the A panel and the B block, which are live across
-                            // the same loops, so a budget equal to the whole L2
-                            // leaves them nothing and the outcome falls to which
-                            // sets the block happens to land in. Measured on the full
-                            // ccsd_t group: at 512 KB one row of thirty-six
-                            // (`abcdef-gfab-degc` d, and only when run after thirty
-                            // other cases had fragmented the heap) collapsed to
-                            // 11.3 GF/s against its five identical-shape siblings'
-                            // 21.7; at 256 KB it is 21.3 and the group's double
-                            // median rises from 1.30x to 1.32x of TBLIS with every
-                            // row winning. 128 KB is too small - the double median
-                            // falls to 1.11x.
-                            int64_t const cb_budget = std::max<int64_t>(cpu_config().l2_cache_size / 2, int64_t{64} << 10);
-                            int64_t       nb_len    = cb_budget / (mc_len * static_cast<int64_t>(sizeof(ValueType)));
-                            nb_len                  = std::max<int64_t>((nb_len / NR) * NR, NR);
-                            nb_len                  = std::min(nb_len, nc_len);
-
-                            for (int64_t nb = 0; nb < nc_len; nb += nb_len) {
-                                int64_t const nb_cur  = std::min(nb_len, nc_len - nb);
-                                int64_t const jr_base = nb / NR;
-                                tls_Ct.assign(static_cast<size_t>(mc_len) * static_cast<size_t>(nb_cur), ValueType{0});
-                                ValueType *Cb = tls_Ct.data();
-
-                                // Which of the two packed blocks the tile loops keep
-                                // resident.
-                                //
-                                // The standard order streams the A panel and reuses one
-                                // NR x KC column of B, which is right while B's block is
-                                // the larger of the two - the shape this blocking was
-                                // built for, where NC comes from an L3 budget and MC
-                                // from an L2 one. It is exactly wrong for the intensli
-                                // shapes, whose whole N is 24: there the B block is a
-                                // few kilobytes and the A panel is the one that has just
-                                // been gathered at a cache line per sixteen elements, so
-                                // reading it back once per N tile pushes it through L2
-                                // num_jr times over. Run those with the A panel
-                                // innermost instead, so the pack's output is consumed
-                                // while it is still in L1.
-                                //
-                                // The test is on the B block, not on a ratio: it earns
-                                // its keep only while the whole thing stays resident
-                                // alongside one A panel, and half the L1 is the budget
-                                // that leaves room for the panel and the C block rows.
-                                int64_t const num_jr_b = (nb_cur + NR - 1) / NR;
-                                bool const    b_block_resident =
-                                    nb_cur * kc_len * static_cast<int64_t>(sizeof(ValueType)) * 2 <= cpu_config().l1_cache_size;
-                                if (b_block_resident) {
-                                    for (int64_t ir = 0; ir < num_ir; ++ir) {
-                                        int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
-                                        for (int64_t jr = 0; jr < num_jr_b; ++jr) {
-                                            int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nb_cur - jr * NR);
-                                            micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
-                                                       Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
-                                                       Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
-                                        }
-                                    }
-                                } else {
-                                    for (int64_t jr = 0; jr < num_jr_b; ++jr) {
-                                        int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nb_cur - jr * NR);
-                                        for (int64_t ir = 0; ir < num_ir; ++ir) {
-                                            int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
-                                            micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
-                                                       Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
-                                                       Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
-                                        }
-                                    }
-                                }
-
-                                LabeledSectionInternal("C block scatter");
-
-                                if (use_a_order && (mc % blk_aorder.xa) == 0 && (mc_len % blk_aorder.xa) == 0) {
-                                    flush_c_block_transposed<ValueType>(C_data, Cb, mc, mc_len, nb, nb_cur, c_m_offsets, c_n_offsets,
-                                                                        blk_aorder.xa, blk_aorder.xc, store_c, may_stream_c, streamed_c);
-                                    continue; // next C block chunk
-                                }
-
-                                if (blk_compose) {
-                                    int64_t pos = 0;
-                                    while (pos < mc_len) {
-                                        int64_t const run_m = std::min(blk_m_fast - ((mc + pos) % blk_m_fast), mc_len - pos);
-                                        // A partial m segment breaks the span - its rows
-                                        // stop short of the next n step - so those fall
-                                        // back to the column walk below.
-                                        if (run_m == blk_m_fast) {
-                                            int64_t jj = 0;
-                                            while (jj < nb_cur) {
-                                                int64_t const run_n = std::min(blk_n_fast - ((nc + nb + jj) % blk_n_fast), nb_cur - jj);
-                                                ValueType    *dst   = C_data + c_m_offsets[static_cast<size_t>(pos)] +
-                                                                      c_n_offsets[static_cast<size_t>(nb + jj)];
-                                                int64_t const span  = run_n * blk_m_fast;
-                                                // The span's columns are already adjacent in C, so
-                                                // each one streams in place - no staging. A span
-                                                // shorter than a few lines cannot fill a
-                                                // write-combining buffer, so streaming it would pay
-                                                // a partial write and keep the fetch.
-                                                if (may_stream_c && store_c &&
-                                                    span * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes &&
-                                                    stream_run_ok(dst, run_m)) {
-                                                    for (int64_t q = 0; q < run_n; ++q) {
-                                                        stream_copy(dst + q * blk_m_fast, Cb + (jj + q) * mc_len + pos, run_m);
-                                                    }
-                                                    streamed_c = true;
-                                                    jj += run_n;
-                                                    continue;
-                                                }
-                                                for (int64_t q = 0; q < run_n; ++q) {
-                                                    ValueType const *s = Cb + (jj + q) * mc_len + pos;
-                                                    ValueType       *d = dst + q * blk_m_fast;
-                                                    if (store_c) {
-                                                        std::copy(s, s + run_m, d);
-                                                    } else {
-                                                        for (int64_t r = 0; r < run_m; ++r) {
-                                                            d[r] += s[r];
-                                                        }
-                                                    }
-                                                }
-                                                jj += run_n;
-                                            }
-                                            pos += run_m;
-                                            continue;
-                                        }
-                                        for (int64_t j = 0; j < nb_cur; ++j) {
-                                            ValueType *dst =
-                                                C_data + c_m_offsets[static_cast<size_t>(pos)] + c_n_offsets[static_cast<size_t>(nb + j)];
-                                            ValueType const *s = Cb + j * mc_len + pos;
-                                            if (store_c) {
-                                                std::copy(s, s + run_m, dst);
-                                            } else {
-                                                for (int64_t r = 0; r < run_m; ++r) {
-                                                    dst[r] += s[r];
-                                                }
-                                            }
-                                        }
-                                        pos += run_m;
-                                    }
-                                    continue; // next C block chunk
-                                }
-
-                                for (int64_t j = 0; j < nb_cur; ++j) {
-                                    int64_t const    n_off = c_n_offsets[static_cast<size_t>(nb + j)];
-                                    ValueType const *src   = Cb + j * mc_len;
-                                    if (plan.c_m_dims.back().tensor_stride == 1) {
+                                bool const    c_m_unit = plan.c_m_dims.back().tensor_stride == 1;
+                                int64_t const c_m_fast = plan.c_m_dims.back().size;
+                                for (int64_t j = 0; j < nc_len; ++j) {
+                                    int64_t const    n_off = c_n_offsets[static_cast<size_t>(j)];
+                                    ValueType const *src   = tls_Cb.data() + j * mc_len;
+                                    if (c_m_unit) {
                                         int64_t pos = 0;
                                         while (pos < mc_len) {
-                                            int64_t const    run = std::min(blk_m_fast - ((mc + pos) % blk_m_fast), mc_len - pos);
+                                            int64_t const    run = std::min(c_m_fast - ((mc + pos) % c_m_fast), mc_len - pos);
                                             ValueType       *dst = C_data + c_m_offsets[static_cast<size_t>(pos)] + n_off;
                                             ValueType const *s   = src + pos;
-                                            if (may_stream_c && store_c &&
-                                                run * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes &&
-                                                stream_run_ok(dst, run)) {
-                                                stream_copy(dst, s, run);
-                                                streamed_c = true;
-                                                pos += run;
-                                                continue;
-                                            }
                                             if (store_c) {
                                                 std::copy(s, s + run, dst);
                                             } else {
@@ -2566,156 +2440,504 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                         C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] += src[i2];
                                     }
                                 }
-                            } // next C block chunk
-                        } else if (needs_c_scatter) {
-                            LabeledSectionInternal("micro-kernel loop, tile scatter");
-                            // Multi-M/N: GEMM into a contiguous temp tile, then scatter to C.
-                            //
-                            // The scatter walks C's inner group in RUNS where that group's
-                            // fastest index has unit stride: a run is the stretch of
-                            // consecutive flat coordinates that stays inside one extent of
-                            // that index, so within it C is contiguous and the update is a
-                            // straight vector copy or add. The block strategy's scatter has
-                            // done this all along; the tile scatter used to look every
-                            // element up in the offset table, which at K=24 (the rank-6
-                            // ccsd_t shapes) cost more than the 288 FMAs the tile computes
-                            // and held the path to 15 GF/s where the same kernel reaches 60.
-                            bool const    tile_m_unit = plan.c_m_dims.back().tensor_stride == 1;
-                            int64_t const tile_m_fast = plan.c_m_dims.back().size;
-                            bool const    tile_n_unit = plan.c_n_dims.back().tensor_stride == 1;
-                            int64_t const tile_n_fast = plan.c_n_dims.back().size;
-                            tls_Ct.resize(static_cast<size_t>(MR) * NR);
-                            for (int64_t jr = 0; jr < num_jr; ++jr) {
-                                int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nc_len - jr * NR);
+                            }
+                        }
+                        continue; // next nc block
+                    }
 
-                                for (int64_t ir = 0; ir < num_ir; ++ir) {
-                                    int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
+                    for (int64_t kc = 0; kc < K; kc += KC_blk) {
+                        int64_t const kc_len = std::min(KC_blk, K - kc);
 
-                                    // Use a contiguous MR*NR temp buffer for the GEMM output.
-                                    std::fill(tls_Ct.begin(), tls_Ct.end(), ValueType{0});
-                                    ValueType *Ct = tls_Ct.data();
+                        bool bp_packed = false;
 
-                                    ValueType *Ap_panel = Ap + ir * MR * kc_len;
-                                    ValueType *Bp_panel = Bp + jr * NR * kc_len;
+                        // A team packs its shared panel together, each member a slice of its NR
+                        // panels (pack_B lays panel p at p * kc_len * NR, so a slice is a slice of the
+                        // whole), and meets before any member reads it.
+                        if (team->size > 1) {
+                            int64_t const panels = (nc_len + NR - 1) / NR;
+                            int64_t const p0     = (panels * team->member) / team->size;
+                            int64_t const p1     = (panels * (team->member + 1)) / team->size;
+                            if (p1 > p0) {
+                                LabeledSectionInternal("team: pack B slice");
+                                pack_B(Bp + p0 * kc_len * NR, B_data, plan, kc, kc_len, nc + p0 * NR,
+                                       std::min(nc_len - p0 * NR, (p1 - p0) * NR), NR, conj_b);
+                            }
+                            {
+                                LabeledSectionInternal("team: wait for the packed panel");
+                                team->state->barrier.wait();
+                            }
+                            bp_packed = true;
+                        }
 
-                                    // Micro-kernel into contiguous Ct (col-major: rs=1, cs=MR)
-                                    micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, mr_actual,
-                                               nr_actual, Ct, 1, MR);
+                        // The M blocks of this item's rows. A team of one walks them in order; a team's
+                        // members claim them one at a time from the team's counter (see TeamState), so a
+                        // member on a faster core takes more of them.
+                        int64_t const n_mc_blk = (m_hi - m_lo + MC_blk - 1) / MC_blk;
+                        int64_t const blk_lo   = *team->base;
+                        int64_t       walk     = 0;
+                        auto const    claim    = [&]() -> int64_t {
+                            if (team->size == 1) {
+                                return walk < n_mc_blk ? walk++ : -1;
+                            }
+                            int64_t t = team->state->next_block.load(std::memory_order_relaxed);
+                            do {
+                                if (t >= blk_lo + n_mc_blk) {
+                                    return -1;
+                                }
+                            } while (!team->state->next_block.compare_exchange_weak(t, t + 1, std::memory_order_relaxed));
+                            return t - blk_lo;
+                        };
+                        for (int64_t blk_i = claim(); blk_i >= 0; blk_i = claim()) {
+                            int64_t const mc     = m_lo + blk_i * MC_blk;
+                            int64_t const mc_len = std::min(MC_blk, m_hi - mc);
 
-                                    // Scatter Ct back to C using the precomputed offset tables,
-                                    // innermost along whichever of C's index groups is closer
-                                    // packed. Ct is MR by NR and cache resident either way, so
-                                    // reading it with a stride costs nothing.
-                                    if (scatter_n_inner) {
-                                        for (int64_t ii = 0; ii < mr_actual; ++ii) {
-                                            int64_t const m_off = c_m_offsets[static_cast<size_t>(ir * MR + ii)];
-                                            if (tile_n_unit) {
-                                                int64_t pos = 0;
-                                                while (pos < nr_actual) {
-                                                    int64_t const n_global = nc + jr * NR + pos;
-                                                    int64_t const run = std::min(tile_n_fast - (n_global % tile_n_fast), nr_actual - pos);
-                                                    ValueType    *dst = C_data + m_off + c_n_offsets[static_cast<size_t>(jr * NR + pos)];
-                                                    ValueType const *src = Ct + pos * MR + ii;
-                                                    if (store_c) {
-                                                        for (int64_t r = 0; r < run; ++r) {
-                                                            dst[r] = src[r * MR];
-                                                        }
-                                                    } else {
-                                                        for (int64_t r = 0; r < run; ++r) {
-                                                            dst[r] += src[r * MR];
-                                                        }
-                                                    }
-                                                    pos += run;
-                                                }
-                                                continue;
-                                            }
-                                            if (store_c) {
-                                                for (int64_t jj = 0; jj < nr_actual; ++jj) {
-                                                    C_data[m_off + c_n_offsets[static_cast<size_t>(jr * NR + jj)]] = Ct[jj * MR + ii];
-                                                }
-                                                continue;
-                                            }
-                                            for (int64_t jj = 0; jj < nr_actual; ++jj) {
-                                                C_data[m_off + c_n_offsets[static_cast<size_t>(jr * NR + jj)]] += Ct[jj * MR + ii];
-                                            }
+                            if (needs_c_scatter) {
+                                precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);
+                            }
+
+                            // Beta prescale: apply once per (mc, nc) block on first kc tile.
+                            // The scatter branch stores on the first K block when beta == 0
+                            // (see overwrite_c) and so needs no prescale at all. The
+                            // direct-C branches still need one, because the micro-kernel
+                            // only ever accumulates into C - but clearing C is a write
+                            // where `*= 0` was a read-modify-write over the whole block.
+                            bool const store_c = overwrite_c && kc == 0 && needs_c_scatter;
+                            if (kc == 0 && beta != ValueType{1} && !store_c) {
+                                LabeledSectionInternal("C beta prescale");
+                                if (needs_c_scatter) {
+                                    // Multi-M/N: element-by-element prescale via the offset tables
+                                    for (int64_t mi = 0; mi < mc_len; ++mi) {
+                                        int64_t const m_off = c_m_offsets[static_cast<size_t>(mi)];
+                                        for (int64_t ni = 0; ni < nc_len; ++ni) {
+                                            C_data[m_off + c_n_offsets[static_cast<size_t>(ni)]] *= beta;
                                         }
-                                    } else {
-                                        for (int64_t jj = 0; jj < nr_actual; ++jj) {
-                                            int64_t const    n_off = c_n_offsets[static_cast<size_t>(jr * NR + jj)];
-                                            ValueType const *col   = Ct + jj * MR;
-                                            if (tile_m_unit) {
-                                                int64_t pos = 0;
-                                                while (pos < mr_actual) {
-                                                    int64_t const m_global = mc + ir * MR + pos;
-                                                    int64_t const run = std::min(tile_m_fast - (m_global % tile_m_fast), mr_actual - pos);
-                                                    ValueType    *dst = C_data + c_m_offsets[static_cast<size_t>(ir * MR + pos)] + n_off;
-                                                    ValueType const *src = col + pos;
-                                                    if (store_c) {
-                                                        std::copy(src, src + run, dst);
-                                                    } else {
-                                                        for (int64_t r = 0; r < run; ++r) {
-                                                            dst[r] += src[r];
-                                                        }
-                                                    }
-                                                    pos += run;
-                                                }
-                                                continue;
-                                            }
-                                            if (store_c) {
-                                                for (int64_t ii = 0; ii < mr_actual; ++ii) {
-                                                    C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] = col[ii];
-                                                }
-                                                continue;
-                                            }
-                                            for (int64_t ii = 0; ii < mr_actual; ++ii) {
-                                                C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] += col[ii];
-                                            }
+                                    }
+                                } else if (C_col_major) {
+                                    for (int64_t ni = nc; ni < nc + nc_len; ++ni) {
+                                        ValueType *col = C_data + mc + ni * C_n_stride;
+                                        if (overwrite_c) {
+                                            std::fill(col, col + mc_len, ValueType{0});
+                                            continue;
+                                        }
+                                        for (int64_t i = 0; i < mc_len; ++i) {
+                                            col[i] *= beta;
+                                        }
+                                    }
+                                } else {
+                                    for (int64_t mi = mc; mi < mc + mc_len; ++mi) {
+                                        ValueType *row = C_data + mi * C_m_stride + nc;
+                                        if (overwrite_c) {
+                                            std::fill(row, row + nc_len, ValueType{0});
+                                            continue;
+                                        }
+                                        for (int64_t j = 0; j < nc_len; ++j) {
+                                            row[j] *= beta;
                                         }
                                     }
                                 }
                             }
-                        } else {
-                            LabeledSectionInternal("micro-kernel loop, direct C");
-                            // Single-M, single-N: direct GEMM into C (original fast path).
-                            for (int64_t jr = 0; jr < num_jr; ++jr) {
-                                int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nc_len - jr * NR);
 
-                                for (int64_t ir = 0; ir < num_ir; ++ir) {
-                                    int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
+                            // BLAS fallback: pack + per-tile GEMM.
+                            if (!bp_packed) {
+                                pack_B(Bp, B_data, plan, kc, kc_len, nc, nc_len, NR, conj_b);
+                                bp_packed = true;
+                            }
+                            pack_A(Ap, A_data, plan, mc, mc_len, kc, kc_len, MR, conj_a);
 
-                                    ValueType *Ap_panel = Ap + ir * MR * kc_len;
-                                    ValueType *Bp_panel = Bp + jr * NR * kc_len;
-                                    ValueType *C_tile   = C_data + (mc + ir * MR) * C_m_stride + (nc + jr * NR) * C_n_stride;
+                            int64_t const num_jr = (nc_len + NR - 1) / NR;
+                            int64_t const num_ir = (mc_len + MR - 1) / MR;
 
-                                    // Micro-kernel accumulates directly into strided C; the
-                                    // (rs, cs) pair covers both col-major (1, C_n_stride) and
-                                    // row-major (C_m_stride, 1) layouts without a branch.
-                                    micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, mr_actual,
-                                               nr_actual, C_tile, C_m_stride, C_n_stride);
+                            if (needs_c_scatter && !scatter_n_inner && (blk_compose || blk_runs_stream || use_a_order)) {
+                                LabeledSectionInternal("micro-kernel loop, C block");
+                                // ---- Cache-resident C block ----
+                                //
+                                // The tiles accumulate into one contiguous mc_len x
+                                // nc_len block and the block is written back to C
+                                // once, instead of every tile making its own trip to
+                                // a destination that may be hundreds of megabytes
+                                // wide. Two things come of it.
+                                //
+                                // The kernel's C operand is the block, so its row
+                                // stride is 1 whatever C's layout is, which is the
+                                // whole-vector store path rather than the stack tile
+                                // and MR*NR scalar stores.
+                                //
+                                // And the write-back's runs are as long as C's own
+                                // fastest index allows - up to that index's whole
+                                // extent - where the per-tile scatter could never
+                                // carry a run past MR, and paid an offset-table
+                                // lookup and a run computation for each of them.
+                                //
+                                // Only for the m-inner scatter. The n-inner variant
+                                // reads the block along its long stride, which undoes
+                                // the point; @ref mn_roles_should_swap has already
+                                // turned every n-inner case that HAS a contiguous
+                                // direction into an m-inner one, so what is left
+                                // there spends a cache line per element either way.
+                                // The accumulator is bounded by CHUNKING the N block,
+                                // not by shrinking it.
+                                //
+                                // Bounding NC instead is the obvious move and it is
+                                // wrong: A's DRAM traffic scales with 1/NC, so paying
+                                // for a cache-sized C block out of NC charges it to the
+                                // largest memory term in the contraction. Measured on
+                                // ccsd's rank-4 single, where the budget halved NC from
+                                // 2046 and A is 228 MB: every one of the twelve rows lost
+                                // 0.8 to 1.7 points of %GEMM, while the twelve double
+                                // rows - whose NC the budget did not reach - gained 0.5
+                                // to 3.0. The packed B block already covers the whole N
+                                // block, so a chunk costs no extra packing.
+                                // Half the L2, NOT the block strategy's c_temp_budget.
+                                //
+                                // That budget sizes a vendor GEMM's output buffer, where
+                                // the GEMM re-packs its own operands and the temp is the
+                                // only thing competing for L2. This accumulator competes
+                                // with the A panel and the B block, which are live across
+                                // the same loops, so a budget equal to the whole L2
+                                // leaves them nothing and the outcome falls to which
+                                // sets the block happens to land in. Measured on the full
+                                // ccsd_t group: at 512 KB one row of thirty-six
+                                // (`abcdef-gfab-degc` d, and only when run after thirty
+                                // other cases had fragmented the heap) collapsed to
+                                // 11.3 GF/s against its five identical-shape siblings'
+                                // 21.7; at 256 KB it is 21.3 and the group's double
+                                // median rises from 1.30x to 1.32x of TBLIS with every
+                                // row winning. 128 KB is too small - the double median
+                                // falls to 1.11x.
+                                int64_t const cb_budget = std::max<int64_t>(cpu_config().l2_cache_size / 2, int64_t{64} << 10);
+                                int64_t       nb_len    = cb_budget / (mc_len * static_cast<int64_t>(sizeof(ValueType)));
+                                nb_len                  = std::max<int64_t>((nb_len / NR) * NR, NR);
+                                nb_len                  = std::min(nb_len, nc_len);
+
+                                for (int64_t nb = 0; nb < nc_len; nb += nb_len) {
+                                    int64_t const nb_cur  = std::min(nb_len, nc_len - nb);
+                                    int64_t const jr_base = nb / NR;
+                                    tls_Ct.assign(static_cast<size_t>(mc_len) * static_cast<size_t>(nb_cur), ValueType{0});
+                                    ValueType *Cb = tls_Ct.data();
+
+                                    // Which of the two packed blocks the tile loops keep
+                                    // resident.
+                                    //
+                                    // The standard order streams the A panel and reuses one
+                                    // NR x KC column of B, which is right while B's block is
+                                    // the larger of the two - the shape this blocking was
+                                    // built for, where NC comes from an L3 budget and MC
+                                    // from an L2 one. It is exactly wrong for the intensli
+                                    // shapes, whose whole N is 24: there the B block is a
+                                    // few kilobytes and the A panel is the one that has just
+                                    // been gathered at a cache line per sixteen elements, so
+                                    // reading it back once per N tile pushes it through L2
+                                    // num_jr times over. Run those with the A panel
+                                    // innermost instead, so the pack's output is consumed
+                                    // while it is still in L1.
+                                    //
+                                    // The test is on the B block, not on a ratio: it earns
+                                    // its keep only while the whole thing stays resident
+                                    // alongside one A panel, and half the L1 is the budget
+                                    // that leaves room for the panel and the C block rows.
+                                    int64_t const num_jr_b = (nb_cur + NR - 1) / NR;
+                                    bool const    b_block_resident =
+                                        nb_cur * kc_len * static_cast<int64_t>(sizeof(ValueType)) * 2 <= cpu_config().l1_cache_size;
+                                    if (b_block_resident) {
+                                        for (int64_t ir = 0; ir < num_ir; ++ir) {
+                                            int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
+                                            for (int64_t jr = 0; jr < num_jr_b; ++jr) {
+                                                int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nb_cur - jr * NR);
+                                                micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
+                                                           Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
+                                                           Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
+                                            }
+                                        }
+                                    } else {
+                                        for (int64_t jr = 0; jr < num_jr_b; ++jr) {
+                                            int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nb_cur - jr * NR);
+                                            for (int64_t ir = 0; ir < num_ir; ++ir) {
+                                                int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
+                                                micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap + ir * MR * kc_len,
+                                                           Bp + (jr_base + jr) * NR * kc_len, mr_actual, nr_actual,
+                                                           Cb + ir * MR + jr * NR * mc_len, 1, mc_len);
+                                            }
+                                        }
+                                    }
+
+                                    LabeledSectionInternal("C block scatter");
+
+                                    if (use_a_order && (mc % blk_aorder.xa) == 0 && (mc_len % blk_aorder.xa) == 0) {
+                                        flush_c_block_transposed<ValueType>(C_data, Cb, mc, mc_len, nb, nb_cur, c_m_offsets, c_n_offsets,
+                                                                            blk_aorder.xa, blk_aorder.xc, store_c, may_stream_c,
+                                                                            streamed_c);
+                                        continue; // next C block chunk
+                                    }
+
+                                    if (blk_compose) {
+                                        int64_t pos = 0;
+                                        while (pos < mc_len) {
+                                            int64_t const run_m = std::min(blk_m_fast - ((mc + pos) % blk_m_fast), mc_len - pos);
+                                            // A partial m segment breaks the span - its rows
+                                            // stop short of the next n step - so those fall
+                                            // back to the column walk below.
+                                            if (run_m == blk_m_fast) {
+                                                int64_t jj = 0;
+                                                while (jj < nb_cur) {
+                                                    int64_t const run_n = std::min(blk_n_fast - ((nc + nb + jj) % blk_n_fast), nb_cur - jj);
+                                                    ValueType    *dst   = C_data + c_m_offsets[static_cast<size_t>(pos)] +
+                                                                          c_n_offsets[static_cast<size_t>(nb + jj)];
+                                                    int64_t const span  = run_n * blk_m_fast;
+                                                    // The span's columns are already adjacent in C, so
+                                                    // each one streams in place - no staging. A span
+                                                    // shorter than a few lines cannot fill a
+                                                    // write-combining buffer, so streaming it would pay
+                                                    // a partial write and keep the fetch.
+                                                    if (may_stream_c && store_c &&
+                                                        span * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes &&
+                                                        stream_run_ok(dst, run_m)) {
+                                                        for (int64_t q = 0; q < run_n; ++q) {
+                                                            stream_copy(dst + q * blk_m_fast, Cb + (jj + q) * mc_len + pos, run_m);
+                                                        }
+                                                        streamed_c = true;
+                                                        jj += run_n;
+                                                        continue;
+                                                    }
+                                                    for (int64_t q = 0; q < run_n; ++q) {
+                                                        ValueType const *s = Cb + (jj + q) * mc_len + pos;
+                                                        ValueType       *d = dst + q * blk_m_fast;
+                                                        if (store_c) {
+                                                            std::copy(s, s + run_m, d);
+                                                        } else {
+                                                            for (int64_t r = 0; r < run_m; ++r) {
+                                                                d[r] += s[r];
+                                                            }
+                                                        }
+                                                    }
+                                                    jj += run_n;
+                                                }
+                                                pos += run_m;
+                                                continue;
+                                            }
+                                            for (int64_t j = 0; j < nb_cur; ++j) {
+                                                ValueType       *dst = C_data + c_m_offsets[static_cast<size_t>(pos)] +
+                                                                       c_n_offsets[static_cast<size_t>(nb + j)];
+                                                ValueType const *s   = Cb + j * mc_len + pos;
+                                                if (store_c) {
+                                                    std::copy(s, s + run_m, dst);
+                                                } else {
+                                                    for (int64_t r = 0; r < run_m; ++r) {
+                                                        dst[r] += s[r];
+                                                    }
+                                                }
+                                            }
+                                            pos += run_m;
+                                        }
+                                        continue; // next C block chunk
+                                    }
+
+                                    for (int64_t j = 0; j < nb_cur; ++j) {
+                                        int64_t const    n_off = c_n_offsets[static_cast<size_t>(nb + j)];
+                                        ValueType const *src   = Cb + j * mc_len;
+                                        if (plan.c_m_dims.back().tensor_stride == 1) {
+                                            int64_t pos = 0;
+                                            while (pos < mc_len) {
+                                                int64_t const    run = std::min(blk_m_fast - ((mc + pos) % blk_m_fast), mc_len - pos);
+                                                ValueType       *dst = C_data + c_m_offsets[static_cast<size_t>(pos)] + n_off;
+                                                ValueType const *s   = src + pos;
+                                                if (may_stream_c && store_c &&
+                                                    run * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes &&
+                                                    stream_run_ok(dst, run)) {
+                                                    stream_copy(dst, s, run);
+                                                    streamed_c = true;
+                                                    pos += run;
+                                                    continue;
+                                                }
+                                                if (store_c) {
+                                                    std::copy(s, s + run, dst);
+                                                } else {
+                                                    for (int64_t r = 0; r < run; ++r) {
+                                                        dst[r] += s[r];
+                                                    }
+                                                }
+                                                pos += run;
+                                            }
+                                            continue;
+                                        }
+                                        if (store_c) {
+                                            for (int64_t i2 = 0; i2 < mc_len; ++i2) {
+                                                C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] = src[i2];
+                                            }
+                                            continue;
+                                        }
+                                        for (int64_t i2 = 0; i2 < mc_len; ++i2) {
+                                            C_data[c_m_offsets[static_cast<size_t>(i2)] + n_off] += src[i2];
+                                        }
+                                    }
+                                } // next C block chunk
+                            } else if (needs_c_scatter) {
+                                LabeledSectionInternal("micro-kernel loop, tile scatter");
+                                // Multi-M/N: GEMM into a contiguous temp tile, then scatter to C.
+                                //
+                                // The scatter walks C's inner group in RUNS where that group's
+                                // fastest index has unit stride: a run is the stretch of
+                                // consecutive flat coordinates that stays inside one extent of
+                                // that index, so within it C is contiguous and the update is a
+                                // straight vector copy or add. The block strategy's scatter has
+                                // done this all along; the tile scatter used to look every
+                                // element up in the offset table, which at K=24 (the rank-6
+                                // ccsd_t shapes) cost more than the 288 FMAs the tile computes
+                                // and held the path to 15 GF/s where the same kernel reaches 60.
+                                bool const    tile_m_unit = plan.c_m_dims.back().tensor_stride == 1;
+                                int64_t const tile_m_fast = plan.c_m_dims.back().size;
+                                bool const    tile_n_unit = plan.c_n_dims.back().tensor_stride == 1;
+                                int64_t const tile_n_fast = plan.c_n_dims.back().size;
+                                tls_Ct.resize(static_cast<size_t>(MR) * NR);
+                                for (int64_t jr = 0; jr < num_jr; ++jr) {
+                                    int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nc_len - jr * NR);
+
+                                    for (int64_t ir = 0; ir < num_ir; ++ir) {
+                                        int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
+
+                                        // Use a contiguous MR*NR temp buffer for the GEMM output.
+                                        std::fill(tls_Ct.begin(), tls_Ct.end(), ValueType{0});
+                                        ValueType *Ct = tls_Ct.data();
+
+                                        ValueType *Ap_panel = Ap + ir * MR * kc_len;
+                                        ValueType *Bp_panel = Bp + jr * NR * kc_len;
+
+                                        // Micro-kernel into contiguous Ct (col-major: rs=1, cs=MR)
+                                        micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, mr_actual,
+                                                   nr_actual, Ct, 1, MR);
+
+                                        // Scatter Ct back to C using the precomputed offset tables,
+                                        // innermost along whichever of C's index groups is closer
+                                        // packed. Ct is MR by NR and cache resident either way, so
+                                        // reading it with a stride costs nothing.
+                                        if (scatter_n_inner) {
+                                            for (int64_t ii = 0; ii < mr_actual; ++ii) {
+                                                int64_t const m_off = c_m_offsets[static_cast<size_t>(ir * MR + ii)];
+                                                if (tile_n_unit) {
+                                                    int64_t pos = 0;
+                                                    while (pos < nr_actual) {
+                                                        int64_t const n_global = nc + jr * NR + pos;
+                                                        int64_t const run =
+                                                            std::min(tile_n_fast - (n_global % tile_n_fast), nr_actual - pos);
+                                                        ValueType *dst = C_data + m_off + c_n_offsets[static_cast<size_t>(jr * NR + pos)];
+                                                        ValueType const *src = Ct + pos * MR + ii;
+                                                        if (store_c) {
+                                                            for (int64_t r = 0; r < run; ++r) {
+                                                                dst[r] = src[r * MR];
+                                                            }
+                                                        } else {
+                                                            for (int64_t r = 0; r < run; ++r) {
+                                                                dst[r] += src[r * MR];
+                                                            }
+                                                        }
+                                                        pos += run;
+                                                    }
+                                                    continue;
+                                                }
+                                                if (store_c) {
+                                                    for (int64_t jj = 0; jj < nr_actual; ++jj) {
+                                                        C_data[m_off + c_n_offsets[static_cast<size_t>(jr * NR + jj)]] = Ct[jj * MR + ii];
+                                                    }
+                                                    continue;
+                                                }
+                                                for (int64_t jj = 0; jj < nr_actual; ++jj) {
+                                                    C_data[m_off + c_n_offsets[static_cast<size_t>(jr * NR + jj)]] += Ct[jj * MR + ii];
+                                                }
+                                            }
+                                        } else {
+                                            for (int64_t jj = 0; jj < nr_actual; ++jj) {
+                                                int64_t const    n_off = c_n_offsets[static_cast<size_t>(jr * NR + jj)];
+                                                ValueType const *col   = Ct + jj * MR;
+                                                if (tile_m_unit) {
+                                                    int64_t pos = 0;
+                                                    while (pos < mr_actual) {
+                                                        int64_t const m_global = mc + ir * MR + pos;
+                                                        int64_t const run =
+                                                            std::min(tile_m_fast - (m_global % tile_m_fast), mr_actual - pos);
+                                                        ValueType *dst = C_data + c_m_offsets[static_cast<size_t>(ir * MR + pos)] + n_off;
+                                                        ValueType const *src = col + pos;
+                                                        if (store_c) {
+                                                            std::copy(src, src + run, dst);
+                                                        } else {
+                                                            for (int64_t r = 0; r < run; ++r) {
+                                                                dst[r] += src[r];
+                                                            }
+                                                        }
+                                                        pos += run;
+                                                    }
+                                                    continue;
+                                                }
+                                                if (store_c) {
+                                                    for (int64_t ii = 0; ii < mr_actual; ++ii) {
+                                                        C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] = col[ii];
+                                                    }
+                                                    continue;
+                                                }
+                                                for (int64_t ii = 0; ii < mr_actual; ++ii) {
+                                                    C_data[c_m_offsets[static_cast<size_t>(ir * MR + ii)] + n_off] += col[ii];
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                LabeledSectionInternal("micro-kernel loop, direct C");
+                                // Single-M, single-N: direct GEMM into C (original fast path).
+                                for (int64_t jr = 0; jr < num_jr; ++jr) {
+                                    int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nc_len - jr * NR);
+
+                                    for (int64_t ir = 0; ir < num_ir; ++ir) {
+                                        int64_t const mr_actual = std::min(static_cast<int64_t>(MR), mc_len - ir * MR);
+
+                                        ValueType *Ap_panel = Ap + ir * MR * kc_len;
+                                        ValueType *Bp_panel = Bp + jr * NR * kc_len;
+                                        ValueType *C_tile   = C_data + (mc + ir * MR) * C_m_stride + (nc + jr * NR) * C_n_stride;
+
+                                        // Micro-kernel accumulates directly into strided C; the
+                                        // (rs, cs) pair covers both col-major (1, C_n_stride) and
+                                        // row-major (C_m_stride, 1) layouts without a branch.
+                                        micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, mr_actual,
+                                                   nr_actual, C_tile, C_m_stride, C_n_stride);
+                                    }
                                 }
                             }
                         }
+                        *team->base += n_mc_blk;
+                        // Every member is done with this K block's panel before any repacks it. The next K block's
+                        // blocks may go to other members, which read the C blocks this one wrote, so its streaming
+                        // stores drain first.
+                        if (team->size > 1) {
+                            if (streamed_c) {
+                                einsums::simd::stream_fence();
+                            }
+                            LabeledSectionInternal("team: wait for the panel to be consumed");
+                            team->state->barrier.wait();
+                        }
                     }
-                }
 
-                // Reclaim excess thread-local buffer memory.
-                auto shrink_tls = [](auto &v) {
-                    if (v.capacity() > 2 * v.size() && v.capacity() > 4096) {
-                        v.shrink_to_fit();
+                    // Reclaim excess thread-local buffer memory.
+                    auto shrink_tls = [](auto &v) {
+                        if (v.capacity() > 2 * v.size() && v.capacity() > 4096) {
+                            v.shrink_to_fit();
+                        }
+                    };
+                    // Streaming stores are weakly ordered against everything else, so
+                    // this thread's share of C is not reliably visible until they have
+                    // drained. Once per N block, which is as rare as it can be while
+                    // still being inside the loop that did the writing.
+                    if (streamed_c) {
+                        einsums::simd::stream_fence();
                     }
-                };
-                // Streaming stores are weakly ordered against everything else, so
-                // this thread's share of C is not reliably visible until they have
-                // drained. Once per N block, which is as rare as it can be while
-                // still being inside the loop that did the writing.
-                if (streamed_c) {
-                    einsums::simd::stream_fence();
-                }
 
-                shrink_tls(tls_Ap);
-                shrink_tls(tls_Bp);
-                if (needs_c_scatter)
-                    shrink_tls(tls_Ct);
+                    shrink_tls(tls_Ap);
+                    if (team->bp == nullptr) {
+                        shrink_tls(tls_Bp);
+                    }
+                    if (needs_c_scatter)
+                        shrink_tls(tls_Ct);
+                }
+            }
+            if (members > 1 && team_panels.capacity() > 2 * team_panels.size() && team_panels.capacity() > 4096) {
+                team_panels.shrink_to_fit();
             }
         }
 

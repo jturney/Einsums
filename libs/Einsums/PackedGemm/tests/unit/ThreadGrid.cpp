@@ -194,6 +194,32 @@ void ring(int threads, T c_pf, T ab_pf) {
     check_against(C, C_ref, 12 * 9, ab_pf, c_pf);
 }
 
+/// C(a,b,c) = A(b,d,a) * B(d,c) deep and wide enough that a team re-packs its shared panel: K = 1600
+/// is more than one K block and N = 900 more than one panel at the team blocking (half an L3 of a
+/// few MiB holds a KC of about a thousand by a few hundred columns), so the members meet at the
+/// barriers many times and every member's rows cross every panel.
+template <typename T>
+void deep_wide(int threads, T c_pf, T ab_pf) {
+    ThreadCount const guard{threads};
+    auto              A     = create_random_tensor<T>("A", 12, 1600, 8);
+    auto              B     = create_random_tensor<T>("B", 1600, 900);
+    auto              C     = create_random_tensor<T>("C", 8, 12, 900);
+    Tensor<T, 3>      C_ref = C;
+    testing::reference_einsum("abc <- bda ; dc", c_pf, &C_ref, ab_pf, A, B);
+
+    bool const handled = tensor_algebra::detail::try_packed_gemm_indices<false, false>(c_pf, Indices{a, b, c}, &C, ab_pf, Indices{b, d, a},
+                                                                                       A, Indices{d, c}, B);
+    REQUIRE(handled);
+    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
+    // Teams form on the tile engine wherever the threads divide into the cores sharing an L3;
+    // elsewhere every thread works alone, which the same loop also runs. The block-GEMM strategy,
+    // which complex takes on this scatter shape, keeps panels of its own.
+    int const  per_l3 = packed_gemm::cpu_config().cores_per_l3;
+    bool const tile   = std::string(packed_gemm::last_packed_engine()) == "tile";
+    CHECK(packed_gemm::last_team_size() == ((tile && threads > 1 && per_l3 > 1 && threads % per_l3 == 0) ? per_l3 : 1));
+    check_against(C, C_ref, 1600, ab_pf, c_pf);
+}
+
 } // namespace
 
 TEMPLATE_LIST_TEST_CASE("thread grid: tall thin-N contraction at every thread count", "[PackedGemm][ThreadGrid]", testing::AllScalarTypes) {
@@ -211,6 +237,19 @@ TEMPLATE_LIST_TEST_CASE("thread grid: ring scatter at every thread count", "[Pac
     for (int const threads : kThreadCounts) {
         CAPTURE(threads);
         ring<T>(threads, testing::prefactor<T>(0.3, -0.7), testing::prefactor<T>(-0.9, 0.2));
+    }
+}
+
+TEMPLATE_LIST_TEST_CASE("thread grid: teams share a panel across K and N blocks", "[PackedGemm][ThreadGrid]", testing::AllScalarTypes) {
+    // Threads that share an L3 share one packed B panel, pack it together and meet before and after
+    // each K block. Counts that divide into whole teams (3, 6, 12 and 24 on a three-core-per-L3 part)
+    // and ones that do not (4, 7) both run here, as does one thread, whose blocking and loop must be
+    // the ones the engine always had.
+    using T = TestType;
+    for (int const threads : {1, 3, 4, 6, 7, 12, 24}) {
+        CAPTURE(threads);
+        deep_wide<T>(threads, testing::prefactor<T>(0.3, -0.7), testing::prefactor<T>(1.1, 0.4));
+        deep_wide<T>(threads, T{0}, testing::prefactor<T>(-0.9, 0.2));
     }
 }
 
