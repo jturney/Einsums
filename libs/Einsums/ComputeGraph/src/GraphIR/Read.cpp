@@ -543,6 +543,47 @@ PredExpr read_pred_expr(Value const &value, std::string const &path, Problems &p
     return PredExpr{true};
 }
 
+/// The most memory one buffer can ever occupy on a platform that reads these files.
+///
+/// User space on x86-64, arm64 and Windows x64 is 47 bits of address: Linux maps above it only
+/// when asked to, even with five-level paging. A tensor or gate buffer declared larger than this
+/// cannot be allocated anywhere, so the reader reports it rather than asking the allocator. The
+/// system allocator would refuse such a request with std::bad_alloc, which the loader turns into
+/// a report of its own, but a sanitizer's allocator ends the process instead, and a verdict on a
+/// file should not depend on which allocator happens to be linked.
+constexpr std::size_t max_buffer_bytes = std::size_t{1} << 47;
+
+/// Bytes per element of @p dtype; an unknown dtype counts as one byte, and the builder reports it.
+std::size_t element_bytes(packed_gemm::ScalarType dtype) {
+    switch (dtype) {
+    case packed_gemm::ScalarType::Float32:
+        return sizeof(float);
+    case packed_gemm::ScalarType::Float64:
+    case packed_gemm::ScalarType::Complex64:
+        return sizeof(double);
+    case packed_gemm::ScalarType::Complex128:
+        return 2 * sizeof(double);
+    case packed_gemm::ScalarType::Unknown:
+        break;
+    }
+    return 1;
+}
+
+/// Whether @p dims of @p dtype fit in @ref max_buffer_bytes, computed without overflowing.
+bool fits_in_a_buffer(std::vector<std::size_t> const &dims, packed_gemm::ScalarType dtype) {
+    if (std::ranges::find(dims, std::size_t{0}) != dims.end()) {
+        return true; // An empty tensor holds nothing, however large its other extents.
+    }
+    std::size_t bytes = element_bytes(dtype);
+    for (std::size_t const extent : dims) {
+        if (bytes > max_buffer_bytes / extent) {
+            return false;
+        }
+        bytes *= extent;
+    }
+    return bytes <= max_buffer_bytes;
+}
+
 /// One tensor record. A MANIFEST entry and an intermediate share most of their
 /// shape and differ in the two directions the schema keeps apart: a manifest
 /// entry declares a direction and an alias parent, an intermediate declares
@@ -580,6 +621,10 @@ IrTensor read_tensor(Fields const &record, bool manifest_entry) {
 
     if (out.dims.size() != out.rank) {
         record.note(fmt::format("rank is {} but {} dims are given", out.rank, out.dims.size()));
+    } else if (!fits_in_a_buffer(out.dims, out.dtype)) {
+        record.note("dims", record.position(),
+                    fmt::format("dims [{}] of {} need more than the {} bytes any platform can allocate", fmt::join(out.dims, ","),
+                                out.dtype, max_buffer_bytes));
     }
     if (!out.dim_symbols.empty() && out.dim_symbols.size() != out.rank) {
         record.note(
@@ -984,6 +1029,11 @@ IrDocument read_document(Value const &root, Problems &problems, SpaceRegistry co
     document->each_object("gate_flags", [&](Fields const &entry) {
         std::string const name = entry.str("name");
         if (auto const size = entry.count("size")) {
+            if (*size > max_buffer_bytes) {
+                entry.note("size", entry.position(),
+                           fmt::format("{} flags need more than the {} bytes any platform can allocate", *size, max_buffer_bytes));
+                return;
+            }
             out.gate_flags.emplace_back(name, *size);
         }
     });

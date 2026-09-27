@@ -943,6 +943,51 @@ TEST_CASE("SaveLoad - a negative id or size is a problem and never a silent zero
     }
 }
 
+TEST_CASE("SaveLoad - a buffer no platform can allocate is reported, never requested", "[ComputeGraph][SaveLoad]") {
+    // Defends the reader against sizing its allocations by the file. An extent of 2^50 used to
+    // reach the loader, which asked the allocator for petabytes of placeholder storage. The
+    // system allocator refused with std::bad_alloc and the load reported that, but a sanitizer's
+    // allocator ends the process on the same request, so the IR mutation fuzzer died silently on
+    // the ThreadSanitizer leg on its first draw. A product that wraps size_t reached the builder
+    // as a small buffer carrying enormous extents. Each is now reported by the reader, before
+    // anything is allocated, and the message names the field.
+    auto A = create_zero_tensor<double>("A", 3, 4);
+
+    cg::GateFlags const gates(2, true);
+    cg::Graph           graph("oversized");
+    graph.name_gate_flags("blocks", gates);
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::scale(2.0, &A);
+    }
+    std::string const text = must_save(graph, cg::SaveOptions{.pretty = false});
+
+    auto const reported = [](std::string const &mutated, std::string_view where) {
+        auto const result = cg::validate_graph_ir_string(mutated);
+        REQUIRE_FALSE(result.has_value());
+        REQUIRE_THAT(result.error().message, Catch::Matchers::ContainsSubstring(std::string(where)));
+        REQUIRE_THAT(result.error().message, Catch::Matchers::ContainsSubstring("any platform can allocate"));
+        REQUIRE_THAT(load_refusal(mutated), Catch::Matchers::ContainsSubstring("any platform can allocate"));
+    };
+
+    SECTION("an extent of 2^50") {
+        reported(patched(text, R"("dims":[3,4])", R"("dims":[3,1125899906842624])"), "$.manifest[0].dims");
+    }
+    SECTION("extents whose product wraps size_t") {
+        // 2^62 * 4 is 2^64, which is 0 in a size_t.
+        reported(patched(text, R"("dims":[3,4])", R"("dims":[4611686018427387904,4])"), "$.manifest[0].dims");
+    }
+    SECTION("a gate-flag array of 2^50 entries") {
+        reported(patched(text, R"("size":2)", R"("size":1125899906842624)"), "$.gate_flags[0].size");
+    }
+    SECTION("an empty tensor is not oversized, however large its other extent") {
+        auto const result = cg::validate_graph_ir_string(patched(text, R"("dims":[3,4])", R"("dims":[0,1125899906842624])"));
+        if (!result.has_value()) {
+            REQUIRE_THAT(result.error().message, !Catch::Matchers::ContainsSubstring("any platform can allocate"));
+        }
+    }
+}
+
 TEST_CASE("SaveLoad - a file with a sorted target list loads in C's order", "[ComputeGraph][SaveLoad]") {
     // Files written before the target list followed C's order hold it sorted. The loader derives
     // the role lists again, so such a file describes its contraction as a fresh capture does.
@@ -1495,7 +1540,7 @@ TEST_CASE("SaveLoad - a load resolves spaces against a registry the caller owns"
 
     // And the loaded graph USES it, so the ids read back are the ones it was built from
     // rather than whatever sits at those indices in the global registry.
-    cg::Graph &loaded = const_cast<cg::Graph &>(*against_mine);
+    auto &loaded = const_cast<cg::Graph &>(*against_mine);
     CHECK(&loaded.space_registry() == &mine);
     // The manifest is held in a local on purpose: `manifest()` returns BY VALUE, so
     // `loaded.manifest().find("F")` leaves the pointer dangling once the temporary dies at
@@ -1632,9 +1677,9 @@ void capture_scalar_einsum(cg::Graph &graph, RuntimeTensor<T> &e, RuntimeTensor<
 // refused by the file it had just written ("operand C exposes no rank-erased geometry").
 TEMPLATE_LIST_TEST_CASE("SaveLoad - a rank-0 tensor object loads, binds and computes", "[ComputeGraph][SaveLoad][Rank0]",
                         testing::AllScalarTypes) {
-    using T            = TestType;
-    RuntimeTensor<T> A = create_random_tensor<T>("A", 3, 4);
-    RuntimeTensor<T> e("e", std::vector<size_t>{});
+    using T                  = TestType;
+    RuntimeTensor<T> const A = create_random_tensor<T>("A", 3, 4);
+    RuntimeTensor<T>       e("e", std::vector<size_t>{});
     e.zero();
 
     cg::Graph graph("scalar_einsum");
@@ -1677,9 +1722,9 @@ TEST_CASE("SaveLoad - bind refuses the wrong rank-0 kind in either direction", "
     double as_scalar = 0.0;
     CHECK_NOTHROW(dot_loaded.bind_scalar("dot_result", &as_scalar));
 
-    RuntimeTensor<double> M = create_random_tensor<double>("A", 3, 4);
-    RuntimeTensor<double> e("e", std::vector<size_t>{});
-    cg::Graph             einsum_graph("scalar_einsum");
+    RuntimeTensor<double> const M = create_random_tensor<double>("A", 3, 4);
+    RuntimeTensor<double>       e("e", std::vector<size_t>{});
+    cg::Graph                   einsum_graph("scalar_einsum");
     capture_scalar_einsum(einsum_graph, e, M);
     cg::Graph einsum_loaded = must_load(must_save(einsum_graph));
     double    bare          = 0.0;
@@ -1689,9 +1734,9 @@ TEST_CASE("SaveLoad - bind refuses the wrong rank-0 kind in either direction", "
 // Defends: the reader's check on the new key. Any value but the two kinds is a malformed record,
 // and a file older than the key, which cannot carry it, still reads as a bare element.
 TEST_CASE("SaveLoad - a rank-0 kind must be one of the two", "[ComputeGraph][SaveLoad][Rank0]") {
-    RuntimeTensor<double> A = create_random_tensor<double>("A", 3, 4);
-    RuntimeTensor<double> e("e", std::vector<size_t>{});
-    cg::Graph             graph("scalar_einsum");
+    RuntimeTensor<double> const A = create_random_tensor<double>("A", 3, 4);
+    RuntimeTensor<double>       e("e", std::vector<size_t>{});
+    cg::Graph                   graph("scalar_einsum");
     capture_scalar_einsum(graph, e, A);
 
     std::string const text = must_save(graph);
