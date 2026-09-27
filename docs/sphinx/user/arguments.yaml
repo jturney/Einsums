@@ -195,6 +195,22 @@
     Only contractions that reach this route are affected, which is a small minority: most take the
     packed loops instead, and those block their own buffers against the cache.
 
+"einsums:packed-gemm:complex-1m":
+  added: "2.0.0"
+  body: |
+    Run complex contractions on x86 through the real vector tile kernel, using the 1m method. Off
+    by default.
+
+    The vector tile kernel exists only for real types. Without this flag a complex contraction that
+    reaches the packed loops calls one vendor GEMM per cache block when its output must be
+    scattered, and runs a portable complex tile otherwise. With it, both pack the complex operands
+    into the expanded real form of the 1m method, and the real tile of the underlying type computes
+    the complex result directly.
+
+    Only the kernel changes. Which contractions reach the packed loops is decided exactly as before.
+    The flag has no effect below x86-64-v2 or on other architectures, and the SME rung always uses
+    the 1m method for complex types.
+
 "einsums:profile:port":
   added: "2.0.0"
   body: |

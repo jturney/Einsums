@@ -18,6 +18,11 @@ char const *&last_contraction_route() {
     return route;
 }
 
+char const *&last_packed_engine() {
+    thread_local char const *engine = "none";
+    return engine;
+}
+
 KernelRoute &last_route_pin() {
     thread_local KernelRoute pin = KernelRoute::Adaptive;
     return pin;

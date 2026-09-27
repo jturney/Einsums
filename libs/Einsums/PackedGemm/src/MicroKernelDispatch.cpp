@@ -16,9 +16,12 @@
 // einsums::simd::selected_arch(), cached per element type. The kernel and its block shape resolve through
 // the same ladder so packing geometry always matches the kernel.
 
+#include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/Options/Get.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
+#include <Einsums/PackedGemm/Options.hpp>
 #include <Einsums/SIMD/RungLadder.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
@@ -34,11 +37,37 @@ EINSUMS_NAMESPACE_BEGIN(packed_gemm)
                            T *C, int64_t rs_c, int64_t cs_c);                                                                              \
     template <typename T>                                                                                                                  \
     MicroKernelShape micro_kernel_block();                                                                                                 \
+    template <typename T>                                                                                                                  \
+    MicroKernelShape micro_kernel_block_1m();                                                                                              \
     }
 
 EINSUMS_SIMD_FOR_EACH_BUILT_RUNG(EINSUMS_PACKED_GEMM_DECLARE_RUNG_ENTRIES)
 
 #undef EINSUMS_PACKED_GEMM_DECLARE_RUNG_ENTRIES
+
+namespace {
+
+/// The shape the selected rung's 1m route advertises for complex @p T (spelled
+/// @p type_name in the log), which is
+/// the rung's ordinary shape where it has no 1m route to opt into.
+///
+/// Resolved once, like the default shape above, but read only while the flag is
+/// set: the flag is read on every call so a test or a caller that sets it at run
+/// time sees the change on its next contraction.
+template <typename T>
+MicroKernelShape complex_1m_shape(char const *type_name) {
+    using ShapeFn                       = MicroKernelShape (*)();
+    static ShapeFn const          fn    = einsums::simd::select<ShapeFn>(EINSUMS_SIMD_LADDER(micro_kernel_block_1m<T>));
+    static MicroKernelShape const shape = [type_name] {
+        MicroKernelShape const s = fn();
+        EINSUMS_LOG_INFO("packed_gemm kernel<{}> with --{}: rung={}, tile MR={} x NR={}, use_1m={}", type_name,
+                         option::PackedGemmComplex1m.name, einsums::simd::to_string(einsums::simd::selected_arch()), s.mr, s.nr, s.use_1m);
+        return s;
+    }();
+    return shape;
+}
+
+} // namespace
 
 #define EINSUMS_PACKED_GEMM_DEFINE_ENTRY(T)                                                                                                \
     template <>                                                                                                                            \
@@ -56,6 +85,11 @@ EINSUMS_SIMD_FOR_EACH_BUILT_RUNG(EINSUMS_PACKED_GEMM_DECLARE_RUNG_ENTRIES)
                              einsums::simd::to_string(einsums::simd::selected_arch()), s.mr, s.nr, s.kc, s.block_gemm, s.fast_scatter);    \
             return s;                                                                                                                      \
         }();                                                                                                                               \
+        if constexpr (IsComplexV<T>) {                                                                                                     \
+            if (config::get(option::PackedGemmComplex1m)) {                                                                                \
+                return complex_1m_shape<T>(#T);                                                                                            \
+            }                                                                                                                              \
+        }                                                                                                                                  \
         return shape;                                                                                                                      \
     }
 

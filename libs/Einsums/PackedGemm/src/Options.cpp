@@ -11,6 +11,7 @@ EINSUMS_NAMESPACE_BEGIN()
 
 int register_Einsums_PackedGemm_options() {
     cl::register_option(option::PackedGemmFlattenBudget);
+    cl::register_option(option::PackedGemmComplex1m);
     return 0;
 }
 

@@ -43,6 +43,24 @@ inline constinit cl::ConfigOption<std::int64_t> PackedGemmFlattenBudget = cl::co
     "einsums:packed-gemm:flatten-budget", "Cap the multi-K flatten route's temporary buffers, in MiB (0 = transpose whole operands)",
     "PackedGemm", 0, "MIB", cl::RangeBetween<std::int64_t>(0, std::int64_t{1} << 20));
 
+/// Run complex contractions on x86 through the rung's REAL tile kernel, by the 1m method.
+///
+/// Off by default. Without it a complex contraction on an x86 rung takes the
+/// block strategy on the scatter path (one vendor GEMM per cache block, then a
+/// scatter) and the portable complex tile on the tile path, because the vector
+/// tile only exists for float and double. With it, both take Van Zee's 1m
+/// method instead: A packs in the expanded 1e form, B in the 1r form, and the
+/// real vector tile of the underlying type computes interleaved complex output
+/// that is scattered straight into C. It changes the engine only, never the
+/// route: which contractions reach the packed loops is decided exactly as
+/// before.
+///
+/// The SME rung always runs complex this way and ignores the flag, and so does
+/// every rung below x86-64-v2 and every non-x86 rung, which have no 1m route to
+/// switch to.
+inline constinit cl::ConfigOption<bool> PackedGemmComplex1m = cl::config_flag(
+    "einsums:packed-gemm:complex-1m", "Run complex contractions on x86 through the real tile kernel (1m method)", "PackedGemm", false);
+
 EINSUMS_NAMESPACE_END(option)
 
 EINSUMS_NAMESPACE_BEGIN()

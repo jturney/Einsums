@@ -5,6 +5,7 @@
 
 set(PackedGemmTests
     BatchedMultiK.cpp
+    Complex1m.cpp
     FlattenLayouts.cpp
     MicroKernelTile.cpp
     PackingPlan.cpp
@@ -46,3 +47,4 @@ einsums_add_unit_test("Modules.PackedGemm" DirectBlasPaths)
 include(Einsums_AddSIMDDispatch)
 einsums_add_simd_rung_tests("Modules.PackedGemm" MultiMN)
 einsums_add_simd_rung_tests("Modules.PackedGemm" MicroKernelTile)
+einsums_add_simd_rung_tests("Modules.PackedGemm" Complex1m)

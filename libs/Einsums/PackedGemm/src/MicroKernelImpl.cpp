@@ -284,6 +284,37 @@ MicroKernelShape micro_kernel_block() {
     return shape;
 }
 
+/// @brief The register-block shape of this rung's 1m route for complex @p T,
+///        or micro_kernel_block<T>() where the rung has none.
+///
+/// The opt-in counterpart of the SME branch above (see
+/// option::PackedGemmComplex1m): on an x86 rung from V2 up, complex runs on the
+/// REAL vector tile of its underlying type, so the advertised geometry is that
+/// kernel's, and blis_contraction doubles the working extents. Only the engine
+/// changes. fast_scatter keeps the complex shape's value, so the decision of
+/// which contractions reach the packed loops at all is the same with the flag
+/// on or off, and kc stays 0: the K block comes from the cache model, which
+/// keeps the B micro-panel in L1, where the SME rung's deep ZA-tile K block
+/// would not.
+template <typename T>
+MicroKernelShape micro_kernel_block_1m() {
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__SSE4_2__) || defined(__AVX__))
+    if constexpr (std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>) {
+        using RealT = typename T::value_type;
+        if constexpr (has_vector_kernel<RealT>) {
+            MicroKernelShape shape = micro_kernel_block<RealT>();
+            shape.kc               = 0;
+            shape.block_gemm       = false;
+            shape.fast_scatter     = micro_kernel_block<T>().fast_scatter;
+            shape.use_1m           = true;
+            shape.use_3m           = false;
+            return shape;
+        }
+    }
+#endif
+    return micro_kernel_block<T>();
+}
+
 template void micro_kernel_tile<float>(int, int, int64_t, float, float const *, float const *, int64_t, int64_t, float *, int64_t, int64_t);
 template void micro_kernel_tile<double>(int, int, int64_t, double, double const *, double const *, int64_t, int64_t, double *, int64_t,
                                         int64_t);
@@ -298,6 +329,11 @@ template MicroKernelShape micro_kernel_block<float>();
 template MicroKernelShape micro_kernel_block<double>();
 template MicroKernelShape micro_kernel_block<std::complex<float>>();
 template MicroKernelShape micro_kernel_block<std::complex<double>>();
+
+template MicroKernelShape micro_kernel_block_1m<float>();
+template MicroKernelShape micro_kernel_block_1m<double>();
+template MicroKernelShape micro_kernel_block_1m<std::complex<float>>();
+template MicroKernelShape micro_kernel_block_1m<std::complex<double>>();
 
 } // namespace EINSUMS_SIMD_ARCH_NS
 EINSUMS_NAMESPACE_END(packed_gemm)

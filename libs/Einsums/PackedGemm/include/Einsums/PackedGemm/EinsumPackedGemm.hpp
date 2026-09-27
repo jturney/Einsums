@@ -316,6 +316,16 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 /// thread-local is not enough.
 [[nodiscard]] EINSUMS_EXPORT char const *&last_contraction_route();
 
+/// Which engine the packed loops of the most recent "packed" contraction on this
+/// thread ran: "tile" (the rung's tile kernel), "block_gemm" (one vendor GEMM per
+/// cache block, then a scatter), "3m" (the block strategy on three real GEMMs),
+/// or "1m" (complex on the real tile kernel, see MicroKernelShape::use_1m).
+///
+/// Test introspection only, like @ref last_contraction_route, and written only
+/// when that route is "packed": it says how the packed loops ran, not whether
+/// they did. Defined out of line for the same reason.
+[[nodiscard]] EINSUMS_EXPORT char const *&last_packed_engine();
+
 /// The route pin the most recent route decision on this thread read.
 ///
 /// Test introspection ONLY, alongside @ref last_contraction_route: that one
@@ -1514,6 +1524,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // the multi-dim C elements are non-contiguous in memory.
         bool const needs_c_scatter = scatter_c;
         bool const block_strategy  = needs_c_scatter && shape.block_gemm;
+        last_packed_engine()       = (is_complex && shape.use_1m) ? "1m"
+                                     : block_strategy             ? ((is_complex && shape.use_3m) ? "3m" : "block_gemm")
+                                                                  : "tile";
 
         // Is this an M group ordered for A, with C's contiguity one coordinate
         // in? See @ref AOrderFlush. When it is, pack_A is a memcpy and the C
@@ -1901,10 +1914,31 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         MicroKernelFn<RealT> const micro_real = micro_kernel_entry<RealT>();
                         int64_t const              Mh         = 2 * M;
                         int64_t const              Kh         = 2 * K;
-                        int64_t const              KHC        = std::min<int64_t>(int64_t{4096}, Kh); // even: Kh even, 4096 even
-                        int64_t const              MHC        = 256;                                  // even
-                        int64_t const              num_ir_max = (MHC + MR - 1) / MR;
-                        int64_t const              num_jr_max = (nc_len + NR - 1) / NR;
+                        // The K and M blocks, in real units. A rung that fixes the K
+                        // block (the SME rung, whose ZA tiles hold C for the whole K
+                        // loop) keeps its deep one and the M block it was tuned with.
+                        // A register kernel instead needs its B micro-panel, NR * KHC
+                        // reals, to stay in L1 across the M sweep, which a deep K block
+                        // breaks (NR = 6 by 4096 doubles is 192 KiB), so it takes the
+                        // cache model's blocking for the real kernel on the real extents.
+                        // Both must be even, so that a block never splits a complex
+                        // element's (re, im) pair: Kh is even, compute_blocking rounds
+                        // KC to a multiple of 8 and MC to one of MR, and MR is a whole
+                        // number of vectors.
+                        int64_t KHC = 0;
+                        int64_t MHC = 0;
+                        if (shape.kc > 0) {
+                            KHC = std::min<int64_t>(shape.kc, Kh);
+                            MHC = 256;
+                        } else {
+                            BlockingParams const blk_1m = compute_blocking(static_cast<int64_t>(sizeof(RealT)), MR, NR, Mh, N, Kh);
+                            KHC                         = std::min<int64_t>(blk_1m.KC, Kh);
+                            MHC                         = blk_1m.MC;
+                        }
+                        KHC                      = std::max<int64_t>(2, KHC - KHC % 2);
+                        MHC                      = std::max<int64_t>(2, MHC - MHC % 2);
+                        int64_t const num_ir_max = (MHC + MR - 1) / MR;
+                        int64_t const num_jr_max = (nc_len + NR - 1) / NR;
 
                         static thread_local std::vector<RealT> tls_Ap1, tls_Bp1, tls_Cb1;
                         tls_Ap1.resize(static_cast<size_t>(num_ir_max * MR * KHC));
