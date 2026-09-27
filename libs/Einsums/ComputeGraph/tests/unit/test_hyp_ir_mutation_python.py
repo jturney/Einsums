@@ -56,7 +56,7 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 
 import einsums
 import einsums.graph as cg
-from _sanitizer_scaling import sanitizer_examples
+from _sanitizer_scaling import fuzz_capped, sanitizer_examples
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _GOLDEN_MIXED = os.path.join(_HERE, "goldens", "v1_0_0_mixed.eig.json")
@@ -633,6 +633,8 @@ def test_mutation_corpus_is_not_all_reports():
     trivially.
     """
     assert _STATS["trials"] > 0, "no mutation trial ran"
+    if fuzz_capped():
+        pytest.skip("sample counts are capped, too few trials for every outcome to occur")
     # Most mutations touch an extent, a rank or an id, and the loader checks those against each
     # other and against the GEMM hints, so reports dominate by design. What the guard needs is
     # every non-report outcome to occur: files that ran and matched, and well-formed different

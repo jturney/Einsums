@@ -100,3 +100,12 @@ def sanitizer_examples(n: int) -> int:
     """Hypothesis ``max_examples`` for a property test: ``n`` normally, a capped
     value under a sanitizer run (or an explicit ``EINSUMS_FUZZ_MAX_SEEDS``)."""
     return _cap(n, _SANITIZER_EXAMPLE_CAP)
+
+
+def fuzz_capped() -> bool:
+    """Whether sample counts are capped (a sanitizer run, or ``EINSUMS_FUZZ_MAX_SEEDS``).
+
+    A guard over the composition of a fuzz corpus (how often each outcome or
+    pass occurred) cannot hold on a handful of samples, so it asks this first.
+    """
+    return _CAPPING
