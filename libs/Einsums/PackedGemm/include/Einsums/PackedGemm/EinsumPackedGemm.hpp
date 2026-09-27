@@ -423,6 +423,65 @@ inline bool mn_roles_should_swap(PackingPlan const &plan, MicroKernelShape const
            plan.c_m_dims.back().tensor_stride != 1 && plan.N_total >= 2 * static_cast<int64_t>(shape.mr);
 }
 
+/// @brief How blis_contraction's threads divide the output: @c tn groups along N, each split
+///        @c tm ways along M, with N cut into blocks of @c nc_blk columns.
+struct ThreadGrid {
+    int     tn     = 1;
+    int     tm     = 1;
+    int64_t nc_blk = 0;
+};
+
+/// @brief The thread grid for an M x N contraction with @p threads threads, M groups a whole
+///        number of @p m_unit rows, and N blocks no wider than @p nc_cap.
+///
+/// Splitting N alone, which is what the packed loops did, has two costs that grow with the thread
+/// count. Each thread packs all of A for its own N block, so A is packed once per thread; and a
+/// contraction with few N columns has fewer blocks of NR than there are threads, so the rest sit
+/// idle (the TCB's intensli cases have N = 24, which stopped at four threads). Splitting M as well
+/// lets the threads of one N block each take a disjoint group of M rows.
+///
+/// The grid is the one with the shortest critical path, the busiest thread's share of the M x N
+/// output, and among grids within 3% of that, the one that packs the fewest elements: A is packed
+/// once per N block and B once per M group, M * n_blocks + N * tm per unit of K. The N blocks are
+/// cut equal, a whole number per N group, rather than at @p nc_cap with a runt left over: at
+/// M = N = 5184 on 12 threads a 1020-column cap cut N into five full blocks and an 84-column one,
+/// and the two threads that drew the runt sat idle while ten did two full blocks each.
+///
+/// N blocks are whole multiples of NR and M groups whole multiples of @p m_unit (an MR, or an MC
+/// block where a block's position matters), so every thread owns its own buffers and a region of C
+/// no other thread touches. One thread,
+/// or a contraction too small to split, gives one group each way: the loops as they were.
+inline ThreadGrid choose_thread_grid(int threads, int64_t M, int64_t N, int64_t m_unit, int NR, int64_t nc_cap) {
+    nc_cap                   = std::max<int64_t>(nc_cap, NR);
+    int64_t const n_cap      = std::max<int64_t>(1, (N + NR - 1) / NR);
+    int64_t const n_mc       = std::max<int64_t>(1, (M + m_unit - 1) / m_unit);
+    int64_t const min_blocks = std::max<int64_t>(1, (N + nc_cap - 1) / nc_cap);
+
+    ThreadGrid best;
+    double     best_path = 0;
+    double     best_pack = 0;
+    for (int tn = 1; tn <= threads && tn <= n_cap; ++tn) {
+        // Equal N blocks, a whole number of them per N group, none wider than the cap.
+        int64_t const per_group = (min_blocks + tn - 1) / tn;
+        int64_t const want      = (N + tn * per_group - 1) / (tn * per_group);
+        int64_t const nc_blk    = std::min(nc_cap, std::max<int64_t>(NR, ((want + NR - 1) / NR) * NR));
+        int64_t const n_blocks  = (N + nc_blk - 1) / nc_blk;
+        int const     tm        = static_cast<int>(std::max<int64_t>(1, std::min<int64_t>(threads / tn, n_mc)));
+        // The busiest thread: its share of the work items, each an N block by the largest M group.
+        int64_t const items   = n_blocks * tm;
+        int64_t const per_thr = (items + threads - 1) / threads;
+        int64_t const m_group = std::min(M, ((n_mc + tm - 1) / tm) * m_unit);
+        double const  path    = static_cast<double>(per_thr) * static_cast<double>(std::min(nc_blk, N)) * static_cast<double>(m_group);
+        double const  pack    = static_cast<double>(M) * static_cast<double>(n_blocks) + static_cast<double>(N) * tm;
+        if (best_path == 0 || path < best_path / 1.03 || (path <= best_path * 1.03 && pack < best_pack)) {
+            best      = {tn, tm, nc_blk};
+            best_path = path;
+            best_pack = pack;
+        }
+    }
+    return best;
+}
+
 /// @brief Copy @p n elements to @p dst without first fetching its cache lines.
 ///
 /// An ordinary store to a line the core does not already own makes the cache
@@ -1664,6 +1723,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // The step is lcm(segment, MR) so the block stays whole in the register
         // tile too; a segment that cannot reach a whole step inside the block is
         // left alone rather than shrunk to one.
+        // Set when the block below is kept a whole number of C segments: its blocks must then also
+        // START on a segment, so the thread grid cuts M only at whole blocks.
+        bool span_aligned = false;
         if (needs_c_scatter && !block_strategy && plan.c_m_dims.back().tensor_stride == 1) {
             int64_t const fm = plan.c_m_dims.back().size;
             // Whole segments are wanted whenever the write-back intends to
@@ -1675,6 +1737,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // already spans the segment.
             if (fm > 1 && (plan.c_n_dims.back().tensor_stride == fm || fm * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes)) {
                 int64_t const step = std::lcm<int64_t, int64_t>(fm, MR);
+                span_aligned       = true;
                 if (step <= MC_blk) {
                     MC_blk = (MC_blk / step) * step;
                 } else if (step <= (mc_cap / MR) * MR && step <= M) {
@@ -1833,16 +1896,29 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 NC_blk = max_nc;
             }
         }
+        // The thread grid (see @ref choose_thread_grid): N is cut into equal blocks, a whole number
+        // per N group, and each N block's M extent into grid.tm groups of whole MC blocks. The
+        // N-only split this replaces capped its blocks at blk.NC, the cache model's width, and so
+        // does the grid.
+        //
+        // M groups start at whole MC blocks when a block's position matters (the A-ordered
+        // write-back and the C-segment alignment both assume blocks start on a whole unit of C), and
+        // at any MR row otherwise, which lets the grid cut M evenly where MC blocks do not divide it:
+        // 21 blocks of M = 5184 split 6, 5, 5, 5 four ways, where 1296-row groups are exact.
+        int64_t const m_unit = (use_a_order || span_aligned) ? MC_blk : static_cast<int64_t>(MR);
+        ThreadGrid    grid;
 #ifdef _OPENMP
         if (parallel_nc) {
             int const nthreads = omp_get_max_threads();
             if (nthreads > 1) {
-                int64_t const per_thread = (N + nthreads - 1) / nthreads;
-                int64_t const rounded    = ((per_thread + NR - 1) / NR) * NR;
-                NC_blk                   = std::clamp(rounded, static_cast<int64_t>(NR), blk.NC);
+                grid   = choose_thread_grid(nthreads, M, N, m_unit, NR, blk.NC);
+                NC_blk = grid.nc_blk;
             }
         }
 #endif
+        int64_t const n_nc_blocks = (N + NC_blk - 1) / NC_blk;
+        int64_t const n_m_units   = (M + m_unit - 1) / m_unit;
+        int64_t const m_groups    = std::min<int64_t>(grid.tm, n_m_units);
 
         // Size the packing buffers from the blocks actually used, not the
         // cache-derived maxima - with a deep KC_blk, sizing from blk.NC would
@@ -1880,7 +1956,13 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // big enough to pay for the region.
 #    pragma omp parallel for schedule(static) if (parallel_nc)
 #endif
-            for (int64_t nc = 0; nc < N; nc += NC_blk) {
+            for (int64_t item = 0; item < n_nc_blocks * m_groups; ++item) {
+                // One N block and one M group of it. Consecutive items share the N block, so the
+                // threads that pack the same B columns run side by side.
+                int64_t const                              nc      = (item / m_groups) * NC_blk;
+                int64_t const                              m_group = item % m_groups;
+                int64_t const                              m_lo    = std::min(M, ((m_group * n_m_units) / m_groups) * m_unit);
+                int64_t const                              m_hi    = std::min(M, (((m_group + 1) * n_m_units) / m_groups) * m_unit);
                 static thread_local std::vector<ValueType> tls_Ap, tls_Bp, tls_Ct;
                 bool                                       streamed_c = false;
                 tls_Ap.resize(ap_buf_elems);
@@ -1949,8 +2031,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             int64_t const kh_len = std::min(KHC, Kh - kh);
                             pack_B_1m_panels<RealT>(tls_Bp1.data(), B_data, plan, kh, kh_len, nc, nc_len, NR, conj_b);
 
-                            for (int64_t mh = 0; mh < Mh; mh += MHC) {
-                                int64_t const mh_len = std::min(MHC, Mh - mh);
+                            for (int64_t mh = 2 * m_lo; mh < 2 * m_hi; mh += MHC) {
+                                int64_t const mh_len = std::min(MHC, 2 * m_hi - mh);
                                 precompute_offsets(mh / 2, mh_len / 2, plan.c_m_dims, c_m_offsets);
 
                                 // Beta prescale once per (mh, nc) block on the first kh slice.
@@ -2045,8 +2127,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             pack_B_flat(tls_Bf.data(), B_data, plan, kc, kc_len, nc, nc_len, conj_b);
                         }
 
-                        for (int64_t mc = 0; mc < M; mc += MC_blk) {
-                            int64_t const mc_len = std::min(MC_blk, M - mc);
+                        for (int64_t mc = m_lo; mc < m_hi; mc += MC_blk) {
+                            int64_t const mc_len = std::min(MC_blk, m_hi - mc);
                             precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);
 
                             // Beta prescale once per (mc, nc) block on the first kc slice.
@@ -2204,8 +2286,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
                     bool bp_packed = false;
 
-                    for (int64_t mc = 0; mc < M; mc += MC_blk) {
-                        int64_t const mc_len = std::min(MC_blk, M - mc);
+                    for (int64_t mc = m_lo; mc < m_hi; mc += MC_blk) {
+                        int64_t const mc_len = std::min(MC_blk, m_hi - mc);
 
                         if (needs_c_scatter) {
                             precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);

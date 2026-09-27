@@ -9,6 +9,7 @@ set(PackedGemmTests
     FlattenLayouts.cpp
     MicroKernelTile.cpp
     PackingPlan.cpp
+    ThreadGrid.cpp
 )
 
 foreach(test ${PackedGemmTests})
