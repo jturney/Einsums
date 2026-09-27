@@ -19,9 +19,11 @@ Cell labels: O = owning, V = view, in (A, B, C) order.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 import einsums
 import einsums.graph as cg
+from einsums.testing import ALL_DTYPES
 
 
 def test_direct_product_OOO_baseline():
@@ -153,3 +155,69 @@ def test_direct_product_VVV_all_three_views_with_accumulation():
     expected = big_C_before.copy()
     expected[2:5, 3:7] = np.asarray(big_A)[:3, :4] * np.asarray(big_B)[1:4, 2:6] + 0.5 * big_C_before[2:5, 3:7]
     np.testing.assert_allclose(np.asarray(big_C), expected, rtol=1e-5)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# A (or B) and C are overlapping views of ONE parent
+# ──────────────────────────────────────────────────────────────────────────
+#
+# The vendor path scales C by beta and then multiplies into it, so an input
+# that shares elements with C without being C read values already scaled or
+# already written. Only an input with C's exact base pointer was guarded. The
+# expected value reads every input from the parent as it was before the call.
+
+_SHIFTS = {
+    "row-shifted": ((0, 3), (0, 3), (1, 4), (0, 3)),
+    "column-shifted": ((0, 3), (0, 3), (0, 3), (1, 4)),
+    "diagonal-shifted": ((1, 4), (1, 4), (0, 3), (0, 3)),
+}
+
+
+def _view(P, rows, cols, mode):
+    """A view of @p P: a slice eagerly (``cg.view`` is capture-only), ``cg.view`` in a graph."""
+    return P[slice(*rows), slice(*cols)] if mode == "eager" else cg.view(P, [rows, cols])
+
+
+def _parent(dtype):
+    """A 4x4 parent of small exact values, genuinely complex on a complex dtype."""
+    vals = np.arange(1, 17, dtype=np.float64).reshape(4, 4)
+    if np.dtype(dtype).kind == "c":
+        vals = vals + 1j * (np.arange(16).reshape(4, 4) % 3 - 1)
+    P = einsums.create_zero_tensor("P", [4, 4], dtype=dtype)
+    np.asarray(P)[...] = vals
+    return P
+
+
+@pytest.mark.parametrize("mode", ["eager", "graph", "graph+passes"])
+@pytest.mark.parametrize("shift", list(_SHIFTS))
+@pytest.mark.parametrize("operand", ["A", "B"])
+@pytest.mark.parametrize("beta", [0.0, 0.5])
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_direct_product_input_overlapping_output(dtype, beta, operand, shift, mode):
+    (ar, ac, cr, cc) = _SHIFTS[shift]
+    alpha = (0.5 - 0.75j) if np.dtype(dtype).kind == "c" else 2.0
+    P = _parent(dtype)
+    other = einsums.create_zero_tensor("other", [3, 3], dtype=dtype)
+    np.asarray(other)[...] = np.arange(3, 12).reshape(3, 3) % 4 - 1.5
+    before = np.asarray(P).copy()
+    other_vals = np.asarray(other).copy()
+
+    def body():
+        shared = _view(P, ar, ac, mode)
+        A, B = (shared, other) if operand == "A" else (other, shared)
+        einsums.linalg.direct_product(alpha, A, B, beta, _view(P, cr, cc, mode))
+
+    if mode == "eager":
+        body()
+    else:
+        g = cg.Graph("dp-overlap")
+        with cg.capture(g):
+            body()
+        if mode == "graph+passes":
+            g.apply(cg.default_pass_manager())
+        g.execute()
+
+    expected = before.copy()
+    expected[slice(*cr), slice(*cc)] = (alpha * before[slice(*ar), slice(*ac)] * other_vals
+                                        + beta * before[slice(*cr), slice(*cc)])
+    np.testing.assert_array_equal(np.asarray(P), expected)

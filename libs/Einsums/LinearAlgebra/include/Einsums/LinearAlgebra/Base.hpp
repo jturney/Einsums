@@ -873,10 +873,15 @@ void axpby(T alpha, einsums::detail::TensorImpl<T> const &X, T beta, einsums::de
     // If X aliases Y with the same layout, the scal-then-axpy split below would
     // scale Y (and hence X) before axpy reads it -- corrupting the result
     // (beta==0 zeroes X first). For that case Y = alpha*X + beta*Y = (alpha+beta)*Y.
-    // (A transposed/strided self-alias is left to the general path; it needs a
-    // copy and is not produced by any current caller.)
-    if (static_cast<void const *>(X.data()) == static_cast<void const *>(Y->data()) && X.strides() == Y->strides()) {
+    if (einsums::detail::impl_same_operand(X, *Y)) {
         einsums::detail::impl_scal(alpha + beta, *Y);
+        return;
+    }
+    // An X that shares storage with Y without being it (a shifted or
+    // transposed view of one parent) would be scaled by beta, or overwritten,
+    // before axpy read it. Read it through a copy.
+    if (einsums::detail::impl_storage_overlaps(X, *Y)) {
+        einsums::detail::impl_with_snapshot(X, [&](auto const &snapshot) { axpby(alpha, snapshot, beta, Y); });
         return;
     }
     einsums::detail::impl_scal(beta, *Y);

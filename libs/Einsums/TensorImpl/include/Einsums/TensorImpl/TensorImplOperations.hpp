@@ -16,6 +16,8 @@
 
 #include <cmath>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(detail)
 
@@ -515,6 +517,54 @@ void impl_axpy_noncontiguous(int depth, int rank, T alpha, Dims const &dims, TOt
 template <typename T, typename U>
 void impl_scal(U alpha, TensorImpl<T> &out);
 
+template <typename T, typename TOther>
+void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out);
+
+/// Whether @p a and @p b are the same operand: one start, one layout.
+template <typename T, typename U>
+bool impl_same_operand(TensorImpl<T> const &a, TensorImpl<U> const &b) {
+    return static_cast<void const *>(a.data()) == static_cast<void const *>(b.data()) && a.strides() == b.strides();
+}
+
+/// Whether the storage @p a and @p b span, from first element to one past the last, intersects.
+///
+/// Interval intersection, deliberately conservative: callers only decide whether to read an input
+/// through a copy, so two disjoint slices that interleave in one parent pay a copy rather than a
+/// wrong answer. Strides are non-negative, so the base pointer is the lowest address. A zero-extent
+/// operand touches nothing. Compared in bytes, since the element types may differ.
+template <typename T, typename U>
+bool impl_storage_overlaps(TensorImpl<T> const &a, TensorImpl<U> const &b) {
+    auto const bytes_of = [](auto const &t) {
+        auto const *lo   = reinterpret_cast<unsigned char const *>(t.data());
+        size_t      last = 0;
+        for (size_t d = 0; d < t.rank(); d++) {
+            last += (t.dim(d) - 1) * t.stride(d);
+        }
+        return std::pair{lo, lo + (last + 1) * sizeof(*t.data())};
+    };
+    if (a.size() == 0 || b.size() == 0) {
+        return false;
+    }
+    auto const [a_lo, a_hi] = bytes_of(a);
+    auto const [b_lo, b_hi] = bytes_of(b);
+    return a_lo < b_hi && b_lo < a_hi;
+}
+
+/// Calls @p f with a packed copy of @p in, in @p in's own storage order.
+///
+/// For an input whose storage overlaps the output it is read against. BLAS-1 routines forbid
+/// their operands overlapping, and every kernel here reads an input element after writing an
+/// output one, so an input sharing elements with the output would read values already written.
+/// The copy cannot overlap anything the caller holds.
+template <typename T, typename F>
+void impl_with_snapshot(TensorImpl<T> const &in, F &&f) {
+    using V = std::remove_cv_t<T>;
+    std::vector<V> buffer(in.size());
+    TensorImpl<V>  copy(buffer.data(), in.dims(), in.is_row_major());
+    impl_copy(in, copy);
+    std::forward<F>(f)(std::as_const(copy));
+}
+
 template <typename T, typename TOther, typename U>
 void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     LabeledSection0();
@@ -533,10 +583,19 @@ void impl_axpy(U alpha, TensorImpl<TOther> const &in, TensorImpl<T> &out) {
     // alpha came back with the wrong imaginary part. Real and pure-real alpha
     // have no cross term, which is why only complex prefactors showed it.
     if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>>) {
-        if (static_cast<void const *>(in.data()) == static_cast<void const *>(out.data()) && in.strides() == out.strides()) {
+        if (impl_same_operand(in, out)) {
             impl_scal(T{1} + static_cast<T>(alpha), out);
             return;
         }
+    }
+
+    // An input that shares storage with the output without being it (a
+    // shifted view of one parent, a transposed view onto its parent) is the
+    // same forbidden aliasing, and wrong for real alpha too: each output
+    // element reads a neighbour already updated. Read it through a copy.
+    if (impl_storage_overlaps(in, out)) {
+        impl_with_snapshot(in, [&](auto const &snapshot) { impl_axpy(alpha, snapshot, out); });
+        return;
     }
 
     if (in.strides() != out.strides()) {
@@ -1103,6 +1162,20 @@ void impl_copy(TensorImpl<TOther> const &in, TensorImpl<T> &out) {
 
     if (in.dims() != out.dims()) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not copy two tensors with different sizes!");
+    }
+
+    // Copying an operand onto itself changes nothing. One that shares storage
+    // with the output otherwise (a shifted or transposed view of one parent)
+    // would read elements already overwritten, and ?copy forbids the overlap,
+    // so it is read through a copy of its own (see impl_axpy).
+    if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<TOther>>) {
+        if (impl_same_operand(in, out)) {
+            return;
+        }
+    }
+    if (impl_storage_overlaps(in, out)) {
+        impl_with_snapshot(in, [&](auto const &snapshot) { impl_copy(snapshot, out); });
+        return;
     }
 
     // Lock-step vectorized paths require identical memory layouts; equal

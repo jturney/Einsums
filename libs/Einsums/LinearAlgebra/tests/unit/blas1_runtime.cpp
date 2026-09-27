@@ -110,6 +110,193 @@ TEMPLATE_TEST_CASE("RuntimeTensor axpy — complex alpha onto its own input", "[
     CHECK_THAT(runtime_data(Y), Catch::Matchers::Equals(std::vector<C>{C{3, 2.25}, C{-2.25, 3}, C{-3, -6}, C{6, -3}}));
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Input and output are overlapping views of ONE parent
+// ──────────────────────────────────────────────────────────────────────────
+//
+// Two views that share elements without being the same view used to reach the
+// vendor BLAS-1 routine aliased, which BLAS forbids: each output element read a
+// neighbour already updated, so real prefactors went wrong as well as complex
+// ones. Only an input identical to its output (same start, same strides) was
+// guarded. Each case builds its views over one parent buffer and compares the
+// whole parent, element by element, against the parent as it was before the
+// call; parent elements outside the output must come back untouched.
+
+namespace {
+
+/// A view into @p parent: @p offset elements from its start, with its own dims and strides.
+struct ViewShape {
+    size_t              offset;
+    std::vector<size_t> dims;
+    std::vector<size_t> strides;
+};
+
+struct OverlapCase {
+    char const *name;
+    size_t      parent_size;
+    ViewShape   in;
+    ViewShape   out;
+};
+
+// Parent layouts are column-major: a 4x3 parent has leading dimension 4.
+std::vector<OverlapCase> const overlap_cases{
+    {"vector, output one ahead of input", 4, {0, {3}, {1}}, {1, {3}, {1}}},
+    {"vector, output one behind input", 4, {1, {3}, {1}}, {0, {3}, {1}}},
+    {"matrix, row-shifted", 12, {0, {3, 3}, {1, 4}}, {1, {3, 3}, {1, 4}}},
+    {"matrix, column-shifted", 12, {0, {3, 3}, {1, 3}}, {3, {3, 3}, {1, 3}}},
+    {"matrix, transposed view onto its parent", 9, {0, {3, 3}, {3, 1}}, {0, {3, 3}, {1, 3}}},
+    {"vector, disjoint halves (control)", 6, {0, {3}, {1}}, {3, {3}, {1}}},
+};
+
+/// The parent-relative offset of every element of @p v, in column-major logical order.
+auto element_offsets(ViewShape const &v) -> std::vector<size_t> {
+    size_t n = 1;
+    for (auto d : v.dims) {
+        n *= d;
+    }
+    std::vector<size_t> out;
+    std::vector<size_t> idx(v.dims.size(), 0);
+    for (size_t e = 0; e < n; e++) {
+        size_t off = v.offset;
+        for (size_t d = 0; d < idx.size(); d++) {
+            off += idx[d] * v.strides[d];
+        }
+        out.push_back(off);
+        for (size_t d = 0; d < idx.size() && ++idx[d] == v.dims[d]; d++) {
+            idx[d] = 0;
+        }
+    }
+    return out;
+}
+
+/// Small exact values: every sum and product below is exact in single precision.
+template <typename T>
+auto overlap_parent(size_t n) -> std::vector<T> {
+    std::vector<T> v(n);
+    for (size_t i = 0; i < n; i++) {
+        if constexpr (IsComplexV<T>) {
+            v[i] = T{RemoveComplexT<T>(i + 1), RemoveComplexT<T>(static_cast<int>(i % 3) - 1)};
+        } else {
+            v[i] = T(i + 1);
+        }
+    }
+    return v;
+}
+
+/// A prefactor whose imaginary part, on a complex type, gives every product a cross term.
+template <typename T>
+auto overlap_alpha() -> T {
+    if constexpr (IsComplexV<T>) {
+        return T{0.5, -0.75};
+    } else {
+        return T{2};
+    }
+}
+
+template <typename T>
+auto view_over(std::vector<T> &parent, ViewShape const &v) -> RuntimeTensorView<T> {
+    return RuntimeTensorView<T>(detail::TensorImpl<T>(parent.data() + v.offset, v.dims, v.strides));
+}
+
+/// Runs @p op on views of one parent and checks it against @p reference applied to the parent as
+/// it was: reference(x, y) gives the new value of an output element from its old input and output.
+template <typename T, typename Op, typename Reference>
+void check_overlapping(Op &&op, Reference &&reference) {
+    for (auto const &c : overlap_cases) {
+        DYNAMIC_SECTION(c.name) {
+            auto parent = overlap_parent<T>(c.parent_size);
+            auto before = parent;
+            auto X      = view_over(parent, c.in);
+            auto Y      = view_over(parent, c.out);
+
+            auto expected = before;
+            auto in_off   = element_offsets(c.in);
+            auto out_off  = element_offsets(c.out);
+            for (size_t e = 0; e < out_off.size(); e++) {
+                expected[out_off[e]] = reference(before[in_off[e]], before[out_off[e]]);
+            }
+
+            op(X, Y);
+            CHECK_THAT(parent, Catch::Matchers::Equals(expected));
+        }
+    }
+}
+
+} // namespace
+
+TEMPLATE_LIST_TEST_CASE("RuntimeTensor axpy — input overlapping the output", "[linear-algebra][runtime][view]", testing::AllScalarTypes) {
+    using T       = TestType;
+    T const alpha = overlap_alpha<T>();
+    check_overlapping<T>([&](auto const &X, auto &Y) { linear_algebra::axpy(alpha, X, &Y); }, [&](T x, T y) { return y + alpha * x; });
+}
+
+TEMPLATE_LIST_TEST_CASE("RuntimeTensor axpby — input overlapping the output", "[linear-algebra][runtime][view]", testing::AllScalarTypes) {
+    using T       = TestType;
+    T const alpha = overlap_alpha<T>();
+    for (T const beta : {T{0}, T{0.5}}) {
+        CAPTURE(beta);
+        check_overlapping<T>([&](auto const &X, auto &Y) { linear_algebra::axpby(alpha, X, beta, &Y); },
+                             [&](T x, T y) { return alpha * x + beta * y; });
+    }
+}
+
+TEMPLATE_LIST_TEST_CASE("RuntimeTensor copy — input overlapping the output", "[linear-algebra][runtime][view]", testing::AllScalarTypes) {
+    using T = TestType;
+    check_overlapping<T>([](auto const &X, auto &Y) { detail::impl_copy(X.impl(), Y.impl()); }, [](T x, T) { return x; });
+}
+
+TEMPLATE_LIST_TEST_CASE("RuntimeTensor direct_product — input overlapping the output", "[linear-algebra][runtime][view]",
+                        testing::AllScalarTypes) {
+    using T       = TestType;
+    T const alpha = overlap_alpha<T>();
+    for (T const beta : {T{0}, T{0.5}}) {
+        for (bool const shared_is_a : {true, false}) {
+            CAPTURE(beta, shared_is_a);
+            // The operand not shared with C is a separate tensor of constant value, so the
+            // reference needs only the shared operand's old value.
+            T const other = T{3};
+            check_overlapping<T>(
+                [&](auto const &X, auto &Y) {
+                    RuntimeTensor<T> B("B", std::vector<size_t>(X.impl().dims().begin(), X.impl().dims().end()), /*row_major=*/false);
+                    B = other;
+                    if (shared_is_a) {
+                        linear_algebra::direct_product(alpha, X, B, beta, &Y);
+                    } else {
+                        linear_algebra::direct_product(alpha, B, X, beta, &Y);
+                    }
+                },
+                [&](T x, T y) { return alpha * x * other + beta * y; });
+        }
+    }
+}
+
+TEMPLATE_LIST_TEST_CASE("RuntimeTensor direct_product — in place on a strided view", "[linear-algebra][runtime][view]",
+                        testing::AllScalarTypes) {
+    // C = alpha*C*B + beta*C with A the very view C is. The alias guard sat on
+    // the contiguous path only; a strided view (here rows 0..2 of a 4x3 parent)
+    // takes the loops over the vendor routine, which scaled C by beta and then
+    // read A, already scaled, back out of it.
+    using T       = TestType;
+    T const alpha = overlap_alpha<T>();
+    for (T const beta : {T{0}, T{0.5}}) {
+        CAPTURE(beta);
+        auto            parent = overlap_parent<T>(12);
+        auto const      before = parent;
+        std::vector<T>  b_parent(12, T{3});
+        ViewShape const shape{0, {3, 3}, {1, 4}};
+        auto            Cv = view_over(parent, shape);
+        auto const      Bv = view_over(b_parent, shape);
+
+        auto expected = before;
+        for (auto off : element_offsets(shape)) {
+            expected[off] = alpha * before[off] * T{3} + beta * before[off];
+        }
+
+        linear_algebra::direct_product(alpha, Cv, Bv, beta, &Cv);
+        CHECK_THAT(parent, Catch::Matchers::Equals(expected));
+    }
+}
+
 TEST_CASE("RuntimeTensor dot — complex<double> conjugate-aware", "[linear-algebra][runtime]") {
     // linear_algebra::dot computes X^T * Y (not the Hermitian-conjugating
     // version; that's true_dot). Verify with hand-computed values.

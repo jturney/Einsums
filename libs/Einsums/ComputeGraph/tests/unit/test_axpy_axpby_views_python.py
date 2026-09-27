@@ -16,9 +16,11 @@ writes through a view-Y land in its parent and other regions are untouched.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 import einsums
 import einsums.graph as cg
+from einsums.testing import ALL_DTYPES
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -159,3 +161,92 @@ def test_axpby_VV_both_views():
     expected = big_Y_before.copy()
     expected[2:5, 3:7] = 0.5 * np.asarray(big_X)[:3, :4] + 0.5 * big_Y_before[2:5, 3:7]
     np.testing.assert_allclose(np.asarray(big_Y), expected, rtol=1e-5)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# X and Y are overlapping views of ONE parent
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Two views of one parent that share elements but are not the same view once
+# reached vendor ?axpy aliased, which BLAS forbids. Each output element reads a
+# neighbour the kernel had already updated, so the result is wrong for real
+# prefactors as well as complex ones; only X that IS Y (same start, same
+# layout) was guarded. The expected value reads every input from the parent as
+# it was before the call.
+
+_SHIFTS = {
+    "row-shifted": ((0, 3), (0, 3), (1, 4), (0, 3)),
+    "column-shifted": ((0, 3), (0, 3), (0, 3), (1, 4)),
+    "diagonal-shifted": ((1, 4), (1, 4), (0, 3), (0, 3)),
+}
+
+
+def _view(P, rows, cols, mode):
+    """A view of @p P: a slice eagerly (``cg.view`` is capture-only), ``cg.view`` in a graph."""
+    return P[slice(*rows), slice(*cols)] if mode == "eager" else cg.view(P, [rows, cols])
+
+
+def _parent(dtype):
+    """A 4x4 parent of small exact values, genuinely complex on a complex dtype."""
+    vals = np.arange(1, 17, dtype=np.float64).reshape(4, 4)
+    if np.dtype(dtype).kind == "c":
+        vals = vals + 1j * (np.arange(16).reshape(4, 4) % 3 - 1)
+    P = einsums.create_zero_tensor("P", [4, 4], dtype=dtype)
+    np.asarray(P)[...] = vals
+    return P
+
+
+def _prefactor(dtype, value):
+    return value if np.dtype(dtype).kind == "c" else value.real
+
+
+def _run_overlapping(mode, body):
+    if mode == "eager":
+        body()
+        return
+    g = cg.Graph("overlap")
+    with cg.capture(g):
+        body()
+    if mode == "graph+passes":
+        g.apply(cg.default_pass_manager())
+    g.execute()
+
+
+@pytest.mark.parametrize("mode", ["eager", "graph", "graph+passes"])
+@pytest.mark.parametrize("shift", list(_SHIFTS))
+@pytest.mark.parametrize("alpha", [2.0, 0.5 - 0.75j], ids=["real-alpha", "complex-alpha"])
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_axpy_overlapping_views_of_one_parent(dtype, alpha, shift, mode):
+    (xr, xc, yr, yc) = _SHIFTS[shift]
+    alpha = _prefactor(dtype, alpha)
+    P = _parent(dtype)
+    before = np.asarray(P).copy()
+
+    def body():
+        einsums.linalg.axpy(alpha, _view(P, xr, xc, mode), _view(P, yr, yc, mode))
+
+    _run_overlapping(mode, body)
+
+    expected = before.copy()
+    expected[slice(*yr), slice(*yc)] += alpha * before[slice(*xr), slice(*xc)]
+    np.testing.assert_array_equal(np.asarray(P), expected)
+
+
+@pytest.mark.parametrize("mode", ["eager", "graph", "graph+passes"])
+@pytest.mark.parametrize("shift", list(_SHIFTS))
+@pytest.mark.parametrize("beta", [0.0, 0.5])
+@pytest.mark.parametrize("dtype", ALL_DTYPES)
+def test_axpby_overlapping_views_of_one_parent(dtype, beta, shift, mode):
+    (xr, xc, yr, yc) = _SHIFTS[shift]
+    alpha = _prefactor(dtype, 0.5 - 0.75j)
+    P = _parent(dtype)
+    before = np.asarray(P).copy()
+
+    def body():
+        einsums.linalg.axpby(alpha, _view(P, xr, xc, mode), beta, _view(P, yr, yc, mode))
+
+    _run_overlapping(mode, body)
+
+    expected = before.copy()
+    expected[slice(*yr), slice(*yc)] = alpha * before[slice(*xr), slice(*xc)] + beta * before[slice(*yr), slice(*yc)]
+    np.testing.assert_array_equal(np.asarray(P), expected)

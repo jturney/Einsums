@@ -12,6 +12,7 @@
 #include <Einsums/Hardware/CpuInfo.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/TensorImpl/TensorImpl.hpp>
+#include <Einsums/TensorImpl/TensorImplOperations.hpp>
 
 #include <fmt/format.h>
 
@@ -92,6 +93,31 @@ void impl_direct_product(CType alpha, einsums::detail::TensorImpl<AType> const &
 
     if (A.dims() != B.dims() || A.dims() != C->dims()) {
         EINSUMS_THROW_EXCEPTION(DimensionError, "Can not combine tensors with different sizes!");
+    }
+
+    // An input sharing storage with C is read through a copy. The vendor paths
+    // scale C by beta and then multiply into it, so such an input would be read
+    // already scaled or already written. The one shape kept in place is an input
+    // that IS C on a path whose single pass reads each element of C before
+    // writing it: the contiguous path (which drops to its scalar loop when
+    // aliased) and the fully strided loop. The strided loops over the vendor
+    // routine scale first, so they need the copy even then.
+    bool const same_layout        = A.strides() == B.strides() && A.strides() == C->strides();
+    bool const all_vectorable     = A.is_totally_vectorable() && B.is_totally_vectorable() && C->is_totally_vectorable();
+    bool const scales_before_read = same_layout && !all_vectorable;
+    auto const needs_copy         = [&](auto const &in) {
+        if (!einsums::detail::impl_storage_overlaps(in, *C)) {
+            return false;
+        }
+        return scales_before_read || !einsums::detail::impl_same_operand(in, *C);
+    };
+    if (needs_copy(A)) {
+        einsums::detail::impl_with_snapshot(A, [&](auto const &a) { impl_direct_product(alpha, a, B, beta, C); });
+        return;
+    }
+    if (needs_copy(B)) {
+        einsums::detail::impl_with_snapshot(B, [&](auto const &b) { impl_direct_product(alpha, A, b, beta, C); });
+        return;
     }
 
     // Lock-step vectorized paths require all three operands to map logical
