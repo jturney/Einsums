@@ -255,6 +255,7 @@ inline std::pair<std::string, std::string> parse_permute_spec(std::string_view s
  * ``execute()``, or rebind it to new data of the same shapes with the three-argument ``permute``.
  *
  * @tparam ConjA If true, conjugate the elements of @p A as they are permuted.
+ * @tparam T The element type of both tensors.
  * @param spec The axes of @p C and of @p A.
  * @param beta The scale applied to the existing contents of @p C.
  * @param C The output tensor.
@@ -303,6 +304,7 @@ void permute(einsums::detail::TensorImpl<T> *C, einsums::detail::TensorImpl<T> c
  * Empty operands are valid and leave @p C as it is.
  *
  * @tparam ConjA If true, conjugate the elements of @p A as they are permuted.
+ * @tparam T The element type of both tensors.
  * @throws RankError when a side does not have one letter per axis of its operand, or the two sides
  *         do not name the same axes.
  *

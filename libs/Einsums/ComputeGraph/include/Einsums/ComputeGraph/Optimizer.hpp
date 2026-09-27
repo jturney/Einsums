@@ -858,7 +858,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * An explicit setting wins over the option, because the more specific statement about this
      * pipeline is the one that should.
      *
-     * @param[in] allowance How long each pass may take. Zero or negative means unlimited.
+     * @param[in] allowance_ms How long each pass may take, in milliseconds. Zero or negative means unlimited.
      */
     APIARY_EXPOSE void set_optimizer_budget(std::int64_t allowance_ms) {
         _budget_ms       = allowance_ms;

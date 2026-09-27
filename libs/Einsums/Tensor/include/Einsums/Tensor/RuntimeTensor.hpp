@@ -251,6 +251,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      *
      * @param name the new name of the tensor.
      * @param dims The dimensions of the tensor.
+     * @param row_major Lay the elements out in row-major order instead of column-major.
      */
     template <Container Dim>
     GeneralRuntimeTensor(std::string name, Dim const &dims, bool row_major) : _name{std::move(name)}, _impl(nullptr, dims, row_major) {
@@ -263,6 +264,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * @brief Create a new runtime tensor with the given dimensions.
      *
      * @param dims The dimensions of the tensor.
+     * @param row_major Lay the elements out in row-major order instead of column-major.
      */
     template <Container Dim>
     explicit GeneralRuntimeTensor(Dim const &dims, bool row_major) : _impl(nullptr, dims, row_major) {
@@ -276,6 +278,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      *
      * @param name the new name of the tensor.
      * @param dims The dimensions of the tensor as an initializer list.
+     * @param row_major Lay the elements out in row-major order instead of column-major.
      */
     GeneralRuntimeTensor(std::string name, std::initializer_list<size_t> dims, bool row_major)
         : GeneralRuntimeTensor(name, std::vector<size_t>(dims), row_major) {}
@@ -284,6 +287,7 @@ APIARY_INSTANTIATE_AS("RuntimeTensorZ", GeneralRuntimeTensor<std::complex<double
      * @brief Create a new runtime tensor with the given dimensions using an initializer list.
      *
      * @param dims The dimensions of the tensor as an initializer list.
+     * @param row_major Lay the elements out in row-major order instead of column-major.
      */
     explicit GeneralRuntimeTensor(std::initializer_list<size_t> dims, bool row_major)
         : GeneralRuntimeTensor(std::vector<size_t>(dims), row_major) {}

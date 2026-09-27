@@ -162,7 +162,6 @@ void gemm(U const alpha, AType const &A, BType const &B, U const beta, CType *C)
  * @param[in] B Second input tensor
  * @param[in] beta Scaling factor for the output tensor C
  * @param[inout] C Output tensor
- * @tparam T the underlying data type
  *
  * @throws RankError If all of the tensors are not rank-2. Only happens when the inputs do not have compile-time rank.
  * @throws TensorCompatError If the tensors have incompatible dimensions.
@@ -391,6 +390,7 @@ void hermitian_symm_gemm(AType const &A, BType const &B, CType *C) {
  * @tparam AType The type of the matrix A
  * @tparam XType The type of the vector z
  * @tparam YType The type of the vector y
+ * @tparam U The type for the scale factors.
  * @param[in] alpha Scaling factor for the product of A and z
  * @param[in] A Matrix A
  * @param[in] z Vector z
@@ -429,6 +429,7 @@ void gemv(U const alpha, AType const &A, XType const &z, U const beta, YType *y)
  * @tparam AType The type of the matrix A
  * @tparam XType The type of the vector z
  * @tparam YType The type of the vector y
+ * @tparam U The type for the scale factors.
  * @param[in] transA Whether to transpose A. Case insensitive. Can be 'n', 't', or 'c'.
  * @param[in] alpha Scaling factor for the product of A and z
  * @param[in] A Matrix A
@@ -566,6 +567,8 @@ void syev(AType *A, WType *W) {
  *
  * @tparam AType The tensor type of A.
  * @tparam WType The tensor type of W.
+ * @tparam LVecPtr A pointer to the left eigenvector tensor type, or `std::nullptr_t` to skip them.
+ * @tparam RVecPtr A pointer to the right eigenvector tensor type, or `std::nullptr_t` to skip them.
  * @param[inout] A The tensor to decompose. On exit, it will be overwritten with values used for the computation.
  * @param[out] W The eigenvalues.
  * @param[out] lvecs The left eigenvectors. If null, then these will not be computed.
@@ -1068,7 +1071,8 @@ void axpby(typename XType::ValueType alpha, XType const &X, typename XType::Valu
  * @f]
  *
  * @tparam AType The type for the output matrix.
- * @tparam XYType The type for the input vectors.
+ * @tparam XType The type for the left input vector.
+ * @tparam YType The type for the right input vector.
  * @param[in] alpha The scale factor for the product.
  * @param[in] X The left vector.
  * @param[in] Y The right vector.
@@ -1111,7 +1115,8 @@ void ger(typename AType::ValueType alpha, XType const &X, YType const &Y, AType 
  * @f]
  *
  * @tparam AType The type for the output matrix.
- * @tparam XYType The type for the input vectors.
+ * @tparam XType The type for the left input vector.
+ * @tparam YType The type for the right input vector.
  * @param[in] alpha The scale factor for the product.
  * @param[in] X The left vector.
  * @param[in] Y The right vector.
@@ -1156,6 +1161,7 @@ void gerc(typename AType::ValueType alpha, XType const &X, YType const &Y, AType
  *
  * @tparam TensorType The type for the tensor to decompose.
  * @tparam Pivots The type for the pivots.
+ * @tparam resizable Whether @p pivot can be resized to fit the pivots. Deduced from @p Pivots; leave it at its default.
  * @param[inout] A The tensor to decompose. On exit, it contains the U matrix above the diagonal and the L matrix below. The diagonal
  * entries of the L matrix are not stored and are all 1.
  * @param[out] pivot The pivots used during the decomposition.

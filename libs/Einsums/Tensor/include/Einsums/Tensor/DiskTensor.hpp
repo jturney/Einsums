@@ -176,6 +176,8 @@ struct DiskTensor final : public tensor_base::DiskTensor, design_pats::Lockable<
      * @param file The file to use for the storage. Can also be a parent object.
      * @param name The name for the tensor.
      * @param dims The dimensions of the tensor.
+     * @param deflate_level The gzip compression level for a newly created dataset, 0 for none. A negative value, the
+     *                      default, compresses at level 1 only when the tensor has more than 2^32 - 1 elements.
      */
     explicit DiskTensor(hid_t file, std::string name, Dim<Rank> dims, int deflate_level = -1)
         : _file{file}, _name{std::move(name)}, _dims{dims} {
@@ -1613,12 +1615,12 @@ auto create_disk_tensor(std::string const &name, Args &&...args) -> DiskTensor<T
  * saved.
  *
  * @code
- * auto mem_a = create_tensor("a", 3, 3");           // auto -> Tensor<double, 2>
+ * auto mem_a = create_tensor("a", 3, 3);            // auto -> Tensor<double, 2>
  * auto a = create_disk_tensor_like(handle, mem_a);  // auto -> DiskTensor<double, 2>
  * @endcode
  *
- * @tparam Type The datatype of the underlying disk tensor.
- * @tparam Rank The datatypes of the calling parameters. In almost all cases you should not need to worry about this parameter.
+ * @tparam T The datatype of the underlying disk tensor, taken from @p tensor.
+ * @tparam Rank The rank of the tensor, taken from @p tensor.
  * @param file The HDF5 file descriptor
  * @param tensor The tensor to reference for size and name.
  * @return A new disk tensor.

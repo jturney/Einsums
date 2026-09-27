@@ -202,6 +202,11 @@ void permute(T beta, std::tuple<CIndices...> const &C_indices, einsums::detail::
  * @param A_indices The indices for the input tensor.
  * @param A The input tensor.
  * @tparam ConjA If true, conjugate the values of A as it is being permuted.
+ * @tparam AType The type of the input tensor.
+ * @tparam CType The type of the output tensor.
+ * @tparam CIndices The index types of the output tensor.
+ * @tparam AIndices The index types of the input tensor.
+ * @tparam U The type of the prefactors.
  *
  * @versionchangeddesc{1.0.3}
  *      This function now works with TensorView inputs and outputs.
@@ -347,6 +352,10 @@ void permute(CType *C, AType const &A, std::shared_ptr<hptt::Transpose<typename 
  * @param A_indices The indices for the input tensor.
  * @param A The input tensor.
  * @tparam ConjA If true, conjugate the values of A as it is being permuted.
+ * @tparam ObjectA The type of the input tensor.
+ * @tparam ObjectC The type of the output tensor.
+ * @tparam CIndices The index types of the output tensor.
+ * @tparam AIndices The index types of the input tensor.
  */
 template <bool ConjA = false, NotASmartPointer ObjectA, NotASmartPointer ObjectC, typename... CIndices, typename... AIndices>
 void permute(std::tuple<CIndices...> const &C_indices, ObjectC *C, std::tuple<AIndices...> const &A_indices, ObjectA const &A) {
@@ -411,13 +420,13 @@ std::shared_ptr<hptt::Transpose<typename AType::ValueType>> compile_permute(std:
  * @param C_indices The indices for the C tensor.
  * @param A The A tensor.
  * @param A_indices The indices for the A tensor.
- * @param All_unique_indices The list of all indices with duplicates removed.
+ * @param all_unique_indices The list of all indices with duplicates removed. Only its type is used.
  */
 template <typename CType, TensorConcept AType, TensorConcept BType, typename... CIndices, typename... AIndices, typename... BIndices,
           typename... AllUniqueIndices>
 inline auto get_grid_ranges_for_many(CType const &C, std::tuple<CIndices...> const &C_indices, AType const &A,
-                                     std::tuple<AIndices...> const &A_indices,
-                                     std::tuple<AllUniqueIndices...> const & /*All_unique_indices*/) {
+                                     std::tuple<AIndices...> const                          &A_indices,
+                                     [[maybe_unused]] std::tuple<AllUniqueIndices...> const &all_unique_indices) {
     return std::array{get_grid_ranges_for_many_a<AllUniqueIndices, 0>(C, C_indices, A, A_indices)...};
 }
 

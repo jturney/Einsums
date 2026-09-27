@@ -169,6 +169,23 @@ if(TARGET apiary::apiary)
     VERBATIM
   )
   list(APPEND sphinx_source_files_build "${_cppdocs_copy_stamp}")
+
+  # Every doc-lint rule, warnings included, over the whole C++ reference. The
+  # generator's own lint of the Python reference runs only the link check and
+  # never fails; this is the gate for doc comments that name parameters the
+  # signature does not have, leave some undocumented, or convert to broken reST.
+  set(_doc_lint_driver "${CMAKE_CURRENT_SOURCE_DIR}/tools/lint_doc_comments.py")
+  set(_cppdocs_lint_stamp "${CMAKE_CURRENT_BINARY_DIR}/.cppdocs_lint.stamp")
+  add_custom_command(
+    OUTPUT "${_cppdocs_lint_stamp}"
+    DEPENDS "${_cppdocs_stamp}" "${_doc_lint_driver}" "${APIARY_SCRIPTS_DIR}/apiary_doc_lint.py"
+    COMMAND ${Python_EXECUTABLE} "${_doc_lint_driver}" --lint "${APIARY_SCRIPTS_DIR}/apiary_doc_lint.py"
+            "${EINSUMS_CPP_DOCS_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${_cppdocs_lint_stamp}"
+    COMMENT "docs: linting the C++ doc comments"
+    VERBATIM
+  )
+  list(APPEND sphinx_source_files_build "${_cppdocs_lint_stamp}")
 endif()
 
 # Optional announcement banner shown at the top of every page (pydata theme).
@@ -364,7 +381,13 @@ if(TARGET PyEinsumsDocs)
   set(_render_stamp       "${_gen_py_docs_src}/.docs.stamp")
   add_custom_command(
     OUTPUT "${_gen_py_docs_stamp}"
-    DEPENDS PyEinsumsDocs "${_render_stamp}"
+    DEPENDS PyEinsumsDocs "${_render_stamp}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/lint_doc_comments.py"
+            "${APIARY_SCRIPTS_DIR}/apiary_doc_lint.py"
+    # The render step lints only the [[ ]] links and never fails. Run every rule
+    # over the merged graph here, so a finding stops the build before the pages
+    # reach Sphinx.
+    COMMAND ${Python_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/lint_doc_comments.py"
+            --lint "${APIARY_SCRIPTS_DIR}/apiary_doc_lint.py" "${_gen_py_docs_src}/docs.json"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_gen_py_docs_dst}"
     # Sync rather than copy, for the reason spelled out at the C++ reference
     # above: copy_directory resets every mtime, which costs Sphinx a full

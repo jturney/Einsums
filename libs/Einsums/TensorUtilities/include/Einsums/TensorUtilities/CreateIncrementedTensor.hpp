@@ -29,11 +29,13 @@ EINSUMS_NAMESPACE_BEGIN()
  *
  * @code
  * auto a = create_incremented_tensor("a", 3, 3);          // auto -> Tensor<double, 2> with data ranging from 0.0 to 8.0
- * auto b = create_incremented_tensor<float>("b" 4, 5, 6); // auto -> Tensor<float, 3> with dat ranging from 0.0f to 119.0f
+ * auto b = create_incremented_tensor<float>("b", 4, 5, 6); // auto -> Tensor<float, 3> with data ranging from 0.0f to 119.0f
  * @endcode
  *
  * @tparam T The datatype of the underlying tensor. Defaults to double.
+ * @tparam RowMajor The type of the layout flag. Always bool.
  * @tparam MultiIndex The datatype of the calling parameters. In almost all cases you should just ignore this parameter.
+ * @param[in] row_major Lay the elements out in row-major order instead of column-major.
  * @param[in] name The name of the new tensor.
  * @param[in] index The arguments needed to construct the tensor.
  * @return A new tensor filled with incremented data
@@ -74,7 +76,7 @@ auto create_incremented_tensor(RowMajor row_major, std::string const &name, Mult
  *
  * @code
  * auto a = create_incremented_tensor("a", 3, 3);          // auto -> Tensor<double, 2> with data ranging from 0.0 to 8.0
- * auto b = create_incremented_tensor<float>("b" 4, 5, 6); // auto -> Tensor<float, 3> with dat ranging from 0.0f to 119.0f
+ * auto b = create_incremented_tensor<float>("b", 4, 5, 6); // auto -> Tensor<float, 3> with data ranging from 0.0f to 119.0f
  * @endcode
  *
  * @tparam T The datatype of the underlying tensor. Defaults to double.

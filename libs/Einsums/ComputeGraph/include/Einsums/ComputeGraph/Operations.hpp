@@ -3257,9 +3257,16 @@ void grouped_batched_gemm(double alpha, std::vector<AType const *> a_list, std::
 /// whole base is ordered against this write. The list form declares the views,
 /// and the graph does not know a view write touches its parent.
 ///
-/// @param c_bases  Per member, the tensor its block lives in.
+/// @param alpha     Prefactor on op(A_i) op(B_i), shared by the whole call.
+/// @param a_list    Left operands, all rank 2. Shapes may differ between members.
+/// @param b_list    Right operands, same length as @p a_list.
+/// @param beta      Prefactor on C_i. Non-zero means every block is read as well
+///                  as written, which the node records as a dependency.
+/// @param c_bases   Per member, the tensor its block lives in.
 /// @param c_offsets Per member, the block's first element as an offset into its
 ///                  base, in elements.
+/// @param trans_a   Transpose each A_i.
+/// @param trans_b   Transpose each B_i.
 template <TensorConcept AType, TensorConcept BType, TensorConcept CType>
     requires(std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
              std::is_same_v<typename AType::ValueType, typename CType::ValueType>)
@@ -5511,6 +5518,8 @@ ParsedEinsumSpec prepare_einsum(EinsumFormatString const &spec, AType const &A, 
  * @param[in] ab_pf Scalar prefactor for the A*B contraction.
  * @param[in] A First input tensor.
  * @param[in] B Second input tensor.
+ * @param[in] conj_a Conjugate A; a no-op on a real one. ORed with a ``conj(...)`` wrapper in the spec.
+ * @param[in] conj_b Conjugate B; a no-op on a real one. ORed with a ``conj(...)`` wrapper in the spec.
  */
 template <BasicTensorConcept AType, BasicTensorConcept BType, BasicTensorConcept CType>
     requires std::is_same_v<typename AType::ValueType, typename BType::ValueType> &&
@@ -5664,8 +5673,8 @@ void einsum(EinsumFormatString spec, CType *C, AType const &A, BType const &B) {
  * @param c_pf Scale applied to C, in C's type.
  * @param C The output.
  * @param ab_pf Scale applied to the contraction, in the promoted type.
- * @param A, B The inputs.
- * @param conj_a, conj_b Conjugate an input; a no-op on a real one.
+ * @param A,B The inputs.
+ * @param conj_a,conj_b Conjugate an input; a no-op on a real one.
  *
  * @versionadded{2.0.0}
  */

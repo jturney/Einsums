@@ -700,7 +700,7 @@ struct KroneckerDelta {
      *
      * @param i The axis to query. Ignored because the tensor is square.
      */
-    [[nodiscard]] constexpr size_t dim(int /*i*/) const { return _dim; }
+    [[nodiscard]] constexpr size_t dim([[maybe_unused]] int i) const { return _dim; }
 
     /**
      * @brief Get the dimensions of the tensor.

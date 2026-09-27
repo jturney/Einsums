@@ -42,6 +42,7 @@ EINSUMS_NAMESPACE_BEGIN(gpu)
  * callers that cannot get a diagnosable error instead of silent corruption.
  *
  * @param what Name of the entry point, e.g. "gpu::solver::syev<float>".
+ * @param loc Call site named in the message. Defaults to the caller's location.
  */
 [[noreturn]] inline void not_implemented(char const *what, std::source_location const loc = std::source_location::current()) {
     EINSUMS_THROW_EXCEPTION(std::runtime_error, "{} is not implemented for this GPU backend (at {}:{})", what, loc.file_name(), loc.line());

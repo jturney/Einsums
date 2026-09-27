@@ -92,7 +92,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") GrowthClass {
     /// @param[in] lhs Left operand.
     /// @param[in] rhs Right operand.
     /// @return True when the exponents are identical.
-    [[nodiscard]] friend constexpr bool operator==(GrowthClass const &, GrowthClass const &) noexcept = default;
+    [[nodiscard]] friend constexpr bool operator==(GrowthClass const &lhs, GrowthClass const &rhs) noexcept = default;
 };
 
 /**
@@ -134,7 +134,7 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
     /// @param[in] lhs Left operand.
     /// @param[in] rhs Right operand.
     /// @return True when name, scale symbol, dim symbol, typical extent and growth all match.
-    [[nodiscard]] friend bool operator==(IndexSpace const &, IndexSpace const &) = default;
+    [[nodiscard]] friend bool operator==(IndexSpace const &lhs, IndexSpace const &rhs) = default;
 };
 
 /**
@@ -186,6 +186,8 @@ struct APIARY_EXPOSE APIARY_MODULE("graph") IndexSpace {
  * @param[in] scale_symbol Letter this space contributes to a symbolic cost polynomial.
  * @param[in] typical_extent Advisory extent. Zero, the default, means unset.
  * @param[in] growth How the extent grows with system size. Linear by default.
+ * @param[in] dim_symbol Name a symbolic extent over this space goes by ("no", "nv", ...). Empty, the
+ *            default, when the space has none.
  * @return The space.
  *
  * A named constructor rather than a real one: @ref IndexSpace stays an aggregate so the library's
@@ -241,7 +243,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") SpaceId {
     /// @param[in] lhs Left operand.
     /// @param[in] rhs Right operand.
     /// @return True when both name the same space of the same registry.
-    [[nodiscard]] friend constexpr bool operator==(SpaceId const &, SpaceId const &) noexcept = default;
+    [[nodiscard]] friend constexpr bool operator==(SpaceId const &lhs, SpaceId const &rhs) noexcept = default;
 
     /// @brief Order two ids so they can key an ordered container.
     /// @param[in] rhs Right operand.
@@ -251,7 +253,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") SpaceId {
     /// tree already is: an id converts from nothing, so the two forms behave
     /// identically here, and the member form is the one the documentation
     /// extractor renders without mangling the operator's name.
-    [[nodiscard]] constexpr std::strong_ordering operator<=>(SpaceId const &) const noexcept = default;
+    [[nodiscard]] constexpr std::strong_ordering operator<=>(SpaceId const &rhs) const noexcept = default;
 
   private:
     friend class SpaceRegistry;
@@ -334,7 +336,7 @@ struct SpacePolicy {
     /// @param[in] lhs Left operand.
     /// @param[in] rhs Right operand.
     /// @return True when both hints match.
-    [[nodiscard]] friend constexpr bool operator==(SpacePolicy const &, SpacePolicy const &) noexcept = default;
+    [[nodiscard]] friend constexpr bool operator==(SpacePolicy const &lhs, SpacePolicy const &rhs) noexcept = default;
 };
 
 /**

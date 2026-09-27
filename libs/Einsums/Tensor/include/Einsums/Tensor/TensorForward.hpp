@@ -222,6 +222,7 @@ EINSUMS_NAMESPACE_END()
  * @param tensortype The kind of tensor to declare.
  * @param type The type held by that tensor.
  * @param rank The rank of the tensor.
+ * @param alloc The allocator template, instantiated with the stored type.
  */
 #    define TENSOR_EXPORT_ALLOC_TR(tensortype, type, rank, alloc) extern template struct EINSUMS_EXPORT tensortype<type, rank, alloc<type>>;
 
@@ -233,6 +234,7 @@ EINSUMS_NAMESPACE_END()
  *
  * @param tensortype The type of tensor to declare.
  * @param rank The rank of the tensor.
+ * @param alloc The allocator template, instantiated with the stored type.
  */
 #    define TENSOR_EXPORT_ALLOC_RANK(tensortype, rank, alloc)                                                                              \
         TENSOR_EXPORT_ALLOC_TR(tensortype, float, rank, alloc)                                                                             \
@@ -247,6 +249,7 @@ EINSUMS_NAMESPACE_END()
  * @c std::complex<float> , and @c std::complex<double> , and for all ranks between 1 and 4 inclusive.
  *
  * @param tensortype The type of tensor to declare.
+ * @param alloc The allocator template, instantiated with the stored type.
  */
 #    define TENSOR_ALLOC_EXPORT(tensortype, alloc)                                                                                         \
         TENSOR_EXPORT_ALLOC_RANK(tensortype, 1, alloc)                                                                                     \
@@ -255,24 +258,26 @@ EINSUMS_NAMESPACE_END()
         TENSOR_EXPORT_ALLOC_RANK(tensortype, 4, alloc)
 
 /**
- * @def TENSOR_DEFINE_TR
+ * @def TENSOR_DEFINE_ALLOC_TR
  *
  * Creates an exported template definition for a tensor with the given type and rank.
  *
  * @param tensortype The kind of tensor to define.
  * @param type The type held by that tensor.
  * @param rank The rank of the tensor.
+ * @param alloc The allocator template, instantiated with the stored type.
  */
 #    define TENSOR_DEFINE_ALLOC_TR(tensortype, type, rank, alloc) template struct tensortype<type, rank, alloc<type>>;
 
 /**
- * @def TENSOR_DEFINE_RANK
+ * @def TENSOR_DEFINE_ALLOC_RANK
  *
  * Creates exported template definitions for a tensor with the given rank, and for each stored type from
  * @c float , @c double , @c std::complex<float> , and @c std::complex<double> .
  *
  * @param tensortype The type of tensor to define.
  * @param rank The rank of the tensor.
+ * @param alloc The allocator template, instantiated with the stored type.
  */
 #    define TENSOR_DEFINE_ALLOC_RANK(tensortype, rank, alloc)                                                                              \
         TENSOR_DEFINE_ALLOC_TR(tensortype, float, rank, alloc)                                                                             \
@@ -281,12 +286,13 @@ EINSUMS_NAMESPACE_END()
         TENSOR_DEFINE_ALLOC_TR(tensortype, std::complex<double>, rank, alloc)
 
 /**
- * @def TENSOR_DEFINE
+ * @def TENSOR_ALLOC_DEFINE
  *
  * Creates exported template definitions for a tensor for each stored type from @c float , @c double ,
  * @c std::complex<float> , and @c std::complex<double> , and for all ranks between 1 and 4 inclusive.
  *
  * @param tensortype The type of tensor to define.
+ * @param alloc The allocator template, instantiated with the stored type.
  */
 #    define TENSOR_ALLOC_DEFINE(tensortype, alloc)                                                                                         \
         TENSOR_DEFINE_ALLOC_RANK(tensortype, 1, alloc)                                                                                     \

@@ -33,12 +33,14 @@ EINSUMS_NAMESPACE_BEGIN()
  * A \p name is required for the tensor. \p name is used when printing and performing disk operations.
  *
  * @code
- * auto a = create_incremented_tensor("a", 3, 3);          // auto -> Tensor<double, 2>
- * auto b = create_incremented_tensor<float>("b" 4, 5, 6); // auto -> Tensor<float, 3>
+ * auto a = create_random_tensor("a", 3, 3);                // auto -> Tensor<double, 2>
+ * auto b = create_random_tensor<float>("b", 4, 5, 6);      // auto -> Tensor<float, 3>
  * @endcode
  *
  * @tparam T The datatype of the underlying tensor. Defaults to double.
  * @tparam Normalize Should the resulting random data be normalized. Defaults to false.
+ * @tparam RowMajor The type of the layout flag. Always bool.
+ * @tparam Distribution The type of the random distribution.
  * @tparam MultiIndex The datatype of the calling parameters. In almost all cases you should just ignore this parameter.
  * @param[in] row_major Whether the tensor should be row-major or column-major.
  * @param[in] name The name of the new tensor.
@@ -105,8 +107,8 @@ auto create_random_tensor(RowMajor row_major, std::string const &name, Distribut
  * be between -1 and 1 for reals.
  *
  * @code
- * auto a = create_incremented_tensor("a", 3, 3);          // auto -> Tensor<double, 2>
- * auto b = create_incremented_tensor<float>("b" 4, 5, 6); // auto -> Tensor<float, 3>
+ * auto a = create_random_tensor("a", 3, 3);                // auto -> Tensor<double, 2>
+ * auto b = create_random_tensor<float>("b", 4, 5, 6);      // auto -> Tensor<float, 3>
  * @endcode
  *
  * @tparam T The datatype of the underlying tensor. Defaults to double.
@@ -140,12 +142,13 @@ auto create_random_tensor(std::string const &name, MultiIndex... index) -> Tenso
  * be between -1 and 1 for reals.
  *
  * @code
- * auto a = create_incremented_tensor("a", 3, 3);          // auto -> Tensor<double, 2>
- * auto b = create_incremented_tensor<float>("b" 4, 5, 6); // auto -> Tensor<float, 3>
+ * auto a = create_random_tensor("a", 3, 3);                // auto -> Tensor<double, 2>
+ * auto b = create_random_tensor<float>("b", 4, 5, 6);      // auto -> Tensor<float, 3>
  * @endcode
  *
  * @tparam T The datatype of the underlying tensor. Defaults to double.
  * @tparam Normalize Should the resulting random data be normalized. Defaults to false.
+ * @tparam RowMajor The type of the layout flag. Always bool.
  * @tparam MultiIndex The datatype of the calling parameters. In almost all cases you should just ignore this parameter.
  * @param[in] row_major Whether the tensor should be row-major or column major.
  * @param[in] name The name of the new tensor.
@@ -176,13 +179,14 @@ auto create_random_tensor(RowMajor row_major, std::string const &name, MultiInde
  * A \p name is required for the tensor. \p name is used when printing and performing disk operations.
  *
  * @code
- * auto a = create_incremented_tensor("a", 3, 3);          // auto -> Tensor<double, 2>
- * auto b = create_incremented_tensor<float>("b" 4, 5, 6); // auto -> Tensor<float, 3>
+ * auto a = create_random_tensor("a", 3, 3);                // auto -> Tensor<double, 2>
+ * auto b = create_random_tensor<float>("b", 4, 5, 6);      // auto -> Tensor<float, 3>
  * @endcode
  *
  * @tparam T The datatype of the underlying tensor. Defaults to double.
  * @tparam Normalize Should the resulting random data be normalized. Defaults to false.
- * @tparam MultiIndex The datatype of the calling parameters. In almost all cases you should just ignore this parameter.
+ * @tparam Distribution The type of the random distribution.
+ * @tparam Dims A container of the dimensions.
  * @param[in] row_major Whether the tensor should be row-major or column-major.
  * @param[in] name The name of the new tensor.
  * @param[in] dist The random distribution to use for generating the random numbers.
@@ -235,13 +239,13 @@ auto create_random_tensor(bool row_major, std::string const &name, Distribution 
  * be between -1 and 1 for reals.
  *
  * @code
- * auto a = create_incremented_tensor("a", 3, 3);          // auto -> Tensor<double, 2>
- * auto b = create_incremented_tensor<float>("b" 4, 5, 6); // auto -> Tensor<float, 3>
+ * auto a = create_random_tensor("a", 3, 3);                // auto -> Tensor<double, 2>
+ * auto b = create_random_tensor<float>("b", 4, 5, 6);      // auto -> Tensor<float, 3>
  * @endcode
  *
  * @tparam T The datatype of the underlying tensor. Defaults to double.
  * @tparam Normalize Should the resulting random data be normalized. Defaults to false.
- * @tparam MultiIndex The datatype of the calling parameters. In almost all cases you should just ignore this parameter.
+ * @tparam Indices A container of the dimensions.
  * @param[in] name The name of the new tensor.
  * @param[in] index The arguments needed to construct the tensor.
  * @return A new tensor filled with random data
@@ -285,13 +289,13 @@ create_random_tensor(std::string const &name, std::vector<size_t> const &dims) -
  * be between -1 and 1 for reals.
  *
  * @code
- * auto a = create_incremented_tensor("a", 3, 3);          // auto -> Tensor<double, 2>
- * auto b = create_incremented_tensor<float>("b" 4, 5, 6); // auto -> Tensor<float, 3>
+ * auto a = create_random_tensor("a", 3, 3);                // auto -> Tensor<double, 2>
+ * auto b = create_random_tensor<float>("b", 4, 5, 6);      // auto -> Tensor<float, 3>
  * @endcode
  *
  * @tparam T The datatype of the underlying tensor. Defaults to double.
  * @tparam Normalize Should the resulting random data be normalized. Defaults to false.
- * @tparam MultiIndex The datatype of the calling parameters. In almost all cases you should just ignore this parameter.
+ * @tparam Indices A container of the dimensions.
  * @param[in] row_major Whether the tensor should be row-major or column-major.
  * @param[in] name The name of the new tensor.
  * @param[in] index The arguments needed to construct the tensor.

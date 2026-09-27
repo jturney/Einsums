@@ -133,7 +133,7 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
      *
      * @code
      * // Constructs a rank 4 tensor with two blocks, the first is 2x2x2x2, the second is 3x3x3x3.
-     * auto A = BlockTensor<double, 4>("A", std::array<int>{2, 3});
+     * auto A = BlockTensor<double, 4>("A", std::array<int, 2>{2, 3});
      * @endcode
      *
      * The newly constructed Tensor is NOT zeroed out for you. If you start having NaN issues
@@ -239,7 +239,7 @@ struct BlockTensor : public BlockTensorNoExtra, public design_pats::Lockable<std
      * The newly constructed Tensor is NOT zeroed out for you. If you start having NaN issues
      * in your code try calling Tensor.zero() or zero(Tensor) to see if that resolves it.
      *
-     * @tparam ArrayArg A container type that stores the dimensions. For instance, std::array or einsums::Dim.
+     * @tparam IntType The integer type of the block sizes. Must be convertible to size_t.
      * @param[in] block_dims The size of each block.
      *
      * @versionadded{1.0.0}
@@ -1218,13 +1218,13 @@ struct BlockTensor : public tensor_base::BlockTensor<T, Rank, Tensor<T, Rank>>, 
      *
      * @code
      * // Constructs a rank 4 tensor with two blocks, the first is 2x2x2x2, the second is 3x3x3x3.
-     * auto A = BlockTensor<double, 4>("A", 2, 3);
+     * auto A = BlockTensor<double, 4>("A", std::array<int, 2>{2, 3});
      * @endcode
      *
      * The newly constructed BlockTensor is NOT zeroed out for you. If you start having NaN issues
      * in your code try calling Tensor.zero() or zero(Tensor) to see if that resolves it.
      *
-     * @tparam Dims Variadic template arguments for the dimensions. Must be castable to size_t.
+     * @tparam ArrayArg A container type that stores the block sizes. For instance, std::array or einsums::Dim.
      * @param[in] name Name of the new tensor.
      * @param[in] block_dims The size of each block.
      *

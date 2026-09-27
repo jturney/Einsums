@@ -22,8 +22,6 @@ EINSUMS_NAMESPACE_BEGIN()
  * @endcode
  *
  * @tparam TensorType The basic type of the provided tensor.
- * @tparam DataType The underlying datatype of the provided tensor.
- * @tparam Rank The rank of the provided tensor.
  * @param[in] t The provided tensor to copy the dimensions from.
  * @return A new tensor with the same rank and dimensions as the provided tensor.
  *
@@ -66,8 +64,6 @@ auto create_tensor_like(TensorType<DataType, Rank> const &tensor) -> BlockTensor
  * @endcode
  *
  * @tparam TensorType The basic type of the provided tensor.
- * @tparam DataType The underlying datatype of the provided tensor.
- * @tparam Rank The rank of the provided tensor.
  * @param[in] name The name of the new tensor.
  * @param[in] t The provided tensor to copy the dimensions from.
  * @return A new tensor with the same rank and dimensions as the provided tensor.

@@ -68,6 +68,13 @@ AlgorithmChoice einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices.
  *
  * @tparam ConjA If true, use the complex conjugate of the elements of A.
  * @tparam ConjB If true, use the complex conjugate of the elements of B.
+ * @tparam AType The type of the first input tensor.
+ * @tparam BType The type of the second input tensor.
+ * @tparam CType The type of the output, a tensor or a scalar.
+ * @tparam U The type of the prefactors.
+ * @tparam CIndices The index types of the output tensor.
+ * @tparam AIndices The index types of the A tensor.
+ * @tparam BIndices The index types of the B tensor.
  * @param C_prefactor The prefactor for mixing in the original value of the output tensor.
  * @param Cs The indices for the output tensor.
  * @param C The output tensor. May be a scalar when its index tuple is empty.
@@ -85,9 +92,8 @@ template <bool ConjA = false, bool ConjB = false, TensorConcept AType, TensorCon
         requires InSamePlace<AType, CType> || !TensorConcept<CType>;
         requires !SmartPointer<CType>;
     }
-void einsum(U const C_prefactor, std::tuple<CIndices...> const & /*Cs*/, CType *C, U const UAB_prefactor,
-            std::tuple<AIndices...> const & /*As*/, AType const &A, std::tuple<BIndices...> const & /*Bs*/, BType const &B,
-            detail::AlgorithmChoice *algorithm_choice = nullptr);
+void einsum(U const C_prefactor, std::tuple<CIndices...> const &Cs, CType *C, U const UAB_prefactor, std::tuple<AIndices...> const &As,
+            AType const &A, std::tuple<BIndices...> const &Bs, BType const &B, detail::AlgorithmChoice *algorithm_choice = nullptr);
 
 /*
  * Batched einsums calls over collections of tensors.

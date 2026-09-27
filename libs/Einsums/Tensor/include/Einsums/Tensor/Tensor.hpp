@@ -262,6 +262,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * in your code try calling Tensor.zero() or zero(Tensor) to see if that resolves it.
      *
      * @tparam Dims Variadic template arguments for the dimensions. Must be castable to size_t.
+     * @param row_major Lay the elements out in row-major order instead of column-major.
      * @param name Name of the new tensor.
      * @param dims The dimensions of each rank of the tensor.
      */
@@ -379,6 +380,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     /**
      * @brief Construct a new Tensor object using the dimensions given by Dim object.
      *
+     * @param row_major Lay the elements out in row-major order instead of column-major.
      * @param dims The dimensions of the new tensor in Dim form.
      */
     explicit GeneralTensor(bool row_major, Dim<Rank> dims) : _impl(nullptr, dims, row_major) {
@@ -456,7 +458,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      */
     template <std::integral... Dims>
         requires(sizeof...(Dims) == Rank)
-    GeneralTensor(DeferredAlloc, std::string name, Dims... dims)
+    GeneralTensor([[maybe_unused]] DeferredAlloc tag, std::string name, Dims... dims)
         : _name{std::move(name)},
           // Use a sentinel non-null pointer so TensorImpl stores dims/strides correctly.
           // The pointer is never dereferenced; it just prevents TensorImpl::dim() from
@@ -936,8 +938,8 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * This version works when all elements are explicit values into the tensor.
      * It does not work with All or Range tags.
      *
-     * @tparam int_type The type of integer used for the indices.
-     * @param index The explicit desired index into the tensor. Elements must be castable size_t.
+     * @tparam Index A container of the indices, one per axis.
+     * @param index The explicit desired index into the tensor. Elements must be castable to size_t.
      * @return const T&
      */
     template <Container Index>
@@ -988,8 +990,8 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
      * This version works when all elements are explicit values into the tensor.
      * It does not work with All or Range tags.
      *
-     * @tparam int_type The type of integer used for the indices.
-     * @param index The explicit desired index into the tensor. Elements must be castable size_t.
+     * @tparam Index A container of the indices, one per axis.
+     * @param index The explicit desired index into the tensor. Elements must be castable to size_t.
      * @return T&
      */
     template <Container Index>
@@ -1890,6 +1892,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
      *
      * @param data The pointer to wrap.
      * @param dims The dimensions of the view.
+     * @param row_major Whether @p data is laid out in row-major order instead of column-major.
      */
     explicit TensorView(T const *data, Dim<Rank> const &dims, bool row_major)
         : _impl(const_cast<T *>(data), dims, row_major), _parent{const_cast<T *>(data)} {
@@ -1906,6 +1909,7 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
      *
      * @param data The pointer to wrap.
      * @param dims The dimensions of the view.
+     * @param row_major Whether @p data is laid out in row-major order instead of column-major.
      */
     explicit TensorView(T *data, Dim<Rank> const &dims, bool row_major)
         : _impl(const_cast<T *>(data), dims, row_major), _parent{const_cast<T *>(data)} {
@@ -2874,7 +2878,9 @@ auto create_tensor(std::string const &name, Args... args) {
  * @endcode
  *
  * @tparam Type The datatype of the underlying tensor. Defaults to double.
+ * @tparam RowMajor The type of the layout flag. Always bool.
  * @tparam Args The datatype of the calling parameters. In almost all cases you should not need to worry about this parameter.
+ * @param row_major Lay the elements out in row-major order instead of column-major.
  * @param name The name of the new tensor.
  * @param args The arguments needed to construct the tensor.
  * @return A new tensor. By default, memory is not initialized to anything. It may be filled with garbage.

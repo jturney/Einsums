@@ -314,7 +314,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * @tparam T     Element type.
      * @tparam Rank  Number of dimensions.
-     * @param  name  Human-readable tensor name.
+     * @tparam Dims  Integral types of the dimensions.
+     * @param  tensor_name  Human-readable tensor name.
      * @param  dims  Dimensions of each rank.
      * @return Reference to the shell tensor.
      */

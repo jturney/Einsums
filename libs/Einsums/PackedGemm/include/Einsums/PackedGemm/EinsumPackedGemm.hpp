@@ -2627,6 +2627,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 /// Returns `true` if the contraction was handled; `false` if the caller should
 /// fall back (to a direct BLAS GEMM, generic loop, etc.).
 ///
+/// @param spec_in The contraction's index lists and conjugation flags.
+/// @param C_prefactor Scale applied to C before the product is accumulated.
+/// @param C The output tensor.
+/// @param AB_prefactor Scale applied to the contraction of A and B.
+/// @param A The first input tensor.
+/// @param B The second input tensor.
 /// @param allow_scatter When false, contractions that remain multi-M/N after
 ///        dim coalescing are declined instead of taking the slow per-tile
 ///        scatter path. Pass false from callers that have a faster fallback

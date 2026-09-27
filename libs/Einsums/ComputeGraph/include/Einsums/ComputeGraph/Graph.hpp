@@ -1571,7 +1571,12 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * A pass that opts into sub-graph recursion reaches loop bodies and
      * branches exactly as it does inside a PassManager (see @ref run_pass_tree).
      *
+     * Constructor arguments are forwarded, mirroring PassManager::add, so a
+     * cost-model pass can be priced against an explicit profile.
+     *
      * @tparam PassType The pass class.
+     * @tparam Args Types of the pass's constructor arguments.
+     * @param args Arguments forwarded to the pass's constructor.
      * @return Pair of (was_modified, pass_instance).
      *
      * @code
@@ -1579,8 +1584,6 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * mem.print_report(std::cout);
      * @endcode
      */
-    /// Constructor arguments are forwarded, mirroring PassManager::add, so a
-    /// cost-model pass can be priced against an explicit profile.
     template <typename PassType, typename... Args>
     std::pair<bool, PassType> apply(Args &&...args) {
         std::scoped_lock const lock(_content_mutex);
@@ -2011,8 +2014,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      * control-flow body as live, e.g. DeadNodeElimination, which would
      * otherwise eliminate the producer of a tensor that only a nested loop
      * reads (a Loop node does not list its body's tensor reads as inputs).
-     */
-    /**
+     *
+     * @param[in,out] out Set the referenced pointers are inserted into. Existing entries are kept.
      * @param[out] saw_unresolved Set to true (never cleared) when some reference in the
      * subtree could not be resolved to a pointer, because the sub-graph's map has no entry
      * for that id or the handle is an unattached shell. Such a reference contributes
@@ -3251,6 +3254,7 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * @tparam T     Element type.
      * @tparam Rank  Number of dimensions.
+     * @tparam Dims  Integral types of the dimensions.
      * @param  name  Human-readable tensor name.
      * @param  dims  Dimensions of each rank.
      * @return Reference to the shell tensor.

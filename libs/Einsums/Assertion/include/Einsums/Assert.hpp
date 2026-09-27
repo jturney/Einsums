@@ -100,15 +100,15 @@ EINSUMS_NAMESPACE_END(detail)
  * @endversion
  */
 #        define EINSUMS_ASSERT(expr) assert(expr)
-/** \def EINSUMS_ASSERT_MSG(expr, msg)
+/** \def EINSUMS_ASSERT_MSG(expr, ...)
  * \brief This macro asserts that \p expr evaluates to true.
  *
  * \param[in] expr The expression to assert on. This can either be an expression
  *             that's convertible to bool or a callable which returns bool
- * \param[in] msg The optional message that is used to give further information if
+ * \param[in] ... The optional message that is used to give further information if
  *             the assert fails. This should be convertible to a std::string
  *
- * If \p expr evaluates to false, The source location and \p msg is
+ * If \p expr evaluates to false, The source location and the message are
  * printed along with the expression and additional. Afterwards the program is
  * aborted. The assertion handler can be customized by calling
  * einsums::assertion::set_assertion_handler().

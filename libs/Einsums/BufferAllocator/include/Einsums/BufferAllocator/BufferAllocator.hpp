@@ -354,7 +354,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    constexpr bool operator==(BufferAllocator<T> const & /*other*/) const { return true; }
+    constexpr bool operator==([[maybe_unused]] BufferAllocator<T> const &other) const { return true; }
 
     /**
      * @brief Test whether two buffer allocators are not the same.
@@ -366,7 +366,7 @@ struct BufferAllocator {
      *
      * @versionadded{1.1.0}
      */
-    constexpr bool operator!=(BufferAllocator<T> const & /*other*/) const { return false; }
+    constexpr bool operator!=([[maybe_unused]] BufferAllocator<T> const &other) const { return false; }
 };
 
 #ifndef EINSUMS_WINDOWS
