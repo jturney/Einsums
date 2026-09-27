@@ -168,6 +168,21 @@ This will build Einsums inside the ``build`` directory. You can then run tests
 (``ctest`` and ``pytest``), or take other development steps like build the html documentation
 or running benchmarks.
 
+Reproducing a test failure
+--------------------------
+
+The tests draw random tensors, and each run draws from a different seed. Every
+test starts the random engine from that run seed combined with the test's own
+name, so a single test can be rerun into exactly the state it failed in, however
+the run was filtered. A C++ test binary prints ``Randomness seeded to: N`` at the
+top of its output; rerun the failing case with ``--rng-seed N``::
+
+    ./build/libs/Einsums/TensorAlgebra/tests/unit/Einsum1_test "[test-case-name]" --rng-seed N --einsums:debug:no-attach-debugger
+
+A failing pytest run prints ``einsums random seed: N`` beside each failure; pass
+it back with ``--einsums-seed N``, or set ``EINSUMS_TEST_SEED=N`` when the test
+runs under ``ctest``.
+
 Customizing builds
 ------------------
 

@@ -7,7 +7,10 @@ Holds only what has to happen before any test runs, in any suite.
 """
 
 import os
+import secrets
 import sys
+
+import pytest
 
 # Re-arm the sanitizer preload for subprocesses.
 #
@@ -96,3 +99,109 @@ if _stackdump_seconds > 0:
                     os.unlink(_stackdump_file.name)
             except OSError:
                 pass
+
+
+# Deterministic random tensors.
+#
+# The C++ engine behind create_random_tensor, create_random_definite and the
+# randomized LAPACK-style algorithms is seeded from the clock when einsums is
+# imported, so a test that fails at a tolerance edge fails by chance and cannot
+# be rerun into the same state. Every test instead starts the engine from a
+# seed derived from the session seed and the test's node id, the same scheme
+# the C++ test main uses with Catch2's run seed and the test case name. The
+# session seed is random unless given, so runs still vary, and it is printed
+# in the header and beside every failure; passing it back with --einsums-seed
+# (or EINSUMS_TEST_SEED under ctest) reproduces the draws of any single test,
+# however the run was filtered.
+#
+# Tests that seed the engine themselves keep working: they reseed after this.
+_SEED_ENV = "EINSUMS_TEST_SEED"
+
+
+def _test_case_seed(run_seed: int, name: str) -> int:
+    """32-bit FNV-1a over the seed's little-endian bytes, then the name.
+
+    Mirrors ``einsums::testing::test_case_seed`` in the C++ test header, so a
+    seed means the same thing in both suites.
+    """
+    value = 2166136261
+    for byte in run_seed.to_bytes(4, "little") + name.encode():
+        value = ((value ^ byte) * 16777619) & 0xFFFFFFFF
+    return value
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--einsums-seed",
+        type=int,
+        default=None,
+        help=f"Session seed for the einsums random engine (default: ${_SEED_ENV}, else random).",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    seed = config.getoption("--einsums-seed")
+    if seed is None:
+        from_env = os.environ.get(_SEED_ENV, "").strip()
+        seed = int(from_env) if from_env else secrets.randbits(32)
+    config.einsums_seed = seed & 0xFFFFFFFF
+
+
+def _rerun_hint(config: pytest.Config) -> str:
+    return f"einsums random seed: {config.einsums_seed} (reproduce with --einsums-seed={config.einsums_seed} or {_SEED_ENV}={config.einsums_seed})"
+
+
+def pytest_report_header(config: pytest.Config) -> str:
+    return _rerun_hint(config)
+
+
+@pytest.fixture(autouse=True)
+def _seed_einsums_random_engine(request: pytest.FixtureRequest) -> None:
+    # Only seed an einsums the test has already imported: importing it here
+    # would load the extension into tests that never touch it.
+    einsums = sys.modules.get("einsums")
+    seed_random = getattr(einsums, "seed_random", None)
+    if seed_random is not None:
+        seed_random(_test_case_seed(request.config.einsums_seed, request.node.nodeid))
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> pytest.TestReport:
+    report = yield
+    if report.failed:
+        report.sections.append(("einsums random seed", _rerun_hint(item.config)))
+    return report
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Config) -> None:
+    # The header is hidden under -q, which is how ctest runs every suite, so
+    # repeat the seed where a failing run's log will show it.
+    if terminalreporter.stats.get("failed") or terminalreporter.stats.get("error"):
+        terminalreporter.write_line(_rerun_hint(config))
+
+
+# Dtype coverage by opting in.
+#
+# A test that takes a ``dtype`` argument runs once per dtype in
+# einsums.testing.ALL_DTYPES. A test that parametrizes ``dtype`` itself, with
+# a narrower list, keeps its own list.
+@pytest.fixture
+def dtype(request: pytest.FixtureRequest) -> str:
+    """One of einsums.testing.ALL_DTYPES; a test opts in by taking this argument."""
+    return request.param
+
+
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    if "dtype" not in metafunc.fixturenames:
+        return
+    for marker in metafunc.definition.iter_markers("parametrize"):
+        argnames = marker.args[0] if marker.args else marker.kwargs.get("argnames", ())
+        if isinstance(argnames, str):
+            argnames = [name.strip() for name in argnames.split(",")]
+        if "dtype" in argnames:
+            return
+    # Imported here rather than at the top so the tree's pure tooling tests
+    # never load the extension.
+    from einsums.testing import ALL_DTYPES
+
+    metafunc.parametrize("dtype", ALL_DTYPES, indirect=True)

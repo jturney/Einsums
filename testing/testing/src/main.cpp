@@ -24,7 +24,31 @@
 #include <catch2/internal/catch_context.hpp>
 
 #define CATCH_CONFIG_RUNNER
+#include <catch2/reporters/catch_reporter_event_listener.hpp>
+#include <catch2/reporters/catch_reporter_registrars.hpp>
+
+#include <Einsums/Testing.hpp>
 #include <catch2/catch_all.hpp>
+
+namespace {
+
+// The einsums engine is otherwise seeded once, from the clock, when the
+// runtime starts. Reseeding it at every pass through a test case makes each
+// test's draws a function of the printed run seed and the test's own name, so
+// a failure reproduces with "<binary> '<test name>' --rng-seed N" no matter
+// which tests ran before it or which section is selected.
+class ReseedEinsumsRandomEngine final : public Catch::EventListenerBase {
+  public:
+    using Catch::EventListenerBase::EventListenerBase;
+
+    void testCasePartialStarting(Catch::TestCaseInfo const &info, uint64_t /*part_number*/) override {
+        einsums::seed_random(einsums::testing::test_case_seed(Catch::getSeed(), info.name));
+    }
+};
+
+} // namespace
+
+CATCH_REGISTER_LISTENER(ReseedEinsumsRandomEngine)
 
 namespace {
 int einsums_main(int /*argc*/, char *const *const argv) {
@@ -60,9 +84,6 @@ int einsums_main(int /*argc*/, char *const *const argv) {
 
     Catch::StringMaker<float>::precision  = std::numeric_limits<float>::digits10;
     Catch::StringMaker<double>::precision = std::numeric_limits<double>::digits10;
-    auto seed                             = session.config().rngSeed();
-
-    einsums::seed_random(seed);
 
     int const result = session.run();
 

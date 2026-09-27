@@ -65,25 +65,28 @@ struct CircleDistribution<double> {
     std::uniform_real_distribution<double> _mag_dist;
 };
 
-// For this case, we can just use the normal uniform distribution. The boundary of the region will not be included.
+// Uniform by area: the radius is the square root of a uniform draw, because the area within radius r
+// grows as r squared. Drawing the radius itself uniformly would crowd the points toward the center.
+// The boundary of the region will not be included.
 template <typename T>
 struct CircleDistribution<std::complex<T>> {
   public:
     CircleDistribution(std::complex<T> center, T radius)
-        : _center{center}, _mag_dist(0, radius), _angle_dist(0, 2 * std::numbers::pi_v<T>) {}
+        : _center{center}, _radius{radius}, _area_dist(0, 1), _angle_dist(0, 2 * std::numbers::pi_v<T>) {}
 
     ~CircleDistribution() = default;
 
     template <typename Generator>
     std::complex<T> operator()(Generator &generator) {
-        T mag = _mag_dist(generator), angle = _angle_dist(generator);
+        T mag = _radius * std::sqrt(_area_dist(generator)), angle = _angle_dist(generator);
 
         return std::complex<T>{mag * std::cos(angle), mag * std::sin(angle)} + _center;
     }
 
   private:
     std::complex<T>                   _center;
-    std::uniform_real_distribution<T> _mag_dist, _angle_dist;
+    T                                 _radius;
+    std::uniform_real_distribution<T> _area_dist, _angle_dist;
 };
 
 /**
@@ -132,23 +135,24 @@ struct UnitCircleDistribution<double> {
     std::uniform_real_distribution<double> _mag_dist;
 };
 
-// For this case, we can just use the normal uniform distribution. The boundary of the region will not be included.
+// Uniform by area over the open unit disc, as for CircleDistribution. This used to drop the radius it
+// drew and return a point ON the circle, so every complex random tensor had elements of modulus one.
 template <typename T>
 struct UnitCircleDistribution<std::complex<T>> {
   public:
-    UnitCircleDistribution() : _mag_dist(0, 1), _angle_dist(0, 2 * std::numbers::pi_v<T>) {}
+    UnitCircleDistribution() : _area_dist(0, 1), _angle_dist(0, 2 * std::numbers::pi_v<T>) {}
 
     ~UnitCircleDistribution() = default;
 
     template <typename Generator>
     std::complex<T> operator()(Generator &generator) {
-        T mag = _mag_dist(generator), angle = _angle_dist(generator);
+        T mag = std::sqrt(_area_dist(generator)), angle = _angle_dist(generator);
 
-        return std::complex<T>{std::cos(angle), std::sin(angle)};
+        return std::complex<T>{mag * std::cos(angle), mag * std::sin(angle)};
     }
 
   private:
-    std::uniform_real_distribution<T> _mag_dist, _angle_dist;
+    std::uniform_real_distribution<T> _area_dist, _angle_dist;
 };
 
 } // namespace detail

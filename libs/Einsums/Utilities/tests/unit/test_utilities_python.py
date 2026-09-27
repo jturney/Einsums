@@ -86,3 +86,20 @@ def test_make_temp_path_is_unique():
 def test_make_temp_path_does_not_create_the_file():
     """Only the name is reserved; the caller decides whether to create it."""
     assert not einsums.make_temp_path().exists()
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_complex_random_draws_fill_the_unit_disc(dtype):
+    """Complex draws are uniform by area over the open unit disc.
+
+    The distribution used to discard the radius it drew, so every element had
+    modulus exactly one and no test ever saw a complex value of any other size.
+    For a uniform disc, E|z|^2 = 1/2 and a quarter of the points lie within
+    radius 1/2.
+    """
+    einsums.seed_random(20260926)
+    z = np.asarray(einsums.create_random_tensor("Z", [20000], dtype=dtype)).astype(np.complex128)
+    r = np.abs(z)
+    assert r.max() < 1.0 + 1e-6
+    assert abs(np.mean(r**2) - 0.5) < 0.02
+    assert abs(np.mean(r < 0.5) - 0.25) < 0.02

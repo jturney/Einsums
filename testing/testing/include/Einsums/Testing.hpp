@@ -20,6 +20,8 @@
 #include <catch2/matchers/catch_matchers_templated.hpp>
 #include <cmath>
 #include <complex>
+#include <cstdint>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 
@@ -60,6 +62,12 @@
 
 EINSUMS_NAMESPACE_BEGIN()
 
+/// Default relative tolerance of the comparison matchers for element type @p T.
+///
+/// Single precision carries about seven digits, so a short contraction of order-one terms is good to
+/// a few parts in 1e6 and 1e-4 leaves room for longer sums. A looser bound would pass a dropped term
+/// worth a percent of the result. A test that needs more than this should compute the rounding it
+/// expects rather than raise the default.
 template <typename T>
 constexpr double tolerance() {
     return 1e-6;
@@ -67,12 +75,12 @@ constexpr double tolerance() {
 
 template <>
 constexpr double tolerance<float>() {
-    return 1e-2;
+    return 1e-4;
 }
 
 template <>
 constexpr double tolerance<std::complex<float>>() {
-    return 1e-2;
+    return 1e-4;
 }
 
 /**
@@ -235,6 +243,66 @@ namespace testing {
 ///
 ///     TEMPLATE_LIST_TEST_CASE("round trip", "[tag]", einsums::testing::AllScalarTypes) { ... }
 using AllScalarTypes = std::tuple<float, double, std::complex<float>, std::complex<double>>;
+
+/// The two real element types, as a type list for Catch2's TEMPLATE_LIST_TEST_CASE.
+using RealScalarTypes = std::tuple<float, double>;
+
+/// The two complex element types, as a type list for Catch2's TEMPLATE_LIST_TEST_CASE.
+using ComplexScalarTypes = std::tuple<std::complex<float>, std::complex<double>>;
+
+/**
+ * @brief A scalar of element type @p T built from a real and an imaginary part.
+ *
+ * Complex types keep both parts and real types keep only @p re, so one templated test exercises a
+ * genuinely complex prefactor wherever the element type allows it. A real-valued prefactor on a
+ * complex tensor cannot tell a kernel that drops the imaginary part of the scalar, or conjugates it,
+ * from a correct one. Choosing parts with no exact binary representation (0.1, not 0.5) also makes
+ * two kernels that round differently land on different bits.
+ *
+ * @param re The real part.
+ * @param im The imaginary part, ignored for a real @p T.
+ */
+template <typename T>
+constexpr T prefactor(double re, double im) {
+    if constexpr (IsComplexV<T>) {
+        using R = RemoveComplexT<T>;
+        return T{static_cast<R>(re), static_cast<R>(im)};
+    } else {
+        return static_cast<T>(re);
+    }
+}
+
+/**
+ * @brief The seed the einsums random engine starts each test case from.
+ *
+ * The test main reseeds @ref einsums::random_engine with this value at the start of every run
+ * through a test case, including each pass Catch2 makes to reach another leaf section. The
+ * result depends only on the run seed Catch2 prints as "Randomness seeded to: N" and on the
+ * test case name, so a failure is reproduced by rerunning that one test with ``--rng-seed N``:
+ * the draws do not depend on which tests ran before it or on which sections are selected.
+ *
+ * The mix is 32-bit FNV-1a over the seed's four little-endian bytes followed by the name. The
+ * Python test suite uses the same function, so one seed means the same thing in both.
+ *
+ * @param run_seed The seed of the whole test run.
+ * @param test_name The name of the test case.
+ *
+ * @return The seed for the named test case.
+ */
+constexpr std::uint32_t test_case_seed(std::uint32_t run_seed, std::string_view test_name) {
+    std::uint32_t hash  = 2166136261U;
+    auto          mixin = [&hash](unsigned char byte) {
+        hash ^= byte;
+        hash *= 16777619U;
+    };
+    for (int shift = 0; shift < 32; shift += 8) {
+        mixin(static_cast<unsigned char>((run_seed >> shift) & 0xffU));
+    }
+    for (char const c : test_name) {
+        mixin(static_cast<unsigned char>(c));
+    }
+    return hash;
+}
 
 } // namespace testing
 
