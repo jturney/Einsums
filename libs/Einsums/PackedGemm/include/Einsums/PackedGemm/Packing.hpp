@@ -24,6 +24,33 @@
 
 EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
+// Thread-local buffers
+//
+// Every thread_local buffer here is reached through bind_thread_local() once, where it is
+// declared, and every loop goes through the reference it returns. These templates are
+// instantiated in libEinsums, and a shared library reaches a thread_local through a call to
+// __tls_get_addr. GCC treats that address as free to recompute, so under register pressure it
+// calls again rather than keep it: pack_A made one call per row in its strip gather, and a
+// plain local reference changes nothing, since it is the same recomputable address. Compiled
+// into an executable, as these were before cg::einsum's engine moved into the library, the
+// linker turns each access into one %fs-relative load, which is why nothing showed it until
+// then; the move cost abc-bda-dc 7% and the gather-bound intensli rows 3 to 5.
+//
+// Bind in the scope that declares the buffer, never above an OpenMP region: a reference taken
+// outside one is the calling thread's buffer, shared by every thread inside.
+
+/// Returns @p slot through a value the compiler cannot recompute, so it keeps one address in a
+/// register or on the stack instead of re-deriving it from the TLS block. See "Thread-local
+/// buffers" above.
+template <typename T>
+inline T &bind_thread_local(T &slot) {
+    T *p = &slot;
+#if defined(__GNUC__) || defined(__clang__)
+    asm("" : "+r"(p));
+#endif
+    return *p;
+}
+
 /// @brief Describes one dimension of a tensor as seen during packing.
 struct DimSpec {
     size_t  tensor_pos{0};    ///< Position of this dim in the tensor's raw index list
@@ -852,7 +879,8 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
     }
 
     // --- General path: precompute K offsets (multi-K or single-K) ---
-    static thread_local std::vector<int64_t> k_offsets;
+    static thread_local std::vector<int64_t> k_offsets_slot;
+    auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
     if (k_dims.size() == 1) {
         k_offsets.resize(static_cast<size_t>(kc_len));
         int64_t const k_stride = k_dims[0].tensor_stride;
@@ -864,7 +892,8 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
     }
 
     // --- General path: precompute M offsets (multi-M or single-M) ---
-    static thread_local std::vector<int64_t> m_offsets;
+    static thread_local std::vector<int64_t> m_offsets_slot;
+    auto                                    &m_offsets = bind_thread_local(m_offsets_slot);
     if (multi_m) {
         precompute_offsets(mc_start, mc_len, m_dims, m_offsets);
     } else {
@@ -927,7 +956,8 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
         if (m_dims.size() >= 2 && m_dims[m_dims.size() - 2].tensor_stride == 1 && m_fast_size > 1) {
             // Panel-relative destination of each row, once per block rather
             // than once per element.
-            static thread_local std::vector<int64_t> row_dst;
+            static thread_local std::vector<int64_t> row_dst_slot;
+            auto                                    &row_dst = bind_thread_local(row_dst_slot);
             row_dst.resize(static_cast<size_t>(mc_len));
             for (int64_t i = 0; i < mc_len; ++i) {
                 row_dst[static_cast<size_t>(i)] = (i / MR) * MR * kc_len + (i % MR);
@@ -1144,7 +1174,8 @@ void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, i
     }
 
     // --- General path: precompute K offsets ---
-    static thread_local std::vector<int64_t> k_offsets;
+    static thread_local std::vector<int64_t> k_offsets_slot;
+    auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
     if (k_dims.size() == 1) {
         k_offsets.resize(static_cast<size_t>(kc_len));
         int64_t const k_stride = k_dims[0].tensor_stride;
@@ -1156,7 +1187,8 @@ void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, i
     }
 
     // --- General path: precompute N offsets ---
-    static thread_local std::vector<int64_t> n_offsets;
+    static thread_local std::vector<int64_t> n_offsets_slot;
+    auto                                    &n_offsets = bind_thread_local(n_offsets_slot);
     if (multi_n) {
         precompute_offsets(nc_start, nc_len, n_dims, n_offsets);
     } else {
@@ -1193,7 +1225,8 @@ void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, i
             return;
         }
         if (n_dims.size() >= 2 && n_dims[n_dims.size() - 2].tensor_stride == 1 && n_fast_size > 1) {
-            static thread_local std::vector<int64_t> col_dst;
+            static thread_local std::vector<int64_t> col_dst_slot;
+            auto                                    &col_dst = bind_thread_local(col_dst_slot);
             col_dst.resize(static_cast<size_t>(nc_len));
             for (int64_t j = 0; j < nc_len; ++j) {
                 col_dst[static_cast<size_t>(j)] = (j / NR) * kc_len * NR + (j % NR);
@@ -1265,7 +1298,9 @@ void pack_A_flat(T *dst, T const *A_data, PackingPlan const &plan, int64_t mc_st
     auto const &m_dims = plan.m_dims;
     auto const &k_dims = plan.k_dims_in_a;
 
-    static thread_local std::vector<int64_t> k_offsets, m_offsets;
+    static thread_local std::vector<int64_t> k_offsets_slot, m_offsets_slot;
+    auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
+    auto                                    &m_offsets = bind_thread_local(m_offsets_slot);
     precompute_offsets(kc_start, kc_len, k_dims, k_offsets);
     precompute_offsets(mc_start, mc_len, m_dims, m_offsets);
 
@@ -1307,7 +1342,9 @@ void pack_B_flat(T *dst, T const *B_data, PackingPlan const &plan, int64_t kc_st
     auto const &n_dims = plan.n_dims;
     auto const &k_dims = plan.k_dims_in_b;
 
-    static thread_local std::vector<int64_t> k_offsets, n_offsets;
+    static thread_local std::vector<int64_t> k_offsets_slot, n_offsets_slot;
+    auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
+    auto                                    &n_offsets = bind_thread_local(n_offsets_slot);
     precompute_offsets(kc_start, kc_len, k_dims, k_offsets);
     precompute_offsets(nc_start, nc_len, n_dims, n_offsets);
 
@@ -1356,7 +1393,9 @@ template <typename RealT>
 void pack_A_3m_flat(RealT *Ar, RealT *Ai, RealT *As, std::complex<RealT> const *A_data, PackingPlan const &plan, int64_t mc_start,
                     int64_t mc_len, int64_t kc_start, int64_t kc_len, bool conj = false) {
     LabeledSectionInternal0();
-    static thread_local std::vector<int64_t> k_offsets, m_offsets;
+    static thread_local std::vector<int64_t> k_offsets_slot, m_offsets_slot;
+    auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
+    auto                                    &m_offsets = bind_thread_local(m_offsets_slot);
     precompute_offsets(kc_start, kc_len, plan.k_dims_in_a, k_offsets);
     precompute_offsets(mc_start, mc_len, plan.m_dims, m_offsets);
 
@@ -1381,7 +1420,9 @@ template <typename RealT>
 void pack_B_3m_flat(RealT *Br, RealT *Bi, RealT *Bs, std::complex<RealT> const *B_data, PackingPlan const &plan, int64_t kc_start,
                     int64_t kc_len, int64_t nc_start, int64_t nc_len, bool conj = false) {
     LabeledSectionInternal0();
-    static thread_local std::vector<int64_t> k_offsets, n_offsets;
+    static thread_local std::vector<int64_t> k_offsets_slot, n_offsets_slot;
+    auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
+    auto                                    &n_offsets = bind_thread_local(n_offsets_slot);
     precompute_offsets(kc_start, kc_len, plan.k_dims_in_b, k_offsets);
     precompute_offsets(nc_start, nc_len, plan.n_dims, n_offsets);
 
@@ -1429,7 +1470,9 @@ template <typename RealT>
 void pack_A_1m_panels(RealT *Ap, std::complex<RealT> const *A_data, PackingPlan const &plan, int64_t mh_start, int64_t mh_len,
                       int64_t kh_start, int64_t kh_len, int MR, bool conj = false) {
     LabeledSectionInternal0();
-    static thread_local std::vector<int64_t> k_offsets, m_offsets;
+    static thread_local std::vector<int64_t> k_offsets_slot, m_offsets_slot;
+    auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
+    auto                                    &m_offsets = bind_thread_local(m_offsets_slot);
     precompute_offsets(kh_start / 2, (kh_start + kh_len + 1) / 2 - kh_start / 2, plan.k_dims_in_a, k_offsets);
     precompute_offsets(mh_start / 2, (mh_start + mh_len + 1) / 2 - mh_start / 2, plan.m_dims, m_offsets);
 
@@ -1469,7 +1512,9 @@ template <typename RealT>
 void pack_B_1m_panels(RealT *Bp, std::complex<RealT> const *B_data, PackingPlan const &plan, int64_t kh_start, int64_t kh_len,
                       int64_t nc_start, int64_t nc_len, int NR, bool conj = false) {
     LabeledSectionInternal0();
-    static thread_local std::vector<int64_t> k_offsets, n_offsets;
+    static thread_local std::vector<int64_t> k_offsets_slot, n_offsets_slot;
+    auto                                    &k_offsets = bind_thread_local(k_offsets_slot);
+    auto                                    &n_offsets = bind_thread_local(n_offsets_slot);
     precompute_offsets(kh_start / 2, (kh_start + kh_len + 1) / 2 - kh_start / 2, plan.k_dims_in_b, k_offsets);
     precompute_offsets(nc_start, nc_len, plan.n_dims, n_offsets);
 

@@ -46,6 +46,9 @@ EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 /// Measured, not chosen; see the decline site for the data and its caveats.
 inline constexpr int64_t kOuterProductFloor = 768;
 
+// Thread-local buffers: bound to a local reference where declared, as in Packing.hpp, whose
+// "Thread-local buffers" note gives the reason and the OpenMP rule.
+
 // ---------------------------------------------------------------------------
 // Compile-time helpers
 // ---------------------------------------------------------------------------
@@ -789,7 +792,8 @@ void flush_c_block_transposed(T *C_data, T const *Cb, int64_t mc, int64_t mc_len
     int64_t const aw    = std::min(xa, lanes);
     int64_t const rt    = std::clamp<int64_t>(int64_t{2048} / aw, 1, rows);
 
-    static thread_local std::vector<T> tls_flush;
+    static thread_local std::vector<T> tls_flush_slot;
+    auto                              &tls_flush = bind_thread_local(tls_flush_slot);
     tls_flush.resize(static_cast<size_t>(aw) * static_cast<size_t>(rt));
     T *buf = tls_flush.data();
 
@@ -1212,9 +1216,11 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // case held K/KC times more memory than the gather can address -
             // 226 MB against 0.8 on a K of 144384 - for the whole life of the
             // thread, since these only ever grow.
-            static thread_local std::vector<ValueType> tls_A_flat, tls_B_flat;
-            ValueType                                 *A_flat = nullptr;
-            ValueType                                 *B_flat = nullptr;
+            static thread_local std::vector<ValueType> tls_A_flat_slot, tls_B_flat_slot;
+            auto                                      &tls_A_flat = bind_thread_local(tls_A_flat_slot);
+            auto                                      &tls_B_flat = bind_thread_local(tls_B_flat_slot);
+            ValueType                                 *A_flat     = nullptr;
+            ValueType                                 *B_flat     = nullptr;
 
             // Read ranks at runtime so the path works for both compile-time-rank
             // (Tensor<T, K>) and runtime-rank (RuntimeTensor<T, Alloc>) operands.
@@ -2157,7 +2163,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     int64_t m_lo = 0, m_hi = 0;
                     group_rows(item, 0, 1, m_lo, m_hi);
                     int64_t const                              nc = (item / m_groups) * NC_blk;
-                    static thread_local std::vector<ValueType> tls_Ap, tls_Bp, tls_Ct;
+                    static thread_local std::vector<ValueType> tls_Ap_slot, tls_Bp_slot, tls_Ct_slot;
+                    auto                                      &tls_Ap     = bind_thread_local(tls_Ap_slot);
+                    auto                                      &tls_Bp     = bind_thread_local(tls_Bp_slot);
+                    auto                                      &tls_Ct     = bind_thread_local(tls_Ct_slot);
                     bool                                       streamed_c = false;
                     tls_Ap.resize(ap_buf_elems);
                     if (team->bp == nullptr) {
@@ -2172,7 +2181,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     // the beta prescale and tile scatter loops below. n-offsets are
                     // invariant for the whole nc block; m-offsets are refreshed per
                     // mc block inside the kc loop.
-                    static thread_local std::vector<int64_t> c_n_offsets, c_m_offsets;
+                    static thread_local std::vector<int64_t> c_n_offsets_slot, c_m_offsets_slot;
+                    auto                                    &c_n_offsets = bind_thread_local(c_n_offsets_slot);
+                    auto                                    &c_m_offsets = bind_thread_local(c_m_offsets_slot);
                     if (needs_c_scatter || (is_complex && shape.use_1m)) {
                         precompute_offsets(nc, nc_len, plan.c_n_dims, c_n_offsets);
                     }
@@ -2218,7 +2229,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             int64_t const num_ir_max = (MHC + MR - 1) / MR;
                             int64_t const num_jr_max = (nc_len + NR - 1) / NR;
 
-                            static thread_local std::vector<RealT> tls_Ap1, tls_Bp1, tls_Cb1;
+                            static thread_local std::vector<RealT> tls_Ap1_slot, tls_Bp1_slot, tls_Cb1_slot;
+                            auto                                  &tls_Ap1 = bind_thread_local(tls_Ap1_slot);
+                            auto                                  &tls_Bp1 = bind_thread_local(tls_Bp1_slot);
+                            auto                                  &tls_Cb1 = bind_thread_local(tls_Cb1_slot);
                             tls_Ap1.resize(static_cast<size_t>(num_ir_max * MR * KHC));
                             tls_Bp1.resize(static_cast<size_t>(num_jr_max * NR * KHC));
                             tls_Cb1.resize(static_cast<size_t>(MHC) * static_cast<size_t>(nc_len));
@@ -2293,7 +2307,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     if (needs_c_scatter && shape.block_gemm) {
                         // NOLINTNEXTLINE(readability-identifier-naming)
                         using blas_int = einsums::blas::int_t;
-                        static thread_local std::vector<ValueType> tls_Af, tls_Bf, tls_Cb;
+                        static thread_local std::vector<ValueType> tls_Af_slot, tls_Bf_slot, tls_Cb_slot;
+                        auto                                      &tls_Af = bind_thread_local(tls_Af_slot);
+                        auto                                      &tls_Bf = bind_thread_local(tls_Bf_slot);
+                        auto                                      &tls_Cb = bind_thread_local(tls_Cb_slot);
                         bool const                                 use_3m = is_complex && shape.use_3m;
                         if (!use_3m) {
                             tls_Af.resize(static_cast<size_t>(MC_blk * KC_blk));
@@ -2304,7 +2321,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         // 3m buffers: three real splits of A, B, and the block
                         // product, laid out as consecutive segments.
                         using Real3m = RemoveComplexT<ValueType>;
-                        static thread_local std::vector<Real3m> tls_A3, tls_B3, tls_T3;
+                        static thread_local std::vector<Real3m> tls_A3_slot, tls_B3_slot, tls_T3_slot;
+                        auto                                   &tls_A3 = bind_thread_local(tls_A3_slot);
+                        auto                                   &tls_B3 = bind_thread_local(tls_B3_slot);
+                        auto                                   &tls_T3 = bind_thread_local(tls_T3_slot);
                         if (use_3m) {
                             tls_A3.resize(3 * static_cast<size_t>(MC_blk * KC_blk));
                             tls_B3.resize(3 * static_cast<size_t>(nc_len) * static_cast<size_t>(KC_blk));
