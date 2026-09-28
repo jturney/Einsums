@@ -2028,12 +2028,17 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // write-back and the C-segment alignment both assume blocks start on a whole unit of C), and
         // at any MR row otherwise, which lets the grid cut M evenly where MC blocks do not divide it:
         // 21 blocks of M = 5184 split 6, 5, 5, 5 four ways, where 1296-row groups are exact.
-        int64_t const m_unit = (use_a_order || span_aligned) ? MC_blk : static_cast<int64_t>(MR);
+        // Teams share a panel only when there are M blocks enough to share: members claim them, and
+        // ccsd's `abc-ad-bdc` (M = 312, five blocks, N = 92352) left a team of three two, two and one,
+        // and ran at 0.36-0.45x of threads that each take N columns of their own. Four blocks a
+        // member; below that every thread works alone, the split such a wide, short contraction wants.
+        bool const    use_teams = team_mode && (M + MC_blk - 1) / MC_blk >= 4 * static_cast<int64_t>(team_size);
+        int64_t const m_unit    = (use_a_order || span_aligned) ? MC_blk : static_cast<int64_t>(MR);
         ThreadGrid    grid;
 #ifdef _OPENMP
         if (parallel_nc) {
             int const nthreads = omp_get_max_threads();
-            if (nthreads > 1 && team_mode) {
+            if (nthreads > 1 && use_teams) {
                 // The grid's units are teams, and a team's N block is its shared panel, sized to
                 // the panel budget at this KC. Members split each team's rows among themselves.
                 int64_t const panel_nc =
@@ -2097,7 +2102,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // loop it always ran. A larger team's panel lives in a buffer the CALLING thread owns,
             // one stretch per team, first touched by the members that pack it, on their own node.
             int const    run_threads = parallel_nc ? n_threads : 1;
-            int const    members     = parallel_nc ? team_size : 1;
+            int const    members     = (parallel_nc && use_teams) ? team_size : 1;
             int const    n_teams     = run_threads / members;
             size_t const stride      = (bp_buf_elems + 15) & ~size_t{15};
             last_team_size()         = members;

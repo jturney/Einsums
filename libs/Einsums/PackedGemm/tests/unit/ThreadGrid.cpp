@@ -194,30 +194,56 @@ void ring(int threads, T c_pf, T ab_pf) {
     check_against(C, C_ref, 12 * 9, ab_pf, c_pf);
 }
 
-/// C(a,b,c) = A(b,d,a) * B(d,c) deep and wide enough that a team re-packs its shared panel: K = 1600
-/// is more than one K block and N = 900 more than one panel at the team blocking (half an L3 of a
-/// few MiB holds a KC of about a thousand by a few hundred columns), so the members meet at the
-/// barriers many times and every member's rows cross every panel.
+/// C(a,c,b) = A(d,a,b) * B(d,c) deep and tall enough that teams form and re-pack their shared panel
+/// every K block: K = 600 is more than one K block at the team blocking (at least 512), and M = 2688
+/// gives a team of three the M blocks it needs to share while staying above 4K, past which the
+/// engine takes all of M as one block. The reference is computed once and every thread count is
+/// checked against it, since it is the expensive part.
 template <typename T>
-void deep_wide(int threads, T c_pf, T ab_pf) {
+void deep_wide(T c_pf, T ab_pf) {
+    auto         A     = create_random_tensor<T>("A", 600, 48, 56);
+    auto         B     = create_random_tensor<T>("B", 600, 300);
+    auto         C0    = create_random_tensor<T>("C", 48, 300, 56);
+    Tensor<T, 3> C_ref = C0;
+    testing::reference_einsum("acb <- dab ; dc", c_pf, &C_ref, ab_pf, A, B);
+
+    for (int const threads : {1, 3, 4, 6, 7, 12, 24}) {
+        CAPTURE(threads);
+        ThreadCount const guard{threads};
+        Tensor<T, 3>      C       = C0;
+        bool const        handled = tensor_algebra::detail::try_packed_gemm_indices<false, false>(c_pf, Indices{a, c, b}, &C, ab_pf,
+                                                                                                  Indices{d, a, b}, A, Indices{d, c}, B);
+        REQUIRE(handled);
+        REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
+        // Teams form on the tile engine wherever the threads divide into the cores sharing an L3;
+        // elsewhere every thread works alone, which the same loop also runs. The block-GEMM
+        // strategy, which complex takes on this scatter shape, keeps panels of its own.
+        int const  per_l3 = packed_gemm::cpu_config().cores_per_l3;
+        bool const tile   = std::string(packed_gemm::last_packed_engine()) == "tile";
+        CHECK(packed_gemm::last_team_size() == ((tile && threads > 1 && per_l3 > 1 && threads % per_l3 == 0) ? per_l3 : 1));
+        check_against(C, C_ref, 600, ab_pf, c_pf);
+    }
+}
+
+/// A contraction with too few M blocks for a team to share keeps every thread alone, taking N
+/// columns of its own: ccsd's `abc-ad-bdc` shape (M = 312, N much wider) ran at 0.36-0.45x of that
+/// split when its three-member teams divided five M blocks two, two and one.
+template <typename T>
+void short_wide(int threads) {
     ThreadCount const guard{threads};
-    auto              A     = create_random_tensor<T>("A", 12, 1600, 8);
-    auto              B     = create_random_tensor<T>("B", 1600, 900);
-    auto              C     = create_random_tensor<T>("C", 8, 12, 900);
+    auto              A     = create_random_tensor<T>("A", 12, 64, 8);
+    auto              B     = create_random_tensor<T>("B", 64, 4000);
+    auto              C     = create_random_tensor<T>("C", 8, 12, 4000);
     Tensor<T, 3>      C_ref = C;
+    T const           c_pf  = testing::prefactor<T>(0.3, -0.7);
+    T const           ab_pf = testing::prefactor<T>(1.1, 0.4);
     testing::reference_einsum("abc <- bda ; dc", c_pf, &C_ref, ab_pf, A, B);
 
     bool const handled = tensor_algebra::detail::try_packed_gemm_indices<false, false>(c_pf, Indices{a, b, c}, &C, ab_pf, Indices{b, d, a},
                                                                                        A, Indices{d, c}, B);
     REQUIRE(handled);
-    REQUIRE(std::string(packed_gemm::last_contraction_route()) == "packed");
-    // Teams form on the tile engine wherever the threads divide into the cores sharing an L3;
-    // elsewhere every thread works alone, which the same loop also runs. The block-GEMM strategy,
-    // which complex takes on this scatter shape, keeps panels of its own.
-    int const  per_l3 = packed_gemm::cpu_config().cores_per_l3;
-    bool const tile   = std::string(packed_gemm::last_packed_engine()) == "tile";
-    CHECK(packed_gemm::last_team_size() == ((tile && threads > 1 && per_l3 > 1 && threads % per_l3 == 0) ? per_l3 : 1));
-    check_against(C, C_ref, 1600, ab_pf, c_pf);
+    CHECK(packed_gemm::last_team_size() == 1);
+    check_against(C, C_ref, 64, ab_pf, c_pf);
 }
 
 } // namespace
@@ -243,13 +269,18 @@ TEMPLATE_LIST_TEST_CASE("thread grid: ring scatter at every thread count", "[Pac
 TEMPLATE_LIST_TEST_CASE("thread grid: teams share a panel across K and N blocks", "[PackedGemm][ThreadGrid]", testing::AllScalarTypes) {
     // Threads that share an L3 share one packed B panel, pack it together and meet before and after
     // each K block. Counts that divide into whole teams (3, 6, 12 and 24 on a three-core-per-L3 part)
-    // and ones that do not (4, 7) both run here, as does one thread, whose blocking and loop must be
-    // the ones the engine always had.
+    // and ones that do not (4, 7) both run, as does one thread, whose blocking and loop must be the
+    // ones the engine always had.
     using T = TestType;
-    for (int const threads : {1, 3, 4, 6, 7, 12, 24}) {
+    deep_wide<T>(testing::prefactor<T>(0.3, -0.7), testing::prefactor<T>(1.1, 0.4));
+    deep_wide<T>(T{0}, testing::prefactor<T>(-0.9, 0.2));
+}
+
+TEMPLATE_LIST_TEST_CASE("thread grid: too few M blocks keeps every thread alone", "[PackedGemm][ThreadGrid]", testing::RealScalarTypes) {
+    using T = TestType;
+    for (int const threads : {3, 12, 24}) {
         CAPTURE(threads);
-        deep_wide<T>(threads, testing::prefactor<T>(0.3, -0.7), testing::prefactor<T>(1.1, 0.4));
-        deep_wide<T>(threads, T{0}, testing::prefactor<T>(-0.9, 0.2));
+        short_wide<T>(threads);
     }
 }
 
