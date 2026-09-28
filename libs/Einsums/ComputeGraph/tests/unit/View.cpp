@@ -30,7 +30,7 @@ T val(double x) {
 
 // Within a few ulps of the element type, relative to the expected value with a floor of one.
 template <typename T>
-auto near(T want) {
+auto close_to(T want) {
     return CheckWithinRel(want, 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon());
 }
 
@@ -230,7 +230,7 @@ TEMPLATE_LIST_TEST_CASE("View - a view made outside capture still orders against
     for (size_t i = 0; i < N; ++i) {
         expected += static_cast<RemoveComplexT<T>>(N * (i + 1) * (i + 1));
     }
-    REQUIRE_THAT(out, near(expected));
+    REQUIRE_THAT(out, close_to(expected));
 
     // Disjoint slices must still be free to run concurrently: recovering the
     // parent link must not collapse every view into a whole-tensor access.
@@ -759,7 +759,7 @@ TEMPLATE_LIST_TEST_CASE("batched_gemm - one node for many independent GEMMs", "[
         for (size_t i = 0; i < N; ++i)
             for (size_t p = 0; p < m; ++p)
                 for (size_t q = 0; q < n; ++q)
-                    REQUIRE_THAT(C[i](p, q), near(want[i](p, q)));
+                    REQUIRE_THAT(C[i](p, q), close_to(want[i](p, q)));
     }
 
     SECTION("eager: same result outside capture") {
@@ -767,7 +767,7 @@ TEMPLATE_LIST_TEST_CASE("batched_gemm - one node for many independent GEMMs", "[
         for (size_t i = 0; i < N; ++i)
             for (size_t p = 0; p < m; ++p)
                 for (size_t q = 0; q < n; ++q)
-                    REQUIRE_THAT(C[i](p, q), near(want[i](p, q)));
+                    REQUIRE_THAT(C[i](p, q), close_to(want[i](p, q)));
     }
 
     SECTION("a member that cannot share the batch's scalars is rejected") {

@@ -44,7 +44,7 @@ T pf(double re, double im) {
 
 // Within a few ulps of the element type, relative to the expected value with a floor of one.
 template <typename T>
-auto near(T want) {
+auto close_to(T want) {
     return CheckWithinRel(want, 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon());
 }
 
@@ -134,7 +134,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - body-declared deferred scratch hoists
     REQUIRE_NOTHROW(g.execute());
     for (size_t ii = 0; ii < n; ii++) {
         for (size_t jj = 0; jj < n; jj++) {
-            REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
+            REQUIRE_THAT(acc(ii, jj), close_to(ref(ii, jj)));
         }
     }
 
@@ -146,7 +146,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - body-declared deferred scratch hoists
         g.execute(df);
         for (size_t ii = 0; ii < n; ii++) {
             for (size_t jj = 0; jj < n; jj++) {
-                REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
+                REQUIRE_THAT(acc(ii, jj), close_to(ref(ii, jj)));
             }
         }
     }
@@ -233,7 +233,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - branch-declared deferred scratch hois
     REQUIRE_NOTHROW(g.execute());
     for (size_t ii = 0; ii < n; ii++) {
         for (size_t jj = 0; jj < n; jj++) {
-            REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
+            REQUIRE_THAT(acc(ii, jj), close_to(ref(ii, jj)));
         }
     }
 
@@ -257,7 +257,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - branch-declared deferred scratch hois
         g.execute(df);
         for (size_t ii = 0; ii < n; ii++) {
             for (size_t jj = 0; jj < n; jj++) {
-                REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
+                REQUIRE_THAT(acc(ii, jj), close_to(ref(ii, jj)));
             }
         }
     }
@@ -339,7 +339,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - inner-body deferred scratch hoists on
     REQUIRE_NOTHROW(g.execute());
     for (size_t ii = 0; ii < n; ii++) {
         for (size_t jj = 0; jj < n; jj++) {
-            REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
+            REQUIRE_THAT(acc(ii, jj), close_to(ref(ii, jj)));
         }
     }
 
@@ -349,7 +349,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - inner-body deferred scratch hoists on
         g.execute(df);
         for (size_t ii = 0; ii < n; ii++) {
             for (size_t jj = 0; jj < n; jj++) {
-                REQUIRE_THAT(acc(ii, jj), near(ref(ii, jj)));
+                REQUIRE_THAT(acc(ii, jj), close_to(ref(ii, jj)));
             }
         }
     }
@@ -662,7 +662,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - a setup body's output gets ONE lifecy
     CHECK(cg::passes::stranded_materializations(g).empty());
 
     g.execute();
-    CHECK_THAT(out(0, 0), near(pf<T>(1.0, 0.5)));
+    CHECK_THAT(out(0, 0), close_to(pf<T>(1.0, 0.5)));
 }
 
 TEMPLATE_LIST_TEST_CASE("Materialization - a setup nested in a loop body materializes its workspace inside itself",
@@ -722,7 +722,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - a setup nested in a loop body materia
     CHECK(cg::passes::stranded_materializations(g).empty());
 
     g.execute();
-    CHECK_THAT(out(0, 0), near(pf<T>(2.0, 1.0)));
+    CHECK_THAT(out(0, 0), close_to(pf<T>(2.0, 1.0)));
 }
 
 TEMPLATE_LIST_TEST_CASE("Materialization - a factor's lifecycle follows the setup that writes it through a reorder",
@@ -842,8 +842,8 @@ TEMPLATE_LIST_TEST_CASE("Materialization - a factor's lifecycle follows the setu
         CHECK(cg::passes::stranded_materializations(g).empty());
 
         g.execute();
-        CHECK_THAT(out_a(0, 0), near(pf<T>(1.0, 0.5)));
-        CHECK_THAT(out_b(0, 0), near(pf<T>(1.0, 0.5)));
+        CHECK_THAT(out_a(0, 0), close_to(pf<T>(1.0, 0.5)));
+        CHECK_THAT(out_b(0, 0), close_to(pf<T>(1.0, 0.5)));
     };
 
     run_arm(true);
@@ -903,7 +903,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - a top-level setup's chain intermediat
     CHECK(cg::passes::stranded_materializations(g).empty());
 
     g.execute();
-    CHECK_THAT(out(0, 0), near(pf<T>(1.0, 0.5)));
+    CHECK_THAT(out(0, 0), close_to(pf<T>(1.0, 0.5)));
 }
 
 TEMPLATE_LIST_TEST_CASE("Materialization - a body handle whose last use a rewrite removed gets no lifecycle",

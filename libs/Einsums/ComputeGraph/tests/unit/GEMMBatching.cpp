@@ -579,7 +579,7 @@ TEMPLATE_LIST_TEST_CASE("batched_gemm_blocked matches the list form", "[ComputeG
 
     constexpr size_t m = 4, k = 6, n = 3, count = 5;
 
-    auto const near = [](T got, T want) { return std::abs(got - want) <= tol<T>() * (1.0 + std::abs(want)); };
+    auto const close_to = [](T got, T want) { return std::abs(got - want) <= tol<T>() * (1.0 + std::abs(want)); };
 
     std::vector<RuntimeTensor<T>> a_store, b_store;
     for (size_t i = 0; i < count; ++i) {
@@ -624,7 +624,7 @@ TEMPLATE_LIST_TEST_CASE("batched_gemm_blocked matches the list form", "[ComputeG
         }
         cg::batched_gemm(1.0, a_list, b_list, 0.0, c_list);
         for (size_t i = 0; i < ref.size(); ++i) {
-            REQUIRE(near(got.data()[i], ref.data()[i]));
+            REQUIRE(close_to(got.data()[i], ref.data()[i]));
         }
     }
 
@@ -633,7 +633,7 @@ TEMPLATE_LIST_TEST_CASE("batched_gemm_blocked matches the list form", "[ComputeG
         got.zero();
         cg::batched_gemm_blocked(1.0, a_list, b_list, 0.0, &got, offsets, m, n);
         for (size_t i = 0; i < ref.size(); ++i) {
-            REQUIRE(near(got.data()[i], ref.data()[i]));
+            REQUIRE(close_to(got.data()[i], ref.data()[i]));
         }
     }
 
@@ -648,7 +648,7 @@ TEMPLATE_LIST_TEST_CASE("batched_gemm_blocked matches the list form", "[ComputeG
         REQUIRE(g.num_nodes() == 1);
         g.execute();
         for (size_t i = 0; i < ref.size(); ++i) {
-            REQUIRE(near(got.data()[i], ref.data()[i]));
+            REQUIRE(close_to(got.data()[i], ref.data()[i]));
         }
     }
 
@@ -670,7 +670,7 @@ TEMPLATE_LIST_TEST_CASE("batched_gemm_blocked matches the list form", "[ComputeG
             for (size_t c = 0; c < n; ++c) {
                 for (size_t r = 0; r < m; ++r) {
                     T const expected = fill + ref.data()[i * n * m + c * m + r];
-                    REQUIRE(near(got.data()[perm[i] * n * m + c * m + r], expected));
+                    REQUIRE(close_to(got.data()[perm[i] * n * m + c * m + r], expected));
                 }
             }
         }

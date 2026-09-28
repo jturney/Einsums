@@ -32,7 +32,7 @@ T pf(double re, double im) {
 // Within a few ulps of the element type, relative to the expected value with a floor of one: the
 // checks here sum a handful of order-one products a few times over.
 template <typename T>
-bool near(T got, T want) {
+bool close_to(T got, T want) {
     return std::abs(got - want) <= 1000.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon() * (1.0 + std::abs(want));
 }
 
@@ -129,7 +129,7 @@ TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - does NOT hoist a producer whose
     auto C_ref = create_zero_tensor<T>("C_ref", 3, 3);
     reference_einsum("ij <- ik ; kj", &C_ref, A, B);
     for (size_t k = 0; k < C.size(); ++k) {
-        CHECK(near(C.data()[k], pf<T>(0.9, 0.3) * C_ref.data()[k]));
+        CHECK(close_to(C.data()[k], pf<T>(0.9, 0.3) * C_ref.data()[k]));
     }
 }
 
@@ -248,7 +248,7 @@ TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - hoisted node with a deferred ou
     auto AB = create_zero_tensor<T>("AB", 3, 3);
     reference_einsum("ij <- ik ; kj", &AB, A, B);
     for (size_t k = 0; k < acc.size(); ++k) {
-        CHECK(near(acc.data()[k], static_cast<T>(N) * AB.data()[k]));
+        CHECK(close_to(acc.data()[k], static_cast<T>(N) * AB.data()[k]));
     }
 }
 
@@ -306,7 +306,7 @@ TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - inner-loop invariant hoists all
     acc.zero();
     graph.execute();
     for (size_t idx = 0; idx < acc.size(); ++idx) {
-        CHECK(near(acc.data()[idx], T{4} * WB.data()[idx]));
+        CHECK(close_to(acc.data()[idx], T{4} * WB.data()[idx]));
     }
 
     // Repeated parallel execution must match the sequential reference.
@@ -315,7 +315,7 @@ TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - inner-loop invariant hoists all
         cg::DataflowExecutor df;
         graph.execute(df);
         for (size_t idx = 0; idx < acc.size(); ++idx) {
-            CHECK(near(acc.data()[idx], T{4} * WB.data()[idx]));
+            CHECK(close_to(acc.data()[idx], T{4} * WB.data()[idx]));
         }
     }
 }
@@ -383,7 +383,7 @@ TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - invariant w.r.t. inner loop onl
     acc.zero();
     graph.execute();
     for (size_t idx = 0; idx < acc.size(); ++idx) {
-        CHECK(near(acc.data()[idx], T{10} * MMB.data()[idx]));
+        CHECK(close_to(acc.data()[idx], T{10} * MMB.data()[idx]));
     }
 }
 
@@ -432,7 +432,7 @@ TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - does NOT hoist out of a conditi
     acc.zero();
     graph.execute();
     for (size_t idx = 0; idx < acc.size(); ++idx) {
-        CHECK(near(acc.data()[idx], T{2} * AA.data()[idx]));
+        CHECK(close_to(acc.data()[idx], T{2} * AA.data()[idx]));
     }
 }
 
@@ -477,7 +477,7 @@ TEMPLATE_LIST_TEST_CASE("LoopInvariantHoisting - hoists a pure-overwrite axpby",
     acc.zero();
     graph.execute();
     for (size_t idx = 0; idx < acc.size(); ++idx) {
-        CHECK(near(acc.data()[idx], T{3} * (alpha * A.data()[idx] + d.data()[idx])));
+        CHECK(close_to(acc.data()[idx], T{3} * (alpha * A.data()[idx] + d.data()[idx])));
     }
 }
 
