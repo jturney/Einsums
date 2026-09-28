@@ -282,3 +282,16 @@ einsums_add_module(
 # definitions StreamKernelDispatch.cpp keys off) to the module target.
 target_sources(Einsums_ComputeGraph PRIVATE ${ComputeGraphStreamKernelRungs})
 target_compile_definitions(Einsums_ComputeGraph PRIVATE ${ComputeGraphStreamKernelRungs_DEFINITIONS})
+
+# These files instantiate the string einsum engine, PackedGemm's packing loops included, which
+# consumers compiled in their own files at their own -O level before cg::einsum moved into the
+# library. Build them at -O3 in every optimized configuration so a RelWithDebInfo library packs as
+# fast as a Release consumer did: at -O2 GCC's very-cheap cost model leaves loops with a runtime
+# trip count, such as the MR-wide panel copies, scalar. A per-source option follows
+# CMAKE_CXX_FLAGS_<CONFIG>, so its -O3 is the one that takes effect. clang-cl spells it /O2
+# already and MinSizeRel asked for size, so both are left alone.
+set_source_files_properties(
+  src/ErasedEinsum.cpp src/ExecutorBuilder.cpp src/StringDispatch.cpp
+  TARGET_DIRECTORY Einsums_ComputeGraph
+  PROPERTIES COMPILE_OPTIONS "$<$<AND:$<CONFIG:Release,RelWithDebInfo>,$<NOT:$<STREQUAL:${CMAKE_CXX_COMPILER_FRONTEND_VARIANT},MSVC>>>:-O3>"
+)
