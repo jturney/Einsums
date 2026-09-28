@@ -1652,12 +1652,18 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             }
         }
 #endif
-        bool const    team_mode         = team_size > 1;
-        int64_t const team_panel_budget = std::max<int64_t>(cpu_config().l3_cache_size / 2, int64_t{256} << 10);
+        bool const team_mode = team_size > 1;
+        // A quarter of the L3 for the shared panel, not half: the team's A blocks and the C blocks
+        // it writes back pass through the same L3. Measured on the TCB's rank-4 ccsd double at 24
+        // threads, half an L3 ran at 70-76% of an equal vendor GEMM and a quarter at 84-85%; single
+        // moved from 95% to 100%, with the rest of the panel unchanged within noise. Packing the
+        // next K block's panel into a second buffer while the first was read (double buffering, as
+        // OpenBLAS does) was measured too and added nothing the smaller panel had not already given.
+        int64_t const team_panel_budget = std::max<int64_t>(cpu_config().l3_cache_size / 4, int64_t{256} << 10);
 
         // A shared panel is KC x NC, and A is re-packed once per N block while C is swept once per
         // K block, so under a fixed panel budget the K block that moves the least is
-        // sqrt(2 * budget / element size): 1024 doubles or 1448 floats in a 4 MB half of an 8 MB
+        // sqrt(2 * budget / element size): 720 doubles or 1024 floats in a 2 MB quarter of an 8 MB
         // L3, where the cache model alone grows KC to 2592 and 3528 on the TCB's rank-4 ccsd
         // shapes. It never shrinks below what the cache model gives a single thread.
         int64_t KC_blk = std::min<int64_t>((kc_hint > 0) ? std::max<int64_t>(kc_hint, blk.KC) : blk.KC, K);
