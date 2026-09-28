@@ -276,7 +276,7 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
 
         EINSUMS_OMP_PARALLEL_FOR_IF(elements >= ::einsums::hardware::omp_min_parallel_elements())
         for (size_t i = 0; i < elements; i++) {
-            thread_local std::array<int64_t, CRank> index;
+            std::array<int64_t, CRank> index;
 
             sentinel_to_indices(i, index_strides, index);
 
@@ -462,11 +462,11 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
 
     EINSUMS_OMP_PARALLEL_FOR
     for (size_t sentinel = 0; sentinel < unique_grid[0] * unique_strides[0]; sentinel++) {
-        thread_local std::array<size_t, std::tuple_size_v<decltype(unique_indices)>> unique_index_table;
+        std::array<size_t, std::tuple_size_v<decltype(unique_indices)>> unique_index_table;
 
         sentinel_to_indices(sentinel, unique_strides, unique_index_table);
-        thread_local std::array<int, ARank> A_tile_index;
-        thread_local std::array<int, CRank> C_tile_index;
+        std::array<int, ARank> A_tile_index;
+        std::array<int, CRank> C_tile_index;
 
         for (int i = 0; i < ARank; i++) {
             A_tile_index[i] = unique_index_table[A_index_table[i]];

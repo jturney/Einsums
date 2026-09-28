@@ -42,7 +42,7 @@ auto rmsd(AType const &tensor1, BType const &tensor2) -> ValueTypeT<AType> {
 
     // #pragma omp parallel for reduction(+ : diff)
     for (size_t item = 0; item < elements; item++) {
-        thread_local std::array<size_t, TRank> target_combination;
+        std::array<size_t, TRank> target_combination;
         sentinel_to_indices(item, index_strides, target_combination);
 
         TType target1 = subscript_tensor(tensor1, target_combination), target2 = subscript_tensor(tensor2, target_combination);

@@ -358,7 +358,7 @@ struct FunctionTensor : public CoreTensor {
 
         EINSUMS_OMP_PARALLEL_FOR
         for (size_t item = 0; item < elements; item++) {
-            thread_local std::array<ptrdiff_t, Rank> index;
+            std::array<ptrdiff_t, Rank> index;
 
             sentinel_to_indices(item, index_strides, index);
 

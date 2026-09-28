@@ -1223,7 +1223,7 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
 
         EINSUMS_OMP_PARALLEL_FOR
         for (size_t sentinel = 0; sentinel < size; sentinel++) {
-            thread_local std::array<size_t, Rank> index;
+            std::array<size_t, Rank> index;
             sentinel_to_indices(sentinel, _impl.strides(), index);
             _storage->owned[sentinel] = subscript_tensor(other, index);
         }

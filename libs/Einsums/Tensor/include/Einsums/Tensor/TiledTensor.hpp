@@ -1078,7 +1078,7 @@ struct TiledTensor : public TiledTensorNoExtra, design_pats::Lockable<std::recur
                 continue;
             } else {
                 // Calculate the view ranges.
-                thread_local std::array<Range, rank> ranges;
+                std::array<Range, rank> ranges;
 
                 for (size_t i = 0; i < rank; i++) {
                     ranges[i] =

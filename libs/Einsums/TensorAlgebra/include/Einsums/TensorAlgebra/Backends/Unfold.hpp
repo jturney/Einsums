@@ -103,8 +103,8 @@ Tensor<T, 2> unfold(Tensor<T, CRank> const &source) {
 #pragma omp parallel for collapse(2)
     for (size_t link_item = 0; link_item < link_elems; link_item++) {
         for (size_t source_item = 0; source_item < source_elems; source_item++) {
-            thread_local std::array<uint64_t, 2>                                        link_it;
-            thread_local std::array<uint64_t, std::tuple_size_v<decltype(source_dims)>> source_it;
+            std::array<uint64_t, 2>                                        link_it;
+            std::array<uint64_t, std::tuple_size_v<decltype(source_dims)>> source_it;
             sentinel_to_indices(link_item, link_strides, link_it);
             sentinel_to_indices(source_item, source_strides, source_it);
 

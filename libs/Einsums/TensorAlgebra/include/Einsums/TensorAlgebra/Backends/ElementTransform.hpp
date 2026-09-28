@@ -93,7 +93,7 @@ auto element(MultiOperator multi_opt, CType *C, MultiTensors &...tensors) {
 
     EINSUMS_OMP_PARALLEL_FOR_IF(elements >= ::einsums::hardware::omp_min_parallel_elements())
     for (size_t item = 0; item < elements; item++) {
-        thread_local std::array<int64_t, Rank> index;
+        std::array<int64_t, Rank> index;
 
         sentinel_to_indices(item, index_strides, index);
 
