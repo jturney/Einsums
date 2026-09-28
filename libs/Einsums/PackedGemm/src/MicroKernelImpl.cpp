@@ -22,6 +22,7 @@
 
 #define EINSUMS_PACKED_GEMM_KERNEL_NS EINSUMS_SIMD_ARCH_NS
 #include <Einsums/PackedGemm/MicroKernelBody.hpp>
+#include <Einsums/SIMD/Shuffle.hpp>
 
 #include <complex>
 #include <cstdint>
@@ -314,6 +315,59 @@ MicroKernelShape micro_kernel_block_1m() {
 #endif
     return micro_kernel_block<T>();
 }
+
+/// pack_A's K-contiguous transpose at this rung's register width: a lanes x
+/// lanes tile is loaded along K from lanes rows, transposed in registers and
+/// stored as lanes whole vectors of panel columns, where a scalar copy stores
+/// one element at a time. Tails in either direction take the scalar copy.
+// The tile loops must unroll completely for the tile to stay in registers; at
+// the library's -O2 GCC leaves them rolled and spills the tile to the stack,
+// which cost float panels 11 to 17 per cent (abc-dca-bd, abcd-ebad-ce).
+#if defined(__GNUC__) || defined(__clang__)
+#    define EINSUMS_PACK_UNROLL _Pragma("GCC unroll 32")
+#else
+#    define EINSUMS_PACK_UNROLL
+#endif
+
+template <typename T>
+void pack_transpose_rows(T *panel, T const *const *rows, int64_t nrows, int64_t kc, int64_t ld) {
+    constexpr int64_t L = simd::native_lanes<T>;
+    int64_t           r = 0;
+    if constexpr (L > 1) {
+        for (; r + L <= nrows; r += L) {
+            T const *const *src = rows + r;
+            T              *col = panel + r;
+            int64_t         k   = 0;
+            for (; k + L <= kc; k += L) {
+                simd::Vec<T> tile[L];
+                EINSUMS_PACK_UNROLL
+                for (int64_t i = 0; i < L; ++i) {
+                    tile[i] = simd::loadu(src[i] + k);
+                }
+                simd::transpose_inplace(tile);
+                EINSUMS_PACK_UNROLL
+                for (int64_t i = 0; i < L; ++i) {
+                    simd::storeu(col + (k + i) * ld, tile[i]);
+                }
+            }
+            for (; k < kc; ++k) {
+                for (int64_t i = 0; i < L; ++i) {
+                    col[i + k * ld] = src[i][k];
+                }
+            }
+        }
+    }
+    for (; r < nrows; ++r) {
+        for (int64_t k = 0; k < kc; ++k) {
+            panel[r + k * ld] = rows[r][k];
+        }
+    }
+}
+
+template void pack_transpose_rows<float>(float *, float const *const *, int64_t, int64_t, int64_t);
+template void pack_transpose_rows<double>(double *, double const *const *, int64_t, int64_t, int64_t);
+
+#undef EINSUMS_PACK_UNROLL
 
 template void micro_kernel_tile<float>(int, int, int64_t, float, float const *, float const *, int64_t, int64_t, float *, int64_t, int64_t);
 template void micro_kernel_tile<double>(int, int, int64_t, double, double const *, double const *, int64_t, int64_t, double *, int64_t,

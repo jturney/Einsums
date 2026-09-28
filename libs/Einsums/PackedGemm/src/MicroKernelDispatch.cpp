@@ -39,6 +39,8 @@ EINSUMS_NAMESPACE_BEGIN(packed_gemm)
     MicroKernelShape micro_kernel_block();                                                                                                 \
     template <typename T>                                                                                                                  \
     MicroKernelShape micro_kernel_block_1m();                                                                                              \
+    template <typename T>                                                                                                                  \
+    void pack_transpose_rows(T *panel, T const *const *rows, int64_t nrows, int64_t kc, int64_t ld);                                       \
     }
 
 EINSUMS_SIMD_FOR_EACH_BUILT_RUNG(EINSUMS_PACKED_GEMM_DECLARE_RUNG_ENTRIES)
@@ -92,6 +94,18 @@ MicroKernelShape complex_1m_shape(char const *type_name) {
         }                                                                                                                                  \
         return shape;                                                                                                                      \
     }
+
+#define EINSUMS_PACKED_GEMM_DEFINE_PACK_ENTRY(T)                                                                                           \
+    template <>                                                                                                                            \
+    EINSUMS_EXPORT PackTransposeFn<T> pack_transpose_entry<T>() {                                                                          \
+        static PackTransposeFn<T> const fn = einsums::simd::select<PackTransposeFn<T>>(EINSUMS_SIMD_LADDER(pack_transpose_rows<T>));       \
+        return fn;                                                                                                                         \
+    }
+
+EINSUMS_PACKED_GEMM_DEFINE_PACK_ENTRY(float)
+EINSUMS_PACKED_GEMM_DEFINE_PACK_ENTRY(double)
+
+#undef EINSUMS_PACKED_GEMM_DEFINE_PACK_ENTRY
 
 EINSUMS_PACKED_GEMM_DEFINE_ENTRY(float)
 EINSUMS_PACKED_GEMM_DEFINE_ENTRY(double)

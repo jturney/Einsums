@@ -279,6 +279,29 @@ inline constexpr int64_t BLIS_NR = 6; ///< N register-block (fully unrolled by L
 /// @brief Return the native CPU vector configuration (computed once, cached).
 EINSUMS_EXPORT CpuConfig const &cpu_config();
 
+/// @brief Signature of a resolved panel transpose: writes
+///        `panel[r + k * ld] = rows[r][k]` for `r < nrows`, `k < kc`.
+///
+/// This is pack_A's K-contiguous case, where every panel row is a K-contiguous
+/// run of A. A scalar copy makes one store per element; the per-rung kernels
+/// transpose a lanes x lanes tile in registers and store whole vectors.
+template <typename T>
+using PackTransposeFn = void (*)(T *panel, T const *const *rows, int64_t nrows, int64_t kc, int64_t ld);
+
+/// @brief Resolve the panel transpose for element type T, or nullptr where no
+///        per-rung kernel exists (the complex types), for the caller's scalar loop.
+///
+/// Resolved in src/MicroKernelDispatch.cpp and cached like micro_kernel_entry; hoist the call out of panel loops.
+template <typename T>
+PackTransposeFn<T> pack_transpose_entry() {
+    return nullptr;
+}
+
+template <>
+EINSUMS_EXPORT PackTransposeFn<float> pack_transpose_entry<float>();
+template <>
+EINSUMS_EXPORT PackTransposeFn<double> pack_transpose_entry<double>();
+
 // ---------------------------------------------------------------------------
 // PackingPlanCache
 // ---------------------------------------------------------------------------
@@ -822,6 +845,28 @@ inline void precompute_offsets(int64_t start, int64_t len, std::vector<DimSpec> 
 /// @brief Gather-pack A[mc:mc+mc_len, kc:kc+kc_len] into column-major MR*KC panels.
 ///
 /// Supports single-M (fast paths with memcpy) and multi-M (flat-index-to-offset conversion).
+/// Copies one MR-wide panel row. MR is a run-time value, so a plain loop or a
+/// run-time-length memcpy puts overlap checks, a remainder loop or a library
+/// call around every 8- or 16-element copy; the line-sized rows the tile
+/// kernels use get a fixed-size copy instead, which is a few vector moves.
+template <typename T>
+inline void copy_panel_row(T *__restrict d, T const *__restrict s, int64_t MR) {
+    size_t const bytes = static_cast<size_t>(MR) * sizeof(T);
+    if (bytes == 64) {
+        std::memcpy(d, s, 64);
+    } else if (bytes == 128) {
+        std::memcpy(d, s, 128);
+    } else if (bytes == 32) {
+        std::memcpy(d, s, 32);
+    } else {
+        std::memcpy(d, s, bytes);
+    }
+}
+
+/// Tallest panel pack_A hands the per-rung transpose (a row-pointer table on
+/// the stack); the widest tile kernel, AVX-512 float, is 32 rows.
+inline constexpr int64_t kMaxPanelRows = 64;
+
 template <typename T>
 // NOLINTNEXTLINE(readability-identifier-naming)
 void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, int64_t mc_len, int64_t kc_start, int64_t kc_len, int MR,
@@ -940,9 +985,22 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
         }
         if (k_contig) {
             int64_t const k0 = k_offsets[0];
+            // Every panel row is one K-contiguous run of A, so the panel is a
+            // transpose of MR runs: the rung's kernel does it a register tile
+            // at a time (see PackTransposeFn). Complex types, and a panel taller
+            // than the row table, keep the scalar copy.
+            PackTransposeFn<T> const transpose = MR <= kMaxPanelRows ? pack_transpose_entry<T>() : nullptr;
             for (int64_t p = 0; p < num_panels; ++p) {
                 int64_t const panel_len = (p < full_panels) ? MR : tail;
                 T            *panel     = Ap + p * MR * kc_len;
+                if (transpose != nullptr) {
+                    T const *rows[kMaxPanelRows];
+                    for (int64_t i = 0; i < panel_len; ++i) {
+                        rows[i] = A_data + m_offsets[static_cast<size_t>(p * MR + i)] + k0;
+                    }
+                    transpose(panel, rows, panel_len, kc_len, MR);
+                    continue;
+                }
                 for (int64_t i = 0; i < panel_len; ++i) {
                     T const *src = A_data + m_offsets[static_cast<size_t>(p * MR + i)] + k0;
                     T       *dst = panel + i;
@@ -1065,9 +1123,7 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
                 for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
                     T const *s = src + k_offsets[static_cast<size_t>(k_local)];
                     T       *d = panel + k_local * MR;
-                    for (int64_t i = 0; i < MR; ++i) {
-                        d[i] = s[i];
-                    }
+                    copy_panel_row(d, s, MR);
                 }
             }
             return;
@@ -1078,9 +1134,7 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
                 T const *s = seg_base + k_offsets[static_cast<size_t>(k_local)];
                 for (int64_t q = 0; q < per_seg; ++q) {
                     T *d = Ap + (seg * per_seg + q) * MR * kc_len + k_local * MR;
-                    for (int64_t i = 0; i < MR; ++i) {
-                        d[i] = s[q * MR + i];
-                    }
+                    copy_panel_row(d, s + q * MR, MR);
                 }
             }
         }
@@ -1088,12 +1142,28 @@ void pack_A(T *Ap, T const *A_data, PackingPlan const &plan, int64_t mc_start, i
     }
 
     // --- Pack with precomputed offsets ---
+    // Whether a panel's rows are contiguous runs of A depends on the panel
+    // alone, so it is decided once per panel rather than by a division per row:
+    // 2 is a full panel (a fixed-size row copy), 1 a short one, 0 a gather.
+    static thread_local std::vector<unsigned char> panel_run_slot;
+    auto                                          &panel_run = bind_thread_local(panel_run_slot);
+    panel_run.resize(static_cast<size_t>(num_panels));
+    for (int64_t p = 0; p < num_panels; ++p) {
+        int64_t const panel_len           = (p < full_panels) ? MR : tail;
+        bool const    run                 = m_fast_unit && ((mc_start + p * MR) % m_fast_size) + panel_len <= m_fast_size;
+        panel_run[static_cast<size_t>(p)] = !run ? 0 : (panel_len == MR ? 2 : 1);
+    }
+    unsigned char const *run = panel_run.data();
     for (int64_t k_local = 0; k_local < kc_len; ++k_local) {
         int64_t const k_offset = k_offsets[static_cast<size_t>(k_local)];
         for (int64_t p = 0; p < num_panels; ++p) {
             int64_t const panel_len = (p < full_panels) ? MR : tail;
             T            *dst       = Ap + p * MR * kc_len + k_local * MR;
-            if (m_fast_unit && ((mc_start + p * MR) % m_fast_size) + panel_len <= m_fast_size) {
+            if (run[p] == 2) {
+                copy_panel_row(dst, A_data + m_offsets[static_cast<size_t>(p * MR)] + k_offset, MR);
+                continue;
+            }
+            if (run[p] == 1) {
                 std::memcpy(dst, A_data + m_offsets[static_cast<size_t>(p * MR)] + k_offset, static_cast<size_t>(panel_len) * sizeof(T));
                 continue;
             }
@@ -1211,9 +1281,19 @@ void pack_B(T *Bp, T const *B_data, PackingPlan const &plan, int64_t kc_start, i
         }
         if (k_contig) {
             int64_t const k0 = k_offsets[0];
+            // As pack_A's K-contiguous case: a transpose of NR runs.
+            PackTransposeFn<T> const transpose = NR <= kMaxPanelRows ? pack_transpose_entry<T>() : nullptr;
             for (int64_t p = 0; p < num_panels; ++p) {
                 int64_t const panel_len = (p < full_panels) ? static_cast<int64_t>(NR) : tail;
                 T            *panel     = Bp + p * kc_len * NR;
+                if (transpose != nullptr) {
+                    T const *cols[kMaxPanelRows];
+                    for (int64_t j = 0; j < panel_len; ++j) {
+                        cols[j] = B_data + k0 + n_offsets[static_cast<size_t>(p * NR + j)];
+                    }
+                    transpose(panel, cols, panel_len, kc_len, NR);
+                    continue;
+                }
                 for (int64_t j = 0; j < panel_len; ++j) {
                     T const *src = B_data + k0 + n_offsets[static_cast<size_t>(p * NR + j)];
                     T       *dst = panel + j;
