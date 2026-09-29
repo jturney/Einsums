@@ -24,8 +24,11 @@
 #include <Einsums/PackedGemm/MicroKernelBody.hpp>
 #include <Einsums/SIMD/Shuffle.hpp>
 
+#include <array>
 #include <complex>
+#include <cstddef>
 #include <cstdint>
+#include <utility>
 
 // The sme rung TU is compiled with -march=...+sme2+sme-f64f64 (flag-probed
 // by the CMake helper), which guarantees the FP64 FMOPA intrinsics. Gate on
@@ -319,7 +322,9 @@ MicroKernelShape micro_kernel_block_1m() {
 /// pack_A's K-contiguous transpose at this rung's register width: a lanes x
 /// lanes tile is loaded along K from lanes rows, transposed in registers and
 /// stored as lanes whole vectors of panel columns, where a scalar copy stores
-/// one element at a time. Tails in either direction take the scalar copy.
+/// one element at a time. A panel of fewer rows than lanes whose columns are
+/// contiguous (ld == nrows) goes out as one interleaved store per tile. Other
+/// tails, in either direction, take the scalar copy.
 // The tile loops must unroll completely for the tile to stay in registers; at
 // the library's -O2 GCC leaves them rolled and spills the tile to the stack,
 // which cost float panels 11 to 17 per cent (abc-dca-bd, abcd-ebad-ce).
@@ -329,10 +334,44 @@ MicroKernelShape micro_kernel_block_1m() {
 #    define EINSUMS_PACK_UNROLL
 #endif
 
+/// A whole panel of R < lanes rows whose columns are contiguous (ld == R), as every full pack_B panel
+/// of NR = 6 rows is on a rung wider than six lanes: each lanes-wide K block is R rows loaded whole and
+/// written as R * lanes contiguous elements by one interleaved store. The K tail is a scalar copy.
+template <typename T, int R>
+void pack_rows_interleaved(T *panel, T const *const *rows, int64_t kc) {
+    constexpr int64_t L = simd::native_lanes<T>;
+    int64_t           k = 0;
+    for (; k + L <= kc; k += L) {
+        simd::Vec<T> tile[R];
+        EINSUMS_PACK_UNROLL
+        for (int i = 0; i < R; ++i) {
+            tile[i] = simd::loadu(rows[i] + k);
+        }
+        simd::storeu_interleaved<R>(panel + k * R, tile);
+    }
+    for (; k < kc; ++k) {
+        for (int i = 0; i < R; ++i) {
+            panel[i + k * R] = rows[i][k];
+        }
+    }
+}
+
+template <typename T, int... Rm1>
+constexpr auto interleaved_packers(std::integer_sequence<int, Rm1...>) {
+    return std::array<void (*)(T *, T const *const *, int64_t), sizeof...(Rm1)>{&pack_rows_interleaved<T, Rm1 + 1>...};
+}
+
 template <typename T>
 void pack_transpose_rows(T *panel, T const *const *rows, int64_t nrows, int64_t kc, int64_t ld) {
     constexpr int64_t L = simd::native_lanes<T>;
-    int64_t           r = 0;
+    if constexpr (L > 1) {
+        if (nrows > 0 && nrows < L && ld == nrows) {
+            static constexpr auto packers = interleaved_packers<T>(std::make_integer_sequence<int, static_cast<int>(L) - 1>{});
+            packers[static_cast<size_t>(nrows - 1)](panel, rows, kc);
+            return;
+        }
+    }
+    int64_t r = 0;
     if constexpr (L > 1) {
         for (; r + L <= nrows; r += L) {
             T const *const *src = rows + r;

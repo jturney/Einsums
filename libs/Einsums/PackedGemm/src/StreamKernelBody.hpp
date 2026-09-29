@@ -17,9 +17,12 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/ComplexVec.hpp>
 #include <Einsums/SIMD/Operations.hpp>
+#include <Einsums/SIMD/Partial.hpp>
+#include <Einsums/SIMD/Reduce.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
 #include <complex>
+#include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
@@ -44,8 +47,16 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
             for (; i + L <= n; i += L) {
                 storeu(cb + co + i, fmadd(vc, loadu(sp + si + i), loadu(cb + co + i)));
             }
-            for (; i < n; ++i) {
-                cb[co + i] += coeff * sp[si + i];
+            // The tail is one masked vector step where the rung has masked loads and stores;
+            // through a stack buffer it would cost more than the few scalar steps it replaces.
+            if constexpr (native_partial<T>) {
+                if (auto const rem = static_cast<std::size_t>(n - i); rem > 0) {
+                    storeu_partial(cb + co + i, fmadd(vc, loadu_partial(sp + si + i, rem), loadu_partial(cb + co + i, rem)), rem);
+                }
+            } else {
+                for (; i < n; ++i) {
+                    cb[co + i] += coeff * sp[si + i];
+                }
             }
             return;
         }
@@ -58,8 +69,15 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
                 Vec<T> const prod = mul(loadu(sp + si + i), loadu(w + wo + i));
                 storeu(cb + co + i, fmadd(va, prod, loadu(cb + co + i)));
             }
-            for (; i < n; ++i) {
-                cb[co + i] += alpha * sp[si + i] * w[wo + i];
+            if constexpr (native_partial<T>) {
+                if (auto const rem = static_cast<std::size_t>(n - i); rem > 0) {
+                    Vec<T> const prod = mul(loadu_partial(sp + si + i, rem), loadu_partial(w + wo + i, rem));
+                    storeu_partial(cb + co + i, fmadd(va, prod, loadu_partial(cb + co + i, rem)), rem);
+                }
+            } else {
+                for (; i < n; ++i) {
+                    cb[co + i] += alpha * sp[si + i] * w[wo + i];
+                }
             }
             return;
         }
@@ -86,13 +104,14 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
             for (; i + L <= n; i += L) {
                 acc0 = fmadd(loadu(s + i), loadu(x + i), acc0);
             }
-            Vec<T> const acc = add(add(acc0, acc1), add(acc2, acc3));
-            T            lane_buf[L];
-            storeu(lane_buf, acc);
-            T sum = T{0};
-            for (int64_t l = 0; l < L; ++l) {
-                sum += lane_buf[l];
+            // Zero-filled lanes of both operands add 0 * 0 to the sum.
+            if constexpr (native_partial<T>) {
+                if (auto const rem = static_cast<std::size_t>(n - i); rem > 0) {
+                    acc0 = fmadd(loadu_partial(s + i, rem), loadu_partial(x + i, rem), acc0);
+                    i    = n;
+                }
             }
+            T sum = reduce_add(add(add(acc0, acc1), add(acc2, acc3)));
             for (; i < n; ++i) {
                 sum += s[i] * x[i];
             }
@@ -117,8 +136,16 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
             for (; i + L <= n; i += L) {
                 complex_storeu(cb + co + i, complex_fmadd(vc, complex_loadu(sp + si + i), complex_loadu(cb + co + i)));
             }
-            for (; i < n; ++i) {
-                cb[co + i] += coeff * sp[si + i];
+            if constexpr (native_partial<U>) {
+                if (auto const rem = static_cast<std::size_t>(n - i); rem > 0) {
+                    complex_storeu_partial(
+                        cb + co + i, complex_fmadd(vc, complex_loadu_partial(sp + si + i, rem), complex_loadu_partial(cb + co + i, rem)),
+                        rem);
+                }
+            } else {
+                for (; i < n; ++i) {
+                    cb[co + i] += coeff * sp[si + i];
+                }
             }
             return;
         }
@@ -131,8 +158,15 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
                 CVec<U> const prod = complex_mul(complex_loadu(sp + si + i), complex_loadu(w + wo + i));
                 complex_storeu(cb + co + i, complex_fmadd(va, prod, complex_loadu(cb + co + i)));
             }
-            for (; i < n; ++i) {
-                cb[co + i] += alpha * sp[si + i] * w[wo + i];
+            if constexpr (native_partial<U>) {
+                if (auto const rem = static_cast<std::size_t>(n - i); rem > 0) {
+                    CVec<U> const prod = complex_mul(complex_loadu_partial(sp + si + i, rem), complex_loadu_partial(w + wo + i, rem));
+                    complex_storeu_partial(cb + co + i, complex_fmadd(va, prod, complex_loadu_partial(cb + co + i, rem)), rem);
+                }
+            } else {
+                for (; i < n; ++i) {
+                    cb[co + i] += alpha * sp[si + i] * w[wo + i];
+                }
             }
             return;
         }
@@ -156,13 +190,13 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
             for (; i + L <= n; i += L) {
                 acc0 = complex_fmadd(complex_loadu(s + i), complex_loadu(x + i), acc0);
             }
-            CVec<U> const acc = complex_add(complex_add(acc0, acc1), complex_add(acc2, acc3));
-            T             lane_buf[L];
-            complex_storeu(lane_buf, acc);
-            T sum{0};
-            for (int64_t l = 0; l < L; ++l) {
-                sum += lane_buf[l];
+            if constexpr (native_partial<U>) {
+                if (auto const rem = static_cast<std::size_t>(n - i); rem > 0) {
+                    acc0 = complex_fmadd(complex_loadu_partial(s + i, rem), complex_loadu_partial(x + i, rem), acc0);
+                    i    = n;
+                }
             }
+            T sum = complex_reduce_add(complex_add(complex_add(acc0, acc1), complex_add(acc2, acc3)));
             for (; i < n; ++i) {
                 sum += s[i] * x[i];
             }
@@ -190,13 +224,13 @@ template <typename T>
 void stream_tile(T *cb, T const *sp, T const *w, T const alpha, int64_t const m, int64_t const n, int64_t const co, int64_t const si,
                  int64_t const wo, int64_t const ds, int64_t const dc, int64_t const dw, int64_t const ds2, int64_t const dc2,
                  int64_t const dw2) {
-    // Rows that all accumulate into ONE row of C - (1,1,0) with the rows summed
+    // Rows that all accumulate into ONE row of C are a transposed GEMV:
+    // C[i] += sum_r (alpha*W[r]) * S[r][i]. That is (1,1,0) with the rows summed
     // away, as in the exchange K(i,j) = S(i,k,j,l) W(k,l), whose tile runs over
-    // (k, i) - are a transposed GEMV: C[i] += sum_r (alpha*W[r]) * S[r][i]. Row
-    // by row that is an AXPY which loads and stores C once per row; blocking C in
-    // registers across all rows stores it once per tile. The difference is the
-    // whole cost once S sits in cache, where loads and stores, not bandwidth,
-    // set the pace.
+    // (k, i). Row by row it is an AXPY that loads and stores C once per row;
+    // blocking C in registers across all rows stores it once per tile. The
+    // difference is the whole cost once S sits in cache, where loads and stores,
+    // not bandwidth, set the pace.
     if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
         if (ds == 1 && dc == 1 && dw == 0 && dc2 == 0 && m > 1) {
             using namespace einsums::simd;
@@ -225,12 +259,22 @@ void stream_tile(T *cb, T const *sp, T const *w, T const alpha, int64_t const m,
                 }
                 storeu(c + i, a);
             }
-            for (; i < n; ++i) {
-                T acc = c[i];
-                for (int64_t r = 0; r < m; ++r) {
-                    acc += alpha * w[wo + r * dw2] * sp[si + r * ds2 + i];
+            if constexpr (native_partial<T>) {
+                if (auto const rem = static_cast<std::size_t>(n - i); rem > 0) {
+                    Vec<T> a = loadu_partial(c + i, rem);
+                    for (int64_t r = 0; r < m; ++r) {
+                        a = fmadd(broadcast(alpha * w[wo + r * dw2]), loadu_partial(sp + si + r * ds2 + i, rem), a);
+                    }
+                    storeu_partial(c + i, a, rem);
                 }
-                c[i] = acc;
+            } else {
+                for (; i < n; ++i) {
+                    T acc = c[i];
+                    for (int64_t r = 0; r < m; ++r) {
+                        acc += alpha * w[wo + r * dw2] * sp[si + r * ds2 + i];
+                    }
+                    c[i] = acc;
+                }
             }
             return;
         }
