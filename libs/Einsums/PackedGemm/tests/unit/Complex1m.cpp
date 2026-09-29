@@ -70,7 +70,9 @@ std::string expected_engine(bool flag) {
         }
         return packed_gemm::micro_kernel_shape<T>().use_3m ? "3m" : "block_gemm";
     } else {
-        return "tile";
+        // A rung without a vector tile kernel for T runs real types through block_gemm too: the
+        // aarch64 NEON rung does, which a forced EINSUMS_SIMD_ARCH=baseline selects on an SME machine.
+        return packed_gemm::micro_kernel_shape<T>().block_gemm ? "block_gemm" : "tile";
     }
 }
 
