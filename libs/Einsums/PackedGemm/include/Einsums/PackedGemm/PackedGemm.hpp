@@ -2670,6 +2670,19 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                 ++n_count;
             // in_a && in_b → batch dim (handled by packing plan)
         }
+        // A letter in one input alone and absent from C is summed over that input. The packing plan
+        // has an axis only for target and link letters, so it would read that letter's first slice
+        // and drop the sum: the templated engine computed "jmk <- jml ; plk" from p = 0 alone.
+        // Decline, and the caller's generic algorithm sums it.
+        std::unordered_set<std::string> const c_set(c_raw.begin(), c_raw.end());
+        auto const                            has_lone = [&c_set](auto const &raw, std::unordered_set<std::string> const &other) {
+            return std::ranges::any_of(raw, [&](std::string const &x) { return other.count(x) == 0 && c_set.count(x) == 0; });
+        };
+        if (has_lone(a_raw, b_set) || has_lone(b_raw, a_set)) {
+            ProfileAnnotate("packed_gemm_skip", "lone_summed_index");
+            remember(key, nullptr);
+            return false;
+        }
         // Skip contractions that BLAS GEMM handles directly (no batch, single M/N/K), unless the
         // packed route is preferred: that GEMM would be clamped to one thread under a node-scoped
         // width. The recorded decline carries the route, so it is never reused in the other regime.

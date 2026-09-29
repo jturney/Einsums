@@ -84,6 +84,29 @@ TEST_CASE("eager parity - lone summed index with shared link jk<-jl;plk", "[Tens
     require_close(C_eager, ref);
 }
 
+TEST_CASE("eager parity - lone summed index beside two free indices jmk<-jml;plk", "[TensorAlgebra][EagerSemantics][lone-summed]") {
+    // Two free letters from A, so PackedGemm's plain-GEMM deferral never covered this shape and the
+    // packed plan, which has no axis for a letter summed in one operand alone, read only p = 0.
+    auto A = create_random_tensor<double>("A", 3, 2, 4);
+    auto B = create_random_tensor<double>("B", 2, 4, 5);
+
+    Tensor<double, 3> ref{"ref", 3, 2, 5};
+    for (size_t jj = 0; jj < 3; ++jj)
+        for (size_t mm = 0; mm < 2; ++mm)
+            for (size_t kk = 0; kk < 5; ++kk) {
+                double s = 0.0;
+                for (size_t ll = 0; ll < 4; ++ll)
+                    for (size_t pp = 0; pp < 2; ++pp)
+                        s += A(jj, mm, ll) * B(pp, ll, kk);
+                ref(jj, mm, kk) = s;
+            }
+
+    auto C_eager = create_zero_tensor<double>("Ce", 3, 2, 5);
+    ta::einsum(Indices{j, m, k}, &C_eager, Indices{j, m, l}, A, Indices{p, l, k}, B);
+
+    require_close(C_eager, ref);
+}
+
 TEST_CASE("eager aliasing - in-place update survives the generic algorithm", "[TensorAlgebra][EagerSemantics][aliasing]") {
     // Same defect, same fix, in the eager generic algorithm. Eager is the
     // oracle the differential tests compare against, so a silent zero here
