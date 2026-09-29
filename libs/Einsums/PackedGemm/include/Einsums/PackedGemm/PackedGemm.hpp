@@ -5,8 +5,6 @@
 
 #pragma once
 
-// This header is included from Dispatch.hpp.
-
 #include <Einsums/Config.hpp>
 
 #include <Einsums/BLAS.hpp>
@@ -89,51 +87,22 @@ inline std::vector<std::string> compute_link_indices(std::vector<std::string> co
 
 /// Outer-product destination size at which the k=1 GEMM stops paying.
 ///
-/// ger has no beta, so a destination prefactor costs a separate pass over C -
-/// and C traffic IS the cost of an outer product. A k=1 GEMM folds beta in and
-/// makes one pass, which wins while C is small; past that, GEMM's blocking and
-/// threading overhead outgrows the extra pass and plain ger wins.
-///
-/// Measured graph-vs-eager on the same shapes (lower is better), three runs,
-/// A/B interleaved in both orders:
-///
-///   C elements   256    2.4k    10k    65k    332k     1M    5.3M
-///   k=1 gemm    2.1-2.8 2.5-2.6 0.36-0.43 0.56-0.60 1.05-1.10 0.93-0.95 1.46-1.50
-///   ger         1.9-3.0 2.5-2.9 1.07-1.10 0.91-0.94 0.58-0.61 0.52-0.55 0.84-0.87
-///
-/// The crossover sits between 65k and 332k; this threshold is in that gap.
-/// Below ~2.4k the two agree within noise - the call overhead dominates - so
-/// only the middle of the range actually decides it.
+/// ger has no beta, so a destination prefactor costs a separate pass over C. A k=1 GEMM folds beta
+/// in, which wins while C is small, until GEMM's blocking overhead outgrows the extra pass. The
+/// measured crossover lies between 65k and 332k elements.
 constexpr size_t kOuterGemmMaxElems = 1u << 17;
 
-/// Outer-product destination size below which no BLAS call is worth making.
-///
-/// Matches the existing small-outer deferral further down, which measured the
-/// packed path losing to the generic loop under ~4k output elements. At that
-/// size a BLAS call's fixed cost is the entire measurement, so the direct paths
-/// leave the decision to the deferral rather than pre-empting a tuned choice
-/// with a noisier one.
+/// Outer-product destination size below which no BLAS call is worth making: the call's fixed cost
+/// dominates, so the direct paths leave these to the small-outer deferral.
 constexpr size_t kOuterMinElems = 1u << 12;
 
 /// @brief Collapse axes [@p begin, @p end) of @p t into one (extent, stride).
 ///
-/// Succeeds only when that run of axes tiles memory exactly **in axis order**:
-/// taken first to last, each axis must begin where the previous one ended
-/// (s_next == s * d). A permuted or gappy view fails, and the caller must not
-/// flatten it. Extent-1 axes are ignored - their stride is arbitrary and a
-/// permuted view can leave one at a boundary with an inflated value.
-///
-/// Axis order is the whole point, and this used to sort the axes by stride
-/// before checking. That answers "do these axes tile memory?", which is not the
-/// question: the caller flattens two operands independently and then walks both
-/// flat runs in lockstep, so they have to agree on which index varies fastest.
-/// Sorting made a reversed run look flattenable, and a C[i,j] <- A[k] B[k,i,j]
-/// with a permuted B then came out transposed - correct memory, wrong order.
-/// A run that is not already in increasing-stride order now declines, and the
-/// caller falls through to the generic loop.
-///
-/// This is the runtime twin of the compile-time `contiguous_positions` check
-/// the eager dispatcher uses to decide the same question.
+/// Succeeds only when the axes tile memory exactly in axis order, each beginning where the previous
+/// one ended (s_next == s * d). The caller walks two operands' flat runs in lockstep, so the order
+/// must agree: sorting by stride would accept a reversed run and transpose the result. Extent-1
+/// axes are ignored, since their stride is arbitrary. This is the runtime twin of the compile-time
+/// `contiguous_positions` check.
 template <einsums::BasicTensorConcept TensorType>
 bool flatten_run(TensorType const &t, size_t begin, size_t end, size_t &extent, size_t &stride_out) {
     extent = 1;
@@ -183,12 +152,8 @@ inline bool is_concatenation(std::vector<std::string> const &whole, std::vector<
 template <einsums::BasicTensorConcept TensorType>
 TensorDescriptor tensor_descriptor(TensorType const &t) {
     TensorDescriptor td;
-    // TensorType::Rank exists for BOTH compile-time tensors (Rank = K >= 0) and
-    // runtime-rank ones (Rank = dynamic_rank = -1, a sentinel), so it is only a
-    // real rank when non-negative. Taking the sentinel at face value gave every
-    // runtime-rank operand a descriptor rank of (size_t)-1 - which went unnoticed
-    // while rank was merely hashed and compared, since they all shared the same
-    // wrong value and the dims vectors did the real disambiguating.
+    // TensorType::Rank is dynamic_rank (-1) for runtime-rank tensors, so it is a real rank only
+    // when non-negative.
     using TT = std::remove_cvref_t<TensorType>;
     if constexpr (requires { TT::Rank; }) {
         if constexpr (TT::Rank >= 0) {
@@ -207,11 +172,8 @@ TensorDescriptor tensor_descriptor(TensorType const &t) {
     return td;
 }
 
-/// @brief Whether @p td still describes @p t, without building a descriptor.
-///
-/// The comparison @ref tensor_descriptor + operator== would do, done in place:
-/// a ContractionSite checks three of these per call, and allocating three
-/// stride vectors to throw them away is the cost it exists to avoid.
+/// @brief Whether @p td still describes @p t, compared in place so a ContractionSite's per-call
+/// check allocates nothing.
 template <einsums::BasicTensorConcept TensorType>
 bool descriptor_matches(TensorDescriptor const &td, TensorType const &t) {
     using TT    = std::remove_cvref_t<TensorType>;
@@ -238,14 +200,10 @@ bool descriptor_matches(TensorDescriptor const &td, TensorType const &t) {
 
 /// @brief Whether a memoized @p key still describes this contraction.
 ///
-/// Checks exactly what the ContractionKey encodes - topology, operand layout,
-/// and the runtime sizes of the target and link dimensions - because that is
-/// the plan cache's own soundness contract: equal key, valid plan. Everything
-/// is compared in place, so a match allocates nothing.
-///
-/// @p spec_in's derived fields (target/all/link) are checked only when the
-/// caller filled them; they are functions of the raw c/a/b lists, which are
-/// compared unconditionally.
+/// Checks exactly what the ContractionKey encodes (topology, operand layout, and the target and
+/// link extents), which is the plan cache's soundness contract, without allocating. @p spec_in's
+/// derived fields are checked only when the caller filled them; they follow from the raw index
+/// lists, which are always compared.
 template <einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType, einsums::BasicTensorConcept CType>
 bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in, ScalarType st, AType const &A, BType const &B,
                       CType const &C) {
@@ -304,39 +262,20 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 // BLIS-style packed contraction with BLAS GEMM tiles
 // ---------------------------------------------------------------------------
 
-/// Name of the kernel route the most recent @ref blis_contraction call on this
-/// thread took: "gemm_batch", "flatten_gemm", "flatten_gemm_hptt",
-/// "flatten_gemm_gather", "single_k_gemm" or "packed", all but the last being
-/// the fast paths that hand the whole contraction to the vendor, and the last
-/// the engine's own packed loops.
+/// Name of the kernel route the most recent @ref blis_contraction call on this thread took:
+/// "gemm_batch", "flatten_gemm", "flatten_gemm_hptt", "flatten_gemm_hptt_chunked",
+/// "flatten_gemm_gather", "single_k_gemm" or "packed". The flatten suffixes say how the operands
+/// were made flat: already flat, transposed by HPTT, or gathered.
 ///
-/// The three flatten spellings name the same route by how it fed the vendor:
-/// plain when both operands were already flat (no copy), @c _hptt when HPTT
-/// transposed them into the flat buffers, @c _gather when the scalar gather
-/// did. They are distinguished because the difference is worth a measurable
-/// factor and nothing else observes which one ran.
-///
-/// Test introspection ONLY, mirroring @c dispatch::last_dispatch_route one
-/// level down - that one names which BACKEND took the contraction, and this one
-/// which kernel inside PackedGemm did. It exists so a test can assert that a
-/// node-scoped width sends the work to the packed loops rather than to a vendor
-/// GEMM the wrappers would clamp to one thread. Thread-local, and for a batched
-/// contraction it names the last slice this thread ran; not an API for steering
-/// execution.
-///
-/// Defined OUT OF LINE, and exported, so the whole process shares one slot; see
-/// @c compute_graph::dispatch::last_dispatch_route for why an inline
-/// thread-local is not enough.
+/// Test introspection only, not an API for steering execution. Thread-local; for a batched
+/// contraction it names the last slice this thread ran. Exported and defined out of line so the
+/// whole process shares one slot.
 [[nodiscard]] EINSUMS_EXPORT char const *&last_contraction_route();
 
-/// Which engine the packed loops of the most recent "packed" contraction on this
-/// thread ran: "tile" (the rung's tile kernel), "block_gemm" (one vendor GEMM per
-/// cache block, then a scatter), "3m" (the block strategy on three real GEMMs),
-/// or "1m" (complex on the real tile kernel, see MicroKernelShape::use_1m).
-///
-/// Test introspection only, like @ref last_contraction_route, and written only
-/// when that route is "packed": it says how the packed loops ran, not whether
-/// they did. Defined out of line for the same reason.
+/// Which engine the most recent "packed" contraction on this thread ran: "tile", "block_gemm" (one
+/// vendor GEMM per cache block, then a scatter), "3m" (the block strategy on three real GEMMs), or
+/// "1m" (complex on the real tile kernel). Written only when the route is "packed". Test
+/// introspection only.
 [[nodiscard]] EINSUMS_EXPORT char const *&last_packed_engine();
 
 /// Threads per team in the most recent packed contraction on this thread: 1 when every thread
@@ -344,28 +283,15 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 /// Test introspection only, like @ref last_packed_engine.
 [[nodiscard]] EINSUMS_EXPORT int &last_team_size();
 
-/// The route pin the most recent route decision on this thread read.
-///
-/// Test introspection ONLY, alongside @ref last_contraction_route: that one
-/// names which kernel ran, this one whether a pin or the thread regime chose
-/// it. Adaptive means the decision came from @ref
-/// einsums::blas::vendor_call_is_fenced, which is what an eager caller and an
-/// unplanned graph get.
-///
-/// Exported and defined out of line for the same reason as
-/// @ref last_contraction_route.
+/// The route pin the most recent route decision on this thread read. Adaptive means the thread
+/// regime decided (@ref einsums::blas::vendor_call_is_fenced). Test introspection only.
 [[nodiscard]] EINSUMS_EXPORT KernelRoute &last_route_pin();
 
-/// @brief Whether this contraction is to be packed rather than handed to one
-///        vendor GEMM.
+/// @brief Whether this contraction is to be packed rather than handed to one vendor GEMM.
 ///
-/// A pinned site answers from the pin, at every width including 1. Everything
-/// else - an eager caller, an unplanned graph, any caller that passes no site -
-/// answers from the thread regime exactly as before pinning existed: a caller
-/// holding a node-scoped width has its vendor calls clamped to one thread (@ref
-/// einsums::blas::vendor_call_is_fenced), so the deferring fast paths would run
-/// the node serially while the packed loops, which fork from the same ICV the
-/// width raised, get all of it.
+/// A pinned site answers from its pin. Otherwise the thread regime decides: under a node-scoped
+/// width the vendor calls are clamped to one thread (@ref einsums::blas::vendor_call_is_fenced),
+/// while the packed loops fork from the widened ICV and get all of it.
 [[nodiscard]] inline bool prefer_packed_route(ContractionSite const *site) {
     KernelRoute const pin = site != nullptr ? site->route : KernelRoute::Adaptive;
     last_route_pin()      = pin;
@@ -380,57 +306,24 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
     }
 }
 
-/// Bytes a C run must cover before the write-back streams it.
-///
-/// Two cache lines. Swept over 1, 2, 4, 8 and 16 lines on intensli and ccsd_t:
-/// ccsd_t is flat throughout, and intensli single is 0.978x / 0.984x / 0.945x /
-/// 0.942x / 0.954x of TBLIS, so 2 is the peak and 16 is clearly bad (it also
-/// costs intensli double, 1.110x -> 1.039x). The first cut of this shipped 4 on
-/// the reasoning that a 192-byte run wastes too much of itself on the partial
-/// lines at its ends; the measurement says otherwise, and those rows do want
-/// streaming.
+/// Bytes a C run must cover before the write-back streams it: two cache lines, the peak of a sweep
+/// over 1 to 16.
 inline constexpr int64_t kStreamRunBytes = 2 * 64;
 
-/// @brief Whether this contraction should be packed with the roles of A and B
-///        exchanged, i.e. as C^T = B^T A^T.
+/// @brief Whether this contraction should be packed with the roles of A and B exchanged, as C^T =
+/// B^T A^T.
 ///
-/// The tile kernel is not symmetric in m and n. It holds a tile as MR-tall
-/// vectors, so a destination whose consecutive m coordinates are adjacent in
-/// memory takes a vector store, and any other destination takes MR*NR scalar
-/// stores through a stack tile. The C scatter wants that same direction, for
-/// the same reason: it is the one whose consecutive flat coordinates are
-/// contiguous in C.
+/// The tile kernel holds a tile as MR-tall vectors, so it stores C with vector stores only when
+/// consecutive m coordinates are adjacent in C, and the C scatter wants the same direction. When
+/// C's unit stride comes through B, no order inside the M group supplies it and every tile is
+/// written with MR*NR scalar stores. Exchanging the roles makes the kernel's m direction C's
+/// unit-stride one.
 ///
-/// When C's unit stride reaches C through B, both wants point at the N group,
-/// and no ordering inside the M group can supply it. Reading the tile back with
-/// a stride - what the scatter used to do - costs MR*NR strided loads and MR*NR
-/// scalar stores per tile against the (MR*NR/lanes) * kc vector FMAs that
-/// produced it, which at the rank-6 ccsd_t shapes' K of 24 is more than the
-/// arithmetic itself. On the Tensor Contraction Benchmark that split the
-/// eighteen ccsd_t mirror pairs cleanly in two, at 20 GF/s against 27 for the
-/// same kernel on the mirrored shape.
-///
-/// So exchange the roles instead: C^T = B^T A^T is the same contraction, B
-/// packs into the MR panels, A into the NR panels, and the kernel's m direction
-/// IS C's unit-stride one. Measured +25% to +35% on the nine ccsd_t rows whose
-/// unit index arrives through B, and level with their mirrors afterwards.
-///
-/// The test is for a UNIT stride in the N group and none in the M group, not
-/// simply the smaller of the two. When neither group is contiguous in C both
-/// orders spend a cache line per element, `scatter_n_inner` inside
-/// @ref blis_contraction already picks the shorter stride for the inner loop,
-/// and there is nothing left for an exchange to win - while it still costs the
-/// register tile, which is cut MR deep along whichever group takes the M role.
-/// intensli's abcd-dbea-ec has an N group of 24 against an MR of 16, so
-/// exchanging computes a third of its FMAs into masked-off lanes; measured
-/// 0.70x. Hence
-/// also the floor: a group that cannot fill a couple of tiles is the wrong one
-/// to cut into them.
-///
-/// Only the tile-scatter path benefits. The direct-C branches already choose a
-/// transposed BLAS call from the same fact, the block-GEMM strategy already
-/// swaps its vendor operands, and the 1m complex path packs in a geometry of
-/// its own.
+/// Only when the N group has a unit stride and the M group has none. When neither is contiguous
+/// both orders cost a cache line per element, and the exchange still cuts the register tile along
+/// the other group, which wastes lanes when that group is short; hence also the floor of two tiles.
+/// Only the tile-scatter path benefits: the direct-C branches, the block-GEMM strategy and the 1m
+/// path handle the transpose their own way.
 inline bool mn_roles_should_swap(PackingPlan const &plan, MicroKernelShape const &shape, bool is_complex) {
     if (plan.c_m_dims.empty() || plan.c_n_dims.empty()) {
         return false;
@@ -449,26 +342,17 @@ struct ThreadGrid {
     int64_t nc_blk = 0;
 };
 
-/// @brief The thread grid for an M x N contraction with @p threads threads, M groups a whole
-///        number of @p m_unit rows, and N blocks no wider than @p nc_cap.
+/// @brief The thread grid for an M x N contraction with @p threads threads, M groups a whole number
+/// of @p m_unit rows, and N blocks no wider than @p nc_cap.
 ///
-/// Splitting N alone, which is what the packed loops did, has two costs that grow with the thread
-/// count. Each thread packs all of A for its own N block, so A is packed once per thread; and a
-/// contraction with few N columns has fewer blocks of NR than there are threads, so the rest sit
-/// idle (the TCB's intensli cases have N = 24, which stopped at four threads). Splitting M as well
-/// lets the threads of one N block each take a disjoint group of M rows.
+/// Splitting M as well as N keeps a contraction with few N columns from idling threads, and packs A
+/// once per N block instead of once per thread. The grid minimizes the busiest thread's share of
+/// the output and, among grids within 3% of that, the elements packed (M * n_blocks + N * tm per
+/// unit of K). N blocks are cut equal rather than at the cap with a runt, which would idle the
+/// threads that draw it.
 ///
-/// The grid is the one with the shortest critical path, the busiest thread's share of the M x N
-/// output, and among grids within 3% of that, the one that packs the fewest elements: A is packed
-/// once per N block and B once per M group, M * n_blocks + N * tm per unit of K. The N blocks are
-/// cut equal, a whole number per N group, rather than at @p nc_cap with a runt left over: at
-/// M = N = 5184 on 12 threads a 1020-column cap cut N into five full blocks and an 84-column one,
-/// and the two threads that drew the runt sat idle while ten did two full blocks each.
-///
-/// N blocks are whole multiples of NR and M groups whole multiples of @p m_unit (an MR, or an MC
-/// block where a block's position matters), so every thread owns its own buffers and a region of C
-/// no other thread touches. One thread,
-/// or a contraction too small to split, gives one group each way: the loops as they were.
+/// N blocks are whole multiples of NR and M groups whole multiples of @p m_unit, so every thread
+/// owns its buffers and a region of C no other thread touches.
 inline ThreadGrid choose_thread_grid(int threads, int64_t M, int64_t N, int64_t m_unit, int NR, int64_t nc_cap) {
     nc_cap                   = std::max<int64_t>(nc_cap, NR);
     int64_t const n_cap      = std::max<int64_t>(1, (N + NR - 1) / NR);
@@ -502,11 +386,9 @@ inline ThreadGrid choose_thread_grid(int threads, int64_t M, int64_t N, int64_t 
 
 /// @brief A spin barrier for the few threads of one team.
 ///
-/// OpenMP has no barrier for a subset of a parallel region's threads, and the team that shares a
-/// packed B panel is exactly such a subset. Its threads meet twice per K block, after packing the
-/// panel and before overwriting it, and a sense-reversing counter costs a few hundred cycles where
-/// the work between meetings is milliseconds. The arriving thread's release and the waiters'
-/// acquire order the panel's writes before any member reads it.
+/// OpenMP has no barrier for a subset of a parallel region's threads. Members meet twice per K
+/// block, after packing the shared panel and before overwriting it. The arriving thread's release
+/// and the waiters' acquire order the panel's writes before any member reads it.
 struct alignas(64) TeamBarrier {
     std::atomic<int> arrived{0};
     std::atomic<int> generation{0};
@@ -534,13 +416,12 @@ struct alignas(64) TeamBarrier {
 };
 
 /// @brief What one team shares besides its panel: the barrier its members meet at, and the counter
-///        they claim M blocks from.
+/// they claim M blocks from.
 ///
-/// Members claim blocks instead of each taking a fixed share of rows: equal shares measured up to
-/// 15% apart in kernel time on a CCX, and which member was slowest changed from one K block to the
-/// next, so the others waited at every barrier - 11% of a 24-thread call on the TCB's rank-4 ccsd
-/// double. The counter only rises, and every member steps its view of where the current K block's
-/// blocks begin identically, so no reset is needed between K blocks or items.
+/// Members claim blocks rather than taking fixed shares, because member speeds vary from one K
+/// block to the next and fixed shares make the others wait at every barrier. The counter only
+/// rises, and every member steps its view of the current K block's start identically, so it never
+/// needs a reset.
 struct TeamState {
     TeamBarrier barrier;
     alignas(64) std::atomic<int64_t> next_block{0};
@@ -558,32 +439,21 @@ struct TeamPanel {
 
 /// @brief Copy @p n elements to @p dst without first fetching its cache lines.
 ///
-/// An ordinary store to a line the core does not already own makes the cache
-/// read that line from memory before the write can land - a read-for-ownership
-/// - even when every byte of it is about to be overwritten. On a contraction
-/// whose C is written once and never read (beta == 0), that is an extra pass
-/// over the whole of C: the rank-6 ccsd_t shapes write 369 MB and fetch 369 MB
-/// they have no use for, against an arithmetic floor of 71 ms out of 131.
+/// An ordinary store to a line the core does not own reads that line from memory first, even when
+/// every byte is overwritten; for a C written once and never read, that is an extra pass over C.
+/// Streaming stores go through the write-combining buffers, and a line assembled there whole is
+/// written with no read, so the run must be contiguous and reasonably long.
 ///
-/// Streaming stores leave through the write-combining buffers instead, and a
-/// line assembled there whole is written with no prior read. That is why the
-/// caller must hand this a run that is CONTIGUOUS and reasonably long: a
-/// buffer flushed half-full pays a partial write and keeps the read.
+/// @p dst must be vector-aligned and @p n a whole number of lanes (@ref stream_run_ok tests both).
+/// A misaligned head is not handled here: its line would keep the fetch, and staging to realign
+/// costs a pass of C through L1.
 ///
-/// @p dst must be vector-aligned and @p n a whole number of lanes - @ref
-/// stream_run_ok is the caller's test for both. Handling a misaligned head
-/// in here was tried and is a trap: the head and tail are ordinary stores, so
-/// their lines keep the fetch, and paying a staging copy to line the run up
-/// costs an entire extra pass of C through L1 - measured -4% on the intensli
-/// rows, where the fetch it saves is a small share of the run anyway.
-///
-/// @warning Streaming stores are weakly ordered. The caller must
-/// @ref einsums::simd::stream_fence() before anything reads @p dst.
+/// @warning Streaming stores are weakly ordered. The caller must @ref einsums::simd::stream_fence()
+/// before anything reads @p dst.
 template <typename T>
 void stream_copy(T *dst, T const *src, int64_t n) {
-    // Only the types with a vector register on this ISA; complex has none, and
-    // @ref stream_run_ok already refuses it at run time, but the template is
-    // instantiated for it regardless.
+    // Only float and double have a vector register here. @ref stream_run_ok refuses complex at run
+    // time, but the template is instantiated for it.
     if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
         constexpr int64_t L = einsums::simd::Vec<T>::lanes;
         for (int64_t i = 0; i < n; i += L) {
@@ -609,11 +479,8 @@ bool stream_run_ok(T const *dst, int64_t n) {
     }
 }
 
-/// @brief Print the resolved plan and blocking for one contraction.
-///
-/// Behind option::PackedGemmDumpPlan, and out of line so that @ref
-/// blis_contraction carries only the flag test. See the call site for why it
-/// earns its keep.
+/// @brief Print the resolved plan and blocking for one contraction, behind
+/// option::PackedGemmDumpPlan. Out of line so @ref blis_contraction carries only the flag test.
 inline void dump_packed_plan(PackingPlan const &plan, int64_t M, int64_t N, int64_t K, int MR, int NR, int64_t MC, int64_t NC, int64_t KC,
                              bool a_order, AOrderFlush const &af, bool n_inner, bool compose, bool runs_stream) {
     auto const dims = [](std::vector<DimSpec> const &d) {
@@ -654,10 +521,8 @@ bool gemm_from_strides(T *c_data, T const *a_data, T const *b_data, T alpha, T b
     using blas_int            = einsums::blas::int_t;
     constexpr bool is_complex = (get_scalar_type<T>() == ScalarType::Complex64 || get_scalar_type<T>() == ScalarType::Complex128);
 
-    // Clamp a stride-derived leading dimension up to the BLAS minimum (the row
-    // count of the stored operand for that call). A degenerate (size-1) axis can
-    // collapse the natural stride below the minimum; the clamp is a no-op
-    // otherwise and is safe because the stride is unused when its axis is size 1.
+    // Clamp a stride-derived leading dimension up to the BLAS minimum. A size-1 axis can collapse
+    // its stride below it, and that stride is never used.
     auto ld = [](int64_t stride, int64_t min_rows) { return static_cast<blas_int>(std::max<int64_t>(stride, min_rows)); };
 
     bool dispatched = false;
@@ -764,25 +629,17 @@ bool gemm_from_strides(T *c_data, T const *a_data, T const *b_data, T alpha, T b
 
 /// @brief Write an A-order C block back to C, transposing its runs out.
 ///
-/// The flat M coordinate was ordered for the packing operand, so pack_A was a
-/// memcpy and C's contiguous index sits one coordinate in: block row i holds
-/// coordinate i % @p xa of the fastest index and i / @p xa of C's. A run of C
-/// is therefore a COLUMN of the block at a stride of @p xa, not a contiguous
-/// piece of it, and the composed write-back cannot see it.
+/// The flat M coordinate was ordered for the packing operand, so block row i holds coordinate i %
+/// @p xa of the fastest index and i / @p xa of C's: a run of C is a column of the block at stride
+/// @p xa. It is read back a strip at a time, one cache line wide in the fastest coordinate, so each
+/// block line is consumed whole and the staged transpose stays in L1. What reaches memory is the
+/// same sequential run of C the composed write-back sends.
 ///
-/// Read it back a strip at a time. Each strip is one cache line wide in the
-/// fastest coordinate, so the block lines it touches are consumed whole, and
-/// the staged transpose is a few KB that stays in L1. What reaches DRAM is the
-/// same sequential run of C the composed write-back sends, streamed the same
-/// way.
+/// Out of line deliberately: inlined into @ref blis_contraction's hottest loop nest, it slowed
+/// contractions that never take this path.
 ///
-/// Out of line deliberately. @ref blis_contraction is enormous and this sits in
-/// its hottest loop nest; inline, it cost the rank-6 ccsd_t rows 2 to 4.5 per
-/// cent even though their `use_a_order` is false and not one of these
-/// instructions ran. A separate function leaves that path's code layout alone.
-///
-/// @p Cb is the mc_len x nb_cur block in column-major order, @p c_m_offsets is
-/// indexed by block-local flat M and @p c_n_offsets by N block position.
+/// @p Cb is the mc_len x nb_cur block in column-major order, @p c_m_offsets is indexed by
+/// block-local flat M and @p c_n_offsets by N block position.
 template <typename T>
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((noinline))
@@ -811,11 +668,9 @@ void flush_c_block_transposed(T *C_data, T const *Cb, int64_t mc, int64_t mc_len
             int64_t const rt_cur = std::min(rt, rows - r0);
             for (int64_t a0 = 0; a0 < xa; a0 += aw) {
                 int64_t const aw_cur = std::min(aw, xa - a0);
-                // Read the block ALONG the strip, not down it. Both orders touch
-                // each line once and use all of it, but only this one's loads are
-                // contiguous, so they vectorise; the transposing stores land in
-                // the staging strip, which is in L1. The other way round measured
-                // no better than the C order it replaces.
+                // Read the block along the strip: both orders use each line whole, but only this
+                // one's loads are contiguous and vectorise. The transposing stores land in the
+                // staging strip, in L1.
                 for (int64_t r = 0; r < rt_cur; ++r) {
                     T const *s = src_j + (r0 + r) * xa + a0;
                     for (int64_t a = 0; a < aw_cur; ++a) {
@@ -849,104 +704,72 @@ void flush_c_block_transposed(T *C_data, T const *Cb, int64_t mc, int64_t mc_len
     }
 }
 
-/// @brief Execute a tensor contraction via Pack-A / Pack-B + BLAS GEMM tiles (BLIS-style).
-///
-/// For multi-K contractions (rank-3+), flattens A and B into contiguous M*K / K*N buffers
-/// and calls BLAS GEMM directly.  For single-K, uses BLIS-style tiled packing with BLAS
-/// GEMM per tile.
+/// @brief Execute a tensor contraction with the packed engine: the vendor fast paths when the plan
+/// maps onto one GEMM or a batch of them, and otherwise BLIS-style packed loops over the resolved
+/// SIMD rung's tile kernel.
 template <typename ValueType, einsums::BasicTensorConcept CType, einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType>
 void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType const &B, ValueType alpha, ValueType beta,
                       bool conj_a = false, bool conj_b = false, bool prefer_packed = false) {
     LabeledSection0();
 
-    // Resolve the SIMD-dispatch rung's tile kernel and its register-block
-    // shape once per contraction; the per-tile call below is through this
-    // pointer, keeping rung resolution out of the hot loop. The shape comes
-    // from the same rung as the kernel (NEON/AVX: cpu_config vector
-    // blocking; SME: ZA-tile blocking), so the panels are packed in the
-    // geometry the kernel expects.
+    // Resolve the rung's tile kernel and its register-block shape once per contraction, so the
+    // panels are packed in the geometry that kernel expects and rung resolution stays out of the
+    // hot loop.
     MicroKernelFn<ValueType> const micro_tile = micro_kernel_entry<ValueType>();
     MicroKernelShape const         shape      = micro_kernel_shape<ValueType>();
     int const                      MR         = shape.mr;
     int const                      NR         = shape.nr;
 
-    // `prefer_packed` says to keep the whole contraction rather than hand it to
-    // one vendor GEMM. It is decided by the caller - see @ref
-    // prefer_packed_route - and arrives here already resolved, so the two fast
-    // paths below and the packed loops are picked from one answer per call. The
-    // gemm_batch path is exempt: its vendor entry point is einsums' own OpenMP
-    // loop over serial GEMMs, it forks from the ICV too, and its wrapper carries
-    // no fence.
-    //
-    // Still not stored anywhere here. The plan cache is shared across nodes and
-    // a route is not a property of a packing plan; where a route IS a settled
-    // fact it is a fact about the NODE, and it lives on that node's
-    // ContractionSite (@ref KernelRoute), which is what the caller read.
+    // `prefer_packed` keeps the whole contraction in the packed loops rather than handing it to one
+    // vendor GEMM; the caller resolved it (@ref prefer_packed_route). The gemm_batch path is
+    // exempt: its vendor entry point is einsums' own OpenMP loop over serial GEMMs, which forks
+    // from the ICV like the packed loops. The answer is not stored in the plan, because a route
+    // belongs to the node's ContractionSite, not to a packing plan.
 
     int64_t const M = plan.M_total;
     int64_t const N = plan.N_total;
     int64_t const K = plan.K_total;
 
-    // Cache-aware blocking: tile sizes adapt to sizeof(ValueType) and CPU cache
-    // hierarchy, derived from the tile the resolved kernel actually computes,
-    // and from this contraction's own extents - whether C survives a sweep
-    // decides how large KC wants to be, and only M and N say that.
+    // Cache-aware blocking from the resolved kernel's tile and this contraction's extents: whether
+    // C survives a sweep decides how large KC should be.
     auto const    blk        = compute_blocking(static_cast<int64_t>(sizeof(ValueType)), MR, NR, M, N, K);
     bool const    multi_m    = (plan.c_m_dims.size() > 1);
     bool const    multi_n    = (plan.c_n_dims.size() > 1);
     int64_t const C_m_stride = plan.c_m_dims[0].tensor_stride;
     int64_t const C_n_stride = plan.c_n_dims[0].tensor_stride;
 
-    // For multi-M/N, col_major detection uses the first C_m dim stride.
-    // The flat-to-offset conversion handles the rest.
+    // For multi-M/N, col_major detection uses the first C_m dim stride; the flat-to-offset
+    // conversion handles the rest.
     bool const C_col_major = (!multi_m && C_m_stride == 1);
 
-    // Scatter is needed for multi-M/N outputs and for single-M/N layouts
-    // where neither output dim is unit-stride (batched C with a stride-1
-    // batch index, strided views, synthetic unit dims with stride 0).
+    // Scatter is needed for multi-M/N outputs and for single-M/N layouts where neither output dim
+    // is unit-stride (batched C with a stride-1 batch index, strided views, synthetic unit dims).
     bool const scatter_c = multi_m || multi_n || (C_m_stride != 1 && C_n_stride != 1);
 
-    // BLAS requires the output leading dimension to be at least the number of
-    // rows of the stored result: M for a column-major result (ldc = C_n_stride),
-    // N for the swapped form (ldc = C_m_stride). For a transposed or degenerate
-    // (size-1) output axis the natural stride can collapse below that minimum
-    // (e.g. "nm <- mkq ; kqn" with n=1 gives C_n_stride=1 < M), so clamp up. This
-    // is a no-op for non-degenerate outputs (the real stride already meets the
-    // bound) and safe for a size-1 axis whose stride spans one element BLAS never
-    // indexes. Use these as the ldc argument to every gemm call below.
+    // BLAS requires ldc to be at least the stored result's row count. A transposed or size-1 output
+    // axis can collapse the natural stride below it (e.g. "nm <- mkq ; kqn" with n=1), so clamp up;
+    // the clamped stride is never used to index. Every gemm call below takes ldc from these.
     int64_t const ldc_col = std::max<int64_t>(C_n_stride, M);
     int64_t const ldc_row = std::max<int64_t>(C_m_stride, N);
 
     constexpr bool is_complex =
         (get_scalar_type<ValueType>() == ScalarType::Complex64 || get_scalar_type<ValueType>() == ScalarType::Complex128);
 
-    // -------------------------------------------------------------------------
-    // Batch loop: iterate over all batch slices.
-    // For non-batched contractions, batch_total=1 and batch_dims is empty,
-    // so this is a single iteration with zero offsets.
+    // ------------------------------------------------------------------------- Batch loop: iterate
+    // over all batch slices. A non-batched contraction is one iteration with zero offsets.
     // -------------------------------------------------------------------------
     auto const  &batch_dims = plan.batch_dims;
     size_t const nb         = batch_dims.size();
 
-    // -------------------------------------------------------------------------
-    // Batch GEMM fast path: if single-K, single-M, single-N with compatible
-    // strides, precompute pointer arrays and call gemm_batch() for all batches
-    // at once. This is much faster than looping over batches individually.
-    //
-    // Kept under a node width, unlike the single-GEMM deferrals below: the
-    // gemm_batch entry point is einsums' own OpenMP loop over the batch, which
-    // forks from the ICV the width raised and runs its inner GEMMs nested-serial,
-    // so it consumes the width instead of losing it to the wrapper fence (which
-    // the batch wrappers deliberately do not carry).
+    // ------------------------------------------------------------------------- Batch GEMM fast
+    // path: single-K, single-M, single-N with compatible strides becomes one gemm_batch() call. It
+    // is kept under a node width, unlike the single-GEMM deferrals below, because gemm_batch is
+    // einsums' own OpenMP loop over the batch and so consumes the width.
     // -------------------------------------------------------------------------
     //
-    // The `!plan.swap_ab` term is a guard, not a policy: this is the one path
-    // that reads A and B directly rather than through the role-resolved pointers
-    // below, so an exchanged plan would pair B's batch strides with A's data. A
-    // swap always implies multi-M or multi-N (see @ref mn_roles_should_swap: it
-    // needs a scatter, and the only scatter reason left once the N group holds
-    // C's unit stride is a multi-dim group), so the term never fires today - it
-    // is here so that widening the swap cannot silently break this path.
+    // `!plan.swap_ab` is a guard, not a policy: this path reads A and B directly rather than
+    // through the role-resolved pointers below. A swap always implies a multi-dim group today, so
+    // it never fires, but it keeps a wider swap from silently breaking this path.
     if (plan.batch_total > 1 && plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic && !plan.swap_ab) {
         // NOLINTNEXTLINE(readability-identifier-naming)
         using blas_int = einsums::blas::int_t;
@@ -956,8 +779,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         int64_t const k_stride_a = plan.k_dims_in_a[0].tensor_stride;
         int64_t const k_stride_b = plan.k_dims_in_b[0].tensor_stride;
 
-        // Check if strides are compatible with a simple GEMM call
-        // (same logic as the single-K fast path inside the batch loop)
+        // Same stride test as the single-K fast path inside the batch loop.
         char     transA = 'N', transB = 'N';
         blas_int lda_val = 0, ldb_val = 0, ldc_val = 0;
         bool     can_batch = false;
@@ -1015,14 +837,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 c_ptrs[static_cast<size_t>(batch)] = C.data() + c_off;
             }
 
-            // BLAS validates the leading dimensions against the stored-operand
-            // row counts (lda >= rows of op-form: M for transA='N', K for 'T';
-            // ldb >= K for transB='N', N for 'T'; ldc >= M). When any of M/N/K
-            // is 1 the corresponding axis stride is meaningless and can collapse
-            // below that minimum (e.g. K=1 makes both m_stride and k_stride_a == 1,
-            // so lda_val=k_stride_a=1 < M). Clamp up to the BLAS minimum: a no-op
-            // for non-degenerate operands (the real stride already meets it), and
-            // safe for a size-1 axis since that stride is never used to index.
+            // BLAS validates each leading dimension against the stored operand's row count. A
+            // size-1 axis can collapse its stride below that (K=1 makes k_stride_a 1 < M), so clamp
+            // up; that stride is never used to index.
             lda_val = std::max<blas_int>(lda_val, (transA == 'N') ? static_cast<blas_int>(M) : static_cast<blas_int>(K));
             ldb_val = std::max<blas_int>(ldb_val, (transB == 'N') ? static_cast<blas_int>(K) : static_cast<blas_int>(N));
             ldc_val = std::max<blas_int>(ldc_val, static_cast<blas_int>(M));
@@ -1034,8 +851,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Per-batch loop (fallback when gemm_batch can't be used)
+    // ------------------------------------------------------------------------- Per-batch loop
+    // (fallback when gemm_batch can't be used)
     // -------------------------------------------------------------------------
     bool const parallel_batch = (plan.batch_total >= 4) && (M * N < 10000);
 
@@ -1056,28 +873,18 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             }
         }
 
-        // `plan.swap_ab` says this plan describes the contraction as C^T = B^T
-        // A^T, so the tensor the packers must read for the plan's A role is B
-        // and vice versa. The batch strides were mirrored with the rest of the
-        // plan, so the offsets already belong to the tensors named here. The
-        // caller swapped the conjugation flags to match.
+        // With `plan.swap_ab` the plan describes C^T = B^T A^T, so the plan's A role reads B and
+        // vice versa. The batch strides and conjugation flags were already swapped to match.
         ValueType       *C_data = C.data() + c_batch_off;
         ValueType const *A_data = (plan.swap_ab ? static_cast<ValueType const *>(B.data()) : A.data()) + a_batch_off;
         ValueType const *B_data = (plan.swap_ab ? static_cast<ValueType const *>(A.data()) : B.data()) + b_batch_off;
 
-        // -------------------------------------------------------------------------
-        // Multi-K fast path: flatten A and B into contiguous M*K / K*N buffers,
-        // then call BLAS GEMM directly.
-        // -------------------------------------------------------------------------
-        // The flatten+GEMM path writes C directly and supports only stride-1
-        // column- or row-major outputs; scatter-layout C goes to the tiled or
-        // block-GEMM paths below.
-        //
-        // Every exit from this block is a vendor GEMM over the flat buffers -
-        // one call when both sides are zero-copy, a serial chain of KC slices
-        // otherwise - so under a fenced width the whole block runs on one
-        // thread. The packed loops below take the contraction instead; they read
-        // the same multi-K plan through pack_A/pack_B.
+        // ------------------------------------------------------------------------- Multi-K fast
+        // path: flatten A and B into contiguous M*K / K*N buffers, then call BLAS GEMM directly.
+        // ------------------------------------------------------------------------- Writes C
+        // directly, so only stride-1 column- or row-major outputs; a scattered C goes to the packed
+        // paths below. Every exit is a vendor GEMM, which a fenced width runs on one thread, so
+        // under prefer_packed the packed loops take the contraction instead.
         if (plan.k_dims_in_a.size() > 1 && !scatter_c && !plan.synthetic && !prefer_packed) {
             // Multi-K fast path: only for single-M, single-N (can map to flat BLAS GEMM).
             LabeledSection("flatten + GEMM");
@@ -1124,29 +931,14 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
             // ---- Peel the outer K dims into a loop of ordinary GEMMs ----
             //
-            // A multi-K contraction needs a copy only because the flat K index
-            // has to be one axis of each operand at once. It does not have to
-            // be. Hold every K dim but one fixed and what is left is an
-            // ordinary strided GEMM, so the contraction is a loop over the
-            // others accumulating into the same C - with no buffer at all.
-            //
-            // ab-acd-dbc is the shape that wants it. Its B has the N index at
-            // stride 376 and a K index at stride 1, so the flatten route
-            // HPTT-transposes all 217 MB of B into a K x N buffer and then runs
-            // one GEMM. The GEMM is already at the vendor's own rate on this
-            // shape, so that transpose is the whole of the deficit: 755 ms of
-            // gemm against 152 ms of flatten, 88.8% of an equally sized GEMM.
-            // Sliced on c instead, A[.,c,.] is 384 x 384 with lda 144384 and
-            // B[.,.,c] is 384 x 376 with ldb 384, both already in memory.
-            // Measured 103% of GEMM single and 104% double - above the
-            // reference because C is 577 KB and stays resident across the
-            // slices while its traffic amortises over all of them.
-            //
-            // Only when a copy would otherwise happen: the both-zero-copy case
-            // above is one big GEMM and nothing here improves on it.
+            // Holding every K dim but one fixed leaves an ordinary strided GEMM, so a multi-K
+            // contraction can be a loop of GEMMs accumulating into C with no copy at all. That
+            // beats the flatten when one operand would otherwise be transposed whole, as on
+            // ab-acd-dbc, whose B has a K index at unit stride; C stays cache-resident across the
+            // slices. Only when a copy would otherwise happen: the both zero-copy case above is
+            // already one GEMM.
             {
-                // Candidates, largest extent first, so the GEMM is as big as
-                // the shape allows and the per-call overhead as thin.
+                // Candidates, largest extent first, so each GEMM is as big as the shape allows.
                 std::vector<size_t> order(nk);
                 std::iota(order.begin(), order.end(), size_t{0});
                 std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) { return k_dims_a[x].size > k_dims_a[y].size; });
@@ -1162,23 +954,22 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             outer *= k_dims_a[d].size;
                         }
                     }
-                    // A slice has to carry enough arithmetic to be worth a
-                    // vendor call and its internal re-packing of the operands.
+                    // A slice has to carry enough arithmetic to be worth a vendor call and its
+                    // internal re-packing.
                     if (k_len < 2 || outer < 2 || M * N * k_len < (int64_t{1} << 20)) {
                         continue;
                     }
 
-                    // The first slice both tests the strides and does its share
-                    // of the work: gemm_from_strides calls nothing when it
-                    // cannot map them, so a candidate that fails leaves C
-                    // untouched and the next one is free to try.
+                    // The first slice both tests the strides and does its share of the work:
+                    // gemm_from_strides calls nothing when it cannot map them, so a failed
+                    // candidate leaves C untouched.
                     if (!gemm_from_strides<ValueType>(C_data, A_data, B_data, alpha, beta, M, N, k_len, m_stride, n_stride, ksa, ksb,
                                                       C_col_major, C_n_stride, ldc_col, ldc_row, conj_a, conj_b)) {
                         continue;
                     }
 
-                    // The rest accumulate. Strides do not change between
-                    // slices, so no later call can fail to map.
+                    // The rest accumulate. The strides are the same for every slice, so none can
+                    // fail to map.
                     std::vector<int64_t> coord(nk, 0);
                     for (int64_t t = 1; t < outer; ++t) {
                         int64_t off_a = 0, off_b = 0;
@@ -1209,33 +1000,25 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 }
             }
 
-            // At least one side needs copying.
-            //
-            // Strategy: HPTT-transpose the full tensor into a flat M*K / K*N buffer
-            // (cache-blocked, SIMD-optimized), then call KC-tiled BLAS GEMM over the
-            // already-contiguous flat buffer.  Falls back to scalar gather loops only
-            // on Windows (no HPTT) or when the source tensor is non-contiguous.
+            // At least one side needs copying: HPTT-transpose it into a flat M*K / K*N buffer and
+            // run KC-tiled GEMM over that, or, when HPTT cannot describe the operand, gather it a
+            // KC tile at a time.
 
-            // Flat buffers for the sides that need copying. Sized once the route
-            // is known, below: the HPTT branch transposes whole operands and
-            // needs M*K / K*N, but the gather branch refills ONE KC tile at a
-            // time and never reads past M*KC / KC*N. Sizing both for the worst
-            // case held K/KC times more memory than the gather can address -
-            // 226 MB against 0.8 on a K of 144384 - for the whole life of the
-            // thread, since these only ever grow.
+            // Sized once the route is known, below: the HPTT branch needs whole M*K / K*N buffers,
+            // while the gather refills one KC tile at a time and never reads past M*KC / KC*N.
+            // These buffers only grow, so sizing the gather for the worst case would pin K/KC times
+            // the memory it can use.
             static thread_local std::vector<ValueType> tls_A_flat_slot, tls_B_flat_slot;
             auto                                      &tls_A_flat = bind_thread_local(tls_A_flat_slot);
             auto                                      &tls_B_flat = bind_thread_local(tls_B_flat_slot);
             ValueType                                 *A_flat     = nullptr;
             ValueType                                 *B_flat     = nullptr;
 
-            // Read ranks at runtime so the path works for both compile-time-rank
-            // (Tensor<T, K>) and runtime-rank (RuntimeTensor<T, Alloc>) operands.
+            // Ranks read at run time, so compile-time-rank and runtime-rank operands both work.
             auto rank_of = [](auto const &t) -> int {
                 using TT = std::remove_cvref_t<decltype(t)>;
-                // TT::Rank exists for BOTH compile-time tensors (Rank = K >= 0) and
-                // runtime-rank tensors (Rank = dynamic_rank = -1, a sentinel). Only
-                // trust it when it is a real rank; otherwise read the live rank.
+                // TT::Rank is dynamic_rank (-1) for runtime-rank tensors; trust it only when
+                // non-negative.
                 if constexpr (requires { TT::Rank; }) {
                     if constexpr (TT::Rank >= 0) {
                         return static_cast<int>(TT::Rank);
@@ -1251,29 +1034,17 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
             // Describe a dense operand to HPTT.
             //
-            // HPTT takes no stride vector: sizes[0] is the FASTEST-varying axis
-            // and every axis after it follows as a dense product chain. That is
-            // column-major by argument convention, not an assumption about the
-            // caller's layout - any dense tensor (row-major, column-major, or any
-            // other axis order) fits the model once its axes are RELABELLED into
-            // ascending-stride order. So sort the axes by stride, describe the
-            // operand in that order, and renumber the transpose permutation
-            // through the same relabelling. This is what lets row-major operands
-            // - what the runtime-tensor and string-einsum paths hand us - take
-            // the HPTT route instead of falling to the scalar gather below.
+            // HPTT takes no strides: sizes[0] is the fastest axis and the rest follow as a dense
+            // product chain. Any dense tensor fits once its axes are relabelled into
+            // ascending-stride order, so sort them, describe the operand in that order, and
+            // renumber the permutation through the same relabelling. That is what lets row-major
+            // operands take the HPTT route. Extent-1 axes carry no layout and are dropped from both
+            // sides.
             //
-            // Extent-1 axes carry no layout information (their stride is
-            // arbitrary and never indexed), so they are dropped from both the
-            // source description and the permutation; the destination is dense,
-            // so dropping them does not change its element order.
-            //
-            // Returns false - leaving the caller on the scalar gather - when the
-            // operand is dense in no axis order at all: a padded, strided or
-            // broadcast view. HPTT could express a padded one through outerSizeA,
-            // which hptt_transpose does not plumb through today.
-            // @p ord comes back as the layout-carrying axes in ascending-stride
-            // order, which is HPTT's own axis numbering - what a caller needs to
-            // say WHICH of those axes it wants to read a sub-block along.
+            // Returns false, leaving the caller on the gather, when the operand is dense in no axis
+            // order (a padded, strided or broadcast view). @p ord_out comes back as the
+            // layout-carrying axes in HPTT's numbering, which a caller needs to read a sub-block
+            // along one of them.
             auto describe_for_hptt = [](auto const &tensor, int rank, std::vector<int> const &out_order, std::vector<size_t> &sizes,
                                         std::vector<int> &perm, std::vector<int> &ord_out) -> bool {
                 auto extent = [&](int i) { return static_cast<int64_t>(tensor.dim(static_cast<size_t>(i))); };
@@ -1308,8 +1079,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     sizes[p]                              = static_cast<size_t>(extent(ord[p]));
                 }
 
-                // perm[j] = the source axis, in HPTT's numbering, that becomes
-                // destination axis j.
+                // perm[j] = the source axis, in HPTT's numbering, that becomes destination axis j.
                 perm.clear();
                 perm.reserve(ord.size());
                 for (int const pos : out_order) {
@@ -1320,43 +1090,28 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         perm.push_back(h);
                     }
                 }
-                // Anything other than a permutation of the layout-carrying axes
-                // means the plan's dims do not account for this operand.
+                // Anything other than a permutation of the layout-carrying axes means the plan's
+                // dims do not account for this operand.
                 ord_out = ord;
                 return perm.size() == ord.size();
             };
 
-            // Batched contractions (nb > 0) must not use the HPTT flatten path:
-            // it builds the transpose plan from the operand's full rank and
-            // sizes (including the batch dims) while A_flat/B_flat are sized for a
-            // single batch slice (M*K / K*N) and A_data/B_data are already offset
-            // to the current slice. HPTT then transposes the whole batched tensor
-            // into the inner-sized buffer -> heap-buffer-overflow. Fall through to
-            // the batch-aware gather below, which honors the slice offset and the
-            // inner strides.
+            // Batched contractions (nb > 0) must not use the HPTT flatten: it describes the
+            // operand's full rank, batch dims included, while the flat buffers hold one slice and
+            // A_data/B_data already point at it, so the transpose would overflow them. The gather
+            // below honours the slice offset.
             //
-            // A per-slice batched HPTT path (each slice described to HPTT as an
-            // embedded subtensor via outer sizes + inner stride, one cached plan
-            // rebound per slice) was implemented and benchmarked on an Apple M4
-            // (2026-07-19) and does NOT pay: the gather below copies one KC x M
-            // tile at a time immediately before the GEMM consumes it, so the
-            // copy stays fused in cache, while an up-front HPTT transpose of the
-            // whole M*K slice round-trips a multi-MB flat buffer through DRAM.
-            // Measured wash at small K to 15% SLOWER at large K, on both the
-            // memcpy (lead stride 1) and strided-lead gather variants. Revisit
-            // only with a cache-resident (KC-tiled) transpose scheme, or on
-            // hardware whose strided-load throughput is much worse relative to
-            // its cache bandwidth. The BatchedMultiK tests pin the layouts that
-            // experiment covered.
+            // A per-slice HPTT path does not pay either: the gather copies one KC tile just before
+            // the GEMM consumes it, so the copy stays in cache, where a whole-slice transpose
+            // round-trips the buffer through DRAM. The BatchedMultiK tests pin the layouts that
+            // comparison covered.
             bool use_hptt = (nb == 0) && !plan.coalesced;
 
             std::vector<int>    perm_a, perm_b, ord_a, ord_b;
             std::vector<size_t> sizes_a, sizes_b;
 
-            // Destination axis order: A_flat is col-major M x K (M fastest) and
-            // B_flat is row-major K x N, i.e. col-major N x K (N fastest). In
-            // both, the K axes run in reverse plan order so that the flat K index
-            // matches k_cum.
+            // Destination axis order: A_flat is col-major M x K and B_flat col-major N x K, with
+            // the K axes in reverse plan order so the flat K index matches k_cum.
             if (use_hptt && !a_zero_copy) {
                 std::vector<int> out_a;
                 out_a.reserve(nk + 1);
@@ -1378,24 +1133,15 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
             // How much K to hold at once.
             //
-            // The flatten transposes WHOLE operands so that one GEMM can span
-            // the whole K - 448 MiB on ccsd's ab-cad-dcb, both sides, into
-            // thread-local buffers that only ever grow. It does not have to. A
-            // chunk of K is a sub-block of each operand, and HPTT reads a
-            // sub-block given the block's extents and the enclosing tensor's
-            // (see @ref hptt_transpose), so the buffers can be capped and the
-            // contraction becomes a short chain of large GEMMs. The objection
-            // that a K chain re-reads C once per link is real but was priced at
-            // KC = 512, which is 282 links; a budget-sized chunk is 15 links
-            // over a 578 KB C, about 17 MB.
+            // By default the flatten transposes whole operands so one GEMM spans all of K. A chunk
+            // of K is a sub-block of each operand, which HPTT can read (@ref hptt_transpose), so
+            // option::PackedGemmFlattenBudget can cap the buffers and turn the contraction into a
+            // short chain of large GEMMs. It is off by default because chunking is not free; the
+            // option's documentation says what it costs.
             //
-            // Off unless asked for, because it is not free - see @ref
-            // option::PackedGemmFlattenBudget for what it costs and why.
-            //
-            // Chunking is along the OUTERMOST plan K dim, because the flat K
-            // index runs slowest there: a range of that dim is a contiguous
-            // range of flat K, which is what both the destination layout and a
-            // zero-copy operand's own offset assume.
+            // Chunks run along the outermost plan K dim, where the flat K index varies slowest, so
+            // a chunk is a contiguous range of flat K, as both the destination layout and a
+            // zero-copy operand's offset assume.
             int64_t const flat_budget_bytes = config::get(option::PackedGemmFlattenBudget) << 20;
             int64_t const elem_bytes        = static_cast<int64_t>(sizeof(ValueType));
             int64_t const per_k             = (a_zero_copy ? 0 : M) + (b_zero_copy ? 0 : N);
@@ -1423,12 +1169,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 #ifdef _OPENMP
                 num_threads = omp_get_max_threads();
 #endif
-                // The chunk's extent replaces the outermost K dim's in what HPTT
-                // is told to READ, while the enclosing extents stay whole. A
-                // chunked axis that is not the operand's slowest leaves gaps
-                // between its rows, and the outer sizes are how those are said:
-                // on ab-cad-dcb the chunked dim is A's slowest axis and B's
-                // FASTEST, so B is exactly the case that needs them.
+                // HPTT reads the chunk's extent along the outermost K dim, inside the whole
+                // enclosing extents (the outer sizes). A chunked axis that is not the operand's
+                // slowest leaves gaps between rows, and the outer sizes are how those are
+                // expressed.
                 std::vector<size_t> chunk_a = sizes_a, chunk_b = sizes_b;
                 int                 axpos_a = -1, axpos_b = -1;
                 int64_t             stride_a = 0, stride_b = 0;
@@ -1449,8 +1193,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         axpos_b  = locate(ord_b, k_dims_b[0].tensor_pos);
                         stride_b = static_cast<int64_t>(B.stride(k_dims_b[0].tensor_pos));
                     }
-                    // An operand that does not carry the chunked axis (extent 1,
-                    // dropped from the description) cannot be read in pieces.
+                    // An operand that does not carry the chunked axis (extent 1, dropped from the
+                    // description) cannot be read in pieces.
                     if ((!a_zero_copy && axpos_a < 0) || (!b_zero_copy && axpos_b < 0)) {
                         k_len = K;
                         if (!a_zero_copy) {
@@ -1485,10 +1229,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                        kc_len == K ? nullptr : sizes_b.data(), B_flat, num_threads, conj_b);
                     }
 
-                    // A_flat is col-major M x kc_len; B_flat is row-major
-                    // kc_len x N - and a zero-copy side is, by the test above,
-                    // already exactly that over the whole K, so it is indexed
-                    // at the chunk's own offset.
+                    // A_flat is col-major M x kc_len and B_flat row-major kc_len x N. A zero-copy
+                    // side is already that over all of K, so it is indexed at the chunk's offset.
                     ValueType const *A_base = a_zero_copy ? A_data + kc * M : A_flat;
                     ValueType const *B_base = b_zero_copy ? B_data + kc * N : B_flat;
 
@@ -1576,8 +1318,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 }
             }
 
-            // Reclaim excess thread-local buffer memory to avoid bloat across
-            // contractions of varying sizes.
+            // Reclaim excess thread-local buffer memory so contractions of varying sizes do not
+            // bloat it.
             auto shrink = [](auto &v) {
                 if (v.capacity() > 2 * v.size() && v.capacity() > 4096) {
                     v.shrink_to_fit();
@@ -1589,16 +1331,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             continue; // next batch slice
         }
 
-        // -------------------------------------------------------------------------
-        // Single-K fast path: call BLAS GEMM directly without packing.
-        //
-        // When K has a single dimension, the contraction is a standard GEMM with
-        // strides.  BLAS can handle this directly via lda/ldb/ldc parameters,
-        // avoiding the expensive pack_A/pack_B + tiled micro-GEMM.
-        //
-        // Skipped under a fenced width for the reason given at the top: this is
-        // the whole contraction in one vendor call, which is the one shape of
-        // work a clamped vendor cannot spread.
+        // ------------------------------------------------------------------------- Single-K fast
+        // path: a single K dimension is a standard strided GEMM, which BLAS handles through
+        // lda/ldb/ldc without packing. Skipped under prefer_packed, since this is the whole
+        // contraction in one vendor call.
         // -------------------------------------------------------------------------
         if (plan.k_dims_in_a.size() == 1 && !multi_m && !multi_n && !plan.synthetic && !prefer_packed) {
             // Single-K fast path: only for single-M, single-N (direct BLAS GEMM dispatch).
@@ -1620,38 +1356,30 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             }
         }
 
-        // -------------------------------------------------------------------------
-        // Fallback: BLIS-style tiled packing with BLAS GEMM per tile.
+        // ------------------------------------------------------------------------- Packed loops:
+        // BLIS-style packing around the rung's tile kernel, or one vendor GEMM per cache block for
+        // the block strategy.
         // -------------------------------------------------------------------------
         last_contraction_route() = "packed";
         // NOLINTNEXTLINE(readability-identifier-naming)
         using blas_int = einsums::blas::int_t;
 
-        // K blocking: the kernel rung may deepen the cache-derived KC (the SME
-        // rung's ZA accumulators need no C cache blocking), which cuts the
-        // number of beta/scatter read-modify-write passes over C and ZA
-        // extractions to one per tile. The block-GEMM scatter strategy gets
-        // the same deep default: the vendor GEMM blocks K internally, so the
-        // only KC role left is bounding the packed panels and the number of
-        // scatter passes. The M block shrinks in compensation so the packed
-        // A panel (MC_blk * KC_blk) stays within ~4 MiB.
+        // K blocking: the rung may deepen the cache-derived KC (SME's ZA accumulators need no C
+        // cache blocking), which cuts the beta/scatter passes over C to one per tile. The
+        // block-GEMM scatter strategy gets the same deep default, since the vendor GEMM blocks K
+        // internally. The M block shrinks to keep the A panel (MC_blk * KC_blk) within ~4 MiB.
         int64_t kc_hint = shape.kc;
         if (kc_hint == 0 && shape.block_gemm && scatter_c) {
             kc_hint = 4096;
         }
-        // Clamped to K on BOTH branches: a K-block larger than K is never useful,
-        // and the packing buffers below are sized from KC_blk, so an unclamped
-        // cache-derived blk.KC inflates the panels for a small contraction. That
-        // stayed hidden while the L2 was being under-detected; correcting the L2
-        // made blk.KC bigger and the small shapes paid for it.
-        // Teams: with several threads, the threads that share an L3 (a Zen CCX, say) share one
-        // packed B panel in it, packing it together and each computing its own rows against it.
-        // Each thread packing its own panel is what the loops did, and a private panel per thread
-        // either overflows the shared L3 (three 4.2 MB panels in a CCX's 8 MB cost the tile kernel
-        // a third of its speed with twelve cores busy) or, cut narrow enough to fit, re-packs A for
-        // every narrow N block. Only the tile path shares: the block-GEMM and 1m strategies keep
-        // panels of their own. One thread, a region already inside a parallel one, or a thread
-        // count that does not divide into whole teams keeps the loops exactly as they were.
+        // KC is clamped to K on both branches: the packing buffers are sized from KC_blk, so an
+        // unclamped blk.KC would inflate the panels of a small contraction.
+        //
+        // Teams: the threads that share an L3 share one packed B panel in it, packing it together
+        // and each computing its own rows against it. Private panels either overflow the shared L3
+        // or, cut narrow enough to fit, re-pack A for every narrow N block. Only the tile path
+        // shares; the block-GEMM and 1m strategies keep panels of their own. One thread, a nested
+        // region, or a thread count that does not divide into whole teams keeps private panels.
         int n_threads = 1;
         int team_size = 1;
 #ifdef _OPENMP
@@ -1667,18 +1395,13 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 #endif
         bool const team_mode = team_size > 1;
         // A quarter of the L3 for the shared panel, not half: the team's A blocks and the C blocks
-        // it writes back pass through the same L3. Measured on the TCB's rank-4 ccsd double at 24
-        // threads, half an L3 ran at 70-76% of an equal vendor GEMM and a quarter at 84-85%; single
-        // moved from 95% to 100%, with the rest of the panel unchanged within noise. Packing the
-        // next K block's panel into a second buffer while the first was read (double buffering, as
-        // OpenBLAS does) was measured too and added nothing the smaller panel had not already given.
+        // it writes back pass through the same L3.
         int64_t const team_panel_budget = std::max<int64_t>(cpu_config().l3_cache_size / 4, int64_t{256} << 10);
 
         // A shared panel is KC x NC, and A is re-packed once per N block while C is swept once per
-        // K block, so under a fixed panel budget the K block that moves the least is
-        // sqrt(2 * budget / element size): 720 doubles or 1024 floats in a 2 MB quarter of an 8 MB
-        // L3, where the cache model alone grows KC to 2592 and 3528 on the TCB's rank-4 ccsd
-        // shapes. It never shrinks below what the cache model gives a single thread.
+        // K block, so under a fixed panel budget the K block that moves the least is sqrt(2 *
+        // budget / element size). It never shrinks below what the cache model gives a single
+        // thread.
         int64_t KC_blk = std::min<int64_t>((kc_hint > 0) ? std::max<int64_t>(kc_hint, blk.KC) : blk.KC, K);
         if (team_mode) {
             auto const    es = static_cast<double>(sizeof(ValueType));
@@ -1687,72 +1410,48 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             int64_t const kc_base = compute_blocking(static_cast<int64_t>(sizeof(ValueType)), MR, NR).KC;
             KC_blk                = std::min(KC_blk, std::min(K, std::max(kc_team, kc_base)));
         }
-        // Bound the A panel at ~4 MiB, which is what the paragraph above promises.
-        //
-        // This used to be gated on KC_blk > blk.KC, a comparison between two K values
-        // that has nothing to do with the panel's size, and the gate failed both ways.
-        // It let the panel through at 512 * 4096 * 4 bytes, 8 MiB, whenever KC_blk and
-        // blk.KC coincided, which is every large-K single-precision contraction on a
-        // rung with a kc hint. And it silently switched off if blk.KC grew, so
-        // correcting a detected cache size turned the cap off and cost 0.62x on the
-        // large-K cases. A constraint on the panel belongs on the panel.
+        // Bound the A panel at ~4 MiB. The bound is on the panel's size itself; gating it on a
+        // comparison of K values let 8 MiB panels through and switched off when the cache model
+        // grew.
         int64_t const mc_cap = (int64_t{4} << 20) / (KC_blk * static_cast<int64_t>(sizeof(ValueType)));
 
-        // For multi-M/N: we need a temporary contiguous C tile buffer because
-        // the multi-dim C elements are non-contiguous in memory.
+        // A scattered C needs a contiguous C block to accumulate into, because its elements are not
+        // contiguous in memory.
         bool const needs_c_scatter = scatter_c;
         bool const block_strategy  = needs_c_scatter && shape.block_gemm;
         last_packed_engine()       = (is_complex && shape.use_1m) ? "1m"
                                      : block_strategy             ? ((is_complex && shape.use_3m) ? "3m" : "block_gemm")
                                                                   : "tile";
 
-        // Is this an M group ordered for A, with C's contiguity one coordinate
-        // in? See @ref AOrderFlush. When it is, pack_A is a memcpy and the C
-        // block's write-back transposes C's runs out instead of composing them,
-        // which changes what the M block has to be a whole number of (xa rows,
-        // not C's fastest segment) and which write-back branch runs.
-        // Not const: the M block sizing below has the last word. It is what
-        // learns how long the write-back's runs can actually be, and a block
-        // that cannot reach a streamable run is better off on the ordinary
-        // scatter than paying a transpose for nothing.
+        // Is this an M group ordered for A, with C's contiguity one coordinate in (see @ref
+        // AOrderFlush)? Then pack_A is a memcpy and the C block's write-back transposes C's runs
+        // out, which changes what the M block must be a whole number of (xa rows) and which
+        // write-back runs. Not const: the M block sizing below turns it off when no streamable run
+        // can form.
         AOrderFlush const blk_aorder  = a_order_flush(plan.m_dims, plan.c_m_dims);
         bool              use_a_order = blk_aorder.valid && needs_c_scatter && !block_strategy && !(is_complex && shape.use_1m);
 
-        // Budget for the block-GEMM strategy's MC by NC C temp; the bound on NC
-        // below applies it, and the block strategy's M block is sized from it
-        // here. Four times L1 is where the M4 optimum sat, 432 to 504 KB against
-        // a 128 KB L1. On a Zen+ with a 32 KB L1 the same multiplier gives 128 KB,
-        // which measured WORST of every value swept on the rank-6 ccsd_t shape
-        // (MC=2048: 15.7 GF/s, against 24.5 at 512 KB and 25.7 at 2 MB), so the
-        // budget is floored at 512 KiB, which leaves the M4 value where it was
-        // measured. option::PackedGemmCTempBudget overrides it for sweeps.
+        // Budget for the block-GEMM strategy's MC by NC C temporary; it bounds NC below and sizes
+        // the block strategy's M block here. Four times L1, floored at 512 KiB because a 32 KB L1
+        // gives a budget too small to pay for the scatter. option::PackedGemmCTempBudget overrides
+        // it for sweeps.
         int64_t c_temp_budget = std::max<int64_t>(4 * cpu_config().l1_cache_size, int64_t{512} << 10);
         if (int64_t const kib = config::get(option::PackedGemmCTempBudget); kib > 0) {
             c_temp_budget = kib << 10;
         }
 
-        // The tile loops keep the A panel L2-resident, so blk.MC bounds their MC.
-        // The block strategy has no such stake: its A block is consumed by a vendor
-        // GEMM that re-packs it internally, and what that GEMM pays for is a SMALL
-        // M - it also re-packs the whole KC x NC B block on every call, so M/MC
-        // calls multiply that traffic. Sized from the cache-derived MC this was 32
-        // rows on a Zen+, 93 thousand GEMMs of 32 x 24 x 36 on the intensli shape
-        // abcde-efcad-bf, and lifting the clamp measured 1.74x there (5.8 to 10.0
-        // GF/s, flat from 512 rows up, in both sweep orders). So the block
-        // strategy's MC comes from the A-panel cap and the C temp: enough rows to
-        // use the whole budget at the N the shape actually has, or a square
-        // temp, whichever is larger.
+        // The tile loops keep the A panel L2-resident, so blk.MC bounds their MC. The block
+        // strategy's A block is consumed by a vendor GEMM that re-packs it, and that GEMM also
+        // re-packs the whole B block on every call, so a small MC multiplies B traffic. Its MC
+        // comes instead from the A-panel cap and the C temporary: enough rows to use the budget at
+        // this N, or a square temporary, whichever is larger.
         int64_t MC_blk = std::clamp((mc_cap / MR) * MR, static_cast<int64_t>(MR), blk.MC);
 
-        // pack_A gathers along A's own contiguous axis when the flat M coordinate
-        // was ordered for C (its unit-stride M axis sits second-fastest, see
-        // coalesce_plan): rows i, i + X, i + 2X ... are adjacent in A. That reads
-        // each cache line whole only if the block holds a line's worth of those
-        // rows per value of the fastest coordinate, so the block is raised to
-        // (line / elem) * X rows, within the A-panel cap. The panel may then
-        // outgrow the L2 the tile kernel likes it in; on the shapes that take
-        // this path (abcde-efcad-bf: 768 rows of 36) the kernel's A traffic is
-        // trivial next to the gather it replaces.
+        // pack_A gathers along A's own contiguous axis when the flat M coordinate was ordered for C
+        // (its unit-stride M axis second-fastest, see coalesce_plan): rows i, i + X, i + 2X ... are
+        // adjacent in A. Each cache line is read whole only if the block holds a line's worth of
+        // those rows per value of the fastest coordinate, so the block is raised to (line / elem) *
+        // X rows within the A-panel cap.
         auto const line_rows = [&](std::vector<DimSpec> const &dims) -> int64_t {
             if (dims.size() < 2 || dims.back().tensor_stride == 1 || dims[dims.size() - 2].tensor_stride != 1) {
                 return 0;
@@ -1760,14 +1459,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             return (int64_t{64} / static_cast<int64_t>(sizeof(ValueType))) * dims.back().size;
         };
         if (!block_strategy) {
-            // (line / elem) * X is a multiple of MR for the vector tile (MR is
-            // itself 2 * lanes), and pack_A's fast strip needs the block whole in
-            // X, so it is taken exactly when the panel cap allows it.
-            // Only when the pack is a real share of the work: A carries M*K
-            // elements against C's M*N, and a taller block costs the kernel its
-            // L1-resident A panel (the rank-6 ccsd_t shapes, K=24 against
-            // N=8000, lost 10% to the raise while packing 300x less than they
-            // scatter).
+            // (line / elem) * X is a multiple of MR for the vector tile, and pack_A's fast strip
+            // needs the block whole in X, so it is taken exactly when the panel cap allows. Only
+            // when packing is a real share of the work (4K >= N): a taller block costs the kernel
+            // its L1-resident A panel.
             int64_t const want = line_rows(plan.m_dims);
             if (want > MC_blk && want % MR == 0 && want <= (mc_cap / MR) * MR && 4 * K >= N) {
                 MC_blk = want;
@@ -1776,18 +1471,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
         // The A-order block is xa rows of C's contiguous index at a time.
         //
-        // It has to be a WHOLE number of xa so that every flat row the block
-        // holds carries the same set of C coordinates - that is what makes the
-        // write-back's gather a constant stride - and it wants as many of C's
-        // index as it can afford, because that index's run IS the write-back's
-        // contiguous span. A whole segment (run == xc) is the best case and the
-        // one the intensli shapes land in; when xc is too large to hold, a
-        // divisor of it keeps every span the same length instead of leaving a
-        // short straddling remainder that cannot stream.
-        //
-        // Two caps: the A panel (mc_cap, as everywhere else) and the C block,
-        // which must still fit its budget at the narrowest N chunk the loop
-        // below will take.
+        // It must be a whole number of xa so every flat row carries the same set of C coordinates,
+        // which makes the write-back's gather a constant stride, and it wants as much of C's index
+        // as it can afford, because that index's run is the write-back's contiguous span. When a
+        // whole segment does not fit, a divisor of it keeps every span the same length instead of
+        // leaving a short remainder that cannot stream. Capped by the A panel and by the C block at
+        // the narrowest N chunk.
         if (use_a_order) {
             int64_t const elem      = static_cast<int64_t>(sizeof(ValueType));
             int64_t const cb_budget = std::max<int64_t>(cpu_config().l2_cache_size / 2, int64_t{64} << 10);
@@ -1799,8 +1488,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             while (run > 1 && blk_aorder.xc % run != 0) {
                 --run;
             }
-            // A span that cannot cover a couple of cache lines is worth less than
-            // an even division of the segment, so take the length instead.
+            // A span shorter than a couple of cache lines is worth less than an even division of
+            // the segment, so take the length instead.
             if (run * elem < kStreamRunBytes) {
                 run = std::min(blk_aorder.xc, cap_run);
             }
@@ -1808,11 +1497,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             if (run * elem >= kStreamRunBytes && want >= MR && want <= M) {
                 MC_blk = want;
             } else {
-                // The caps left no run worth transposing for - a group whose
-                // fastest extent is large enough to swallow the whole panel
-                // budget on its own. The ordering cost model refuses these on
-                // the same grounds, so this is a backstop rather than a path
-                // anything is expected to take; keep the ordinary scatter.
+                // No run worth transposing for fits the caps. The ordering cost model already
+                // refuses these, so this is a backstop; keep the ordinary scatter.
                 use_a_order = false;
             }
         }
@@ -1825,55 +1511,31 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             MC_blk                 = std::max<int64_t>((want / MR) * MR, MR);
         }
 
-        // Keep the M block a whole number of C's fastest segment when the C block
-        // flush below can compose its destination into contiguous spans.
+        // Keep the M block a whole number of C's fastest segment when the C block flush can compose
+        // its destination into contiguous spans. A block that ends mid-segment sends its tail down
+        // the fallback walk, which reads the block transposed and scatters. The step is
+        // lcm(segment, MR) so the block stays whole in the register tile too; a segment that cannot
+        // reach a whole step is left alone.
         //
-        // A block that ends mid-segment sends its tail down the fallback walk,
-        // which reads the block transposed AND scatters - the worst of both
-        // orders. The tail is a fixed number of ROWS, so what it costs is set by
-        // how many rows the block has: 16 of a 64-row double block is a quarter
-        // of the work, against 8 of a 128-row single block. Measured on ccsd_t
-        // before this alignment existed, the span flush was worth +5 to +10% on
-        // the single rows and -3 to -4% on the double ones, which is that split
-        // and nothing else.
-        //
-        // The step is lcm(segment, MR) so the block stays whole in the register
-        // tile too; a segment that cannot reach a whole step inside the block is
-        // left alone rather than shrunk to one.
-        // A team's members claim M blocks (see TeamState), which balances only if each has several
-        // to claim. The block raises below and above can make MC thousands of rows: ao2mo's
-        // `abcd-ec-abed` raised it to its 8064-row C segment, a block or two per team, and ran at
-        // half the speed (0.45-0.64x) of the same contraction cut into cache-sized blocks. So on
-        // the team path the A block is held to twice the L2, the size BLIS's Zen blocking gives
-        // it (960 KiB), and the segment alignment below applies only to what is left. Holding it
-        // to one L2 instead cost the square ccsd shapes 6%, trimming blocks that were never too
-        // big. The A-ordered write-back sizes its block to whole rows of its own and is left as
-        // it is.
-        //
-        // The one raise past the cap is to a whole C segment (below), whose streamed write-back
-        // is worth more than balance while each thread still has blocks enough to share: on
-        // `abcd-ec-abed` the 8064-row segment left seven per thread at 12 threads and won there
-        // (1.15-1.24x of the capped block), three and a half at 24 and lost (0.45-0.70x). So on
-        // the team path a raise past the cap needs four blocks per thread; one within it (the
-        // square ccsd shapes raise 64 rows to 72) is taken as before.
+        // On the team path the A block is first held to twice the L2: members claim M blocks (see
+        // TeamState), which balances only if each has several to claim, and the raises can
+        // otherwise make MC thousands of rows. The A-ordered write-back sizes its block itself and
+        // is exempt. The one raise past that cap is to a whole C segment, whose streamed write-back
+        // is worth more than balance only while each thread still has four blocks to claim.
         int64_t const mc_cap_team =
             (team_mode && !use_a_order)
                 ? std::max<int64_t>(MR, (((2 * cpu_config().l2_cache_size) / (KC_blk * static_cast<int64_t>(sizeof(ValueType)))) / MR) * MR)
                 : std::numeric_limits<int64_t>::max();
         MC_blk = std::min(MC_blk, mc_cap_team);
 
-        // Set when the block below is kept a whole number of C segments: its blocks must then also
-        // START on a segment, so the thread grid cuts M only at whole blocks.
+        // Set when the block is kept a whole number of C segments: its blocks must then also start
+        // on a segment, so the thread grid cuts M only at whole blocks.
         bool span_aligned = false;
         if (needs_c_scatter && !block_strategy && plan.c_m_dims.back().tensor_stride == 1) {
             int64_t const fm = plan.c_m_dims.back().size;
-            // Whole segments are wanted whenever the write-back intends to
-            // stream, which is composition OR a run long enough on its own. A
-            // block shorter than the segment cuts every run partial and
-            // misaligned, nothing streams, and the accumulator is pure overhead:
-            // `abcd-ebad-ce` has Fm = 72 against MC = 64 and measured -9.4%,
-            // while the same change is worth +13% to +15% on the rows whose MC
-            // already spans the segment.
+            // Whole segments are wanted whenever the write-back intends to stream: composition, or
+            // a run long enough on its own. A block shorter than the segment cuts every run
+            // partial, nothing streams, and the accumulator is pure overhead.
             if (fm > 1 && (plan.c_n_dims.back().tensor_stride == fm || fm * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes)) {
                 int64_t const step = std::lcm<int64_t, int64_t>(fm, MR);
                 span_aligned       = true;
@@ -1881,123 +1543,69 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     MC_blk = (MC_blk / step) * step;
                 } else if ((step <= mc_cap_team || M >= 4 * step * static_cast<int64_t>(n_threads)) && step <= (mc_cap / MR) * MR &&
                            step <= M) {
-                    // The block is SMALLER than one C segment, so every m run it
-                    // cuts is partial and the span never forms at all - the
-                    // write-back falls back to the column walk for the whole
-                    // contraction and the streaming store is never reached. Raise
-                    // the block to one whole segment.
-                    //
-                    // This is the case on twelve of the eighteen ccsd_t shapes,
-                    // whose C segment is 384 or 480 elements against a cache-derived
-                    // MC of 64 or 128, and on ao2mo's `abcd-ec-abed`, whose segment
-                    // is 8064. It is affordable precisely because these are the
-                    // small-K shapes: the A panel is MC * KC, so at K = 24 a
-                    // 480-row block is 46 KB. The A-panel cap is still the bound,
-                    // and a segment that cannot fit under it is left alone.
+                    // The block is smaller than one C segment, so every run it cuts is partial and
+                    // the write-back never streams. Raise it to one whole segment. This is
+                    // affordable on the small-K shapes where it happens, since the A panel is MC *
+                    // KC; the A-panel cap still bounds it.
                     MC_blk = step;
                 }
             }
         }
 
-        // beta == 0 says C's prior contents are irrelevant, so the first K block
-        // STORES its result and later blocks accumulate onto it. The direct-BLAS
-        // paths above already do this through beta_k; the scatter paths below did
-        // not, and instead made a separate read-modify-write pass over C to
-        // multiply it by zero. On a scatter shape that pass is the dominant cost:
-        // C's m and n index groups interleave in memory, so it touches one element
-        // per cache line, and it is pure waste when the result is about to be
-        // overwritten. Folding it into the scatter also makes beta == 0 mean what
-        // BLAS says it means - C is never read - which `*= 0` does not, since
-        // NaN * 0 is NaN rather than 0 and an uninitialized C would leak through.
+        // beta == 0 says C's prior contents are irrelevant, so the first K block stores its result
+        // and later blocks accumulate onto it, as the direct-BLAS paths do through beta_k. A
+        // separate `*= 0` pass over a scattered C would touch one element per cache line, and would
+        // not honour BLAS's beta == 0 contract either: NaN * 0 is NaN, so an uninitialized C would
+        // leak through.
         bool const overwrite_c = (beta == ValueType{0});
 
-        // Whether the C block write-back may stream past the cache.
-        //
-        // Three things have to hold. C must be written and never read, which is
-        // what overwrite_c says. K must fit one block, or a later K block would
-        // accumulate onto lines this one just pushed out to memory and have to
-        // fetch every one of them back. And the element type must have a vector
-        // register to store from.
-        //
-        // Whether the run is long enough is decided per span at the write-back,
-        // since that is where the length is known.
+        // Whether the C block write-back may stream past the cache: C must be written and never
+        // read (overwrite_c), K must fit one block so no later block re-reads lines this one pushed
+        // out, and the element type must have a vector register. Run length is decided per span at
+        // the write-back.
         bool const may_stream_c = overwrite_c && K <= KC_blk && !is_complex;
 
-        // Which side the C scatter walks innermost. Both scatters below were
-        // hardwired to n outer, m inner, so only the M group's fastest dimension
-        // could make the inner loop contiguous. When C's smallest stride sits in
-        // the N group instead, which happens whenever C's unit-stride index came
-        // from B rather than A, no ordering of either group can help and the inner
-        // loop spends a cache line per element. On the Tensor Contraction
-        // Benchmark's rank-6 ccsd_t contractions that splits the eighteen mirror
-        // pairs cleanly in two: the nine whose unit index reaches C through A run
-        // at 76% to 98% of an equally sized GEMM, and the nine whose unit index
-        // arrives through B run at 42% to 66%, with no overlap.
+        // Which side the C scatter walks innermost: the group holding C's smallest stride, so the
+        // inner loop is contiguous when C's unit-stride index came from B rather than A.
         //
-        // A synthesized unit dim keeps a stride of 0 for life (see Packing.cpp), and
-        // a group of extent 1 carries no locality to compare, so it never argues for
-        // itself and never argues against the other side.
-        // An A-order M group is the exception. Its fastest C stride is large by
-        // construction - that coordinate was chosen for A, not for C - so this
-        // test reads it as having no locality in the M group and hands the inner
-        // loop to N. The locality is there, one coordinate in, and the
-        // transposing write-back reaches it; comparing only the fastest strides
-        // would throw it away and take the N side's cache line per element.
+        // A synthesized unit dim keeps a stride of 0 (see Packing.cpp), and a group of extent 1
+        // carries no locality, so neither argues either way. An A-order M group is the exception:
+        // its fastest C stride is large by construction, but its locality is one coordinate in,
+        // where the transposing write-back reaches it, so it keeps the inner loop.
         int64_t const c_m_fastest     = plan.c_m_dims.back().tensor_stride;
         int64_t const c_n_fastest     = plan.c_n_dims.back().tensor_stride;
         bool const    scatter_n_inner = !use_a_order && c_n_fastest != 0 && (c_m_fastest == 0 || c_n_fastest < c_m_fastest);
 
-        // Does C's destination COMPOSE into whole contiguous spans?
+        // Does C's destination compose into whole contiguous spans?
         //
-        // The scatter is written as if C's two index groups were independent, and
-        // for a general contraction they are. But when C's fastest m index has unit
-        // stride and its fastest n index steps by exactly that index's extent, the
-        // two are adjacent halves of one dense run: element (i, j) of the rectangle
-        // sits at base + j * Fm + i, so a whole m segment by a whole n segment is
-        // Fm * Fn consecutive elements of C.
-        //
-        // It is the common case, not a curiosity - it holds whenever the two groups
-        // happen to hold neighbouring indices of a dense C, which is what the rank-6
-        // ccsd_t and the intensli shapes both do (24 x 20 = 480 floats and
-        // 48 x 24 = 1152). The C block write-back walks those spans, which turns a
-        // scatter of Fm-element pieces revisiting each cache line Fn times from Fn
-        // different places into one sequential sweep - and is what lets the
-        // write-back stream past the cache at all (@ref stream_copy).
+        // When C's fastest m index has unit stride and its fastest n index steps by exactly that
+        // index's extent, the two are adjacent halves of one dense run: element (i, j) sits at base
+        // + j * Fm + i, so a whole m segment by a whole n segment is Fm * Fn consecutive elements.
+        // That holds whenever the two groups hold neighbouring indices of a dense C, which is
+        // common. The C block write-back then walks those spans in one sequential sweep, which is
+        // what lets it stream past the cache (@ref stream_copy).
         int64_t const blk_m_fast = plan.c_m_dims.back().size;
         int64_t const blk_n_fast = plan.c_n_dims.back().size;
         bool const    blk_compose =
             plan.c_m_dims.back().tensor_stride == 1 && blk_m_fast > 1 && plan.c_n_dims.back().tensor_stride == blk_m_fast;
 
-        // A contraction that does NOT compose can still be worth the block, if
-        // its m runs alone are long enough to stream.
-        //
-        // Composition is what makes a whole RECTANGLE of C contiguous; it is not
-        // what the write-combining buffers need. They need a run that covers
-        // whole cache lines, and C's own fastest index supplies one whenever its
-        // extent is a few lines: 39 lines on abc-bda-dc double, 9 on
-        // abcd-dbea-ec double, 3 on abcde-ecbfa-fd single. The lines at the two
-        // ends of each run are partial and keep their fetch, which is why a run
-        // of one or two lines is not worth the block's L2 round trip.
+        // A contraction that does not compose can still be worth the block if its m runs alone are
+        // long enough to stream: the write-combining buffers need runs of whole cache lines, not a
+        // contiguous rectangle. The partial lines at each end keep their fetch, so a run of one or
+        // two lines is not worth the block's L2 round trip.
         bool const blk_runs_stream =
             plan.c_m_dims.back().tensor_stride == 1 && blk_m_fast * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes;
 
-        // The NC loop is the parallel loop, but only when there is enough work to
-        // pay for the region. Entering and leaving one costs a fork/join barrier
-        // -- measured at init into cpu_config().min_parallel_flops -- and for a
-        // small contraction that is orders of magnitude more than the arithmetic
-        // it distributes. A tiled CCSD contraction is ~2 KFLOP against a ~20 us
-        // region; expanding a tiled einsum into thousands of such nodes made the
-        // replay several times SLOWER with more threads.
+        // The NC loop is the parallel loop, but only when there is enough work to pay for a
+        // fork/join (cpu_config().min_parallel_flops). For a small contraction the region costs
+        // orders of magnitude more than the arithmetic it distributes, so a tiled einsum of
+        // thousands of such nodes would get slower with more threads.
         double const work_flops    = 2.0 * static_cast<double>(M) * static_cast<double>(N) * static_cast<double>(K);
         bool const   worth_threads = work_flops >= static_cast<double>(cpu_config().min_parallel_flops);
         bool const   parallel_nc   = !parallel_batch && worth_threads;
 
-        // Shrink the NC block below the cache-derived blk.NC so every thread gets
-        // at least one block. The cost is re-packing A once per extra NC block, a
-        // bandwidth-trivial price next to leaving all but one core idle on tall-N
-        // contractions (N <= blk.NC previously ran fully serial). Only worth doing
-        // when the loop is actually going to run in parallel: otherwise it buys
-        // extra re-packing for nothing.
+        // NC starts from the cache model's blk.NC; the thread grid below shrinks it so every thread
+        // gets a block, at the price of re-packing A once per extra block.
         int64_t NC_blk = blk.NC;
         if (!block_strategy) {
             // Mirror of the MC raise above for pack_B.
@@ -2008,47 +1616,27 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             }
         }
 
-        // Bound the MC by NC C temp that the block-GEMM scatter strategy allocates.
-        //
-        // Nothing else constrains it. compute_blocking derives MC from an A-panel
-        // budget and NC from a B-panel budget, so their product lands wherever those
-        // two leave it, and it scales with the element size while neither budget
-        // does. On abcdef-gfbc-dega that gives 504 KB for float and 1008 KB for
-        // double, and the double figure costs 1.30x: measured on an M4 with the block
-        // path forced, bounding it takes the case from 24.0 to 31.3 GF/s.
-        //
-        // The cost is not only the scatter's own locality. The vendor GEMM that
-        // writes this temp keeps its own packed buffers, and an oversized output
-        // buffer evicts them: the GEMM's own time falls from 96.7 ms to 71.7 ms when
-        // the temp is halved, which is most of what the case gains. That is also why
-        // the smallest temp is not the best. Below roughly 400 KB the bound shrinks
-        // NC far enough to re-pack A many more times for no further cache benefit,
-        // and at a 32 KB bound pack_A goes from 2.4 ms to 39 ms.
-        //
-        // The budget itself, and where its floor came from, is c_temp_budget above.
-        //
-        // This lives here rather than in compute_blocking because only this strategy
-        // allocates the temp: the tile and direct-BLAS paths would pay the smaller NC
-        // and get nothing back.
+        // Bound the MC by NC C temporary the block-GEMM strategy allocates. compute_blocking sizes
+        // MC and NC from separate panel budgets, so their product is unconstrained and grows with
+        // the element size. An oversized temporary evicts the vendor GEMM's own packed buffers; too
+        // small a one shrinks NC until A is re-packed many more times. The budget is c_temp_budget
+        // above. It lives here rather than in compute_blocking because only this strategy allocates
+        // the temporary.
         if (block_strategy) {
             int64_t const max_nc = ((c_temp_budget / (MC_blk * static_cast<int64_t>(sizeof(ValueType)))) / NR) * NR;
             if (max_nc >= NR && max_nc < NC_blk) {
                 NC_blk = max_nc;
             }
         }
-        // The thread grid (see @ref choose_thread_grid): N is cut into equal blocks, a whole number
-        // per N group, and each N block's M extent into grid.tm groups of whole MC blocks. The
-        // N-only split this replaces capped its blocks at blk.NC, the cache model's width, and so
-        // does the grid.
+        // The thread grid (see @ref choose_thread_grid): N cut into equal blocks, a whole number
+        // per N group, no wider than the cache model's blk.NC, and each N block's M extent cut into
+        // grid.tm groups. M groups start at whole MC blocks when a block's position matters (the
+        // A-ordered write-back and the C-segment alignment assume it), and at any MR row otherwise,
+        // which lets M be cut evenly where MC blocks do not divide it.
         //
-        // M groups start at whole MC blocks when a block's position matters (the A-ordered
-        // write-back and the C-segment alignment both assume blocks start on a whole unit of C), and
-        // at any MR row otherwise, which lets the grid cut M evenly where MC blocks do not divide it:
-        // 21 blocks of M = 5184 split 6, 5, 5, 5 four ways, where 1296-row groups are exact.
-        // Teams share a panel only when there are M blocks enough to share: members claim them, and
-        // ccsd's `abc-ad-bdc` (M = 312, five blocks, N = 92352) left a team of three two, two and one,
-        // and ran at 0.36-0.45x of threads that each take N columns of their own. Four blocks a
-        // member; below that every thread works alone, the split such a wide, short contraction wants.
+        // Teams share a panel only when each member has four M blocks to claim; below that the
+        // imbalance costs more than the shared panel saves, and every thread works alone on N
+        // columns of its own.
         bool const    use_teams = team_mode && (M + MC_blk - 1) / MC_blk >= 4 * static_cast<int64_t>(team_size);
         int64_t const m_unit    = (use_a_order || span_aligned) ? MC_blk : static_cast<int64_t>(MR);
         ThreadGrid    grid;
@@ -2072,27 +1660,17 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         int64_t const n_m_units   = (M + m_unit - 1) / m_unit;
         int64_t const m_groups    = std::min<int64_t>(grid.tm, n_m_units);
 
-        // Size the packing buffers from the blocks actually used, not the
-        // cache-derived maxima - with a deep KC_blk, sizing from blk.NC would
-        // allocate NC/NC_blk times more B-panel memory than any iteration
-        // touches.
-        // Panel counts follow the work actually done, not the cache-derived maxima:
-        // a contraction narrower than its block gets a buffer its own size.
+        // Size the packing buffers from the blocks actually used, not the cache-derived maxima: a
+        // contraction narrower than its block gets a buffer its own size.
         int64_t const mc_panels_max = (std::min(MC_blk, M) + MR - 1) / MR;
         int64_t const nc_panels_max = (std::min(NC_blk, N) + NR - 1) / NR;
         auto const    ap_buf_elems  = static_cast<size_t>(mc_panels_max * MR * KC_blk);
         auto const    bp_buf_elems  = static_cast<size_t>(nc_panels_max * NR * KC_blk);
 
-        // What the plan and the blocking actually came out as, on request.
-        //
-        // Two sessions of wrong guesses about this path collapsed in one build
-        // once the plan was dumped instead of re-derived from its construction
-        // rules, and both diagnoses were the opposite of the assumption. The
-        // strides are what settle which order won; the blocks are what settle
-        // whether the write-back's runs form at all.
-        //
-        // Printed from out of line: this function is enormous and hot, and a
-        // formatting lambda in its body is not free even when the flag is off.
+        // What the plan and the blocking came out as, on request: the strides settle which loop
+        // order won, and the blocks settle whether the write-back's runs form. Printed from out of
+        // line: this function is hot, and a formatting lambda in its body is not free even when the
+        // flag is off.
         if (config::get(option::PackedGemmDumpPlan)) {
             dump_packed_plan(plan, M, N, K, MR, NR, MC_blk, NC_blk, KC_blk, use_a_order, blk_aorder, scatter_n_inner, blk_compose,
                              blk_runs_stream);
@@ -2111,11 +1689,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             };
 
             // Every thread count runs the same loop: teams of team_size consecutive threads, which
-            // is one thread per team unless the threads that share an L3 are sharing panels, and
-            // one team of one when the contraction runs serially. A team of one packs into the
-            // thread-local panel the loops have always used, so a single thread runs exactly the
-            // loop it always ran. A larger team's panel lives in a buffer the CALLING thread owns,
-            // one stretch per team, first touched by the members that pack it, on their own node.
+            // is one thread per team unless threads sharing an L3 share panels. A team of one packs
+            // into the thread-local panel. A larger team's panel lives in a buffer the calling
+            // thread owns, one stretch per team, first touched by the members that pack it, on
+            // their own node.
             int const    run_threads = parallel_nc ? n_threads : 1;
             int const    members     = (parallel_nc && use_teams) ? team_size : 1;
             int const    n_teams     = run_threads / members;
@@ -2157,11 +1734,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                 TeamPanel<ValueType> const *const team = &ctx;
                 LabeledSectionInternal("team: all items of one thread");
 
-                // One work item: an N block and one M group of it, the group's M blocks claimed by
-                // the members of the team that takes it. Every thread owns the buffer it packs A
-                // into and the region of C its blocks cover. The team owns the B panel: a team of
-                // one packs it alone, lazily, into the thread-local panel the loops always used; a
-                // larger team packs it together and meets around it.
+                // One work item: an N block and one M group of it, whose M blocks the team's
+                // members claim. Every thread owns the buffer it packs A into and the region of C
+                // its blocks cover. The team owns the B panel: a team of one packs it alone into
+                // the thread-local panel; a larger team packs it together and meets around it.
                 for (int64_t item = team_id; item < n_items; item += teams) {
                     int64_t m_lo = 0, m_hi = 0;
                     group_rows(item, 0, 1, m_lo, m_hi);
@@ -2179,11 +1755,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                     ValueType    *Bp     = team->bp != nullptr ? team->bp : tls_Bp.data();
                     int64_t const nc_len = std::min(NC_blk, N - nc);
 
-                    // Scatter path: precompute the C offset tables (one entry per
-                    // flat index) instead of paying a div/mod chain per element in
-                    // the beta prescale and tile scatter loops below. n-offsets are
-                    // invariant for the whole nc block; m-offsets are refreshed per
-                    // mc block inside the kc loop.
+                    // Scatter path: precompute the C offset tables, one entry per flat index,
+                    // instead of a div/mod chain per element. n-offsets are fixed for the nc block;
+                    // m-offsets are refreshed per mc block.
                     static thread_local std::vector<int64_t> c_n_offsets_slot, c_m_offsets_slot;
                     auto                                    &c_n_offsets = bind_thread_local(c_n_offsets_slot);
                     auto                                    &c_m_offsets = bind_thread_local(c_m_offsets_slot);
@@ -2191,32 +1765,24 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         precompute_offsets(nc, nc_len, plan.c_n_dims, c_n_offsets);
                     }
 
-                    // ---- 1m complex strategy (rungs with a real matrix kernel) ----
-                    // Complex tile work runs on the REAL kernel via Van Zee's 1m
-                    // method: A packs 1e, B packs 1r, and the real (2M x N) output
-                    // is interleaved complex, scattered directly. Working extents
-                    // double (Mh = 2M, Kh = 2K); MR/NR here are the real kernel's
-                    // geometry (see MicroKernelShape::use_1m). Conjugation folds
-                    // into the packing signs; the complex alpha applies at the
-                    // scatter. Measured 1.74x over Sort+GEMM for complex<double>
-                    // on the M4 SME rung, with no operand-sized temporaries.
+                    // ---- 1m complex strategy (rungs with a real matrix kernel) ---- Complex runs
+                    // on the real kernel by Van Zee's 1m method: A packs 1e, B packs 1r, and the
+                    // real (2M x N) output is interleaved complex, scattered directly. Working
+                    // extents double (Mh = 2M, Kh = 2K); MR/NR are the real kernel's (see
+                    // MicroKernelShape::use_1m). Conjugation folds into the packing signs and alpha
+                    // applies at the scatter. No operand-sized temporaries.
                     if constexpr (is_complex) {
                         if (shape.use_1m) {
                             using RealT                           = RemoveComplexT<ValueType>;
                             MicroKernelFn<RealT> const micro_real = micro_kernel_entry<RealT>();
                             int64_t const              Mh         = 2 * M;
                             int64_t const              Kh         = 2 * K;
-                            // The K and M blocks, in real units. A rung that fixes the K
-                            // block (the SME rung, whose ZA tiles hold C for the whole K
-                            // loop) keeps its deep one and the M block it was tuned with.
-                            // A register kernel instead needs its B micro-panel, NR * KHC
-                            // reals, to stay in L1 across the M sweep, which a deep K block
-                            // breaks (NR = 6 by 4096 doubles is 192 KiB), so it takes the
-                            // cache model's blocking for the real kernel on the real extents.
-                            // Both must be even, so that a block never splits a complex
-                            // element's (re, im) pair: Kh is even, compute_blocking rounds
-                            // KC to a multiple of 8 and MC to one of MR, and MR is a whole
-                            // number of vectors.
+                            // The K and M blocks, in real units. A rung that fixes the K block
+                            // (SME, whose ZA tiles hold C across the whole K loop) keeps it and the
+                            // M block it was tuned with. A register kernel needs its B micro-panel
+                            // (NR * KHC reals) to stay in L1 across the M sweep, so it takes the
+                            // cache model's blocking on the real extents. Both blocks must be even
+                            // so a block never splits a complex element's (re, im) pair.
                             int64_t KHC = 0;
                             int64_t MHC = 0;
                             if (shape.kc > 0) {
@@ -2297,16 +1863,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         }
                     }
 
-                    // ---- Block-GEMM scatter strategy ----
-                    // One vendor GEMM per (mc, kc) block: pack A to a plain
-                    // column-major mc_len x kc_len matrix and B to k-major
-                    // kc_len x nc_len, GEMM into a contiguous C block, then
-                    // scatter-accumulate through the offset tables. Vendor
-                    // libraries run cache-blocked GEMMs of this size at full
-                    // speed (including matrix units the tile kernels cannot
-                    // reach, e.g. Accelerate's AMX/SME), while the packed blocks
-                    // and C temp stay cache-sized and thread-local - no
-                    // operand-sized temporaries, unlike Sort+GEMM.
+                    // ---- Block-GEMM scatter strategy ---- One vendor GEMM per (mc, kc) block:
+                    // pack A to a column-major mc_len x kc_len matrix and B to k-major kc_len x
+                    // nc_len, GEMM into a contiguous C block, then scatter-accumulate through the
+                    // offset tables. Vendor GEMMs of this size run at full speed, including on
+                    // matrix units the tile kernels cannot reach, while the blocks stay cache-sized
+                    // and thread-local.
                     if (needs_c_scatter && shape.block_gemm) {
                         // NOLINTNEXTLINE(readability-identifier-naming)
                         using blas_int = einsums::blas::int_t;
@@ -2404,11 +1966,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 
                                 {
                                     LabeledSectionInternal("block GEMM (vendor)");
-                                    // Swapping the operands computes Bf * Af^T, whose (j, i) is the
-                                    // (i, j) of Af * Bf^T, so the block temp comes out transposed and
-                                    // the n-inner scatter reads it contiguously. Striding the temp
-                                    // instead is not an option here: it is MC by NC, far too large to
-                                    // sweep once per m index, unlike the tile path's MR by NR buffer.
+                                    // Swapping the operands computes Bf * Af^T, so the block
+                                    // temporary comes out transposed and the n-inner scatter reads
+                                    // it contiguously. Striding the temporary instead would sweep
+                                    // an MC by NC buffer once per m index.
                                     if (scatter_n_inner) {
                                         einsums::blas::gemm<ValueType>('N', 'T', static_cast<blas_int>(nc_len),
                                                                        static_cast<blas_int>(mc_len), static_cast<blas_int>(kc_len), alpha,
@@ -2424,14 +1985,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     }
                                 }
 
-                                // Scatter-accumulate the contiguous block into C. When C's
-                                // stride along the fastest flat m coordinate is 1, the
-                                // destination decomposes into contiguous runs and the
-                                // accumulation vectorizes.
+                                // Scatter-accumulate the contiguous block into C, in contiguous
+                                // runs wherever C's fastest flat coordinate has unit stride.
                                 LabeledSectionInternal("C block scatter");
                                 if (scatter_n_inner) {
-                                    // Mirror of the loop below with the roles of m and n exchanged.
-                                    // tls_Cb is nc_len x mc_len here (see the swapped GEMM above).
+                                    // Mirror of the loop below with m and n exchanged; tls_Cb is
+                                    // nc_len x mc_len here.
                                     bool const    c_n_unit = plan.c_n_dims.back().tensor_stride == 1;
                                     int64_t const c_n_fast = plan.c_n_dims.back().size;
                                     for (int64_t i2 = 0; i2 < mc_len; ++i2) {
@@ -2509,8 +2068,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                         bool bp_packed = false;
 
                         // A team packs its shared panel together, each member a slice of its NR
-                        // panels (pack_B lays panel p at p * kc_len * NR, so a slice is a slice of the
-                        // whole), and meets before any member reads it.
+                        // panels (pack_B lays panel p at p * kc_len * NR), and meets before any
+                        // member reads it.
                         if (team->size > 1) {
                             int64_t const panels = (nc_len + NR - 1) / NR;
                             int64_t const p0     = (panels * team->member) / team->size;
@@ -2527,9 +2086,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             bp_packed = true;
                         }
 
-                        // The M blocks of this item's rows. A team of one walks them in order; a team's
-                        // members claim them one at a time from the team's counter (see TeamState), so a
-                        // member on a faster core takes more of them.
+                        // The M blocks of this item's rows. A team of one walks them in order; a
+                        // team's members claim them from the team's counter (see TeamState), so a
+                        // member on a faster core takes more.
                         int64_t const n_mc_blk = (m_hi - m_lo + MC_blk - 1) / MC_blk;
                         int64_t const blk_lo   = *team->base;
                         int64_t       walk     = 0;
@@ -2553,12 +2112,11 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 precompute_offsets(mc, mc_len, plan.c_m_dims, c_m_offsets);
                             }
 
-                            // Beta prescale: apply once per (mc, nc) block on first kc tile.
-                            // The scatter branch stores on the first K block when beta == 0
-                            // (see overwrite_c) and so needs no prescale at all. The
-                            // direct-C branches still need one, because the micro-kernel
-                            // only ever accumulates into C - but clearing C is a write
-                            // where `*= 0` was a read-modify-write over the whole block.
+                            // Beta prescale, once per (mc, nc) block on the first kc tile. The
+                            // scatter branch stores on the first K block when beta == 0 (see
+                            // overwrite_c) and needs none. The direct-C branches still do, because
+                            // the kernel only accumulates, but for beta == 0 they clear C rather
+                            // than scale it.
                             bool const store_c = overwrite_c && kc == 0 && needs_c_scatter;
                             if (kc == 0 && beta != ValueType{1} && !store_c) {
                                 LabeledSectionInternal("C beta prescale");
@@ -2595,7 +2153,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 }
                             }
 
-                            // BLAS fallback: pack + per-tile GEMM.
+                            // Pack B once per kc (a team already has), then this block's A.
                             if (!bp_packed) {
                                 pack_B(Bp, B_data, plan, kc, kc_len, nc, nc_len, NR, conj_b);
                                 bp_packed = true;
@@ -2609,59 +2167,21 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 LabeledSectionInternal("micro-kernel loop, C block");
                                 // ---- Cache-resident C block ----
                                 //
-                                // The tiles accumulate into one contiguous mc_len x
-                                // nc_len block and the block is written back to C
-                                // once, instead of every tile making its own trip to
-                                // a destination that may be hundreds of megabytes
-                                // wide. Two things come of it.
+                                // The tiles accumulate into one contiguous mc_len x nc_len block,
+                                // written back to C once. The kernel's C operand then has unit row
+                                // stride whatever C's layout, which is the whole-vector store path,
+                                // and the write-back's runs are as long as C's fastest index allows
+                                // rather than capped at MR. Only for the m-inner scatter: @ref
+                                // mn_roles_should_swap has already turned every n-inner case with a
+                                // contiguous direction into an m-inner one.
                                 //
-                                // The kernel's C operand is the block, so its row
-                                // stride is 1 whatever C's layout is, which is the
-                                // whole-vector store path rather than the stack tile
-                                // and MR*NR scalar stores.
-                                //
-                                // And the write-back's runs are as long as C's own
-                                // fastest index allows - up to that index's whole
-                                // extent - where the per-tile scatter could never
-                                // carry a run past MR, and paid an offset-table
-                                // lookup and a run computation for each of them.
-                                //
-                                // Only for the m-inner scatter. The n-inner variant
-                                // reads the block along its long stride, which undoes
-                                // the point; @ref mn_roles_should_swap has already
-                                // turned every n-inner case that HAS a contiguous
-                                // direction into an m-inner one, so what is left
-                                // there spends a cache line per element either way.
-                                // The accumulator is bounded by CHUNKING the N block,
-                                // not by shrinking it.
-                                //
-                                // Bounding NC instead is the obvious move and it is
-                                // wrong: A's DRAM traffic scales with 1/NC, so paying
-                                // for a cache-sized C block out of NC charges it to the
-                                // largest memory term in the contraction. Measured on
-                                // ccsd's rank-4 single, where the budget halved NC from
-                                // 2046 and A is 228 MB: every one of the twelve rows lost
-                                // 0.8 to 1.7 points of %GEMM, while the twelve double
-                                // rows - whose NC the budget did not reach - gained 0.5
-                                // to 3.0. The packed B block already covers the whole N
-                                // block, so a chunk costs no extra packing.
-                                // Half the L2, NOT the block strategy's c_temp_budget.
-                                //
-                                // That budget sizes a vendor GEMM's output buffer, where
-                                // the GEMM re-packs its own operands and the temp is the
-                                // only thing competing for L2. This accumulator competes
-                                // with the A panel and the B block, which are live across
-                                // the same loops, so a budget equal to the whole L2
-                                // leaves them nothing and the outcome falls to which
-                                // sets the block happens to land in. Measured on the full
-                                // ccsd_t group: at 512 KB one row of thirty-six
-                                // (`abcdef-gfab-degc` d, and only when run after thirty
-                                // other cases had fragmented the heap) collapsed to
-                                // 11.3 GF/s against its five identical-shape siblings'
-                                // 21.7; at 256 KB it is 21.3 and the group's double
-                                // median rises from 1.30x to 1.32x of TBLIS with every
-                                // row winning. 128 KB is too small - the double median
-                                // falls to 1.11x.
+                                // The accumulator is bounded by chunking the N block, not by
+                                // shrinking NC: A's DRAM traffic scales with 1/NC, and the packed B
+                                // block already covers the whole N block, so a chunk costs no extra
+                                // packing. The budget is half the L2, not the block strategy's
+                                // c_temp_budget: that budget sizes a vendor GEMM's output, the only
+                                // thing competing for L2 there, while this accumulator shares the
+                                // L2 with the A panel and B block live across the same loops.
                                 int64_t const cb_budget = std::max<int64_t>(cpu_config().l2_cache_size / 2, int64_t{64} << 10);
                                 int64_t       nb_len    = cb_budget / (mc_len * static_cast<int64_t>(sizeof(ValueType)));
                                 nb_len                  = std::max<int64_t>((nb_len / NR) * NR, NR);
@@ -2673,26 +2193,14 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                     tls_Ct.assign(static_cast<size_t>(mc_len) * static_cast<size_t>(nb_cur), ValueType{0});
                                     ValueType *Cb = tls_Ct.data();
 
-                                    // Which of the two packed blocks the tile loops keep
-                                    // resident.
-                                    //
-                                    // The standard order streams the A panel and reuses one
-                                    // NR x KC column of B, which is right while B's block is
-                                    // the larger of the two - the shape this blocking was
-                                    // built for, where NC comes from an L3 budget and MC
-                                    // from an L2 one. It is exactly wrong for the intensli
-                                    // shapes, whose whole N is 24: there the B block is a
-                                    // few kilobytes and the A panel is the one that has just
-                                    // been gathered at a cache line per sixteen elements, so
-                                    // reading it back once per N tile pushes it through L2
-                                    // num_jr times over. Run those with the A panel
-                                    // innermost instead, so the pack's output is consumed
-                                    // while it is still in L1.
-                                    //
-                                    // The test is on the B block, not on a ratio: it earns
-                                    // its keep only while the whole thing stays resident
-                                    // alongside one A panel, and half the L1 is the budget
-                                    // that leaves room for the panel and the C block rows.
+                                    // Which packed block the tile loops keep resident. The standard
+                                    // order streams the A panel and reuses one NR x KC column of B,
+                                    // which is right while B's block is the larger. When B's whole
+                                    // block fits in half the L1 alongside one A panel (N is small,
+                                    // as on the intensli shapes), run the A panel innermost
+                                    // instead, so a freshly gathered A panel is consumed while it
+                                    // is still in L1 rather than read back through L2 once per N
+                                    // tile.
                                     int64_t const num_jr_b = (nb_cur + NR - 1) / NR;
                                     bool const    b_block_resident =
                                         nb_cur * kc_len * static_cast<int64_t>(sizeof(ValueType)) * 2 <= cpu_config().l1_cache_size;
@@ -2741,11 +2249,11 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                                     ValueType    *dst   = C_data + c_m_offsets[static_cast<size_t>(pos)] +
                                                                           c_n_offsets[static_cast<size_t>(nb + jj)];
                                                     int64_t const span  = run_n * blk_m_fast;
-                                                    // The span's columns are already adjacent in C, so
-                                                    // each one streams in place - no staging. A span
-                                                    // shorter than a few lines cannot fill a
-                                                    // write-combining buffer, so streaming it would pay
-                                                    // a partial write and keep the fetch.
+                                                    // The span's columns are already adjacent in C,
+                                                    // so each streams in place with no staging. A
+                                                    // span shorter than a few lines cannot fill a
+                                                    // write-combining buffer, and streaming it
+                                                    // would pay a partial write and keep the fetch.
                                                     if (may_stream_c && store_c &&
                                                         span * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes &&
                                                         stream_run_ok(dst, run_m)) {
@@ -2830,17 +2338,12 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 } // next C block chunk
                             } else if (needs_c_scatter) {
                                 LabeledSectionInternal("micro-kernel loop, tile scatter");
-                                // Multi-M/N: GEMM into a contiguous temp tile, then scatter to C.
-                                //
-                                // The scatter walks C's inner group in RUNS where that group's
-                                // fastest index has unit stride: a run is the stretch of
-                                // consecutive flat coordinates that stays inside one extent of
-                                // that index, so within it C is contiguous and the update is a
-                                // straight vector copy or add. The block strategy's scatter has
-                                // done this all along; the tile scatter used to look every
-                                // element up in the offset table, which at K=24 (the rank-6
-                                // ccsd_t shapes) cost more than the 288 FMAs the tile computes
-                                // and held the path to 15 GF/s where the same kernel reaches 60.
+                                // Multi-M/N: run the kernel into a contiguous temporary tile, then
+                                // scatter it to C. Where the inner group's fastest index has unit
+                                // stride, the scatter walks it in runs that stay inside one extent
+                                // of that index, so C is contiguous within each run and the update
+                                // is a vector copy or add; looking every element up in the offset
+                                // table costs more than the tile's arithmetic at small K.
                                 bool const    tile_m_unit = plan.c_m_dims.back().tensor_stride == 1;
                                 int64_t const tile_m_fast = plan.c_m_dims.back().size;
                                 bool const    tile_n_unit = plan.c_n_dims.back().tensor_stride == 1;
@@ -2863,10 +2366,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                         micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, mr_actual,
                                                    nr_actual, Ct, 1, MR);
 
-                                        // Scatter Ct back to C using the precomputed offset tables,
-                                        // innermost along whichever of C's index groups is closer
-                                        // packed. Ct is MR by NR and cache resident either way, so
-                                        // reading it with a stride costs nothing.
+                                        // Scatter Ct back to C through the offset tables, innermost
+                                        // along whichever of C's index groups is packed closer. Ct
+                                        // is MR by NR and cache-resident, so reading it with a
+                                        // stride costs nothing.
                                         if (scatter_n_inner) {
                                             for (int64_t ii = 0; ii < mr_actual; ++ii) {
                                                 int64_t const m_off = c_m_offsets[static_cast<size_t>(ir * MR + ii)];
@@ -2939,7 +2442,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                 }
                             } else {
                                 LabeledSectionInternal("micro-kernel loop, direct C");
-                                // Single-M, single-N: direct GEMM into C (original fast path).
+                                // Single-M, single-N: the kernel accumulates directly into C.
                                 for (int64_t jr = 0; jr < num_jr; ++jr) {
                                     int64_t const nr_actual = std::min(static_cast<int64_t>(NR), nc_len - jr * NR);
 
@@ -2978,10 +2481,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                             v.shrink_to_fit();
                         }
                     };
-                    // Streaming stores are weakly ordered against everything else, so
-                    // this thread's share of C is not reliably visible until they have
-                    // drained. Once per N block, which is as rare as it can be while
-                    // still being inside the loop that did the writing.
+                    // Streaming stores are weakly ordered, so drain them before this thread's share
+                    // of C is read: once per N block, the rarest point still inside the loop that
+                    // wrote them.
                     if (streamed_c) {
                         einsums::simd::stream_fence();
                     }
@@ -3003,45 +2505,25 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 }
 
 // ---------------------------------------------------------------------------
-// Main template bridge
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Runtime entry point: accepts a pre-built ContractionSpec.
 // ---------------------------------------------------------------------------
 
-/// @brief Attempt to execute an einsum contraction via the packed GEMM backend
-///        from a runtime-built ContractionSpec.
+/// @brief Attempt to execute an einsum contraction via the packed GEMM backend from a runtime-built
+/// ContractionSpec.
 ///
-/// This is the runtime-form entry point. It accepts a ContractionSpec that the
-/// caller has already populated from string indices (or from a compile-time
-/// index pack via the convenience overload below). Works uniformly for typed
-/// `Tensor<T, K>`, `RuntimeTensor<T, Alloc>`, or any `BasicTensorConcept`
-/// operand. All dispatch decisions, including rank classification, batch
-/// handling, and kernel selection, happen at runtime against the spec.
+/// Works for any BasicTensorConcept operand, compile-time or runtime rank; every decision (rank
+/// classification, batching, kernel selection) is made at run time against the spec. Returns true
+/// if the contraction was handled, false if the caller should fall back.
 ///
-/// Returns `true` if the contraction was handled; `false` if the caller should
-/// fall back (to a direct BLAS GEMM, generic loop, etc.).
-///
-/// @param spec_in The contraction's index lists and conjugation flags.
-/// @param C_prefactor Scale applied to C before the product is accumulated.
-/// @param C The output tensor.
-/// @param AB_prefactor Scale applied to the contraction of A and B.
-/// @param A The first input tensor.
-/// @param B The second input tensor.
-/// @param allow_scatter When false, contractions that remain multi-M/N after
-///        dim coalescing are declined instead of taking the slow per-tile
-///        scatter path. Pass false from callers that have a faster fallback
-///        (the compile-time einsum dispatch falls back to Sort+GEMM); leave
-///        true for callers whose only alternative is a generic loop (the
-///        ComputeGraph runtime string dispatch).
-/// @param site Optional memo owned by a caller that repeats this exact
-///        contraction (a graph node). See @ref ContractionSite: a hit skips
-///        assembling the spec, the key and its stride vectors, hashing them,
-///        and the plan-cache lookup, none of which can change between two
-///        calls that the key compares equal for. It also carries the site's
-///        @ref KernelRoute pin, which decides vendor-versus-packed here instead
-///        of the thread regime when it is set.
+/// @param spec_in The contraction's index lists and conjugation flags. @param C_prefactor Scale
+/// applied to C before the product is accumulated. @param C The output tensor. @param AB_prefactor
+/// Scale applied to the contraction of A and B. @param A The first input tensor. @param B The
+/// second input tensor. @param allow_scatter When false, decline contractions that remain multi-M/N
+/// after coalescing, for callers with a faster fallback (the compile-time dispatch's Sort+GEMM).
+/// Leave true for callers whose only alternative is a generic loop (ComputeGraph's string
+/// dispatch). @param site Optional memo owned by a caller that repeats this exact contraction (a
+/// graph node); see @ref ContractionSite. A hit skips building and hashing the key and the
+/// plan-cache lookup. Its @ref KernelRoute pin, when set, decides vendor versus packed.
 template <einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType, einsums::BasicTensorConcept CType>
 bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> C_prefactor, CType *C,
                      einsums::BiggestTypeT<typename AType::ValueType, typename BType::ValueType> AB_prefactor, AType const &A,
@@ -3063,21 +2545,14 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         return false;
     }
 
-    // Which kernel this contraction is to be spent through. Resolved once, here,
-    // and carried to every decision below that used to read the thread regime
-    // for itself: the deferral to a direct vendor GEMM, and the two fast paths
-    // inside blis_contraction.
+    // Which kernel this contraction is spent through, resolved once and carried to the direct-GEMM
+    // deferral and to blis_contraction's fast paths.
     bool const prefer_packed = prefer_packed_route(site);
 
-    // Memo hit: this caller already resolved this exact contraction, under the
-    // same policy and the same route, against operands with this layout and
-    // these sizes.
-    //
-    // The route is only part of the test for a DECLINE. A stored plan is a
-    // packing topology and stays valid whichever way the contraction is spent,
-    // but a decline is the engine standing aside for a vendor GEMM, which is
-    // only right while the vendor is the route - so a decline recorded in one
-    // regime must never turn a call away in the other.
+    // Memo hit: this caller already resolved this exact contraction, under the same policy and
+    // route, for operands with this layout and these sizes. The route matters only for a decline: a
+    // plan is valid whichever way the contraction is spent, but a decline stands aside for a vendor
+    // GEMM, which is right only while the vendor is the route.
     if (site != nullptr && site->resolved && site->allow_scatter == allow_scatter &&
         (site->plan != nullptr || site->declined_packed == prefer_packed) && site_key_matches(site->key, spec_in, st, A, B, *C)) {
         if (site->plan == nullptr) {
@@ -3091,11 +2566,8 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         return true;
     }
 
-    // Records what this call resolved to, so the next one can skip straight to
-    // it. A null plan means "declined": that is a property of the key too, and
-    // re-deriving it costs the same as finding a plan would. A decline also
-    // records the route it was made under, which is what the reuse test above
-    // re-checks.
+    // Record what this call resolved to, so the next can skip straight to it. A null plan means
+    // declined, which is a property of the key too; it records the route it was made under.
     auto remember = [site, allow_scatter, prefer_packed](ContractionKey const &k, PackingPlan const *p) {
         if (site != nullptr) {
             site->key             = k;
@@ -3155,22 +2627,17 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         }
     }
 
-    // Hashing the whole key - every index string in the spec, plus three
-    // stride vectors - purely to label a profiler annotation, on a path the
-    // tiled expansion drives thousands of times per replay. It buys a
-    // debugging aid, so it is worth exactly what a recording run will pay for
-    // it and nothing on a run that records nothing.
+    // Hashing the whole key only labels a profiler annotation, on a path tiled expansions drive
+    // thousands of times per replay, so it is paid only when recording.
     if (profile::Profiler::instance().enabled()) {
         profile::annotate("packed_gemm_hash", static_cast<int64_t>(std::hash<ContractionKey>{}(key)));
     }
 
-    // -------------------------------------------------------------------------
-    // Classify target indices. Empty M/N/link groups are no longer
-    // rejections: compute_packing_topology synthesizes a unit dim so GEMV-
-    // and outer-product-shaped contractions run through the same block/tile
-    // machinery. What the classification still decides is (a) the direct-GEMM
-    // deferral and (b) whether Sort+GEMM exists as a fallback for the policy
-    // check below (it requires all three groups non-empty).
+    // ------------------------------------------------------------------------- Classify target
+    // indices. An empty M, N or link group is not a rejection: compute_packing_topology synthesizes
+    // a unit dim so GEMV- and outer-product-shaped contractions run through the same machinery. The
+    // classification decides the direct-GEMM deferral and whether Sort+GEMM exists as a fallback
+    // (it needs all three groups non-empty).
     // -------------------------------------------------------------------------
     bool ttgt_exists  = false;
     bool outer_shaped = false;
@@ -3187,13 +2654,9 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                 ++n_count;
             // in_a && in_b → batch dim (handled by packing plan)
         }
-        // Skip contractions that BLAS GEMM can handle directly (no batch, single M/N/K).
-        //
-        // Not when the packed route is preferred: the direct GEMM this defers to
-        // would be clamped to one thread under a node-scoped width, and on a
-        // pinned node it is the side whose last bit moves with the thread count.
-        // The decline recorded here carries the route it was made under, so a
-        // memo written in one regime is never read in the other.
+        // Skip contractions that BLAS GEMM handles directly (no batch, single M/N/K), unless the
+        // packed route is preferred: that GEMM would be clamped to one thread under a node-scoped
+        // width. The recorded decline carries the route, so it is never reused in the other regime.
         if (m_count == 1 && n_count == 1 && link.size() == 1 && !spec.conj_a && !spec.conj_b && m_count + n_count == target.size() &&
             !prefer_packed) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_direct_gemm");
@@ -3201,26 +2664,15 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             return false; // Deferred to direct BLAS GEMM, not a rejection.
         }
         // ── Direct BLAS fast paths ───────────────────────────────────────
-        // The packed structure needs a K dimension to amortize its packing
-        // copy. Two shape classes have none, and pay 2-3 memory passes for
-        // work one BLAS call does in a single pass:
+        // The packed structure needs a K dimension to amortize its packing copy. Two shape classes have
+        // none, and one BLAS call does their work in a single pass:
         //
-        //   - outer product (no link indices): a K=1 GEMM, where the
-        //     micro-kernel's per-tile setup IS the cost, while ger writes C at
-        //     bandwidth.
-        //   - GEMV-shaped (no N, or no M): packing copies the largest operand
-        //     (read + write) and the kernel then reads it again - three passes
-        //     where gemv makes one. This is the "no K reuse to amortize the
-        //     packing copy" case noted below.
+        //   - outer product (no link indices): a K=1 GEMM, or ger, which writes C at bandwidth.
+        //   - GEMV-shaped (no N, or no M): packing would copy the largest operand only for the kernel to
+        //     read it again.
         //
-        // Measured 4-5x on both against the packed path. They apply when the
-        // operands' axis groups flatten to BLAS shapes, which is the common
-        // case (dense tensors, index groups already adjacent); anything that
-        // does not flatten falls through to packing below, unchanged.
-        //
-        // Conjugated operands are excluded: ger/gerc and the gemv transposes
-        // differ for complex, and the packing path already handles conjugation
-        // natively.
+        // Both apply when the operands' axis groups flatten to BLAS shapes; anything else falls through to
+        // packing. Conjugated operands are excluded, since the packing path handles conjugation natively.
         if (!spec.conj_a && !spec.conj_b) {
             auto const alpha = static_cast<ValueType>(AB_prefactor);
             auto const beta  = static_cast<ValueType>(C_prefactor);
@@ -3250,9 +2702,8 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                 if (a_ext != m_a || b_ext != n_b || (s_first != 1 && s_second != 1)) {
                     return false;
                 }
-                // Below this the fixed cost of a BLAS call is the whole
-                // measurement, and the existing small-outer deferral already
-                // picks the runtime loop; leave that decision where it is.
+                // Below this a BLAS call's fixed cost dominates, and the small-outer deferral
+                // decides.
                 if (m * n < kOuterMinElems) {
                     return false;
                 }
@@ -3269,12 +2720,9 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                 auto const cols = static_cast<int_t>(rows_first ? n : m);
                 auto       ldc  = static_cast<int_t>(rows_first ? s_second : s_first);
 
-                // With one column there is no second column to address, so the
-                // column stride is unconstrained - and an all-extent-1 group
-                // reports a placeholder anyway. BLAS still validates
-                // ldc >= rows, so pin it. Anything still short of that is a
-                // layout no leading dimension can describe: decline rather than
-                // hand the vendor an ldc it will reject.
+                // With one column the column stride is unconstrained (an all-extent-1 group reports
+                // a placeholder), but BLAS still requires ldc >= rows, so pin it. A layout still
+                // short of that has no leading dimension to describe it; decline.
                 if (cols == 1) {
                     ldc = std::max(ldc, rows);
                 }
@@ -3290,12 +2738,10 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                 auto const  inc_r       = static_cast<int_t>(rows_from_a ? inc_a : inc_b);
                 auto const  inc_c2      = static_cast<int_t>(rows_from_a ? inc_b : inc_a);
 
-                // A k=1 GEMM rather than scal-then-ger: ger has no beta, so a
-                // destination prefactor would cost a separate pass over C - and
-                // C traffic IS the cost of an outer product, so that pass is the
-                // whole overhead. gemm folds beta in. Past kOuterGemmMaxElems
-                // its blocking overhead outgrows the saved pass. A strided
-                // operand has no ldb to express, so it takes ger either way.
+                // A k=1 GEMM rather than scal-then-ger: ger has no beta, so a prefactor would cost
+                // a separate pass over C, which is the whole cost of an outer product. Past
+                // kOuterGemmMaxElems GEMM's blocking overhead outgrows that pass. A strided operand
+                // has no ldb to express, so it takes ger.
                 if (inc_r == 1 && inc_c2 == 1 && (static_cast<size_t>(rows) * cols) < kOuterGemmMaxElems) {
                     ProfileAnnotate("packed_gemm_path", "direct_outer_gemm");
                     einsums::blas::gemm<ValueType>('n', 'n', rows, cols, 1, alpha, rp, rows, cq, 1, beta, cp, ldc);
@@ -3349,10 +2795,9 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                     auto const *sp = S.data();
                     auto const *vp = V.data();
                     auto       *cp = C->data();
-                    // Same leading-dimension rule as the outer path: with a
-                    // single column the other stride is unconstrained (and an
-                    // all-extent-1 group reports a placeholder), but BLAS still
-                    // validates lda against the leading extent.
+                    // Same leading-dimension rule as the outer path: with a single column the other
+                    // stride is unconstrained, but BLAS still validates lda against the leading
+                    // extent.
                     if (s_m == 1) {
                         // S is m x k column-major: y = alpha*S*v + beta*y
                         auto lda = static_cast<int_t>(s_k);
@@ -3394,28 +2839,12 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             }
         }
 
-        // ── GEMV-shaped -> one storage-order stream ──
-        // The gemv above needs the supplying operand's C axes and link axes to
-        // form two adjacent groups. When they interleave - the exchange
-        // K(i,j) = A(i,k,j,l) B(k,l), whose A alternates C and link axes - no
-        // matrix view exists, and packing would copy the whole operand only to
-        // read it again with nothing to reuse it against. stream_contract reads
-        // it once in storage order instead, which is the least this bandwidth-
-        // bound shape can cost. Measured on the M4, ten threads, against what each
-        // engine did before (the packing path here, the templated engine's
-        // compiled generic loop after the decline below):
-        //
-        //   shape                     elements   stream   generic   packed   (us)
-        //   K = S(i,k,j,l) W(k,l)         4096      1.5       1.8      6.2
-        //                              1048576       93       332      513
-        //   C(i,j,a) = S(i,k,j,a) W(k)   65536       16        23       67
-        //                              1048576      152       135      364
-        //
-        // and at n = 100, K falls from 76 ms (packed) and 38 ms (generic) to
-        // 13 ms, the speed of the contiguous J. The large-output shape trails the
-        // compiled loop by 10-15% on all ten cores at a million elements and
-        // leads it on four; everywhere else the stream leads. Below
-        // kStreamMinElems the call is a few microseconds whichever way it goes.
+        // ── GEMV-shaped -> one storage-order stream ── When the supplying operand's C axes and
+        // link axes interleave (the exchange K(i,j) = A(i,k,j,l) B(k,l)), no matrix view exists for
+        // gemv, and packing would copy the whole operand only to read it again with nothing to
+        // reuse it against. stream_contract reads it once in storage order, the least this
+        // bandwidth-bound shape can cost. Below kStreamMinElems the call is a few microseconds
+        // whichever way it goes.
         if (!spec.conj_a && !spec.conj_b && !link.empty() && (m_count == 0) != (n_count == 0)) {
             auto try_stream = [&]<einsums::BasicTensorConcept SupT, einsums::BasicTensorConcept VecT>(
                                   SupT const &S, VecT const &V, std::vector<std::string> const &sup,
@@ -3468,10 +2897,9 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                     }
                 }
 
-                // One output: offer every axis of S that C carries, so threads own
-                // disjoint slices of C and write them in place. Privatizing would
-                // copy and reduce C once per thread, which costs as much as the
-                // stream itself when C is large (an n^3 output over an n^4 S).
+                // One output: offer every axis of S that C carries, so threads own disjoint slices
+                // of C and write them in place. Privatizing would copy and reduce C once per
+                // thread, which costs as much as the stream when C is large.
                 std::vector<int> partition_axes;
                 for (size_t d = 0; d < sup.size(); d++) {
                     if (term.c_axis[d] >= 0 && s_layout.dims[d] > 1) {
@@ -3489,19 +2917,12 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             }
         }
 
-        // Bandwidth-bound shape classes where the packed pass structure
-        // (pack + kernel + scatter = 2-3 memory passes) measurably loses to
-        // the COMPILE-TIME generic loop's single fused pass, at every size
-        // tested:
-        //   - batch-dot: no M and no N indices (per-batch dot products)
-        //   - GEMV-shaped: exactly one of M/N empty (no K reuse to amortize
-        //     the packing copy)
-        // The decline is gated on !allow_scatter (the eager einsum dispatch,
-        // whose generic fallback is the good one). Runtime callers
-        // (allow_scatter=true, e.g. ComputeGraph's string dispatch) would fall
-        // back to the runtime nested loop, about 3x slower than packed on the
-        // exchange shape - they keep the packed path. A GEMV-shaped contraction
-        // reaches this only when the gemv and stream routes above declined.
+        // Bandwidth-bound shape classes where the packed passes lose to the compile-time generic
+        // loop's single fused pass at every size: batch-dot (no M and no N) and GEMV-shaped (one of
+        // M/N empty, nothing to amortize the packing copy). Declined only when !allow_scatter, i.e.
+        // for the eager dispatch whose generic fallback is the good one; runtime callers' fallback
+        // is slower than the packed path, so they keep it. A GEMV-shaped contraction gets here only
+        // when the gemv and stream routes above declined.
         if (!allow_scatter && m_count == 0 && n_count == 0) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_generic_batch_dot");
             remember(key, nullptr);
@@ -3516,19 +2937,13 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         ttgt_exists  = m_count > 0 && n_count > 0 && !link.empty();
     }
 
-    // -------------------------------------------------------------------------
-    // Pack-A / Pack-B path (BLIS-style, with optional batch dims).
-    // -------------------------------------------------------------------------
-    // The cache stores plans that are already filled, k-sorted and coalesced, so
-    // a hit is a lookup and nothing else. That is sound because the key pins the
-    // strides (TensorDescriptor::strides) and those three steps read nothing
-    // else - they never look at an operand pointer. It matters because tiled
-    // expansion drives thousands of same-shape contractions through here, where
-    // redoing the preparation dominated the arithmetic.
-    //
-    // The pointer outlives the shared lock deliberately: entries are never
-    // erased, and unordered_map is node-based, so rehashing does not invalidate
-    // references to mapped values. Nothing is copied on the hot path.
+    // ------------------------------------------------------------------------- Pack-A / Pack-B
+    // path (BLIS-style, with optional batch dims).
+    // ------------------------------------------------------------------------- The cache stores
+    // plans already filled, k-sorted and coalesced, so a hit is only a lookup. That is sound
+    // because the key pins the strides and those steps read nothing else. The pointer outlives the
+    // shared lock deliberately: entries are never erased, and the map is node-based, so references
+    // to mapped values stay valid.
     PackingPlan const *cached = PackingPlanCache::instance().lookup(key);
     PackingPlan        computed;
     if (cached == nullptr) {
@@ -3537,20 +2952,16 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             fill_strides(computed, A, B, *C);
             sort_k_dims_for_packing(computed);
             coalesce_plan(computed, static_cast<int64_t>(sizeof(ValueType)));
-            // Which operand takes the kernel's M role is a property of the
-            // contraction and the resolved kernel, so it is settled once, here,
-            // and cached with the plan. Doing it per call would rebuild the
-            // plan's six stride vectors on every replay of a tiled node.
+            // Which operand takes the kernel's M role is a property of the contraction and the
+            // resolved kernel, so it is settled once here and cached with the plan.
             if (mn_roles_should_swap(computed, micro_kernel_shape<ValueType>(),
                                      get_scalar_type<ValueType>() == ScalarType::Complex64 ||
                                          get_scalar_type<ValueType>() == ScalarType::Complex128)) {
                 computed = transposed_plan(computed);
             }
             PackingPlanCache::instance().insert(key, computed);
-            // Re-look-up so `cached` names the CACHE's copy, not this frame's.
-            // A site remembers the pointer, and only the cache's entries live
-            // long enough to be remembered (they are never erased, and the map
-            // is node-based, so the address is stable).
+            // Re-look-up so `cached` names the cache's copy, not this frame's: a site remembers the
+            // pointer, and only cache entries live long enough.
             cached = PackingPlanCache::instance().lookup(key);
             ProfileAnnotate("packed_gemm_plan", "computed");
         }
@@ -3559,7 +2970,6 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
     }
     PackingPlan const &plan = (cached != nullptr) ? *cached : computed;
     if (plan.valid) {
-
         bool const multi_m = (plan.c_m_dims.size() > 1);
         bool const multi_n = (plan.c_n_dims.size() > 1);
         // Scatter is needed for multi-M/N and for single-M/N layouts where
@@ -3568,47 +2978,20 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // these; the only question is policy.
         bool const needs_scatter = multi_m || multi_n || (plan.c_m_dims[0].tensor_stride != 1 && plan.c_n_dims[0].tensor_stride != 1);
 
-        // Outer products (no link indices, K synthesized to 1) pay a fixed ~3.4 us
-        // to set the packed passes up, and beat the generic nested loop above
-        // roughly 4k output elements. Measured on both CCSD t1*t1 shapes
-        // (BenchmarkOuterProduct, Apple M4 Pro, packed vs generic):
-        //
-        //   elements     256    2.3k    9.2k     230k     922k    14.7M
-        //   speedup     0.42x   0.99x   1.51x    4.05x    6.51x    5.25x
-        //
-        // The two shapes agree to within noise, so one threshold covers both.
-        //
-        // Note for anyone re-deriving this: what the loser is matters. Below
-        // rank-3 output an outer product never reaches here - StringDispatch's
-        // GER path takes it first - so the alternative being measured against is
-        // always the generic loop. That is why this number is not a constant of
-        // the engine: it moves whenever the generic loop does.
-        //
-        // Re-derived 2026-09-15 on the Zen+ box, after the generic loops were
-        // ordered for the layout. An outer product has no link index, so all of
-        // its target axes coalesce into one flat sweep - the single biggest case
-        // that change helps - and the crossover moved by a factor of five:
-        //
-        //   elements     256    576    625    784    900    1296   2304
-        //   speedup     0.40x  0.96x  0.94x  1.18x  1.22x  1.18x  1.28x
-        //
-        // (three runs, both shapes, membind + pinned). Generic wins at or below
-        // 625; packed wins from 784 up. 768 sits in the gap. The old 4096 was
-        // declining shapes the packed path wins by about 1.2x.
-        //
-        // The two measurements are from different machines, and the crossover
-        // depends on the ratio of two implementations rather than on either one,
-        // so it is genuinely per-target. 4096 may still be right on the M4.
+        // Outer products (no link indices, K synthesized to 1) pay a fixed setup cost for the
+        // packed passes, so below kOuterProductFloor output elements the generic loop wins. Rank-2
+        // outer products never get here (StringDispatch's GER path takes them first), so the
+        // comparison is always against the generic loop: the crossover moves whenever that loop
+        // does, and it differs between machines.
         if (outer_shaped && plan.M_total * plan.N_total < kOuterProductFloor) {
             ProfileAnnotate("packed_gemm_skip", "defer_small_outer_to_generic");
             remember(key, nullptr);
             return false;
         }
 
-        // Decline when a TTGT fallback exists and either the rung's kernel
-        // does not beat it on the scatter path or the shape is batched -
-        // Sort+GEMM's per-batch canonical GEMMs measure faster than the
-        // scatter engines for batched shapes at every size tested.
+        // Decline when a TTGT fallback exists and either the rung's kernel does not beat it on the
+        // scatter path or the shape is batched: Sort+GEMM's per-batch GEMMs beat the scatter
+        // engines on batched shapes at every size tested.
         if (needs_scatter && ttgt_exists && !allow_scatter && (!micro_kernel_shape<ValueType>().fast_scatter || plan.batch_total > 1)) {
             ProfileAnnotate("packed_gemm_skip", "scatter_defer_to_ttgt");
             EINSUMS_LOG_INFO("PackedGemm: declining — scatter-path shape, the caller has a TTGT fallback, "
@@ -3618,10 +3001,8 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         }
 
         ProfileAnnotate("packed_gemm_path", needs_scatter ? "scatter" : "single_mn");
-        // Only a cache-owned plan is stable enough to remember. `computed` is
-        // this frame's; if the re-lookup above somehow missed, skip the memo
-        // rather than record a null plan, which would read as "declined" and
-        // wrongly turn every later call away.
+        // Only a cache-owned plan is stable enough to remember. If the re-lookup above missed, skip
+        // the memo rather than record a null plan, which would read as declined.
         if (cached != nullptr) {
             remember(key, cached);
         }

@@ -19,7 +19,7 @@
 
 // TensorAlgebra.hpp must come first; it defines the einsums::index namespace
 // containing the index tag types (i, j, k, l, ...) used below.
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Performance.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>

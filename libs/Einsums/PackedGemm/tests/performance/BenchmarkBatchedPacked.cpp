@@ -22,7 +22,7 @@
 // It is a measurement, not the feature. If the gap is small, a
 // BatchedPackedGemm node is not worth building.
 
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
@@ -277,7 +277,7 @@ TEST_CASE("BatchedPackedGemm ceiling - CCSD ladder tile", "[performance][packed_
 
 // What an OpenMP parallel region costs, against what a small contraction is
 // worth. blis_contraction parallelizes the NC loop for any contraction without a
-// batch dimension (EinsumPackedGemm.hpp:753), shrinking NC_blk so every thread
+// batch dimension (PackedGemm.hpp), shrinking NC_blk so every thread
 // gets a block -- correct for tall N, ruinous for a tile whose whole contraction
 // is a couple of KFLOP. This measures the region cost so a work threshold can be
 // derived from it rather than guessed, and so the crossover can be re-measured on

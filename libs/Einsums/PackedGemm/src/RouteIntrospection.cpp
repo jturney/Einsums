@@ -4,7 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/Config/Namespace.hpp>
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 
 EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 

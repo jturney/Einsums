@@ -20,7 +20,7 @@
 /// both rather than assumed to be one number.
 ///
 /// Run just this: ctest -R BenchmarkOuterProduct
-/// The threshold under test lives in EinsumPackedGemm.hpp
+/// The threshold under test lives in PackedGemm.hpp
 /// (`defer_small_outer_to_generic`); a "declined" line below means the size is
 /// under it and the generic loop ran.
 

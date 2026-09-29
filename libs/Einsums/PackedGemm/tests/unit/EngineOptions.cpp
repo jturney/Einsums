@@ -13,8 +13,8 @@
 // entry up by key; these cases fail if it stops.
 
 #include <Einsums/Options/Get.hpp>
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
 #include <Einsums/PackedGemm/Options.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorAlgebra/Detail/PackedGemmIndices.hpp>

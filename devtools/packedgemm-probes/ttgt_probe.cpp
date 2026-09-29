@@ -9,7 +9,7 @@
 //   gemm   : the reference GEMM of the same m,n,k on contiguous operands
 #include <Einsums/BLAS.hpp>
 #include <Einsums/ComputeGraph.hpp>
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>

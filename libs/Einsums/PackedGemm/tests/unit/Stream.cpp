@@ -8,7 +8,7 @@
 ///        to it: every term against a brute-force loop, the privatized and the partitioned walks, a
 ///        call from inside a parallel region, and the route pins.
 
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/PackedGemm/Stream.hpp>
 #include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>

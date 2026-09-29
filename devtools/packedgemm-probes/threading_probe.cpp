@@ -28,8 +28,8 @@
 #include <Einsums/BLAS.hpp>
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Options/Get.hpp>
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
 #include <Einsums/PackedGemm/Options.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 

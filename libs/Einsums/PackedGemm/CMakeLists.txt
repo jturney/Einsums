@@ -5,11 +5,11 @@
 
 set(PackedGemmHeaders
     Einsums/PackedGemm/ContractionKey.hpp
-    Einsums/PackedGemm/EinsumPackedGemm.hpp
     Einsums/PackedGemm/InitModule.hpp
     Einsums/PackedGemm/MicroKernel.hpp
     Einsums/PackedGemm/MicroKernelBody.hpp
     Einsums/PackedGemm/Options.hpp
+    Einsums/PackedGemm/PackedGemm.hpp
     Einsums/PackedGemm/Packing.hpp
     Einsums/PackedGemm/Stream.hpp
     Einsums/PackedGemm/StreamKernel.hpp

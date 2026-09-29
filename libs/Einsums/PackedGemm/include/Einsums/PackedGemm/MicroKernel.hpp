@@ -5,7 +5,7 @@
 
 #pragma once
 
-// This header is included from EinsumPackedGemm.hpp.
+// This header is included from PackedGemm.hpp.
 //
 // Public entry point for the BLIS-style register-blocked micro-kernel that
 // replaces the per-tile vendor blas::gemm calls (the stand-in left behind

@@ -13,8 +13,8 @@
 // what the correctness cases below exercise at thread counts that do and do not divide the work.
 
 #include <Einsums/Options/Get.hpp>
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
 #include <Einsums/PackedGemm/Options.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorAlgebra/Detail/PackedGemmIndices.hpp>

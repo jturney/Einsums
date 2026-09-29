@@ -26,7 +26,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/LinearAlgebra.hpp>
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 #include <Einsums/TensorPermute/Permute.hpp>

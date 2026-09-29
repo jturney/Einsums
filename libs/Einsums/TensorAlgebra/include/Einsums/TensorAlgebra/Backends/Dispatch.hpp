@@ -14,7 +14,7 @@
 #include <Einsums/HPTT/Options.hpp>
 #include <Einsums/LinearAlgebra.hpp>
 #include <Einsums/Logging.hpp>
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Print.hpp>
 #include <Einsums/Profile.hpp>
 #include <Einsums/Tensor/BlockTensor.hpp>

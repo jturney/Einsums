@@ -6,14 +6,14 @@
 // Batched multi-K contractions through the flatten path's gather fallback.
 //
 // nb > 0 always gathers (see the per-slice-HPTT finding in
-// EinsumPackedGemm.hpp: the KC-fused gather measured faster than up-front
+// PackedGemm.hpp: the KC-fused gather measured faster than up-front
 // slice transposes). These tests pin the gather across the layouts that
 // experiment covered: memcpy-friendly stride-1 lead axes, strided lead axes
 // (elementwise gather) with the batch axis outermost and buried mid-tensor,
 // and complex elements. try_packed_gemm is called directly so the tests
 // exercise this backend regardless of what einsum dispatch prefers.
 
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorAlgebra.hpp>
 #include <Einsums/TensorAlgebra/Detail/PackedGemmIndices.hpp>

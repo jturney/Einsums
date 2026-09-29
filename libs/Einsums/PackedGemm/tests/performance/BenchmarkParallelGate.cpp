@@ -39,7 +39,7 @@
 /// up. Do NOT read the parallel column as the cost of threading in a real
 /// stream of thousands of contractions; for that, time the replay.
 
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/Performance.hpp>
 #include <Einsums/Profile/Profile.hpp>

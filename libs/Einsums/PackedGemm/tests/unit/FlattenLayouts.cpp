@@ -20,7 +20,7 @@
 // a single K and the contraction stays on the multi-K flatten path.
 
 #include <Einsums/ComputeGraph.hpp>
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <cmath>

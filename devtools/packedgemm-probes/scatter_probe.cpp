@@ -25,7 +25,7 @@
 //   einsum    - the full eager dispatch, with its AlgorithmChoice
 //   sortgemm  - permute both operands to canonical order, then einsum -> GEMM
 
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Runtime.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorAlgebra/Permute.hpp>

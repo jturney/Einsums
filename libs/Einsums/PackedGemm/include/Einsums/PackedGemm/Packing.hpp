@@ -5,7 +5,7 @@
 
 #pragma once
 
-// This header is included from EinsumPackedGemm.hpp.
+// This header is included from PackedGemm.hpp.
 
 #include <Einsums/Concepts/TensorConcepts.hpp>
 #include <Einsums/Config/Namespace.hpp>

@@ -9,7 +9,7 @@
 /// Compares PackedGemm (einsum dispatch) against the generic nested-loop algorithm
 /// for various contraction patterns and tensor sizes. Reports speedup ratios.
 
-#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
+#include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/Performance.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
