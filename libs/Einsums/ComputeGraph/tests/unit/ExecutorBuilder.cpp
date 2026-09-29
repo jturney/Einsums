@@ -960,9 +960,9 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Einsum keeps the repeated-letter r
     using T = TestType;
 
     // "ij <- ii ; jj" is a diagonal access on both inputs. Every fast path in
-    // the cascade assumes a letter appears at most once per operand, so this
-    // spec is claimed by the repeat-aware generic loop before any of them; a
-    // rebuild that landed on a fast path would silently compute something else.
+    // the cascade assumes a letter appears at most once per operand, so the
+    // dispatcher folds each repeated letter into one strided axis before any of
+    // them; a rebuild that skipped the fold would silently compute something else.
     auto A = create_random_tensor<T>("A", 4, 4);
     auto B = create_random_tensor<T>("B", 5, 5);
     auto C = create_random_tensor<T>("C", 4, 5);
@@ -980,7 +980,7 @@ TEMPLATE_TEST_CASE("ExecutorBuilder - rebuilt Einsum keeps the repeated-letter r
     graph.execute();
     auto const captured = bytes_of(C);
     auto const route    = std::string{cg::dispatch::last_dispatch_route()};
-    REQUIRE(route == "generic_loop_repeated_indices");
+    REQUIRE(route.starts_with("diagonal:"));
 
     restore(&A, a0);
     restore(&B, b0);

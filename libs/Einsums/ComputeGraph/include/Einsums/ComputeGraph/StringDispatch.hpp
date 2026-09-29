@@ -440,6 +440,121 @@ void reject_output_alias(ParsedEinsumSpec const &parsed, CType const &C, AType c
     }
 }
 
+/// @brief Fold an operand's repeated letters into one axis each, as a view of the same storage.
+///
+/// A letter that appears twice in one operand ('iik') walks every occurrence together, so it is a
+/// single axis whose step is the sum of the occurrences' strides: A(i, i, k) is the rank-2 view with
+/// strides (s0 + s1, s2). Folding costs no copy, and the folded operand has each letter once, which
+/// is what every fast path in @ref string_einsum assumes. @p folded receives the letters in order of
+/// first appearance, @p impl the view.
+///
+/// Returns false, touching nothing the caller uses, when two occurrences of a letter disagree on
+/// the extent. The capture and eager paths reject such a spec before dispatch
+/// (validate_einsum_dims), so this only keeps a caller that skipped them on the loop, which walks
+/// the first occurrence's extent as it always has.
+template <typename T, typename TensorType>
+bool fold_repeated_letters(std::vector<std::string> const &idx, TensorType const &t, T *data, std::vector<std::string> &folded,
+                           einsums::detail::TensorImpl<T> &impl) {
+    std::vector<std::string> letters;
+    std::vector<size_t>      dims;
+    std::vector<size_t>      strides;
+    for (size_t p = 0; p < idx.size(); p++) {
+        auto const at = std::ranges::find(letters, idx[p]);
+        if (at == letters.end()) {
+            letters.push_back(idx[p]);
+            dims.push_back(t.dim(p));
+            strides.push_back(t.stride(p));
+            continue;
+        }
+        auto const k = static_cast<size_t>(at - letters.begin());
+        if (dims[k] != t.dim(p)) {
+            return false;
+        }
+        strides[k] += t.stride(p);
+    }
+    folded = std::move(letters);
+    impl   = einsums::detail::TensorImpl<T>(data, dims, strides);
+    return true;
+}
+
+/// @brief Sum an operand over its lone letters, the ones in no other operand and not in C.
+///
+/// A lone letter is a reduction over that operand alone ("ij <- ikm ; j" sums A over k and m), and
+/// summing it first turns a loop over every (target, lone) pair into one pass over the operand
+/// followed by a smaller contraction the fast paths can take. @p kept receives the remaining
+/// letters in their original order, @p scratch the summed values, column-major, and @p impl a view
+/// of them.
+///
+/// Returns false when the operand has no lone letter, or when every letter is lone: that operand
+/// would sum to a scalar, which the routes do not take as an operand, and the loop already reads
+/// it once per target element, the same cost as reducing it.
+template <typename T, typename TensorType>
+bool reduce_lone_letters(std::vector<std::string> const &idx, TensorType const &t, std::vector<std::string> const &other,
+                         std::vector<std::string> const &c_idx, std::vector<std::string> &kept, std::vector<T> &scratch,
+                         einsums::detail::TensorImpl<T> &impl) {
+    auto const contains = [](std::vector<std::string> const &v, std::string const &x) { return std::ranges::find(v, x) != v.end(); };
+
+    size_t const        rank = idx.size();
+    std::vector<size_t> out_step(rank, 0);
+    std::vector<size_t> dims;
+    size_t              total = 1;
+    for (size_t p = 0; p < rank; p++) {
+        if (contains(other, idx[p]) || contains(c_idx, idx[p])) {
+            kept.push_back(idx[p]);
+            out_step[p] = total;
+            dims.push_back(t.dim(p));
+            total *= t.dim(p);
+        }
+    }
+    if (kept.size() == rank || kept.empty()) {
+        kept.clear();
+        return false;
+    }
+
+    scratch.assign(total, T{0});
+    T const *data = t.data();
+
+    // One pass over the operand: every element is added into the slot its kept letters name. Axis 0
+    // is a tight inner loop, which vectorizes for the usual column-major operand whether that axis
+    // is kept (a unit step into the result) or summed (a fixed slot); the outer axes step an
+    // odometer once per run. The dispatcher has already dealt with a zero extent.
+    size_t const        n0 = t.dim(0), in0 = t.stride(0), out0 = out_step[0];
+    size_t              runs = 1;
+    std::vector<size_t> value(rank, 0);
+    for (size_t p = 1; p < rank; p++) {
+        runs *= t.dim(p);
+    }
+    size_t in_off = 0, out_off = 0;
+    for (size_t r = 0; r < runs; r++) {
+        T const *in  = data + in_off;
+        T       *out = scratch.data() + out_off;
+        if (out0 == 0) {
+            T sum = T{0};
+            for (size_t i = 0; i < n0; i++) {
+                sum += in[i * in0];
+            }
+            *out += sum;
+        } else {
+            for (size_t i = 0; i < n0; i++) {
+                out[i * out0] += in[i * in0];
+            }
+        }
+        for (size_t p = 1; p < rank; p++) {
+            in_off += t.stride(p);
+            out_off += out_step[p];
+            if (++value[p] < t.dim(p)) {
+                break;
+            }
+            in_off -= t.stride(p) * t.dim(p);
+            out_off -= out_step[p] * t.dim(p);
+            value[p] = 0;
+        }
+    }
+
+    impl = einsums::detail::TensorImpl<T>(scratch.data(), dims, false);
+    return true;
+}
+
 // ── Main dispatch function ──────────────────────────────────────────────────
 
 /**
@@ -447,8 +562,9 @@ void reject_output_alias(ParsedEinsumSpec const &parsed, CType const &C, AType c
  *
  * Classifies the contraction at run time and takes the first route that fits: a dot product, GEMV,
  * GER, GEMM or direct product on the operands' TensorImpls, then PackedGemm, then the generic loop.
- * Repeated letters and lone summed indices go straight to the generic loop, which is the only route
- * that handles them.
+ * Repeated letters are folded into strided views first (@ref fold_repeated_letters) and the folded
+ * contraction takes the same routes; an operand with lone summed letters is summed over them first
+ * (@ref reduce_lone_letters) and the smaller contraction takes the same routes too.
  *
  * Every caller hands it runtime-rank views: the graph's replay executors, and eager ``cg::einsum``
  * through @ref erased_string_einsum, which is what code holding typed tensors calls.
@@ -551,11 +667,14 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 
     reject_output_alias(parsed, *C, A, B);
 
-    // Repeated letters within one operand ('ij <- ii ; jj') are diagonal
+    // Repeated letters within one operand ('ij <- iik ; kj') are diagonal
     // accesses. Every fast path below classifies indices assuming each
     // letter appears at most once per operand - the outer-product/GER
-    // routes silently computed wrong values for these specs.
-    // The generic loop above is the only repeat-aware path; route there.
+    // routes silently computed wrong values for these specs - so a repeated
+    // letter is folded into one strided axis first (fold_repeated_letters)
+    // and the folded contraction is dispatched like any other: a diagonal
+    // feeding a GEMM runs as that GEMM, instead of the scalar loop that used
+    // to take every such spec at 100-200x the GEMM's time.
     auto const has_repeated_letter = [](std::vector<std::string> const &idx) {
         for (size_t p = 1; p < idx.size(); p++) {
             for (size_t q = 0; q < p; q++) {
@@ -567,6 +686,58 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         return false;
     };
     if (has_repeated_letter(a_idx) || has_repeated_letter(b_idx) || has_repeated_letter(c_idx)) {
+        bool const                     c_repeats = has_repeated_letter(c_idx);
+        ParsedEinsumSpec               folded    = parsed;
+        einsums::detail::TensorImpl<T> a_view, b_view, c_view;
+
+        // The inputs are only read; the views are non-const because TensorImpl is.
+        bool fold = fold_repeated_letters(a_idx, A, const_cast<T *>(A.data()), folded.a_indices, a_view) &&
+                    fold_repeated_letters(b_idx, B, const_cast<T *>(B.data()), folded.b_indices, b_view) &&
+                    fold_repeated_letters(c_idx, *C, C->data(), folded.c_indices, c_view);
+
+        // c_pf scales ALL of C, not only the diagonal a repeated output letter
+        // writes, so that case scales C up front and folds with c_pf = 1. An
+        // input sharing C's storage would then be read after the scaling; the
+        // loop copies such an input first, so it keeps that case. The interval
+        // test is conservative, which costs only the fold.
+        if (fold && c_repeats) {
+            auto const bytes_of = [](auto const &t) {
+                size_t last = 0;
+                for (size_t d = 0; d < detail::tensor_rank(t); d++) {
+                    last += (t.dim(d) - 1) * t.stride(d);
+                }
+                auto const *lo = reinterpret_cast<unsigned char const *>(t.data());
+                return std::pair{lo, lo + (last + 1) * sizeof(*t.data())};
+            };
+            auto const [c_lo, c_hi] = bytes_of(*C);
+            auto const overlaps_c   = [&](auto const &t) {
+                auto const [lo, hi] = bytes_of(t);
+                return lo < c_hi && c_lo < hi;
+            };
+            fold = !overlaps_c(A) && !overlaps_c(B);
+        }
+
+        if (fold) {
+            T folded_c_pf = c_pf;
+            if (c_repeats) {
+                if (c_pf == T{0}) {
+                    C->zero();
+                } else if (c_pf != T{1}) {
+                    linear_algebra::scale(c_pf, C);
+                }
+                folded_c_pf = T{1};
+            }
+            einsums::RuntimeTensorView<T> a_folded(a_view), b_folded(b_view), c_folded(c_view);
+            string_einsum(folded, folded_c_pf, &c_folded, ab_pf, a_folded, b_folded, conj_a, conj_b, nullptr, pg_site);
+
+            // Name the fold AND the kernel the folded contraction reached, so a
+            // test can assert both, as the antisymmetrized route does.
+            static thread_local std::string route;
+            route                 = std::string("diagonal:") + last_dispatch_route();
+            last_dispatch_route() = route.c_str();
+            return;
+        }
+
         ProfileAnnotate("dispatch", "generic_loop_repeated_indices");
         last_dispatch_route() = "generic_loop_repeated_indices";
         generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
@@ -579,11 +750,11 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
     // over m - and no BLAS/PackedGemm call can express it: every fast path
     // below classifies on links.size() and builds a spec over target + link
     // indices only, so a lone index is neither iterated nor summed (PackedGemm
-    // pins it to 0, silently dropping the reduction). Only the generic loop is
-    // correct here; it adds such letters as summed axes (see the trace-letter
-    // handling in generic_string_einsum). This runs before every fast path so
-    // the empty-link case (P1-style "ij <- ijk ; ij", already correct) and the
-    // link+lone case (previously miscomputed) both route here.
+    // declines it). The operand is summed over its lone letters first
+    // (reduce_lone_letters) and the smaller contraction is dispatched like any
+    // other: "ij <- ikm ; j" used to multiply every A(i, k, m) by every B(j) in
+    // the loop, n^4 work for an n^3 answer. This runs before every fast path so
+    // both the empty-link case ("ij <- ijk ; ij") and the link+lone case land here.
     auto const has_lone_summed_index = [&] {
         for (auto const *idx : {&a_idx, &b_idx}) {
             for (auto const &s : *idx) {
@@ -595,6 +766,47 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         return false;
     };
     if (has_lone_summed_index()) {
+        ParsedEinsumSpec               reduced = parsed;
+        std::vector<T>                 a_scratch, b_scratch;
+        einsums::detail::TensorImpl<T> a_impl, b_impl;
+        std::vector<std::string>       a_kept, b_kept;
+
+        bool const a_reduced = reduce_lone_letters(a_idx, A, b_idx, c_idx, a_kept, a_scratch, a_impl);
+        bool const b_reduced = reduce_lone_letters(b_idx, B, a_idx, c_idx, b_kept, b_scratch, b_impl);
+        // An operand whose letters are all lone reduces to a scalar and is not reduced (see
+        // reduce_lone_letters), so a lone letter can survive; the loop takes those.
+        bool const lone_left = [&] {
+            for (auto const *idx : {a_reduced ? &a_kept : &a_idx, b_reduced ? &b_kept : &b_idx}) {
+                for (auto const &s : *idx) {
+                    auto const role = index_role(s, c_idx, a_reduced ? a_kept : a_idx, b_reduced ? b_kept : b_idx);
+                    if (role == IndexRole::ALone || role == IndexRole::BLone) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }();
+
+        if ((a_reduced || b_reduced) && !lone_left) {
+            if (a_reduced) {
+                reduced.a_indices = a_kept;
+            }
+            if (b_reduced) {
+                reduced.b_indices = b_kept;
+            }
+            // The reduced operands are fresh buffers, so they alias nothing; an unreduced operand
+            // is passed as a view of itself so the call has one type combination.
+            einsums::detail::TensorImpl<T> const a_view = a_reduced ? a_impl : A.impl();
+            einsums::detail::TensorImpl<T> const b_view = b_reduced ? b_impl : B.impl();
+            einsums::RuntimeTensorView<T>        a_arg(a_view), b_arg(b_view), c_arg(C->impl());
+            string_einsum(reduced, c_pf, &c_arg, ab_pf, a_arg, b_arg, conj_a, conj_b, nullptr, pg_site);
+
+            static thread_local std::string route;
+            route                 = std::string("lone_reduced:") + last_dispatch_route();
+            last_dispatch_route() = route.c_str();
+            return;
+        }
+
         ProfileAnnotate("dispatch", "generic_loop_lone_summed");
         last_dispatch_route() = "generic_loop_lone_summed";
         generic_string_einsum(parsed, links, c_pf, C, ab_pf, A, B, conj_a, conj_b);
@@ -669,9 +881,15 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         // call for three operands, a third of a small contraction's whole eager call.
         namespace la = linear_algebra::detail;
 
+        // The GEMV and GEMM routes hand their matrices to BLAS, which needs a unit stride along
+        // one axis. Without one (a diagonal folded out of a rank-3 operand, a stepped slice) the
+        // rank-erased kernels fall back to a hand-written loop, so such a contraction goes on to
+        // PackedGemm instead, which packs from any strides and keeps it (packed_gemm::blas_addressable).
+        auto const addressable = [](auto const &t) { return packed_gemm::blas_addressable(t); };
+
         // ── GEMV: matrix × vector → vector ───────────────────────────
         if (a_rank == 2 && b_rank == 1 && c_rank == 1) {
-            if (links.size() == 1) {
+            if (links.size() == 1 && addressable(A)) {
                 ProfileAnnotate("dispatch", "gemv_mat_vec_runtime");
                 last_dispatch_route() = "gemv_mat_vec_runtime";
                 char const trans      = (a_idx[0] == links[0]) ? 't' : 'n';
@@ -682,7 +900,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 
         // ── GEMV: vector × matrix → vector ───────────────────────────
         if (a_rank == 1 && b_rank == 2 && c_rank == 1) {
-            if (links.size() == 1) {
+            if (links.size() == 1 && addressable(B)) {
                 ProfileAnnotate("dispatch", "gemv_vec_mat_runtime");
                 last_dispatch_route() = "gemv_vec_mat_runtime";
                 char const trans      = (b_idx[1] == links[0]) ? 'n' : 't';
@@ -714,7 +932,7 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
 
         // ── GEMM: matrix × matrix → matrix ───────────────────────────
         if (a_rank == 2 && b_rank == 2 && c_rank == 2) {
-            if (links.size() == 1 && !route_prefers_packed) {
+            if (links.size() == 1 && !route_prefers_packed && addressable(A) && addressable(B) && addressable(*C)) {
                 ProfileAnnotate("dispatch", "gemm_direct_runtime");
                 last_dispatch_route() = "gemm_direct_runtime";
                 // C = [freeA, freeB] is op(A) op(B); the transposed output C = [freeB, freeA]

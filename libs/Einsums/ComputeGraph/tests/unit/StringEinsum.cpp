@@ -958,3 +958,153 @@ TEMPLATE_TEST_CASE("String einsum - eager exchange contraction streams", "[Compu
         }
     }
 }
+
+namespace {
+
+/// Run @p spec eagerly, captured, and captured after the default pipeline, against
+/// reference_einsum each time. The eager route must start with @p prefix and must not end on the
+/// generic loop; the plain captured replay must take the same route, since eager and replay share
+/// the dispatcher.
+template <typename T, typename AType, typename BType, typename CType>
+void check_rewritten_route(std::string const &spec, std::string const &prefix, AType const &A, BType const &B, CType const &C0) {
+    T const c_pf  = testing::prefactor<T>(0.5, 0.1);
+    T const ab_pf = testing::prefactor<T>(-1.25, 0.3);
+
+    cg::EinsumFormatString const format{std::string_view{spec}};
+    auto                         expected = C0;
+    reference_einsum(spec, c_pf, &expected, ab_pf, A, B);
+
+    auto const same = [&](auto const &C) {
+        auto const *got  = C.data();
+        auto const *want = expected.data();
+        for (size_t e = 0; e < C.size(); e++) {
+            REQUIRE(std::abs(got[e] - want[e]) < route_tolerance<T>());
+        }
+    };
+
+    INFO("spec " << spec);
+    auto eager = C0;
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum(format, c_pf, &eager, ab_pf, A, B);
+    std::string const route = cg::dispatch::last_dispatch_route();
+    INFO("eager route " << route);
+    same(eager);
+    REQUIRE(route.starts_with(prefix));
+    REQUIRE(route.find("generic_loop") == std::string::npos);
+
+    auto      captured = C0;
+    cg::Graph plain("rewritten_plain");
+    {
+        cg::CaptureGuard const guard(plain);
+        cg::einsum(format, c_pf, &captured, ab_pf, A, B);
+    }
+    plain.execute();
+    same(captured);
+    REQUIRE(std::string{cg::dispatch::last_dispatch_route()} == route);
+
+    auto      optimized = C0;
+    cg::Graph graph("rewritten_optimized");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum(format, c_pf, &optimized, ab_pf, A, B);
+    }
+    cg::PassManager pm;
+    pm.populate_default();
+    pm.set_optimizer_budget(0);
+    pm.run(graph);
+    graph.execute();
+    same(optimized);
+}
+
+} // namespace
+
+// A repeated letter ('iik') is a diagonal walk, and every fast path assumes each letter once per
+// operand, so these specs all went to the scalar loop: "ij <- iik ; kj" ran 100-200x slower than the
+// GEMM it is. The dispatcher now folds each repeated letter into one strided axis and dispatches the
+// folded contraction, naming the route "diagonal:<kernel>". Eager calls and graph replay share the
+// dispatcher, so every case runs eagerly, captured, and captured after the default pipeline.
+TEMPLATE_LIST_TEST_CASE("String einsum - a repeated letter folds into a strided view and keeps the fast paths",
+                        "[ComputeGraph][StringEinsum][Diagonal]", testing::AllScalarTypes) {
+    using T        = TestType;
+    size_t const n = 5, k = 6, m = 4;
+
+    SECTION("a diagonal of A feeding a GEMM") {
+        check_rewritten_route<T>("ij <- iik ; kj", "diagonal:", create_random_tensor<T>("A", n, n, k), create_random_tensor<T>("B", k, m),
+                                 create_random_tensor<T>("C", n, m));
+    }
+    SECTION("a diagonal of B feeding a GEMM") {
+        check_rewritten_route<T>("ij <- ik ; kkj", "diagonal:", create_random_tensor<T>("A", n, k), create_random_tensor<T>("B", k, k, m),
+                                 create_random_tensor<T>("C", n, m));
+    }
+    SECTION("a diagonal on both sides of an outer product") {
+        check_rewritten_route<T>("ij <- ii ; jj", "diagonal:", create_random_tensor<T>("A", n, n), create_random_tensor<T>("B", m, m),
+                                 create_random_tensor<T>("C", n, m));
+    }
+    SECTION("a diagonal of A feeding a GEMV") {
+        check_rewritten_route<T>("i <- iik ; k", "diagonal:", create_random_tensor<T>("A", n, n, k), create_random_tensor<T>("B", k),
+                                 create_random_tensor<T>("C", n));
+    }
+    SECTION("a repeated letter in C: the GEMM writes a diagonal, c_pf still scales all of C") {
+        check_rewritten_route<T>("iij <- ik ; kj", "diagonal:", create_random_tensor<T>("A", n, k), create_random_tensor<T>("B", k, m),
+                                 create_random_tensor<T>("C", n, n, m));
+    }
+    SECTION("a diagonal that leaves a lone letter: folded, then reduced") {
+        check_rewritten_route<T>("j <- iik ; kj", "diagonal:lone_reduced:", create_random_tensor<T>("A", n, n, k),
+                                 create_random_tensor<T>("B", k, m), create_random_tensor<T>("C", m));
+    }
+}
+
+// A letter in one input alone and absent from C is summed over that input. The loop multiplied every
+// such term by every element of the other operand: "ij <- ikm ; j" did n^4 work for an n^3 answer and
+// took 1.4 s at n = 160. The operand is now summed over its lone letters first and the smaller
+// contraction dispatched, naming the route "lone_reduced:<kernel>".
+TEMPLATE_LIST_TEST_CASE("String einsum - a lone summed letter is summed first and keeps the fast paths",
+                        "[ComputeGraph][StringEinsum][LoneSummed]", testing::AllScalarTypes) {
+    using T        = TestType;
+    size_t const n = 5, k = 6, m = 4;
+
+    SECTION("summed out of A, leaving an outer product") {
+        check_rewritten_route<T>("ij <- ikm ; j", "lone_reduced:", create_random_tensor<T>("A", n, k, m), create_random_tensor<T>("B", m),
+                                 create_random_tensor<T>("C", n, m));
+    }
+    SECTION("summed out of B beside a shared link, leaving a GEMM") {
+        check_rewritten_route<T>("jk <- jl ; plk", "lone_reduced:", create_random_tensor<T>("A", n, k),
+                                 create_random_tensor<T>("B", m, k, n), create_random_tensor<T>("C", n, n));
+    }
+    SECTION("summed out of both operands") {
+        check_rewritten_route<T>("ij <- ip ; qj", "lone_reduced:", create_random_tensor<T>("A", n, k), create_random_tensor<T>("B", m, n),
+                                 create_random_tensor<T>("C", n, n));
+    }
+    SECTION("summed out of a strided view") {
+        auto A = create_random_tensor<T>("A", n + 2, k, m);
+        check_rewritten_route<T>("ij <- ikm ; j", "lone_reduced:", A(Range{1, n + 1}, All, All), create_random_tensor<T>("B", m),
+                                 create_random_tensor<T>("C", n, m));
+    }
+}
+
+// Folding a repeated output letter scales all of C before the folded call, so an input sharing C's
+// storage would be read after that scaling. That case stays on the loop, which copies such an input
+// first; this pins that the fold declines it and the result is still right.
+TEMPLATE_LIST_TEST_CASE("String einsum - a repeated output letter over an aliased input stays on the loop",
+                        "[ComputeGraph][StringEinsum][Diagonal]", testing::AllScalarTypes) {
+    using T            = TestType;
+    size_t const n     = 5;
+    T const      c_pf  = testing::prefactor<T>(0.5, 0.1);
+    T const      ab_pf = testing::prefactor<T>(-1.25, 0.3);
+
+    auto C = create_random_tensor<T>("C", n, n);
+    auto B = create_random_tensor<T>("B", n);
+
+    // "ii <- ii ; i" with C as A: the aliased operand's index list is C's own, which is the one
+    // in-place shape the dispatcher permits.
+    auto expected = C;
+    auto A_copy   = C;
+    reference_einsum("ii <- ii ; i", c_pf, &expected, ab_pf, A_copy, B);
+
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("ii <- ii ; i", c_pf, &C, ab_pf, C, B);
+    REQUIRE(std::string{cg::dispatch::last_dispatch_route()} == "generic_loop_repeated_indices");
+    for (size_t e = 0; e < C.size(); e++) {
+        REQUIRE(std::abs(C.data()[e] - expected.data()[e]) < route_tolerance<T>());
+    }
+}

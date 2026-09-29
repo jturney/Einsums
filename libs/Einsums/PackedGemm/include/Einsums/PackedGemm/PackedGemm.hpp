@@ -308,6 +308,35 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 /// regime decided (@ref einsums::blas::vendor_call_is_fenced). Test introspection only.
 [[nodiscard]] EINSUMS_EXPORT KernelRoute &last_route_pin();
 
+/// @brief Whether a vendor GEMM or GEMV can address rank-2 @p t as a matrix, in either orientation.
+///
+/// BLAS needs a unit stride along one axis and the other axis's stride as the leading dimension
+/// (an axis of extent one is never stepped, so it constrains nothing). A matrix with neither, such
+/// as a diagonal folded out of a rank-3 operand, has no BLAS form, and the rank-erased kernels run a
+/// hand-written loop for it; PackedGemm packs from any strides, so it keeps such a contraction
+/// rather than deferring it to the direct route.
+template <einsums::BasicTensorConcept TensorType>
+bool blas_addressable(TensorType const &t) {
+    // Rank as tensor_descriptor reads it, without building the descriptor's vectors.
+    using TT = std::remove_cvref_t<TensorType>;
+    if constexpr (requires { TT::Rank; }) {
+        if constexpr (TT::Rank >= 0) {
+            if constexpr (TT::Rank != 2) {
+                return false;
+            }
+        } else if (t.rank() != 2) {
+            return false;
+        }
+    } else if (t.rank() != 2) {
+        return false;
+    }
+    size_t const m = t.dim(0), n = t.dim(1);
+    size_t const s0 = t.stride(0), s1 = t.stride(1);
+    bool const   column_major = (m <= 1 || s0 == 1) && (n <= 1 || s1 >= s0);
+    bool const   row_major    = (n <= 1 || s1 == 1) && (m <= 1 || s0 >= s1);
+    return column_major || row_major;
+}
+
 /// @brief Whether this contraction is to be packed rather than handed to one vendor GEMM.
 ///
 /// A pinned site answers from its pin. Otherwise the thread regime decides: under a node-scoped
@@ -2686,8 +2715,9 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         // Skip contractions that BLAS GEMM handles directly (no batch, single M/N/K), unless the
         // packed route is preferred: that GEMM would be clamped to one thread under a node-scoped
         // width. The recorded decline carries the route, so it is never reused in the other regime.
+        // A matrix BLAS cannot address stays here too, since the direct route would run a loop.
         if (m_count == 1 && n_count == 1 && link.size() == 1 && !spec.conj_a && !spec.conj_b && m_count + n_count == target.size() &&
-            !prefer_packed) {
+            !prefer_packed && blas_addressable(A) && blas_addressable(B) && blas_addressable(*C)) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_direct_gemm");
             remember(key, nullptr);
             return false; // Deferred to direct BLAS GEMM, not a rejection.

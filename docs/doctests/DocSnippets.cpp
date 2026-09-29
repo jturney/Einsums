@@ -303,10 +303,15 @@ TEST_CASE("docs - performance: the dispatch reference table is accurate", "[Docs
         CHECK(route_of([&] { cg::einsum("ij;ji->i", &shared, A2, B2); }) == "packed_gemm");
     }
 
-    SECTION("a repeated letter is the one thing still on the generic loop") {
+    SECTION("a repeated letter is read as a strided view and keeps the fast path") {
         auto diag = filled("diag", {N});
-        CHECK(route_of([&] { cg::einsum("ii;i->i", &diag, A2, v); }) == "generic_loop_repeated_indices");
-        CHECK(route_of([&] { cg::einsum("ikk;k->i", &diag, A3, v); }) == "generic_loop_repeated_indices");
+        CHECK(route_of([&] { cg::einsum("ii;i->i", &diag, A2, v); }) == "diagonal:direct_product_runtime");
+        CHECK(route_of([&] { cg::einsum("ikk;k->i", &diag, A3, v); }) == "diagonal:gemv_mat_vec_runtime");
+    }
+
+    SECTION("a letter summed out of one operand alone is summed first and keeps the fast path") {
+        auto outer = filled("outer", {N, N});
+        CHECK(route_of([&] { cg::einsum("ikm;j->ij", &outer, A3, v); }) == "lone_reduced:ger_runtime");
     }
 }
 

@@ -71,8 +71,15 @@ _CASCADE = [
     ("ijkl <- ijm ; mkl", "ijm,mkl->ijkl", {"i": 3, "j": 4, "k": 5, "l": 6, "m": 2}, "packed_gemm"),
     # A small outer product: no link to contract, and too few elements for PackedGemm's setup to pay.
     ("ijk <- ij ; k", "ij,k->ijk", {"i": 2, "j": 3, "k": 4}, "generic_loop"),
-    ("ij <- ii ; jj", "ii,jj->ij", {"i": 3, "j": 4}, "generic_loop_repeated_indices"),
-    ("ij <- ijk ; ij", "ijk,ij->ij", {"i": 3, "j": 4, "k": 2}, "generic_loop_lone_summed"),
+    # A repeated letter folds into one strided axis, and the folded contraction takes the fast path it
+    # fits: an outer product, and a GEMM whose diagonal operand has no unit stride, so PackedGemm packs it.
+    ("ij <- ii ; jj", "ii,jj->ij", {"i": 3, "j": 4}, "diagonal:ger_runtime"),
+    ("ij <- iik ; kj", "iik,kj->ij", {"i": 4, "j": 5, "k": 3}, "diagonal:packed_gemm"),
+    # A letter summed over one operand alone is summed there first, and the rest takes its route.
+    ("ij <- ijk ; ij", "ijk,ij->ij", {"i": 3, "j": 4, "k": 2}, "lone_reduced:direct_product_runtime"),
+    ("ij <- ikm ; j", "ikm,j->ij", {"i": 3, "j": 4, "k": 2, "m": 5}, "lone_reduced:ger_runtime"),
+    # Every letter of the first operand is lone, so it would sum to a scalar; the loop takes it.
+    ("ij <- k ; ij", "k,ij->ij", {"i": 3, "j": 4, "k": 2}, "generic_loop_lone_summed"),
 ]
 
 

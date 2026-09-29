@@ -505,24 +505,37 @@ TEMPLATE_LIST_TEST_CASE("cg dispatch route - every route in the cascade fires wh
         CHECK(route() == "empty_input_scale_only");
     }
 
-    // ── Generic-loop-only shapes, claimed before any fast path ──────────────
-    SECTION("generic_loop_repeated_indices") {
+    // A repeated letter is folded into one strided axis, then the folded contraction is dispatched:
+    // a diagonal on each side of an outer product is a GER.
+    SECTION("diagonal:ger_runtime") {
         auto S = create_random_tensor<T>("S", 4, 4);
         auto R = create_random_tensor<T>("R", 4, 4);
         auto H = create_zero_tensor<T>("H", 4, 4);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ii ; jj", &H, S, R);
-        CHECK(route() == "generic_loop_repeated_indices");
+        CHECK(route() == "diagonal:ger_runtime");
     }
 
-    SECTION("generic_loop_lone_summed") {
-        // `l` lives in A only and is absent from C and from the links, so it is
-        // a single-operand reduction no BLAS or PackedGemm call can express.
+    // `l` lives in A only and is absent from C and from the links, a reduction
+    // over A alone: A is summed over it first, and what is left is a GEMM.
+    SECTION("lone_reduced:gemm_direct_runtime") {
         auto A = create_random_tensor<T>("A", 3, 2, 4);
         auto B = create_random_tensor<T>("B", 2, 5);
         auto C = create_zero_tensor<T>("C", 3, 5);
         // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
         cg::einsum("ij <- ikl ; kj", &C, A, B);
+        CHECK(route() == "lone_reduced:gemm_direct_runtime");
+    }
+
+    // ── Generic-loop-only shapes, claimed before any fast path ──────────────
+    SECTION("generic_loop_lone_summed") {
+        // Every letter of A is lone, so A would sum to a scalar, which no route
+        // takes as an operand; the loop reads it once per element of C.
+        auto A = create_random_tensor<T>("A", 4);
+        auto B = create_random_tensor<T>("B", 3, 5);
+        auto C = create_zero_tensor<T>("C", 3, 5);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- k ; ij", &C, A, B);
         CHECK(route() == "generic_loop_lone_summed");
     }
 

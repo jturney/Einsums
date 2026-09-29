@@ -577,11 +577,14 @@ Through the string form
       - ``packed_gemm``
       - shared index plus a summed one
     * - ``ii;i->i``
-      - ``generic_loop_repeated_indices``
-      - diagonal
+      - ``diagonal:direct_product_runtime``
+      - the diagonal as a strided view, then elementwise
     * - ``ikk;k->i``
-      - ``generic_loop_repeated_indices``
-      - diagonal with a summed index
+      - ``diagonal:gemv_mat_vec_runtime``
+      - the diagonal as a strided view, then one ``GEMV``
+    * - ``ikm;j->ij``
+      - ``lone_reduced:ger_runtime``
+      - ``A`` summed over ``k`` and ``m``, then a rank-1 update
 
 A contraction with a zero-length dimension reports ``empty_input_scale_only`` or
 ``empty_output_noop`` and still applies the output prefactor exactly once.
@@ -593,9 +596,11 @@ PackedGemm does not produce a scalar.
 What is still not accelerated
 -----------------------------
 
-**A letter repeated inside one operand.** ``A(i,k,k)`` is a diagonal, and a diagonal is not a
-matrix multiplication, so it runs on a repeat-aware loop. If a diagonal sits inside an iteration,
-extract it once outside the loop.
+**An operand whose every letter is summed out of it alone.** In ``k;ij->ij`` the first operand
+sums to a single number, which no route takes as an operand, so it runs on the generic loop. A
+diagonal, or a letter summed out of an operand that keeps others, is accelerated: the diagonal is
+read as a strided view and the lone letter is summed first, and what remains takes the table's
+routes.
 
 **A scalar result over permuted index packs.** ``DOT`` requires the two operands to name their
 indices in the same order, so :math:`s = \sum_{ij} A_{ij} B_{ji}` takes the generic loop. Permute

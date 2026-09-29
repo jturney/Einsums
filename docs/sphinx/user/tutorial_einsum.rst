@@ -244,9 +244,9 @@ This one does not map onto a plain ``GEMM``, so it runs on the packed contractio
 blocks and packs the operands for cache reuse rather than falling back to loops. You write the
 same call either way.
 
-An index repeated **within one operand** is a diagonal rather than a contraction, and diagonals
-are the one common pattern with no matrix-multiplication form. ``"ii;i->i"`` runs a loop. That is
-worth knowing before you put one inside an iteration.
+An index repeated **within one operand** is a diagonal rather than a contraction. Einsums reads
+the diagonal as a strided view of the operand, without copying it, so ``"iik;kj->ij"`` still runs
+as a matrix multiplication.
 
 .. _tutorial-einsum-graph:
 

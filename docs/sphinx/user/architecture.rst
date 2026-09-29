@@ -91,8 +91,12 @@ the dispatcher:
 3. Takes the first route that fits:
 
    * Nothing, or only the scaling of ``C``, when an extent is zero.
-   * The repeat-aware generic loop, when a letter repeats within one
-     operand (a diagonal) or is summed out of one operand alone (a trace).
+   * A strided view, when a letter repeats within one operand (a
+     diagonal): the operand is read with one axis per distinct letter, and
+     the contraction continues down this list.
+   * A sum over one operand first, when a letter appears in that operand
+     alone (a trace): the operand is summed over it into a temporary, and
+     the smaller contraction continues down this list.
    * Vendor BLAS, when the pattern is a plain ``dot``, ``gemv``, ``ger`` or
      ``gemm``, or an elementwise product. It uses the transposition flags
      BLAS offers, and copies no operand.

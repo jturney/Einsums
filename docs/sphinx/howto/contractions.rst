@@ -130,10 +130,11 @@ Repeated indices, traces, and transposes
 
 A letter repeated within one operand means diagonal access.
 ``"ii;i->i"`` reads the diagonal of a matrix and multiplies it elementwise by a vector.
-A letter that appears in only one input and not in the output is summed over, which is how you write a trace.
+The diagonal is read as a strided view of the operand, without a copy, and the rest of the contraction takes the same routes as any other, so ``"iik;kj->ij"`` runs as a matrix multiplication.
 
-Both of these leave the BLAS fast paths and run on the repeat-aware generic loop, which is correct but slower than a contraction that maps onto a matrix multiplication.
-That is worth knowing before you put one inside an iteration.
+A letter that appears in only one input and not in the output is summed over, which is how you write a trace.
+That input is summed over the letter first, and the smaller contraction left over takes the same routes, so ``"ikm;j->ij"`` is one pass over the first operand and a rank-1 update.
+Only an input whose letters are all summed this way, such as the ``k`` in ``"k;ij->ij"``, still runs on the generic loop.
 
 A generalized transpose is ``cg::permute`` rather than an einsum:
 
@@ -258,13 +259,14 @@ These are the routes for the common shapes, as measured with :cpp:type:`einsums:
       - ``direct_product_runtime``
       - elementwise
     * - ``ii;i->i``
-      - ``generic_loop_repeated_indices``
-      - repeat-aware loop
+      - ``diagonal:direct_product_runtime``
+      - the diagonal as a strided view, then elementwise
     * - ``ijkl;klmn->ijmn``
       - ``packed_gemm``
       - cache-blocked packed contraction
 
 Statically ranked operands produce the same names without the ``_runtime`` suffix.
+A contraction with a repeated letter names the route its folded form took, prefixed with ``diagonal:``, and one with a letter summed over a single input is prefixed with ``lone_reduced:``.
 Contractions with a zero extent report ``empty_input_scale_only`` or ``empty_output_noop``.
 
 Two cautions.
