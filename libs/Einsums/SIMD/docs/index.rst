@@ -64,6 +64,85 @@ Core Vec Type
     // Store back to memory
     storeu(data, c);
 
+Arithmetic, Comparisons and Masks
+=================================
+
+Beyond ``add``, ``sub``, ``mul`` and ``fmadd``, ``Operations.hpp`` has ``div``,
+``sqrt``, ``min``, ``max``, ``abs`` and ``neg`` for ``float`` and ``double``,
+and the operators ``/`` and unary ``-``. ``min(a, b)`` is exactly
+``a < b ? a : b``, so a NaN on either side, or two zeros of either sign, give
+``b`` on every backend. ``abs`` and ``neg`` change only the sign bit.
+
+A comparison returns a mask of the same type: each lane all-ones where it
+holds and zero where it does not. The comparisons follow IEEE 754, so every
+one involving a NaN is false except ``cmp_ne``.
+
+.. code-block:: cpp
+
+    Vec<float> const too_big = cmp_gt(v, limit);         // lanes where v > limit
+    Vec<float> const clamped = select(too_big, limit, v); // limit there, v elsewhere
+    if (any(cmp_ne(v, v))) {                              // is any lane a NaN?
+        ...
+    }
+
+``select(mask, a, b)`` takes ``a`` where the mask is set, for ``float``,
+``double`` and the 32- and 64-bit integers. Masks combine with
+``bitwise_and``, ``bitwise_or``, ``bitwise_xor`` and ``bitwise_andnot``
+(``a & ~b``), and ``any(mask)`` and ``all(mask)`` reduce one to a ``bool``.
+Only comparison results are valid masks: the backends read different bits of
+a lane, so only all-ones and zero mean the same thing everywhere.
+
+Reductions, Partial Loads and Conversions
+=========================================
+
+``Reduce.hpp`` folds a Vec to a scalar with ``reduce_add``, ``reduce_min``
+and ``reduce_max``, for ``float``, ``double`` and ``int32_t``. The lanes are
+combined in a tree whose shape depends on the width, so a floating-point sum
+can differ in its last bits between ISAs and from a sequential loop.
+
+``Partial.hpp`` handles the tail of a loop whose length is not a multiple of
+the lane count. ``loadu_partial(p, n)`` reads the first ``n`` elements and
+zeroes the rest of the Vec; ``storeu_partial(p, v, n)`` writes the first
+``n`` lanes. Neither touches memory past those elements, so a tail that ends
+at the end of an allocation is safe:
+
+.. code-block:: cpp
+
+    std::size_t i = 0;
+    for (; i + L <= n; i += L) {
+        storeu(y + i, fmadd(a, loadu(x + i), loadu(y + i)));
+    }
+    if (i < n) {
+        storeu_partial(y + i, fmadd(a, loadu_partial(x + i, n - i), loadu_partial(y + i, n - i)), n - i);
+    }
+
+``Convert.hpp`` converts between ``int32_t`` and ``float``, which have the
+same lane count: ``convert<float>(vi)`` rounds to nearest and
+``convert<int32_t>(vf)`` truncates toward zero. A NaN or an out-of-range
+value gives an unspecified lane.
+
+Examples
+========
+
+Each program in ``libs/Einsums/SIMD/examples`` checks its result against a
+scalar loop and runs as a test:
+
+- ``PlatformInfo``: the width this build compiled for, and the rungs the CPU
+  supports.
+- ``Saxpy``: the basic loop shape, with a partial tail.
+- ``DotProduct``: independent accumulators and one ``reduce_add``.
+- ``ComplexAxpy``: complex arithmetic with ``CVec``.
+- ``ColumnSum``: strided ``gather`` against a contiguous traversal.
+- ``BlockTranspose``: a matrix transpose in register tiles.
+- ``ClampAndSanitize``: comparisons, ``select`` and ``any`` in place of
+  branches.
+- ``IntegerBits``: shifts, bitwise logic and ``cmp_eq`` counting.
+- ``QuantizedGemv``: int8 dot products and ``convert``.
+- ``StreamingScale``: ``prefetch``, ``stream_store`` and ``stream_fence``.
+- ``RuntimeDispatch``: one kernel compiled per rung and chosen at run time.
+- ``GemmMicroKernel``: a register-blocked matrix-multiply kernel.
+- ``OperatorsAndFunctions``: the two spellings, and what ``fmadd`` changes.
+
 Shuffle and Transpose
 =====================
 
@@ -213,37 +292,60 @@ arguments instead of setting the option.
 Building a dispatch ladder
 --------------------------
 
-``select()`` picks the best entry point at or after the selected rung in
-the architecture's preference order, falling through rungs a module chose
-not to build and rungs the machine cannot run:
+A kernel that should use the widest registers the CPU has is written once and
+compiled several times, once per rung. ``einsums_add_simd_dispatch_sources``
+(``cmake/Einsums_AddSIMDDispatch.cmake``) generates the per-rung translation
+units: each includes the implementation file, compiles with that rung's
+``-march`` flags, and defines ``EINSUMS_SIMD_ARCH_NS`` to a namespace of its
+own. Because the SIMD headers key off compiler-defined macros, the same
+source widens ``Vec<T>`` and every operation to each rung's register width.
+
+.. code-block:: cmake
+
+    einsums_add_simd_dispatch_sources(MyKernelRungs IMPL src/KernelImpl.cpp RUNGS baseline v2 v3 v4)
+    target_sources(my_target PRIVATE ${MyKernelRungs})
+    set_source_files_properties(src/KernelDispatch.cpp PROPERTIES COMPILE_DEFINITIONS "${MyKernelRungs_DEFINITIONS}")
+
+The implementation wraps its entry points in the rung namespace:
 
 .. code-block:: cpp
 
-    using KernelFn = void (*)(float const *, float *, std::size_t);
+    // KernelImpl.cpp: compiled once per rung.
+    namespace mylib::EINSUMS_SIMD_ARCH_NS {
+    void kernel(float const *x, float *y, std::size_t n) { /* Vec<float> code */ }
+    }
 
-    // One namespace per compiled rung; nullptr for rungs not built.
-    static KernelFn const kernel = select<KernelFn>(
-        &arch_baseline::kernel,   // required
-        nullptr,                  // no dedicated v2 build of this kernel
-        &arch_v3::kernel,
-        &arch_v4::kernel);
+and one arch-neutral file declares every copy that was built and picks one.
+``EINSUMS_SIMD_FOR_EACH_BUILT_RUNG`` names each built namespace,
+``EINSUMS_SIMD_LADDER`` expands to the five slots ``select()`` takes (with
+``nullptr`` for rungs not built), and ``select()`` returns the slot of the rung
+``selected_arch()`` chose:
 
-The intended pattern for kernel authors is to compile one implementation
-file several times, once per rung, each compilation wrapped in a distinct
-namespace and given the matching ``-march`` flag, then bridge the copies
-with ``select()`` at the call site. Because the SIMD headers key off
-compiler-defined macros (``__AVX2__`` and friends), the same source
-automatically widens ``Vec<T>``, ``native_lanes`` and every operation to
-each rung's register width - no source changes per rung. CMake helpers that
-generate the per-rung translation units live with this module (see
-``Einsums_AddSIMDDispatch.cmake``); HPTT is the reference consumer: its
-``Transpose.cpp`` compiles once per rung, and the arch-neutral factory in
-``TransposeFactory.cpp`` selects a rung at plan creation.
+.. code-block:: cpp
+
+    // KernelDispatch.cpp: compiled once, at the ambient flags.
+    namespace mylib {
+    #define DECLARE(ns) namespace ns { void kernel(float const *, float *, std::size_t); }
+    EINSUMS_SIMD_FOR_EACH_BUILT_RUNG(DECLARE)
+    #undef DECLARE
+
+    void kernel(float const *x, float *y, std::size_t n) {
+        using Fn = void (*)(float const *, float *, std::size_t);
+        static Fn const fn = einsums::simd::select<Fn>(EINSUMS_SIMD_LADDER(kernel));
+        fn(x, y, n);
+    }
+    }
+
+Resolve the pointer once, as the function-local static does: the choice
+cannot change while the program runs. The ``RuntimeDispatch`` example is a
+complete, buildable version of this, and HPTT and PackedGemm are the library's
+own consumers.
 
 The whole mechanism sits behind ``EINSUMS_WITH_SIMD_DISPATCH`` (default ON).
-When it is OFF, on non-x86 targets, or when a compile-time pin is in effect
-(below), the helper emits a single ``native`` rung compiled at the ambient
-flags - exactly the pre-dispatch behavior.
+When it is OFF, or when a compile-time pin is in effect (below), the helper
+emits a single ``native`` rung compiled at the ambient flags. On aarch64 the
+x86 rungs do not exist, so the ladder is that ``native`` rung plus ``sme``
+when the caller asks for it.
 
 Interaction with the compile-time pinning options: building with
 ``EINSUMS_SIMD_NATIVE_ARCH=ON`` or ``EINSUMS_SIMD_TARGET_CPU=<cpu>`` raises
