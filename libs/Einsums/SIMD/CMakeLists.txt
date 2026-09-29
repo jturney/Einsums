@@ -8,10 +8,13 @@ set(SIMDHeaders
     Einsums/SIMD/Vec.hpp
     Einsums/SIMD/Operations.hpp
     Einsums/SIMD/ComplexVec.hpp
+    Einsums/SIMD/Convert.hpp
     Einsums/SIMD/Shuffle.hpp
     Einsums/SIMD/Gather.hpp
     Einsums/SIMD/Options.hpp
+    Einsums/SIMD/Partial.hpp
     Einsums/SIMD/Prefetch.hpp
+    Einsums/SIMD/Reduce.hpp
     Einsums/SIMD/RuntimeFeatures.hpp
     Einsums/SIMD/RungLadder.hpp
 )

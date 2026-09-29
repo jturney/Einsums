@@ -9,6 +9,10 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
+#include <bit>
+#include <cmath>
+#include <cstdint>
+
 EINSUMS_NAMESPACE_BEGIN(simd)
 
 // ===========================================================================
@@ -482,6 +486,277 @@ EINSUMS_FORCEINLINE Vec<double> fmadd(Vec<double> a, Vec<double> b, Vec<double> 
 #endif
 
 // ===========================================================================
+// Arithmetic: div, sqrt, min, max, abs, neg (float and double).
+//
+// min(a, b) is exactly a < b ? a : b, and max(a, b) exactly a > b ? a : b: when
+// either lane is NaN, or both are zeros of either sign, the result is b. That
+// is what x86 MINPS/MAXPS compute; NEON's own vminq propagates NaN instead, so
+// NEON builds the same selection from a compare. abs clears the sign bit and
+// neg flips it, so neg of +0.0 is -0.0 and neither changes a NaN's payload.
+// ===========================================================================
+
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> div(Vec<T> a, Vec<T> b);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> sqrt(Vec<T> a);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> min(Vec<T> a, Vec<T> b);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> max(Vec<T> a, Vec<T> b);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> abs(Vec<T> a);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> neg(Vec<T> a);
+
+#if defined(__AVX512F__) && defined(__AVX512VL__)
+template <>
+EINSUMS_FORCEINLINE Vec<float> div(Vec<float> a, Vec<float> b) {
+    return _mm512_div_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> div(Vec<double> a, Vec<double> b) {
+    return _mm512_div_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> sqrt(Vec<float> a) {
+    return _mm512_sqrt_ps(a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> sqrt(Vec<double> a) {
+    return _mm512_sqrt_pd(a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> min(Vec<float> a, Vec<float> b) {
+    return _mm512_min_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> min(Vec<double> a, Vec<double> b) {
+    return _mm512_min_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> max(Vec<float> a, Vec<float> b) {
+    return _mm512_max_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> max(Vec<double> a, Vec<double> b) {
+    return _mm512_max_pd(a.reg, b.reg);
+}
+// The floating-point and/xor intrinsics are AVX-512DQ; the integer ones are F.
+template <>
+EINSUMS_FORCEINLINE Vec<float> abs(Vec<float> a) {
+    return _mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(a.reg), _mm512_set1_epi32(0x7FFFFFFF)));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> abs(Vec<double> a) {
+    return _mm512_castsi512_pd(_mm512_and_si512(_mm512_castpd_si512(a.reg), _mm512_set1_epi64(0x7FFFFFFFFFFFFFFF)));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> neg(Vec<float> a) {
+    return _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(a.reg), _mm512_set1_epi32(INT32_MIN)));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> neg(Vec<double> a) {
+    return _mm512_castsi512_pd(_mm512_xor_si512(_mm512_castpd_si512(a.reg), _mm512_set1_epi64(INT64_MIN)));
+}
+#elif defined(__AVX__)
+template <>
+EINSUMS_FORCEINLINE Vec<float> div(Vec<float> a, Vec<float> b) {
+    return _mm256_div_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> div(Vec<double> a, Vec<double> b) {
+    return _mm256_div_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> sqrt(Vec<float> a) {
+    return _mm256_sqrt_ps(a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> sqrt(Vec<double> a) {
+    return _mm256_sqrt_pd(a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> min(Vec<float> a, Vec<float> b) {
+    return _mm256_min_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> min(Vec<double> a, Vec<double> b) {
+    return _mm256_min_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> max(Vec<float> a, Vec<float> b) {
+    return _mm256_max_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> max(Vec<double> a, Vec<double> b) {
+    return _mm256_max_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> abs(Vec<float> a) {
+    return _mm256_andnot_ps(_mm256_set1_ps(-0.0f), a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> abs(Vec<double> a) {
+    return _mm256_andnot_pd(_mm256_set1_pd(-0.0), a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> neg(Vec<float> a) {
+    return _mm256_xor_ps(a.reg, _mm256_set1_ps(-0.0f));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> neg(Vec<double> a) {
+    return _mm256_xor_pd(a.reg, _mm256_set1_pd(-0.0));
+}
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+template <>
+EINSUMS_FORCEINLINE Vec<float> div(Vec<float> a, Vec<float> b) {
+    return _mm_div_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> div(Vec<double> a, Vec<double> b) {
+    return _mm_div_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> sqrt(Vec<float> a) {
+    return _mm_sqrt_ps(a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> sqrt(Vec<double> a) {
+    return _mm_sqrt_pd(a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> min(Vec<float> a, Vec<float> b) {
+    return _mm_min_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> min(Vec<double> a, Vec<double> b) {
+    return _mm_min_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> max(Vec<float> a, Vec<float> b) {
+    return _mm_max_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> max(Vec<double> a, Vec<double> b) {
+    return _mm_max_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> abs(Vec<float> a) {
+    return _mm_andnot_ps(_mm_set1_ps(-0.0f), a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> abs(Vec<double> a) {
+    return _mm_andnot_pd(_mm_set1_pd(-0.0), a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> neg(Vec<float> a) {
+    return _mm_xor_ps(a.reg, _mm_set1_ps(-0.0f));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> neg(Vec<double> a) {
+    return _mm_xor_pd(a.reg, _mm_set1_pd(-0.0));
+}
+#elif defined(__aarch64__) || defined(_M_ARM64)
+template <>
+EINSUMS_FORCEINLINE Vec<float> div(Vec<float> a, Vec<float> b) {
+    return vdivq_f32(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> div(Vec<double> a, Vec<double> b) {
+    return vdivq_f64(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> sqrt(Vec<float> a) {
+    return vsqrtq_f32(a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> sqrt(Vec<double> a) {
+    return vsqrtq_f64(a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> min(Vec<float> a, Vec<float> b) {
+    return vbslq_f32(vcltq_f32(a.reg, b.reg), a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> min(Vec<double> a, Vec<double> b) {
+    return vbslq_f64(vcltq_f64(a.reg, b.reg), a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> max(Vec<float> a, Vec<float> b) {
+    return vbslq_f32(vcgtq_f32(a.reg, b.reg), a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> max(Vec<double> a, Vec<double> b) {
+    return vbslq_f64(vcgtq_f64(a.reg, b.reg), a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> abs(Vec<float> a) {
+    return vabsq_f32(a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> abs(Vec<double> a) {
+    return vabsq_f64(a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> neg(Vec<float> a) {
+    return vnegq_f32(a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> neg(Vec<double> a) {
+    return vnegq_f64(a.reg);
+}
+#else
+template <>
+EINSUMS_FORCEINLINE Vec<float> div(Vec<float> a, Vec<float> b) {
+    return {a.reg / b.reg};
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> div(Vec<double> a, Vec<double> b) {
+    return {a.reg / b.reg};
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> sqrt(Vec<float> a) {
+    return {std::sqrt(a.reg)};
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> sqrt(Vec<double> a) {
+    return {std::sqrt(a.reg)};
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> min(Vec<float> a, Vec<float> b) {
+    return {a.reg < b.reg ? a.reg : b.reg};
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> min(Vec<double> a, Vec<double> b) {
+    return {a.reg < b.reg ? a.reg : b.reg};
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> max(Vec<float> a, Vec<float> b) {
+    return {a.reg > b.reg ? a.reg : b.reg};
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> max(Vec<double> a, Vec<double> b) {
+    return {a.reg > b.reg ? a.reg : b.reg};
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> abs(Vec<float> a) {
+    return {std::fabs(a.reg)};
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> abs(Vec<double> a) {
+    return {std::fabs(a.reg)};
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> neg(Vec<float> a) {
+    return {-a.reg};
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> neg(Vec<double> a) {
+    return {-a.reg};
+}
+#endif
+
+// ===========================================================================
 // Operator overloads (opt-out via EINSUMS_SIMD_NO_OPERATORS)
 // ===========================================================================
 
@@ -497,6 +772,14 @@ EINSUMS_FORCEINLINE Vec<T> operator-(Vec<T> a, Vec<T> b) {
 template <typename T>
 EINSUMS_FORCEINLINE Vec<T> operator*(Vec<T> a, Vec<T> b) {
     return mul(a, b);
+}
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> operator/(Vec<T> a, Vec<T> b) {
+    return div(a, b);
+}
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> operator-(Vec<T> a) {
+    return neg(a);
 }
 #endif
 
@@ -1659,6 +1942,645 @@ template <>
 EINSUMS_FORCEINLINE Vec<uint64_t> cmp_eq(Vec<uint64_t> a, Vec<uint64_t> b) {
     return {a.reg == b.reg ? ~uint64_t(0) : uint64_t(0)};
 }
+#endif
+
+// ===========================================================================
+// Floating-point comparisons, select, and mask logic.
+//
+// A comparison returns a Vec<T> mask, as the integer cmp_eq above does: each
+// lane is all-ones where the comparison holds and zero where it does not. The
+// comparisons follow IEEE 754, so every one involving a NaN is false except
+// cmp_ne, which is true.
+//
+// select(mask, a, b) takes a where the mask lane is set and b where it is
+// clear, for float, double and the 32- and 64-bit integers. The mask must be a
+// comparison result: the backends read different bits of a lane (x86 BLENDV
+// the top bit, AVX-512 any bit, NEON every bit), so only all-ones and zero
+// mean the same thing everywhere.
+//
+// bitwise_and/or/xor combine float masks as they combine integers, and
+// bitwise_andnot(a, b) is a & ~b for both. any(mask) and all(mask) ask whether
+// any lane, or every lane, is set.
+// ===========================================================================
+
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> cmp_ne(Vec<T> a, Vec<T> b);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> cmp_lt(Vec<T> a, Vec<T> b);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> cmp_le(Vec<T> a, Vec<T> b);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> cmp_gt(Vec<T> a, Vec<T> b);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> cmp_ge(Vec<T> a, Vec<T> b);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> select(Vec<T> mask, Vec<T> a, Vec<T> b);
+template <typename T>
+EINSUMS_FORCEINLINE Vec<T> bitwise_andnot(Vec<T> a, Vec<T> b);
+template <typename T>
+EINSUMS_FORCEINLINE bool any(Vec<T> mask);
+template <typename T>
+EINSUMS_FORCEINLINE bool all(Vec<T> mask);
+
+#if defined(__AVX512F__) && defined(__AVX512VL__)
+// AVX-512 compares produce a __mmask; widen it to a lane mask so every backend
+// returns the same shape, and narrow it back with a test where one is consumed.
+namespace detail {
+EINSUMS_FORCEINLINE __m512 mask_to_ps(__mmask16 k) {
+    return _mm512_castsi512_ps(_mm512_maskz_set1_epi32(k, -1));
+}
+EINSUMS_FORCEINLINE __m512d mask_to_pd(__mmask8 k) {
+    return _mm512_castsi512_pd(_mm512_maskz_set1_epi64(k, -1));
+}
+EINSUMS_FORCEINLINE __mmask16 lanes_set_32(__m512i m) {
+    return _mm512_test_epi32_mask(m, m);
+}
+EINSUMS_FORCEINLINE __mmask8 lanes_set_64(__m512i m) {
+    return _mm512_test_epi64_mask(m, m);
+}
+} // namespace detail
+
+#    define EINSUMS_SIMD_AVX512_CMP(name, pred)                                                                                            \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<float> name(Vec<float> a, Vec<float> b) {                                                                  \
+            return detail::mask_to_ps(_mm512_cmp_ps_mask(a.reg, b.reg, pred));                                                             \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<double> name(Vec<double> a, Vec<double> b) {                                                               \
+            return detail::mask_to_pd(_mm512_cmp_pd_mask(a.reg, b.reg, pred));                                                             \
+        }
+EINSUMS_SIMD_AVX512_CMP(cmp_eq, _CMP_EQ_OQ)
+EINSUMS_SIMD_AVX512_CMP(cmp_ne, _CMP_NEQ_UQ)
+EINSUMS_SIMD_AVX512_CMP(cmp_lt, _CMP_LT_OQ)
+EINSUMS_SIMD_AVX512_CMP(cmp_le, _CMP_LE_OQ)
+EINSUMS_SIMD_AVX512_CMP(cmp_gt, _CMP_GT_OQ)
+EINSUMS_SIMD_AVX512_CMP(cmp_ge, _CMP_GE_OQ)
+#    undef EINSUMS_SIMD_AVX512_CMP
+
+template <>
+EINSUMS_FORCEINLINE Vec<float> select(Vec<float> mask, Vec<float> a, Vec<float> b) {
+    return _mm512_mask_blend_ps(detail::lanes_set_32(_mm512_castps_si512(mask.reg)), b.reg, a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> select(Vec<double> mask, Vec<double> a, Vec<double> b) {
+    return _mm512_mask_blend_pd(detail::lanes_set_64(_mm512_castpd_si512(mask.reg)), b.reg, a.reg);
+}
+#    define EINSUMS_SIMD_AVX512_SELECT_INT(T, W)                                                                                           \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> select(Vec<T> mask, Vec<T> a, Vec<T> b) {                                                               \
+            return _mm512_mask_blend_epi##W(detail::lanes_set_##W(mask.reg), b.reg, a.reg);                                                \
+        }
+EINSUMS_SIMD_AVX512_SELECT_INT(int32_t, 32)
+EINSUMS_SIMD_AVX512_SELECT_INT(uint32_t, 32)
+EINSUMS_SIMD_AVX512_SELECT_INT(int64_t, 64)
+EINSUMS_SIMD_AVX512_SELECT_INT(uint64_t, 64)
+#    undef EINSUMS_SIMD_AVX512_SELECT_INT
+
+// The floating-point logic intrinsics are AVX-512DQ; the integer ones are F.
+#    define EINSUMS_SIMD_AVX512_FLOAT_LOGIC(T, cast_to, cast_from)                                                                         \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_and(Vec<T> a, Vec<T> b) {                                                                       \
+            return cast_from(_mm512_and_si512(cast_to(a.reg), cast_to(b.reg)));                                                            \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_or(Vec<T> a, Vec<T> b) {                                                                        \
+            return cast_from(_mm512_or_si512(cast_to(a.reg), cast_to(b.reg)));                                                             \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_xor(Vec<T> a, Vec<T> b) {                                                                       \
+            return cast_from(_mm512_xor_si512(cast_to(a.reg), cast_to(b.reg)));                                                            \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_andnot(Vec<T> a, Vec<T> b) {                                                                    \
+            return cast_from(_mm512_andnot_si512(cast_to(b.reg), cast_to(a.reg)));                                                         \
+        }
+EINSUMS_SIMD_AVX512_FLOAT_LOGIC(float, _mm512_castps_si512, _mm512_castsi512_ps)
+EINSUMS_SIMD_AVX512_FLOAT_LOGIC(double, _mm512_castpd_si512, _mm512_castsi512_pd)
+#    undef EINSUMS_SIMD_AVX512_FLOAT_LOGIC
+
+#    define EINSUMS_SIMD_AVX512_ANDNOT_INT(T)                                                                                              \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_andnot(Vec<T> a, Vec<T> b) {                                                                    \
+            return _mm512_andnot_si512(b.reg, a.reg);                                                                                      \
+        }
+EINSUMS_SIMD_AVX512_ANDNOT_INT(int32_t)
+EINSUMS_SIMD_AVX512_ANDNOT_INT(uint32_t)
+EINSUMS_SIMD_AVX512_ANDNOT_INT(int64_t)
+EINSUMS_SIMD_AVX512_ANDNOT_INT(uint64_t)
+#    undef EINSUMS_SIMD_AVX512_ANDNOT_INT
+
+template <>
+EINSUMS_FORCEINLINE bool any(Vec<float> mask) {
+    return detail::lanes_set_32(_mm512_castps_si512(mask.reg)) != 0;
+}
+template <>
+EINSUMS_FORCEINLINE bool all(Vec<float> mask) {
+    return detail::lanes_set_32(_mm512_castps_si512(mask.reg)) == 0xFFFF;
+}
+template <>
+EINSUMS_FORCEINLINE bool any(Vec<double> mask) {
+    return detail::lanes_set_64(_mm512_castpd_si512(mask.reg)) != 0;
+}
+template <>
+EINSUMS_FORCEINLINE bool all(Vec<double> mask) {
+    return detail::lanes_set_64(_mm512_castpd_si512(mask.reg)) == 0xFF;
+}
+#    define EINSUMS_SIMD_AVX512_ANY_ALL_INT(T, W, full)                                                                                    \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool any(Vec<T> mask) {                                                                                        \
+            return detail::lanes_set_##W(mask.reg) != 0;                                                                                   \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool all(Vec<T> mask) {                                                                                        \
+            return detail::lanes_set_##W(mask.reg) == full;                                                                                \
+        }
+EINSUMS_SIMD_AVX512_ANY_ALL_INT(int32_t, 32, 0xFFFF)
+EINSUMS_SIMD_AVX512_ANY_ALL_INT(uint32_t, 32, 0xFFFF)
+EINSUMS_SIMD_AVX512_ANY_ALL_INT(int64_t, 64, 0xFF)
+EINSUMS_SIMD_AVX512_ANY_ALL_INT(uint64_t, 64, 0xFF)
+#    undef EINSUMS_SIMD_AVX512_ANY_ALL_INT
+#elif defined(__AVX__)
+#    define EINSUMS_SIMD_AVX_CMP(name, pred)                                                                                               \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<float> name(Vec<float> a, Vec<float> b) {                                                                  \
+            return _mm256_cmp_ps(a.reg, b.reg, pred);                                                                                      \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<double> name(Vec<double> a, Vec<double> b) {                                                               \
+            return _mm256_cmp_pd(a.reg, b.reg, pred);                                                                                      \
+        }
+EINSUMS_SIMD_AVX_CMP(cmp_eq, _CMP_EQ_OQ)
+EINSUMS_SIMD_AVX_CMP(cmp_ne, _CMP_NEQ_UQ)
+EINSUMS_SIMD_AVX_CMP(cmp_lt, _CMP_LT_OQ)
+EINSUMS_SIMD_AVX_CMP(cmp_le, _CMP_LE_OQ)
+EINSUMS_SIMD_AVX_CMP(cmp_gt, _CMP_GT_OQ)
+EINSUMS_SIMD_AVX_CMP(cmp_ge, _CMP_GE_OQ)
+#    undef EINSUMS_SIMD_AVX_CMP
+
+// BLENDV reads each lane's top bit; the integer forms go through the float
+// domain so that AVX without AVX2 has them too.
+template <>
+EINSUMS_FORCEINLINE Vec<float> select(Vec<float> mask, Vec<float> a, Vec<float> b) {
+    return _mm256_blendv_ps(b.reg, a.reg, mask.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> select(Vec<double> mask, Vec<double> a, Vec<double> b) {
+    return _mm256_blendv_pd(b.reg, a.reg, mask.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> bitwise_and(Vec<float> a, Vec<float> b) {
+    return _mm256_and_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> bitwise_and(Vec<double> a, Vec<double> b) {
+    return _mm256_and_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> bitwise_or(Vec<float> a, Vec<float> b) {
+    return _mm256_or_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> bitwise_or(Vec<double> a, Vec<double> b) {
+    return _mm256_or_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> bitwise_xor(Vec<float> a, Vec<float> b) {
+    return _mm256_xor_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> bitwise_xor(Vec<double> a, Vec<double> b) {
+    return _mm256_xor_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> bitwise_andnot(Vec<float> a, Vec<float> b) {
+    return _mm256_andnot_ps(b.reg, a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> bitwise_andnot(Vec<double> a, Vec<double> b) {
+    return _mm256_andnot_pd(b.reg, a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE bool any(Vec<float> mask) {
+    return _mm256_movemask_ps(mask.reg) != 0;
+}
+template <>
+EINSUMS_FORCEINLINE bool all(Vec<float> mask) {
+    return _mm256_movemask_ps(mask.reg) == 0xFF;
+}
+template <>
+EINSUMS_FORCEINLINE bool any(Vec<double> mask) {
+    return _mm256_movemask_pd(mask.reg) != 0;
+}
+template <>
+EINSUMS_FORCEINLINE bool all(Vec<double> mask) {
+    return _mm256_movemask_pd(mask.reg) == 0xF;
+}
+#    define EINSUMS_SIMD_AVX_MASK_INT(T, sfx, full)                                                                                        \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> select(Vec<T> mask, Vec<T> a, Vec<T> b) {                                                               \
+            return _mm256_cast##sfx##_si256(                                                                                               \
+                _mm256_blendv_##sfx(_mm256_castsi256_##sfx(b.reg), _mm256_castsi256_##sfx(a.reg), _mm256_castsi256_##sfx(mask.reg)));      \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_andnot(Vec<T> a, Vec<T> b) {                                                                    \
+            return _mm256_cast##sfx##_si256(_mm256_andnot_##sfx(_mm256_castsi256_##sfx(b.reg), _mm256_castsi256_##sfx(a.reg)));            \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool any(Vec<T> mask) {                                                                                        \
+            return _mm256_movemask_##sfx(_mm256_castsi256_##sfx(mask.reg)) != 0;                                                           \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool all(Vec<T> mask) {                                                                                        \
+            return _mm256_movemask_##sfx(_mm256_castsi256_##sfx(mask.reg)) == full;                                                        \
+        }
+EINSUMS_SIMD_AVX_MASK_INT(int32_t, ps, 0xFF)
+EINSUMS_SIMD_AVX_MASK_INT(uint32_t, ps, 0xFF)
+EINSUMS_SIMD_AVX_MASK_INT(int64_t, pd, 0xF)
+EINSUMS_SIMD_AVX_MASK_INT(uint64_t, pd, 0xF)
+#    undef EINSUMS_SIMD_AVX_MASK_INT
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_eq(Vec<float> a, Vec<float> b) {
+    return _mm_cmpeq_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_eq(Vec<double> a, Vec<double> b) {
+    return _mm_cmpeq_pd(a.reg, b.reg);
+}
+// CMPNEQPS is the unordered not-equal, so a NaN lane compares true.
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_ne(Vec<float> a, Vec<float> b) {
+    return _mm_cmpneq_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_ne(Vec<double> a, Vec<double> b) {
+    return _mm_cmpneq_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_lt(Vec<float> a, Vec<float> b) {
+    return _mm_cmplt_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_lt(Vec<double> a, Vec<double> b) {
+    return _mm_cmplt_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_le(Vec<float> a, Vec<float> b) {
+    return _mm_cmple_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_le(Vec<double> a, Vec<double> b) {
+    return _mm_cmple_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_gt(Vec<float> a, Vec<float> b) {
+    return _mm_cmpgt_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_gt(Vec<double> a, Vec<double> b) {
+    return _mm_cmpgt_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_ge(Vec<float> a, Vec<float> b) {
+    return _mm_cmpge_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_ge(Vec<double> a, Vec<double> b) {
+    return _mm_cmpge_pd(a.reg, b.reg);
+}
+#    if defined(__SSE4_1__)
+template <>
+EINSUMS_FORCEINLINE Vec<float> select(Vec<float> mask, Vec<float> a, Vec<float> b) {
+    return _mm_blendv_ps(b.reg, a.reg, mask.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> select(Vec<double> mask, Vec<double> a, Vec<double> b) {
+    return _mm_blendv_pd(b.reg, a.reg, mask.reg);
+}
+#        define EINSUMS_SIMD_SSE_SELECT_INT(T)                                                                                             \
+            template <>                                                                                                                    \
+            EINSUMS_FORCEINLINE Vec<T> select(Vec<T> mask, Vec<T> a, Vec<T> b) {                                                           \
+                return _mm_blendv_epi8(b.reg, a.reg, mask.reg);                                                                            \
+            }
+#    else
+// SSE2 has no BLENDV: (mask & a) | (~mask & b).
+template <>
+EINSUMS_FORCEINLINE Vec<float> select(Vec<float> mask, Vec<float> a, Vec<float> b) {
+    return _mm_or_ps(_mm_and_ps(mask.reg, a.reg), _mm_andnot_ps(mask.reg, b.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> select(Vec<double> mask, Vec<double> a, Vec<double> b) {
+    return _mm_or_pd(_mm_and_pd(mask.reg, a.reg), _mm_andnot_pd(mask.reg, b.reg));
+}
+#        define EINSUMS_SIMD_SSE_SELECT_INT(T)                                                                                             \
+            template <>                                                                                                                    \
+            EINSUMS_FORCEINLINE Vec<T> select(Vec<T> mask, Vec<T> a, Vec<T> b) {                                                           \
+                return _mm_or_si128(_mm_and_si128(mask.reg, a.reg), _mm_andnot_si128(mask.reg, b.reg));                                    \
+            }
+#    endif
+EINSUMS_SIMD_SSE_SELECT_INT(int32_t)
+EINSUMS_SIMD_SSE_SELECT_INT(uint32_t)
+EINSUMS_SIMD_SSE_SELECT_INT(int64_t)
+EINSUMS_SIMD_SSE_SELECT_INT(uint64_t)
+#    undef EINSUMS_SIMD_SSE_SELECT_INT
+template <>
+EINSUMS_FORCEINLINE Vec<float> bitwise_and(Vec<float> a, Vec<float> b) {
+    return _mm_and_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> bitwise_and(Vec<double> a, Vec<double> b) {
+    return _mm_and_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> bitwise_or(Vec<float> a, Vec<float> b) {
+    return _mm_or_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> bitwise_or(Vec<double> a, Vec<double> b) {
+    return _mm_or_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> bitwise_xor(Vec<float> a, Vec<float> b) {
+    return _mm_xor_ps(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> bitwise_xor(Vec<double> a, Vec<double> b) {
+    return _mm_xor_pd(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> bitwise_andnot(Vec<float> a, Vec<float> b) {
+    return _mm_andnot_ps(b.reg, a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> bitwise_andnot(Vec<double> a, Vec<double> b) {
+    return _mm_andnot_pd(b.reg, a.reg);
+}
+template <>
+EINSUMS_FORCEINLINE bool any(Vec<float> mask) {
+    return _mm_movemask_ps(mask.reg) != 0;
+}
+template <>
+EINSUMS_FORCEINLINE bool all(Vec<float> mask) {
+    return _mm_movemask_ps(mask.reg) == 0xF;
+}
+template <>
+EINSUMS_FORCEINLINE bool any(Vec<double> mask) {
+    return _mm_movemask_pd(mask.reg) != 0;
+}
+template <>
+EINSUMS_FORCEINLINE bool all(Vec<double> mask) {
+    return _mm_movemask_pd(mask.reg) == 0x3;
+}
+#    define EINSUMS_SIMD_SSE_MASK_INT(T, sfx, full)                                                                                        \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_andnot(Vec<T> a, Vec<T> b) {                                                                    \
+            return _mm_andnot_si128(b.reg, a.reg);                                                                                         \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool any(Vec<T> mask) {                                                                                        \
+            return _mm_movemask_##sfx(_mm_castsi128_##sfx(mask.reg)) != 0;                                                                 \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool all(Vec<T> mask) {                                                                                        \
+            return _mm_movemask_##sfx(_mm_castsi128_##sfx(mask.reg)) == full;                                                              \
+        }
+EINSUMS_SIMD_SSE_MASK_INT(int32_t, ps, 0xF)
+EINSUMS_SIMD_SSE_MASK_INT(uint32_t, ps, 0xF)
+EINSUMS_SIMD_SSE_MASK_INT(int64_t, pd, 0x3)
+EINSUMS_SIMD_SSE_MASK_INT(uint64_t, pd, 0x3)
+#    undef EINSUMS_SIMD_SSE_MASK_INT
+#elif defined(__aarch64__) || defined(_M_ARM64)
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_eq(Vec<float> a, Vec<float> b) {
+    return vreinterpretq_f32_u32(vceqq_f32(a.reg, b.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_eq(Vec<double> a, Vec<double> b) {
+    return vreinterpretq_f64_u64(vceqq_f64(a.reg, b.reg));
+}
+// NEON has no not-equal compare; inverting the ordered equal makes a NaN lane true.
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_ne(Vec<float> a, Vec<float> b) {
+    return vreinterpretq_f32_u32(vmvnq_u32(vceqq_f32(a.reg, b.reg)));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_ne(Vec<double> a, Vec<double> b) {
+    return vreinterpretq_f64_u32(vmvnq_u32(vreinterpretq_u32_u64(vceqq_f64(a.reg, b.reg))));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_lt(Vec<float> a, Vec<float> b) {
+    return vreinterpretq_f32_u32(vcltq_f32(a.reg, b.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_lt(Vec<double> a, Vec<double> b) {
+    return vreinterpretq_f64_u64(vcltq_f64(a.reg, b.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_le(Vec<float> a, Vec<float> b) {
+    return vreinterpretq_f32_u32(vcleq_f32(a.reg, b.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_le(Vec<double> a, Vec<double> b) {
+    return vreinterpretq_f64_u64(vcleq_f64(a.reg, b.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_gt(Vec<float> a, Vec<float> b) {
+    return vreinterpretq_f32_u32(vcgtq_f32(a.reg, b.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_gt(Vec<double> a, Vec<double> b) {
+    return vreinterpretq_f64_u64(vcgtq_f64(a.reg, b.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> cmp_ge(Vec<float> a, Vec<float> b) {
+    return vreinterpretq_f32_u32(vcgeq_f32(a.reg, b.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> cmp_ge(Vec<double> a, Vec<double> b) {
+    return vreinterpretq_f64_u64(vcgeq_f64(a.reg, b.reg));
+}
+template <>
+EINSUMS_FORCEINLINE Vec<float> select(Vec<float> mask, Vec<float> a, Vec<float> b) {
+    return vbslq_f32(vreinterpretq_u32_f32(mask.reg), a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> select(Vec<double> mask, Vec<double> a, Vec<double> b) {
+    return vbslq_f64(vreinterpretq_u64_f64(mask.reg), a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<int32_t> select(Vec<int32_t> mask, Vec<int32_t> a, Vec<int32_t> b) {
+    return vbslq_s32(vreinterpretq_u32_s32(mask.reg), a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<uint32_t> select(Vec<uint32_t> mask, Vec<uint32_t> a, Vec<uint32_t> b) {
+    return vbslq_u32(mask.reg, a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<int64_t> select(Vec<int64_t> mask, Vec<int64_t> a, Vec<int64_t> b) {
+    return vbslq_s64(vreinterpretq_u64_s64(mask.reg), a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<uint64_t> select(Vec<uint64_t> mask, Vec<uint64_t> a, Vec<uint64_t> b) {
+    return vbslq_u64(mask.reg, a.reg, b.reg);
+}
+#    define EINSUMS_SIMD_NEON_FLOAT_LOGIC(T, sfx)                                                                                          \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_and(Vec<T> a, Vec<T> b) {                                                                       \
+            return vreinterpretq_##sfx##_u32(vandq_u32(vreinterpretq_u32_##sfx(a.reg), vreinterpretq_u32_##sfx(b.reg)));                   \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_or(Vec<T> a, Vec<T> b) {                                                                        \
+            return vreinterpretq_##sfx##_u32(vorrq_u32(vreinterpretq_u32_##sfx(a.reg), vreinterpretq_u32_##sfx(b.reg)));                   \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_xor(Vec<T> a, Vec<T> b) {                                                                       \
+            return vreinterpretq_##sfx##_u32(veorq_u32(vreinterpretq_u32_##sfx(a.reg), vreinterpretq_u32_##sfx(b.reg)));                   \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_andnot(Vec<T> a, Vec<T> b) {                                                                    \
+            return vreinterpretq_##sfx##_u32(vbicq_u32(vreinterpretq_u32_##sfx(a.reg), vreinterpretq_u32_##sfx(b.reg)));                   \
+        }
+EINSUMS_SIMD_NEON_FLOAT_LOGIC(float, f32)
+EINSUMS_SIMD_NEON_FLOAT_LOGIC(double, f64)
+#    undef EINSUMS_SIMD_NEON_FLOAT_LOGIC
+template <>
+EINSUMS_FORCEINLINE Vec<int32_t> bitwise_andnot(Vec<int32_t> a, Vec<int32_t> b) {
+    return vbicq_s32(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<uint32_t> bitwise_andnot(Vec<uint32_t> a, Vec<uint32_t> b) {
+    return vbicq_u32(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<int64_t> bitwise_andnot(Vec<int64_t> a, Vec<int64_t> b) {
+    return vbicq_s64(a.reg, b.reg);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<uint64_t> bitwise_andnot(Vec<uint64_t> a, Vec<uint64_t> b) {
+    return vbicq_u64(a.reg, b.reg);
+}
+// Every lane of a mask is all-ones or zero, so the 32-bit view answers for 64-bit lanes too.
+#    define EINSUMS_SIMD_NEON_ANY_ALL(T, sfx)                                                                                              \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool any(Vec<T> mask) {                                                                                        \
+            return vmaxvq_u32(vreinterpretq_u32_##sfx(mask.reg)) != 0;                                                                     \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool all(Vec<T> mask) {                                                                                        \
+            return vminvq_u32(vreinterpretq_u32_##sfx(mask.reg)) != 0;                                                                     \
+        }
+EINSUMS_SIMD_NEON_ANY_ALL(float, f32)
+EINSUMS_SIMD_NEON_ANY_ALL(double, f64)
+EINSUMS_SIMD_NEON_ANY_ALL(int32_t, s32)
+EINSUMS_SIMD_NEON_ANY_ALL(int64_t, s64)
+EINSUMS_SIMD_NEON_ANY_ALL(uint64_t, u64)
+#    undef EINSUMS_SIMD_NEON_ANY_ALL
+template <>
+EINSUMS_FORCEINLINE bool any(Vec<uint32_t> mask) {
+    return vmaxvq_u32(mask.reg) != 0;
+}
+template <>
+EINSUMS_FORCEINLINE bool all(Vec<uint32_t> mask) {
+    return vminvq_u32(mask.reg) != 0;
+}
+#else
+// Scalar fallback: a mask lane is the all-ones bit pattern of T, or zero.
+namespace detail {
+template <typename T>
+using mask_bits_t = std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>;
+template <typename T>
+EINSUMS_FORCEINLINE T mask_lane(bool set) {
+    return std::bit_cast<T>(set ? ~mask_bits_t<T>{0} : mask_bits_t<T>{0});
+}
+template <typename T>
+EINSUMS_FORCEINLINE bool lane_set(T lane) {
+    return std::bit_cast<mask_bits_t<T>>(lane) != 0;
+}
+template <typename T, typename Op>
+EINSUMS_FORCEINLINE T bits_op(T a, T b, Op op) {
+    return std::bit_cast<T>(static_cast<mask_bits_t<T>>(op(std::bit_cast<mask_bits_t<T>>(a), std::bit_cast<mask_bits_t<T>>(b))));
+}
+} // namespace detail
+
+#    define EINSUMS_SIMD_SCALAR_FLOAT_MASKS(T)                                                                                             \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_eq(Vec<T> a, Vec<T> b) {                                                                            \
+            return {detail::mask_lane<T>(a.reg == b.reg)};                                                                                 \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_ne(Vec<T> a, Vec<T> b) {                                                                            \
+            return {detail::mask_lane<T>(a.reg != b.reg)};                                                                                 \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_lt(Vec<T> a, Vec<T> b) {                                                                            \
+            return {detail::mask_lane<T>(a.reg < b.reg)};                                                                                  \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_le(Vec<T> a, Vec<T> b) {                                                                            \
+            return {detail::mask_lane<T>(a.reg <= b.reg)};                                                                                 \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_gt(Vec<T> a, Vec<T> b) {                                                                            \
+            return {detail::mask_lane<T>(a.reg > b.reg)};                                                                                  \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> cmp_ge(Vec<T> a, Vec<T> b) {                                                                            \
+            return {detail::mask_lane<T>(a.reg >= b.reg)};                                                                                 \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_and(Vec<T> a, Vec<T> b) {                                                                       \
+            return {detail::bits_op(a.reg, b.reg, [](auto x, auto y) { return x & y; })};                                                  \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_or(Vec<T> a, Vec<T> b) {                                                                        \
+            return {detail::bits_op(a.reg, b.reg, [](auto x, auto y) { return x | y; })};                                                  \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_xor(Vec<T> a, Vec<T> b) {                                                                       \
+            return {detail::bits_op(a.reg, b.reg, [](auto x, auto y) { return x ^ y; })};                                                  \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_andnot(Vec<T> a, Vec<T> b) {                                                                    \
+            return {detail::bits_op(a.reg, b.reg, [](auto x, auto y) { return x & ~y; })};                                                 \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> select(Vec<T> mask, Vec<T> a, Vec<T> b) {                                                               \
+            return detail::lane_set(mask.reg) ? a : b;                                                                                     \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool any(Vec<T> mask) {                                                                                        \
+            return detail::lane_set(mask.reg);                                                                                             \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool all(Vec<T> mask) {                                                                                        \
+            return detail::lane_set(mask.reg);                                                                                             \
+        }
+EINSUMS_SIMD_SCALAR_FLOAT_MASKS(float)
+EINSUMS_SIMD_SCALAR_FLOAT_MASKS(double)
+#    undef EINSUMS_SIMD_SCALAR_FLOAT_MASKS
+
+#    define EINSUMS_SIMD_SCALAR_INT_MASKS(T)                                                                                               \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> bitwise_andnot(Vec<T> a, Vec<T> b) {                                                                    \
+            return {static_cast<T>(a.reg & ~b.reg)};                                                                                       \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE Vec<T> select(Vec<T> mask, Vec<T> a, Vec<T> b) {                                                               \
+            return mask.reg != 0 ? a : b;                                                                                                  \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool any(Vec<T> mask) {                                                                                        \
+            return mask.reg != 0;                                                                                                          \
+        }                                                                                                                                  \
+        template <>                                                                                                                        \
+        EINSUMS_FORCEINLINE bool all(Vec<T> mask) {                                                                                        \
+            return mask.reg != 0;                                                                                                          \
+        }
+EINSUMS_SIMD_SCALAR_INT_MASKS(int32_t)
+EINSUMS_SIMD_SCALAR_INT_MASKS(uint32_t)
+EINSUMS_SIMD_SCALAR_INT_MASKS(int64_t)
+EINSUMS_SIMD_SCALAR_INT_MASKS(uint64_t)
+#    undef EINSUMS_SIMD_SCALAR_INT_MASKS
 #endif
 
 // ===========================================================================
