@@ -147,13 +147,15 @@ jobs:
         run: ctest --rerun-failed --output-on-failure -j4
 
       # One leg only, the one without coverage instrumentation or a variant switch.
+      # Two at a time: with four scaled fuzzers running together the hosted runner was shut
+      # down mid-step (exit 143, no test failure) on consecutive nightlies.
       - name: Test (CTest) - Long fuzz
         if: inputs.long_fuzz && matrix.compiler == 'clang' && matrix.blas == 'openblas' && matrix.variant == 'default'
         working-directory: "${{ github.workspace }}/build"
         env:
           EINSUMS_FUZZ_SCALE: "20"
           EINSUMS_TEST_STACKDUMP_DIR: "${{ github.workspace }}/stackdumps"
-        run: ctest -L PYTHON -R "Fuzz|Hyp" --output-on-failure -j4 --timeout 7200
+        run: ctest -L PYTHON -R "Fuzz|Hyp" --output-on-failure -j2 --timeout 7200
 
       # The runners rarely have AVX-512, so without an emulator every simd_v4 test is Skipped.
       # SDE emulates CPUID and XGETBV and follows exec, so the rung guard sees a v4 host.
