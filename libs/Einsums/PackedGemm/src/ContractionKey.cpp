@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -27,6 +28,8 @@
 #include <shared_mutex>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <unordered_map>
 
 #if defined(__APPLE__)
@@ -72,20 +75,29 @@ int count_cpu_list(char const *path) {
     if (!in || !std::getline(in, list)) {
         return 0;
     }
+    // A CPU number must fill its whole field: "3x" or "" makes the list unreadable, not one CPU.
+    auto parse = [](std::string_view s, int &out) {
+        auto const [end, ec] = std::from_chars(s.data(), s.data() + s.size(), out);
+        return ec == std::errc{} && end == s.data() + s.size();
+    };
     int               count = 0;
     std::stringstream ss(list);
     std::string       range;
     while (std::getline(ss, range, ',')) {
-        auto const dash = range.find('-');
-        try {
-            if (dash == std::string::npos) {
-                std::stoi(range);
-                ++count;
-            } else {
-                count += std::stoi(range.substr(dash + 1)) - std::stoi(range.substr(0, dash)) + 1;
+        std::string_view const r    = range;
+        auto const             dash = r.find('-');
+        int                    lo   = 0;
+        int                    hi   = 0;
+        if (dash == std::string_view::npos) {
+            if (!parse(r, lo)) {
+                return 0;
             }
-        } catch (...) {
-            return 0;
+            ++count;
+        } else {
+            if (!parse(r.substr(0, dash), lo) || !parse(r.substr(dash + 1), hi) || hi < lo) {
+                return 0;
+            }
+            count += hi - lo + 1;
         }
     }
     return count;
