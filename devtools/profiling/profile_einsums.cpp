@@ -92,12 +92,12 @@ inline constinit einsums::cl::ConfigOption<bool> Csv =
 } // namespace option
 
 void register_args() {
-    einsums::cl::register_option(option::Start);
-    einsums::cl::register_option(option::Step);
-    einsums::cl::register_option(option::End);
-    einsums::cl::register_option(option::Trials);
-    einsums::cl::register_option(option::ColMajor);
-    einsums::cl::register_option(option::Csv);
+    einsums::cl::register_option(::option::Start);
+    einsums::cl::register_option(::option::Step);
+    einsums::cl::register_option(::option::End);
+    einsums::cl::register_option(::option::Trials);
+    einsums::cl::register_option(::option::ColMajor);
+    einsums::cl::register_option(::option::Csv);
 }
 
 int main(int argc, char **argv) {
@@ -114,12 +114,12 @@ int main(int argc, char **argv) {
             bool csv, row_major;
 
             {
-                start     = static_cast<int>(einsums::config::get(option::Start));
-                end       = static_cast<int>(einsums::config::get(option::End));
-                step      = static_cast<int>(einsums::config::get(option::Step));
-                trials    = static_cast<int>(einsums::config::get(option::Trials));
-                csv       = einsums::config::get(option::Csv);
-                row_major = !einsums::config::get(option::ColMajor);
+                start     = static_cast<int>(einsums::config::get(::option::Start));
+                end       = static_cast<int>(einsums::config::get(::option::End));
+                step      = static_cast<int>(einsums::config::get(::option::Step));
+                trials    = static_cast<int>(einsums::config::get(::option::Trials));
+                csv       = einsums::config::get(::option::Csv);
+                row_major = !einsums::config::get(::option::ColMajor);
             }
 
             if (end < start) {

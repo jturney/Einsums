@@ -1,131 +1,194 @@
+! J and K builds from plain Fortran loop nests, serial and with OpenMP: the
+! Fortran rows of the J/K breakdown figure (see profile_jk_breakdown.cpp for the
+! other rows).
+!
+!   J(mu,nu) =  2 sum_{lam,sig} (mu nu|lam sig) D(lam,sig)
+!   K(mu,nu) = -1 sum_{lam,sig} (mu lam|nu sig) D(lam,sig)
+!
+! The operands are the deterministic symmetric values profile_jk_breakdown
+! fills, so the checksums printed here must match the ones it prints. Times
+! are wall clock, the median of the trials after one untimed warm-up call.
+!
+! Usage: profile_fort_loop -n <norbs> -t <trials> [-c]
+!   -c prints "fortran_loops,j_ms,k_ms", "fortran_omp_loops,j_ms,k_ms" and a
+!      "checksum,J,K" line.
 MODULE loops
+   USE, INTRINSIC :: ISO_FORTRAN_ENV, ONLY : INT64, REAL64
    IMPLICIT NONE
 
 CONTAINS
-!       Create the J matrix.
-   SUBROUTINE create_j(j, d, tei, norbs)
-      REAL*8, DIMENSION(:,:), INTENT(OUT) :: j
-      REAL*8, DIMENSION(:,:), INTENT(IN) :: d
-      REAL*8, DIMENSION(:,:,:,:), INTENT(IN) :: tei
 
-      INTEGER, INTENT(IN) :: norbs
+   PURE INTEGER(INT64) FUNCTION pair_index(a, b)
+      INTEGER(INT64), INTENT(IN) :: a, b
+      pair_index = MAX(a, b) * (MAX(a, b) + 1) / 2 + MIN(a, b)
+   END FUNCTION pair_index
 
+   ! Zero-based indices, matching tei_value in profile_jk_breakdown.cpp.
+   PURE REAL(REAL64) FUNCTION tei_value(a, b, c, d)
+      INTEGER(INT64), INTENT(IN) :: a, b, c, d
+      INTEGER(INT64) :: idx
+      idx = pair_index(pair_index(a, b), pair_index(c, d))
+      tei_value = REAL(MOD(idx * 2654435761_INT64, 1000003_INT64), REAL64) / 500001.5_REAL64 - 1.0_REAL64
+   END FUNCTION tei_value
 
+   PURE REAL(REAL64) FUNCTION density_value(a, b)
+      INTEGER(INT64), INTENT(IN) :: a, b
+      density_value = REAL(MOD(pair_index(a, b) * 40503_INT64, 10007_INT64), REAL64) / 5003.5_REAL64 - 1.0_REAL64
+   END FUNCTION density_value
+
+   SUBROUTINE create_j(j, d, tei, n)
+      INTEGER, INTENT(IN) :: n
+      REAL(REAL64), INTENT(OUT) :: j(n, n)
+      REAL(REAL64), INTENT(IN) :: d(n, n), tei(n, n, n, n)
       INTEGER :: mu, nu, lam, sig
 
-      j(:,:) = 0
-
-      DO CONCURRENT (mu=1:norbs, nu=1:norbs, lam=1:norbs, sig=1:norbs)
-         j(nu, mu) = j(nu, mu) + 2 * d(nu, mu) * tei(sig, lam, nu, mu)
+      ! Storage order: the TEI streams through once, unit stride, while the
+      ! n x n output stays in cache - the Fortran counterpart of the C nests
+      ! reading their last index fastest.
+      j(:, :) = 0
+      DO sig = 1, n
+         DO lam = 1, n
+            DO nu = 1, n
+               DO mu = 1, n
+                  j(mu, nu) = j(mu, nu) + 2 * d(lam, sig) * tei(mu, nu, lam, sig)
+               END DO
+            END DO
+         END DO
       END DO
-
    END SUBROUTINE create_j
 
-! Create the K matrix.
-   SUBROUTINE create_k(k, d, tei, norbs)
-      REAL*8, DIMENSION(:,:), INTENT(OUT) :: k
-      REAL*8, DIMENSION(:,:), INTENT(IN) :: d
-      REAL*8, DIMENSION(:,:,:,:), INTENT(IN) :: tei
-
-      INTEGER, INTENT(IN) :: norbs
-
-
+   SUBROUTINE create_k(k, d, tei, n)
+      INTEGER, INTENT(IN) :: n
+      REAL(REAL64), INTENT(OUT) :: k(n, n)
+      REAL(REAL64), INTENT(IN) :: d(n, n), tei(n, n, n, n)
       INTEGER :: mu, nu, lam, sig
 
-      k(:,:) = 0
-
-      DO CONCURRENT (mu=1:norbs, nu=1:norbs, lam=1:norbs, sig=1:norbs)
-         k(nu, mu) = k(nu, mu) - d(nu, mu) * tei(sig, nu, lam, mu)
+      k(:, :) = 0
+      DO sig = 1, n
+         DO nu = 1, n
+            DO lam = 1, n
+               DO mu = 1, n
+                  k(mu, nu) = k(mu, nu) - d(lam, sig) * tei(mu, lam, nu, sig)
+               END DO
+            END DO
+         END DO
       END DO
-
    END SUBROUTINE create_k
 
-! Create the G matrix.
-   SUBROUTINE create_g(g, j, k)
-      REAL(8), DIMENSION(:,:), INTENT(OUT) :: g
-      REAL(8), DIMENSION(:,:), INTENT(IN) :: j, k
+   ! The same nests, OpenMP over the outermost (sig) loop. Every thread streams
+   ! its own slab of the TEI and accumulates into a private copy of the n x n
+   ! output, which the reduction sums at the end.
+   SUBROUTINE create_j_omp(j, d, tei, n)
+      INTEGER, INTENT(IN) :: n
+      REAL(REAL64), INTENT(OUT) :: j(n, n)
+      REAL(REAL64), INTENT(IN) :: d(n, n), tei(n, n, n, n)
+      INTEGER :: mu, nu, lam, sig
 
-      g(:,:) = j(:,:) + k(:,:)
-   END SUBROUTINE
-
-! Calculate the average.
-   REAL(8) FUNCTION mean(values)
-      REAL(8), DIMENSION(:), INTENT(IN) :: values
-
-      mean = SUM(values) / SIZE(values)
-   END FUNCTION mean
-
-! Calculate the variance
-   REAL(8) FUNCTION variance(values, avg)
-      REAL(8), DIMENSION(:), INTENT(IN) :: values
-      REAL(8), INTENT(IN) :: avg
-
-      INTEGER :: i
-
-      variance = 0
-
-      DO i=1,SIZE(values)
-         variance = variance + (values(i) - avg) * (values(i) - avg)
+      j(:, :) = 0
+      !$omp parallel do reduction(+:j) private(lam, nu, mu)
+      DO sig = 1, n
+         DO lam = 1, n
+            DO nu = 1, n
+               DO mu = 1, n
+                  j(mu, nu) = j(mu, nu) + 2 * d(lam, sig) * tei(mu, nu, lam, sig)
+               END DO
+            END DO
+         END DO
       END DO
+      !$omp end parallel do
+   END SUBROUTINE create_j_omp
 
-      variance = variance / (SIZE(values) - 1)
-   END FUNCTION variance
+   SUBROUTINE create_k_omp(k, d, tei, n)
+      INTEGER, INTENT(IN) :: n
+      REAL(REAL64), INTENT(OUT) :: k(n, n)
+      REAL(REAL64), INTENT(IN) :: d(n, n), tei(n, n, n, n)
+      INTEGER :: mu, nu, lam, sig
 
-! Calculate the standard deviation.
-   REAL(8) FUNCTION stdev(values, avg)
-      REAL(8), DIMENSION(:), INTENT(IN) :: values
-      REAL(8), INTENT(IN) :: avg
+      k(:, :) = 0
+      !$omp parallel do reduction(+:k) private(nu, lam, mu)
+      DO sig = 1, n
+         DO nu = 1, n
+            DO lam = 1, n
+               DO mu = 1, n
+                  k(mu, nu) = k(mu, nu) - d(lam, sig) * tei(mu, lam, nu, sig)
+               END DO
+            END DO
+         END DO
+      END DO
+      !$omp end parallel do
+   END SUBROUTINE create_k_omp
 
-      stdev = SQRT(variance(values, avg))
-   END FUNCTION stdev
+   REAL(REAL64) FUNCTION now_ms()
+      INTEGER(INT64) :: count, rate
+      CALL SYSTEM_CLOCK(count, rate)
+      now_ms = 1000.0_REAL64 * REAL(count, REAL64) / REAL(rate, REAL64)
+   END FUNCTION now_ms
 
-! Parse command line arguments
-   SUBROUTINE parse_args(norbs, trials)
-      INTEGER, INTENT(OUT) :: norbs, trials
+   ! Median of v; sorts v in place (insertion sort, the trial count is small).
+   REAL(REAL64) FUNCTION median(v)
+      REAL(REAL64), INTENT(INOUT) :: v(:)
+      INTEGER :: i, m, n
+      REAL(REAL64) :: x
+      n = SIZE(v)
+      DO i = 2, n
+         x = v(i)
+         m = i - 1
+         DO WHILE (m >= 1)
+            IF (v(m) <= x) EXIT
+            v(m + 1) = v(m)
+            m = m - 1
+         END DO
+         v(m + 1) = x
+      END DO
+      IF (MOD(n, 2) == 1) THEN
+         median = v(n / 2 + 1)
+      ELSE
+         median = 0.5_REAL64 * (v(n / 2) + v(n / 2 + 1))
+      END IF
+   END FUNCTION median
 
-      INTEGER :: i, state, status
+   ! Layout-independent for a symmetric matrix; the C++ driver computes the same sum.
+   REAL(REAL64) FUNCTION checksum(x, n)
+      INTEGER, INTENT(IN) :: n
+      REAL(REAL64), INTENT(IN) :: x(n, n)
+      INTEGER :: a, b
+      checksum = 0
+      DO b = 1, n
+         DO a = 1, n
+            checksum = checksum + x(a, b) * REAL(1 + (a - 1) + 3 * (b - 1), REAL64)
+         END DO
+      END DO
+   END FUNCTION checksum
+
+   SUBROUTINE parse_args(n, trials, csv)
+      INTEGER, INTENT(OUT) :: n, trials
+      LOGICAL, INTENT(OUT) :: csv
+      INTEGER :: i, stat
       CHARACTER(len=64) :: arg
 
-      state = 0
-      status = 0
-      norbs = 20
+      n = 100
       trials = 20
-
-      DO i = 1, COMMAND_ARGUMENT_COUNT()
+      csv = .FALSE.
+      i = 1
+      DO WHILE (i <= COMMAND_ARGUMENT_COUNT())
          CALL GET_COMMAND_ARGUMENT(i, arg)
-         SELECT CASE(state)
-          CASE (0)
-            IF(arg == "-n") THEN
-               state = 1
-            ELSEIF(arg == "-t") THEN
-               state = 2
-            ELSEIF(arg == "-h" .OR. arg == "--help") THEN
-               WRITE(*,*) "Arguments:\n\n&
-               &-n NUMBER\t\tThe number of orbitals. Defaults to 20.\n\n&
-               &-t NUMBER\t\tThe number of trials. Defaults to 20.\n\n-h, --help\t\tPrint the help message."
-            ELSE
-               STOP "Error! Could not handle argument. Try -h or --help for help. &
-               &Also check to make sure there are spaces between your arguments."
-            END IF
-          CASE (1)
-            READ(arg, *, iostat=state) norbs
-
-            IF(state /= 0) THEN
-               STOP "Could not handle integer argument! Try -h or --help for help."
-            ELSEIF(norbs < 1) THEN
-               STOP "Invalid number of orbitals. Number of orbitals must be greater than 0."
-            ENDIF
-          CASE (2)
-            READ(arg, *, iostat=state) trials
-
-            IF(state /= 0) THEN
-               STOP "Could not handle integer argument! Try -h or --help for help."
-            ELSEIF(trials < 1) THEN
-               STOP "Invalid number of trials. Number of trials must be greater than 0."
-            ENDIF
-          CASE DEFAULT
-            STOP "Something really bad happened."
+         SELECT CASE (TRIM(arg))
+         CASE ("-n")
+            i = i + 1
+            CALL GET_COMMAND_ARGUMENT(i, arg)
+            READ (arg, *, iostat=stat) n
+            IF (stat /= 0 .OR. n < 1) STOP "-n needs a positive integer"
+         CASE ("-t")
+            i = i + 1
+            CALL GET_COMMAND_ARGUMENT(i, arg)
+            READ (arg, *, iostat=stat) trials
+            IF (stat /= 0 .OR. trials < 1) STOP "-t needs a positive integer"
+         CASE ("-c")
+            csv = .TRUE.
+         CASE DEFAULT
+            STOP "usage: profile_fort_loop -n <norbs> -t <trials> [-c]"
          END SELECT
+         i = i + 1
       END DO
    END SUBROUTINE parse_args
 
@@ -133,63 +196,83 @@ END MODULE loops
 
 PROGRAM time_loops
    USE loops
-
    IMPLICIT NONE
 
-   INTEGER :: norbs, trials
-   REAL(8), ALLOCATABLE, DIMENSION(:,:) :: J, K, D, G
-   REAL(8), ALLOCATABLE, DIMENSION(:,:,:,:) :: TEI
-   REAL(8), ALLOCATABLE, DIMENSION(:) :: time_J, time_K, time_G, time_tot
-   REAL(8) :: mean_J, mean_K, mean_G, mean_tot, start, J_split, K_split, G_split
+   INTEGER :: n, trials, i
+   INTEGER(INT64) :: a, b, c, d
+   LOGICAL :: csv
+   REAL(REAL64), ALLOCATABLE :: jm(:, :), km(:, :), dm(:, :), tei(:, :, :, :), tj(:), tk(:)
+   REAL(REAL64) :: t0, mean_j, mean_k, sum_j, sum_k
 
-   INTEGER :: i
+   CALL parse_args(n, trials, csv)
 
-   CALL parse_args(norbs, trials)
+   ALLOCATE (jm(n, n), km(n, n), dm(n, n), tei(n, n, n, n), tj(trials), tk(trials))
 
-   PRINT *, "Running ", trials, " trials with ", norbs, " orbitals."
+   DO d = 0, n - 1
+      DO c = 0, n - 1
+         DO b = 0, n - 1
+            DO a = 0, n - 1
+               tei(a + 1, b + 1, c + 1, d + 1) = tei_value(a, b, c, d)
+            END DO
+         END DO
+      END DO
+   END DO
+   DO b = 0, n - 1
+      DO a = 0, n - 1
+         dm(a + 1, b + 1) = density_value(a, b)
+      END DO
+   END DO
 
-   CALL RANDOM_INIT(.FALSE., .FALSE.)
+   CALL create_j(jm, dm, tei, n)
+   DO i = 1, trials
+      t0 = now_ms()
+      CALL create_j(jm, dm, tei, n)
+      tj(i) = now_ms() - t0
+   END DO
 
-   ALLOCATE(J(norbs, norbs), K(norbs, norbs), D(norbs, norbs), G(norbs, norbs))
-   ALLOCATE(TEI(norbs, norbs, norbs, norbs))
-   ALLOCATE(time_J(trials), time_K(trials), time_G(trials), time_tot(trials))
+   CALL create_k(km, dm, tei, n)
+   DO i = 1, trials
+      t0 = now_ms()
+      CALL create_k(km, dm, tei, n)
+      tk(i) = now_ms() - t0
+   END DO
 
-! Initialize the input arrays.
-    CALL RANDOM_NUMBER(D)
-    CALL RANDOM_NUMBER(TEI)
+   mean_j = median(tj)
+   mean_k = median(tk)
+   sum_j  = checksum(jm, n)
+   sum_k  = checksum(km, n)
 
-    D = 2 * D - 1
-    TEI = 2 * TEI - 1
+   CALL create_j_omp(jm, dm, tei, n)
+   DO i = 1, trials
+      t0 = now_ms()
+      CALL create_j_omp(jm, dm, tei, n)
+      tj(i) = now_ms() - t0
+   END DO
 
-! Perform the trials
-    DO i=1,trials
-        CALL CPU_TIME(start)
-        CALL create_j(J, D, TEI, norbs)
-        CALL CPU_TIME(J_split)
-        CALL create_k(K, D, TEI, norbs)
-        CALL CPU_TIME(K_split)
-        CALL create_g(G, J, K)
-        CALL CPU_TIME(G_split)
+   CALL create_k_omp(km, dm, tei, n)
+   DO i = 1, trials
+      t0 = now_ms()
+      CALL create_k_omp(km, dm, tei, n)
+      tk(i) = now_ms() - t0
+   END DO
 
-        time_J(i) = J_split - start
-        time_tot(i) = G_split - start
-        time_K(i) = K_split - J_split
-        time_G(i) = G_split - K_split
-    END DO
+   ! The threaded nests must reproduce the serial ones' checksums: the reduction
+   ! only reorders the summation, far inside this tolerance.
+   IF (ABS(checksum(jm, n) - sum_j) > 1.0E-10_REAL64 * ABS(sum_j) .OR. &
+       ABS(checksum(km, n) - sum_k) > 1.0E-10_REAL64 * ABS(sum_k)) THEN
+      ERROR STOP "MISMATCH: the OpenMP nests disagree with the serial ones"
+   END IF
 
-    DEALLOCATE(J, K, D, G, TEI)
+   IF (csv) THEN
+      WRITE (*, '(A,F0.4,A,F0.4)') "fortran_loops,", mean_j, ",", mean_k
+      WRITE (*, '(A,F0.4,A,F0.4)') "fortran_omp_loops,", median(tj), ",", median(tk)
+      WRITE (*, '(A,ES22.15,A,ES22.15)') "checksum,", sum_j, ",", sum_k
+   ELSE
+      WRITE (*, '(A,I0,A,I0,A)') "n=", n, ", ", trials, " trials, median wall time"
+      WRITE (*, '(A,F9.2,A,F9.2,A)') "  fortran_loops      J ", mean_j, " ms   K ", mean_k, " ms"
+      WRITE (*, '(A,F9.2,A,F9.2,A)') "  fortran_omp_loops  J ", median(tj), " ms   K ", median(tk), " ms"
+      WRITE (*, '(A,ES22.15,A,ES22.15)') "  checksum J ", sum_j, "  K ", sum_k
+   END IF
 
-    mean_J = mean(time_J)
-    mean_K = mean(time_K)
-    mean_G = mean(time_G)
-    mean_tot = mean(time_tot)
-
-    PRINT *, "Timing information:"
-    PRINT *, "Form J: ", mean_J, " s, stdev ", stdev(time_J, mean_J), " s"
-    PRINT *, "Form K: ", mean_K, " s, stdev ", stdev(time_K, mean_K), " s"
-    PRINT *, "Form G: ", mean_G, " s, stdev ", stdev(time_G, mean_G), " s"
-    PRINT *, "Total: ", mean_tot, " s, stdev ", stdev(time_tot, mean_tot), " s"
-
-    DEALLOCATE(time_J, time_K, time_G, time_tot)
-
+   DEALLOCATE (jm, km, dm, tei, tj, tk)
 END PROGRAM time_loops

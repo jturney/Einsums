@@ -14,11 +14,12 @@ cmake_minimum_required(VERSION 3.24)
 
 project(profile_test C CXX)
 
-# Set Fortran as optional
-enable_language(Fortran OPTIONAL)
-
-# Check if the Fortran compiler was found
+# Fortran is optional: enable_language(Fortran OPTIONAL) is a documented
+# placeholder that still fails without a compiler, so probe first.
+include(CheckLanguage)
+check_language(Fortran)
 if (CMAKE_Fortran_COMPILER)
+    enable_language(Fortran)
     message(STATUS "Fortran compiler found: ${CMAKE_Fortran_COMPILER}")
     set(EINSUMS_HAVE_FORTRAN TRUE)
 else ()
@@ -34,7 +35,13 @@ add_executable(profile_for_loop profile_for_loop.c)
 target_link_libraries(profile_for_loop PRIVATE m)
 
 if (EINSUMS_HAVE_FORTRAN)
-add_executable(profile_fort_loop profile_fort_loop.f03)
+  add_executable(profile_fort_loop profile_fort_loop.f03)
+  # The Fortran compiler brings its own OpenMP runtime (libgomp for gfortran);
+  # this is a separate executable, so it never meets the library's.
+  find_package(OpenMP COMPONENTS Fortran)
+  if (OpenMP_Fortran_FOUND)
+    target_link_libraries(profile_fort_loop PRIVATE OpenMP::OpenMP_Fortran)
+  endif ()
 endif ()
 
 # If you get an error about not being able to find libm, uncomment the commented out lines and replace
@@ -50,3 +57,6 @@ target_link_libraries(profile_blas PRIVATE Einsums::Einsums)
 
 add_executable(profile_strategies profile_strategies.cpp)
 target_link_libraries(profile_strategies PRIVATE Einsums::Einsums)
+
+add_executable(profile_jk_breakdown profile_jk_breakdown.cpp)
+target_link_libraries(profile_jk_breakdown PRIVATE Einsums::Einsums)
