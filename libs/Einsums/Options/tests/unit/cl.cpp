@@ -797,6 +797,58 @@ TEST_CASE("A write reaches the slot and whoever asked to hear about it", "[descr
     REQUIRE(calls == 1);
 }
 
+// A descriptor is an inline variable in a header, so each binary that includes it has a copy of its
+// own, and registration fills in only the copy the owning library registered. A test or a tool that
+// instantiates a header template reads its OWN copy, and get() used to answer that copy's empty entry
+// with the declared default whatever the option held. Two descriptors of one name stand in for the
+// library's copy and the caller's.
+TEST_CASE("Every copy of a descriptor reads the registered value", "[descriptor][copies]") {
+    CLITestFixture _;
+
+    ConfigOption<std::int64_t> library      = config_opt<std::int64_t>("t27:level", "how loud", "T27", 1, "N", RangeBetween(0, 9));
+    ConfigOption<std::int64_t> caller       = config_opt<std::int64_t>("t27:level", "how loud", "T27", 1, "N", RangeBetween(0, 9));
+    ConfigOption<bool>         library_flag = config_flag("t27:guard", "on unless told otherwise", "T27", true);
+    ConfigOption<bool>         caller_flag  = config_flag("t27:guard", "on unless told otherwise", "T27", true);
+
+    // Before any copy is registered, the declared default, and nothing is cached: the reads below
+    // would fail if this one had pinned it.
+    REQUIRE(einsums::config::get(caller) == 1);
+    REQUIRE_FALSE(einsums::config::try_get(caller).has_value());
+
+    register_option(library);
+    register_option(library_flag);
+
+    auto args = to_args({"prog", "--t27:level", "7", "--t27:no-guard"});
+    REQUIRE(parse(args).ok);
+
+    REQUIRE(einsums::config::get(caller) == 7);
+    REQUIRE(einsums::config::try_get(caller) == std::optional<std::int64_t>{7});
+    REQUIRE(einsums::config::get(caller_flag) == false);
+
+    // Writes through either copy land in the one slot.
+    einsums::config::set(library, std::int64_t{3});
+    REQUIRE(einsums::config::get(caller) == 3);
+    einsums::config::set(caller, std::int64_t{5});
+    REQUIRE(einsums::config::get(library) == 5);
+
+    // And an observer attached through the caller's copy hears a write through the library's.
+    int calls = 0;
+    on_change(caller, [&] { ++calls; });
+    einsums::config::set(library, std::int64_t{2});
+    REQUIRE(calls == 1);
+}
+
+TEST_CASE("A copy does not bind to a key written before any descriptor claimed it", "[descriptor][copies]") {
+    CLITestFixture _;
+
+    // A dynamic write creates the key's slot with no option behind it.
+    einsums::config::set_dynamic<std::int64_t>("t28-level", 8);
+
+    ConfigOption<std::int64_t> caller = config_opt<std::int64_t>("t28:level", "how loud", "T28", 1, "N");
+    REQUIRE(einsums::config::get(caller) == 1);
+    REQUIRE_FALSE(einsums::config::try_get(caller).has_value());
+}
+
 TEST_CASE("Dynamic keys reach the same slots, spelled loosely", "[descriptor][dynamic]") {
     CLITestFixture _;
 

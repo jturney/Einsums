@@ -114,7 +114,9 @@ std::string normalize_key(std::string_view key) {
  *
  * The parser holds raw pointers into these, so nothing here may be freed while
  * a parse could still run - which is what "until the process ends" buys.
- * Entries live in a deque because descriptors hold pointers to them.
+ * Entries live in a deque because descriptors hold pointers to them, and
+ * nothing may ever free or move one: config::get caches an entry's address in
+ * every copy of a descriptor, in every binary, that has read it.
  */
 struct OwnedRegistrations {
     std::deque<OptionEntry>                         entries;
@@ -407,7 +409,7 @@ namespace {
 /// Attach an observer to a descriptor that has already been registered.
 template <typename T>
 void attach_observer(ConfigOption<T> &opt, std::function<void()> fn) {
-    auto *entry = opt.entry.load(std::memory_order_acquire);
+    auto const *entry = config::detail::entry_for(opt);
     assert(entry != nullptr && "register_option must run before on_change");
     if (entry == nullptr) {
         return;
@@ -584,6 +586,18 @@ void note_unregistered([[maybe_unused]] std::string_view name) noexcept {
 }
 
 } // namespace
+
+cl::detail::OptionEntry const *registered_entry(std::string_view name) {
+    auto                  &r = cl::detail::owned();
+    std::scoped_lock const lock(r.mutex);
+    auto const             it = r.by_key.find(cl::detail::normalize_key(cl::derive_key(name)));
+    // An entry with no primary exists only because a key was written before
+    // any descriptor claimed it. It is not the registered option yet.
+    if (it == r.by_key.end() || it->second->primary == nullptr) {
+        return nullptr;
+    }
+    return it->second;
+}
 
 bool read_bool(cl::detail::OptionEntry const *entry, std::string_view name, bool default_value) noexcept {
     if (entry == nullptr) {

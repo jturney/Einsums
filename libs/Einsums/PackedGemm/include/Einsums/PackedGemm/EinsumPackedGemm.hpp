@@ -16,6 +16,7 @@
 #include <Einsums/Logging.hpp>
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
+#include <Einsums/PackedGemm/Options.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/PackedGemm/Stream.hpp>
 #include <Einsums/Profile/Profile.hpp>
@@ -1395,7 +1396,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
             // index runs slowest there: a range of that dim is a contiguous
             // range of flat K, which is what both the destination layout and a
             // zero-copy operand's own offset assume.
-            int64_t const flat_budget_bytes = flatten_budget_bytes();
+            int64_t const flat_budget_bytes = config::get(option::PackedGemmFlattenBudget) << 20;
             int64_t const elem_bytes        = static_cast<int64_t>(sizeof(ValueType));
             int64_t const per_k             = (a_zero_copy ? 0 : M) + (b_zero_copy ? 0 : N);
             int64_t const k_outer_extent    = k_dims_a[0].size;

@@ -6,7 +6,6 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/Logging.hpp>
-#include <Einsums/PackedGemm/Options.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/Profile/Profile.hpp>
 // HPTT includes <complex> which on some platforms defines I as a macro.
@@ -228,10 +227,6 @@ PackingPlan compute_packing_topology(ContractionKey const &key) {
     EINSUMS_LOG_TRACE("compute_packing_topology: valid plan M={}, N={}, K={} ({} K dims, {} batch dims, batch_total={})", plan.M_total,
                       plan.N_total, plan.K_total, plan.k_dims_in_a.size(), plan.batch_dims.size(), plan.batch_total);
     return plan;
-}
-
-int64_t flatten_budget_bytes() {
-    return config::get(option::PackedGemmFlattenBudget) << 20;
 }
 
 // ---------------------------------------------------------------------------

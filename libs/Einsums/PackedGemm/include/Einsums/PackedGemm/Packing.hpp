@@ -1623,19 +1623,6 @@ void pack_B_1m_panels(RealT *Bp, std::complex<RealT> const *B_data, PackingPlan 
     }
 }
 
-/// @brief The flatten route's temporary-buffer cap in bytes, or 0 for no cap.
-///
-/// Defined in the library rather than read from the descriptor here, and that
-/// is not a style choice. A ConfigOption caches the address of its registry
-/// entry inside itself, filled in when the owning module registers it. These
-/// headers are compiled by consumers outside the library - the head-to-head
-/// harness and the probes both instantiate blis_contraction themselves - and
-/// such a translation unit gets its OWN copy of the descriptor, whose entry is
-/// never filled, so a read there quietly returns the default however the option
-/// was set. Going through an exported function reads the copy that was actually
-/// registered.
-EINSUMS_EXPORT int64_t flatten_budget_bytes();
-
 // ---------------------------------------------------------------------------
 // HPTT-accelerated transpose (cache-blocked, SIMD-optimized)
 // ---------------------------------------------------------------------------

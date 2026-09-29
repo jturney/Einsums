@@ -103,9 +103,16 @@ struct ConfigOption {
     /// registration.
     value_type (*default_provider)() = nullptr;
 
-    /// Filled in by registration; read by the accessors. Null until the owning
-    /// module registers the option.
-    std::atomic<detail::OptionEntry const *> entry{nullptr};
+    /// The registry entry this descriptor reads, filled in by registration and
+    /// read by the accessors.
+    ///
+    /// A descriptor is an inline variable in a header, and each binary that
+    /// includes the header - a test, a tool, the Python extension - gets its
+    /// own copy, which registration never sees: it fills in the copy the owning
+    /// library registered. So the accessors treat this as a cache. When it is
+    /// null they look the entry up by key, and keep what they find, which is
+    /// why it is mutable: every copy then reads the one registered value.
+    mutable std::atomic<detail::OptionEntry const *> entry{nullptr};
 };
 
 /// Declare a boolean option. Registration also generates the `--no-` spelling,
@@ -188,6 +195,26 @@ EINSUMS_EXPORT void set_dynamic_int(std::string const &key, std::int64_t value);
 EINSUMS_EXPORT void set_dynamic_double(std::string const &key, double value);
 EINSUMS_EXPORT void set_dynamic_string(std::string const &key, std::string const &value);
 
+/// The registered entry for the option with this long name, or null if no copy
+/// of its descriptor has been registered yet.
+EINSUMS_EXPORT cl::detail::OptionEntry const *registered_entry(std::string_view name);
+
+/// The entry @p opt reads: its own cached pointer, or else the registered entry
+/// for its name, which is then cached so the lookup happens once per copy. Null
+/// before any copy is registered, and nothing is cached then, so a read that
+/// beats registration does not pin the declared default.
+template <typename T>
+cl::detail::OptionEntry const *entry_for(cl::ConfigOption<T> const &opt) {
+    if (auto const *entry = opt.entry.load(std::memory_order_acquire); entry != nullptr) {
+        return entry;
+    }
+    auto const *entry = registered_entry(opt.name);
+    if (entry != nullptr) {
+        opt.entry.store(entry, std::memory_order_release);
+    }
+    return entry;
+}
+
 } // namespace detail
 
 /**
@@ -201,7 +228,7 @@ EINSUMS_EXPORT void set_dynamic_string(std::string const &key, std::string const
  */
 template <typename T>
 T get(cl::ConfigOption<T> const &opt) {
-    auto const *entry = opt.entry.load(std::memory_order_acquire);
+    auto const *entry = detail::entry_for(opt);
     if constexpr (std::is_same_v<T, bool>) {
         return detail::read_bool(entry, opt.name, opt.default_value);
     } else if constexpr (std::is_same_v<T, std::int64_t>) {
@@ -228,7 +255,7 @@ T get(cl::ConfigOption<T> const &opt) {
  */
 template <typename T>
 std::optional<T> try_get(cl::ConfigOption<T> const &opt) {
-    auto const *entry = opt.entry.load(std::memory_order_acquire);
+    auto const *entry = detail::entry_for(opt);
     if (!detail::was_specified(entry)) {
         return std::nullopt;
     }
