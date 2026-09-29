@@ -30,6 +30,7 @@
 #    include <string>
 #    include <thread>
 #    include <unordered_map>
+#    include <unordered_set>
 #    include <vector>
 
 EINSUMS_NAMESPACE_BEGIN(profile)
@@ -105,6 +106,11 @@ struct AggNode {
     /// name at every level of the path. A 4-byte key hashes in constant time
     /// and needs no string at all; ``name`` below still carries it for display.
     InsertionOrderedMap<uint32_t, std::unique_ptr<AggNode>> children;
+
+    /// Set only on a parent's "(other)" node: the ids of the names folded into it once the parent
+    /// held option::ProfileMaxDistinctChildren named children. Its size is the node's "distinct"
+    /// annotation.
+    std::unordered_set<uint32_t> folded_names;
 
     AggNode() = default;
     explicit AggNode(std::string n) : name(std::move(n)) {}
@@ -310,6 +316,9 @@ class EINSUMS_EXPORT Consumer {
     void unwind_stale_frames(ThreadState &ts, size_t depth);
 
     StringTable &_strings;
+
+    /// The id of "(other)", the node a parent's names fold into past its distinct-name cap.
+    uint32_t _other_id;
 
     // Registered ring buffers (protected by reg_mutex_)
     std::mutex                      _reg_mutex;

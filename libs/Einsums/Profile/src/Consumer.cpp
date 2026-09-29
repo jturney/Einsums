@@ -5,12 +5,15 @@
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/Consumer.hpp>
+#include <Einsums/Profile/Options.hpp>
+
+#include <string>
 
 #if defined(EINSUMS_HAVE_PROFILER)
 
 EINSUMS_NAMESPACE_BEGIN(profile)
 
-Consumer::Consumer(StringTable &strings) : _strings(strings) {
+Consumer::Consumer(StringTable &strings) : _strings(strings), _other_id(strings.intern("(other)")) {
     _running.store(true, std::memory_order_relaxed);
     _thread = std::thread([this] { consumer_loop(); });
 }
@@ -147,6 +150,31 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
     // already known and re-deriving it was pure repetition.
     AggNode *parent = ts.stack.empty() ? &ts.root : ts.stack.back().node;
     auto     it     = parent->children.find(evt.name_id);
+    if (it == parent->children.end()) {
+        // A name built at run time, such as a graph's or a loop's, is a new node under this parent
+        // every time it changes, and a program that names each graph for its iteration grows the
+        // tree for as long as it runs. Past the cap a new name joins the parent's "(other)" node,
+        // which still times it; the names that came first keep their own.
+        std::int64_t const cap   = config::get(option::ProfileMaxDistinctChildren);
+        auto               other = parent->children.find(_other_id);
+        size_t const       named = parent->children.size() - (other != parent->children.end() ? 1 : 0);
+        if (cap > 0 && named >= static_cast<size_t>(cap)) {
+            if (other == parent->children.end()) {
+                auto node      = std::make_unique<AggNode>(_strings.get(_other_id));
+                node->file     = _strings.get(evt.file_id);
+                node->line     = evt.line;
+                node->function = _strings.get(evt.func_id);
+
+                parent->children[_other_id] = std::move(node);
+                other                       = parent->children.find(_other_id);
+            }
+            AggNode &folded = *other->second;
+            if (folded.folded_names.insert(evt.name_id).second) {
+                folded.annotations["distinct"] = std::to_string(folded.folded_names.size());
+            }
+            it = other;
+        }
+    }
     if (it == parent->children.end()) {
         // The only place a name is resolved to a string, and it runs once per
         // distinct call path rather than once per event. file/function are

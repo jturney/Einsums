@@ -236,3 +236,60 @@ TEST_CASE("Profiler - a burst that overruns the ring buffer does not deepen the 
         WARN("the burst kept up with the consumer, so this run did not exercise reconstruction under drops");
     }
 }
+
+// A zone name built at run time, such as a graph's, made a new node under its parent for every
+// distinct value, and every zone beneath it a new node too. A fuzzer that named each trial's graph
+// afresh grew the tree by ~160 KB per trial until a scaled nightly run exhausted the runner. Past
+// option::ProfileMaxDistinctChildren (256 by default) new names fold into the parent's "(other)".
+TEST_CASE("Profiler - names past the distinct-children cap fold into one node", "[profiler][consumer]") {
+    auto &prof = Profiler::instance();
+    if (!prof.enabled()) {
+        SKIP("the profiler is disabled, so no events are recorded at all");
+    }
+
+    constexpr int kCap   = 256;
+    constexpr int kNames = 1000;
+    auto const    zone   = [&prof](std::string const &name) {
+        prof.push(name, "cap.cpp", 1, "cap");
+        prof.push("distinct_cap_leaf", "cap.cpp", 2, "cap");
+        prof.pop();
+        prof.pop();
+    };
+
+    prof.push("distinct_cap_parent", "cap.cpp", 0, "cap");
+    for (int i = 0; i < kNames; i++) {
+        zone("distinct_cap_child_" + std::to_string(i));
+    }
+    // After the cap: a name that came first still has its own node, and a folded name folds again
+    // without counting as another distinct name.
+    zone("distinct_cap_child_0");
+    zone("distinct_cap_child_" + std::to_string(kNames - 1));
+    prof.pop();
+    prof.flush();
+
+    auto        lock       = prof.consumer()->lock_shared();
+    auto const &thread_map = prof.consumer()->thread_data();
+
+    AggNode const *parent = find_node_any_thread(thread_map, "distinct_cap_parent");
+    REQUIRE(parent != nullptr);
+    REQUIRE(parent->children.size() == kCap + 1);
+
+    AggNode const *kept = find_node(*parent, "distinct_cap_child_0");
+    REQUIRE(kept != nullptr);
+    CHECK(kept->call_count == 2);
+    CHECK(find_node(*parent, "distinct_cap_child_" + std::to_string(kCap - 1)) != nullptr);
+    CHECK(find_node(*parent, "distinct_cap_child_" + std::to_string(kCap)) == nullptr);
+
+    AggNode const *other = find_node(*parent, "(other)");
+    REQUIRE(other != nullptr);
+    CHECK(other->call_count == kNames - kCap + 1);
+    auto const distinct = other->annotations.find("distinct");
+    REQUIRE(distinct != other->annotations.end());
+    CHECK(distinct->second == std::to_string(kNames - kCap));
+
+    // The folded zones' own children merge under "(other)" rather than being dropped.
+    REQUIRE(other->children.size() == 1);
+    AggNode const *leaf = find_node(*other, "distinct_cap_leaf");
+    REQUIRE(leaf != nullptr);
+    CHECK(leaf->call_count == kNames - kCap + 1);
+}

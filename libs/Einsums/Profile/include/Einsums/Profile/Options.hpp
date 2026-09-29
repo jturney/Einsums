@@ -60,6 +60,13 @@ inline constinit cl::ConfigOption<std::int64_t> ProfilePort =
 inline constinit cl::ConfigOption<bool> ProfileWaitForViewer =
     cl::config_flag("einsums:profile:wait-for-viewer", "Wait for the profiler viewer to connect before running", "Profile", false);
 
+/// Distinct zone names one parent keeps as separate nodes. Past it, a new name joins that parent's
+/// "(other)" node, so names built at run time (a graph's, a loop's) cannot grow the tree without
+/// bound. Zero means no limit.
+inline constinit cl::ConfigOption<std::int64_t> ProfileMaxDistinctChildren = cl::config_opt<std::int64_t>(
+    "einsums:profile:max-distinct-children", "Distinct zone names kept per parent before the rest fold into \"(other)\"; 0 means no limit",
+    "Profile", 256, "N");
+
 EINSUMS_NAMESPACE_END(option)
 
 EINSUMS_NAMESPACE_BEGIN()

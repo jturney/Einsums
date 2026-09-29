@@ -253,6 +253,18 @@
     Block at startup until a profiler viewer connects, so that a short run cannot finish before the
     viewer has attached.
 
+"einsums:profile:max-distinct-children":
+  added: "2.0.0"
+  body: |
+    How many distinct zone names one parent zone keeps as separate entries in the profile. Defaults
+    to ``256``; zero means no limit.
+
+    Some zone names are built at run time from a graph's or a loop's name, so a program that names
+    each graph after its iteration adds a new entry, and every zone beneath it, for as long as it
+    runs. Once a parent holds this many named children, each further name is timed under that
+    parent's ``(other)`` entry instead, whose ``distinct`` annotation counts the names it holds. The
+    names that appeared first keep their own entries.
+
 "einsums:pass:disable":
   added: "2.0.0"
   body: |

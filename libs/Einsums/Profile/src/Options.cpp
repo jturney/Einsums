@@ -31,6 +31,7 @@ int register_Einsums_Profile_options() {
     cl::register_option(option::ProfileServer);
     cl::register_option(option::ProfilePort);
     cl::register_option(option::ProfileWaitForViewer);
+    cl::register_option(option::ProfileMaxDistinctChildren);
     return 0;
 }
 
