@@ -2362,9 +2362,14 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                         ValueType *Ap_panel = Ap + ir * MR * kc_len;
                                         ValueType *Bp_panel = Bp + jr * NR * kc_len;
 
-                                        // Micro-kernel into contiguous Ct (col-major: rs=1, cs=MR)
-                                        micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, mr_actual,
-                                                   nr_actual, Ct, 1, MR);
+                                        // Micro-kernel into contiguous Ct (col-major: rs=1, cs=MR). Always
+                                        // the whole MR x NR tile, even at an edge: Ct has room for it and
+                                        // the scatter below reads only mr_actual x nr_actual of it, so the
+                                        // lanes past the edge are computed and never read. Passing the edge
+                                        // extents instead sent every edge tile down the kernel's partial
+                                        // path, which stores through a stack tile element by element.
+                                        micro_tile(static_cast<int>(MR), static_cast<int>(NR), kc_len, alpha, Ap_panel, Bp_panel, MR, NR,
+                                                   Ct, 1, MR);
 
                                         // Scatter Ct back to C through the offset tables, innermost
                                         // along whichever of C's index groups is packed closer. Ct
