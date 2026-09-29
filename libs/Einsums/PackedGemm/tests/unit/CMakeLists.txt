@@ -6,6 +6,7 @@
 set(PackedGemmTests
     BatchedMultiK.cpp
     Complex1m.cpp
+    EngineOptions.cpp
     FlattenLayouts.cpp
     MicroKernelTile.cpp
     PackTranspose.cpp
@@ -35,8 +36,10 @@ endforeach()
 # the three-core-per-L3 Zen+ part the thresholds were measured on, so every runner models it.
 set_property(
   TEST Tests.Unit.Modules.PackedGemm.ThreadGrid APPEND PROPERTY ENVIRONMENT
-                                                                "EINSUMS_CACHE_SIZES=32768,524288,8388608"
-                                                                "EINSUMS_CORES_PER_L3=3"
+                                                                "EINSUMS_HARDWARE_L1_CACHE_SIZE=32768"
+                                                                "EINSUMS_HARDWARE_L2_CACHE_SIZE=524288"
+                                                                "EINSUMS_HARDWARE_L3_CACHE_SIZE=8388608"
+                                                                "EINSUMS_PACKED_GEMM_CORES_PER_L3=3"
 )
 
 einsums_add_executable(
@@ -62,6 +65,8 @@ einsums_add_simd_rung_tests("Modules.PackedGemm" MultiMN)
 einsums_add_simd_rung_tests("Modules.PackedGemm" MicroKernelTile)
 einsums_add_simd_rung_tests("Modules.PackedGemm" PackTranspose)
 einsums_add_simd_rung_tests("Modules.PackedGemm" Complex1m)
+# The C-temp budget only sizes the block strategy, which some rungs never take for complex.
+einsums_add_simd_rung_tests("Modules.PackedGemm" EngineOptions)
 # The stream inner loop is compiled once per rung; pin it, and the route that uses it, on each.
 einsums_add_simd_rung_tests("Modules.PackedGemm" StreamKernel)
 einsums_add_simd_rung_tests("Modules.PackedGemm" Stream)

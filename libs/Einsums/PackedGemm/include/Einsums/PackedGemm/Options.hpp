@@ -61,6 +61,40 @@ inline constinit cl::ConfigOption<std::int64_t> PackedGemmFlattenBudget = cl::co
 inline constinit cl::ConfigOption<bool> PackedGemmComplex1m = cl::config_flag(
     "einsums:packed-gemm:complex-1m", "Run complex contractions on x86 through the real tile kernel (1m method)", "PackedGemm", false);
 
+/// Physical cores the engine assumes share one L3, in place of the count read from sysfs.
+///
+/// Zero, the default, detects it: on Linux from CPU 0's L3 `shared_cpu_list`
+/// divided by its SMT siblings, and 1 wherever that cannot be read, macOS
+/// included. The count decides whether a threaded contraction splits its
+/// threads into per-L3 teams that each share one packed B panel, so a wrong
+/// value changes how the work is divided, never the result.
+///
+/// Setting it pins the machine model, which is how a test asserts the teams a
+/// particular part forms on a runner whose own caches would form others.
+inline constinit cl::ConfigOption<std::int64_t> PackedGemmCoresPerL3 =
+    cl::config_opt<std::int64_t>("einsums:packed-gemm:cores-per-l3", "Physical cores sharing one L3 cache (0 = detect)", "PackedGemm", 0,
+                                 "N", cl::RangeBetween<std::int64_t>(0, 4096));
+
+/// Budget, in KiB, for the block-GEMM strategy's M by N temporary of C.
+///
+/// Zero, the default, derives it: four times the L1, floored at 512 KiB. The
+/// multiplier is where the M4 optimum sat, and the floor is there because on a
+/// Zen+ with a 32 KiB L1 the same multiplier measured worst of every value
+/// swept on a rank-6 CCSD(T) shape. It bounds the strategy's N block and sizes
+/// its M block, so it moves speed and memory, never the result. For sweeps.
+inline constinit cl::ConfigOption<std::int64_t> PackedGemmCTempBudget = cl::config_opt<std::int64_t>(
+    "einsums:packed-gemm:c-temp-budget", "Budget for the block-GEMM strategy's C temporary, in KiB (0 = derive from the L1)", "PackedGemm",
+    0, "KIB", cl::RangeBetween<std::int64_t>(0, std::int64_t{1} << 30));
+
+/// Print each packed contraction's resolved plan and blocking to stderr.
+///
+/// The dimensions and strides of every operand group, the register and cache
+/// blocks, and which scatter the write-back took. Off by default, and for
+/// diagnosis: a plan read off the dump settles questions that re-deriving it
+/// from the construction rules has repeatedly got wrong.
+inline constinit cl::ConfigOption<bool> PackedGemmDumpPlan =
+    cl::config_flag("einsums:packed-gemm:dump-plan", "Print each packed contraction's plan and blocking to stderr", "PackedGemm", false);
+
 EINSUMS_NAMESPACE_END(option)
 
 EINSUMS_NAMESPACE_BEGIN()

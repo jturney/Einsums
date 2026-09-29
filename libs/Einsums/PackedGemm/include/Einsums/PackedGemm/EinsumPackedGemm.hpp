@@ -611,7 +611,7 @@ bool stream_run_ok(T const *dst, int64_t n) {
 
 /// @brief Print the resolved plan and blocking for one contraction.
 ///
-/// Behind EINSUMS_DUMP_PACKED_PLAN, and out of line so that @ref
+/// Behind option::PackedGemmDumpPlan, and out of line so that @ref
 /// blis_contraction carries only the flag test. See the call site for why it
 /// earns its keep.
 inline void dump_packed_plan(PackingPlan const &plan, int64_t M, int64_t N, int64_t K, int MR, int NR, int64_t MC, int64_t NC, int64_t KC,
@@ -1725,12 +1725,10 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // which measured WORST of every value swept on the rank-6 ccsd_t shape
         // (MC=2048: 15.7 GF/s, against 24.5 at 512 KB and 25.7 at 2 MB), so the
         // budget is floored at 512 KiB, which leaves the M4 value where it was
-        // measured. EINSUMS_EXPERIMENT_C_TEMP_KB overrides it in KB for sweeps.
+        // measured. option::PackedGemmCTempBudget overrides it for sweeps.
         int64_t c_temp_budget = std::max<int64_t>(4 * cpu_config().l1_cache_size, int64_t{512} << 10);
-        if (char const *e = std::getenv("EINSUMS_EXPERIMENT_C_TEMP_KB")) {
-            if (int64_t const kb = std::atoll(e); kb > 0) {
-                c_temp_budget = kb * 1024;
-            }
+        if (int64_t const kib = config::get(option::PackedGemmCTempBudget); kib > 0) {
+            c_temp_budget = kib << 10;
         }
 
         // The tile loops keep the A panel L2-resident, so blk.MC bounds their MC.
@@ -2093,11 +2091,9 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         // strides are what settle which order won; the blocks are what settle
         // whether the write-back's runs form at all.
         //
-        // Read once, and printed from out of line: this function is enormous and
-        // hot, and a getenv plus a formatting lambda in its body is not free even
-        // when the environment variable is unset.
-        static bool const dump_plan = std::getenv("EINSUMS_DUMP_PACKED_PLAN") != nullptr;
-        if (dump_plan) {
+        // Printed from out of line: this function is enormous and hot, and a
+        // formatting lambda in its body is not free even when the flag is off.
+        if (config::get(option::PackedGemmDumpPlan)) {
             dump_packed_plan(plan, M, N, K, MR, NR, MC_blk, NC_blk, KC_blk, use_a_order, blk_aorder, scatter_n_inner, blk_compose,
                              blk_runs_stream);
         }

@@ -5,9 +5,9 @@
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/SIMD/Options.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
-#include <cstdlib>
 #include <span>
 #include <string>
 
@@ -370,7 +370,7 @@ InstructionSet resolve_arch(CpuFeatures const &features, std::optional<std::stri
 
     auto const requested = parse_instruction_set(*override_name);
     if (!requested.has_value()) {
-        EINSUMS_LOG_WARN("EINSUMS_SIMD_ARCH=\"{}\" is not a recognized instruction-set name; ignoring the override. "
+        EINSUMS_LOG_WARN("--einsums:simd:arch=\"{}\" is not a recognized instruction-set name; ignoring the override. "
                          "Accepted: baseline, v2, v3, v4, sme (aliases: sse2, sse4.2, avx2, avx512, sme2).",
                          *override_name);
         return ceiling;
@@ -387,22 +387,23 @@ InstructionSet resolve_arch(CpuFeatures const &features, std::optional<std::stri
     for (InstructionSet const set : order) {
         found = found || set == *requested;
         if (found && supports(features, set)) {
-            EINSUMS_LOG_WARN("EINSUMS_SIMD_ARCH requests {} but this CPU/OS cannot run it; using {}.", to_string(*requested),
+            EINSUMS_LOG_WARN("--einsums:simd:arch requests {} but this CPU/OS cannot run it; using {}.", to_string(*requested),
                              to_string(set));
             return set;
         }
     }
 
-    EINSUMS_LOG_WARN("EINSUMS_SIMD_ARCH requests {}, which is not a rung of this CPU's architecture; ignoring the override and using {}.",
+    EINSUMS_LOG_WARN("--einsums:simd:arch requests {}, which is not a rung of this CPU's architecture; ignoring the override and using {}.",
                      to_string(*requested), to_string(ceiling));
     return ceiling;
 }
 
 InstructionSet selected_arch() {
     static InstructionSet const selected = [] {
+        std::string const               requested = config::get(option::SimdArch);
         std::optional<std::string_view> override_name;
-        if (char const *env = std::getenv("EINSUMS_SIMD_ARCH"); env != nullptr && *env != '\0') {
-            override_name = env;
+        if (!requested.empty()) {
+            override_name = requested;
         }
         InstructionSet const arch = resolve_arch(cpu_features(), override_name);
         EINSUMS_LOG_DEBUG("SIMD dispatch rung: {}", to_string(arch));

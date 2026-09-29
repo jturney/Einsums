@@ -5,16 +5,12 @@
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Options/Declare.hpp>
-#include <Einsums/PackedGemm/Options.hpp>
+#include <Einsums/SIMD/Options.hpp>
 
 EINSUMS_NAMESPACE_BEGIN()
 
-int register_Einsums_PackedGemm_options() {
-    cl::register_option(option::PackedGemmFlattenBudget);
-    cl::register_option(option::PackedGemmComplex1m);
-    cl::register_option(option::PackedGemmCoresPerL3);
-    cl::register_option(option::PackedGemmCTempBudget);
-    cl::register_option(option::PackedGemmDumpPlan);
+int register_Einsums_SIMD_options() {
+    cl::register_option(option::SimdArch);
     return 0;
 }
 

@@ -8,9 +8,10 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(HardwareHeaders
     Einsums/Hardware/CpuInfo.hpp
+    Einsums/Hardware/Options.hpp
 )
 
-set(HardwareSources CpuInfo.cpp)
+set(HardwareSources CpuInfo.cpp Options.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(
@@ -19,7 +20,7 @@ einsums_add_module(
   SOURCES ${HardwareSources}
   HEADERS ${HardwareHeaders}
   DEPENDENCIES 
-  MODULE_DEPENDENCIES Einsums_Config Einsums_SIMD
+  MODULE_DEPENDENCIES Einsums_Config Einsums_Options Einsums_SIMD
   CMAKE_SUBDIRS examples tests
   BASE_LIBNAME Einsums
 )

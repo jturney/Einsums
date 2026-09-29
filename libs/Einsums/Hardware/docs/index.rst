@@ -42,7 +42,7 @@ CpuInfo
 
     hw.simd_width_f64;      // 2 (SSE2/NEON), 4 (AVX/AVX2), 8 (AVX-512): the rung the
                             // process dispatches to (simd::selected_arch()), so it
-                            // follows the CPU and the EINSUMS_SIMD_ARCH override
+                            // follows the CPU and the --einsums:simd:arch override
     hw.simd_width_f32;      // twice simd_width_f64
     hw.compiled_simd_width_f64; // what the library's own flags were vectorized at
     hw.cache.l1;            // bytes
@@ -62,9 +62,11 @@ caches). On Apple Silicon the L2 probe deliberately prefers
 ``hw.perflevel0.l2cachesize``, the performance cluster, and falls back to
 ``hw.l2cachesize``; an L3 reported as zero falls back to 8 MB.
 
-The SIMD width comes from the compile-time ISA macros, not from CPUID. For the
-runtime feature ladder, including the psABI rungs and the ``EINSUMS_SIMD_ARCH``
-override, see :ref:`the SIMD module <modules_Einsums_SIMD>`.
+The SIMD width comes from the rung the process dispatches to, which CPUID, the
+operating system's vector state and :option:`--einsums:simd:arch` decide
+together. Only ``compiled_simd_width_f64`` comes from the compile-time ISA
+macros. For the runtime feature ladder and its psABI rungs, see
+:ref:`the SIMD module <modules_Einsums_SIMD>`.
 
 The cost of a parallel region
 =============================
@@ -136,28 +138,28 @@ An unconditional region on a short loop costs far more than the loop.
 Diagnostic overrides
 ====================
 
-Three environment variables force the detected values, so a blocking or
-threshold change can be A/B tested from **one** binary. Comparing across
-rebuilds is not reliable for these benchmarks: they swing by tens of percent
-with unrelated machine activity, and only a same-binary comparison holds the
-controls steady.
+Options force the detected values, so a blocking or threshold change can be
+A/B tested from **one** binary. Comparing across rebuilds is not reliable for
+these benchmarks: they swing by tens of percent with unrelated machine
+activity, and only a same-binary comparison holds the controls steady. Each
+also pins the machine model a test asserts against, on a runner whose own
+hardware would give another.
 
-.. envvar:: EINSUMS_CACHE_SIZES
+- :option:`--einsums:hardware:l1-cache-size`,
+  :option:`--einsums:hardware:l2-cache-size` and
+  :option:`--einsums:hardware:l3-cache-size` replace the detected cache sizes.
+- :option:`--einsums:hardware:omp-region-cost-ns` pins
+  :cpp:func:`~einsums::hardware::omp_region_cost_ns`, ahead of any calibration
+  file.
+- :option:`--einsums:hardware:omp-min-parallel-elements` pins
+  :cpp:func:`~einsums::hardware::omp_min_parallel_elements`. Zero restores
+  "always parallelize".
+- :option:`--einsums:hardware:omp-min-parallel-flops` pins
+  :cpp:func:`~einsums::hardware::omp_min_parallel_flops`.
 
-    ``L1,L2,L3`` in bytes. Any field that is absent or ``<= 0`` keeps the
-    detected value.
-
-.. envvar:: EINSUMS_OMP_MIN_PARALLEL_ELEMENTS
-
-    Overrides :cpp:func:`~einsums::hardware::omp_min_parallel_elements`. Zero
-    restores "always parallelize".
-
-.. envvar:: EINSUMS_PACKED_MIN_PARALLEL_FLOPS
-
-    Overrides :cpp:func:`~einsums::hardware::omp_min_parallel_flops`.
-
-These are diagnostics, not a tuning interface: they are read once, on the first
-call, and are not part of the supported configuration surface.
+The cache sizes and the region cost are detected once and kept, so those
+options take effect only when they are parsed first: on the command line or in
+the environment, before the first contraction.
 
 Who reads this
 ==============

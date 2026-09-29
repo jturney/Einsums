@@ -12,6 +12,7 @@
 #endif
 
 #include <Einsums/PackedGemm/ContractionKey.hpp>
+#include <Einsums/PackedGemm/Options.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
@@ -21,7 +22,6 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -105,16 +105,13 @@ int count_cpu_list(char const *path) {
 
 /// Physical cores sharing CPU 0's L3, from sysfs; 1 where that cannot be read.
 ///
-/// EINSUMS_CORES_PER_L3 overrides the detected count, as EINSUMS_CACHE_SIZES does the cache sizes:
-/// with both, a test pins the machine model the team blocking reads and asserts the teams that
-/// model forms, on a runner whose own caches would form others (or, on macOS, where sysfs is
-/// absent, none).
+/// option::PackedGemmCoresPerL3 overrides the detected count, as the einsums:hardware:l*-cache-size
+/// options do the cache sizes: with both, a test pins the machine model the team blocking reads and
+/// asserts the teams that model forms, on a runner whose own caches would form others (or, on
+/// macOS, where sysfs is absent, none).
 int detect_cores_per_l3() {
-    if (char const *env = std::getenv("EINSUMS_CORES_PER_L3"); env != nullptr) {
-        int const n = std::atoi(env);
-        if (n > 0) {
-            return n;
-        }
+    if (auto const n = config::get(option::PackedGemmCoresPerL3); n > 0) {
+        return static_cast<int>(n);
     }
 #if defined(__linux__)
     for (int idx = 0; idx <= 4; ++idx) {

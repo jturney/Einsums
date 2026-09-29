@@ -211,6 +211,37 @@
     The flag has no effect below x86-64-v2 or on other architectures, and the SME rung always uses
     the 1m method for complex types.
 
+"einsums:packed-gemm:cores-per-l3":
+  added: "2.0.0"
+  body: |
+    The number of physical cores the packed engine assumes share one L3 cache. Zero, the default,
+    detects it.
+
+    On Linux the count is read from sysfs as the CPUs sharing CPU 0's L3 divided by its SMT
+    siblings. Where that cannot be read, macOS included, the engine assumes 1.
+
+    The count decides whether a threaded contraction splits its threads into teams, one per L3, that
+    each share a packed panel of the right-hand operand. A wrong value changes how the work is
+    divided and how fast it runs, never the result. Set it when detection gets a machine wrong, or
+    to model a particular part on another machine.
+
+"einsums:packed-gemm:c-temp-budget":
+  added: "2.0.0"
+  body: |
+    The budget, in KiB, for the temporary block of the output that the block-GEMM strategy computes
+    into before scattering it. Zero, the default, derives it as four times the L1 cache, and never
+    less than 512 KiB.
+
+    The budget bounds the blocks that strategy works in, so it trades memory against speed and never
+    changes a result. It exists for sweeps.
+
+"einsums:packed-gemm:dump-plan":
+  added: "2.0.0"
+  body: |
+    Print the resolved plan and blocking of every packed contraction to standard error: the
+    dimensions and strides of each operand group, the register and cache blocks, and how the result
+    is written back. Off by default, and meant for diagnosis.
+
 "einsums:profile:port":
   added: "2.0.0"
   body: |
@@ -557,6 +588,89 @@
 
     Read once per cost model, while a pass manager is being populated, so it is settled well before
     any graph executes.
+
+"einsums:hardware:l1-cache-size":
+  added: "2.0.0"
+  body: |
+    The L1 data cache size, in bytes, that einsums assumes in place of the detected one. Zero, the
+    default, detects it.
+
+    The cache sizes decide how the packed contraction engine blocks its operands, so a wrong value
+    changes speed, never the result. Set the three cache sizes to compare blockings from one binary,
+    or to model another machine's caches on this one.
+
+"einsums:hardware:l2-cache-size":
+  added: "2.0.0"
+  body: |
+    The L2 cache size, in bytes, that einsums assumes in place of the detected one. Zero, the
+    default, detects it. See :option:`--einsums:hardware:l1-cache-size`.
+
+"einsums:hardware:l3-cache-size":
+  added: "2.0.0"
+  body: |
+    The L3 cache size, in bytes, that einsums assumes in place of the detected one. Zero, the
+    default, detects it. See :option:`--einsums:hardware:l1-cache-size`.
+
+"einsums:cache-dir":
+  added: "2.0.0"
+  body: |
+    The directory where einsums looks for measurements kept between runs. Empty, the default, uses
+    the platform's cache location: an ``einsums`` directory under ``%LOCALAPPDATA%`` on Windows, and
+    under ``$XDG_CACHE_HOME`` or ``~/.cache`` elsewhere.
+
+    Today that is only the default calibration file, see
+    :option:`--einsums:hardware:calibration`. Point this somewhere disposable to keep a test or a CI
+    job from reading the machine's own calibration.
+
+"einsums:hardware:calibration":
+  added: "2.0.0"
+  body: |
+    The calibration file the cost of an OpenMP parallel region is read from. Empty, the default,
+    uses a file under :option:`--einsums:cache-dir` named for this host, so a shared home directory
+    cannot hand one machine's numbers to another.
+
+    Measured in each process, that cost drifts by tens of percent with whatever else the machine is
+    doing. A calibration makes it the same number in every run. Only the ``calibrate_hardware`` tool
+    writes the file, and einsums never does. A missing or unreadable file means the cost is measured
+    as if there were none.
+
+"einsums:hardware:omp-region-cost-ns":
+  added: "2.0.0"
+  body: |
+    Pin the cost of entering an OpenMP parallel region, in nanoseconds. Negative, the default, takes
+    the calibrated value when there is one and measures otherwise.
+
+    The thresholds that decide whether a loop or a contraction is worth a team are derived from
+    this cost. A pin holds them fixed across machines and runs without touching any file.
+
+"einsums:hardware:omp-min-parallel-elements":
+  added: "2.0.0"
+  body: |
+    Pin the element count at which an elementwise kernel opens a parallel region. Negative, the
+    default, derives it from the region cost. Zero parallelizes every loop.
+
+    This is for comparing thresholds from one binary, since rebuilds move timings for unrelated
+    reasons. Any value gives the same results.
+
+"einsums:hardware:omp-min-parallel-flops":
+  added: "2.0.0"
+  body: |
+    Pin the work, in flops, at which a contraction opens a parallel region. Negative, the default,
+    derives it from the region cost. Zero parallelizes every contraction.
+
+    This is for comparing thresholds from one binary, since rebuilds move timings for unrelated
+    reasons. Any value gives the same results.
+
+"einsums:simd:arch":
+  added: "2.0.0"
+  body: |
+    Cap the SIMD rung that runtime-dispatched kernels run at. Empty, the default, uses the highest
+    rung the CPU and operating system support. Accepted rungs are ``baseline``, ``v2``, ``v3``,
+    ``v4`` and ``sme``, and the aliases ``sse2``, ``sse4.2``, ``avx2``, ``avx512`` and ``sme2``.
+
+    This can only lower the rung. A rung the machine cannot run is replaced, with a warning, by the
+    next one below it that it can, and a rung of another architecture is ignored. It is how a test
+    runs every rung of a dispatch ladder on one machine.
 
 "einsums:hptt:selection-method":
   added: "2.0.0"

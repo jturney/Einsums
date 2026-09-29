@@ -118,7 +118,7 @@ def test_an_explicit_pin_wins(tmp_path):
     path.write_text(CALIBRATION)
     assert _region_cost_in_subprocess(
         {"EINSUMS_HARDWARE_CALIBRATION": str(path), "OMP_NUM_THREADS": "2",
-         "EINSUMS_OMP_REGION_COST_NS": "12345"}) == 12345.0
+         "EINSUMS_HARDWARE_OMP_REGION_COST_NS": "12345"}) == 12345.0
 
 
 def test_a_corrupt_calibration_is_survived(tmp_path):

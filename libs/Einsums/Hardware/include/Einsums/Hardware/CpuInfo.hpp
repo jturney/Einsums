@@ -19,9 +19,9 @@ EINSUMS_NAMESPACE_BEGIN(hardware)
 /// accessors below always return usable values, falling back to conservative
 /// defaults.
 struct CacheSizes {
-    std::int64_t l1{32 * 1024};
-    std::int64_t l2{256 * 1024};
-    std::int64_t l3{8 * 1024 * 1024};
+    std::int64_t l1{std::int64_t{32} << 10};
+    std::int64_t l2{std::int64_t{256} << 10};
+    std::int64_t l3{std::int64_t{8} << 20};
 };
 
 /**
@@ -44,7 +44,7 @@ struct CpuInfo {
     /// process dispatches to: SSE/NEON = 2, AVX = 4, AVX-512 = 8.
     ///
     /// Runtime, from `simd::selected_arch()` (CPUID, OS vector state, and the
-    /// `EINSUMS_SIMD_ARCH` override), not from the flags the library was
+    /// `--einsums:simd:arch` override), not from the flags the library was
     /// compiled with. It used to be the latter, and on a distribution build
     /// compiled for the x86-64 baseline it reported 2 on every AVX2 machine;
     /// PackedGemm sized its register tile from it and ran SSE-width kernels on
@@ -89,7 +89,7 @@ EINSUMS_EXPORT CpuInfo const &cpu_info();
  * measurement taken while the machine was busy is indistinguishable from a
  * slower machine; a file you generated can be regenerated, diffed and deleted.
  *
- * @c EINSUMS_OMP_REGION_COST_NS pins a value outright.
+ * @c --einsums:hardware:omp-region-cost-ns pins a value outright.
  *
  * Exposed to Python because cost models are not all in C++: the DLPNO example
  * chooses how finely to batch its per-pair work, and that decision turns on
@@ -109,22 +109,28 @@ APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT double omp_region_cost_ns
  * The motivating case is a tiled tensor: an amplitude update over a 64-element
  * tile was forking a team to divide 64 numbers, and a graph replay does thousands
  * of those per iteration.
+ *
+ * @c --einsums:hardware:omp-min-parallel-elements pins a value outright.
  */
 APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::size_t omp_min_parallel_elements();
 
 /**
  * @brief Work, in flops, below which parallelizing a contraction is a net loss.
  *
- * Same derivation as @ref omp_min_parallel_elements, converted at the ~1 GFLOP/s
- * that SMALL contractions actually achieve rather than at peak. Using peak would
- * put the break-even far too high and exclude shapes that genuinely want threads.
+ * Scales with @ref omp_region_cost_ns, as @ref omp_min_parallel_elements does,
+ * by a multiplier calibrated end to end on tiled CCSD residuals rather than by an
+ * achieved flop rate: the rate of the smallest contractions put the break-even
+ * so low that nearly every contraction forked a team, and the region cost then
+ * dominated the replay.
+ *
+ * @c --einsums:hardware:omp-min-parallel-flops pins a value outright.
  */
 APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::int64_t omp_min_parallel_flops();
 
 /**
  * @brief Where @ref omp_region_cost_ns looks for a calibration file.
  *
- * @c EINSUMS_HARDWARE_CALIBRATION if set, otherwise a host-keyed default under
+ * @c --einsums:hardware:calibration if set, otherwise a host-keyed default under
  * the platform cache directory. Empty when there is nowhere to look, which is
  * not an error: the measurement simply happens per process.
  */
@@ -141,7 +147,7 @@ APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT std::string default_calib
  * got, rather than leaving a reader of its numbers to guess.
  *
  * True for a single-threaded run, where the cost is exactly zero either way, and
- * for an explicit @c EINSUMS_OMP_REGION_COST_NS pin.
+ * for an explicit @c --einsums:hardware:omp-region-cost-ns pin.
  */
 APIARY_EXPOSE APIARY_MODULE("hardware") EINSUMS_EXPORT bool region_cost_is_calibrated();
 

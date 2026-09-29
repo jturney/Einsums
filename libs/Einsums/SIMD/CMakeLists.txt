@@ -10,12 +10,13 @@ set(SIMDHeaders
     Einsums/SIMD/ComplexVec.hpp
     Einsums/SIMD/Shuffle.hpp
     Einsums/SIMD/Gather.hpp
+    Einsums/SIMD/Options.hpp
     Einsums/SIMD/Prefetch.hpp
     Einsums/SIMD/RuntimeFeatures.hpp
     Einsums/SIMD/RungLadder.hpp
 )
 
-set(SIMDSources RuntimeFeatures.cpp)
+set(SIMDSources Options.cpp RuntimeFeatures.cpp)
 
 # ── Architecture-targeting options ───────────────────────────────────────────
 #
@@ -80,7 +81,7 @@ einsums_add_module(
   SOURCES ${SIMDSources}
   HEADERS ${SIMDHeaders}
   DEPENDENCIES
-  MODULE_DEPENDENCIES Einsums_Config Einsums_Logging
+  MODULE_DEPENDENCIES Einsums_Config Einsums_Logging Einsums_Options
   CMAKE_SUBDIRS examples tests
 )
 

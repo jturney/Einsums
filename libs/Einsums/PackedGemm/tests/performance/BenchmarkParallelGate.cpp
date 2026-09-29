@@ -22,8 +22,8 @@
 /// A/B it from ONE binary, since rebuilds move unrelated things:
 /// @code
 /// B=./build/libs/Einsums/PackedGemm/tests/performance/BenchmarkParallelGate_test
-/// EINSUMS_PACKED_MIN_PARALLEL_FLOPS=0             $B  # always parallel
-/// EINSUMS_PACKED_MIN_PARALLEL_FLOPS=1000000000000 $B  # always serial
+/// $B --einsums:hardware:omp-min-parallel-flops=0              # always parallel
+/// $B --einsums:hardware:omp-min-parallel-flops=1000000000000  # always serial
 /// @endcode
 /// The threshold is read once per process, so each run reports one policy; the
 /// header line says which.

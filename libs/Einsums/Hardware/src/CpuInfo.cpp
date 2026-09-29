@@ -5,13 +5,12 @@
 
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Hardware/CpuInfo.hpp>
+#include <Einsums/Hardware/Options.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
 #include <chrono>
-#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -47,37 +46,23 @@ EINSUMS_NAMESPACE_BEGIN(hardware)
 
 namespace {
 
-/// Detect CPU cache sizes. Returns {L1, L2, L3} in bytes.
-/// Falls back to conservative defaults if detection fails.
-struct CacheSizes {
-    int64_t l1 = 32 * 1024;       // 32 KB
-    int64_t l2 = 256 * 1024;      // 256 KB
-    int64_t l3 = 8 * 1024 * 1024; // 8 MB
-};
-
+/// Detect CPU cache sizes in bytes, keeping CacheSizes' conservative defaults
+/// for any level detection cannot read.
 CacheSizes detect_cache_sizes() {
     CacheSizes cs;
 
     // Diagnostic override, so a blocking change can be measured against the old
     // sizes from ONE binary. Comparing across rebuilds is not reliable for these
-    // benchmarks. Format: "L1,L2,L3" in bytes; any field <= 0 keeps the detected
-    // value.
+    // benchmarks. A level left at zero keeps the detected value.
     auto const apply_override = [&cs]() {
-        char const *env = std::getenv("EINSUMS_CACHE_SIZES");
-        if (env == nullptr) {
-            return;
+        if (auto const l1 = config::get(option::HardwareL1CacheSize); l1 > 0) {
+            cs.l1 = l1;
         }
-        long long a = 0, b = 0, c = 0;
-        if (std::sscanf(env, "%lld,%lld,%lld", &a, &b, &c) >= 1) {
-            if (a > 0) {
-                cs.l1 = static_cast<int64_t>(a);
-            }
-            if (b > 0) {
-                cs.l2 = static_cast<int64_t>(b);
-            }
-            if (c > 0) {
-                cs.l3 = static_cast<int64_t>(c);
-            }
+        if (auto const l2 = config::get(option::HardwareL2CacheSize); l2 > 0) {
+            cs.l2 = l2;
+        }
+        if (auto const l3 = config::get(option::HardwareL3CacheSize); l3 > 0) {
+            cs.l3 = l3;
         }
     };
 
@@ -101,7 +86,7 @@ CacheSizes detect_cache_sizes() {
     cs.l3 = sysctl_i64("hw.l3cachesize", cs.l3);
     // Apple Silicon may report L3 as 0; fall back to a reasonable default.
     if (cs.l3 <= 0) {
-        cs.l3 = 8 * 1024 * 1024;
+        cs.l3 = CacheSizes{}.l3;
     }
 #elif defined(__linux__)
     // Read from sysfs: /sys/devices/system/cpu/cpu0/cache/index{0,1,2,3}/
@@ -202,13 +187,13 @@ double measure_omp_region_cost_ns() {
 
 /// Where a measured constant may be remembered between runs, or "" if nowhere.
 ///
-/// ``EINSUMS_CACHE_DIR`` first so a test or a CI job can point this somewhere
+/// option::CacheDir first so a test or a CI job can point this somewhere
 /// disposable, then the platform's own cache location. Never a fatal condition:
 /// a machine with nowhere to write simply measures every time, which is what
 /// happened before there was a cache at all.
 std::filesystem::path cache_directory() {
-    if (char const *env = std::getenv("EINSUMS_CACHE_DIR"); env != nullptr && *env != '\0') {
-        return std::filesystem::path(env);
+    if (auto const dir = config::get(option::CacheDir); !dir.empty()) {
+        return std::filesystem::path(dir);
     }
 #if defined(_WIN32)
     if (char const *base = std::getenv("LOCALAPPDATA"); base != nullptr && *base != '\0') {
@@ -252,19 +237,14 @@ std::string host_tag() {
 
 /// The calibration file this machine's measurements are read from.
 ///
-/// ``EINSUMS_HARDWARE_CALIBRATION`` first, mirroring the contract
+/// option::HardwareCalibration first, mirroring the contract
 /// ``--einsums:hardware:profile`` already has for the ComputeGraph cost model:
-/// an explicit file, missing is fine, never load-bearing. That one is a config
-/// descriptor and this one is not, deliberately: a cost model is built while a
-/// pass manager is populated, long after the option system parses, whereas
-/// everything in this file is memoized on first touch and first touch can
-/// precede initialize(). A descriptor read there would freeze the compiled-in
-/// default and no later parse could undo it. Otherwise a default
+/// an explicit file, missing is fine, never load-bearing. Otherwise a default
 /// under the cache directory, keyed by host so a shared home directory cannot
 /// hand one machine's fork/join cost to another.
 std::filesystem::path calibration_file() {
-    if (char const *env = std::getenv("EINSUMS_HARDWARE_CALIBRATION"); env != nullptr && *env != '\0') {
-        return std::filesystem::path(env);
+    if (auto const file = config::get(option::HardwareCalibration); !file.empty()) {
+        return std::filesystem::path(file);
     }
     std::filesystem::path const dir = cache_directory();
     if (dir.empty()) {
@@ -335,13 +315,8 @@ struct ResolvedRegionCost {
 ResolvedRegionCost resolve_omp_region_cost_ns() {
     // An explicit pin beats everything, so a benchmark can hold the rate fixed
     // across machines without touching any file.
-    if (char const *env = std::getenv("EINSUMS_OMP_REGION_COST_NS"); env != nullptr && *env != '\0') {
-        errno               = 0;
-        char        *end    = nullptr;
-        double const pinned = std::strtod(env, &end);
-        if (errno == 0 && end != env && pinned >= 0.0) {
-            return {pinned, true};
-        }
+    if (double const pinned = config::get(option::HardwareOmpRegionCostNs); pinned >= 0.0) {
+        return {pinned, true};
     }
 
 #ifdef _OPENMP
@@ -520,83 +495,67 @@ bool region_cost_is_calibrated() {
 std::size_t omp_min_parallel_elements() {
     // Derived per call for the same reason omp_region_cost_ns is: a threshold
     // frozen while OpenMP was clamped to one thread is zero forever after.
-    auto const compute = []() -> std::size_t {
-        // Elementwise kernels are bandwidth-bound. One element per nanosecond is a
-        // conservative rate for cache-resident data, so the break-even element
-        // count is numerically the region cost in nanoseconds.
-        auto value = static_cast<std::size_t>(omp_region_cost_ns());
-
-        // Diagnostic override, so a threshold can be measured against the
-        // unthresholded behaviour from ONE binary. Comparing across rebuilds is
-        // not viable for this: the benchmarks involved swing by tens of percent
-        // with unrelated machine activity, and only a same-binary A/B holds its
-        // controls steady. Zero restores "always parallelize".
-        if (char const *env = std::getenv("EINSUMS_OMP_MIN_PARALLEL_ELEMENTS"); env != nullptr) {
-            errno                  = 0;
-            char           *end    = nullptr;
-            long long const parsed = std::strtoll(env, &end, 10);
-            if (errno == 0 && end != env && parsed >= 0) {
-                value = static_cast<std::size_t>(parsed);
-            }
-        }
-        return value;
-    };
-    return compute();
+    //
+    // Diagnostic override, so a threshold can be measured against the
+    // unthresholded behaviour from ONE binary. Comparing across rebuilds is
+    // not viable for this: the benchmarks involved swing by tens of percent
+    // with unrelated machine activity, and only a same-binary A/B holds its
+    // controls steady. Zero restores "always parallelize".
+    if (auto const pinned = config::get(option::HardwareOmpMinParallelElements); pinned >= 0) {
+        return static_cast<std::size_t>(pinned);
+    }
+    // Elementwise kernels are bandwidth-bound. One element per nanosecond is a
+    // conservative rate for cache-resident data, so the break-even element
+    // count is numerically the region cost in nanoseconds.
+    return static_cast<std::size_t>(omp_region_cost_ns());
 }
 
 std::int64_t omp_min_parallel_flops() {
-    auto const compute = []() -> std::int64_t {
-        // Work is worth a parallel region once it takes longer than entering one,
-        // so the break-even scales with the measured region cost. This constant is
-        // what that cost is multiplied by, in flops per nanosecond, and it is a
-        // CALIBRATION rather than a flop rate - see below.
-        //
-        // It had been 1.0, on the reasoning that the smallest contractions manage
-        // about 1 GFLOP/s. That rate is real but it is the rate of work far below
-        // the break-even, which never decides anything; using it dragged the
-        // threshold down to a few tens of KFLOP and handed a region to everything.
-        // A tiled CCSD residual at 50 spin orbitals expands to 3751 contractions
-        // of ~295 KFLOP each, and forking for every one of them cost 71 ms of that
-        // replay's 72 ms einsum time, against 32 ms with the regions declined.
-        //
-        // The rate achieved AT the break-even is what a straight calculation would
-        // want, and BenchmarkParallelGate measures it on a `ijab <- ijcd ; cdab`
-        // ladder:
-        //
-        //   flops     8k    295k    524k    2.7M     13M
-        //   GFLOP/s  4.2    34.3    23.8    60.2    61.1
-        //
-        // But ~32 over-excludes. Measured end to end on two tiled CCSD residuals,
-        // same binary, threshold forced by the environment override:
-        //
-        //   threshold      26 spin-orb     50 spin-orb
-        //   26k (old)      3.9-4.1 ms      66.9-68.7 ms
-        //   300k           4.0-4.1 ms      33.6-34.3 ms
-        //   835k (=32x)    4.2-4.3 ms      33.5-33.6 ms
-        //
-        // 300k keeps the whole win on the large residual and costs the small one
-        // nothing, where 835k costs it ~6% for no further gain. The gap is that a
-        // region does not cost the full isolated figure when it is entered from a
-        // stream that keeps the team hot, so the naive break-even is too
-        // conservative. 12 is the multiplier that lands on the measured optimum;
-        // it is not a claim about achieved GFLOP/s.
-        //
-        // Measured on arm64 (Apple M4 Pro, 10 threads) only - x86 wants the same
-        // sweep before this is trusted there.
-        constexpr double kBreakEvenFlopsPerNs = 12.0;
-        auto             value                = static_cast<std::int64_t>(omp_region_cost_ns() * kBreakEvenFlopsPerNs);
+    // A pin beats the derivation below, so the threshold can be swept from ONE
+    // binary: zero always parallelizes, a huge value never does.
+    if (auto const pinned = config::get(option::HardwareOmpMinParallelFlops); pinned >= 0) {
+        return pinned;
+    }
 
-        if (char const *env = std::getenv("EINSUMS_PACKED_MIN_PARALLEL_FLOPS"); env != nullptr) {
-            errno                  = 0;
-            char           *end    = nullptr;
-            long long const parsed = std::strtoll(env, &end, 10);
-            if (errno == 0 && end != env && parsed >= 0) {
-                value = static_cast<std::int64_t>(parsed);
-            }
-        }
-        return value;
-    };
-    return compute();
+    // Work is worth a parallel region once it takes longer than entering one,
+    // so the break-even scales with the measured region cost. This constant is
+    // what that cost is multiplied by, in flops per nanosecond, and it is a
+    // CALIBRATION rather than a flop rate - see below.
+    //
+    // It had been 1.0, on the reasoning that the smallest contractions manage
+    // about 1 GFLOP/s. That rate is real but it is the rate of work far below
+    // the break-even, which never decides anything; using it dragged the
+    // threshold down to a few tens of KFLOP and handed a region to everything.
+    // A tiled CCSD residual at 50 spin orbitals expands to 3751 contractions
+    // of ~295 KFLOP each, and forking for every one of them cost 71 ms of that
+    // replay's 72 ms einsum time, against 32 ms with the regions declined.
+    //
+    // The rate achieved AT the break-even is what a straight calculation would
+    // want, and BenchmarkParallelGate measures it on a `ijab <- ijcd ; cdab`
+    // ladder:
+    //
+    //   flops     8k    295k    524k    2.7M     13M
+    //   GFLOP/s  4.2    34.3    23.8    60.2    61.1
+    //
+    // But ~32 over-excludes. Measured end to end on two tiled CCSD residuals,
+    // same binary, threshold forced by the environment override:
+    //
+    //   threshold      26 spin-orb     50 spin-orb
+    //   26k (old)      3.9-4.1 ms      66.9-68.7 ms
+    //   300k           4.0-4.1 ms      33.6-34.3 ms
+    //   835k (=32x)    4.2-4.3 ms      33.5-33.6 ms
+    //
+    // 300k keeps the whole win on the large residual and costs the small one
+    // nothing, where 835k costs it ~6% for no further gain. The gap is that a
+    // region does not cost the full isolated figure when it is entered from a
+    // stream that keeps the team hot, so the naive break-even is too
+    // conservative. 12 is the multiplier that lands on the measured optimum;
+    // it is not a claim about achieved GFLOP/s.
+    //
+    // Measured on arm64 (Apple M4 Pro, 10 threads) only - x86 wants the same
+    // sweep before this is trusted there.
+    constexpr double kBreakEvenFlopsPerNs = 12.0;
+    return static_cast<std::int64_t>(omp_region_cost_ns() * kBreakEvenFlopsPerNs);
 }
 
 int get_max_threads() {

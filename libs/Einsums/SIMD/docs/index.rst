@@ -194,9 +194,10 @@ only selects ``Sme`` on a core that has SVE2 as well.
 Overriding the rung
 -------------------
 
-Set the ``EINSUMS_SIMD_ARCH`` environment variable (``baseline``, ``v2``,
-``v3``, ``v4``, ``sme``, or the aliases ``sse2``/``sse4.2``/``avx2``/``avx512``/``sme2``)
-before process start to force another rung. This is the primary tool for
+Set :option:`--einsums:simd:arch`, or its environment variable
+``EINSUMS_SIMD_ARCH``, to ``baseline``, ``v2``, ``v3``, ``v4``, ``sme``, or
+one of the aliases ``sse2``/``sse4.2``/``avx2``/``avx512``/``sme2`` to force
+another rung. This is the primary tool for
 testing every rung of a dispatch ladder on one machine. An override can only
 choose a rung the machine supports. Asking for one it cannot run logs a
 warning and takes the next supported rung in the architecture's preference
@@ -207,7 +208,7 @@ registration in the ``simd_rung_guard`` launcher, which turns an unsupported
 rung into an honest ctest "Skipped" (exit 77) instead of a silent rerun at
 another rung. The value is read once and cached; tests that need to exercise
 the resolution logic itself should call ``resolve_arch()`` with explicit
-arguments instead of mutating the environment.
+arguments instead of setting the option.
 
 Building a dispatch ladder
 --------------------------

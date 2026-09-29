@@ -187,8 +187,8 @@ EINSUMS_EXPORT char const *to_string(InstructionSet set);
 EINSUMS_EXPORT int vector_bits(InstructionSet set);
 
 /**
- * @brief Parse a rung name, as accepted by the `EINSUMS_SIMD_ARCH`
- *        environment variable.
+ * @brief Parse a rung name, as accepted by the `--einsums:simd:arch`
+ *        option.
  *
  * Accepted spellings (case-insensitive): `baseline`, `v2`, `v3`, `v4`,
  * `x86-64-v2/-v3/-v4`, `sme`, and the colloquial aliases `sse2` (baseline),
@@ -256,7 +256,7 @@ EINSUMS_EXPORT InstructionSet highest_supported(CpuFeatures const &features);
  * @brief Resolve the rung to dispatch to, given a feature set and an
  *        optional override spelling.
  *
- * The override (normally the `EINSUMS_SIMD_ARCH` environment variable) can
+ * The override (normally the `--einsums:simd:arch` option) can
  * only choose a rung the machine supports. A supported rung is used as
  * given. A rung of this architecture that the machine cannot run is
  * replaced, with a logged warning, by the next supported rung after it in
@@ -278,12 +278,12 @@ EINSUMS_EXPORT InstructionSet resolve_arch(CpuFeatures const &features, std::opt
 /**
  * @brief The rung the current process dispatches to.
  *
- * Equivalent to `resolve_arch(cpu_features(), <EINSUMS_SIMD_ARCH env var>)`,
+ * Equivalent to `resolve_arch(cpu_features(), <--einsums:simd:arch>)`,
  * computed once (thread-safe) and cached for the lifetime of the process.
- * Because the result is cached, the environment variable must be set before
- * the first call anywhere in the process; changing it afterwards has no
- * effect. Test code that needs different rungs should call resolve_arch()
- * directly instead of mutating the environment.
+ * Because the result is cached, the option must be parsed before the first
+ * call anywhere in the process, on the command line or in the environment;
+ * changing it afterwards has no effect. Test code that needs different rungs
+ * should call resolve_arch() directly instead of setting the option.
  *
  * @return The cached rung.
  *
