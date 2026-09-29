@@ -63,7 +63,7 @@ EINSUMS_FORCEINLINE void complex_storeu(std::complex<T> *ptr, CVec<T> v) {
 template <typename T>
 EINSUMS_FORCEINLINE CVec<T> complex_broadcast(std::complex<T> val);
 
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) && defined(__AVX512VL__)
 template <>
 EINSUMS_FORCEINLINE CVec<float> complex_broadcast(std::complex<float> val) {
     return _mm512_setr_ps(val.real(), val.imag(), val.real(), val.imag(), val.real(), val.imag(), val.real(), val.imag(), val.real(),
@@ -134,7 +134,7 @@ EINSUMS_FORCEINLINE CVec<T> complex_sub(CVec<T> a, CVec<T> b) {
 template <typename T>
 EINSUMS_FORCEINLINE CVec<T> conjugate(CVec<T> v);
 
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) && defined(__AVX512VL__)
 template <>
 EINSUMS_FORCEINLINE CVec<float> conjugate(CVec<float> v) {
     auto sign = _mm512_setr_ps(0.f, -0.f, 0.f, -0.f, 0.f, -0.f, 0.f, -0.f, 0.f, -0.f, 0.f, -0.f, 0.f, -0.f, 0.f, -0.f);
@@ -209,7 +209,7 @@ EINSUMS_FORCEINLINE CVec<double> conjugate(CVec<double> v) {
 template <typename T>
 EINSUMS_FORCEINLINE CVec<T> complex_mul(CVec<T> a, CVec<T> b);
 
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) && defined(__AVX512VL__)
 // fmaddsub(x, y, z) computes x*y - z in the even (real) lanes and x*y + z in
 // the odd (imaginary) lanes, which is steps 3 and 6 fused into one.
 template <>

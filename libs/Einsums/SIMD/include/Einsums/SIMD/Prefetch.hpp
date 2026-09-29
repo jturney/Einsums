@@ -94,7 +94,7 @@ EINSUMS_FORCEINLINE void prefetch_rows(T const *base, size_t stride, int nrows =
 template <typename T>
 EINSUMS_FORCEINLINE void stream_store(T *ptr, Vec<T> v);
 
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) && defined(__AVX512VL__)
 template <>
 EINSUMS_FORCEINLINE void stream_store(float *p, Vec<float> v) {
     _mm512_stream_ps(p, v.reg);

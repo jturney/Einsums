@@ -18,7 +18,7 @@ EINSUMS_NAMESPACE_BEGIN(simd)
 template <typename T>
 EINSUMS_FORCEINLINE Vec<T> broadcast(T val);
 
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) && defined(__AVX512VL__)
 template <>
 EINSUMS_FORCEINLINE Vec<float> broadcast(float val) {
     return _mm512_set1_ps(val);
@@ -72,7 +72,7 @@ EINSUMS_FORCEINLINE Vec<double> broadcast(double val) {
 template <typename T>
 EINSUMS_FORCEINLINE Vec<T> loadu(T const *ptr);
 
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) && defined(__AVX512VL__)
 template <>
 EINSUMS_FORCEINLINE Vec<float> loadu(float const *p) {
     return _mm512_loadu_ps(p);
@@ -126,7 +126,7 @@ EINSUMS_FORCEINLINE Vec<double> loadu(double const *p) {
 template <typename T>
 EINSUMS_FORCEINLINE Vec<T> loada(T const *ptr);
 
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) && defined(__AVX512VL__)
 template <>
 EINSUMS_FORCEINLINE Vec<float> loada(float const *p) {
     return _mm512_load_ps(p);
@@ -181,7 +181,7 @@ EINSUMS_FORCEINLINE Vec<double> loada(double const *p) {
 template <typename T>
 EINSUMS_FORCEINLINE void storeu(T *ptr, Vec<T> v);
 
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) && defined(__AVX512VL__)
 template <>
 EINSUMS_FORCEINLINE void storeu(float *p, Vec<float> v) {
     _mm512_storeu_ps(p, v.reg);
@@ -235,7 +235,7 @@ EINSUMS_FORCEINLINE void storeu(double *p, Vec<double> v) {
 template <typename T>
 EINSUMS_FORCEINLINE void storea(T *ptr, Vec<T> v);
 
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) && defined(__AVX512VL__)
 template <>
 EINSUMS_FORCEINLINE void storea(float *p, Vec<float> v) {
     _mm512_store_ps(p, v.reg);
@@ -293,7 +293,7 @@ EINSUMS_FORCEINLINE Vec<T> sub(Vec<T> a, Vec<T> b);
 template <typename T>
 EINSUMS_FORCEINLINE Vec<T> mul(Vec<T> a, Vec<T> b);
 
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) && defined(__AVX512VL__)
 template <>
 EINSUMS_FORCEINLINE Vec<float> add(Vec<float> a, Vec<float> b) {
     return _mm512_add_ps(a, b);
@@ -431,7 +431,7 @@ EINSUMS_FORCEINLINE Vec<T> fmadd(Vec<T> a, Vec<T> b, Vec<T> c);
 // x86 with FMA3 support (available on AVX2+ and some AVX processors). See
 // Platform.hpp for why this is not a bare __FMA__ test.
 #if defined(EINSUMS_SIMD_HAVE_FMA)
-#    if defined(__AVX512F__)
+#    if defined(__AVX512F__) && defined(__AVX512VL__)
 template <>
 EINSUMS_FORCEINLINE Vec<float> fmadd(Vec<float> a, Vec<float> b, Vec<float> c) {
     return _mm512_fmadd_ps(a, b, c);
@@ -1074,6 +1074,10 @@ EINSUMS_FORCEINLINE Vec<uint32_t> mul(Vec<uint32_t> a, Vec<uint32_t> b) {
     return _mm256_mullo_epi32(a.reg, b.reg);
 }
 // i64/u64 mul not implemented; needs AVX-512DQ.
+#elif defined(__AVX__)
+// AVX without AVX2 has no 256-bit integer instructions, and the integer Vecs
+// are __m256i here, so no SSE2 form fits them: these operations are left
+// undefined for that tier, and a call is a link error.
 #elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 template <>
 EINSUMS_FORCEINLINE Vec<int32_t> add(Vec<int32_t> a, Vec<int32_t> b) {
@@ -1275,6 +1279,11 @@ EINSUMS_FORCEINLINE Vec<T> bitwise_xor(Vec<T> a, Vec<T> b);
         EINSUMS_FORCEINLINE Vec<T> bitwise_xor(Vec<T> a, Vec<T> b) {                                                                       \
             return _mm256_xor_si256(a.reg, b.reg);                                                                                         \
         }
+#elif defined(__AVX__)
+// AVX without AVX2 has no 256-bit integer instructions, and the integer Vecs
+// are __m256i here, so no SSE2 form fits them: these operations are left
+// undefined for that tier, and a call is a link error.
+#    define EINSUMS_SIMD_INT_BITWISE(T) /* nothing; see above */
 #elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #    define EINSUMS_SIMD_INT_BITWISE(T)                                                                                                    \
         template <>                                                                                                                        \
@@ -1415,6 +1424,10 @@ template <int N>
 EINSUMS_FORCEINLINE Vec<uint64_t> shift_right(Vec<uint64_t> v) {
     return _mm256_srli_epi64(v.reg, N);
 }
+#elif defined(__AVX__)
+// AVX without AVX2 has no 256-bit integer instructions, and the integer Vecs
+// are __m256i here, so no SSE2 form fits them: these operations are left
+// undefined for that tier, and a call is a link error.
 #elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 template <int N>
 EINSUMS_FORCEINLINE Vec<int32_t> shift_left(Vec<int32_t> v) {
@@ -1571,6 +1584,10 @@ template <>
 EINSUMS_FORCEINLINE Vec<uint64_t> cmp_eq(Vec<uint64_t> a, Vec<uint64_t> b) {
     return _mm256_cmpeq_epi64(a.reg, b.reg);
 }
+#elif defined(__AVX__)
+// AVX without AVX2 has no 256-bit integer instructions, and the integer Vecs
+// are __m256i here, so no SSE2 form fits them: these operations are left
+// undefined for that tier, and a call is a link error.
 #elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 template <>
 EINSUMS_FORCEINLINE Vec<int32_t> cmp_eq(Vec<int32_t> a, Vec<int32_t> b) {
@@ -1705,6 +1722,10 @@ template <>
 EINSUMS_FORCEINLINE void storeu(uint8_t *p, Vec<uint8_t> v) {
     _mm256_storeu_si256(reinterpret_cast<__m256i *>(p), v.reg);
 }
+#elif defined(__AVX__)
+// AVX without AVX2 has no 256-bit integer instructions, and the integer Vecs
+// are __m256i here, so no SSE2 form fits them: these operations are left
+// undefined for that tier, and a call is a link error.
 #elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 template <>
 EINSUMS_FORCEINLINE Vec<int8_t> broadcast(int8_t v) {
@@ -1827,7 +1848,7 @@ EINSUMS_FORCEINLINE Vec<int32_t> dot_product_uu(Vec<int32_t> acc, Vec<uint8_t> a
 EINSUMS_FORCEINLINE Vec<int32_t> dot_product_us(Vec<int32_t> acc, Vec<uint8_t> a, Vec<int8_t> b) {
     return vusdotq_s32(acc.reg, a.reg, b.reg);
 }
-#elif defined(__AVX512VNNI__) && defined(__AVX512F__)
+#elif defined(__AVX512VNNI__) && defined(__AVX512F__) && defined(__AVX512VL__)
 EINSUMS_FORCEINLINE Vec<int32_t> dot_product_us(Vec<int32_t> acc, Vec<uint8_t> a, Vec<int8_t> b) {
     return _mm512_dpbusd_epi32(acc.reg, a.reg, b.reg);
 }
