@@ -1395,13 +1395,20 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
             einsum_do_outer_product<DryRun, ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B);
         retval = GER;
     } else if constexpr (einsum_is_matrix_vector<ConjA, ConjB>(C_indices, A_indices, B_indices)) {
-        has_performed_contraction =
-            einsum_do_matrix_vector<DryRun, ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B);
-        retval = GEMV;
+        // A GEMV the vendor cannot thread falls through to PackedGemm's stream route, as the string
+        // engine's does (see packed_gemm::stream_gemv_preferred). The stream does not conjugate, so a
+        // conjugated GEMV keeps the vendor's.
+        if (ConjA || ConjB || !packed_gemm::stream_gemv_preferred(static_cast<int64_t>(A.size()))) {
+            has_performed_contraction =
+                einsum_do_matrix_vector<DryRun, ConjA, ConjB>(C_prefactor, C_indices, C, AB_prefactor, A_indices, A, B_indices, B);
+            retval = GEMV;
+        }
     } else if constexpr (einsum_is_matrix_vector<ConjA, ConjB>(C_indices, B_indices, A_indices)) {
-        has_performed_contraction =
-            einsum_do_matrix_vector<DryRun, ConjB, ConjA>(C_prefactor, C_indices, C, AB_prefactor, B_indices, B, A_indices, A);
-        retval = GEMV;
+        if (ConjA || ConjB || !packed_gemm::stream_gemv_preferred(static_cast<int64_t>(B.size()))) {
+            has_performed_contraction =
+                einsum_do_matrix_vector<DryRun, ConjB, ConjA>(C_prefactor, C_indices, C, AB_prefactor, B_indices, B, A_indices, A);
+            retval = GEMV;
+        }
     }
     // To use a gemm the input tensors need to be at least rank 2
     else if constexpr (CRank >= 2 && ARank >= 2 && BRank >= 2) {

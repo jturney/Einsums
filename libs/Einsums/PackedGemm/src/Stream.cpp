@@ -76,59 +76,85 @@ constexpr int64_t kElemsPerThread = 65536;
 
 } // namespace
 
-template <typename T>
-void stream_contract(T const *s, StreamLayout const &s_layout, std::vector<StreamTerm<T>> const &terms,
-                     std::vector<int> const &partition_axes) {
-    int const rank = static_cast<int>(s_layout.dims.size());
-    for (auto const &t : terms) {
-        if (t.c_axis.size() != static_cast<size_t>(rank) || t.w_axis.size() != static_cast<size_t>(rank)) {
-            throw std::invalid_argument("stream_contract: a term's axis maps must have one entry per axis of the streamed tensor");
-        }
-    }
+namespace {
 
-    // Distinct outputs, in first-appearance order. Terms name an output by its
-    // data pointer.
-    std::vector<T *>                  outs;
-    std::vector<StreamLayout const *> out_layouts;
-    std::vector<size_t>               slot_of(terms.size());
-    for (size_t k = 0; k < terms.size(); k++) {
-        auto it = std::ranges::find(outs, terms[k].c);
-        if (it == outs.end()) {
-            outs.push_back(terms[k].c);
-            out_layouts.push_back(&terms[k].c_layout);
-            slot_of[k] = outs.size() - 1;
-        } else {
-            slot_of[k] = static_cast<size_t>(it - outs.begin());
-            if (terms[k].c_pf != T{1}) {
-                throw std::invalid_argument(
-                    "stream_contract: only the first term on an output may scale it; a later term's c_pf must be 1");
+/// Merge pairs of axes of S that are contiguous in S and in every term's output
+/// and weight: axis a merges into axis b when a steps exactly one run of b in S,
+/// and, in each of C and W, both are summed or a is the axis right after b and
+/// steps one run of it. The merged axis keeps b's position; its extent is the
+/// product. A term's operand axes merge the same way, so an element's offset and
+/// its place in the operand's dense order are unchanged. Partition axes follow
+/// their merged axis.
+template <typename T>
+void merge_contiguous_axes(StreamLayout &sl, std::vector<StreamTerm<T>> &tv, std::vector<int> &pax) {
+    auto const erase_axis = [](StreamLayout &l, int axis) {
+        l.dims.erase(l.dims.begin() + axis);
+        l.strides.erase(l.strides.begin() + axis);
+    };
+    auto const fits = [](std::vector<int> const &map, StreamLayout const &l, int a, int b) {
+        int const oa = map[static_cast<size_t>(a)], ob = map[static_cast<size_t>(b)];
+        if ((oa < 0) != (ob < 0)) {
+            return false;
+        }
+        return oa < 0 ||
+               (oa == ob + 1 && l.strides[static_cast<size_t>(oa)] == l.dims[static_cast<size_t>(ob)] * l.strides[static_cast<size_t>(ob)]);
+    };
+    auto const merge_operand = [&](std::vector<int> &map, StreamLayout &l, int a, int b) {
+        int const oa = map[static_cast<size_t>(a)], ob = map[static_cast<size_t>(b)];
+        if (oa >= 0) {
+            l.dims[static_cast<size_t>(ob)] *= l.dims[static_cast<size_t>(oa)];
+            erase_axis(l, oa);
+            for (auto &x : map) {
+                if (x > oa) {
+                    --x;
+                }
+            }
+        }
+        map.erase(map.begin() + a);
+    };
+
+    for (bool merged = true; merged;) {
+        merged      = false;
+        int const r = static_cast<int>(sl.dims.size());
+        for (int a = 0; a < r && !merged; ++a) {
+            for (int b = 0; b < r && !merged; ++b) {
+                if (a == b || sl.strides[static_cast<size_t>(a)] != sl.dims[static_cast<size_t>(b)] * sl.strides[static_cast<size_t>(b)]) {
+                    continue;
+                }
+                bool const ok = std::ranges::all_of(
+                    tv, [&](StreamTerm<T> const &t) { return fits(t.c_axis, t.c_layout, a, b) && fits(t.w_axis, t.w_layout, a, b); });
+                if (!ok) {
+                    continue;
+                }
+                sl.dims[static_cast<size_t>(b)] *= sl.dims[static_cast<size_t>(a)];
+                erase_axis(sl, a);
+                for (auto &t : tv) {
+                    merge_operand(t.c_axis, t.c_layout, a, b);
+                    merge_operand(t.w_axis, t.w_layout, a, b);
+                }
+                int const        b_new = b > a ? b - 1 : b;
+                std::vector<int> moved;
+                for (int const x : pax) {
+                    int const y = x == a ? b_new : (x > a ? x - 1 : x);
+                    if (std::ranges::find(moved, y) == moved.end()) {
+                        moved.push_back(y);
+                    }
+                }
+                pax    = std::move(moved);
+                merged = true;
             }
         }
     }
+}
 
-    // Apply each output's prefactor once, before anything accumulates, and
-    // before the empty-stream return: an empty contraction still scales C.
-    // Zero overwrites rather than multiplies, so a NaN already in C does not
-    // survive a c_pf of 0.
-    for (size_t k = 0; k < terms.size(); k++) {
-        bool const first = std::ranges::find(slot_of.begin(), slot_of.begin() + static_cast<std::ptrdiff_t>(k), slot_of[k]) ==
-                           slot_of.begin() + static_cast<std::ptrdiff_t>(k);
-        if (!first || terms[k].c_pf == T{1}) {
-            continue;
-        }
-        T *const cd = terms[k].c;
-        T const  f  = terms[k].c_pf;
-        if (f == T{0}) {
-            for_each_element(terms[k].c_layout, [cd](int64_t off) { cd[off] = T{0}; });
-        } else {
-            for_each_element(terms[k].c_layout, [cd, f](int64_t off) { cd[off] *= f; });
-        }
-    }
-
-    if (terms.empty() || elems_of(s_layout) == 0 || rank == 0) {
-        return;
-    }
-
+/// The storage-order walk of stream_contract, after its checks, the output
+/// prefactors and the axis merge. The reduction reads the outputs through
+/// @p out_layouts, their layouts before the merge, which index the same elements
+/// in the same dense order.
+template <typename T>
+void stream_walk(T const *s, StreamLayout const &s_layout, std::vector<StreamTerm<T>> const &terms, std::vector<int> const &partition_axes,
+                 std::vector<size_t> const &slot_of, std::vector<T *> const &outs, std::vector<StreamLayout const *> const &out_layouts) {
+    int const rank = static_cast<int>(s_layout.dims.size());
     // Storage-order axes: descending stride, so the last walks stride 1.
     std::vector<int> axes(static_cast<size_t>(rank));
     std::iota(axes.begin(), axes.end(), 0);
@@ -396,6 +422,73 @@ void stream_contract(T const *s, StreamLayout const &s_layout, std::vector<Strea
             for_each_element(*out_layouts[u], [&](int64_t off) { cd[off] += buf[e++]; });
         }
     }
+}
+
+} // namespace
+
+template <typename T>
+void stream_contract(T const *s, StreamLayout const &s_layout, std::vector<StreamTerm<T>> const &terms,
+                     std::vector<int> const &partition_axes) {
+    int const rank = static_cast<int>(s_layout.dims.size());
+    for (auto const &t : terms) {
+        if (t.c_axis.size() != static_cast<size_t>(rank) || t.w_axis.size() != static_cast<size_t>(rank)) {
+            throw std::invalid_argument("stream_contract: a term's axis maps must have one entry per axis of the streamed tensor");
+        }
+    }
+
+    // Distinct outputs, in first-appearance order. Terms name an output by its
+    // data pointer.
+    std::vector<T *>                  outs;
+    std::vector<StreamLayout const *> out_layouts;
+    std::vector<size_t>               slot_of(terms.size());
+    for (size_t k = 0; k < terms.size(); k++) {
+        auto it = std::ranges::find(outs, terms[k].c);
+        if (it == outs.end()) {
+            outs.push_back(terms[k].c);
+            out_layouts.push_back(&terms[k].c_layout);
+            slot_of[k] = outs.size() - 1;
+        } else {
+            slot_of[k] = static_cast<size_t>(it - outs.begin());
+            if (terms[k].c_pf != T{1}) {
+                throw std::invalid_argument(
+                    "stream_contract: only the first term on an output may scale it; a later term's c_pf must be 1");
+            }
+        }
+    }
+
+    // Apply each output's prefactor once, before anything accumulates, and
+    // before the empty-stream return: an empty contraction still scales C.
+    // Zero overwrites rather than multiplies, so a NaN already in C does not
+    // survive a c_pf of 0.
+    for (size_t k = 0; k < terms.size(); k++) {
+        bool const first = std::ranges::find(slot_of.begin(), slot_of.begin() + static_cast<std::ptrdiff_t>(k), slot_of[k]) ==
+                           slot_of.begin() + static_cast<std::ptrdiff_t>(k);
+        if (!first || terms[k].c_pf == T{1}) {
+            continue;
+        }
+        T *const cd = terms[k].c;
+        T const  f  = terms[k].c_pf;
+        if (f == T{0}) {
+            for_each_element(terms[k].c_layout, [cd](int64_t off) { cd[off] = T{0}; });
+        } else {
+            for_each_element(terms[k].c_layout, [cd, f](int64_t off) { cd[off] *= f; });
+        }
+    }
+
+    if (terms.empty() || elems_of(s_layout) == 0 || rank == 0) {
+        return;
+    }
+
+    // Work on copies with contiguous axes merged: a longer innermost run and a
+    // tile the kernels can block. A shared output is left alone, since two terms
+    // could map the same axes of S onto different axes of it.
+    StreamLayout               sl  = s_layout;
+    std::vector<StreamTerm<T>> tv  = terms;
+    std::vector<int>           pax = partition_axes;
+    if (outs.size() == terms.size()) {
+        merge_contiguous_axes(sl, tv, pax);
+    }
+    stream_walk<T>(s, sl, tv, pax, slot_of, outs, out_layouts);
 }
 
 #define EINSUMS_STREAM_CONTRACT_INSTANTIATE(T)                                                                                             \

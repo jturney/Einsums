@@ -8,6 +8,7 @@
 ///        to it: every term against a brute-force loop, the privatized and the partitioned walks, a
 ///        call from inside a parallel region, and the route pins.
 
+#include <Einsums/BLAS/ThreadControl.hpp>
 #include <Einsums/PackedGemm/PackedGemm.hpp>
 #include <Einsums/PackedGemm/Stream.hpp>
 #include <Einsums/TensorAlgebra.hpp>
@@ -259,6 +260,101 @@ TEST_CASE("Stream route - shapes it must leave alone", "[PackedGemm][Stream]") {
             for (size_t b = 0; b < n; b++) {
                 REQUIRE_THAT(K(a, b), Catch::Matchers::WithinAbs(K_ref(a, b), 1e-12));
             }
+        }
+    }
+}
+
+// A transposed GEMV row longer than the kernel's register-blocked width goes through L2 in chunks,
+// four rows at a time: 70000 elements cross the chunk (256 KB, 65536 floats or 32768 doubles), seven
+// rows leave three after the blocks of four, and 70000 is not a multiple of any register width, so
+// the lane tail runs too.
+TEMPLATE_TEST_CASE("stream_contract - long transposed-GEMV rows, blocked four at a time", "[PackedGemm][Stream]", float, double) {
+    int64_t const       n = 70000, m = 7;
+    auto const          s = random_values<TestType>(static_cast<size_t>(n * m), 4);
+    auto const          w = random_values<TestType>(static_cast<size_t>(m), 5);
+    auto                c = random_values<TestType>(static_cast<size_t>(n), 6);
+    std::vector<double> expected(static_cast<size_t>(n));
+    for (int64_t i = 0; i < n; i++) {
+        double sum = 0;
+        for (int64_t r = 0; r < m; r++) {
+            sum += static_cast<double>(s[i + n * r]) * static_cast<double>(w[r]);
+        }
+        expected[i] = -0.5 * static_cast<double>(c[i]) + 1.5 * sum;
+    }
+    pg::StreamTerm<TestType> term{.c        = c.data(),
+                                  .c_layout = column_major({n}),
+                                  .w        = w.data(),
+                                  .w_layout = column_major({m}),
+                                  .c_axis   = {0, -1},
+                                  .w_axis   = {-1, 0},
+                                  .alpha    = TestType{1.5},
+                                  .c_pf     = TestType{-0.5}};
+    pg::stream_contract<TestType>(s.data(), column_major({n, m}), {term}, {});
+    for (int64_t i = 0; i < n; i++) {
+        REQUIRE_THAT(static_cast<double>(c[i]), Catch::Matchers::WithinAbs(expected[i], 1e-4));
+    }
+}
+
+// J(i,j) = S(i,j,k,l) W(k,l): (i, j) are contiguous in S and in J, and (k, l) in S and in W, so the
+// walk merges them into one long row per (k, l) slice. With every other column of a wider J the
+// output is not contiguous, so the output axes must not merge; both must match the loop.
+TEST_CASE("stream_contract - contiguous axes merge only where every operand allows", "[PackedGemm][Stream]") {
+    int64_t const n = 12;
+    auto const    s = random_values<double>(static_cast<size_t>(n * n * n * n), 7);
+    auto const    w = random_values<double>(static_cast<size_t>(n * n), 8);
+    for (int64_t const col_stride : {n, 2 * n}) {
+        INFO("J column stride " << col_stride);
+        std::vector<double> c(static_cast<size_t>(n * col_stride), 3.0), expected = c;
+        for (int64_t j = 0; j < n; j++) {
+            for (int64_t i = 0; i < n; i++) {
+                double sum = 0;
+                for (int64_t l = 0; l < n; l++) {
+                    for (int64_t k = 0; k < n; k++) {
+                        sum += s[i + n * (j + n * (k + n * l))] * w[k + n * l];
+                    }
+                }
+                expected[i + col_stride * j] = 2.0 * sum;
+            }
+        }
+        pg::StreamTerm<double> term{.c        = c.data(),
+                                    .c_layout = pg::StreamLayout{.dims = {n, n}, .strides = {1, col_stride}},
+                                    .w        = w.data(),
+                                    .w_layout = column_major({n, n}),
+                                    .c_axis   = {0, 1, -1, -1},
+                                    .w_axis   = {-1, -1, 0, 1},
+                                    .alpha    = 2.0,
+                                    .c_pf     = 0.0};
+        pg::stream_contract<double>(s.data(), column_major({n, n, n, n}), {term}, {0, 1});
+        for (size_t e = 0; e < c.size(); e++) {
+            REQUIRE_THAT(c[e], Catch::Matchers::WithinAbs(expected[e], 1e-10));
+        }
+    }
+}
+
+// A contiguous GEMV goes to the vendor's gemv, unless nothing can give that gemv threads: then, with
+// threads to use, it streams. On the M4, Accelerate's gemv ran on one core at any thread count and the
+// stream read the same 800 MB operand 1.6x faster on ten. OpenBLAS (threads through OpenMP) and MKL (a
+// per-thread count) keep their gemv.
+TEST_CASE("Stream route - a large GEMV streams only where the vendor's cannot be threaded", "[PackedGemm][Stream]") {
+    size_t const      n   = 24; // 331776 elements in the supplying operand, past kStreamGemvMinElems
+    auto              TEI = create_random_tensor<double>("TEI", n, n, n, n);
+    auto              D   = create_random_tensor<double>("D", n, n);
+    Tensor<double, 2> J("J", n, n), J_ref("J_ref", n, n);
+    J_ref.zero();
+    reference_einsum("ij <- ijkl ; kl", 0.0, &J_ref, 2.0, TEI, D);
+
+    pg::last_contraction_route() = "none";
+    einsum(0.0, Indices{i, j}, &J, 2.0, Indices{i, j, k, l}, TEI, Indices{k, l}, D);
+
+#ifdef _OPENMP
+    bool const ungoverned = omp_get_max_threads() > 1 && !einsums::blas::threads_with_openmp() && !einsums::blas::has_per_thread_control();
+#else
+    bool const ungoverned = false;
+#endif
+    CHECK((std::string(pg::last_contraction_route()) == "stream") == ungoverned);
+    for (size_t a = 0; a < n; a++) {
+        for (size_t b = 0; b < n; b++) {
+            REQUIRE_THAT(J(a, b), Catch::Matchers::WithinAbs(J_ref(a, b), 1e-9));
         }
     }
 }

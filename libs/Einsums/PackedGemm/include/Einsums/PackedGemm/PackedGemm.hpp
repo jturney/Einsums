@@ -51,6 +51,27 @@ inline constexpr int64_t kOuterProductFloor = 768;
 /// chosen; see the stream route for the data.
 inline constexpr int64_t kStreamMinElems = 4096;
 
+/// Elements of the supplying operand from which a GEMV that the vendor cannot thread is streamed
+/// instead: two threads' worth, the least from which the stream runs on more than one.
+inline constexpr int64_t kStreamGemvMinElems = int64_t{2} << 16;
+
+/// Whether a GEMV whose matrix operand has @p elems elements should go to the stream route rather
+/// than the vendor's gemv. Only where nothing can give that gemv threads: Accelerate's runs on one
+/// core however many the process has (the Coulomb J over an 800 MB operand took 12 ms on the M4 at
+/// one thread or ten), while the stream reads the operand on every thread (7.9 ms at ten). A vendor
+/// that threads through OpenMP (OpenBLAS) or takes a per-thread count (MKL) keeps its gemv, as does
+/// a GEMV too small for the stream to use more than one thread. Both einsum engines ask this, so a
+/// contraction takes the same route from either.
+inline bool stream_gemv_preferred(int64_t elems) {
+#ifdef _OPENMP
+    return elems >= kStreamGemvMinElems && omp_get_max_threads() > 1 && !einsums::blas::threads_with_openmp() &&
+           !einsums::blas::has_per_thread_control();
+#else
+    (void)elems;
+    return false;
+#endif
+}
+
 // Thread-local buffers: bound to a local reference where declared, as in Packing.hpp, whose
 // "Thread-local buffers" note gives the reason and the OpenMP rule.
 
@@ -2772,7 +2793,20 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             // Exactly one operand supplies all of C; the other is entirely
             // contracted. The supplying operand's axes must be C's group and
             // the link group, adjacent in either order.
-            if (!link.empty() && (m_count == 0) != (n_count == 0) && m_count + n_count == target.size()) {
+            //
+            // Except where stream_gemv_preferred sends it to the stream route below.
+            bool const stream_gemv = [&] {
+                auto const elems = [](auto const &X, size_t rank) {
+                    int64_t e = 1;
+                    for (size_t d = 0; d < rank; ++d) {
+                        e *= static_cast<int64_t>(X.dim(d));
+                    }
+                    return e;
+                };
+                return (m_count == 0) != (n_count == 0) &&
+                       stream_gemv_preferred(n_count == 0 ? elems(A, a_raw.size()) : elems(B, b_raw.size()));
+            }();
+            if (!stream_gemv && !link.empty() && (m_count == 0) != (n_count == 0) && m_count + n_count == target.size()) {
                 // A and B are distinct types, so the supplying operand cannot be
                 // selected into one reference - the shared body is a template
                 // instead, instantiated for whichever side supplies C.
@@ -2905,11 +2939,27 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
                     }
                 }
 
-                // One output: offer every axis of S that C carries, so threads own disjoint slices
-                // of C and write them in place. Privatizing would copy and reduce C once per
-                // thread, which costs as much as the stream when C is large.
+                // Threads either keep a private copy of C each and sum them at the end, or own
+                // disjoint slices of C and write them in place. A private copy lets each thread read
+                // one contiguous slab of S, which a slice of C does not (it reads a short run from
+                // every row of S), and it pays while C is small beside S: the final sum adds threads
+                // copies of C, held to an eighth of S, and all the copies together fit in L2, which
+                // on the M4 is one 16 MB cache shared by a cluster, not a cache per core. The
+                // exchange K and the Coulomb J (10^4 outputs over a 10^8-element S) are that shape; an
+                // n^3 output over an n^4 S, whose sum would cost as much as the stream, is not.
+                int64_t c_elems = 1;
+                for (int64_t const d : term.c_layout.dims) {
+                    c_elems *= d;
+                }
+#ifdef _OPENMP
+                int64_t const threads = omp_get_max_threads();
+#else
+                int64_t const threads = 1;
+#endif
+                bool const       privatize = threads * c_elems * 8 <= s_elems &&
+                                             threads * c_elems * static_cast<int64_t>(sizeof(ValueType)) <= cpu_config().l2_cache_size;
                 std::vector<int> partition_axes;
-                for (size_t d = 0; d < sup.size(); d++) {
+                for (size_t d = 0; d < sup.size() && !privatize; d++) {
                     if (term.c_axis[d] >= 0 && s_layout.dims[d] > 1) {
                         partition_axes.push_back(static_cast<int>(d));
                     }

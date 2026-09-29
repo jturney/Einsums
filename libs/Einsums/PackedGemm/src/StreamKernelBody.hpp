@@ -21,6 +21,7 @@
 #include <Einsums/SIMD/Reduce.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
+#include <algorithm>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -216,6 +217,10 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
     }
 }
 
+/// Rows up to this many registers wide keep a block of C in registers across every row of a
+/// transposed-GEMV tile; longer rows stream through L1 four rows at a time.
+inline constexpr int64_t kRegisterRowLanes = 8;
+
 /// The two innermost stream loops for one term: rows r = 0..m of stream_inner, row r starting at
 /// (co + r*dc2, si + r*ds2, wo + r*dw2). One call per tile instead of one per row keeps the dispatch
 /// pointer's indirect call and the caller's odometer off short rows, which dominated a stream whose
@@ -232,6 +237,54 @@ void stream_tile(T *cb, T const *sp, T const *w, T const alpha, int64_t const m,
     // difference is the whole cost once S sits in cache, where loads and stores,
     // not bandwidth, set the pace.
     if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+        if (ds == 1 && dc == 1 && dw == 0 && dc2 == 0 && m > 1 && n > kRegisterRowLanes * einsums::simd::VecTraits<T>::lanes) {
+            // A row longer than a few registers: C goes through L2 in chunks, and within a chunk
+            // the rows go four at a time, so S is read as four sequential streams and C is loaded
+            // and stored once per four rows. The chunk is as long as L2 allows, since each chunk
+            // reads its own run of every row: at 1024 elements a 10^4-element row was read in
+            // scattered 8 KB pieces. Holding a column block of C in registers across all
+            // m rows instead reads S in m interleaved streams, which at m = 100 is more than a
+            // prefetcher follows.
+            using namespace einsums::simd;
+            constexpr int64_t L     = VecTraits<T>::lanes;
+            constexpr int64_t chunk = int64_t{256 << 10} / static_cast<int64_t>(sizeof(T));
+            T *const          c     = cb + co;
+            for (int64_t i0 = 0; i0 < n; i0 += chunk) {
+                int64_t const i1 = std::min(n, i0 + chunk);
+                int64_t       r  = 0;
+                for (; r + 4 <= m; r += 4) {
+                    Vec<T> const   w0 = broadcast(alpha * w[wo + r * dw2]), w1 = broadcast(alpha * w[wo + (r + 1) * dw2]);
+                    Vec<T> const   w2 = broadcast(alpha * w[wo + (r + 2) * dw2]), w3 = broadcast(alpha * w[wo + (r + 3) * dw2]);
+                    T const *const p0 = sp + si + r * ds2, *const p1 = p0 + ds2, *const p2 = p1 + ds2, *const p3 = p2 + ds2;
+                    int64_t i = i0;
+                    for (; i + L <= i1; i += L) {
+                        Vec<T> a = loadu(c + i);
+                        a        = fmadd(w0, loadu(p0 + i), a);
+                        a        = fmadd(w1, loadu(p1 + i), a);
+                        a        = fmadd(w2, loadu(p2 + i), a);
+                        a        = fmadd(w3, loadu(p3 + i), a);
+                        storeu(c + i, a);
+                    }
+                    for (; i < i1; ++i) {
+                        T const a0 = alpha * w[wo + r * dw2], a1 = alpha * w[wo + (r + 1) * dw2];
+                        T const a2 = alpha * w[wo + (r + 2) * dw2], a3 = alpha * w[wo + (r + 3) * dw2];
+                        c[i] += a0 * p0[i] + a1 * p1[i] + a2 * p2[i] + a3 * p3[i];
+                    }
+                }
+                for (; r < m; ++r) {
+                    Vec<T> const   wr = broadcast(alpha * w[wo + r * dw2]);
+                    T const *const pr = sp + si + r * ds2;
+                    int64_t        i  = i0;
+                    for (; i + L <= i1; i += L) {
+                        storeu(c + i, fmadd(wr, loadu(pr + i), loadu(c + i)));
+                    }
+                    for (; i < i1; ++i) {
+                        c[i] += alpha * w[wo + r * dw2] * pr[i];
+                    }
+                }
+            }
+            return;
+        }
         if (ds == 1 && dc == 1 && dw == 0 && dc2 == 0 && m > 1) {
             using namespace einsums::simd;
             constexpr int64_t L = VecTraits<T>::lanes;
