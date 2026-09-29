@@ -134,11 +134,6 @@ constexpr inline double get_zero_threshold<einsums::simd::bfloat16_t>() {
 #endif
 
 /**
- * @todo Figure this out.
- */
-void trash_cache(double *A, double *B, size_t n);
-
-/**
  * Check whether a vector contains an item.
  */
 template <typename t>

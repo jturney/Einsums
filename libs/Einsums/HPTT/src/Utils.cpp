@@ -343,14 +343,6 @@ int find_pos(int value, int const *array, int n) {
     return -1;
 }
 
-void trash_cache(double *A, double *B, int n) {
-#ifdef _OPENMP
-#    pragma omp parallel
-#endif
-    for (int i = 0; i < n; i++)
-        A[i] += 0.999 * B[i];
-}
-
 static constexpr uint8_t  num_factorials = 21;
 static constexpr uint64_t factorials[]   = {1UL,
                                             1UL,
