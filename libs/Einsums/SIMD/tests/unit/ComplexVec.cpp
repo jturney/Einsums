@@ -7,7 +7,9 @@
 #include <Einsums/SIMD/ComplexVec.hpp>
 #include <Einsums/SIMD/Shuffle.hpp>
 
+#include <algorithm>
 #include <complex>
+#include <memory>
 #include <vector>
 
 #include <catch2/catch_all.hpp>
@@ -283,4 +285,51 @@ TEMPLATE_TEST_CASE("CVec operator overloads", "[simd][complex]", float, double) 
         CHECK(dst[i].real() == Catch::Approx(expected_prod.real()));
         CHECK(dst[i].imag() == Catch::Approx(expected_prod.imag()));
     }
+}
+
+TEMPLATE_TEST_CASE("complex partial load and store at every count", "[simd][complex][partial]", float, double) {
+    using C          = std::complex<TestType>;
+    constexpr int  N = CVec<TestType>::complex_lanes;
+    std::vector<C> src(N);
+    for (int i = 0; i < N; ++i) {
+        src[i] = C(static_cast<TestType>(i + 1), static_cast<TestType>(-(i + 1)));
+    }
+    for (std::size_t n = 0; n <= static_cast<std::size_t>(N) + 1; ++n) {
+        INFO("n = " << n);
+        C loaded[N];
+        complex_storeu(loaded, complex_loadu_partial(src.data(), n));
+        for (int i = 0; i < N; ++i) {
+            CHECK(loaded[i] == (static_cast<std::size_t>(i) < n ? src[i] : C(0, 0)));
+        }
+        std::vector<C> dst(N + 2, C(99, 99));
+        complex_storeu_partial(dst.data(), complex_loadu(src.data()), n);
+        for (int i = 0; i < N + 2; ++i) {
+            CHECK(dst[i] == (static_cast<std::size_t>(i) < std::min(n, static_cast<std::size_t>(N)) ? src[i] : C(99, 99)));
+        }
+    }
+    // Exact-size allocations: a partial access past n values is a heap overflow the sanitizers see.
+    for (std::size_t n = 1; n < static_cast<std::size_t>(N); ++n) {
+        auto const in  = std::make_unique<C[]>(n);
+        auto const out = std::make_unique<C[]>(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            in[i] = src[i];
+        }
+        complex_storeu_partial(out.get(), complex_loadu_partial(in.get(), n), n);
+        for (std::size_t i = 0; i < n; ++i) {
+            CHECK(out[i] == in[i]);
+        }
+    }
+}
+
+TEMPLATE_TEST_CASE("complex_reduce_add sums real and imaginary parts apart", "[simd][complex][reduce]", float, double) {
+    using C         = std::complex<TestType>;
+    constexpr int N = CVec<TestType>::complex_lanes;
+    // Integer values, so every partial sum is exact and the fold order cannot show.
+    C in[N];
+    C expected(0, 0);
+    for (int i = 0; i < N; ++i) {
+        in[i] = C(static_cast<TestType>(i + 1), static_cast<TestType>(-10 * (i + 1)));
+        expected += in[i];
+    }
+    CHECK(complex_reduce_add(complex_loadu(in)) == expected);
 }

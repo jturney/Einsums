@@ -31,6 +31,13 @@ EINSUMS_NAMESPACE_BEGIN(simd)
 // store-to-load round trip once per loop.
 // ===========================================================================
 
+/// True where loadu_partial and storeu_partial are single masked instructions: AVX-512 for float,
+/// double and the 32- and 64-bit integers, AVX for float and double. Elsewhere they go through a
+/// stack buffer, and a kernel whose loop tail is a few elements may do better with a scalar
+/// remainder there; `if constexpr (native_partial<T>)` chooses at compile time, per rung.
+template <typename T>
+inline constexpr bool native_partial = false;
+
 template <typename T>
 EINSUMS_FORCEINLINE Vec<T> loadu_partial(T const *p, std::size_t n) {
     constexpr int L = Vec<T>::lanes;
@@ -55,6 +62,19 @@ EINSUMS_FORCEINLINE void storeu_partial(T *p, Vec<T> v, std::size_t n) {
 }
 
 #if defined(__AVX512F__) && defined(__AVX512VL__)
+template <>
+inline constexpr bool native_partial<float> = true;
+template <>
+inline constexpr bool native_partial<double> = true;
+template <>
+inline constexpr bool native_partial<int32_t> = true;
+template <>
+inline constexpr bool native_partial<uint32_t> = true;
+template <>
+inline constexpr bool native_partial<int64_t> = true;
+template <>
+inline constexpr bool native_partial<uint64_t> = true;
+
 namespace detail {
 /// The lane mask selecting the first min(n, lanes) of @p lanes lanes.
 template <typename Mask>
@@ -94,6 +114,11 @@ EINSUMS_SIMD_AVX512_PARTIAL_INT(int64_t, __mmask8, 8, 64)
 EINSUMS_SIMD_AVX512_PARTIAL_INT(uint64_t, __mmask8, 8, 64)
 #    undef EINSUMS_SIMD_AVX512_PARTIAL_INT
 #elif defined(__AVX__)
+template <>
+inline constexpr bool native_partial<float> = true;
+template <>
+inline constexpr bool native_partial<double> = true;
+
 namespace detail {
 // Eight all-ones words followed by eight zeros: loading eight words starting at
 // 8 - n gives a VMASKMOV mask whose first n 32-bit lanes are set.

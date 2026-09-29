@@ -68,3 +68,20 @@ TEMPLATE_TEST_CASE("partial load and store stay inside an exact-size allocation"
         }
     }
 }
+
+TEST_CASE("native_partial is true exactly where partial access is a masked instruction", "[simd][partial]") {
+#if defined(__AVX512F__) && defined(__AVX512VL__)
+    STATIC_CHECK(native_partial<float>);
+    STATIC_CHECK(native_partial<double>);
+    STATIC_CHECK(native_partial<int32_t>);
+    STATIC_CHECK(native_partial<int64_t>);
+#elif defined(__AVX__)
+    STATIC_CHECK(native_partial<float>);
+    STATIC_CHECK(native_partial<double>);
+    STATIC_CHECK_FALSE(native_partial<int32_t>);
+#else
+    STATIC_CHECK_FALSE(native_partial<float>);
+    STATIC_CHECK_FALSE(native_partial<double>);
+    STATIC_CHECK_FALSE(native_partial<int32_t>);
+#endif
+}

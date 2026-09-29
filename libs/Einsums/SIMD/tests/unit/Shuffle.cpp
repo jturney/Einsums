@@ -8,6 +8,8 @@
 #include <Einsums/SIMD/Shuffle.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
+#include <memory>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_all.hpp>
@@ -97,4 +99,49 @@ TEMPLATE_TEST_CASE("transpose_inplace identity matrix", "[simd]", float, double)
     for (int i = 0; i < N * N; ++i) {
         CHECK(result[i] == Catch::Approx(identity[i]));
     }
+}
+
+namespace {
+
+// storeu_interleaved<R> against its definition, dst[k * R + r] = rows[r][k]: into an allocation of
+// exactly R * lanes elements, so a write past it is a heap overflow the sanitizer legs report, and
+// into a larger buffer whose sentinels on both sides must survive.
+template <typename T, int R>
+void check_interleaved() {
+    constexpr int L = Vec<T>::lanes;
+    INFO("R = " << R << " of " << L << " lanes");
+    T      src[R][L];
+    Vec<T> rows[R];
+    for (int r = 0; r < R; ++r) {
+        for (int k = 0; k < L; ++k) {
+            src[r][k] = static_cast<T>(100 * r + k + 1);
+        }
+        rows[r] = loadu(src[r]);
+    }
+
+    auto const exact = std::make_unique<T[]>(static_cast<std::size_t>(R * L));
+    storeu_interleaved<R>(exact.get(), rows);
+    for (int k = 0; k < L; ++k) {
+        for (int r = 0; r < R; ++r) {
+            CHECK(exact[k * R + r] == src[r][k]);
+        }
+    }
+
+    std::vector<T> padded(static_cast<std::size_t>(R * L + 2 * L), static_cast<T>(-7));
+    storeu_interleaved<R>(padded.data() + L, rows);
+    for (int i = 0; i < L; ++i) {
+        CHECK(padded[i] == static_cast<T>(-7));
+        CHECK(padded[L + R * L + i] == static_cast<T>(-7));
+    }
+}
+
+template <typename T, int... Rm1>
+void check_every_row_count(std::integer_sequence<int, Rm1...>) {
+    (check_interleaved<T, Rm1 + 1>(), ...);
+}
+
+} // namespace
+
+TEMPLATE_TEST_CASE("storeu_interleaved writes every row count exactly", "[simd][shuffle]", float, double) {
+    check_every_row_count<TestType>(std::make_integer_sequence<int, Vec<TestType>::lanes>{});
 }

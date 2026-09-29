@@ -116,10 +116,38 @@ at the end of an allocation is safe:
         storeu_partial(y + i, fmadd(a, loadu_partial(x + i, n - i), loadu_partial(y + i, n - i)), n - i);
     }
 
+A partial access is a single masked instruction only on AVX-512, and on AVX
+for ``float`` and ``double``; everywhere else it goes through a stack buffer,
+which a tail of two or three elements does not repay. ``native_partial<T>`` is
+``true`` exactly where the masked instruction exists, so a kernel compiled per
+rung can keep a scalar tail on the others:
+
+.. code-block:: cpp
+
+    if constexpr (native_partial<T>) {
+        // one masked vector step, as above
+    } else {
+        for (; i < n; ++i) { /* scalar tail */ }
+    }
+
 ``Convert.hpp`` converts between ``int32_t`` and ``float``, which have the
 same lane count: ``convert<float>(vi)`` rounds to nearest and
 ``convert<int32_t>(vf)`` truncates toward zero. A NaN or an out-of-range
 value gives an unspecified lane.
+
+Where the build has the 16-bit float types, it also widens ``half_t`` and
+``bfloat16_t`` to ``float`` and narrows back. A 16-bit Vec holds exactly
+twice ``Vec<float>``'s lanes, so it widens to two float vectors:
+
+.. code-block:: cpp
+
+    Vec<float> lo = convert_low<float>(h);    // lanes 0 .. L/2 - 1 of h
+    Vec<float> hi = convert_high<float>(h);   // lanes L/2 .. L - 1
+    Vec<bfloat16_t> b = convert<bfloat16_t>(lo, hi);
+
+Widening is exact; narrowing rounds to nearest, ties to even, as a C++
+conversion does. NEON uses its conversion instructions and every other build
+converts lane by lane through memory.
 
 Examples
 ========
@@ -161,25 +189,40 @@ micro-kernels:
     // On AVX: 8x8 float transpose
     // On AVX-512: 16x16 float transpose
 
+``storeu_interleaved<R>(dst, rows)`` stores ``R`` rows lane by lane, row index
+fastest: ``dst[k * R + r] = rows[r][k]``, exactly ``R * L`` elements, for any
+``R`` up to the lane count. It is the store a transpose into a narrow panel
+needs, such as a GEMM B panel of six rows on a machine with eight or sixteen
+float lanes:
+
+.. code-block:: cpp
+
+    Vec<float> rows[6];               // six rows of L elements each
+    storeu_interleaved<6>(panel, rows);  // panel: 6 * L contiguous elements
+
+The rows are transposed in registers and written with full-width stores that
+overlap, each later store rewriting the lanes the one before it spilled; only
+the last one or two columns need a partial store.
+
 Gather and Scatter
 ==================
 
-Non-contiguous memory access with optional hardware acceleration:
+Strided memory access, with hardware gathers where the ISA has them:
 
 .. code-block:: cpp
 
     #include <Einsums/SIMD/Gather.hpp>
 
-    // Gather elements from non-contiguous locations
-    int32_t indices[8] = {0, 3, 6, 9, 12, 15, 18, 21};
-    float data[22] = { /* ... */ };
-    Vec<float> gathered = gather(data, indices);
+    float data[64] = { /* ... */ };
 
-    // Fixed-stride gather (compile-time optimized)
-    Vec<float> strided = gather_fixed<3>(data);  // data[0], data[3], data[6], ...
+    // Every third element: data[0], data[3], data[6], ...
+    Vec<float> strided = gather(data, 3);
 
-    // Scatter (write to non-contiguous locations)
-    scatter(data, indices, gathered);
+    // The same with the stride known at compile time
+    Vec<float> fixed = gather_fixed<3>(data);
+
+    // Write the lanes back to the same strided locations
+    scatter(data, 3, strided);
 
 Complex Numbers
 ===============
@@ -192,14 +235,25 @@ Complex Numbers
 
     // Load interleaved complex data: [re0, im0, re1, im1, ...]
     std::complex<float> z[4] = {{1,2}, {3,4}, {5,6}, {7,8}};
-    CVec<float> a = complex_loadu(reinterpret_cast<float const*>(z));
+    CVec<float> a = complex_loadu(z);
 
     // Complex multiply
-    CVec<float> b = complex_broadcast(1.0f, -1.0f);  // (1 - i)
+    CVec<float> b = complex_broadcast(std::complex<float>(1.0f, -1.0f));  // (1 - i)
     CVec<float> c = complex_mul(a, b);
 
     // Conjugate
     CVec<float> conj = conjugate(a);
+
+    // The first n complex values, for a loop tail; n counts complex values
+    CVec<float> t = complex_loadu_partial(z, n);
+    complex_storeu_partial(z, t, n);
+
+    // The complex values of a CVec added together
+    std::complex<float> sum = complex_reduce_add(a);
+
+``reduce_add`` on a CVec would add real and imaginary lanes together;
+``complex_reduce_add`` keeps them apart, folding the upper half of the lanes
+onto the lower in the same order on every backend.
 
 Prefetch and Streaming
 ======================

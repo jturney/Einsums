@@ -8,9 +8,11 @@
 #include <Einsums/Config/ForceInline.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/Operations.hpp>
+#include <Einsums/SIMD/Partial.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
 #include <complex>
+#include <cstddef>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
 
@@ -53,6 +55,30 @@ EINSUMS_FORCEINLINE CVec<T> complex_loadu(std::complex<T> const *ptr) {
 template <typename T>
 EINSUMS_FORCEINLINE void complex_storeu(std::complex<T> *ptr, CVec<T> v) {
     storeu(reinterpret_cast<T *>(ptr), v.reg);
+}
+
+// ===========================================================================
+// Partial load / store: the first n complex values, as loadu_partial and
+// storeu_partial do for real lanes (Partial.hpp). n counts complex values, each
+// two real lanes; the rest of the loaded CVec is zero, and nothing past the
+// n values is read or written.
+// ===========================================================================
+
+template <typename T>
+EINSUMS_FORCEINLINE CVec<T> complex_loadu_partial(std::complex<T> const *ptr, std::size_t n) {
+    if (n >= static_cast<std::size_t>(CVec<T>::complex_lanes)) {
+        return complex_loadu(ptr);
+    }
+    return loadu_partial(reinterpret_cast<T const *>(ptr), 2 * n);
+}
+
+template <typename T>
+EINSUMS_FORCEINLINE void complex_storeu_partial(std::complex<T> *ptr, CVec<T> v, std::size_t n) {
+    if (n >= static_cast<std::size_t>(CVec<T>::complex_lanes)) {
+        complex_storeu(ptr, v);
+        return;
+    }
+    storeu_partial(reinterpret_cast<T *>(ptr), v.reg, 2 * n);
 }
 
 // ===========================================================================
@@ -356,6 +382,31 @@ EINSUMS_FORCEINLINE CVec<T> complex_fmadd(CVec<T> a, CVec<T> b, CVec<T> c) {
 template <typename T>
 EINSUMS_FORCEINLINE CVec<T> complex_scale(CVec<T> v, T scalar) {
     return mul(v.reg, broadcast(scalar));
+}
+
+// ===========================================================================
+// Complex horizontal sum: the complex values of a CVec added together.
+//
+// reduce_add would mix the real and imaginary lanes, which alternate. This
+// instead adds the upper half of the lanes onto the lower half, and repeats
+// until one complex value is left; every half is an even number of lanes, so a
+// real lane only ever meets real lanes. The order is the same on every backend, so the
+// sum is too. It runs once per reduction, outside any loop, so it goes through
+// memory rather than carrying a fold per instruction set.
+// ===========================================================================
+
+template <typename T>
+EINSUMS_FORCEINLINE std::complex<T> complex_reduce_add(CVec<T> v) {
+    constexpr int L = Vec<T>::lanes;
+    static_assert(L >= 2, "complex_reduce_add needs at least one whole complex value per register");
+    alignas(native_alignment) T buf[L];
+    storeu(buf, v.reg);
+    for (int width = L; width > 2; width /= 2) {
+        for (int i = 0; i < width / 2; ++i) {
+            buf[i] += buf[i + width / 2];
+        }
+    }
+    return {buf[0], buf[1]};
 }
 
 // ===========================================================================

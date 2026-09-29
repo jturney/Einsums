@@ -9,6 +9,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/ComplexVec.hpp>
 #include <Einsums/SIMD/Operations.hpp>
+#include <Einsums/SIMD/Partial.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
 #include <algorithm>
@@ -366,6 +367,54 @@ EINSUMS_FORCEINLINE void complex_transpose_inplace(CVec<double> *rows) {
 
     for (int i = 0; i < N; ++i)
         rows[i].reg = loadu(&buf[i * N * 2]);
+}
+
+// ===========================================================================
+// Interleaved store: storeu_interleaved<R>(dst, rows)
+//
+// Writes R rows lane by lane, row index fastest:
+//
+//     dst[k * R + r] = rows[r][k]      for k < lanes, r < R
+//
+// exactly R * lanes elements and nothing past them. It is NEON's vst2/vst3/vst4
+// for any R up to the lane count, and the store a transpose into a panel of R
+// rows needs: a GEMM B panel of NR = 6 rows is 6 * lanes contiguous elements
+// per register tile, fewer rows than a float register holds on AVX2 or AVX-512.
+//
+// The rows are padded to a full tile and transposed in registers, and column k
+// is stored at dst + k * R. A full-width store there also writes the first
+// lanes of the next columns, but the store of each later column rewrites
+// those, so every column that ends inside the output goes out whole and only
+// the last ceil(lanes / R) columns, which would end past it, use a partial
+// store. A partial store is the costly one (VMASKMOV on AVX, a stack buffer on
+// backends without masked stores), and this keeps it to one or two per tile.
+// ===========================================================================
+
+template <int R, typename T>
+EINSUMS_FORCEINLINE void storeu_interleaved(T *dst, Vec<T> const *rows) {
+    constexpr int L = Vec<T>::lanes;
+    static_assert(R >= 1 && R <= L, "storeu_interleaved: between one row and a full register's lanes");
+
+    Vec<T> tile[L];
+    for (int r = 0; r < R; ++r) {
+        tile[r] = rows[r];
+    }
+    // The padding rows land only in lanes a later store rewrites; zeroing them
+    // keeps the transpose from reading uninitialized registers.
+    for (int r = R; r < L; ++r) {
+        tile[r] = broadcast(T{0});
+    }
+    transpose_inplace(tile);
+
+    // Column k's full store ends at k * R + L, inside the output while
+    // k * R + L <= R * L.
+    constexpr int full = L - (L + R - 1) / R + 1;
+    for (int k = 0; k < full; ++k) {
+        storeu(dst + k * R, tile[k]);
+    }
+    for (int k = full; k < L; ++k) {
+        storeu_partial(dst + k * R, tile[k], static_cast<std::size_t>(R));
+    }
 }
 
 EINSUMS_NAMESPACE_END(simd)
