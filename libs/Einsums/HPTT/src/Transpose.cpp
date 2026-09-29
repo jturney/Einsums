@@ -60,6 +60,7 @@
 #include <Einsums/HPTT/Utils.hpp>
 #include <Einsums/Logging.hpp>
 #include <Einsums/SIMD/ComplexVec.hpp>
+#include <Einsums/SIMD/Convert.hpp>
 #include <Einsums/SIMD/Gather.hpp>
 #include <Einsums/SIMD/Operations.hpp>
 #include <Einsums/SIMD/Prefetch.hpp>
@@ -237,11 +238,12 @@ struct MicroKernel<einsums::simd::half_t, betaIsZero, conjA> {
 
 // ---------------------------------------------------------------------------
 // micro_kernel for bfloat16_t. BF16 has SIMD load/store but no Vec<bf16>×Vec<bf16>
-// multiply that returns BF16; every native arithmetic instruction
-// (vbfmla*, vbfdot, vmulq_f32 of converted halves) lands in FP32. So we
-// load BF16 vectors, transpose 8×8 in-register, then for each output row
-// convert BF16→FP32 (two halves), do alpha·A (+ beta·B) in FP32, and pack
-// FP32→BF16 back into one 8-lane vector.
+// multiply that returns BF16; its arithmetic lands in FP32. So we load BF16
+// vectors, transpose them in registers, then for each output row widen BF16 to
+// FP32 (two halves), do alpha·A (+ beta·B) in FP32, and round back to BF16.
+// Everything is the SIMD module's portable spelling; it needs a Vec<bf16>
+// transpose, which only the NEON backend has, so AVX-512 BF16 keeps the scalar
+// kernel below.
 // ---------------------------------------------------------------------------
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC)
 template <bool betaIsZero, bool conjA>
@@ -250,7 +252,7 @@ struct MicroKernel<einsums::simd::bfloat16_t, betaIsZero, conjA> {
     static void execute(bf16_t const *A, size_t const lda, size_t const innerStrideA, bf16_t *B, size_t const ldb,
                         size_t const innerStrideB, bf16_t const alpha, bf16_t const beta) {
         using namespace einsums::simd;
-        constexpr int N = Vec<bf16_t>::lanes; // 8
+        constexpr int N = Vec<bf16_t>::lanes;
 
         Vec<bf16_t> rows[N]; // NOLINT
         if (innerStrideA == 1) {
@@ -263,36 +265,28 @@ struct MicroKernel<einsums::simd::bfloat16_t, betaIsZero, conjA> {
 
         transpose_inplace(rows);
 
-        float32x4_t const va = vdupq_n_f32(static_cast<float>(alpha));
-        float32x4_t       vb{};
+        Vec<float> const va = broadcast(static_cast<float>(alpha));
+        Vec<float>       vb{};
         if constexpr (!betaIsZero) {
-            vb = vdupq_n_f32(static_cast<float>(beta));
+            vb = broadcast(static_cast<float>(beta));
         }
 
         for (int i = 0; i < N; ++i) {
-            float32x4_t lo = vmulq_f32(vcvtq_low_f32_bf16(rows[i].reg), va);
-            float32x4_t hi = vmulq_f32(vcvtq_high_f32_bf16(rows[i].reg), va);
+            Vec<float> lo = mul(convert_low<float>(rows[i]), va);
+            Vec<float> hi = mul(convert_high<float>(rows[i]), va);
 
             if constexpr (!betaIsZero) {
-                bfloat16x8_t b_row;
-                if (innerStrideB == 1) {
-                    b_row = vld1q_bf16(reinterpret_cast<__bf16 const *>(B + i * ldb));
-                } else {
-                    b_row = gather(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB)).reg;
-                }
-                lo = vfmaq_f32(lo, vcvtq_low_f32_bf16(b_row), vb);
-                hi = vfmaq_f32(hi, vcvtq_high_f32_bf16(b_row), vb);
+                Vec<bf16_t> const b_row =
+                    innerStrideB == 1 ? loadu(B + i * ldb) : gather(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB));
+                lo = fmadd(convert_low<float>(b_row), vb, lo);
+                hi = fmadd(convert_high<float>(b_row), vb, hi);
             }
 
-            // Pack two float32x4 → one bfloat16x8: low half from `lo`, high half from `hi`.
-            bfloat16x8_t result = vcvtq_high_bf16_f32(vcvtq_low_bf16_f32(lo), hi);
-
+            Vec<bf16_t> const result = convert<bf16_t>(lo, hi);
             if (innerStrideB == 1) {
-                vst1q_bf16(reinterpret_cast<__bf16 *>(B + i * ldb), result);
+                storeu(B + i * ldb, result);
             } else {
-                Vec<bf16_t> out;
-                out.reg = result;
-                scatter(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB), out);
+                scatter(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB), result);
             }
         }
     }

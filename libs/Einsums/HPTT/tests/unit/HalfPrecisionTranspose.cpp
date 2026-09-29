@@ -10,13 +10,15 @@
 // compile. Instead we drive HPTT through its direct create_plan API and
 // check correctness lane-by-lane.
 //
-// The half_t test path exercises the SIMD MicroKernel<half_t>; the
-// bfloat16_t test path exercises the FP32-promoted scalar MicroKernel
-// since BF16 has no native SIMD arithmetic on either NEON or AVX-512.
+// The half_t test path exercises the SIMD MicroKernel<half_t>. The
+// bfloat16_t path exercises the NEON MicroKernel<bfloat16_t>, which widens
+// to FP32 for the arithmetic, and the FP32-promoted scalar kernel on
+// AVX-512 BF16, which has no BF16 transpose to build a vector kernel from.
 
 #include <Einsums/HPTT/HPTT.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <vector>
@@ -159,6 +161,41 @@ TEST_CASE("HPTT bfloat16_t 2D transpose with alpha", "[hptt][bfloat]") {
             float const got      = static_cast<float>(B[j + i * N]);
             float const expected = static_cast<float>(alpha) * static_cast<float>(A[i + j * N]);
             CHECK(std::abs(got - expected) < 1e-1f);
+        }
+    }
+}
+
+TEST_CASE("HPTT bfloat16_t 2D transpose accumulates beta * B", "[hptt][bfloat]") {
+    using bf16_t = einsums::simd::bfloat16_t;
+
+    // Not a multiple of the eight-lane tile, so the scalar remainder runs beside the vector tiles.
+    constexpr size_t N = 37;
+
+    std::vector<bf16_t> A(N * N), B(N * N), B0(N * N);
+    for (size_t i = 0; i < N; ++i) {
+        for (size_t j = 0; j < N; ++j) {
+            A[i + j * N]  = static_cast<bf16_t>(static_cast<float>(i) * 0.25f + static_cast<float>(j) * 0.125f + 1.0f);
+            B0[j + i * N] = static_cast<bf16_t>(static_cast<float>(i) * 0.5f - static_cast<float>(j) * 0.25f);
+        }
+    }
+    B = B0;
+
+    bf16_t const alpha = static_cast<bf16_t>(2.0f);
+    bf16_t const beta  = static_cast<bf16_t>(0.5f);
+
+    int const    perm[2] = {1, 0};
+    size_t const size[2] = {N, N};
+    auto         plan    = einsums::hptt::create_plan<bf16_t>(perm, 2, alpha, A.data(), size, nullptr, beta, B.data(), nullptr,
+                                                              einsums::hptt::ESTIMATE, hptt_test_threads());
+    plan->execute();
+
+    // One rounding to BF16's eight significant bits, relative to the result.
+    for (size_t i = 0; i < N; ++i) {
+        for (size_t j = 0; j < N; ++j) {
+            float const expected = 2.0f * static_cast<float>(A[i + j * N]) + 0.5f * static_cast<float>(B0[j + i * N]);
+            float const got      = static_cast<float>(B[j + i * N]);
+            INFO("(" << i << ", " << j << ")");
+            CHECK(std::abs(got - expected) <= 1e-2f * std::max(1.0f, std::abs(expected)));
         }
     }
 }
