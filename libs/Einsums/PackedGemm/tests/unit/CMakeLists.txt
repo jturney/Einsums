@@ -30,6 +30,15 @@ foreach(test ${PackedGemmTests})
 endforeach()
 
 # Multi-M/N tests need TensorAlgebra (full einsum dispatch)
+# ThreadGrid asserts the teams the engine forms, which depend on the cache sizes and on how many
+# cores share an L3: a runner's own would form other teams, or none (macOS reports no sharing). Pin
+# the three-core-per-L3 Zen+ part the thresholds were measured on, so every runner models it.
+set_property(
+  TEST Tests.Unit.Modules.PackedGemm.ThreadGrid APPEND PROPERTY ENVIRONMENT
+                                                                "EINSUMS_CACHE_SIZES=32768,524288,8388608"
+                                                                "EINSUMS_CORES_PER_L3=3"
+)
+
 einsums_add_executable(
   MultiMN_test INTERNAL_FLAGS
   SOURCES MultiMN.cpp

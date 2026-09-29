@@ -92,7 +92,18 @@ int count_cpu_list(char const *path) {
 }
 
 /// Physical cores sharing CPU 0's L3, from sysfs; 1 where that cannot be read.
+///
+/// EINSUMS_CORES_PER_L3 overrides the detected count, as EINSUMS_CACHE_SIZES does the cache sizes:
+/// with both, a test pins the machine model the team blocking reads and asserts the teams that
+/// model forms, on a runner whose own caches would form others (or, on macOS, where sysfs is
+/// absent, none).
 int detect_cores_per_l3() {
+    if (char const *env = std::getenv("EINSUMS_CORES_PER_L3"); env != nullptr) {
+        int const n = std::atoi(env);
+        if (n > 0) {
+            return n;
+        }
+    }
 #if defined(__linux__)
     for (int idx = 0; idx <= 4; ++idx) {
         std::string const base = "/sys/devices/system/cpu/cpu0/cache/index" + std::to_string(idx) + "/";
