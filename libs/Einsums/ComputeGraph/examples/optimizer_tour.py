@@ -155,7 +155,7 @@ def capture(problem, name):
     with cg.capture(graph):
         la.outer_sum(denominator, [occupied, virtual, occupied, virtual], [1.0, -1.0, 1.0, -1.0])
         la.element_transform(denominator, "recip")
-        einsums.einsum("Q,i,a ; Q,j,b -> i,a,j,b", integrals, three, three)
+        einsums.einsum("iajb <- Qia ; Qjb", integrals, three, three)
         la.direct_product(1.0, integrals, denominator, 0.0, amplitudes)
         einsums.permute("iajb <- ibja", exchange, integrals)
         la.axpby(2.0, integrals, 0.0, combination)

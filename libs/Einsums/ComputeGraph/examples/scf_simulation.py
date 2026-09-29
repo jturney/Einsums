@@ -173,7 +173,7 @@ def run_scf(system: System, *, max_iter: int = 50, etol: float = 1e-9, dtol: flo
 
     g = cg.Graph(f"scf:{system.name}")
 
-    def converged(iteration: int) -> bool:
+    def keep_iterating(iteration: int) -> bool:
         dE   = float(np.asarray(delta_E)[0])
         rmsD = float(np.asarray(rms_D)[0])
         e    = float(np.asarray(E_elec)[0])
@@ -185,7 +185,7 @@ def run_scf(system: System, *, max_iter: int = 50, etol: float = 1e-9, dtol: flo
             return True
         return not (abs(dE) < etol and rmsD < dtol)
 
-    body = g.add_loop("scf_iterations", max_iter, converged)
+    body = g.add_loop("scf_iterations", max_iter, keep_iterating)
 
     with cg.capture(body):
         # Snapshot the previous iteration's energy and density.
