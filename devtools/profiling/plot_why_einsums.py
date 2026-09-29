@@ -25,7 +25,12 @@ plotted - algebraic folding targets flop-bound contraction groups and is
 the wrong rewrite for this bandwidth-bound shape, a comparison that
 belongs in the docs discussion rather than the headline figure.
 
-Build the driver first (see profile_compare.py for the cmake invocation),
+Build the driver first, against an Einsums build or install:
+
+    cmake -S devtools/profiling -B build-profiling -GNinja \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$PWD/build/lib/cmake
+    cmake --build build-profiling -j
+
 then from the repo root:
 
     python devtools/profiling/plot_why_einsums.py --bin-dir build-profiling \
