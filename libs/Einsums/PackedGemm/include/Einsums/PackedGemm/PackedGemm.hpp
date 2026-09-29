@@ -458,6 +458,10 @@ struct TeamPanel {
     int64_t   *base;   ///< where this member's view of the current K block's blocks begins
 };
 
+/// Element types whose C runs stream: those with a streaming store.
+template <typename T>
+inline constexpr bool streams_c_v = std::is_same_v<T, float> || std::is_same_v<T, double>;
+
 /// @brief Copy @p n elements to @p dst without first fetching its cache lines.
 ///
 /// An ordinary store to a line the core does not own reads that line from memory first, even when
@@ -465,38 +469,22 @@ struct TeamPanel {
 /// Streaming stores go through the write-combining buffers, and a line assembled there whole is
 /// written with no read, so the run must be contiguous and reasonably long.
 ///
-/// @p dst must be vector-aligned and @p n a whole number of lanes (@ref stream_run_ok tests both).
-/// A misaligned head is not handled here: its line would keep the fetch, and staging to realign
-/// costs a pass of C through L1.
+/// Any alignment and length stream (einsums::simd::stream_store_span): the misaligned head and the
+/// partial tail are ordinary stores, and only the lines they touch keep the fetch.
 ///
 /// @warning Streaming stores are weakly ordered. The caller must @ref einsums::simd::stream_fence()
 /// before anything reads @p dst.
 template <typename T>
 void stream_copy(T *dst, T const *src, int64_t n) {
-    // Only float and double have a vector register here. @ref stream_run_ok refuses complex at run
-    // time, but the template is instantiated for it.
-    if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
-        constexpr int64_t L = einsums::simd::Vec<T>::lanes;
-        for (int64_t i = 0; i < n; i += L) {
-            einsums::simd::stream_store<T>(dst + i, einsums::simd::loadu(src + i));
-        }
+    // Only float and double have a vector register here; the call sites test @ref streams_c_v, but
+    // the template is instantiated for every type.
+    if constexpr (streams_c_v<T>) {
+        using namespace einsums::simd;
+        constexpr std::size_t L = static_cast<std::size_t>(Vec<T>::lanes);
+        stream_store_span(dst, static_cast<std::size_t>(n),
+                          [src](std::size_t i, std::size_t count) { return count == L ? loadu(src + i) : loadu_partial(src + i, count); });
     } else {
         std::copy(src, src + n, dst);
-    }
-}
-
-/// @brief Whether a run of @p n elements at @p dst can be streamed whole.
-///
-/// Both conditions are about the write-combining buffer: a partial line at
-/// either end is an ordinary store, which fetches the line and undoes the
-/// point of streaming it.
-template <typename T>
-bool stream_run_ok(T const *dst, int64_t n) {
-    if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
-        constexpr int64_t L = einsums::simd::Vec<T>::lanes;
-        return (n % L) == 0 && (reinterpret_cast<uintptr_t>(dst) % static_cast<uintptr_t>(L * sizeof(T))) == 0;
-    } else {
-        return false;
     }
 }
 
@@ -706,8 +694,7 @@ void flush_c_block_transposed(T *C_data, T const *Cb, int64_t mc, int64_t mc_len
                         // different outer coordinate and the run ends.
                         int64_t const run = std::min(xc - ((c0 + r0 + r) % xc), rt_cur - r);
                         T            *dst = C_data + c_m_offsets[static_cast<size_t>((r0 + r) * xa + a0 + a)] + n_off;
-                        if (may_stream_c && store_c && run * static_cast<int64_t>(sizeof(T)) >= kStreamRunBytes &&
-                            stream_run_ok(dst, run)) {
+                        if (may_stream_c && store_c && run * static_cast<int64_t>(sizeof(T)) >= kStreamRunBytes && streams_c_v<T>) {
                             stream_copy(dst, s + r, run);
                             streamed_c = true;
                         } else if (store_c) {
@@ -2277,7 +2264,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                                     // would pay a partial write and keep the fetch.
                                                     if (may_stream_c && store_c &&
                                                         span * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes &&
-                                                        stream_run_ok(dst, run_m)) {
+                                                        streams_c_v<ValueType>) {
                                                         for (int64_t q = 0; q < run_n; ++q) {
                                                             stream_copy(dst + q * blk_m_fast, Cb + (jj + q) * mc_len + pos, run_m);
                                                         }
@@ -2329,7 +2316,7 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
                                                 ValueType const *s   = src + pos;
                                                 if (may_stream_c && store_c &&
                                                     run * static_cast<int64_t>(sizeof(ValueType)) >= kStreamRunBytes &&
-                                                    stream_run_ok(dst, run)) {
+                                                    streams_c_v<ValueType>) {
                                                     stream_copy(dst, s, run);
                                                     streamed_c = true;
                                                     pos += run;

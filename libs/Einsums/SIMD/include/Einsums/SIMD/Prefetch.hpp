@@ -8,10 +8,14 @@
 #include <Einsums/Config/ForceInline.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/SIMD/Operations.hpp>
+#include <Einsums/SIMD/Partial.hpp>
 #include <Einsums/SIMD/Vec.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
+#include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN(simd)
 
@@ -196,6 +200,49 @@ EINSUMS_FORCEINLINE void stream_fence() {
 #else
     std::atomic_thread_fence(std::memory_order_release);
 #endif
+}
+
+// ===========================================================================
+// Streaming a span: stream_store_span(dst, n, produce)
+//
+// Writes dst[0 .. n) with non-temporal stores wherever the instruction
+// allows, which is a whole Vec on a Vec-aligned address. The elements before
+// the first such address and after the last whole Vec go out through partial
+// stores. produce(i, count) returns the Vec whose first count lanes are
+// elements i .. i + count - 1; count is the lane count except at those two
+// edges, so a producer that loads with loadu_partial when count is short never
+// reads past the end of its source.
+//
+// It does not fence: the caller issues one stream_fence() after the last span
+// of its region, on the thread that wrote it, before another thread or the
+// caller reads the data. A destination that is not even element-aligned, or an
+// element type without a streaming store, is written with ordinary stores.
+// ===========================================================================
+
+template <typename T, typename Produce>
+EINSUMS_FORCEINLINE void stream_store_span(T *dst, std::size_t n, Produce &&produce) {
+    constexpr std::size_t L = static_cast<std::size_t>(Vec<T>::lanes);
+    std::size_t           i = 0;
+    if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+        constexpr std::size_t align = sizeof(Vec<T>);
+        auto const            addr  = reinterpret_cast<std::uintptr_t>(dst);
+        if (addr % sizeof(T) == 0) {
+            std::size_t const head = std::min(n, (align - addr % align) % align / sizeof(T));
+            if (head > 0) {
+                storeu_partial(dst, produce(std::size_t{0}, head), head);
+                i = head;
+            }
+            for (; i + L <= n; i += L) {
+                stream_store(dst + i, produce(i, L));
+            }
+        }
+    }
+    for (; i + L <= n; i += L) {
+        storeu(dst + i, produce(i, L));
+    }
+    if (i < n) {
+        storeu_partial(dst + i, produce(i, n - i), n - i);
+    }
 }
 
 EINSUMS_NAMESPACE_END(simd)

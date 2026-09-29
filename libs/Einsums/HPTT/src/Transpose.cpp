@@ -459,16 +459,18 @@ static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const
     constexpr int blocking_micro_ = einsums::simd::native_bits / 8 / sizeof(floatType);
     constexpr int blocking_       = blocking_micro_ * 4;
 
-    // The AVX-512 rung's non-temporal store (_mm512_stream_pd) needs 64-byte alignment, but
-    // the destination check was a hardcoded 32 B, so under the thread-sanitizer allocator an
-    // under-aligned B slipped through and #GP-faulted (SEGV) / corrupted results. Raise the B
-    // base and row-stride requirement to the rung's vector width, but never below the original
-    // 32 B floor: SSE/NEON (16 B native) and AVX2 (32 B) must keep streaming exactly where they
-    // did before - lowering their gate re-enables streaming paths that produce wrong results
-    // there. So only the AVX-512 rung tightens (32 -> 64); every other rung is unchanged. The
-    // blockingB (buffer-tile) predicate is not a store-alignment constraint and stays at 64 B.
-    constexpr size_t stream_align       = einsums::simd::native_bits / 8 < 32 ? 32 : einsums::simd::native_bits / 8;
-    bool const       useStreamingStores = useStreamingStores_ && betaIsZero && (blockingB * sizeof(floatType)) % 64 == 0 &&
+    // A non-temporal store needs its destination aligned to the rung's vector width: 64 B for
+    // _mm512_stream_pd, 32 B for AVX, 16 B for SSE; aarch64's STNP needs none, and 16 B keeps it
+    // on whole vectors. The gate asks exactly that of B's base and row stride, and that each
+    // buffered tile row is whole vectors.
+    //
+    // It used to keep a 32 B floor on the 16 B rungs, from a July change whose message blamed a
+    // failing Einsum7 on streaming at 16 B. That change also removed a nested `omp for` from
+    // direct_prod, undefined behaviour reported against the same Einsum7 line, and it is what
+    // failed: Einsum7 streams no tile at all under the 16 B gate, and LargeTranspose, which
+    // streams 545 tiles only that gate allows, matches its reference on aarch64.
+    constexpr size_t stream_align       = einsums::simd::native_bits / 8;
+    bool const       useStreamingStores = useStreamingStores_ && betaIsZero && (blockingB * sizeof(floatType)) % stream_align == 0 &&
                                           ((uint64_t)B) % stream_align == 0 && (ldb * sizeof(floatType)) % stream_align == 0;
 
     floatType *Btmp    = B;
@@ -890,6 +892,22 @@ void transpose_int(floatType const *A, floatType const *Anext, size_t innerStrid
     }
 }
 
+/// Element types the contiguous paths stream: those with a streaming store.
+template <typename floatType>
+inline constexpr bool streams_run_v = std::is_same_v<floatType, float> || std::is_same_v<floatType, double>;
+
+/// B[0 .. n) = alpha * A[0 .. n), streamed past the cache (einsums::simd::stream_store_span): a
+/// contiguous run of the paths that keep the fastest index, which a loop alone never streamed (the
+/// `vector nontemporal` pragma they relied on is Intel's, and GCC and Clang ignore it). Conjugation is
+/// the identity on the real types this takes. The caller fences once after its last run.
+template <typename floatType>
+static EINSUMS_FORCEINLINE void stream_scaled_run(floatType *B, floatType const *A, size_t n, floatType const alpha) {
+    using namespace einsums::simd;
+    constexpr size_t     L  = Vec<floatType>::lanes;
+    Vec<floatType> const va = broadcast(alpha);
+    stream_store_span(B, n, [A, va](size_t i, size_t count) { return mul(va, count == L ? loadu(A + i) : loadu_partial(A + i, count)); });
+}
+
 template <bool betaIsZero, typename floatType, bool useStreamingStores, bool conjA>
 void transpose_int_constStride1(floatType const *A, floatType *B, floatType const alpha, floatType const beta, // NOLINT
                                 ComputeNode const *plan) {
@@ -914,19 +932,13 @@ void transpose_int_constStride1(floatType const *A, floatType *B, floatType cons
                 B[i * ldb] = alpha * A[(i + offDiffAB) * lda] + beta * B[i * ldb];
         }
     } else {
-        if constexpr (useStreamingStores) {
-            if constexpr (conjA) {
-#pragma vector nontemporal
-                for (ptrdiff_t i = plan->start; i < end; i += inc) {
-                    B[i * ldb] = alpha * conj(A[(i + offDiffAB) * lda]);
-                }
-            } else {
-#pragma vector nontemporal
-                for (ptrdiff_t i = plan->start; i < end; i += inc) {
-                    B[i * ldb] = alpha * A[(i + offDiffAB) * lda];
-                }
+        if constexpr (useStreamingStores && streams_run_v<floatType>) {
+            if (lda == 1 && ldb == 1 && end > plan->start) {
+                stream_scaled_run(&B[plan->start], &A[plan->start + offDiffAB], static_cast<size_t>(end - plan->start), alpha);
+                return;
             }
-        } else if constexpr (conjA) {
+        }
+        if constexpr (conjA) {
             for (ptrdiff_t i = plan->start; i < end; i += inc) {
                 B[i * ldb] = alpha * conj(A[(i + offDiffAB) * lda]);
             }
@@ -1085,14 +1097,36 @@ static void axpy_1D(floatType const *A, floatType *B, size_t const myStart, size
                                          alpha * conj(A[(i + offDiffAB_) * lda]) + beta * B[i * ldb];
                        else B[i * ldb] = alpha * A[(i + offDiffAB_) * lda] + beta * B[i * ldb];)
     } else {
-        if constexpr (useStreamingStores)
-            HPTT_DUPLICATE(spawnThreads, for (size_t i = myStart; i < myEnd; i++) if constexpr (conjA) B[i * ldb] =
-                                             alpha * conj(A[(i + offDiffAB_) * lda]);
-                           else B[i * ldb] = alpha * A[(i + offDiffAB_) * lda];)
-        else
-            HPTT_DUPLICATE(spawnThreads, for (size_t i = myStart; i < myEnd; i++) if constexpr (conjA) B[i * ldb] =
-                                             alpha * conj(A[(i + offDiffAB_) * lda]);
-                           else B[i * ldb] = alpha * A[(i + offDiffAB_) * lda];)
+        if constexpr (useStreamingStores && streams_run_v<floatType>) {
+            if (lda == 1 && ldb == 1) {
+                // Each thread streams one contiguous share and drains it: with spawnThreads this call owns
+                // the whole range and opens the region, otherwise the caller's region already gave this
+                // thread [myStart, myEnd).
+                if constexpr (spawnThreads) {
+#ifdef _OPENMP
+#    pragma omp parallel num_threads(numThreads)
+#endif
+                    {
+#ifdef _OPENMP
+                        size_t const t = static_cast<size_t>(omp_get_thread_num()), nt = static_cast<size_t>(omp_get_num_threads());
+#else
+                        size_t const t = 0, nt = 1;
+#endif
+                        size_t const len = myEnd - myStart;
+                        size_t const b = myStart + len * t / nt, e = myStart + len * (t + 1) / nt;
+                        stream_scaled_run(B + b, A + b + offDiffAB_, e - b, alpha);
+                        einsums::simd::stream_fence();
+                    }
+                } else {
+                    stream_scaled_run(B + myStart, A + myStart + offDiffAB_, myEnd - myStart, alpha);
+                    einsums::simd::stream_fence();
+                }
+                return;
+            }
+        }
+        HPTT_DUPLICATE(spawnThreads,
+                       for (size_t i = myStart; i < myEnd; i++) if constexpr (conjA) B[i * ldb] = alpha * conj(A[(i + offDiffAB_) * lda]);
+                       else B[i * ldb]                                                          = alpha * A[(i + offDiffAB_) * lda];)
     }
 }
 
@@ -1108,21 +1142,39 @@ static void axpy_2D(floatType const *A, size_t const (&lda)[2], floatType *B, si
                        else B[(i * ldb[0]) + j * ldb[1]] =
                            alpha * A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]] + beta * B[(i * ldb[0]) + j * ldb[1]];)
     } else {
-        if constexpr (useStreamingStores)
-            // Compilers that honor the nontemporal pragma stream B, so each column ends with a
-            // fence on the thread that wrote it, for the same reason as the tiled path.
-            HPTT_DUPLICATE(
-                spawnThreads, for (size_t j = myStart; j < myEnd; j++) {
-                    _Pragma("vector nontemporal") for (size_t i = offsetB_; i < n0 + offsetB_; i++) if constexpr (conjA)
-                        B[(i * ldb[0]) + j * ldb[1]]  = alpha * conj(A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]]);
-                    else B[(i * ldb[0]) + j * ldb[1]] = alpha * A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]];
+        if constexpr (useStreamingStores && streams_run_v<floatType>) {
+            if (lda[0] == 1 && ldb[0] == 1) {
+                // Every column is one contiguous run. Each thread streams its columns and drains once,
+                // after the last of them, instead of once per column.
+                auto const column = [&](size_t j) {
+                    stream_scaled_run(B + offsetB_ + j * ldb[1], A + (offsetB_ + offDiffAB_[0]) + (j + offDiffAB_[1]) * lda[1], n0, alpha);
+                };
+                if constexpr (spawnThreads) {
+#ifdef _OPENMP
+#    pragma omp parallel num_threads(numThreads)
+#endif
+                    {
+#ifdef _OPENMP
+#    pragma omp for schedule(static) nowait
+#endif
+                        for (size_t j = myStart; j < myEnd; j++) {
+                            column(j);
+                        }
+                        einsums::simd::stream_fence();
+                    }
+                } else {
+                    for (size_t j = myStart; j < myEnd; j++) {
+                        column(j);
+                    }
                     einsums::simd::stream_fence();
-                })
-        else
-            HPTT_DUPLICATE(spawnThreads, for (size_t j = myStart; j < myEnd; j++) for (size_t i = offsetB_; i < n0 + offsetB_;
-                                                                                       i++) if (conjA) B[(i * ldb[0]) + j * ldb[1]] =
+                }
+                return;
+            }
+        }
+        HPTT_DUPLICATE(spawnThreads, for (size_t j = myStart; j < myEnd; j++) for (size_t i = offsetB_; i < n0 + offsetB_; i++) if (conjA)
+                                         B[(i * ldb[0]) + j * ldb[1]] =
                                              alpha * conj(A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]]);
-                           else B[(i * ldb[0]) + j * ldb[1]] = alpha * A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]];)
+                       else B[(i * ldb[0]) + j * ldb[1]] = alpha * A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]];)
     }
 }
 
@@ -1237,6 +1289,9 @@ void TransposeImpl<floatType>::execute_expert() noexcept {
                 transpose_int_constStride1<betaIsZero, floatType, useStreamingStores, true>(_A, _B, _alpha, _beta, rootNode);
             else
                 transpose_int_constStride1<betaIsZero, floatType, useStreamingStores, false>(_A, _B, _alpha, _beta, rootNode);
+            // Its runs stream as the tiled path's tiles do, so the same drain once per task.
+            if constexpr (useStreamingStores && betaIsZero)
+                einsums::simd::stream_fence();
         })
 }
 template <typename floatType>

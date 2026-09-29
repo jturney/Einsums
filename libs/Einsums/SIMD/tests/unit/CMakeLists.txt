@@ -13,6 +13,7 @@ set(SIMDTests
     VecReduce
     VecPartial
     VecConvert
+    StreamStore
     Shuffle
     GatherScatter
     ComplexVec
@@ -34,6 +35,7 @@ set(SIMDWidthDependentTests
     VecReduce
     VecPartial
     VecConvert
+    StreamStore
     Shuffle
     GatherScatter
     ComplexVec
