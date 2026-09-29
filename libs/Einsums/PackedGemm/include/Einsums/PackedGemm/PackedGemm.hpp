@@ -2515,15 +2515,18 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
 /// classification, batching, kernel selection) is made at run time against the spec. Returns true
 /// if the contraction was handled, false if the caller should fall back.
 ///
-/// @param spec_in The contraction's index lists and conjugation flags. @param C_prefactor Scale
-/// applied to C before the product is accumulated. @param C The output tensor. @param AB_prefactor
-/// Scale applied to the contraction of A and B. @param A The first input tensor. @param B The
-/// second input tensor. @param allow_scatter When false, decline contractions that remain multi-M/N
-/// after coalescing, for callers with a faster fallback (the compile-time dispatch's Sort+GEMM).
-/// Leave true for callers whose only alternative is a generic loop (ComputeGraph's string
-/// dispatch). @param site Optional memo owned by a caller that repeats this exact contraction (a
-/// graph node); see @ref ContractionSite. A hit skips building and hashing the key and the
-/// plan-cache lookup. Its @ref KernelRoute pin, when set, decides vendor versus packed.
+/// @param spec_in The contraction's index lists and conjugation flags.
+/// @param C_prefactor Scale applied to C before the product is accumulated.
+/// @param C The output tensor.
+/// @param AB_prefactor Scale applied to the contraction of A and B.
+/// @param A The first input tensor.
+/// @param B The second input tensor.
+/// @param allow_scatter When false, decline contractions that remain multi-M/N after coalescing,
+///        for callers with a faster fallback (the compile-time dispatch's Sort+GEMM). Leave true
+///        for callers whose only alternative is a generic loop (ComputeGraph's string dispatch).
+/// @param site Optional memo owned by a caller that repeats this exact contraction (a graph node);
+///        see @ref ContractionSite. A hit skips building and hashing the key and the plan-cache
+///        lookup. Its @ref KernelRoute pin, when set, decides vendor versus packed.
 template <einsums::BasicTensorConcept AType, einsums::BasicTensorConcept BType, einsums::BasicTensorConcept CType>
 bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> C_prefactor, CType *C,
                      einsums::BiggestTypeT<typename AType::ValueType, typename BType::ValueType> AB_prefactor, AType const &A,
