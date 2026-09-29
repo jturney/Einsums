@@ -10,6 +10,8 @@ set(PackedGemmTests
     MicroKernelTile.cpp
     PackTranspose.cpp
     PackingPlan.cpp
+    Stream.cpp
+    StreamKernel.cpp
     ThreadGrid.cpp
 )
 
@@ -51,3 +53,6 @@ einsums_add_simd_rung_tests("Modules.PackedGemm" MultiMN)
 einsums_add_simd_rung_tests("Modules.PackedGemm" MicroKernelTile)
 einsums_add_simd_rung_tests("Modules.PackedGemm" PackTranspose)
 einsums_add_simd_rung_tests("Modules.PackedGemm" Complex1m)
+# The stream inner loop is compiled once per rung; pin it, and the route that uses it, on each.
+einsums_add_simd_rung_tests("Modules.PackedGemm" StreamKernel)
+einsums_add_simd_rung_tests("Modules.PackedGemm" Stream)

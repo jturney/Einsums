@@ -7,14 +7,13 @@
 #include <Einsums/ComputeGraph/Graph.hpp>
 #include <Einsums/ComputeGraph/Node.hpp>
 #include <Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp>
-#include <Einsums/ComputeGraph/Passes/StreamKernel.hpp>
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Logging.hpp>
+#include <Einsums/PackedGemm/Stream.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
 
 #include <algorithm>
 #include <complex>
-#include <numeric>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -62,26 +61,13 @@ bool subset_of(std::vector<std::string> const &small, std::vector<std::string> c
     return true;
 }
 
-/// The streaming kernel for one element type. Walks S once in storage order
-/// (axes sorted by descending stride) and feeds every member's accumulator:
-///   C_k[rho_k(idx)] += alpha_k * S[idx] * W_k[pi_k(idx)]
-/// The coordinate-to-offset maps are affine, so each member carries one
-/// offset delta per storage axis of S and the walk maintains running offsets
-/// with an odometer.
-///
-/// With a non-empty allowed_axes (owner-computes chunking) the kernel
-/// partitions the highest-stride allowed physical S axis into per-thread
-/// blocks - the stride decides because a low-stride partition turns each
-/// thread's read into a strided comb through S, while a high-stride one
-/// keeps contiguous slabs. Each thread walks only its slab; members whose
-/// output pattern contains the axis label write DIRECTLY into their
-/// (disjoint) output slices, members without it accumulate into
-/// thread-private buffers reduced at the end. With allowed_axes empty every
-/// member is privatized and threads split the flattened outer space; the
-/// caller guarantees privatized outputs are small (max_output_elems).
+/// Execute one fused group: hand every member to packed_gemm::stream_contract,
+/// which walks S once in storage order and feeds each member's output. The
+/// graph's part is only resolving TensorIds to live storage and index labels to
+/// axis positions; the walk, the privatized accumulators and the owner-computes
+/// partition all live in the kernel, which the eager string dispatch shares.
 template <typename T>
-void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &members, std::vector<TensorId> const &unique_outs,
-                std::vector<int> const &allowed_axes) {
+void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &members, std::vector<int> const &allowed_axes) {
     using Impl = ::einsums::detail::TensorImpl<T>;
 
     // Geometry comes from the handle's LIVE rank-erased impl, never from a cast
@@ -101,314 +87,42 @@ void run_stream(Graph *graph, TensorId s_id, std::vector<StreamMember> const &me
         }
         return static_cast<Impl *>(handle->impl_fn());
     };
-
-    auto const *S      = impl_of(s_id);
-    int const   rank   = static_cast<int>(S->rank());
-    size_t      s_size = 1;
-    for (int d = 0; d < rank; d++) {
-        s_size *= S->dim(d);
-    }
-    if (s_size == 0) {
-        return;
-    }
-
-    // Storage-order axes: descending S stride, so the last walks stride-1.
-    std::vector<int> axes(rank);
-    std::iota(axes.begin(), axes.end(), 0);
-    std::ranges::sort(axes, [&](int x, int y) { return S->stride(x) > S->stride(y); });
-
-    std::vector<int64_t> dims(rank), s_delta(rank);
-    for (int d = 0; d < rank; d++) {
-        dims[d]    = static_cast<int64_t>(S->dim(axes[d]));
-        s_delta[d] = static_cast<int64_t>(S->stride(axes[d]));
-    }
-
-    // Element count of an operand, which is also the size of a private
-    // accumulator for it: private buffers are indexed in the output's DENSE
-    // element space (see dense_strides below), not by its real offsets, so a
-    // strided view output costs its elements and not its offset span - a single
-    // column view of a large matrix would otherwise privatize the whole matrix.
-    auto elems_of = [](Impl const *X) {
-        size_t n = 1;
+    auto const layout_of = [](Impl const *X) {
+        packed_gemm::StreamLayout l;
         for (size_t d = 0; d < X->rank(); d++) {
-            n *= X->dim(static_cast<int>(d));
+            l.dims.push_back(static_cast<int64_t>(X->dim(static_cast<int>(d))));
+            l.strides.push_back(static_cast<int64_t>(X->stride(static_cast<int>(d))));
         }
-        return n;
+        return l;
     };
-
-    // Column-major packing of an output's own axis order: stride 1 on axis 0,
-    // each later axis the product of the dims before it. Used for the private
-    // accumulators, so every member writing one output agrees on the mapping
-    // whatever order its index list names the axes in.
-    auto dense_strides = [](Impl const *X) {
-        std::vector<int64_t> ds(X->rank(), 1);
-        for (size_t d = 1; d < X->rank(); d++) {
-            ds[d] = ds[d - 1] * static_cast<int64_t>(X->dim(static_cast<int>(d - 1)));
-        }
-        return ds;
-    };
-
-    // Walk an output's real element offsets in the same (axis 0 fastest) order
-    // the dense packing uses, calling body(real_offset).
-    auto for_each_element = [](Impl const *X, auto &&body) {
-        size_t const cr = X->rank();
-        size_t       n  = 1;
-        for (size_t d = 0; d < cr; d++) {
-            n *= X->dim(static_cast<int>(d));
-        }
-        std::vector<int64_t> cc(cr, 0);
-        int64_t              off = 0;
-        for (size_t e = 0; e < n; e++) {
-            body(off);
-            for (size_t d = 0; d < cr; d++) {
-                cc[d]++;
-                off += static_cast<int64_t>(X->stride(static_cast<int>(d)));
-                if (cc[d] < static_cast<int64_t>(X->dim(static_cast<int>(d)))) {
-                    break;
-                }
-                off -= cc[d] * static_cast<int64_t>(X->stride(static_cast<int>(d)));
-                cc[d] = 0;
+    auto const axis_map = [](std::vector<std::string> const &s_indices, std::vector<std::string> const &indices) {
+        std::vector<int> map(s_indices.size(), -1);
+        for (size_t d = 0; d < s_indices.size(); d++) {
+            if (auto it = std::ranges::find(indices, s_indices[d]); it != indices.end()) {
+                map[d] = static_cast<int>(it - indices.begin());
             }
         }
+        return map;
     };
 
-    // Prescale the outputs (member order): 0 -> zero, 1 -> keep, else scale
-    // (stride-aware odometer, so a strided output touches only its own
-    // elements and never the gaps between them). Only the first member
-    // touching an output may have c_pf != 1 (validated by the pass), so this is
-    // exact.
-    std::unordered_set<TensorId> prescaled;
+    auto const *S = impl_of(s_id);
+
+    std::vector<packed_gemm::StreamTerm<T>> terms;
+    terms.reserve(members.size());
     for (auto const &m : members) {
-        if (prescaled.insert(m.out_id).second && !m.c_pf_is_one) {
-            auto   *C  = impl_of(m.out_id);
-            T      *cd = C->data();
-            T const f  = as<T>(m.c_pf);
-            if (m.c_pf_is_zero) {
-                for_each_element(C, [cd](int64_t off) { cd[off] = T{0}; });
-            } else {
-                for_each_element(C, [cd, f](int64_t off) { cd[off] *= f; });
-            }
-        }
-    }
-
-    // Partition axis: the allowed axis with the largest S stride.
-    int part_axis = -1;
-    {
-        size_t best_stride = 0;
-        for (int const axis : allowed_axes) {
-            if (S->stride(axis) > best_stride) {
-                best_stride = S->stride(axis);
-                part_axis   = axis;
-            }
-        }
-    }
-
-    // Per-member affine deltas: for storage axis d (label = member's S
-    // pattern at original axis axes[d]), the label's stride in C / W, or 0.
-    struct Plan {
-        T                    alpha;
-        T const             *w;
-        T                   *out;
-        bool                 direct;
-        std::vector<int64_t> cdelta, wdelta;
-        size_t               out_slot;
-        size_t               out_elems;
-    };
-    std::vector<Plan> plans;
-    plans.reserve(members.size());
-    for (auto const &m : members) {
-        Plan        p;
-        auto const *W = impl_of(m.w_id);
         auto       *C = impl_of(m.out_id);
-        p.alpha       = as<T>(m.alpha);
-        p.w           = W->data();
-        p.out         = C->data();
-        p.direct      = part_axis >= 0 && std::ranges::find(m.c_indices, m.s_indices[static_cast<size_t>(part_axis)]) != m.c_indices.end();
-        p.cdelta.resize(rank, 0);
-        p.wdelta.resize(rank, 0);
-        // A direct writer addresses C itself, so its deltas are C's real
-        // strides; a privatized member addresses its dense accumulator instead.
-        std::vector<int64_t> c_strides = dense_strides(C);
-        if (p.direct) {
-            for (size_t d = 0; d < C->rank(); d++) {
-                c_strides[d] = static_cast<int64_t>(C->stride(static_cast<int>(d)));
-            }
-        }
-        for (int d = 0; d < rank; d++) {
-            auto const &label = m.s_indices[static_cast<size_t>(axes[d])];
-            if (auto it = std::ranges::find(m.c_indices, label); it != m.c_indices.end()) {
-                p.cdelta[d] = c_strides[static_cast<size_t>(it - m.c_indices.begin())];
-            }
-            if (auto it = std::ranges::find(m.w_indices, label); it != m.w_indices.end()) {
-                p.wdelta[d] = static_cast<int64_t>(W->stride(static_cast<int>(it - m.w_indices.begin())));
-            }
-        }
-        p.out_slot  = static_cast<size_t>(std::ranges::find(unique_outs, m.out_id) - unique_outs.begin());
-        p.out_elems = elems_of(C);
-        plans.push_back(std::move(p));
+        auto const *W = impl_of(m.w_id);
+        terms.push_back({.c        = C->data(),
+                         .c_layout = layout_of(C),
+                         .w        = W->data(),
+                         .w_layout = layout_of(W),
+                         .c_axis   = axis_map(m.s_indices, m.c_indices),
+                         .w_axis   = axis_map(m.s_indices, m.w_indices),
+                         .alpha    = as<T>(m.alpha),
+                         .c_pf     = m.c_pf_is_one ? T{1} : (m.c_pf_is_zero ? T{0} : as<T>(m.c_pf))});
     }
 
-    // Storage-order position of the partition axis, if any.
-    int pd = -1;
-    if (part_axis >= 0) {
-        for (int d = 0; d < rank; d++) {
-            if (axes[d] == part_axis) {
-                pd = d;
-                break;
-            }
-        }
-    }
-
-    T const *s_data = S->data();
-
-    // Resolve the SIMD inner-loop kernel for this element type once (cached in
-    // the dispatch TU); every thread reads the same const pointer.
-    StreamInnerFn<T> const stream_inner = stream_inner_entry<T>();
-
-    std::vector<std::vector<std::vector<T>>> thread_priv; // [thread][out_slot][elem]
-
-#ifdef _OPENMP
-    int const nthreads = omp_get_max_threads();
-#else
-    int const nthreads = 1;
-#endif
-    thread_priv.resize(static_cast<size_t>(nthreads));
-
-#ifdef _OPENMP
-#    pragma omp parallel num_threads(nthreads)
-#endif
-    {
-#ifdef _OPENMP
-        int const tid = omp_get_thread_num();
-#else
-        int const tid = 0;
-#endif
-        // This thread's iteration space: with a partition axis, one block of
-        // that axis and the full extent of every other (bases carry the
-        // block offset); otherwise the full volume with the flattened outer
-        // space chunked across threads.
-        std::vector<int64_t> ldims  = dims;
-        int64_t              s_base = 0;
-        std::vector<int64_t> c_base(plans.size(), 0), w_base(plans.size(), 0);
-        int64_t              q0 = 0, q1 = 0;
-
-        if (pd >= 0) {
-            int64_t const extent  = dims[pd];
-            int const     nblocks = static_cast<int>(std::min<int64_t>(nthreads, extent));
-            if (tid < nblocks) {
-                int64_t const b0 = extent * tid / nblocks;
-                int64_t const b1 = extent * (tid + 1) / nblocks;
-                ldims[pd]        = b1 - b0;
-                s_base           = b0 * s_delta[pd];
-                for (size_t k = 0; k < plans.size(); k++) {
-                    c_base[k] = b0 * plans[k].cdelta[pd];
-                    w_base[k] = b0 * plans[k].wdelta[pd];
-                }
-                q1 = 1;
-                for (int d = 0; d < rank - 1; d++) {
-                    q1 *= ldims[d];
-                }
-            }
-        } else {
-            int64_t outer_total = 1;
-            for (int d = 0; d < rank - 1; d++) {
-                outer_total *= dims[d];
-            }
-            int64_t const chunk = (outer_total + nthreads - 1) / nthreads;
-            q0                  = std::min<int64_t>(static_cast<int64_t>(tid) * chunk, outer_total);
-            q1                  = std::min<int64_t>(q0 + chunk, outer_total);
-        }
-        int64_t const inner_n = ldims[rank - 1];
-
-        auto &priv = thread_priv[static_cast<size_t>(tid)];
-        priv.resize(unique_outs.size());
-        for (size_t u = 0; u < unique_outs.size(); u++) {
-            size_t elems = 0;
-            if (q0 < q1) {
-                for (auto const &p : plans) {
-                    if (p.out_slot == u && !p.direct) {
-                        elems = p.out_elems;
-                    }
-                }
-            }
-            priv[u].assign(elems, T{0});
-        }
-
-        if (q0 < q1) {
-            // Decompose q0 into outer coordinates and compute starting offsets.
-            std::vector<int64_t> coord(static_cast<size_t>(rank), 0);
-            {
-                int64_t rem = q0;
-                for (int d = rank - 2; d >= 0; d--) {
-                    coord[static_cast<size_t>(d)] = rem % ldims[d];
-                    rem /= ldims[d];
-                }
-            }
-            int64_t              s_off = s_base;
-            std::vector<int64_t> c_off = c_base, w_off = w_base;
-            for (int d = 0; d < rank - 1; d++) {
-                s_off += coord[static_cast<size_t>(d)] * s_delta[d];
-                for (size_t k = 0; k < plans.size(); k++) {
-                    c_off[k] += coord[static_cast<size_t>(d)] * plans[k].cdelta[d];
-                    w_off[k] += coord[static_cast<size_t>(d)] * plans[k].wdelta[d];
-                }
-            }
-
-            int64_t const ds = s_delta[rank - 1];
-            for (int64_t q = q0; q < q1; q++) {
-                // Innermost walk: the resolved SIMD kernel branches on this
-                // member's (ds, dc, dw) triple, vectorizing the unit-stride
-                // patterns and taking a scalar strided loop otherwise.
-                for (size_t k = 0; k < plans.size(); k++) {
-                    auto const &p  = plans[k];
-                    T          *cb = p.direct ? p.out : priv[p.out_slot].data();
-                    stream_inner(cb, s_data, p.w, p.alpha, inner_n, c_off[k], s_off, w_off[k], ds, p.cdelta[rank - 1], p.wdelta[rank - 1]);
-                }
-
-                // Odometer: advance the outer coordinates (bases stay put:
-                // the wrap subtracts only the local-axis contribution).
-                for (int d = rank - 2; d >= 0; d--) {
-                    coord[static_cast<size_t>(d)]++;
-                    s_off += s_delta[d];
-                    for (size_t k = 0; k < plans.size(); k++) {
-                        c_off[k] += plans[k].cdelta[d];
-                        w_off[k] += plans[k].wdelta[d];
-                    }
-                    if (coord[static_cast<size_t>(d)] < ldims[d]) {
-                        break;
-                    }
-                    s_off -= coord[static_cast<size_t>(d)] * s_delta[d];
-                    for (size_t k = 0; k < plans.size(); k++) {
-                        c_off[k] -= coord[static_cast<size_t>(d)] * plans[k].cdelta[d];
-                        w_off[k] -= coord[static_cast<size_t>(d)] * plans[k].wdelta[d];
-                    }
-                    coord[static_cast<size_t>(d)] = 0;
-                }
-            }
-        }
-    }
-
-    // Reduce thread-private accumulators into the real outputs. A privatized
-    // member's cdelta is the DENSE packing of its output's dims (axis 0
-    // fastest), so buffer index e pairs with the e-th element the output's own
-    // odometer visits: the walk translates dense index to real offset, which
-    // keeps a strided output's gaps untouched (a view output shares them with
-    // the rest of its parent) and keeps the buffers the size of the output the
-    // pass capped, not of its offset span.
-    for (size_t u = 0; u < unique_outs.size(); u++) {
-        auto *C  = impl_of(unique_outs[u]);
-        T    *cd = C->data();
-        for (int t = 0; t < nthreads; t++) {
-            auto const &buf = thread_priv[static_cast<size_t>(t)][u];
-            if (buf.empty()) {
-                continue;
-            }
-            // buf.size() == elems_of(C): every plan on this slot sized its
-            // buffer from the same output.
-            size_t e = 0;
-            for_each_element(C, [&](int64_t off) { cd[off] += buf[e++]; });
-        }
-    }
+    packed_gemm::stream_contract<T>(S->data(), layout_of(S), terms, allowed_axes);
 }
 
 } // namespace
@@ -741,10 +455,9 @@ bool StreamContractionFusion::run(Graph &graph) {
         }
 
         auto const anchor   = graph.anchor();
-        auto       fused_fn = [anchor, s_id, members, unique_outs, dtype, allowed_axes]() {
+        auto       fused_fn = [anchor, s_id, members, dtype, allowed_axes]() {
             Graph *const graph_now = &anchor->graph();
-            detail::dispatch_scalar_type(dtype,
-                                         [&](auto tag) { run_stream<decltype(tag)>(graph_now, s_id, members, unique_outs, allowed_axes); });
+            detail::dispatch_scalar_type(dtype, [&](auto tag) { run_stream<decltype(tag)>(graph_now, s_id, members, allowed_axes); });
         };
 
         Node fused;

@@ -11,7 +11,7 @@
 // the boundaries in different places, which is why the lengths run past 4
 // vectors of the widest rung.
 
-#include <Einsums/ComputeGraph/Passes/StreamKernel.hpp>
+#include <Einsums/PackedGemm/StreamKernel.hpp>
 
 #include <cmath>
 #include <complex>
@@ -47,7 +47,7 @@ double tolerance() {
 
 template <typename T>
 void check_triple(int64_t ds, int64_t dc, int64_t dw) {
-    auto const kernel = compute_graph::passes::stream_inner_entry<T>();
+    auto const kernel = packed_gemm::stream_inner_entry<T>();
     REQUIRE(kernel != nullptr);
 
     // Offsets keep the streams unaligned and away from the buffer starts.
@@ -80,7 +80,7 @@ void check_triple(int64_t ds, int64_t dc, int64_t dw) {
 
 } // namespace
 
-TEMPLATE_TEST_CASE("StreamKernel - every stride triple matches the scalar loop", "[ComputeGraph][StreamKernel]", float, double,
+TEMPLATE_TEST_CASE("StreamKernel - every stride triple matches the scalar loop", "[PackedGemm][StreamKernel]", float, double,
                    std::complex<float>, std::complex<double>) {
     SECTION("(1,1,0) scaled AXPY") {
         check_triple<TestType>(1, 1, 0);

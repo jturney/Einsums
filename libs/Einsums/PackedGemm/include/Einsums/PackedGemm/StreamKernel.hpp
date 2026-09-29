@@ -5,9 +5,9 @@
 
 #pragma once
 
-// Public entry point for the SIMD-dispatched inner-loop kernel used by
-// StreamContractionFusion. The fused stream walks the large tensor S once in
-// storage order and, for each member, runs an innermost loop over the
+// Public entry point for the SIMD-dispatched inner-loop kernel of
+// stream_contract (Stream.hpp). The stream walks the large tensor S once in
+// storage order and, for each term, runs an innermost loop over the
 // unit-stride axis:
 //
 //     C[co + i*dc] += alpha * S[si + i*ds] * W[wo + i*dw]     (i = 0..n)
@@ -18,7 +18,7 @@
 // This kernel branches on the triple at runtime and hands each vectorizable
 // case to the SIMD module's Vec ops:
 //
-//     (1,1,0)  scaled AXPY      C[i] += (alpha*W) * S[i]     (GEMV-shaped members: Fock J/K)
+//     (1,1,0)  scaled AXPY      C[i] += (alpha*W) * S[i]     (GEMV-shaped terms: Fock J/K)
 //     (1,1,1)  Hadamard FMA     C[i] += alpha * S[i] * W[i]
 //     (1,0,1)  dot reduction    C[co] += alpha * sum_i S[i]*W[i]
 //
@@ -27,10 +27,10 @@
 // exotic element type - falls back to the general scalar strided loop.
 //
 // The kernel body (StreamKernelBody.hpp) is compiled once per instruction-set
-// rung by einsums_add_simd_dispatch_sources() (see src/Passes/StreamKernelImpl.cpp),
-// and the rung is resolved at runtime in src/Passes/StreamKernelDispatch.cpp,
-// mirroring the PackedGemm micro-kernel and HPTT transpose dispatch. Unlike
-// PackedGemm this kernel requests NO `sme` rung: the operation is a
+// rung by einsums_add_simd_dispatch_sources() (see src/StreamKernelImpl.cpp),
+// and the rung is resolved at runtime in src/StreamKernelDispatch.cpp,
+// mirroring the micro-kernel and HPTT transpose dispatch. Unlike the
+// micro-kernel this kernel requests NO `sme` rung: the operation is a
 // bandwidth-bound streaming FMA with unit arithmetic intensity, which the
 // SME matrix unit cannot accelerate (it targets reuse-heavy outer products).
 
@@ -40,12 +40,18 @@
 
 #include <cstdint>
 
-EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 
-/// Function-pointer type for one member's innermost stream loop.
+/// Function-pointer type for one term's innermost stream loop.
 template <typename T>
 using StreamInnerFn = void (*)(T *cb, T const *sp, T const *w, T alpha, int64_t n, int64_t co, int64_t si, int64_t wo, int64_t ds,
                                int64_t dc, int64_t dw);
+
+/// Function-pointer type for one term's two innermost stream loops: m rows of the
+/// StreamInnerFn loop, row r offset by (r*dc2, r*ds2, r*dw2).
+template <typename T>
+using StreamTileFn = void (*)(T *cb, T const *sp, T const *w, T alpha, int64_t m, int64_t n, int64_t co, int64_t si, int64_t wo, int64_t ds,
+                              int64_t dc, int64_t dw, int64_t ds2, int64_t dc2, int64_t dw2);
 
 /// Resolve the best inner-loop kernel for @p T at einsums::simd::selected_arch().
 /// Cached on first call; safe to invoke on the hot path but callers should
@@ -53,4 +59,8 @@ using StreamInnerFn = void (*)(T *cb, T const *sp, T const *w, T alpha, int64_t 
 template <typename T>
 EINSUMS_EXPORT StreamInnerFn<T> stream_inner_entry();
 
-EINSUMS_NAMESPACE_END(compute_graph::passes)
+/// Resolve the best two-loop tile kernel for @p T, as stream_inner_entry does.
+template <typename T>
+EINSUMS_EXPORT StreamTileFn<T> stream_tile_entry();
+
+EINSUMS_NAMESPACE_END(packed_gemm)

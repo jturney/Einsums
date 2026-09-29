@@ -92,7 +92,6 @@ set(ComputeGraphTests
     Pass_InplaceOptimization.cpp
     Pass_LinearCombinationContractionFolding.cpp
     Pass_StreamContractionFusion.cpp
-    StreamKernel.cpp
     SymmetrizedAccumulationMatch.cpp
     SymmetrizedAccumulationRewrite.cpp
     Pass_LoopInvariantHoisting.cpp
@@ -327,10 +326,6 @@ foreach(test ${ComputeGraphTests})
     )
   endif ()
 endforeach()
-
-# The stream kernel is compiled once per SIMD rung and dispatched at run time;
-# these registrations pin each rung through EINSUMS_SIMD_ARCH.
-einsums_add_simd_rung_tests("Modules.ComputeGraph" StreamKernel)
 
 # SaveLoad's golden corpus lives beside the test rather than being generated:
 # the promise it encodes is that a file written by an earlier build still loads,

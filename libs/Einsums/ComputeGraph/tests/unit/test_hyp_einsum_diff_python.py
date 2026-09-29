@@ -123,7 +123,33 @@ def _einsum_problem(draw):
     # Both used to fall through to the serial generic loop at ranks other than
     # the one BLAS could reach directly, so neither was drawn while the bug
     # class they cover was live.
-    shape_kind = draw(st.sampled_from(["general", "general", "general", "hadamard", "full_contraction"]))
+    shape_kind = draw(st.sampled_from(["general", "general", "general", "hadamard", "full_contraction", "gemv_stream"]))
+    if shape_kind == "gemv_stream":
+        # GEMV-shaped (no N) with the supplying operand's output and summed
+        # axes in any order, large enough to stream: PackedGemm walks such a
+        # contraction once in storage order when its axes do not form a matrix,
+        # but only above kStreamMinElems (4096) elements, which the general
+        # class's extents of at most 3 never reach. Four or five axes of 8-10
+        # put every draw over the floor. Either operand may supply the output.
+        n_batch = draw(st.integers(0, 1))
+        letters = draw(st.permutations(list(_LETTERS)))[:4 + n_batch]
+        batch, mids, kids = letters[:n_batch], letters[n_batch:n_batch + 2], letters[n_batch + 2:]
+        extent = {ix: draw(st.sampled_from([8, 9, 10])) for ix in letters}
+        sup_idx = draw(st.permutations(batch + mids + kids))
+        vec_idx = draw(st.permutations(batch + kids))
+        c_idx   = draw(st.permutations(batch + mids))
+        a_idx, b_idx = (sup_idx, vec_idx) if draw(st.booleans()) else (vec_idx, sup_idx)
+        dt = draw(st.sampled_from(["float64", "complex128", "float32", "complex64"]))
+        if dt == "complex128":
+            c_pf  = draw(st.sampled_from([0.0, 1.0, 1.0 + 2.0j]))
+            ab_pf = draw(st.sampled_from([1.0, -2.0, 0.5 - 1.0j]))
+        else:
+            c_pf  = draw(st.sampled_from([0.0, 1.0]))
+            ab_pf = draw(st.sampled_from([1.0, -2.0]))
+        return (a_idx, b_idx, c_idx, extent, False,
+                dt, c_pf, ab_pf,
+                draw(st.booleans()), draw(st.booleans()), draw(st.booleans()), draw(st.booleans()),
+                draw(st.booleans()))
     if shape_kind in ("hadamard", "full_contraction"):
         n_h    = draw(st.integers(1, 3))
         hl     = draw(st.permutations(list(_LETTERS)))[:n_h]

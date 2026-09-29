@@ -17,6 +17,7 @@
 #include <Einsums/PackedGemm/ContractionKey.hpp>
 #include <Einsums/PackedGemm/MicroKernel.hpp>
 #include <Einsums/PackedGemm/Packing.hpp>
+#include <Einsums/PackedGemm/Stream.hpp>
 #include <Einsums/Profile/Profile.hpp>
 #include <Einsums/SIMD/Prefetch.hpp>
 
@@ -45,6 +46,11 @@ EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 /// Output elements below which an outer product is left to the generic loop.
 /// Measured, not chosen; see the decline site for the data and its caveats.
 inline constexpr int64_t kOuterProductFloor = 768;
+
+/// Elements of the supplying operand below which a GEMV-shaped contraction whose axes do not form a
+/// matrix is not streamed: where the stream starts to beat the compiled generic loop. Measured, not
+/// chosen; see the stream route for the data.
+inline constexpr int64_t kStreamMinElems = 4096;
 
 // Thread-local buffers: bound to a local reference where declared, as in Packing.hpp, whose
 // "Thread-local buffers" note gives the reason and the OpenMP rule.
@@ -3391,6 +3397,101 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
             }
         }
 
+        // ── GEMV-shaped -> one storage-order stream ──
+        // The gemv above needs the supplying operand's C axes and link axes to
+        // form two adjacent groups. When they interleave - the exchange
+        // K(i,j) = A(i,k,j,l) B(k,l), whose A alternates C and link axes - no
+        // matrix view exists, and packing would copy the whole operand only to
+        // read it again with nothing to reuse it against. stream_contract reads
+        // it once in storage order instead, which is the least this bandwidth-
+        // bound shape can cost. Measured on the M4, ten threads, against what each
+        // engine did before (the packing path here, the templated engine's
+        // compiled generic loop after the decline below):
+        //
+        //   shape                     elements   stream   generic   packed   (us)
+        //   K = S(i,k,j,l) W(k,l)         4096      1.5       1.8      6.2
+        //                              1048576       93       332      513
+        //   C(i,j,a) = S(i,k,j,a) W(k)   65536       16        23       67
+        //                              1048576      152       135      364
+        //
+        // and at n = 100, K falls from 76 ms (packed) and 38 ms (generic) to
+        // 13 ms, the speed of the contiguous J. The large-output shape trails the
+        // compiled loop by 10-15% on all ten cores at a million elements and
+        // leads it on four; everywhere else the stream leads. Below
+        // kStreamMinElems the call is a few microseconds whichever way it goes.
+        if (!spec.conj_a && !spec.conj_b && !link.empty() && (m_count == 0) != (n_count == 0)) {
+            auto try_stream = [&]<einsums::BasicTensorConcept SupT, einsums::BasicTensorConcept VecT>(
+                                  SupT const &S, VecT const &V, std::vector<std::string> const &sup,
+                                  std::vector<std::string> const &other) -> bool {
+                auto const distinct = [](std::vector<std::string> const &v) {
+                    return std::unordered_set<std::string>(v.begin(), v.end()).size() == v.size();
+                };
+                auto const within_sup = [&](std::vector<std::string> const &v) {
+                    return std::ranges::all_of(v, [&](std::string const &x) { return std::ranges::find(sup, x) != sup.end(); });
+                };
+                if (!distinct(sup) || !distinct(other) || !distinct(c_raw) || !within_sup(other) || !within_sup(c_raw)) {
+                    return false;
+                }
+
+                StreamLayout s_layout, w_layout, c_layout;
+                for (size_t d = 0; d < sup.size(); d++) {
+                    s_layout.dims.push_back(static_cast<int64_t>(S.dim(d)));
+                    s_layout.strides.push_back(static_cast<int64_t>(S.stride(d)));
+                }
+                int64_t s_elems = 1;
+                for (int64_t const d : s_layout.dims) {
+                    s_elems *= d;
+                }
+                if (s_elems < kStreamMinElems) {
+                    return false;
+                }
+                for (size_t d = 0; d < other.size(); d++) {
+                    w_layout.dims.push_back(static_cast<int64_t>(V.dim(d)));
+                    w_layout.strides.push_back(static_cast<int64_t>(V.stride(d)));
+                }
+                for (size_t d = 0; d < c_raw.size(); d++) {
+                    c_layout.dims.push_back(static_cast<int64_t>(C->dim(d)));
+                    c_layout.strides.push_back(static_cast<int64_t>(C->stride(d)));
+                }
+
+                StreamTerm<ValueType> term{.c        = C->data(),
+                                           .c_layout = std::move(c_layout),
+                                           .w        = V.data(),
+                                           .w_layout = std::move(w_layout),
+                                           .c_axis   = std::vector<int>(sup.size(), -1),
+                                           .w_axis   = std::vector<int>(sup.size(), -1),
+                                           .alpha    = static_cast<ValueType>(AB_prefactor),
+                                           .c_pf     = static_cast<ValueType>(C_prefactor)};
+                for (size_t d = 0; d < sup.size(); d++) {
+                    if (auto it = std::ranges::find(c_raw, sup[d]); it != c_raw.end()) {
+                        term.c_axis[d] = static_cast<int>(it - c_raw.begin());
+                    }
+                    if (auto it = std::ranges::find(other, sup[d]); it != other.end()) {
+                        term.w_axis[d] = static_cast<int>(it - other.begin());
+                    }
+                }
+
+                // One output: offer every axis of S that C carries, so threads own
+                // disjoint slices of C and write them in place. Privatizing would
+                // copy and reduce C once per thread, which costs as much as the
+                // stream itself when C is large (an n^3 output over an n^4 S).
+                std::vector<int> partition_axes;
+                for (size_t d = 0; d < sup.size(); d++) {
+                    if (term.c_axis[d] >= 0 && s_layout.dims[d] > 1) {
+                        partition_axes.push_back(static_cast<int>(d));
+                    }
+                }
+
+                ProfileAnnotate("packed_gemm_path", "stream");
+                last_contraction_route() = "stream";
+                stream_contract<ValueType>(S.data(), s_layout, {std::move(term)}, partition_axes);
+                return true;
+            };
+            if (n_count == 0 ? try_stream(A, B, a_raw, b_raw) : try_stream(B, A, b_raw, a_raw)) {
+                return true;
+            }
+        }
+
         // Bandwidth-bound shape classes where the packed pass structure
         // (pack + kernel + scatter = 2-3 memory passes) measurably loses to
         // the COMPILE-TIME generic loop's single fused pass, at every size
@@ -3400,9 +3501,10 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         //     the packing copy)
         // The decline is gated on !allow_scatter (the eager einsum dispatch,
         // whose generic fallback is the good one). Runtime callers
-        // (allow_scatter=true, e.g. ComputeGraph's string dispatch) fall back
-        // to the runtime nested loop instead, which measures ~1000x slower
-        // than packed for streamed GEMV shapes - they keep the packed path.
+        // (allow_scatter=true, e.g. ComputeGraph's string dispatch) would fall
+        // back to the runtime nested loop, about 3x slower than packed on the
+        // exchange shape - they keep the packed path. A GEMV-shaped contraction
+        // reaches this only when the gemv and stream routes above declined.
         if (!allow_scatter && m_count == 0 && n_count == 0) {
             ProfileAnnotate("packed_gemm_skip", "defer_to_generic_batch_dot");
             remember(key, nullptr);

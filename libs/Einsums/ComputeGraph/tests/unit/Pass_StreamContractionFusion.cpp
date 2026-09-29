@@ -796,3 +796,46 @@ TEST_CASE("StreamContractionFusion - two outputs in one buffer decline", "[Compu
     REQUIRE_FALSE(modified);
     REQUIRE(pass.num_groups() == 0);
 }
+
+// Defends a segfault: the fused node split its work by omp_get_max_threads() and assumed its
+// parallel region forked that wide. A graph executed from inside a caller's parallel region (a
+// per-pair loop driving a captured graph, say) gets a region that does not fork, so only thread 0
+// ran and the reduction read the private buffers of threads that never existed.
+TEST_CASE("StreamContractionFusion - a fused graph executed inside a parallel region", "[ComputeGraph][Passes][StreamFusion]") {
+    auto TEI = create_random_tensor<double>("TEI", kN, kN, kN, kN);
+    auto D   = create_random_tensor<double>("D", kN, kN);
+
+    Tensor<double, 2> J_ref("J_ref", kN, kN), K_ref("K_ref", kN, kN);
+    reference_einsum("ij <- ijkl ; kl", 0.0, &J_ref, 2.0, TEI, D);
+    reference_einsum("ij <- ikjl ; kl", 0.0, &K_ref, -1.0, TEI, D);
+
+    RuntimeTensor<double> TEI_rt(TEI), D_rt(D);
+    RuntimeTensor<double> J_rt("J", std::vector<size_t>{kN, kN}), K_rt("K", std::vector<size_t>{kN, kN});
+    J_rt.zero();
+    K_rt.zero();
+
+    cg::Graph graph("stream_jk_nested");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("i,j <- i,j,k,l ; k,l", 0.0, &J_rt, 2.0, TEI_rt, D_rt);
+        cg::einsum("i,j <- i,k,j,l ; k,l", 0.0, &K_rt, -1.0, TEI_rt, D_rt);
+    }
+    auto [modified, pass] = graph.apply<cg::passes::StreamContractionFusion>();
+    REQUIRE(pass.num_groups() == 1);
+
+#ifdef _OPENMP
+#    pragma omp parallel num_threads(2)
+#    pragma omp single
+#endif
+    {
+        graph.execute();
+    }
+
+    for (size_t ii = 0; ii < kN; ii++) {
+        for (size_t jj = 0; jj < kN; jj++) {
+            std::vector<ptrdiff_t> const idx{static_cast<ptrdiff_t>(ii), static_cast<ptrdiff_t>(jj)};
+            REQUIRE_THAT(J_rt(idx), Catch::Matchers::WithinAbs(J_ref(ii, jj), 1e-9));
+            REQUIRE_THAT(K_rt(idx), Catch::Matchers::WithinAbs(K_ref(ii, jj), 1e-9));
+        }
+    }
+}

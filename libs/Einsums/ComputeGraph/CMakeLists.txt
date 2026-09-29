@@ -76,7 +76,6 @@ set(ComputeGraphHeaders
     Einsums/ComputeGraph/Passes/StreamContractionFusion.hpp
     Einsums/ComputeGraph/Passes/SymmetrizedAccumulation.hpp
     Einsums/ComputeGraph/Passes/TiledExpansion.hpp
-    Einsums/ComputeGraph/Passes/StreamKernel.hpp
     Einsums/ComputeGraph/Passes/LoopInvariantHoisting.hpp
     Einsums/ComputeGraph/Passes/MemoryPlanning.hpp
     Einsums/ComputeGraph/Passes/InputSlicing.hpp
@@ -195,7 +194,6 @@ set(ComputeGraphSources
     Passes/LayoutAssignment.cpp
     Passes/LinearCombinationContractionFolding.cpp
     Passes/StreamContractionFusion.cpp
-    Passes/StreamKernelDispatch.cpp
     Passes/LoopInvariantHoisting.cpp
     Passes/MemoryPlanning.cpp
     Passes/InputSlicing.cpp
@@ -225,18 +223,6 @@ set(ComputeGraphSources
     Pipeline.cpp
     SpaceRegistry.cpp
     ThreadSweep.cpp
-)
-
-# StreamKernelImpl.cpp is the arch-generic stream-fusion inner kernel: it is
-# compiled once per SIMD-dispatch rung (each copy in its own namespace) rather
-# than as a regular module source. StreamKernelDispatch.cpp (a normal source)
-# bridges the copies to a runtime-selected entry point. See
-# Einsums/SIMD/RuntimeFeatures.hpp and Einsums_AddSIMDDispatch.cmake. No `sme`
-# rung is requested: the kernel is a bandwidth-bound streaming FMA that gains
-# nothing from the matrix unit.
-include(Einsums_AddSIMDDispatch)
-einsums_add_simd_dispatch_sources(
-  ComputeGraphStreamKernelRungs IMPL src/Passes/StreamKernelImpl.cpp RUNGS baseline v2 v3 v4
 )
 
 include(Einsums_AddModule)
@@ -278,10 +264,6 @@ einsums_add_module(
   CMAKE_SUBDIRS examples tests tools
 )
 
-# Attach the generated per-rung wrapper sources (and the EINSUMS_SIMD_HAS_RUNG_*
-# definitions StreamKernelDispatch.cpp keys off) to the module target.
-target_sources(Einsums_ComputeGraph PRIVATE ${ComputeGraphStreamKernelRungs})
-target_compile_definitions(Einsums_ComputeGraph PRIVATE ${ComputeGraphStreamKernelRungs_DEFINITIONS})
 
 # These files instantiate the string einsum engine, PackedGemm's packing loops included, which
 # consumers compiled in their own files at their own -O level before cg::einsum moved into the

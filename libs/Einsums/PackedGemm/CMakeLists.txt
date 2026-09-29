@@ -11,6 +11,8 @@ set(PackedGemmHeaders
     Einsums/PackedGemm/MicroKernelBody.hpp
     Einsums/PackedGemm/Options.hpp
     Einsums/PackedGemm/Packing.hpp
+    Einsums/PackedGemm/Stream.hpp
+    Einsums/PackedGemm/StreamKernel.hpp
 )
 
 set(PackedGemmSources
@@ -20,6 +22,8 @@ set(PackedGemmSources
     Options.cpp
     Packing.cpp
     RouteIntrospection.cpp
+    Stream.cpp
+    StreamKernelDispatch.cpp
 )
 
 # MicroKernelImpl.cpp is the arch-generic tile-kernel implementation: it is
@@ -30,6 +34,13 @@ set(PackedGemmSources
 include(Einsums_AddSIMDDispatch)
 einsums_add_simd_dispatch_sources(
   PackedGemmMicroKernelRungs IMPL src/MicroKernelImpl.cpp RUNGS baseline v2 v3 v4 sme
+)
+
+# StreamKernelImpl.cpp is the inner loop of stream_contract, dispatched the same
+# way. No `sme` rung is requested: the kernel is a bandwidth-bound streaming FMA
+# that gains nothing from the matrix unit.
+einsums_add_simd_dispatch_sources(
+  PackedGemmStreamKernelRungs IMPL src/StreamKernelImpl.cpp RUNGS baseline v2 v3 v4
 )
 
 include(Einsums_AddModule)
@@ -52,7 +63,16 @@ einsums_add_module(
 )
 
 # The generated rung TUs carry absolute paths, which einsums_add_module's
-# src/ prepend cannot express; attach them (and the rung-availability
-# definitions MicroKernelDispatch.cpp keys off) directly to the module target.
-target_sources(Einsums_PackedGemm PRIVATE ${PackedGemmMicroKernelRungs})
-target_compile_definitions(Einsums_PackedGemm PRIVATE ${PackedGemmMicroKernelRungs_DEFINITIONS})
+# src/ prepend cannot express; attach them directly to the module target.
+target_sources(Einsums_PackedGemm PRIVATE ${PackedGemmMicroKernelRungs} ${PackedGemmStreamKernelRungs})
+
+# Each dispatch TU declares an entry for every rung its definitions name, so
+# each gets only its own kernel's set: the micro-kernel builds an `sme` rung and
+# the stream kernel does not, and a module-wide definition would have the stream
+# dispatch reference an sme copy that was never compiled.
+set_source_files_properties(
+  src/MicroKernelDispatch.cpp PROPERTIES COMPILE_DEFINITIONS "${PackedGemmMicroKernelRungs_DEFINITIONS}"
+)
+set_source_files_properties(
+  src/StreamKernelDispatch.cpp PROPERTIES COMPILE_DEFINITIONS "${PackedGemmStreamKernelRungs_DEFINITIONS}"
+)

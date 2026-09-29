@@ -3,8 +3,8 @@
 // Licensed under the MIT License. See LICENSE.txt in the project root for license information.
 //----------------------------------------------------------------------------------------------
 
-// Kernel body for the stream-fusion inner loop. Private implementation header
-// (src/Passes, not installed): it is included only by StreamKernelImpl.cpp,
+// Kernel body for the stream inner loop. Private implementation header
+// (src, not installed): it is included only by StreamKernelImpl.cpp,
 // which first defines EINSUMS_STREAM_KERNEL_NS to that rung's namespace
 // (arch_<rung>) and is itself compiled once per rung by
 // einsums_add_simd_dispatch_sources(). Each copy compiles at its rung's ISA,
@@ -23,7 +23,7 @@
 #include <cstdint>
 #include <type_traits>
 
-EINSUMS_NAMESPACE_BEGIN(compute_graph::passes)
+EINSUMS_NAMESPACE_BEGIN(packed_gemm)
 namespace EINSUMS_STREAM_KERNEL_NS {
 
 /// Innermost stream loop for one member. See StreamKernel.hpp for the stride
@@ -182,5 +182,63 @@ void stream_inner(T *cb, T const *sp, T const *w, T const alpha, int64_t const n
     }
 }
 
+/// The two innermost stream loops for one term: rows r = 0..m of stream_inner, row r starting at
+/// (co + r*dc2, si + r*ds2, wo + r*dw2). One call per tile instead of one per row keeps the dispatch
+/// pointer's indirect call and the caller's odometer off short rows, which dominated a stream whose
+/// fastest axis is only a few dozen elements long.
+template <typename T>
+void stream_tile(T *cb, T const *sp, T const *w, T const alpha, int64_t const m, int64_t const n, int64_t const co, int64_t const si,
+                 int64_t const wo, int64_t const ds, int64_t const dc, int64_t const dw, int64_t const ds2, int64_t const dc2,
+                 int64_t const dw2) {
+    // Rows that all accumulate into ONE row of C - (1,1,0) with the rows summed
+    // away, as in the exchange K(i,j) = S(i,k,j,l) W(k,l), whose tile runs over
+    // (k, i) - are a transposed GEMV: C[i] += sum_r (alpha*W[r]) * S[r][i]. Row
+    // by row that is an AXPY which loads and stores C once per row; blocking C in
+    // registers across all rows stores it once per tile. The difference is the
+    // whole cost once S sits in cache, where loads and stores, not bandwidth,
+    // set the pace.
+    if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) {
+        if (ds == 1 && dc == 1 && dw == 0 && dc2 == 0 && m > 1) {
+            using namespace einsums::simd;
+            constexpr int64_t L = VecTraits<T>::lanes;
+            T *const          c = cb + co;
+            int64_t           i = 0;
+            for (; i + 4 * L <= n; i += 4 * L) {
+                Vec<T> a0 = loadu(c + i), a1 = loadu(c + i + L), a2 = loadu(c + i + 2 * L), a3 = loadu(c + i + 3 * L);
+                for (int64_t r = 0; r < m; ++r) {
+                    Vec<T> const   coeff = broadcast(alpha * w[wo + r * dw2]);
+                    T const *const row   = sp + si + r * ds2 + i;
+                    a0                   = fmadd(coeff, loadu(row), a0);
+                    a1                   = fmadd(coeff, loadu(row + L), a1);
+                    a2                   = fmadd(coeff, loadu(row + 2 * L), a2);
+                    a3                   = fmadd(coeff, loadu(row + 3 * L), a3);
+                }
+                storeu(c + i, a0);
+                storeu(c + i + L, a1);
+                storeu(c + i + 2 * L, a2);
+                storeu(c + i + 3 * L, a3);
+            }
+            for (; i + L <= n; i += L) {
+                Vec<T> a = loadu(c + i);
+                for (int64_t r = 0; r < m; ++r) {
+                    a = fmadd(broadcast(alpha * w[wo + r * dw2]), loadu(sp + si + r * ds2 + i), a);
+                }
+                storeu(c + i, a);
+            }
+            for (; i < n; ++i) {
+                T acc = c[i];
+                for (int64_t r = 0; r < m; ++r) {
+                    acc += alpha * w[wo + r * dw2] * sp[si + r * ds2 + i];
+                }
+                c[i] = acc;
+            }
+            return;
+        }
+    }
+    for (int64_t r = 0; r < m; ++r) {
+        stream_inner(cb, sp, w, alpha, n, co + r * dc2, si + r * ds2, wo + r * dw2, ds, dc, dw);
+    }
+}
+
 } // namespace EINSUMS_STREAM_KERNEL_NS
-EINSUMS_NAMESPACE_END(compute_graph::passes)
+EINSUMS_NAMESPACE_END(packed_gemm)

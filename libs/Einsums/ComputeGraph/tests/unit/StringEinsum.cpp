@@ -4,12 +4,15 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/ComputeGraph.hpp>
+#include <Einsums/PackedGemm/EinsumPackedGemm.hpp>
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
 
 #include <array>
+#include <cmath>
+#include <complex>
 #include <limits>
 #include <string>
 
@@ -923,6 +926,35 @@ TEST_CASE("String einsum - an operator survives capture and replay", "[ComputeGr
                     REQUIRE_THAT(replayed(ii, jj, aa, bb), Catch::Matchers::WithinAbs(eager(ii, jj, aa, bb), 1e-12));
                 }
             }
+        }
+    }
+}
+
+// The exchange contraction's operand alternates output and summed axes, so no matrix view of it
+// exists. Eager string einsum used to take it through PackedGemm's packing path, which copied the
+// whole operand on every call (76 ms at n = 100 against 13 ms for one storage-order read); it now
+// streams. Pinned on the eager path because no pass can rescue an eager call.
+TEMPLATE_TEST_CASE("String einsum - eager exchange contraction streams", "[ComputeGraph][StringEinsum]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    using T          = TestType;
+    size_t const n   = 16;
+    auto         TEI = create_random_tensor<T>("TEI", n, n, n, n);
+    auto         D   = create_random_tensor<T>("D", n, n);
+    auto         K   = create_zero_tensor<T>("K", n, n);
+    auto         K_r = create_zero_tensor<T>("K_r", n, n);
+
+    reference_einsum("ij <- ikjl ; kl", T{0}, &K_r, T{-1}, TEI, D);
+
+    packed_gemm::last_contraction_route() = "none";
+    // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+    cg::einsum("i,j <- i,k,j,l ; k,l", T{0}, &K, T{-1}, TEI, D);
+    CHECK(std::string{cg::dispatch::last_dispatch_route()} == "packed_gemm");
+    CHECK(std::string{packed_gemm::last_contraction_route()} == "stream");
+
+    using R = RemoveComplexT<T>;
+    for (size_t a = 0; a < n; a++) {
+        for (size_t b = 0; b < n; b++) {
+            REQUIRE(std::abs(K(a, b) - K_r(a, b)) <= R(1000) * std::numeric_limits<R>::epsilon() * static_cast<R>(n * n));
         }
     }
 }
