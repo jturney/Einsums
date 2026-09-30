@@ -7,6 +7,7 @@
 
 #include <Einsums/Profile/Event.hpp>
 #include <Einsums/Profile/RingBuffer.hpp>
+#include <Einsums/Profile/TickClock.hpp>
 
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
@@ -104,12 +105,12 @@ TEST_CASE("RingBuffer with Event struct", "[profiler][ringbuffer]") {
     RingBuffer<Event, 64> rb;
 
     Event push_evt{};
-    push_evt.type      = EventType::Push;
-    push_evt.timestamp = Clock::now();
-    push_evt.name_id   = 42;
-    push_evt.file_id   = 1;
-    push_evt.func_id   = 2;
-    push_evt.line      = 100;
+    push_evt.type    = EventType::Push;
+    push_evt.ticks   = TickClock::now();
+    push_evt.name_id = 42;
+    push_evt.file_id = 1;
+    push_evt.func_id = 2;
+    push_evt.line    = 100;
 
     REQUIRE(rb.try_push(push_evt));
 

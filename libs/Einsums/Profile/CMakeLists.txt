@@ -15,6 +15,7 @@ set(ProfileHeaders
     Einsums/Profile/Server.hpp
     Einsums/Profile/LogSink.hpp
     Einsums/Profile/Options.hpp
+    Einsums/Profile/TickClock.hpp
 )
 
 set(ProfileSources Profile.cpp Consumer.cpp CounterBackend.cpp Options.cpp Server.cpp)

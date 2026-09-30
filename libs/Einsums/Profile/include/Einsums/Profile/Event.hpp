@@ -35,9 +35,28 @@ enum class AnnotateValueType : uint8_t {
     Float64,
 };
 
-struct Event {
+/// The payload of an Annotate event: a key and a typed value.
+struct AnnotationPayload {
+    uint32_t          key_id;
+    AnnotateValueType value_type;
+    union {
+        uint32_t string_id;
+        int64_t  int_val;
+        double   float_val;
+    };
+};
+
+/**
+ * @brief One record in a thread's ring buffer, exactly one cache line.
+ *
+ * Each event type uses one arm of the trailing union: Push and Pop the hardware counters, Annotate
+ * the annotation, MemAlloc and MemFree the byte count. It was 96 bytes with all three side by side,
+ * so every Push and Pop wrote a cache line and a half.
+ */
+struct alignas(64) Event {
+    /// Raw @ref TickClock ticks; the consumer converts them with TickClock::to_time_point.
+    uint64_t  ticks;
     EventType type;
-    TimePoint timestamp;
 
     // For Push/Pop: interned string IDs
     uint32_t name_id;
@@ -60,21 +79,17 @@ struct Event {
     /// against, so drops cost the zones they hit and nothing else.
     uint32_t depth{0};
 
-    // Hardware counter slots (future work; zeros for now)
-    uint64_t counters[4];
-
-    // For Annotate events
-    uint32_t          key_id;
-    AnnotateValueType value_type;
     union {
-        uint32_t string_id;
-        int64_t  int_val;
-        double   float_val;
+        /// For Push/Pop: hardware counter values, left zero unless a counter backend is active.
+        uint64_t counters[4]; // NOLINT(modernize-avoid-c-arrays)
+        /// For Annotate.
+        AnnotationPayload annotation;
+        /// For MemAlloc/MemFree.
+        int64_t mem_bytes;
     };
-
-    // For MemAlloc/MemFree events
-    int64_t mem_bytes{0};
 };
+
+static_assert(sizeof(Event) == 64, "an Event is meant to fill one cache line exactly");
 
 EINSUMS_NAMESPACE_END(profile)
 

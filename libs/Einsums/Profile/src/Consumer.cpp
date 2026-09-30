@@ -6,6 +6,7 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Profile/Consumer.hpp>
 #include <Einsums/Profile/Options.hpp>
+#include <Einsums/Profile/TickClock.hpp>
 
 #include <string>
 
@@ -141,7 +142,7 @@ void Consumer::process_push(ThreadState &ts, Event const &evt) {
     frame.func_id    = evt.func_id;
     frame.line       = evt.line;
     frame.child_time = ns{0};
-    frame.start      = evt.timestamp;
+    frame.start      = TickClock::instance().to_time_point(evt.ticks);
     for (int i = 0; i < kNumCounterSlots; ++i)
         frame.counters[i] = evt.counters[i];
 
@@ -238,8 +239,9 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
     auto frame = ts.stack.back();
     ts.stack.pop_back();
 
-    ns const duration  = std::chrono::duration_cast<ns>(evt.timestamp - frame.start);
-    ns const exclusive = duration - frame.child_time;
+    TimePoint const end       = TickClock::instance().to_time_point(evt.ticks);
+    ns const        duration  = std::chrono::duration_cast<ns>(end - frame.start);
+    ns const        exclusive = duration - frame.child_time;
 
     // The node this frame accumulates into was resolved at push. This used to
     // rebuild the whole root-to-here path and hash every ancestor's full name,
@@ -272,7 +274,7 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
     // Record timeline event for Gantt chart
     {
         auto start_since_program = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(frame.start - _program_start);
-        auto end_since_program   = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(evt.timestamp - _program_start);
+        auto end_since_program   = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(end - _program_start);
         TimelineEvent te;
         te.thread_id = thread_id;
         te.name      = _strings.get(frame.name_id);
@@ -298,19 +300,19 @@ void Consumer::process_annotate(ThreadState &ts, Event const &evt) {
     if (cur == nullptr)
         return; // push was never processed for this frame
 
-    std::string const &key = _strings.get(evt.key_id);
+    std::string const &key = _strings.get(evt.annotation.key_id);
 
-    switch (evt.value_type) {
+    switch (evt.annotation.value_type) {
     case AnnotateValueType::String: {
-        cur->annotations[key] = _strings.get(evt.string_id);
+        cur->annotations[key] = _strings.get(evt.annotation.string_id);
         break;
     }
     case AnnotateValueType::Int64: {
-        cur->annotations[key] = std::to_string(evt.int_val);
+        cur->annotations[key] = std::to_string(evt.annotation.int_val);
         auto &na              = cur->numeric_annotations[key];
-        na.total += static_cast<double>(evt.int_val);
+        na.total += static_cast<double>(evt.annotation.int_val);
         na.count += 1;
-        auto val = static_cast<double>(evt.int_val);
+        auto val = static_cast<double>(evt.annotation.int_val);
         if (val < na.min_val)
             na.min_val = val;
         if (val > na.max_val)
@@ -318,14 +320,14 @@ void Consumer::process_annotate(ThreadState &ts, Event const &evt) {
         break;
     }
     case AnnotateValueType::Float64: {
-        cur->annotations[key] = std::to_string(evt.float_val);
+        cur->annotations[key] = std::to_string(evt.annotation.float_val);
         auto &na              = cur->numeric_annotations[key];
-        na.total += evt.float_val;
+        na.total += evt.annotation.float_val;
         na.count += 1;
-        if (evt.float_val < na.min_val)
-            na.min_val = evt.float_val;
-        if (evt.float_val > na.max_val)
-            na.max_val = evt.float_val;
+        if (evt.annotation.float_val < na.min_val)
+            na.min_val = evt.annotation.float_val;
+        if (evt.annotation.float_val > na.max_val)
+            na.max_val = evt.annotation.float_val;
         break;
     }
     }

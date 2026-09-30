@@ -10,6 +10,16 @@
 #include <Einsums/TypeSupport/JsonEscape.hpp>
 
 #include <iomanip>
+#include <memory>
+#include <mutex>
+
+#if defined(__x86_64__) || defined(_M_X64)
+#    if defined(_MSC_VER) && !defined(__clang__)
+#        include <intrin.h>
+#    else
+#        include <cpuid.h>
+#    endif
+#endif
 
 #if defined(EINSUMS_HAVE_PROFILER)
 EINSUMS_NAMESPACE_BEGIN(profile)
@@ -95,6 +105,156 @@ auto Profiler::instance() -> Profiler & {
     return p;
 }
 
+auto Profiler::register_thread() -> ThreadChannel & {
+    auto       channel = std::make_shared<ThreadChannel>();
+    auto const tid     = thread_key();
+    channel->counters  = get_counter_backend().available();
+
+    // The consumer drains the ring, and shares the channel's ownership through it.
+    _consumer->register_thread(tid, std::shared_ptr<EventRingBuffer>(channel, &channel->ring));
+    get_counter_backend().open_thread_counters();
+
+    // Auto-name the thread: the first thread to initialize is "main"
+    static std::atomic<bool> first_thread{true};
+    if (first_thread.exchange(false, std::memory_order_acq_rel)) {
+        _consumer->set_thread_name(tid, "main");
+    } else {
+        _consumer->set_thread_name(tid, "thread-" + std::to_string(tid));
+    }
+
+    std::scoped_lock const lock(_channels_mutex);
+    _channels.push_back(channel);
+    return *channel;
+}
+
+auto Profiler::total_push_count() const -> uint64_t {
+    std::scoped_lock const lock(_channels_mutex);
+    uint64_t               total = 0;
+    for (auto const &ch : _channels) {
+        total += ch->pushes.load(std::memory_order_relaxed);
+    }
+    return total;
+}
+
+auto Profiler::total_pop_count() const -> uint64_t {
+    std::scoped_lock const lock(_channels_mutex);
+    uint64_t               total = 0;
+    for (auto const &ch : _channels) {
+        total += ch->pops.load(std::memory_order_relaxed);
+    }
+    return total;
+}
+
+auto Profiler::calibrated_overhead() -> Overhead const & {
+    std::call_once(_calibration_once, [this] {
+        // The same write_push/write_pop a recorded zone runs, into a channel nobody drains and the
+        // consumer never sees. 16384 zones are 32768 events, half the ring, so none is dropped.
+        constexpr int kZones  = 16384;
+        auto          scratch = std::make_unique<ThreadChannel>();
+        scratch->counters     = get_counter_backend().available();
+        auto const elapsed    = [](auto t0, auto t1) { return std::chrono::duration<double, std::nano>(t1 - t0).count(); };
+        auto const t0         = std::chrono::steady_clock::now();
+        for (int i = 0; i < kZones; ++i) {
+            write_push(*scratch, 0, 0, 0, 0);
+        }
+        auto const t1 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kZones; ++i) {
+            write_pop(*scratch);
+        }
+        auto const t2        = std::chrono::steady_clock::now();
+        _calibration.push_ns = elapsed(t0, t1) / kZones;
+        _calibration.pop_ns  = elapsed(t1, t2) / kZones;
+    });
+    return _calibration;
+}
+
+auto TickClock::instance() -> TickClock const & {
+    static TickClock const clock;
+    return clock;
+}
+
+namespace {
+#    if defined(__x86_64__) || defined(_M_X64)
+/// Whether the TSC ticks at a constant rate whatever the core's frequency and power state
+/// (CPUID leaf 0x80000007, EDX bit 8). Without that its ticks are not a clock.
+bool invariant_tsc() {
+#        if defined(_MSC_VER) && !defined(__clang__)
+    int regs[4];
+    __cpuid(regs, 0x80000000);
+    if (static_cast<unsigned>(regs[0]) < 0x80000007u) {
+        return false;
+    }
+    __cpuid(regs, 0x80000007);
+    return (regs[3] & (1 << 8)) != 0;
+#        else
+    unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
+    if (__get_cpuid_max(0x80000000u, nullptr) < 0x80000007u) {
+        return false;
+    }
+    __get_cpuid(0x80000007u, &eax, &ebx, &ecx, &edx);
+    return (edx & (1u << 8)) != 0;
+#        endif
+}
+#    endif
+} // namespace
+
+TickClock::TickClock() {
+    // Reads the counters directly: now() goes through instance() on x86, which is this object.
+#    if (defined(__aarch64__) || defined(_M_ARM64)) && !defined(_MSC_VER)
+    std::uint64_t freq = 0;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+    ns_per_tick     = 1e9 / static_cast<double>(freq);
+    source          = "cntvct_el0";
+    auto const read = [] {
+        std::uint64_t v;
+        asm volatile("mrs %0, cntvct_el0" : "=r"(v));
+        return v;
+    };
+#    elif defined(__x86_64__) || defined(_M_X64)
+    uses_tsc        = invariant_tsc();
+    auto const read = [this] { return uses_tsc ? static_cast<std::uint64_t>(__rdtsc()) : fallback_now(); };
+    if (uses_tsc) {
+        // The TSC's rate is not stated anywhere architectural, so measure it against steady_clock
+        // over a couple of milliseconds. Each end is a TSC read bracketed by two steady_clock reads,
+        // taken again if the bracket is wider than a microsecond: a thread descheduled between the
+        // two clocks (a CI virtual machine does this) would otherwise skew the rate by as much as
+        // it was away. The TSC read is placed at the bracket's midpoint.
+        struct Pair {
+            std::chrono::steady_clock::time_point time;
+            std::uint64_t                         ticks;
+        };
+        auto const pair = [&] {
+            Pair best{};
+            auto width = std::chrono::steady_clock::duration::max();
+            for (int attempt = 0; attempt < 100; ++attempt) {
+                auto const          before = std::chrono::steady_clock::now();
+                std::uint64_t const ticks  = read();
+                auto const          after  = std::chrono::steady_clock::now();
+                if (after - before < width) {
+                    width = after - before;
+                    best  = {before + (after - before) / 2, ticks};
+                }
+                if (width < std::chrono::microseconds(1)) {
+                    break;
+                }
+            }
+            return best;
+        };
+        Pair const start = pair();
+        while (std::chrono::steady_clock::now() - start.time < std::chrono::milliseconds(2)) {
+        }
+        Pair const end = pair();
+        ns_per_tick =
+            std::chrono::duration<double, std::nano>(end.time - start.time).count() / static_cast<double>(end.ticks - start.ticks);
+        source = "rdtsc";
+    }
+#    else
+    auto const read = [] { return fallback_now(); };
+#    endif
+    anchor_time  = std::chrono::steady_clock::now();
+    anchor_ticks = read();
+}
+
 void Profiler::print(bool detailed, std::ostream &os) {
     // Flush pending events before reading the tree
     flush();
@@ -143,10 +303,15 @@ void Profiler::print(bool detailed, std::ostream &os) {
     fprintln(os);
     fprintln(os, fmt::emphasis::bold | fg(fmt::color::white), "Profiler overhead");
     fprintln(os, "{:-^80}", "");
-    fprintln(os, "  push():  avg {:.1f} ns  ({} calls, {:.3f} ms total)", avg_push_overhead_ns(), total_push_count(),
-             static_cast<double>(_push_overhead_ns.load(std::memory_order_relaxed)) / 1'000'000.0);
-    fprintln(os, "  pop():   avg {:.1f} ns  ({} calls, {:.3f} ms total)", avg_pop_overhead_ns(), total_pop_count(),
-             static_cast<double>(_pop_overhead_ns.load(std::memory_order_relaxed)) / 1'000'000.0);
+    // Per-call costs are calibrated, not accumulated per call (see avg_push_overhead_ns), so the
+    // totals are estimates: the calibrated cost times the number of calls.
+    auto const pushes = total_push_count();
+    auto const pops   = total_pop_count();
+    fprintln(os, "  push():  {:.1f} ns each, calibrated  ({} calls, ~{:.3f} ms total)", avg_push_overhead_ns(), pushes,
+             avg_push_overhead_ns() * static_cast<double>(pushes) / 1'000'000.0);
+    fprintln(os, "  pop():   {:.1f} ns each, calibrated  ({} calls, ~{:.3f} ms total)", avg_pop_overhead_ns(), pops,
+             avg_pop_overhead_ns() * static_cast<double>(pops) / 1'000'000.0);
+    fprintln(os, "  clock:   {}, {:.3f} ns per tick", TickClock::instance().source, TickClock::instance().ns_per_tick);
     auto dropped = _consumer->dropped_count();
     if (dropped > 0) {
         fprintln(os, fg(fmt::color::red), "  dropped events: {}", dropped);

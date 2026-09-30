@@ -16,16 +16,20 @@
 #include <Einsums/Profile/RingBuffer.hpp>
 #include <Einsums/Profile/Server.hpp>
 #include <Einsums/Profile/StringTable.hpp>
+#include <Einsums/Profile/TickClock.hpp>
 #include <Einsums/Python/Annotations.hpp>
 #include <Einsums/TypeSupport/InsertionOrderedMap.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 #ifdef EINSUMS_HAVE_TRACY
 #    include <tracy/Tracy.hpp>
@@ -99,9 +103,6 @@ struct EINSUMS_EXPORT Profiler {
         if (!enabled()) {
             return;
         }
-        auto overhead_start = Clock::now();
-        auto now            = overhead_start;
-
 #    ifdef EINSUMS_HAVE_TRACY
         auto z = std::make_unique<tracy::ScopedZone>(line, file.data(), file.size(), func.data(), func.size(), name.data(), name.size(), 1);
         thread_tracy_zones().push_back(std::move(z));
@@ -110,39 +111,7 @@ struct EINSUMS_EXPORT Profiler {
         (void)file;
         (void)func;
 #    endif
-
-        // Ensure thread is registered with consumer
-        auto &rb = thread_ring_buffer();
-
-        // Write event to ring buffer
-        Event evt{};
-        evt.type      = EventType::Push;
-        evt.timestamp = now;
-        evt.name_id   = name_id;
-        evt.file_id   = file_id;
-        evt.func_id   = func_id;
-        evt.line      = line;
-        // Counted whether or not the event makes it into the buffer: this is
-        // where the thread actually is, and the consumer resynchronizes against
-        // it precisely when the events between have been dropped.
-        evt.depth = ++thread_zone_depth();
-
-        // Read hardware counters
-        auto                                  &counters = get_counter_backend();
-        std::array<uint64_t, kNumCounterSlots> cvals;
-        counters.read(cvals);
-        for (int i = 0; i < kNumCounterSlots; ++i)
-            evt.counters[i] = cvals[i];
-
-        if (!rb->try_push(evt)) {
-            _consumer->increment_dropped();
-        }
-
-        auto overhead_end = Clock::now();
-        _push_overhead_ns.fetch_add(
-            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(overhead_end - overhead_start).count()),
-            std::memory_order_relaxed);
-        _push_count.fetch_add(1, std::memory_order_relaxed);
+        write_push(thread_channel(), name_id, file_id, func_id, line);
     }
 
     // Stop timer region
@@ -150,45 +119,11 @@ struct EINSUMS_EXPORT Profiler {
         if (!enabled()) {
             return;
         }
-        auto overhead_start = Clock::now();
-        auto now            = overhead_start;
-
 #    ifdef EINSUMS_HAVE_TRACY
         if (!thread_tracy_zones().empty())
             thread_tracy_zones().pop_back();
 #    endif
-
-        auto &rb = thread_ring_buffer();
-
-        Event evt{};
-        evt.type      = EventType::Pop;
-        evt.timestamp = now;
-
-        // A pop with nothing open closes nothing. It used to be sent anyway and
-        // dropped at the far end; keeping the count here means the depth a Pop
-        // carries is always the level of a zone that is really open.
-        auto &depth = thread_zone_depth();
-        if (depth == 0) {
-            return;
-        }
-        evt.depth = depth--;
-
-        // Read hardware counters
-        auto                                  &counters = get_counter_backend();
-        std::array<uint64_t, kNumCounterSlots> cvals;
-        counters.read(cvals);
-        for (int i = 0; i < kNumCounterSlots; ++i)
-            evt.counters[i] = cvals[i];
-
-        if (!rb->try_push(evt)) {
-            _consumer->increment_dropped();
-        }
-
-        auto overhead_end = Clock::now();
-        _pop_overhead_ns.fetch_add(
-            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(overhead_end - overhead_start).count()),
-            std::memory_order_relaxed);
-        _pop_count.fetch_add(1, std::memory_order_relaxed);
+        write_pop(thread_channel());
     }
 
     // Print default compact report (exclusive time, percent, name, file:line clickable, func)
@@ -214,17 +149,18 @@ struct EINSUMS_EXPORT Profiler {
             _consumer->flush();
     }
 
-    // Overhead measurement accessors
-    auto avg_push_overhead_ns() const -> double {
-        auto c = _push_count.load(std::memory_order_relaxed);
-        return c > 0 ? static_cast<double>(_push_overhead_ns.load(std::memory_order_relaxed)) / static_cast<double>(c) : 0.0;
-    }
-    auto avg_pop_overhead_ns() const -> double {
-        auto c = _pop_count.load(std::memory_order_relaxed);
-        return c > 0 ? static_cast<double>(_pop_overhead_ns.load(std::memory_order_relaxed)) / static_cast<double>(c) : 0.0;
-    }
-    auto total_push_count() const -> uint64_t { return _push_count.load(std::memory_order_relaxed); }
-    auto total_pop_count() const -> uint64_t { return _pop_count.load(std::memory_order_relaxed); }
+    /// What one recorded push and one recorded pop cost, in nanoseconds.
+    ///
+    /// Measured once, on first request, by running the same code path into a scratch ring. A zone
+    /// used to time itself: two extra clock reads and four fetch_adds on counters every thread
+    /// shared, which made the overhead it reported a large part of the overhead it had, and the
+    /// shared counters grew that part with every thread added.
+    auto avg_push_overhead_ns() -> double { return calibrated_overhead().push_ns; }
+    auto avg_pop_overhead_ns() -> double { return calibrated_overhead().pop_ns; }
+
+    /// Zones opened and closed so far, on every thread, whether or not their events were dropped.
+    auto total_push_count() const -> uint64_t;
+    auto total_pop_count() const -> uint64_t;
 
     // Access string table (for interning annotation keys/values)
     auto string_table() -> StringTable & { return _strings; }
@@ -243,8 +179,7 @@ struct EINSUMS_EXPORT Profiler {
 
     // Emit an event to the thread-local ring buffer. Used by annotation API.
     void emit_event(Event const &evt) {
-        auto &rb = thread_ring_buffer();
-        if (!rb->try_push(evt)) {
+        if (!thread_channel().ring.try_push(evt)) {
             _consumer->increment_dropped();
         }
     }
@@ -296,42 +231,41 @@ struct EINSUMS_EXPORT Profiler {
         print_node_recursive(os, static_cast<AggNode const *>(n), thread_total_ms, depth, detailed);
     }
 
-    // ------------------ thread-local ring buffer ------------------
-    // The ring buffer is shared with the Consumer: a producer thread (e.g. a
-    // transient TaskPool worker) can exit while the Consumer's drain thread is
-    // still popping residual events, so ownership must outlive the thread. With
-    // a thread_local unique_ptr the buffer was freed on thread exit while the
-    // Consumer held a raw pointer to it, a heap-use-after-free (caught by ASan
-    // via the DataflowExecutor). Shared ownership lets the buffer live until the
-    // last of {producer thread, Consumer} releases it.
-    static auto thread_ring_buffer() -> std::shared_ptr<EventRingBuffer> & {
-        thread_local auto rb = [] {
-            auto ptr = std::make_shared<EventRingBuffer>();
-            auto tid = thread_key();
-            // Register with consumer (shares ownership) and open hardware counters.
-            Profiler::instance()._consumer->register_thread(tid, ptr);
-            get_counter_backend().open_thread_counters();
-            // Auto-name the thread: the first thread to initialize is "main"
-            static std::atomic<bool> first_thread{true};
-            if (first_thread.exchange(false, std::memory_order_acq_rel)) {
-                Profiler::instance()._consumer->set_thread_name(tid, "main");
-            } else {
-                Profiler::instance()._consumer->set_thread_name(tid, "thread-" + std::to_string(tid));
-            }
-            return ptr;
-        }();
-        return rb;
-    }
+    // ------------------ per-thread channel ------------------
 
-    /// How many zones this thread has open, counted by the producer itself.
+    /**
+     * @brief One thread's side of the profiler: its ring buffer, nesting depth and zone counts.
+     *
+     * Only the owning thread writes any of it. The counts are atomics only so another thread can
+     * read them: the owner bumps them with a relaxed load and store, never a read-modify-write, so
+     * no producer ever touches a cache line another producer writes.
+     *
+     * The ring buffer is shared with the Consumer: a producer thread (e.g. a transient TaskPool
+     * worker) can exit while the Consumer's drain thread is still popping residual events, so
+     * ownership must outlive the thread. The profiler keeps every channel for the life of the
+     * process, which is also what keeps an exited thread's zones in the counts.
+     */
+    struct ThreadChannel {
+        EventRingBuffer ring;
+        alignas(64) std::atomic<uint64_t> pushes{0};
+        std::atomic<uint64_t> pops{0};
+        /// How many zones this thread has open, stamped into every Push and Pop (see
+        /// @ref Event::depth) so the consumer can tell a nesting level from a lost event.
+        uint32_t depth{0};
+        /// Whether a hardware counter backend is active, read once when the thread registers.
+        bool counters{false};
+    };
+
+    /// The calling thread's channel, registered on first use.
     ///
-    /// Stamped into every Push and Pop (see @ref Event::depth) so the consumer
-    /// can tell a nesting level from a lost event. Kept here rather than in the
-    /// consumer's per-thread state because only the producer knows: the ring
-    /// buffer between them is allowed to drop.
-    static auto thread_zone_depth() -> uint32_t & {
-        thread_local uint32_t depth = 0;
-        return depth;
+    /// A plain pointer in a constant-initialized thread_local, so the hot path reads it with no
+    /// initialization guard; registration is the cold path.
+    static auto thread_channel() -> ThreadChannel & {
+        static thread_local ThreadChannel *channel = nullptr;
+        if (channel == nullptr) [[unlikely]] {
+            channel = &instance().register_thread();
+        }
+        return *channel;
     }
 
 #    ifdef EINSUMS_HAVE_TRACY
@@ -377,15 +311,79 @@ struct EINSUMS_EXPORT Profiler {
     std::unique_ptr<Consumer> _consumer;
     std::unique_ptr<Server>   _server;
 
-    // Overhead measurement counters
     /// Recording switch. On by default so the default report keeps working;
     /// --einsums:profile:disable turns it off, which reduces every zone and
     /// annotation to one relaxed load.
-    std::atomic<bool>     _enabled{true};
-    std::atomic<uint64_t> _push_overhead_ns{0};
-    std::atomic<uint64_t> _pop_overhead_ns{0};
-    std::atomic<uint64_t> _push_count{0};
-    std::atomic<uint64_t> _pop_count{0};
+    std::atomic<bool> _enabled{true};
+
+    /// Every thread's channel, for the life of the process; see @ref ThreadChannel.
+    mutable std::mutex                          _channels_mutex;
+    std::vector<std::shared_ptr<ThreadChannel>> _channels;
+
+    struct Overhead {
+        double push_ns{0.0};
+        double pop_ns{0.0};
+    };
+    std::once_flag _calibration_once;
+    Overhead       _calibration;
+
+    /// Create, register and return the calling thread's channel. The cold half of @ref thread_channel.
+    auto register_thread() -> ThreadChannel &;
+
+    /// Run the push and pop paths into a scratch channel and time them, once.
+    auto calibrated_overhead() -> Overhead const &;
+
+    /// Record a zone's opening on @p ch. The whole hot path of a recorded zone: one raw clock read,
+    /// one event written into a ring only this thread writes, and the thread's own count.
+    void write_push(ThreadChannel &ch, uint32_t name_id, uint32_t file_id, uint32_t func_id, int line) {
+        Event evt{};
+        evt.ticks   = TickClock::now();
+        evt.type    = EventType::Push;
+        evt.name_id = name_id;
+        evt.file_id = file_id;
+        evt.func_id = func_id;
+        evt.line    = line;
+        // Counted whether or not the event makes it into the buffer: this is
+        // where the thread actually is, and the consumer resynchronizes against
+        // it precisely when the events between have been dropped.
+        evt.depth = ++ch.depth;
+        if (ch.counters) {
+            read_counters(evt);
+        }
+        if (!ch.ring.try_push(evt)) {
+            _consumer->increment_dropped();
+        }
+        ch.pushes.store(ch.pushes.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    }
+
+    /// Record a zone's closing on @p ch.
+    void write_pop(ThreadChannel &ch) {
+        // A pop with nothing open closes nothing. It used to be sent anyway and
+        // dropped at the far end; keeping the count here means the depth a Pop
+        // carries is always the level of a zone that is really open.
+        if (ch.depth == 0) {
+            return;
+        }
+        Event evt{};
+        evt.ticks = TickClock::now();
+        evt.type  = EventType::Pop;
+        evt.depth = ch.depth--;
+        if (ch.counters) {
+            read_counters(evt);
+        }
+        if (!ch.ring.try_push(evt)) {
+            _consumer->increment_dropped();
+        }
+        ch.pops.store(ch.pops.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    }
+
+    static void read_counters(Event &evt) {
+        std::array<uint64_t, kNumCounterSlots> values;
+        get_counter_backend().read(values);
+        for (int i = 0; i < kNumCounterSlots; ++i) {
+            evt.counters[i] = values[i];
+        }
+    }
 };
 
 // ---------------------- Scoped helper ----------------------
@@ -499,11 +497,11 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate(std::string_view key
     auto &st = prof.string_table();
 
     Event evt{};
-    evt.type       = EventType::Annotate;
-    evt.timestamp  = Clock::now();
-    evt.key_id     = st.intern(key);
-    evt.value_type = AnnotateValueType::String;
-    evt.string_id  = st.intern(value);
+    evt.type                  = EventType::Annotate;
+    evt.ticks                 = TickClock::now();
+    evt.annotation.key_id     = st.intern(key);
+    evt.annotation.value_type = AnnotateValueType::String;
+    evt.annotation.string_id  = st.intern(value);
 
     prof.emit_event(evt);
 }
@@ -517,11 +515,11 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate(std::string_view key
     auto &st = prof.string_table();
 
     Event evt{};
-    evt.type       = EventType::Annotate;
-    evt.timestamp  = Clock::now();
-    evt.key_id     = st.intern(key);
-    evt.value_type = AnnotateValueType::Int64;
-    evt.int_val    = value;
+    evt.type                  = EventType::Annotate;
+    evt.ticks                 = TickClock::now();
+    evt.annotation.key_id     = st.intern(key);
+    evt.annotation.value_type = AnnotateValueType::Int64;
+    evt.annotation.int_val    = value;
 
     prof.emit_event(evt);
 }
@@ -535,11 +533,11 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void annotate(std::string_view key
     auto &st = prof.string_table();
 
     Event evt{};
-    evt.type       = EventType::Annotate;
-    evt.timestamp  = Clock::now();
-    evt.key_id     = st.intern(key);
-    evt.value_type = AnnotateValueType::Float64;
-    evt.float_val  = value;
+    evt.type                  = EventType::Annotate;
+    evt.ticks                 = TickClock::now();
+    evt.annotation.key_id     = st.intern(key);
+    evt.annotation.value_type = AnnotateValueType::Float64;
+    evt.annotation.float_val  = value;
 
     prof.emit_event(evt);
 }
@@ -556,11 +554,11 @@ inline void annotate_interned(uint32_t key_id, uint32_t value_id) {
         return;
     }
     Event evt{};
-    evt.type       = EventType::Annotate;
-    evt.timestamp  = Clock::now();
-    evt.key_id     = key_id;
-    evt.value_type = AnnotateValueType::String;
-    evt.string_id  = value_id;
+    evt.type                  = EventType::Annotate;
+    evt.ticks                 = TickClock::now();
+    evt.annotation.key_id     = key_id;
+    evt.annotation.value_type = AnnotateValueType::String;
+    evt.annotation.string_id  = value_id;
 
     prof.emit_event(evt);
 }
@@ -572,11 +570,11 @@ inline void annotate_interned(uint32_t key_id, int64_t value) {
         return;
     }
     Event evt{};
-    evt.type       = EventType::Annotate;
-    evt.timestamp  = Clock::now();
-    evt.key_id     = key_id;
-    evt.value_type = AnnotateValueType::Int64;
-    evt.int_val    = value;
+    evt.type                  = EventType::Annotate;
+    evt.ticks                 = TickClock::now();
+    evt.annotation.key_id     = key_id;
+    evt.annotation.value_type = AnnotateValueType::Int64;
+    evt.annotation.int_val    = value;
 
     prof.emit_event(evt);
 }
@@ -588,11 +586,11 @@ inline void annotate_interned(uint32_t key_id, double value) {
         return;
     }
     Event evt{};
-    evt.type       = EventType::Annotate;
-    evt.timestamp  = Clock::now();
-    evt.key_id     = key_id;
-    evt.value_type = AnnotateValueType::Float64;
-    evt.float_val  = value;
+    evt.type                  = EventType::Annotate;
+    evt.ticks                 = TickClock::now();
+    evt.annotation.key_id     = key_id;
+    evt.annotation.value_type = AnnotateValueType::Float64;
+    evt.annotation.float_val  = value;
 
     prof.emit_event(evt);
 }
@@ -608,7 +606,7 @@ inline void annotate_dims(std::string_view key, std::span<int64_t const> dims) {
 APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_alloc(int64_t bytes) {
     Event evt{};
     evt.type      = EventType::MemAlloc;
-    evt.timestamp = Clock::now();
+    evt.ticks     = TickClock::now();
     evt.mem_bytes = bytes;
     Profiler::instance().emit_event(evt);
 }
@@ -617,7 +615,7 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_alloc(int64_t bytes) {
 APIARY_EXPOSE APIARY_MODULE("profile") inline void mem_free(int64_t bytes) {
     Event evt{};
     evt.type      = EventType::MemFree;
-    evt.timestamp = Clock::now();
+    evt.ticks     = TickClock::now();
     evt.mem_bytes = bytes;
     Profiler::instance().emit_event(evt);
 }
