@@ -76,26 +76,57 @@ std::shared_ptr<hptt::Transpose<T>> build_permute_plan(T beta, std::span<int con
         perms[i] = c_to_a[flip ? rank - 1 - i : i];
     }
 
+    // An extent-1 axis is never stepped along, so its stride says nothing, and a view carries
+    // whatever stride the axis had in its parent. Read off as it stands, such a stride can make a
+    // neighbour's outer size smaller than its extent, and HPTT rejects the plan. Each is replaced by
+    // a stride that agrees with its neighbours: 1 on the fastest axis; else the stride of the
+    // nearest slower axis that is stepped along, so the faster neighbour's outer size spans up to
+    // it; else, with nothing slower stepped along, the packed stride past the faster neighbour.
+    auto const effective_strides = [&](einsums::detail::TensorImpl<T> const &t) {
+        auto const          axis = [&](std::size_t p) { return static_cast<int>(row_major ? rank - 1 - p : p); };
+        std::vector<size_t> s(rank, 0);
+        std::size_t         slower = 0; // stride of the nearest slower stepped axis, 0 for none
+        for (std::size_t p = rank; p-- > 0;) {
+            int const d = axis(p);
+            if (t.dim(d) > 1) {
+                s[d]   = t.stride(d);
+                slower = s[d];
+            } else if (p == 0) {
+                s[d] = 1;
+            } else {
+                s[d] = slower;
+            }
+        }
+        for (std::size_t p = 1; p < rank; ++p) {
+            if (s[axis(p)] == 0) {
+                s[axis(p)] = s[axis(p - 1)] * t.dim(axis(p - 1));
+            }
+        }
+        return s;
+    };
+    std::vector<size_t> const strideA = effective_strides(A);
+    std::vector<size_t> const strideC = effective_strides(C_view);
+
     // The outer sizes are what each axis's stride says the allocation spans, measured from the
     // fastest axis: the last in row-major, the first in column-major.
-    size_t const innerStrideA = row_major ? A.stride(-1) : A.stride(0);
-    size_t const innerStrideC = row_major ? C_view.stride(-1) : C_view.stride(0);
+    size_t const innerStrideA = row_major ? strideA[rank - 1] : strideA[0];
+    size_t const innerStrideC = row_major ? strideC[rank - 1] : strideC[0];
     for (std::size_t i = 0; i < rank; ++i) {
         size[i] = A.dim(static_cast<int>(i));
     }
     if (row_major) {
         outerSizeA[0] = A.dim(0);
         outerSizeC[0] = C_view.dim(0);
-        for (int i0 = 1; i0 < static_cast<int>(rank); i0++) {
-            outerSizeA[i0] = A.stride(i0 - 1) / (A.stride(i0) * innerStrideA);
-            outerSizeC[i0] = C_view.stride(i0 - 1) / (C_view.stride(i0) * innerStrideC);
+        for (std::size_t i0 = 1; i0 < rank; i0++) {
+            outerSizeA[i0] = strideA[i0 - 1] / (strideA[i0] * innerStrideA);
+            outerSizeC[i0] = strideC[i0 - 1] / (strideC[i0] * innerStrideC);
         }
     } else {
         outerSizeA[rank - 1] = A.dim(-1);
         outerSizeC[rank - 1] = C_view.dim(-1);
-        for (int i0 = 0; i0 < static_cast<int>(rank) - 1; i0++) {
-            outerSizeA[i0] = A.stride(i0 + 1) / (A.stride(i0) * innerStrideA);
-            outerSizeC[i0] = C_view.stride(i0 + 1) / (C_view.stride(i0) * innerStrideC);
+        for (std::size_t i0 = 0; i0 + 1 < rank; i0++) {
+            outerSizeA[i0] = strideA[i0 + 1] / (strideA[i0] * innerStrideA);
+            outerSizeC[i0] = strideC[i0 + 1] / (strideC[i0] * innerStrideC);
         }
     }
 

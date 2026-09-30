@@ -340,3 +340,55 @@ TEMPLATE_TEST_CASE("TensorPermute - the overwrite shorthand", "[TensorPermute]",
     tp::permute("ji <- ij", &MT, M);
     M.operand.for_each([&](auto const &idx, size_t) { CHECK(MT.operand.at({idx[1], idx[0]}) == M.operand.at(idx)); });
 }
+
+TEMPLATE_TEST_CASE("TensorPermute - an extent-1 axis whatever its stride says", "[TensorPermute]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    // An extent-1 axis is never stepped along, so its stride carries no information, and a
+    // permute_view hands over whatever stride the axis had in its parent. The outer sizes HPTT is
+    // given used to be read off every stride, so such a stride made one of them smaller than its
+    // extent and the plan was rejected: A(i, j, k) with extents (2, 1, 3) and j's stride 6 gave
+    // i an outer size of 2/6 = 0. The fuzzer reached it through "ikj <- ijk ; ijk" on a view.
+    struct Layout {
+        char const           *name;
+        std::array<size_t, 3> dims;
+        std::array<size_t, 3> strides;
+    };
+    // Every case is the 6 elements of a column-major (2, 3) block, with the extent-1 axis put in
+    // a different place and given a stride larger, smaller, or equal to what a packed tensor has.
+    std::array<Layout, 7> const layouts{{
+        {"middle axis, stride past the end", {2, 1, 3}, {1, 6, 2}},
+        {"middle axis, stride of one", {2, 1, 3}, {1, 1, 2}},
+        {"fastest axis", {1, 2, 3}, {2, 1, 2}},
+        {"slowest axis", {2, 3, 1}, {1, 2, 5}},
+        {"two of them", {1, 6, 1}, {5, 1, 7}},
+        // A leading or trailing extent-1 stride used to decide the layout flag as well.
+        {"fastest axis, stride past the end", {1, 2, 3}, {6, 1, 2}},
+        {"slowest axis, stride of one", {2, 3, 1}, {1, 2, 1}},
+    }};
+    for (auto const &layout : layouts) {
+        CAPTURE(layout.name);
+        std::vector<TestType> a_data(6);
+        for (size_t n = 0; n < a_data.size(); ++n) {
+            a_data[n] = value_for<TestType>(n);
+        }
+        TensorImpl<TestType> const A(a_data.data(), layout.dims, layout.strides);
+
+        // C(i, k, j) = A(i, j, k), packed column-major.
+        std::array<size_t, 3> const c_dims{layout.dims[0], layout.dims[2], layout.dims[1]};
+        std::array<size_t, 3> const c_strides{1, c_dims[0], c_dims[0] * c_dims[1]};
+        std::vector<TestType>       c_data(6, TestType{0});
+        TensorImpl<TestType>        C(c_data.data(), c_dims, c_strides);
+
+        tp::permute("ikj <- ijk", TestType{0}, &C, TestType{1}, A);
+
+        for (size_t i = 0; i < layout.dims[0]; ++i) {
+            for (size_t j = 0; j < layout.dims[1]; ++j) {
+                for (size_t k = 0; k < layout.dims[2]; ++k) {
+                    size_t const a_at = i * layout.strides[0] + j * layout.strides[1] + k * layout.strides[2];
+                    size_t const c_at = i * c_strides[0] + k * c_strides[1] + j * c_strides[2];
+                    CHECK(c_data[c_at] == a_data[a_at]);
+                }
+            }
+        }
+    }
+}
