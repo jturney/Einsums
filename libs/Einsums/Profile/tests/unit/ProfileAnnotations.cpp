@@ -7,9 +7,14 @@
 
 #include <Einsums/Profile/Profile.hpp>
 
+#include <fmt/ranges.h>
+
 #include <catch2/catch_test_macros.hpp>
+#include <iterator>
 #include <sstream>
+#include <string>
 #include <thread>
+#include <vector>
 
 using namespace einsums::profile;
 
@@ -114,4 +119,129 @@ TEST_CASE("ProfileAnnotate macro works", "[profiler][annotations]") {
     REQUIRE(node != nullptr);
     REQUIRE(node->annotations.count("key") > 0);
     REQUIRE(node->annotations.at("key") == "value");
+}
+
+// ── Per-site caches for formatted zone names and annotation values ──────────
+//
+// A formatted zone name used to be formatted and interned (under the string table's lock) on every
+// entry, and so did every annotation's key and string value. Each call site now caches its ids per
+// thread, keyed by the arguments' values. These cases pin that the cache never hands back a stale
+// name or value.
+
+namespace {
+
+struct Recording {
+    explicit Recording(bool on) : _was(Profiler::instance().enabled()) { Profiler::instance().set_enabled(on); }
+    Recording(Recording const &)            = delete;
+    Recording &operator=(Recording const &) = delete;
+    ~Recording() { Profiler::instance().set_enabled(_was); }
+
+  private:
+    bool _was;
+};
+
+void cached_zone(std::vector<std::string> const &c, int n) {
+    LabeledSection("cached_zone: {} n={}", fmt::join(c, ","), n);
+}
+
+/// A zone argument with no value to key on: only fmt can say what it prints as.
+struct Opaque {
+    int value;
+};
+
+/// Calls of every zone named @p name, on every thread: each thread has a tree of its own.
+uint64_t zone_calls_below(AggNode const &node, std::string const &name) {
+    uint64_t total = node.name == name ? node.call_count : 0;
+    for (auto const &child : node.children) {
+        total += zone_calls_below(*child.second, name);
+    }
+    return total;
+}
+
+uint64_t zone_calls(std::string const &name) {
+    auto     lock  = Profiler::instance().consumer()->lock_shared();
+    uint64_t total = 0;
+    for (auto const &thread : Profiler::instance().consumer()->thread_data()) {
+        total += zone_calls_below(thread.second.root, name);
+    }
+    return total;
+}
+
+} // namespace
+
+template <>
+struct fmt::formatter<Opaque> : fmt::formatter<int> {
+    auto format(Opaque const &o, fmt::format_context &ctx) const -> fmt::format_context::iterator {
+        return fmt::format_to(ctx.out(), "<{}>", o.value);
+    }
+};
+
+TEST_CASE("A formatted zone name is cached per call site and stays right", "[profiler][annotations][cache]") {
+    Recording const                on(true);
+    std::vector<std::string> const ij{"i", "j"}, kl{"k", "l"};
+
+    cached_zone(ij, 1);
+    cached_zone(kl, 2);
+    cached_zone(ij, 1);
+    cached_zone(kl, 3);
+    std::thread([&] {
+        cached_zone(ij, 1);
+        cached_zone(kl, 3);
+    }).join();
+    Profiler::instance().flush();
+
+    CHECK(zone_calls("cached_zone: i,j n=1") == 3);
+    CHECK(zone_calls("cached_zone: k,l n=2") == 1);
+    CHECK(zone_calls("cached_zone: k,l n=3") == 2);
+}
+
+TEST_CASE("A zone argument with no value to key on is formatted every time", "[profiler][annotations][cache]") {
+    Recording const on(true);
+    for (int const v : {1, 2, 1}) {
+        LabeledSection("unkeyed zone {}", Opaque{v});
+    }
+    // A single-pass range cannot be read once for the key and again to format.
+    std::istringstream words("a b");
+    {
+        LabeledSection("single-pass zone {}",
+                       fmt::join(std::istream_iterator<std::string>(words), std::istream_iterator<std::string>(), "+"));
+    }
+    Profiler::instance().flush();
+    CHECK(zone_calls("unkeyed zone <1>") == 2);
+    CHECK(zone_calls("unkeyed zone <2>") == 1);
+    CHECK(zone_calls("single-pass zone a+b") == 1);
+}
+
+TEST_CASE("A conditional between two same-length literals annotates each value", "[profiler][annotations][cache]") {
+    // ``i % 2 ? "T" : "N"`` has the type of a single literal, char const[2]. A cache that trusted the
+    // type would record whichever value it met first at every later entry.
+    Recording const on(true);
+    for (int i = 0; i < 4; ++i) {
+        LabeledSection("ternary annotation zone {}", i);
+        ProfileAnnotate("trans", i % 2 != 0 ? "T" : "N");
+    }
+    Profiler::instance().flush();
+
+    auto        lock = Profiler::instance().consumer()->lock_shared();
+    auto const &map  = Profiler::instance().consumer()->thread_data();
+    for (int i = 0; i < 4; ++i) {
+        auto const *node = find_node_any_thread(map, fmt::format("ternary annotation zone {}", i));
+        REQUIRE(node != nullptr);
+        CHECK(node->annotations.at("trans") == (i % 2 != 0 ? "T" : "N"));
+    }
+}
+
+TEST_CASE("Annotation values and zone arguments are not evaluated while recording is off", "[profiler][annotations][cache]") {
+    Recording const off(false);
+    int             evaluated = 0;
+    auto const      value     = [&] {
+        ++evaluated;
+        return int64_t{1};
+    };
+    {
+        LabeledSection("lazy zone {}", value());
+        ProfileAnnotate("lazy", value());
+        ProfileAnnotate("lazy string", std::to_string(value()));
+    }
+    CHECK(evaluated == 0);
 }

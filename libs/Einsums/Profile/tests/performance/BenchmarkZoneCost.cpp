@@ -41,6 +41,18 @@
 
 #include <Einsums/Testing.hpp>
 
+/// An index list printed as fmt::join prints it, through a type the name cache cannot key on.
+struct Unkeyed {
+    std::vector<std::string> const &v;
+};
+
+template <>
+struct fmt::formatter<Unkeyed> : fmt::formatter<std::string_view> {
+    auto format(Unkeyed const &u, fmt::format_context &ctx) const -> fmt::format_context::iterator {
+        return fmt::format_to(ctx.out(), "{}", fmt::join(u.v, ","));
+    }
+};
+
 using namespace einsums;
 namespace prof = einsums::profile;
 
@@ -132,13 +144,41 @@ TEST_CASE("Bench ZoneCost: one zone, whole and in pieces", "[Profile][ZoneCost][
         // The shape cg::einsum opens on every call: three joined index lists, formatted and
         // interned per entry.
         std::vector<std::string> const c{"i", "j"}, a{"i", "k"}, b{"k", "j"};
-        show("zone, formatted like cg::einsum",
+        show("zone, formatted, fmt::join (cached per site)",
              per_op([&](int) { LabeledSection("cg::einsum: {} <- {} ; {}", fmt::join(c, ","), fmt::join(a, ","), fmt::join(b, ",")); }));
+        // The same name through an argument with no value to key on, which is formatted every entry:
+        // what every formatted zone cost before the cache.
+        show("zone, formatted, no key (formats every entry)",
+             per_op([&](int) { LabeledSection("cg::einsum: {} <- {} ; {}", Unkeyed{c}, Unkeyed{a}, Unkeyed{b}); }));
+        // The cached path's pieces, for the three joined index lists above.
+        {
+            std::array<char, prof::site_cache::kNameKeyCapacity> buffer{};
+            std::size_t                                          size = 0;
+            show("  key: build from three joined lists", per_op([&](int) {
+                     prof::site_cache::KeyWriter w{.pos = buffer.data(), .end = buffer.data() + buffer.size()};
+                     prof::site_cache::write_key(w, fmt::join(c, ","));
+                     prof::site_cache::write_key(w, fmt::join(a, ","));
+                     prof::site_cache::write_key(w, fmt::join(b, ","));
+                     size = static_cast<std::size_t>(w.pos - buffer.data());
+                     keep(size);
+                 }));
+            std::string const key(buffer.data(), size);
+            fmt::println("[ZoneCost] that key is {} bytes", key.size());
+            show("  key: hash", per_op([&](int) { keep(prof::site_cache::StringKeyHash{}(key)); }));
+            prof::site_cache::IdCache cache;
+            cache.emplace(key, 7);
+            show("  key: find in the cache (hit)", per_op([&](int) { keep(cache.find(std::string_view(key))->second); }));
+        }
+        show("zone, formatted from an int (cached per site)", per_op([](int i) { LabeledSection("gemv<TransA={}>", (i & 1) != 0); }));
 
         // Annotations attach to the open zone, so open one around the batch.
         LabeledSection("bench annotate host");
         show("annotate, int64", per_op([](int i) { ProfileAnnotate("bench key", static_cast<std::int64_t>(i)); }));
         show("annotate, string literal", per_op([](int) { ProfileAnnotate("bench key", "bench value"); }));
+        show("annotate, string from a conditional",
+             per_op([](int i) { ProfileAnnotate("bench key", (i & 1) != 0 ? "left" : "right side"); }));
+        // The unmacroed call interns key and value on every call, under the string table's lock.
+        show("annotate(), string, interned per call", per_op([](int) { prof::annotate("bench key", "bench value"); }));
     }
 
     // ── The pieces a recorded zone is built from ────────────────────────

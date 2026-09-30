@@ -23,12 +23,17 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 #ifdef EINSUMS_HAVE_TRACY
@@ -424,6 +429,171 @@ struct ZoneSite {
     uint32_t         func_id{0};
 };
 
+namespace site_cache {
+
+template <typename T>
+struct is_join_view : std::false_type {};
+template <typename It, typename Sentinel>
+struct is_join_view<fmt::join_view<It, Sentinel, char>> : std::true_type {};
+
+/// Whether a zone-name argument of type @p T has a value that can stand for it in a cache key.
+template <typename T>
+concept NameKeyScalar = std::is_arithmetic_v<std::remove_cvref_t<T>> || std::is_enum_v<std::remove_cvref_t<T>>;
+template <typename T>
+concept NameKeyString = std::is_convertible_v<T const &, std::string_view>;
+
+template <typename T>
+constexpr bool name_keyable() {
+    using U = std::remove_cvref_t<T>;
+    if constexpr (NameKeyScalar<U> || NameKeyString<U>) {
+        return true;
+    } else if constexpr (is_join_view<U>::value) {
+        // A fmt::join view is read twice on a miss, once for the key and once to format, so only
+        // one over a forward range can stand in the key; a single-pass range is formatted every time.
+        using It = decltype(std::declval<U const &>().begin);
+        using E  = std::remove_cvref_t<std::iter_reference_t<It>>;
+        return std::forward_iterator<It> && (NameKeyScalar<E> || NameKeyString<E>);
+    } else {
+        return false;
+    }
+}
+
+/// Writes a cache key into a fixed buffer: scalars as their bytes, strings length-prefixed, so no
+/// two different argument lists write the same key. A key the buffer cannot hold is marked, and its
+/// zone is named the uncached way.
+///
+/// A plain buffer and memcpy, not std::string::append: three joined index lists are about twenty
+/// pieces, and appending them to a string one call at a time cost 74 ns, most of a zone's entry.
+struct KeyWriter {
+    char *pos;
+    char *end;
+    bool  fits{true};
+
+    void put(void const *src, std::size_t n) noexcept {
+        if (static_cast<std::size_t>(end - pos) < n) {
+            fits = false;
+            return;
+        }
+        std::memcpy(pos, src, n);
+        pos += n;
+    }
+
+    void put_string(std::string_view s) noexcept {
+        auto const n = s.size();
+        put(&n, sizeof(n));
+        put(s.data(), n);
+    }
+};
+
+template <typename T>
+void write_key(KeyWriter &w, T const &v) noexcept {
+    using U = std::remove_cvref_t<T>;
+    if constexpr (NameKeyScalar<U>) {
+        w.put(&v, sizeof(U));
+    } else if constexpr (NameKeyString<U>) {
+        w.put_string(std::string_view(v));
+    } else {
+        w.put_string(std::string_view(v.sep.data(), v.sep.size()));
+        std::size_t count = 0;
+        for (auto it = v.begin; it != v.end; ++it) {
+            write_key(w, *it);
+            ++count;
+        }
+        w.put(&count, sizeof(count));
+    }
+}
+
+struct StringKeyHash {
+    using is_transparent = void;
+    std::size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
+};
+
+/// Interned ids by string, for one call site on one thread. No lock: only its thread touches it.
+using IdCache = std::unordered_map<std::string, uint32_t, StringKeyHash, std::equal_to<>>;
+
+/// The interned id of @p s through @p cache, interning (one lock) only the first time.
+inline uint32_t cached_id(IdCache &cache, std::string_view s) {
+    if (auto it = cache.find(s); it != cache.end()) {
+        return it->second;
+    }
+    uint32_t const id = Profiler::instance().string_table().intern(s);
+    cache.emplace(std::string(s), id);
+    return id;
+}
+
+/// Room for one zone-name key; see KeyWriter.
+inline constexpr std::size_t kNameKeyCapacity = 1024;
+
+/// One call site's zone names on one thread: the key being built, the most recent key and its id,
+/// and every id the site has named.
+struct NameSiteCache {
+    char        key[kNameKeyCapacity]; // NOLINT(modernize-avoid-c-arrays)
+    std::string last_key;
+    uint32_t    last_id{std::numeric_limits<uint32_t>::max()};
+    IdCache     ids;
+};
+
+/// The interned id of the zone name @p format_name makes from @p args, cached per call site and
+/// thread. Each call site's formatting lambda is its own type, so each gets its own cache.
+///
+/// The most recent key is checked first with one comparison: a loop running the same contraction
+/// takes that path every time, and skips the hash and the map.
+template <typename FormatName, typename... Args>
+uint32_t zone_name_id(FormatName const &format_name, Args &&...args) {
+    // Forwarded, because fmt refuses a view (a fmt::join) passed as an lvalue. A view read for the key
+    // is only iterators, so it can still be formatted afterwards.
+    auto const intern_formatted = [&] { return Profiler::instance().string_table().intern(format_name(std::forward<Args>(args)...)); };
+    if constexpr ((name_keyable<Args>() && ...)) {
+        thread_local NameSiteCache cache;
+        KeyWriter                  w{.pos = cache.key, .end = cache.key + kNameKeyCapacity};
+        (write_key(w, args), ...);
+        if (!w.fits) [[unlikely]] {
+            return intern_formatted();
+        }
+        std::string_view const key(cache.key, static_cast<std::size_t>(w.pos - cache.key));
+        if (key == cache.last_key && cache.last_id != std::numeric_limits<uint32_t>::max()) {
+            return cache.last_id;
+        }
+        uint32_t id;
+        if (auto it = cache.ids.find(key); it != cache.ids.end()) {
+            id = it->second;
+        } else {
+            id = intern_formatted();
+            cache.ids.emplace(std::string(key), id);
+        }
+        cache.last_key.assign(key);
+        cache.last_id = id;
+        return id;
+    } else {
+        // An argument with no value to key on: format every time.
+        return intern_formatted();
+    }
+}
+
+/// Sentinel for an id not interned yet.
+inline constexpr uint32_t kNotInterned = std::numeric_limits<uint32_t>::max();
+
+/// One ProfileAnnotate call site: its literal key, interned on first use and then read with one
+/// relaxed load. Two threads racing to fill the slot intern the same string and store the same id.
+///
+/// Only the key is held here. A value that looks like a literal need not be one: a conditional
+/// between two literals of the same length, ``ta == 't' ? "T" : "N"``, has the same type as a
+/// single literal, and caching it here would pin the site to whichever value came first.
+struct AnnotateSite {
+    std::atomic<uint32_t> key_id{kNotInterned};
+
+    static uint32_t fill(std::atomic<uint32_t> &slot, std::string_view s) {
+        uint32_t id = slot.load(std::memory_order_relaxed);
+        if (id == kNotInterned) [[unlikely]] {
+            id = Profiler::instance().string_table().intern(s);
+            slot.store(id, std::memory_order_relaxed);
+        }
+        return id;
+    }
+};
+
+} // namespace site_cache
+
 struct ScopedZone {
     /**
      * @brief Enter a zone at @p site named by @p name (plus any format arguments).
@@ -461,6 +631,34 @@ struct ScopedZone {
         }
         std::string const name = make_name();
         prof.push_interned(prof.string_table().intern(name), site.file_id, site.func_id, site.line, name, site.file, site.func);
+    }
+
+    /**
+     * @brief Enter a zone whose name is formatted from arguments, with the name cached per call site.
+     *
+     * @p apply_args calls what it is given with the zone's arguments, so they are evaluated only
+     * when recording is on. @p format_name formats them; it is called only when this thread has not
+     * seen these argument values at this site before, so a zone named after its operands pays for
+     * fmt::format and the string table's lock once per distinct name instead of on every entry.
+     * Numbers, strings and fmt::join views over forward ranges of either can key the cache; a zone
+     * with any other argument is formatted every time.
+     */
+    template <typename ApplyArgs, typename FormatName>
+        requires std::is_class_v<std::remove_cvref_t<ApplyArgs>> && std::is_class_v<FormatName>
+    ScopedZone(ZoneSite const &site, ApplyArgs &&apply_args, FormatName const &format_name) {
+        auto &prof = Profiler::instance();
+        if (!prof.enabled()) {
+            return;
+        }
+        std::forward<ApplyArgs>(apply_args)([&](auto &&...args) {
+            uint32_t const id = site_cache::zone_name_id(format_name, std::forward<decltype(args)>(args)...);
+#    ifdef EINSUMS_HAVE_TRACY
+            std::string const name = prof.string_table().get(id);
+#    else
+            std::string_view const name{};
+#    endif
+            prof.push_interned(id, site.file_id, site.func_id, site.line, name, site.file, site.func);
+        });
     }
 
     /// Enter a zone whose name the CALLER interned, at a fixed call site.
@@ -595,6 +793,36 @@ inline void annotate_interned(uint32_t key_id, double value) {
     prof.emit_event(evt);
 }
 
+namespace site_cache {
+
+/**
+ * @brief The body of @ref ProfileAnnotate: annotate the open zone from call site @p site.
+ *
+ * The key is a literal, so its id is the site's, interned once. A string value is looked up in a
+ * cache of this site's own on this thread, so it takes the string table's lock once per distinct
+ * value. Numbers need no interning. @p get_value produces the value, and is called only when
+ * recording is on.
+ */
+template <std::size_t N, typename GetValue>
+void annotate_at(AnnotateSite &site, char const (&key)[N], GetValue &&get_value) {
+    auto &prof = Profiler::instance();
+    if (!prof.enabled()) {
+        return;
+    }
+    uint32_t const key_id = AnnotateSite::fill(site.key_id, key);
+    using V               = decltype(std::forward<GetValue>(get_value)());
+    if constexpr (std::is_convertible_v<V, std::string_view>) {
+        thread_local IdCache cache;
+        annotate_interned(key_id, cached_id(cache, std::string_view(get_value())));
+    } else if constexpr (std::is_floating_point_v<std::remove_cvref_t<V>>) {
+        annotate_interned(key_id, static_cast<double>(get_value()));
+    } else {
+        annotate_interned(key_id, static_cast<int64_t>(get_value()));
+    }
+}
+
+} // namespace site_cache
+
 /// Attach a vector of dimension sizes as annotations (dim.0, dim.1, ...).
 inline void annotate_dims(std::string_view key, std::span<int64_t const> dims) {
     for (size_t i = 0; i < dims.size(); ++i) {
@@ -713,10 +941,11 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 // use @ref LabeledSectionRuntime, which cannot cache it.
 //
 // Expands to TWO declarations, so use it at statement scope.
-#    define LabeledSection(name_format, ...)                                                                                               \
-        static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};        \
-        ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(                                                 \
-            EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__(, [&] { return fmt::format(name_format, __VA_ARGS__); }))
+#    define LabeledSection(name_format, ...)                                                                                                \
+        static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};         \
+        ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__( \
+            , [&](auto &&_zone_f) { return _zone_f(__VA_ARGS__); },                                                                         \
+            [](auto &&..._zone_a) { return fmt::format(name_format, std::forward<decltype(_zone_a)>(_zone_a)...); }))
 
 /// A zone whose name is only known at runtime. The name is interned on every
 /// entry, which is one lock; prefer @ref LabeledSection wherever the label can be
@@ -729,15 +958,23 @@ APIARY_EXPOSE APIARY_MODULE("profile") inline uint64_t total_pop_count() {
 #    if defined(EINSUMS_HAVE_PROFILER_INTERNAL)
 #        define LabeledSectionInternal(name_format, ...)                                                                                   \
             static ::einsums::profile::ZoneSite const EINSUMS_PP_CAT(_zone_site_, __LINE__){name_format, __FILE__, __LINE__, __func__};    \
-            ::einsums::profile::ScopedZone const      EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(                                             \
-                EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__(, [&] { return fmt::format(name_format, __VA_ARGS__); }))
+            ::einsums::profile::ScopedZone const EINSUMS_PP_CAT(_scoped_zone_, __LINE__)(EINSUMS_PP_CAT(_zone_site_, __LINE__) __VA_OPT__( \
+                , [&](auto &&_zone_f) { return _zone_f(__VA_ARGS__); },                                                                    \
+                [](auto &&..._zone_a) { return fmt::format(name_format, std::forward<decltype(_zone_a)>(_zone_a)...); }))
 #        define LabeledSectionInternal0() LabeledSectionInternal(__func__)
 #    else
 #        define LabeledSectionInternal(...)
 #        define LabeledSectionInternal0()
 #    endif
 
-#    define ProfileAnnotate(key, value)    ::einsums::profile::annotate(key, value)
+/// Annotate the open zone. The key must be a plain string literal, not an expression that picks
+/// one: its id is interned once per call site and reused (see site_cache::annotate_at). The value may
+/// be anything the annotation overloads take, and is evaluated only when recording.
+#    define ProfileAnnotate(key, value)                                                                                                    \
+        [&]() {                                                                                                                            \
+            static ::einsums::profile::site_cache::AnnotateSite _annotate_site;                                                            \
+            ::einsums::profile::site_cache::annotate_at(_annotate_site, key, [&]() -> decltype(auto) { return (value); });                 \
+        }()
 #    define ProfileAnnotateDims(key, dims) ::einsums::profile::annotate_dims(key, dims)
 #    define ProfileMemAlloc(bytes)         ::einsums::profile::mem_alloc(static_cast<int64_t>(bytes))
 #    define ProfileMemFree(bytes)          ::einsums::profile::mem_free(static_cast<int64_t>(bytes))
