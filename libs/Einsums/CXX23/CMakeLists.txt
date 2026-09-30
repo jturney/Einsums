@@ -6,9 +6,6 @@
 set(CXX23Headers
     Einsums/CXX23.hpp
     Einsums/CXX23/Expected.hpp
-    Einsums/CXX23/FlatMap.hpp
-    Einsums/CXX23/FlatSet.hpp
-    Einsums/CXX23/Unreachable.hpp
 )
 
 # Header-only module — no source files
