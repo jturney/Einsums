@@ -500,9 +500,7 @@ TEMPLATE_LIST_TEST_CASE("Materialization - the storage invariants hold across co
         cg::einsum("ik;kj->ij", 1.0, &R, 1.0, W, A);
     }
 
-    cg::PassManager pm;
-    pm.add<cg::passes::Materialization>();
-    REQUIRE(pm.run(g));
+    REQUIRE(g.apply<cg::passes::Materialization>().first);
 
     // Both invariants, on a graph where every deferred tensor is genuinely used.
     CHECK(cg::passes::duplicate_materializations(g).empty());

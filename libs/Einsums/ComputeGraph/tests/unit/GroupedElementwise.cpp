@@ -11,6 +11,7 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <cstddef>
 #include <cstring>
@@ -34,11 +35,7 @@ RuntimeTensor<double> randt(std::string const &name, std::vector<std::size_t> co
     return out;
 }
 
-std::vector<unsigned char> bytes_of(RuntimeTensor<double> const &t) {
-    std::vector<unsigned char> out(t.size() * sizeof(double));
-    std::memcpy(out.data(), t.data(), out.size());
-    return out;
-}
+using einsums::testing::bytes_of;
 
 /// Member extents chosen to span the cases that break a grouped form: several
 /// sizes so no member's shape is the run's, and a zero extent so an empty

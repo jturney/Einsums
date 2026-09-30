@@ -11,6 +11,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <cmath>
 #include <complex>
@@ -41,10 +42,7 @@ T pf(double re, double im) {
 template <typename GotType, typename WantType>
 void require_close(GotType const &got, WantType const &want) {
     using T = typename GotType::ValueType;
-    REQUIRE(got.size() == want.size());
-    for (size_t i = 0; i < got.size(); i++) {
-        REQUIRE(std::abs(got.data()[i] - want.data()[i]) <= tol<T>() * (1.0 + std::abs(want.data()[i])));
-    }
+    einsums::testing::require_tensors_close(got, want, {.rtol = tol<T>(), .atol = tol<T>()});
 }
 
 } // namespace

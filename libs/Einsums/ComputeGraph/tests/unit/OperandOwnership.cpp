@@ -28,6 +28,7 @@
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <memory>
 #include <vector>
@@ -60,10 +61,7 @@ RuntimeTensor<double> zeros(std::string name, size_t rows, size_t cols) {
 }
 
 void require_close(RuntimeTensor<double> const &got, RuntimeTensor<double> const &ref) {
-    REQUIRE(got.size() == ref.size());
-    for (size_t i = 0; i < got.size(); i++) {
-        REQUIRE_THAT(got.data()[i], Catch::Matchers::WithinAbs(ref.data()[i], kTol));
-    }
+    einsums::testing::require_tensors_close(got, ref, {.rtol = 0, .atol = kTol});
 }
 
 } // namespace

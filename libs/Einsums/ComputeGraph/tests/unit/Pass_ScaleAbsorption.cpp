@@ -260,9 +260,7 @@ TEMPLATE_LIST_TEST_CASE("ScaleAbsorption - folds scale into a sole einsum operan
 
     // Applied through a PassManager so the program-order validator runs; the
     // fold must declare its compensated read so the validator does not throw.
-    cg::PassManager pm;
-    pm.add<cg::passes::ScaleAbsorption>();
-    REQUIRE(graph.apply(pm));
+    REQUIRE(graph.apply<cg::passes::ScaleAbsorption>().first);
 
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++) {
@@ -367,9 +365,7 @@ TEMPLATE_LIST_TEST_CASE("ScaleAbsorption - folds into every reader of the scaled
         cg::einsum("ik;kj->ij", 0.0, &C, 1.0, A, B); // closes C's live range
     }
 
-    cg::PassManager pm;
-    pm.add<cg::passes::ScaleAbsorption>();
-    REQUIRE(graph.apply(pm));
+    REQUIRE(graph.apply<cg::passes::ScaleAbsorption>().first);
 
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++) {
@@ -402,9 +398,7 @@ TEMPLATE_LIST_TEST_CASE("ScaleAbsorption - folds into an axpby source prefactor"
         cg::einsum("ik;kj->ij", 0.0, &X, 1.0, A, B); // closes X's live range
     }
 
-    cg::PassManager pm;
-    pm.add<cg::passes::ScaleAbsorption>();
-    REQUIRE(graph.apply(pm));
+    REQUIRE(graph.apply<cg::passes::ScaleAbsorption>().first);
 
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++)
@@ -434,9 +428,7 @@ TEMPLATE_LIST_TEST_CASE("ScaleAbsorption - folds into an accumulating einsum des
         cg::einsum("ik;kj->ij", 1.0, &C, 1.0, A, B); // accumulates into C
     }
 
-    cg::PassManager pm;
-    pm.add<cg::passes::ScaleAbsorption>();
-    REQUIRE(graph.apply(pm));
+    REQUIRE(graph.apply<cg::passes::ScaleAbsorption>().first);
 
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++)
@@ -464,9 +456,7 @@ TEMPLATE_LIST_TEST_CASE("ScaleAbsorption - folds into an accumulating axpby dest
         cg::axpby(2.0, X, 5.0, &Y);
     }
 
-    cg::PassManager pm;
-    pm.add<cg::passes::ScaleAbsorption>();
-    REQUIRE(graph.apply(pm));
+    REQUIRE(graph.apply<cg::passes::ScaleAbsorption>().first);
 
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++)

@@ -440,9 +440,7 @@ TEST_CASE("TransferInsertion - loop seam: no boundary transfers when the body op
 
         // Drive through a PassManager so the body-level run actually executes
         // (that is where a spurious seam transfer would appear).
-        cg::PassManager pm;
-        pm.add<cg::passes::TransferInsertion>();
-        bool const modified = graph.apply(pm);
+        bool const modified = graph.apply<cg::passes::TransferInsertion>().first;
 
         CHECK_FALSE(modified);
 
@@ -481,15 +479,11 @@ TEST_CASE("TransferInsertion - loop seam: re-running does not duplicate the body
 
         // Only PassManager::apply recurses into loop bodies (apply<Pass>() does
         // not), so drive the pass through a PassManager here.
-        cg::PassManager pm1;
-        pm1.add<cg::passes::TransferInsertion>();
-        graph.apply(pm1);
+        graph.apply<cg::passes::TransferInsertion>();
         CHECK(count_transfer_by_label(body.nodes(), cg::OpKind::HostToDevice, "H2D(X)") == 1);
 
         // Second run: residency bookkeeping prevents a duplicate H2D for X.
-        cg::PassManager pm2;
-        pm2.add<cg::passes::TransferInsertion>();
-        graph.apply(pm2);
+        graph.apply<cg::passes::TransferInsertion>();
         CHECK(count_transfer_by_label(body.nodes(), cg::OpKind::HostToDevice, "H2D(X)") == 1);
     }
 }

@@ -21,6 +21,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -54,13 +55,7 @@ void require_well_formed(cg::Graph const &graph) {
 /// Every element of @p got within a relative tolerance of @p want.
 template <typename TensorType>
 void require_close(TensorType const &got, TensorType const &want) {
-    REQUIRE(got.size() == want.size());
-    double worst = 0.0;
-    for (std::size_t n = 0; n < got.size(); ++n) {
-        double const scale = std::max(1.0, std::abs(want.data()[n]));
-        worst              = std::max(worst, std::abs(got.data()[n] - want.data()[n]) / scale);
-    }
-    REQUIRE(worst < 1.0e-12);
+    einsums::testing::require_tensors_close(got, want, {.rtol = 1.0e-12, .atol = 1.0e-12});
 }
 
 size_t count_occurrences(std::string const &haystack, std::string const &needle) {
@@ -116,9 +111,7 @@ RuntimeTensor<double> random_runtime(std::string const &name, std::size_t rows, 
 
 /// Allocate what the graph deferred, which a bind leaves to the resource phase.
 void materialize(cg::Graph &graph) {
-    cg::PassManager pm;
-    pm.add<cg::passes::Materialization>();
-    graph.apply(pm);
+    graph.apply<cg::passes::Materialization>();
 }
 
 } // namespace

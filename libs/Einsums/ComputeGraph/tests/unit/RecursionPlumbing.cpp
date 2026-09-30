@@ -162,10 +162,8 @@ TEST_CASE("PassManager recurses for opt-in passes", "[ComputeGraph][Recursion][P
     auto g = build_loop_and_conditional(A, B, C);
 
     std::vector<TraceEntry> log;
-    cg::PassManager         pm;
-    pm.add<TracingPass>(&log, /*recurse=*/true);
 
-    pm.run(g);
+    g.apply<TracingPass>(&log, /*recurse=*/true);
 
     // Expect: parent, then each direct child of parent, order matches
     // node iteration. The exact order in build_loop_and_conditional is:
@@ -185,10 +183,8 @@ TEST_CASE("PassManager does NOT recurse for opt-out passes", "[ComputeGraph][Rec
     auto g = build_loop_and_conditional(A, B, C);
 
     std::vector<TraceEntry> log;
-    cg::PassManager         pm;
-    pm.add<TracingPass>(&log, /*recurse=*/false);
 
-    pm.run(g);
+    g.apply<TracingPass>(&log, /*recurse=*/false);
 
     REQUIRE(log.size() == 1);
     CHECK(log[0].graph_name == "parent");
@@ -206,10 +202,8 @@ TEST_CASE("PassManager recurses into nested loops for opt-in passes", "[ComputeG
     }
 
     std::vector<TraceEntry> log;
-    cg::PassManager         pm;
-    pm.add<TracingPass>(&log, /*recurse=*/true);
 
-    pm.run(g);
+    g.apply<TracingPass>(&log, /*recurse=*/true);
 
     REQUIRE(log.size() == 3);
     CHECK(log[0].graph_name == "outer");
@@ -328,9 +322,7 @@ TEST_CASE("DeadNodeElimination transforms a loop body via its own descent", "[Co
     }
     size_t const before = body.num_nodes();
 
-    cg::PassManager pm;
-    pm.add<cg::passes::DeadNodeElimination>();
-    bool const modified = pm.run(g);
+    bool const modified = g.apply<cg::passes::DeadNodeElimination>().first;
 
     CHECK(modified);
     CHECK(body.num_nodes() == before - 1); // dead node removed inside the body
@@ -354,9 +346,7 @@ TEST_CASE("CSE does NOT recurse into a loop body (deliberate opt-out)", "[Comput
     }
     REQUIRE(body.num_nodes() == 2);
 
-    cg::PassManager pm;
-    pm.add<cg::passes::CSE>();
-    pm.run(g);
+    g.apply<cg::passes::CSE>();
 
     CHECK(body.num_nodes() == 2); // body left untouched
 }

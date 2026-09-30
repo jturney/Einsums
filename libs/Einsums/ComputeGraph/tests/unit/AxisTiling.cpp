@@ -143,9 +143,7 @@ void capture_with_occupied_exchange(cg::Graph &graph, Problem &problem) {
 std::shared_ptr<cg::passes::AxisTiling> decide(cg::Graph &graph, std::int64_t cap) {
     auto tiling = std::make_shared<cg::passes::AxisTiling>();
     tiling->set_memory_cap(cap);
-    cg::PassManager manager;
-    manager.add(tiling);
-    graph.apply(manager);
+    cg::apply_single_pass(*tiling, graph);
     return tiling;
 }
 

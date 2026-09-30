@@ -189,10 +189,8 @@ TEST_CASE("MultiTermFactorization - the shared product neither term asked for", 
     cg::Graph graph("share");
     capture_chains(graph, t);
 
-    auto            pass = searching_pass();
-    cg::PassManager pm;
-    pm.add(pass);
-    REQUIRE(pm.run(graph));
+    auto pass = searching_pass();
+    REQUIRE(cg::apply_single_pass(*pass, graph));
 
     // Both author-named intermediates dissolve, because the bracketing they encode is an artifact
     // of how the equations were written down rather than of what has to be computed.
@@ -253,11 +251,9 @@ TEST_CASE("MultiTermFactorization - the same graph gets the same plan", "[Comput
         cg::Graph graph("determinism");
         capture_chains(graph, t);
 
-        auto            pass = searching_pass();
-        cg::PassManager pm;
-        pm.add(pass);
+        auto pass = searching_pass();
         pass->set_dump(true);
-        REQUIRE(pm.run(graph));
+        REQUIRE(cg::apply_single_pass(*pass, graph));
 
         std::vector<std::string> labels;
         for (auto const &node : graph.nodes()) {
@@ -571,10 +567,8 @@ TEST_CASE("MultiTermFactorization - a graph with nothing to share is left alone"
     }
 
     // Two two-factor terms: nothing to re-bracket and no pair that is not the whole term.
-    auto            pass = searching_pass();
-    cg::PassManager pm;
-    pm.add(pass);
-    CHECK_FALSE(pm.run(graph));
+    auto pass = searching_pass();
+    CHECK_FALSE(cg::apply_single_pass(*pass, graph));
     CHECK(pass->num_shared() == 0);
     CHECK(pass->num_rebracketed() == 0);
 }

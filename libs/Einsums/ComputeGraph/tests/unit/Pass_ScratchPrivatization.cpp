@@ -40,9 +40,7 @@ struct Operands {
 std::shared_ptr<cg::passes::ScratchPrivatization> run(cg::Graph &graph, bool require_executor) {
     auto pass = std::make_shared<cg::passes::ScratchPrivatization>();
     pass->set_require_executor(require_executor);
-    cg::PassManager manager;
-    manager.add(pass);
-    graph.apply(manager);
+    cg::apply_single_pass(*pass, graph);
     return pass;
 }
 

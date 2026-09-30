@@ -308,9 +308,7 @@ TEST_CASE("SpacePropagation - a loop body intermediate is annotated too", "[Comp
     body.annotate_spaces(A, {spaces.occ, spaces.virt});
     body.annotate_spaces(B, {spaces.virt, spaces.aux});
 
-    cg::PassManager pm;
-    pm.add<cg::passes::SpacePropagation>();
-    pm.run(graph);
+    graph.apply<cg::passes::SpacePropagation>();
 
     CHECK(spaces_of(body, C) == std::vector<cg::SpaceId>{spaces.occ, spaces.aux});
 }

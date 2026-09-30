@@ -23,10 +23,8 @@ namespace cg = einsums::compute_graph;
 namespace {
 
 std::shared_ptr<cg::passes::AntisymmetryInference> infer(cg::Graph &graph) {
-    auto            pass = std::make_shared<cg::passes::AntisymmetryInference>();
-    cg::PassManager manager;
-    manager.add(pass);
-    graph.apply(manager);
+    auto pass = std::make_shared<cg::passes::AntisymmetryInference>();
+    cg::apply_single_pass(*pass, graph);
     return pass;
 }
 
@@ -198,10 +196,8 @@ TEST_CASE("AntisymmetryInference - R3 declines when the other operand sees the l
         cg::permute("i,j,k <- P(i/jk) i,j,k", 0.0, &W, 1.0, Xc);
     }
 
-    auto            detection = std::make_shared<cg::passes::AntisymmetryDetection>();
-    cg::PassManager pre;
-    pre.add(detection);
-    graph.apply(pre);
+    auto detection = std::make_shared<cg::passes::AntisymmetryDetection>();
+    cg::apply_single_pass(*detection, graph);
 
     auto const pass = infer(graph);
     CHECK(hint_on(graph, "Xc") == nullptr);

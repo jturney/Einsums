@@ -126,9 +126,7 @@ TEST_CASE("ThcFit - a five-factor grid chain replaces the tensor and the contrac
     // fires on a rewrite that is perfectly correct. The chain and cone cases in
     // Factorization.cpp keep it on, over programs nothing annotates, which is where it means
     // something.
-    cg::PassManager factorization_manager;
-    factorization_manager.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE(graph.apply(factorization_manager));
+    REQUIRE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 1);
 
     // Six leaves, five binary contractions, and none of them a rank-four tensor: rebuilding the
@@ -197,10 +195,8 @@ TEST_CASE("ThcFit - a tensor whose basis the grid does not span is declined", "[
     cg::FactorizationRegistry registry;
     registry.add(std::make_shared<cg::ThcFactorization>("eri", problem.three_index, problem.collocation, 1e-8));
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
 
-    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE_FALSE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 0);
     REQUIRE(graph.approximations().empty());
     bool named_the_basis = false;
@@ -238,9 +234,7 @@ TEST_CASE("ThcFit - a fitted graph saves, loads, rebinds and refits", "[ComputeG
     cg::FactorizationRegistry registry;
     registry.add(std::make_shared<cg::ThcFactorization>("eri", problem.three_index, problem.collocation, 1e-8));
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE(graph.apply(pm));
+    REQUIRE(cg::apply_single_pass(factorization, graph));
 
     // Saved BEFORE any resource pass, which is the documented flow: a Materialize node carries
     // an allocating closure and allocation is re-derived on load.

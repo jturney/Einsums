@@ -11,6 +11,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <complex>
 #include <limits>
@@ -35,12 +36,7 @@ constexpr double tol() {
 
 template <typename T, size_t Rank>
 void require_close(Tensor<T, Rank> const &got, Tensor<T, Rank> const &ref) {
-    REQUIRE(got.size() == ref.size());
-    T const *g = got.data();
-    T const *r = ref.data();
-    for (size_t i = 0; i < got.size(); i++) {
-        REQUIRE(std::abs(g[i] - r[i]) <= tol<T>() * (1.0 + std::abs(r[i])));
-    }
+    einsums::testing::require_tensors_close(got, ref, {.rtol = tol<T>(), .atol = tol<T>()});
 }
 
 template <typename T>

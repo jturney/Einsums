@@ -35,6 +35,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <fmt/format.h>
 
@@ -63,14 +64,7 @@ namespace cg = einsums::compute_graph;
 
 namespace {
 
-/// A byte-for-byte snapshot of an owning tensor's storage.
-template <typename TensorType>
-std::vector<unsigned char> bytes_of(TensorType const &t) {
-    using T = typename TensorType::ValueType;
-    std::vector<unsigned char> out(t.size() * sizeof(T));
-    std::memcpy(out.data(), t.data(), out.size());
-    return out;
-}
+using einsums::testing::bytes_of;
 
 template <typename T>
 std::vector<unsigned char> bytes_of_scalar(T const &value) {
@@ -691,9 +685,7 @@ TEMPLATE_LIST_TEST_CASE("SaveLoad - a deferred intermediate comes back deferred 
     }
     REQUIRE_NOTHROW(loaded.bind("amp", amp2, "out", out2));
 
-    cg::PassManager pm;
-    pm.add<cg::passes::Materialization>();
-    loaded.apply(pm);
+    loaded.apply<cg::passes::Materialization>();
     loaded.execute();
 
     // The reference: capture the same thing at the new size and compare bitwise, which is
@@ -706,9 +698,7 @@ TEMPLATE_LIST_TEST_CASE("SaveLoad - a deferred intermediate comes back deferred 
         cg::einsum("ia;ia->ia", &fresh_tmp, amp2, amp2);
         cg::einsum("ia;ja->ij", &ref, fresh_tmp, amp2);
     }
-    cg::PassManager fresh_pm;
-    fresh_pm.add<cg::passes::Materialization>();
-    fresh.apply(fresh_pm);
+    fresh.apply<cg::passes::Materialization>();
     fresh.execute();
 
     REQUIRE(bytes_of(out2) == bytes_of(ref));

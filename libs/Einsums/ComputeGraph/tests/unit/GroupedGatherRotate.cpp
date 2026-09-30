@@ -12,6 +12,7 @@
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <cstddef>
 #include <cstring>
@@ -55,11 +56,7 @@ void oracle(RuntimeTensor<double> &C, double const *src, std::size_t sq, std::si
     }
 }
 
-std::vector<unsigned char> bytes_of(RuntimeTensor<double> const &t) {
-    std::vector<unsigned char> out(t.size() * sizeof(double));
-    std::memcpy(out.data(), t.data(), out.size());
-    return out;
-}
+using einsums::testing::bytes_of;
 
 } // namespace
 

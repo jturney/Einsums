@@ -206,9 +206,7 @@ TEST_CASE("SymmetryPropagation - infers on a self-contraction inside a loop body
         cg::einsum("ik;jk->ij", &S, A, A); // S = A·Aᵀ → symmetric
     }
 
-    cg::PassManager pm;
-    pm.add<cg::passes::SymmetryPropagation>();
-    pm.run(g);
+    g.apply<cg::passes::SymmetryPropagation>();
 
     REQUIRE(S.has_symmetry());
     REQUIRE(S.symmetry()->ops[0].sign == +1);
@@ -230,9 +228,7 @@ TEST_CASE("SymmetryPropagation - does NOT tag a multi-writer body tensor", "[Com
         cg::axpy(1.0, B, &S);              // S += B (destroys symmetry), 2nd writer
     }
 
-    cg::PassManager pm;
-    pm.add<cg::passes::SymmetryPropagation>();
-    pm.run(g);
+    g.apply<cg::passes::SymmetryPropagation>();
 
     CHECK_FALSE(S.has_symmetry()); // two writers → not tagged
 }
@@ -257,9 +253,7 @@ TEST_CASE("SymmetryPropagation - does NOT tag a tensor written by a nested loop"
         cg::axpy(1.0, B, &S); // nested loop writes S non-symmetrically
     }
 
-    cg::PassManager pm;
-    pm.add<cg::passes::SymmetryPropagation>();
-    pm.run(g);
+    g.apply<cg::passes::SymmetryPropagation>();
 
     CHECK_FALSE(S.has_symmetry()); // referenced by a child sub-graph → not tagged
 }

@@ -256,9 +256,7 @@ TEMPLATE_LIST_TEST_CASE("Factorization - a tagged operand is replaced by its fac
     registry.add(std::make_shared<ExactLowRankT<T>>(left, right));
 
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE(graph.apply(pm));
+    REQUIRE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 1);
 
     // WHICH RUNG said the decomposed form is cheaper. Nothing here is annotated, so every
@@ -317,10 +315,8 @@ TEST_CASE("Factorization - a split that is not cheaper is declined", "[ComputeGr
     registry.add(std::make_shared<ExactLowRank>(left, right));
 
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
 
-    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE_FALSE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 0);
     REQUIRE(graph.approximations().empty());
     REQUIRE(std::ranges::none_of(graph.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::Setup; }));
@@ -405,10 +401,8 @@ TEST_CASE("Factorization - a symbolic axis makes the bound-extent veto abstain",
     registry.add(std::make_shared<ExactLowRank>(left, right));
 
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
 
-    REQUIRE(graph.apply(pm));
+    REQUIRE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 1);
 
     // Specifically NOT declined for its extents, which is the whole difference from the case
@@ -455,10 +449,8 @@ TEST_CASE("Factorization - a tagged tensor the graph writes is declined", "[Comp
     registry.add(std::make_shared<ExactLowRank>(left, right));
 
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
 
-    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE_FALSE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 0);
 
     bool named_the_writer = false;
@@ -509,10 +501,8 @@ TEST_CASE("Factorization - an accuracy budget the split cannot fit refuses it", 
     graph.set_accuracy_budget(cg::ApproximationEffect::NormRelative, 1e-6);
 
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
 
-    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE_FALSE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 0);
     REQUIRE(graph.approximations().empty());
     REQUIRE(std::ranges::none_of(graph.nodes(), [](cg::Node const &node) { return node.kind == cg::OpKind::Setup; }));
@@ -520,9 +510,7 @@ TEST_CASE("Factorization - an accuracy budget the split cannot fit refuses it", 
     // Under a budget it fits inside, the same pass applies.
     graph.set_accuracy_budget(cg::ApproximationEffect::NormRelative, 1e-1);
     cg::passes::FactorizationPass affordable(registry);
-    cg::PassManager               pm2;
-    pm2.add(std::shared_ptr<cg::OptimizerPass>(&affordable, [](cg::OptimizerPass *) {}));
-    REQUIRE(graph.apply(pm2));
+    REQUIRE(cg::apply_single_pass(affordable, graph));
     REQUIRE(affordable.num_factorized() == 1);
 }
 
@@ -562,9 +550,7 @@ TEMPLATE_LIST_TEST_CASE("Factorization - the fitting runs once and the replays s
     cg::FactorizationRegistry registry;
     registry.add(std::make_shared<ExactLowRankT<T>>(left, right));
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE(graph.apply(pm));
+    REQUIRE(cg::apply_single_pass(factorization, graph));
 
     auto defaults = cg::PassManager::create_default();
     graph.apply(defaults);
@@ -1212,9 +1198,7 @@ TEMPLATE_LIST_TEST_CASE("Factorization - a three-factor chain is substituted and
     // from the algebra alone. Checking it against the nodes the lowering emitted is what makes
     // either derivation evidence.
     factorization.set_verify_costs(true);
-    cg::PassManager pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE(graph.apply(pm));
+    REQUIRE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 1);
     REQUIRE(factorization.cost_mismatches().empty());
 
@@ -1289,10 +1273,8 @@ TEST_CASE("Factorization - one factor is a rename rather than a factorization, a
     cg::FactorizationRegistry registry;
     registry.add(std::make_shared<OneFactor>());
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
 
-    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE_FALSE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 0);
     REQUIRE(graph.approximations().empty());
 
@@ -1361,9 +1343,7 @@ TEST_CASE("Factorization - the cone is re-associated, not just the tagged contra
 
     cg::passes::FactorizationPass factorization(registry);
     factorization.set_verify_costs(true);
-    cg::PassManager pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE(graph.apply(pm));
+    REQUIRE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 1);
     REQUIRE(factorization.cost_mismatches().empty());
 
@@ -1594,9 +1574,7 @@ TEST_CASE("Factorization - two tagged tensors of one cone are substituted in one
     // where the node built from that intermediate names it anonymously, and the check fires on a
     // rewrite whose two derivations hold the same monomials.
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    bool const fired = graph.apply(pm);
+    bool const                    fired = cg::apply_single_pass(factorization, graph);
     for (auto const &[reason, count] : factorization.skip_reasons()) {
         UNSCOPED_INFO(fmt::format("{} x{}", reason, count));
     }
@@ -1658,9 +1636,7 @@ TEST_CASE("Factorization - a fit half on one grid and half on another has no gri
     registry.add(fixture.amplitude_provider("grid", "other_grid"));
 
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE_FALSE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 0);
 
     bool declined = false;
@@ -1694,9 +1670,7 @@ TEST_CASE("Factorization - more provider combinations than the pass will cost is
     }
 
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE_FALSE(cg::apply_single_pass(factorization, graph));
 
     bool declined = false;
     for (auto const &[reason, count] : factorization.skip_reasons()) {
@@ -1780,9 +1754,7 @@ TEST_CASE("Factorization - a rank-reduced amplitude reaches a chain against a fi
 
     cg::passes::FactorizationPass factorization(registry);
     factorization.set_dump(true);
-    cg::PassManager pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    bool const fired = graph.apply(pm);
+    bool const fired = cg::apply_single_pass(factorization, graph);
     for (auto const &[reason, count] : factorization.skip_reasons()) {
         UNSCOPED_INFO(fmt::format("{} x{}", reason, count));
     }

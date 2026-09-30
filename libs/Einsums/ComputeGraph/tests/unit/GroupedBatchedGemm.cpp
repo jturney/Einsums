@@ -20,6 +20,7 @@
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <Einsums/Testing.hpp>
 
@@ -63,11 +64,8 @@ std::vector<Tensor<T, 2>> reference(std::vector<Member<T>> const &batch, T alpha
 
 template <typename T>
 void require_close(Tensor<T, 2> const &got, Tensor<T, 2> const &ref) {
-    auto const tol = static_cast<RemoveComplexT<T>>(std::is_same_v<RemoveComplexT<T>, float> ? 1.0e-4 : 1.0e-11);
-    REQUIRE(got.size() == ref.size());
-    for (size_t i = 0; i < got.size(); i++) {
-        REQUIRE(std::abs(got.data()[i] - ref.data()[i]) < tol);
-    }
+    double const tol = std::is_same_v<RemoveComplexT<T>, float> ? 1.0e-4 : 1.0e-11;
+    einsums::testing::require_tensors_close(got, ref, {.rtol = 0, .atol = tol});
 }
 
 /// Pointer lists over a batch, in the order the caller wrote it.

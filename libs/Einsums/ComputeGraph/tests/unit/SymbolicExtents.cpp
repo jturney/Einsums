@@ -64,9 +64,7 @@ struct Chain {
             cg::einsum("ia;ab->ib", tmp, amp, fock);
             cg::einsum("ia;ja->ij", &out, *tmp, amp);
         }
-        cg::PassManager pm;
-        pm.add<cg::passes::Materialization>();
-        graph.apply(pm);
+        graph.apply<cg::passes::Materialization>();
     }
 };
 
@@ -296,9 +294,7 @@ TEST_CASE("Symbolic extents - an under-annotated graph fails loudly at bind", "[
         cg::einsum("ia;ab->ib", &tmp, amp, fock);
         cg::einsum("ia;ja->ij", &out, tmp, other);
     }
-    cg::PassManager pm;
-    pm.add<cg::passes::Materialization>();
-    graph.apply(pm);
+    graph.apply<cg::passes::Materialization>();
 
     graph.annotate_dims(amp, {"no", "nv"});
     graph.annotate_dims(fock, {"nv", "nv"});
@@ -545,9 +541,7 @@ TEST_CASE("Symbolic extents - a RUNTIME-RANK deferred intermediate resizes at bi
 
     // Deferred scratch needs its Materialize node before the graph can run, which is the
     // resource phase's job and deliberately not bind's.
-    cg::PassManager pm;
-    pm.add<cg::passes::Materialization>();
-    graph.apply(pm);
+    graph.apply<cg::passes::Materialization>();
     REQUIRE_NOTHROW(graph.execute());
 }
 

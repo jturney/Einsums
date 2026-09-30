@@ -8,6 +8,7 @@
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
 #include <Einsums/Testing/ReferenceEinsum.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -35,13 +36,7 @@ constexpr double value_tol() {
 
 template <typename T>
 void require_close(Tensor<T, 2> const &got, Tensor<T, 2> const &want) {
-    REQUIRE(got.dim(0) == want.dim(0));
-    REQUIRE(got.dim(1) == want.dim(1));
-    for (size_t ii = 0; ii < static_cast<size_t>(want.dim(0)); ii++) {
-        for (size_t jj = 0; jj < static_cast<size_t>(want.dim(1)); jj++) {
-            REQUIRE_THAT(got(ii, jj), CheckWithinRel(want(ii, jj), value_tol<T>()));
-        }
-    }
+    einsums::testing::require_tensors_close(got, want, {.rtol = value_tol<T>(), .atol = 0});
 }
 
 } // namespace

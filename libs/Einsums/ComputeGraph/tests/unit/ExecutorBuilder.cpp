@@ -25,6 +25,7 @@
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <complex>
 #include <cstdint>
@@ -127,14 +128,7 @@ size_t rebuild_from_snapshots(cg::Graph &graph) {
     return rebuilt;
 }
 
-/// A byte-for-byte snapshot of an OWNING tensor's storage.
-template <typename TensorType>
-std::vector<unsigned char> bytes_of(TensorType const &t) {
-    using T = typename TensorType::ValueType;
-    std::vector<unsigned char> out(t.size() * sizeof(T));
-    std::memcpy(out.data(), t.data(), out.size());
-    return out;
-}
+using einsums::testing::bytes_of;
 
 /// Overwrite a tensor's storage from a snapshot taken by @ref bytes_of.
 template <typename TensorType>

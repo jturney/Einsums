@@ -275,9 +275,7 @@ TEMPLATE_LIST_TEST_CASE("DistributiveFactoring - downstream reader keeps program
     // Run through a PassManager so the program-order verifier (check_observed_writes)
     // runs. Appending the combined node would trip it (the later S-reader would then
     // observe R's initial contents); first-member-slot placement keeps it ahead.
-    cg::PassManager pm;
-    pm.add<cg::passes::DistributiveFactoring>();
-    REQUIRE_NOTHROW(pm.run(graph));
+    REQUIRE_NOTHROW(graph.apply<cg::passes::DistributiveFactoring>());
 
     graph.execute();
     for (size_t ii = 0; ii < 4; ii++)

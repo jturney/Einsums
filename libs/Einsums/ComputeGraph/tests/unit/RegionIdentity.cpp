@@ -77,9 +77,7 @@ void require_identity(Build &&build, Reset &&reset, Read &&read) {
 
     auto pass = std::make_shared<cg::passes::RegionIdentity>();
     pass->set_dump(true);
-    cg::PassManager pm;
-    pm.add(pass);
-    REQUIRE(pm.run(rewritten));
+    REQUIRE(cg::apply_single_pass(*pass, rewritten));
     REQUIRE(pass->regions_formed() >= 1);
     REQUIRE(pass->regions_rewritten() == pass->regions_formed());
 
@@ -435,10 +433,8 @@ TEST_CASE("a refused lowering leaves the graph exactly as it was", "[ComputeGrap
     }
     auto const nodes_before = graph.num_nodes();
 
-    auto            pass = std::make_shared<BreakIt>();
-    cg::PassManager pm;
-    pm.add(pass);
-    CHECK_FALSE(pm.run(graph));
+    auto pass = std::make_shared<BreakIt>();
+    CHECK_FALSE(cg::apply_single_pass(*pass, graph));
     CHECK(graph.num_nodes() == nodes_before);
 
     auto const reasons = pass->skip_reasons();
@@ -680,10 +676,8 @@ TEST_CASE("a lowered grouped region is grouped nodes, not a per-member loop", "[
         cg::grouped_axpby({1.0, 1.0, 1.0, 1.0, 1.0}, as_inputs(C), {0.0, 0.0, 0.0, 0.0, 0.0}, as_outputs(D));
     }
 
-    auto            pass = std::make_shared<cg::passes::RegionIdentity>();
-    cg::PassManager pm;
-    pm.add(pass);
-    REQUIRE(pm.run(graph));
+    auto pass = std::make_shared<cg::passes::RegionIdentity>();
+    REQUIRE(cg::apply_single_pass(*pass, graph));
     CHECK(graph.num_nodes() == 2);
     CHECK(count_kind(graph, cg::OpKind::GroupedBatchedGemm) == 1);
     CHECK(count_kind(graph, cg::OpKind::GroupedAxpby) == 1);

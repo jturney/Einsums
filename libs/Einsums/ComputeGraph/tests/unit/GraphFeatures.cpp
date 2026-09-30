@@ -210,10 +210,8 @@ TEST_CASE("Graph - verify names each structural problem and the pass that caused
     CHECK(graph.verify().empty());
 
     VerifyPasses const verifying;
-    cg::PassManager    manager;
-    manager.add<CorruptingPass>();
     try {
-        (void)manager.run(graph);
+        (void)graph.apply<CorruptingPass>();
         FAIL("a pass that left the graph malformed was not reported");
     } catch (std::logic_error const &error) {
         std::string const message = error.what();
@@ -243,16 +241,13 @@ TEST_CASE("PassManager - a pass that changes the node set must declare it", "[Co
     VerifyPasses const verifying;
 
     SECTION("undeclared") {
-        cg::PassManager manager;
-        manager.add<DroppingPass>(false);
-        CHECK_THROWS_WITH(manager.run(graph), Catch::Matchers::ContainsSubstring("pass 'DroppingPass' changed the node set") &&
-                                                  Catch::Matchers::ContainsSubstring("note_structural_change"));
+        CHECK_THROWS_WITH(graph.apply<DroppingPass>(false),
+                          Catch::Matchers::ContainsSubstring("pass 'DroppingPass' changed the node set") &&
+                              Catch::Matchers::ContainsSubstring("note_structural_change"));
     }
 
     SECTION("declared") {
-        cg::PassManager manager;
-        manager.add<DroppingPass>(true);
-        CHECK_NOTHROW(manager.run(graph));
+        CHECK_NOTHROW(graph.apply<DroppingPass>(true));
         CHECK(graph.num_nodes() == 1);
     }
 }

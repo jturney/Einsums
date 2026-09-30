@@ -126,10 +126,8 @@ TEST_CASE("AntisymmetrizerFolding - declines without an established premise", "[
     cg::Graph             graph("no_inference");
     capture_energy(graph, "i,j,k <- P(i/j/k) i,j,k", dims, wsrc, vsrc, result);
 
-    auto            fold = std::make_shared<cg::passes::AntisymmetrizerFolding>();
-    cg::PassManager manager;
-    manager.add(fold);
-    graph.apply(manager);
+    auto fold = std::make_shared<cg::passes::AntisymmetrizerFolding>();
+    cg::apply_single_pass(*fold, graph);
 
     CHECK(fold->num_candidates() >= 1);
     CHECK(fold->num_folded() == 0);
@@ -185,10 +183,8 @@ TEST_CASE("AntisymmetrizerFolding - a graph with no operator is untouched", "[Co
     }
     std::size_t const before = graph.num_nodes();
 
-    auto            fold = std::make_shared<cg::passes::AntisymmetrizerFolding>();
-    cg::PassManager manager;
-    manager.add(fold);
-    graph.apply(manager);
+    auto fold = std::make_shared<cg::passes::AntisymmetrizerFolding>();
+    cg::apply_single_pass(*fold, graph);
 
     CHECK(fold->num_candidates() == 0);
     CHECK(fold->num_folded() == 0);

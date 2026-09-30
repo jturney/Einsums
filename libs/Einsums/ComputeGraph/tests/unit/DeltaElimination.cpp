@@ -329,10 +329,8 @@ TEMPLATE_LIST_TEST_CASE("an untagged identity matrix is left alone", "[ComputeGr
     }
     auto const before = graph.num_nodes();
 
-    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
-    cg::PassManager pm;
-    pm.add(pass);
-    CHECK_FALSE(pm.run(graph));
+    auto pass = std::make_shared<cg::passes::DeltaElimination>();
+    CHECK_FALSE(cg::apply_single_pass(*pass, graph));
     CHECK(graph.num_nodes() == before);
     CHECK(pass->num_eliminated() == 0);
 }
@@ -352,10 +350,8 @@ TEMPLATE_LIST_TEST_CASE("a delta whose letters are both free is declined", "[Com
         cg::einsum("ij;ij->ij", &C, A, delta);
     }
 
-    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
-    cg::PassManager pm;
-    pm.add(pass);
-    CHECK_FALSE(pm.run(graph));
+    auto pass = std::make_shared<cg::passes::DeltaElimination>();
+    CHECK_FALSE(cg::apply_single_pass(*pass, graph));
     CHECK(pass->num_eliminated() == 0);
 
     auto const reasons = pass->skip_reasons();
@@ -472,10 +468,8 @@ TEMPLATE_LIST_TEST_CASE("a tag rides along a permute but not a slice", "[Compute
         cg::permute("ji <- ij", &swapped, delta);
     }
 
-    auto            pass = std::make_shared<cg::passes::ProvenancePropagation>();
-    cg::PassManager pm;
-    pm.add(pass);
-    pm.run(graph);
+    auto pass = std::make_shared<cg::passes::ProvenancePropagation>();
+    cg::apply_single_pass(*pass, graph);
     CHECK(pass->num_propagated() == 1);
 
     bool tagged = false;
@@ -503,10 +497,8 @@ TEMPLATE_LIST_TEST_CASE("propagation never overrules a declaration", "[ComputeGr
         cg::permute("ji <- ij", &other, delta);
     }
 
-    auto            pass = std::make_shared<cg::passes::ProvenancePropagation>();
-    cg::PassManager pm;
-    pm.add(pass);
-    pm.run(graph);
+    auto pass = std::make_shared<cg::passes::ProvenancePropagation>();
+    cg::apply_single_pass(*pass, graph);
     CHECK(pass->num_propagated() == 0);
 
     for (auto const &[id, handle] : graph.tensors_map()) {
@@ -642,10 +634,8 @@ TEMPLATE_LIST_TEST_CASE("a contraction over disjoint spaces keeps only its prefa
     cg::Graph rewritten("rewritten");
     build(rewritten);
 
-    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
-    cg::PassManager pm;
-    pm.add(pass);
-    REQUIRE(pm.run(rewritten));
+    auto pass = std::make_shared<cg::passes::DeltaElimination>();
+    REQUIRE(cg::apply_single_pass(*pass, rewritten));
     CHECK(pass->num_zero_blocks() == 1);
     CHECK(pass->num_eliminated() == 0);
 
@@ -692,10 +682,8 @@ TEMPLATE_LIST_TEST_CASE("a zero block into a buffer nothing reads leaves no node
     graph.annotate_spaces(A, {spaces.aux, spaces.occ});
     graph.annotate_spaces(B, {spaces.virt, spaces.aux});
 
-    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
-    cg::PassManager pm;
-    pm.add(pass);
-    REQUIRE(pm.run(graph));
+    auto pass = std::make_shared<cg::passes::DeltaElimination>();
+    REQUIRE(cg::apply_single_pass(*pass, graph));
 
     CHECK(pass->num_zero_blocks() == 1);
     // The destination is overwritten, is the region's own, and nothing reads it, so there is no
@@ -731,10 +719,8 @@ TEMPLATE_LIST_TEST_CASE("an overwriting zero block assigns zero rather than mult
     graph.annotate_spaces(A, {spaces.aux, spaces.occ});
     graph.annotate_spaces(B, {spaces.virt, spaces.aux});
 
-    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
-    cg::PassManager pm;
-    pm.add(pass);
-    REQUIRE(pm.run(graph));
+    auto pass = std::make_shared<cg::passes::DeltaElimination>();
+    REQUIRE(cg::apply_single_pass(*pass, graph));
     CHECK(pass->num_zero_blocks() == 1);
 
     graph.execute();
@@ -761,10 +747,8 @@ TEMPLATE_LIST_TEST_CASE("an unrelated pair of spaces is declined", "[ComputeGrap
     graph.annotate_spaces(A, {spaces.virt, spaces.occ});
     graph.annotate_spaces(B, {spaces.aux, spaces.virt});
 
-    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
-    cg::PassManager pm;
-    pm.add(pass);
-    CHECK_FALSE(pm.run(graph));
+    auto pass = std::make_shared<cg::passes::DeltaElimination>();
+    CHECK_FALSE(cg::apply_single_pass(*pass, graph));
     CHECK(pass->num_zero_blocks() == 0);
     CHECK(skip_mentions(pass->skip_reasons(), "nothing declared makes a shared letter's two spaces disjoint"));
 }
@@ -787,10 +771,8 @@ TEMPLATE_LIST_TEST_CASE("a letter annotated on one operand only is declined", "[
     // B says nothing at all, so nothing is provable about the letter the two share.
     graph.annotate_spaces(A, {spaces.aux, spaces.occ});
 
-    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
-    cg::PassManager pm;
-    pm.add(pass);
-    CHECK_FALSE(pm.run(graph));
+    auto pass = std::make_shared<cg::passes::DeltaElimination>();
+    CHECK_FALSE(cg::apply_single_pass(*pass, graph));
     CHECK(pass->num_zero_blocks() == 0);
     CHECK(skip_mentions(pass->skip_reasons(), "annotated on one operand and not the other"));
 }
@@ -815,10 +797,8 @@ TEMPLATE_LIST_TEST_CASE("a batched letter over disjoint spaces is declined", "[C
     graph.annotate_spaces(A, {spaces.occ, spaces.aux, spaces.aux});
     graph.annotate_spaces(B, {spaces.virt, spaces.aux, spaces.aux});
 
-    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
-    cg::PassManager pm;
-    pm.add(pass);
-    CHECK_FALSE(pm.run(graph));
+    auto pass = std::make_shared<cg::passes::DeltaElimination>();
+    CHECK_FALSE(cg::apply_single_pass(*pass, graph));
     CHECK(pass->num_zero_blocks() == 0);
     CHECK(skip_mentions(pass->skip_reasons(), "batched rather than summed"));
 }
@@ -841,10 +821,8 @@ TEMPLATE_LIST_TEST_CASE("a contained pair of spaces is not disjoint", "[ComputeG
     graph.annotate_spaces(A, {spaces.aux, spaces.pno});
     graph.annotate_spaces(B, {spaces.virt, spaces.aux});
 
-    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
-    cg::PassManager pm;
-    pm.add(pass);
-    CHECK_FALSE(pm.run(graph));
+    auto pass = std::make_shared<cg::passes::DeltaElimination>();
+    CHECK_FALSE(cg::apply_single_pass(*pass, graph));
     CHECK(pass->num_zero_blocks() == 0);
 }
 
@@ -870,10 +848,8 @@ TEMPLATE_LIST_TEST_CASE("a graph with no declared disjointness never forms a reg
     graph.annotate_spaces(A, {aux, occ});
     graph.annotate_spaces(B, {occ, aux});
 
-    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
-    cg::PassManager pm;
-    pm.add(pass);
-    CHECK_FALSE(pm.run(graph));
+    auto pass = std::make_shared<cg::passes::DeltaElimination>();
+    CHECK_FALSE(cg::apply_single_pass(*pass, graph));
     CHECK(pass->regions_formed() == 0);
 }
 
@@ -1001,10 +977,8 @@ TEMPLATE_LIST_TEST_CASE("a contraction over disjoint spaces under a permutation 
     graph.annotate_spaces(A, {spaces.aux, spaces.occ});
     graph.annotate_spaces(B, {spaces.virt, spaces.aux});
 
-    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
-    cg::PassManager pm;
-    pm.add(pass);
-    REQUIRE(pm.run(graph));
+    auto pass = std::make_shared<cg::passes::DeltaElimination>();
+    REQUIRE(cg::apply_single_pass(*pass, graph));
     CHECK(pass->num_zero_blocks() == 1);
     CHECK(std::ranges::none_of(graph.nodes(), [](cg::Node const &node) { return cg::passes::carries_permutation_operators(node); }));
 

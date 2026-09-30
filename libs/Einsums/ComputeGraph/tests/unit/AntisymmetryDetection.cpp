@@ -46,10 +46,8 @@ RuntimeTensor<double> fully_invariant(size_t n) {
 }
 
 std::shared_ptr<cg::passes::AntisymmetryDetection> detect(cg::Graph &graph) {
-    auto            pass = std::make_shared<cg::passes::AntisymmetryDetection>();
-    cg::PassManager manager;
-    manager.add(pass);
-    graph.apply(manager);
+    auto pass = std::make_shared<cg::passes::AntisymmetryDetection>();
+    cg::apply_single_pass(*pass, graph);
     return pass;
 }
 

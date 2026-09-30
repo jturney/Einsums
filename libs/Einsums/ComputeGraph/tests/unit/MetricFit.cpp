@@ -103,9 +103,7 @@ TEST_CASE("MetricFit - an exactly fitted tensor is replaced and the contraction 
     registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-12));
 
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE(graph.apply(pm));
+    REQUIRE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 1);
 
     auto defaults = cg::PassManager::create_default();
@@ -143,9 +141,7 @@ TEST_CASE("MetricFit - one tensor is fitted, not two", "[ComputeGraph][Factoriza
     cg::FactorizationRegistry registry;
     registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-12));
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE(graph.apply(pm));
+    REQUIRE(cg::apply_single_pass(factorization, graph));
 
     // The provider offers two factors under one name, which is one buffer. Two would fit the
     // same thing twice and store it twice, and at DF's real sizes B is the largest tensor in
@@ -263,9 +259,7 @@ TEST_CASE("MetricFit - a positive but dead direction is dropped by the threshold
         cg::FactorizationRegistry registry;
         registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, nearly_singular, 1e-3, threshold));
         cg::passes::FactorizationPass factorization(registry);
-        cg::PassManager               pm;
-        pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-        REQUIRE(graph.apply(pm));
+        REQUIRE(cg::apply_single_pass(factorization, graph));
 
         auto defaults = cg::PassManager::create_default();
         graph.apply(defaults);
@@ -327,10 +321,8 @@ TEST_CASE("MetricFit - a tensor whose shape the fit cannot produce is declined",
     cg::FactorizationRegistry registry;
     registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-12));
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
 
-    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE_FALSE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 0);
     REQUIRE(graph.approximations().empty());
 }
@@ -357,10 +349,8 @@ TEST_CASE("MetricFit - a tag no contraction reads is reported rather than passed
     cg::FactorizationRegistry registry;
     registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-12));
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
 
-    REQUIRE_FALSE(graph.apply(pm));
+    REQUIRE_FALSE(cg::apply_single_pass(factorization, graph));
     REQUIRE(factorization.num_factorized() == 0);
 
     bool reported = false;
@@ -391,9 +381,7 @@ TEST_CASE("MetricFit - a fitted graph saves, loads, and refits for the problem i
     cg::FactorizationRegistry registry;
     registry.add(std::make_shared<cg::MetricFitFactorization>("eri", R, J, 1e-5));
     cg::passes::FactorizationPass factorization(registry);
-    cg::PassManager               pm;
-    pm.add(std::shared_ptr<cg::OptimizerPass>(&factorization, [](cg::OptimizerPass *) {}));
-    REQUIRE(graph.apply(pm));
+    REQUIRE(cg::apply_single_pass(factorization, graph));
 
     // Saved BEFORE any resource pass, which is the documented flow rather than a convenience:
     // a Materialize node carries an allocating closure and allocation is re-derived on load.

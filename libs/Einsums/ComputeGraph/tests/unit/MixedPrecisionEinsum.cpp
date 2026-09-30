@@ -348,9 +348,7 @@ TEST_CASE("mixed precision einsum - scratch privatization rebuilds a mixed node 
 
     auto pass = std::make_shared<cg::passes::ScratchPrivatization>();
     pass->set_require_executor(false);
-    cg::PassManager manager;
-    manager.add(pass);
-    graph.apply(manager);
+    cg::apply_single_pass(*pass, graph);
     CHECK(pass->num_tensors_privatized() == 1);
     CHECK(pass->num_copies_created() == 2);
     CHECK(pass->num_nodes_rebuilt() == 4);

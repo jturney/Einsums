@@ -138,9 +138,7 @@ TEST_CASE("DeadNodeElimination - eliminates a dead intermediate inside a loop bo
 
     size_t const body_nodes_before = body.num_nodes();
 
-    cg::PassManager pm;
-    pm.add<cg::passes::DeadNodeElimination>();
-    bool const modified = pm.run(g);
+    bool const modified = g.apply<cg::passes::DeadNodeElimination>().first;
 
     CHECK(modified);
     CHECK(body.num_nodes() == body_nodes_before - 1); // the dead einsum is gone
@@ -172,9 +170,7 @@ TEST_CASE("DeadNodeElimination - keeps a producer feeding only a nested loop", "
 
     size_t const outer_nodes_before = outer.num_nodes();
 
-    cg::PassManager pm;
-    pm.add<cg::passes::DeadNodeElimination>();
-    pm.run(g);
+    g.apply<cg::passes::DeadNodeElimination>();
 
     // The producer of `shared` must survive, it feeds the nested loop.
     CHECK(outer.num_nodes() == outer_nodes_before);
@@ -213,9 +209,7 @@ TEST_CASE("DeadNodeElimination - keeps a body intermediate consumed by the paren
 
     size_t const body_before = body.num_nodes();
 
-    cg::PassManager pm;
-    pm.add<cg::passes::DeadNodeElimination>();
-    pm.run(g);
+    g.apply<cg::passes::DeadNodeElimination>();
 
     // The body producer of `tmp` must survive: an outside consumer reads it.
     CHECK(body.num_nodes() == body_before);
@@ -252,9 +246,7 @@ TEST_CASE("DeadNodeElimination - keeps a body intermediate consumed by a sibling
 
     size_t const body1_before = body1.num_nodes();
 
-    cg::PassManager pm;
-    pm.add<cg::passes::DeadNodeElimination>();
-    pm.run(g);
+    g.apply<cg::passes::DeadNodeElimination>();
 
     // The `tmp` producer in loop1 must survive: loop2's body reads it.
     CHECK(body1.num_nodes() == body1_before);
@@ -290,9 +282,7 @@ TEST_CASE("DeadNodeElimination - keeps a then-branch intermediate consumed by th
 
     size_t const then_before = then_g.num_nodes();
 
-    cg::PassManager pm;
-    pm.add<cg::passes::DeadNodeElimination>();
-    pm.run(g);
+    g.apply<cg::passes::DeadNodeElimination>();
 
     // The then-branch producer of `tmp` must survive: the parent reads it.
     CHECK(then_g.num_nodes() == then_before);

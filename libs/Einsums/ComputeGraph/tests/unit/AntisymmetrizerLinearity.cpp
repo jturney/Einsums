@@ -32,10 +32,8 @@ void capture_sum(cg::Graph &graph, std::string const &w_spec, std::string const 
 }
 
 std::shared_ptr<cg::passes::AntisymmetrizerLinearity> merge(cg::Graph &graph) {
-    auto            pass = std::make_shared<cg::passes::AntisymmetrizerLinearity>();
-    cg::PassManager manager;
-    manager.add(pass);
-    graph.apply(manager);
+    auto pass = std::make_shared<cg::passes::AntisymmetrizerLinearity>();
+    cg::apply_single_pass(*pass, graph);
     return pass;
 }
 

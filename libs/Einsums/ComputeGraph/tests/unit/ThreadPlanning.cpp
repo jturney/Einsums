@@ -18,6 +18,7 @@
 #include <Einsums/Tensor/Tensor.hpp>
 #include <Einsums/TensorUtilities/CreateRandomTensor.hpp>
 #include <Einsums/TensorUtilities/CreateZeroTensor.hpp>
+#include <Einsums/Testing/TensorCompare.hpp>
 
 #include <fmt/format.h>
 
@@ -78,14 +79,7 @@ unsigned width_of(cg::Graph const &graph, size_t position) {
     return graph.nodes()[position].thread_width;
 }
 
-/// A byte-exact fingerprint of a result buffer. Two replays of ONE plan on one
-/// machine run the same kernels at the same widths, so their bits match; that
-/// is what the determinism cases assert.
-std::vector<unsigned char> bytes_of(Tensor<double, 2> const &tensor) {
-    std::vector<unsigned char> out(tensor.size() * sizeof(double));
-    std::memcpy(out.data(), tensor.data(), out.size());
-    return out;
-}
+using einsums::testing::bytes_of;
 
 /// The values, for a comparison that spans two different widths.
 std::vector<double> values_of(Tensor<double, 2> const &tensor) {
