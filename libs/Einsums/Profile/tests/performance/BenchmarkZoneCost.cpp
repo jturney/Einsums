@@ -39,7 +39,15 @@
 #    include <x86intrin.h>
 #endif
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    ifndef WIN32_LEAN_AND_MEAN
+#        define WIN32_LEAN_AND_MEAN
+#    endif
+#    include <windows.h>
+#else
 #    include <sys/resource.h>
 #endif
 
@@ -356,10 +364,20 @@ TEST_CASE("Bench ZoneCost: the consumer", "[Profile][ZoneCost][benchmark]") {
     // CPU the whole process uses while nothing is recorded: the consumer's 1 ms naps and anything
     // else the profiler runs in the background.
     auto const cpu_seconds = [] {
+#if defined(_WIN32)
+        // FILETIME counts 100 ns intervals.
+        FILETIME   creation{}, exit{}, kernel{}, user{};
+        auto const ticks = [](FILETIME const &ft) {
+            return static_cast<double>((static_cast<std::uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime);
+        };
+        GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user);
+        return 1e-7 * (ticks(kernel) + ticks(user));
+#else
         rusage ru{};
         getrusage(RUSAGE_SELF, &ru);
         return static_cast<double>(ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) +
                1e-6 * static_cast<double>(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec);
+#endif
     };
     profiler.flush();
     double const c0 = cpu_seconds();
