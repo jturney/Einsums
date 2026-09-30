@@ -124,10 +124,12 @@ function(einsums_add_test category name)
     set_target_properties(${${name}_EXECUTABLE}_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "")
   endif()
 
-  # Only real tests, i.e. executables ending in _test, link to einsums_testing
+  # Only real tests, i.e. executables ending in _test, link to einsums_testing. Its main exits 77
+  # when every test case skipped, which ctest then reports as "Skipped".
   if(TARGET ${${name}_EXECUTABLE}_test AND ${name}_TESTING)
     target_link_libraries(${${name}_EXECUTABLE}_test PRIVATE Catch2::Catch2)
     target_link_libraries(${${name}_EXECUTABLE}_test PRIVATE einsums_testing)
+    set_tests_properties("${_full_name}" PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 
   if(TARGET ${${name}_EXECUTABLE}_test AND ${name}_PERFORMANCE_TESTING)
