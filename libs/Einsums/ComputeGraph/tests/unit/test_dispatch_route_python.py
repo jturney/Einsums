@@ -67,6 +67,9 @@ _CASCADE = [
     (" <- i ; i", "i,i->", {"i": 6}, "dot_runtime"),
     (" <- ij ; ij", "ij,ij->", {"i": 4, "j": 5}, "dot_runtime"),
     ("ij <- ij ; ij", "ij,ij->ij", {"i": 4, "j": 5}, "direct_product_runtime"),
+    # The same product with operands in another letter order: permuted into C's order first.
+    ("ij <- ij ; ji", "ij,ji->ij", {"i": 4, "j": 5}, "direct_product_permuted_runtime"),
+    ("ijk <- kij ; jki", "kij,jki->ijk", {"i": 3, "j": 4, "k": 5}, "direct_product_permuted_runtime"),
     # Two M and two N indices, so PackedGemm forms the contraction rather than deferring to a GEMM.
     ("ijkl <- ijm ; mkl", "ijm,mkl->ijkl", {"i": 3, "j": 4, "k": 5, "l": 6, "m": 2}, "packed_gemm"),
     # A small outer product: no link to contract, and too few elements for PackedGemm's setup to pay.

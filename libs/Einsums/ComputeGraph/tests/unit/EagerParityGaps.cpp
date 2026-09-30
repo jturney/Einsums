@@ -743,6 +743,38 @@ TEMPLATE_LIST_TEST_CASE("cg dispatch route - every route in the cascade fires wh
         CHECK(route() == "direct_product_runtime");
     }
 
+    // An elementwise product whose operands list C's letters in another order
+    // has no link and no M, N or K axis, so it passed every route above and
+    // PackedGemm, and ran the generic loop at every size.
+    SECTION("elementwise with a transposed operand") {
+        auto A    = create_random_tensor<T>("A", 4, 5);
+        auto B    = create_random_tensor<T>("B", 5, 4);
+        auto C    = create_random_tensor<T>("C", 4, 5);
+        auto want = C;
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ij <- ij ; ji", T{0.5}, &C, T{2.0}, A, B);
+        CHECK(route() == "direct_product_permuted_runtime");
+        reference_einsum("ij <- ij ; ji", T{0.5}, &want, T{2.0}, A, B);
+        for (size_t n = 0; n < C.size(); n++) {
+            CHECK(std::abs(C.data()[n] - want.data()[n]) <= tol * (1.0 + std::abs(want.data()[n])));
+        }
+    }
+
+    SECTION("elementwise at rank 3, both operands permuted, runtime rank") {
+        auto             A_t  = create_random_tensor<T>("A", 5, 3, 4);
+        auto             B_t  = create_random_tensor<T>("B", 4, 5, 3);
+        auto             C_t  = create_random_tensor<T>("C", 3, 4, 5);
+        auto             want = C_t;
+        RuntimeTensor<T> A(A_t), B(B_t), C(C_t);
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("ijk <- kij ; jki", T{0.5}, &C, T{2.0}, A, B);
+        CHECK(route() == "direct_product_permuted_runtime");
+        reference_einsum("ijk <- kij ; jki", T{0.5}, &want, T{2.0}, A_t, B_t);
+        for (size_t n = 0; n < want.size(); n++) {
+            CHECK(std::abs(C.data()[n] - want.data()[n]) <= tol * (1.0 + std::abs(want.data()[n])));
+        }
+    }
+
     // A diagonal of extent 1 folds to a matrix whose major axis carries its parent's stride, which
     // the GEMV route used to pass to BLAS as a leading dimension below the minor extent.
     SECTION("diagonal of extent 1 feeding a GEMV") {

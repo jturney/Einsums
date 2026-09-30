@@ -561,7 +561,8 @@ bool reduce_lone_letters(std::vector<std::string> const &idx, TensorType const &
  * @brief Execute a contraction described by a parsed string spec, on runtime-rank operands.
  *
  * Classifies the contraction at run time and takes the first route that fits: a dot product, GEMV,
- * GER, GEMM or direct product on the operands' TensorImpls, then PackedGemm, then the generic loop.
+ * GER, GEMM or direct product on the operands' TensorImpls (an operand whose letters are C's in
+ * another order is permuted into C's first), then PackedGemm, then the generic loop.
  * Repeated letters are folded into strided views first (@ref fold_repeated_letters) and the folded
  * contraction takes the same routes; an operand with lone summed letters is summed over them first
  * (@ref reduce_lone_letters) and the smaller contraction takes the same routes too.
@@ -961,6 +962,47 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
             ProfileAnnotate("dispatch", "direct_product_runtime");
             last_dispatch_route() = "direct_product_runtime";
             la::direct_product(ab_pf, A.impl(), B.impl(), c_pf, &C->impl());
+            return;
+        }
+
+        // ── Direct product with operands in another letter order ─────
+        // "ij <- ij ; ji" is a direct product too, but no route above takes it:
+        // the one above compares index lists, and PackedGemm finds no M, N or K
+        // axis to pack. With no links and equal ranks, the repeated and lone
+        // letters already handled above, each operand's letters are C's in
+        // another order. Each such operand is permuted into a buffer laid out
+        // like C, so the kernel runs its vectorized lock-step pass: a strided
+        // view of the operand would send it to the per-element strided loop.
+        if (a_rank == b_rank && b_rank == c_rank && links.empty()) {
+            std::size_t         total = 1;
+            std::vector<size_t> dims(c_rank);
+            for (std::size_t d = 0; d < c_rank; d++) {
+                dims[d] = C->dim(d);
+                total *= dims[d];
+            }
+            bool const row_major = C->impl().is_row_major();
+
+            std::vector<T>                 a_scratch, b_scratch;
+            einsums::detail::TensorImpl<T> a_impl = A.impl(), b_impl = B.impl();
+            auto const                     in_c_order = [&](std::vector<std::string> const &idx, einsums::detail::TensorImpl<T> const &src,
+                                                            std::vector<T> &scratch, einsums::detail::TensorImpl<T> &out) {
+                if (idx == c_idx) {
+                    return;
+                }
+                scratch.resize(total);
+                out = einsums::detail::TensorImpl<T>(scratch.data(), dims, row_major);
+                ParsedPermuteSpec spec;
+                spec.c_indices = c_idx;
+                spec.a_indices = idx;
+                spec.raw       = parsed.raw;
+                string_permute_impl<T>(spec, T{0}, &out, T{1}, src);
+            };
+            in_c_order(a_idx, A.impl(), a_scratch, a_impl);
+            in_c_order(b_idx, B.impl(), b_scratch, b_impl);
+
+            ProfileAnnotate("dispatch", "direct_product_permuted_runtime");
+            last_dispatch_route() = "direct_product_permuted_runtime";
+            la::direct_product(ab_pf, a_impl, b_impl, c_pf, &C->impl());
             return;
         }
     } // end of the !conj_a && !conj_b BLAS fast-path gate

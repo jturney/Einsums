@@ -154,9 +154,15 @@ def _einsum_problem(draw):
         n_h    = draw(st.integers(1, 3))
         hl     = draw(st.permutations(list(_LETTERS)))[:n_h]
         extent = {ix: draw(st.sampled_from([0, 1, 1, 2, 2, 3])) for ix in hl}
-        a_idx  = list(hl)
-        b_idx  = list(hl)
-        c_idx  = list(hl) if shape_kind == "hadamard" else []
+        # Each operand lists the letters in its own order: "ij <- ij ; ji" is a direct product
+        # too, and " <- ij ; ji" a full contraction.
+        a_idx  = list(draw(st.permutations(hl)))
+        b_idx  = list(draw(st.permutations(hl)))
+        c_idx  = list(draw(st.permutations(hl))) if shape_kind == "hadamard" else []
+        # Aliasing passes one tensor as both A and B, so it needs B's letters in A's order.
+        alias_ab = draw(st.booleans())
+        if alias_ab:
+            b_idx = list(a_idx)
         dt = draw(st.sampled_from(["float64", "complex128", "float32", "complex64"]))
         if dt == "complex128":
             c_pf  = draw(st.sampled_from([0.0, 1.0, 1.0 + 2.0j]))
@@ -164,7 +170,7 @@ def _einsum_problem(draw):
         else:
             c_pf  = draw(st.sampled_from([0.0, 1.0]))
             ab_pf = draw(st.sampled_from([1.0, -2.0]))
-        return (a_idx, b_idx, c_idx, extent, draw(st.booleans()),
+        return (a_idx, b_idx, c_idx, extent, alias_ab,
                 dt, c_pf, ab_pf,
                 draw(st.booleans()), draw(st.booleans()), draw(st.booleans()), draw(st.booleans()),
                 draw(st.booleans()))
