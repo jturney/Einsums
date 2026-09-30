@@ -27,7 +27,6 @@ generated API reference for its public headers.
     /libs/Einsums/BLAS/docs/index.rst
     /libs/Einsums/BLASBase/docs/index.rst
     /libs/Einsums/BLASVendor/docs/index.rst
-    /libs/Einsums/BlockManager/docs/index.rst
     /libs/Einsums/BufferAllocator/docs/index.rst
     /libs/Einsums/CXX23/docs/index.rst
     /libs/Einsums/Comm/docs/index.rst

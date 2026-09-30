@@ -15,7 +15,6 @@ set(_Einsums_modules
   BLAS
   BLASBase
   BLASVendor
-  BlockManager
   BufferAllocator
   Options
   Concepts

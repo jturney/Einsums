@@ -5,7 +5,6 @@
 
 #pragma once
 
-#include <Einsums/BlockManager/BlockManager.hpp>
 #include <Einsums/BufferAllocator/BufferAllocator.hpp>
 #include <Einsums/Concepts/Complex.hpp>
 #include <Einsums/Concepts/File.hpp>
@@ -21,6 +20,8 @@
 
 #include <cmath>
 #include <initializer_list>
+#include <mutex>
+#include <stdexcept>
 #include <type_traits>
 
 EINSUMS_NAMESPACE_BEGIN()
