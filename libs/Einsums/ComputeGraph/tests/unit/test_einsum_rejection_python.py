@@ -17,13 +17,6 @@ import einsums
 import einsums.graph as cg
 
 
-def _mk(nm, arr):
-    t = einsums.create_zero_tensor(nm, list(arr.shape), dtype="float64")
-    if arr.size:
-        np.asarray(t)[...] = arr
-    return t
-
-
 def _run(mode, spec, C, A, B):
     if mode == "eager":
         einsums.einsum(spec, C, A, B)
@@ -63,9 +56,9 @@ _INVALID = [
 @pytest.mark.parametrize("mode", ["eager", "graph"])
 @pytest.mark.parametrize("label,spec,ash,bsh,csh", _INVALID, ids=[x[0] for x in _INVALID])
 def test_invalid_einsum_spec_rejected(label, spec, ash, bsh, csh, mode):
-    A = _mk("A", np.ones(ash))
-    B = _mk("B", np.ones(bsh))
-    C = _mk("C", np.zeros(csh))
+    A = einsums.asarray(np.ones(ash), dtype="float64", name="A")
+    B = einsums.asarray(np.ones(bsh), dtype="float64", name="B")
+    C = einsums.asarray(np.zeros(csh), dtype="float64", name="C")
     # std::invalid_argument -> ValueError, std::out_of_range -> IndexError,
     # raw throws -> RuntimeError; any of these is an acceptable rejection.
     with pytest.raises((ValueError, RuntimeError, IndexError)):
@@ -78,9 +71,9 @@ def test_repeated_output_index_is_accepted(mode):
     # repeated OUTPUT index as a diagonal WRITE: "ii <- ij ; ji" fills the
     # diagonal of C. This pins that intentional divergence so it is not
     # "fixed" into a rejection by accident.
-    A = _mk("A", np.arange(9.0).reshape(3, 3) + 1.0)
-    B = _mk("B", np.arange(9.0).reshape(3, 3) + 1.0)
-    C = _mk("C", np.zeros((3, 3)))
+    A = einsums.asarray(np.arange(9.0).reshape(3, 3) + 1.0, dtype="float64", name="A")
+    B = einsums.asarray(np.arange(9.0).reshape(3, 3) + 1.0, dtype="float64", name="B")
+    C = einsums.asarray(np.zeros((3, 3)), dtype="float64", name="C")
     _run(mode, "ii <- ij ; ji", C, A, B)   # must NOT raise
     got = np.asarray(C)
     # Diagonal holds sum_j A[i,j]*B[j,i]; off-diagonal stays zero.
@@ -94,9 +87,9 @@ def test_numbered_indices_are_accepted(mode):
     # einsums allows alphanumeric index names (numbered indices "i1"/"i2"),
     # which the char-validation must NOT reject; only non-alphanumeric garbage
     # ('@', '$', '.') is rejected. Comma-delimited so "i1" is one label.
-    A = _mk("A", np.arange(6.0).reshape(2, 3))
-    B = _mk("B", np.arange(12.0).reshape(3, 4))
-    C = _mk("C", np.zeros((2, 4)))
+    A = einsums.asarray(np.arange(6.0).reshape(2, 3), dtype="float64", name="A")
+    B = einsums.asarray(np.arange(12.0).reshape(3, 4), dtype="float64", name="B")
+    C = einsums.asarray(np.zeros((2, 4)), dtype="float64", name="C")
     _run(mode, "i1,i2 <- i1,i3 ; i3,i2", C, A, B)   # must NOT raise
     np.testing.assert_allclose(np.asarray(C), np.asarray(A) @ np.asarray(B), rtol=1e-12, atol=0.0)
 
@@ -107,7 +100,7 @@ def test_numbered_indices_are_accepted(mode):
 # column, leaving the rest of C untouched.
 @pytest.mark.parametrize("spec", ["j@ <- @j", "ik <- ij", "i <- i"])
 def test_invalid_permute_spec_rejected(spec):
-    A = _mk("A", np.ones((2, 3)))
-    C = _mk("C", np.zeros((3, 2)))
+    A = einsums.asarray(np.ones((2, 3)), dtype="float64", name="A")
+    C = einsums.asarray(np.zeros((3, 2)), dtype="float64", name="C")
     with pytest.raises((ValueError, RuntimeError)):
         einsums.permute(spec, C, A)

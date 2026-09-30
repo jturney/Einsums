@@ -23,21 +23,13 @@ INF = np.inf
 NAN = np.nan
 
 
-def _mk(a):
-    a = np.asarray(a, dtype=float)
-    t = einsums.create_zero_tensor(f"sv{next(_ctr)}", list(a.shape), dtype="float64")
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
-
-
 def _scalar():
     return einsums.create_zero_tensor(f"sv{next(_ctr)}", [], dtype="float64")
 
 
 def _emax(v):
     r = _scalar()
-    einsums.linalg.max(r, _mk(v))
+    einsums.linalg.max(r, einsums.asarray(v, dtype="float64"))
     return float(np.asarray(r))
 
 
@@ -55,21 +47,21 @@ def test_elementwise_ieee_passthrough():
     A = np.array([[1.0, INF], [NAN, -INF]])
     B = np.full((2, 2), 2.0)
     # scale
-    t = _mk(A)
+    t = einsums.asarray(A, dtype="float64")
     einsums.linalg.scale(3.0, t)
     np.testing.assert_allclose(np.asarray(t), 3.0 * A, equal_nan=True)
     # axpy
-    y = _mk(A.copy())
-    x = _mk(B)
+    y = einsums.asarray(A.copy(), dtype="float64")
+    x = einsums.asarray(B, dtype="float64")
     einsums.linalg.axpy(1.0, x, y)
     np.testing.assert_allclose(np.asarray(y), A + B, equal_nan=True)
     # direct_product
-    a, b, c = _mk(A), _mk(B), _mk(np.zeros((2, 2)))
+    a, b, c = einsums.asarray(A, dtype="float64"), einsums.asarray(B, dtype="float64"), einsums.asarray(np.zeros((2, 2)), dtype="float64")
     einsums.linalg.direct_product(1.0, a, b, 0.0, c)
     np.testing.assert_allclose(np.asarray(c), A * B, equal_nan=True)
     # direct_division through a zero -> inf
     Bz = np.array([[0.0, 1.0], [2.0, 0.0]])
-    num, den, out = _mk(np.ones((2, 2))), _mk(Bz), _mk(np.zeros((2, 2)))
+    num, den, out = einsums.asarray(np.ones((2, 2)), dtype="float64"), einsums.asarray(Bz, dtype="float64"), einsums.asarray(np.zeros((2, 2)), dtype="float64")
     einsums.linalg.direct_division(1.0, num, den, 0.0, out)
     np.testing.assert_allclose(np.asarray(out), np.ones((2, 2)) / Bz, equal_nan=True)
 
@@ -78,7 +70,7 @@ def test_gemm_einsum_ieee_passthrough():
     A = np.array([[1.0, INF], [1.0, 1.0]])
     B = np.ones((2, 2))
     # gemm (graph) -- operands kept alive across execute
-    At, Bt, Ct = _mk(A), _mk(B), _mk(np.zeros((2, 2)))
+    At, Bt, Ct = einsums.asarray(A, dtype="float64"), einsums.asarray(B, dtype="float64"), einsums.asarray(np.zeros((2, 2)), dtype="float64")
     g = cg.Graph(f"sv{next(_ctr)}")
     with cg.capture(g):
         einsums.linalg.gemm(1.0, At, Bt, 0.0, Ct)
@@ -86,7 +78,7 @@ def test_gemm_einsum_ieee_passthrough():
     np.testing.assert_allclose(np.asarray(Ct), A @ B, equal_nan=True)
     # einsum (graph)
     An = np.array([[NAN, 1.0], [1.0, 1.0]])
-    Ae, Be, Ce = _mk(An), _mk(B), _mk(np.zeros((2, 2)))
+    Ae, Be, Ce = einsums.asarray(An, dtype="float64"), einsums.asarray(B, dtype="float64"), einsums.asarray(np.zeros((2, 2)), dtype="float64")
     g2 = cg.Graph(f"sv{next(_ctr)}")
     with cg.capture(g2):
         einsums.einsum("ij <- ik ; kj", Ce, Ae, Be)

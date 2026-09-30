@@ -27,14 +27,6 @@ from _sanitizer_scaling import sanitizer_examples
 _ctr = itertools.count()
 
 
-def _mk(a, dt):
-    a = np.asarray(a)
-    t = einsums.create_zero_tensor(f"ecp{next(_ctr)}", list(a.shape), dtype=dt)
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
-
-
 def _rnd(shape, cplx, rng):
     if cplx:
         return rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
@@ -62,7 +54,7 @@ def test_einsum_conj_through_passes(pattern, conj_flags, dt, seed):
         i, k, j = (int(rng.integers(2, 5)) for _ in range(3))
         A, B, C = _rnd((i, k), cplx, rng), _rnd((k, j), cplx, rng), _rnd((k, j), cplx, rng)
         oracle = 2.0 * (cj(A, f0) @ cj(B, f1)) - (cj(A, f0) @ cj(C, f2))
-        At, Bt, Ct, O = _mk(A, dt), _mk(B, dt), _mk(C, dt), _mk(np.zeros((i, j)), dt)
+        At, Bt, Ct, O = einsums.asarray(A, dtype=dt), einsums.asarray(B, dtype=dt), einsums.asarray(C, dtype=dt), einsums.asarray(np.zeros((i, j)), dtype=dt)
         with cg.capture(g):
             einsums.einsum("ij <- ik ; kj", O, At, Bt, c_pf=0.0, ab_pf=2.0, conj_a=f0, conj_b=f1)
             einsums.einsum("ij <- ik ; kj", O, At, Ct, c_pf=1.0, ab_pf=-1.0, conj_a=f0, conj_b=f2)
@@ -73,8 +65,8 @@ def test_einsum_conj_through_passes(pattern, conj_flags, dt, seed):
         A, B, D = _rnd((i, k), cplx, rng), _rnd((k, j), cplx, rng), _rnd((j, m), cplx, rng)
         tmp = cj(A, f0) @ cj(B, f1)
         oracle = cj(tmp, f2) @ D
-        At, Bt, Dt = _mk(A, dt), _mk(B, dt), _mk(D, dt)
-        T, O = _mk(np.zeros((i, j)), dt), _mk(np.zeros((i, m)), dt)
+        At, Bt, Dt = einsums.asarray(A, dtype=dt), einsums.asarray(B, dtype=dt), einsums.asarray(D, dtype=dt)
+        T, O = einsums.asarray(np.zeros((i, j)), dtype=dt), einsums.asarray(np.zeros((i, m)), dtype=dt)
         with cg.capture(g):
             einsums.einsum("ij <- ik ; kj", T, At, Bt, conj_a=f0, conj_b=f1)
             einsums.einsum("im <- ij ; jm", O, T, Dt, conj_a=f2)
@@ -85,8 +77,8 @@ def test_einsum_conj_through_passes(pattern, conj_flags, dt, seed):
         o1 = cj(A1, f0) @ cj(B, f2)
         o2 = cj(A2, f1) @ cj(B, f2)
         oracle = o1 + o2
-        A1t, A2t, Bt = _mk(A1, dt), _mk(A2, dt), _mk(B, dt)
-        O1, O2 = _mk(np.zeros((i, j)), dt), _mk(np.zeros((i, j)), dt)
+        A1t, A2t, Bt = einsums.asarray(A1, dtype=dt), einsums.asarray(A2, dtype=dt), einsums.asarray(B, dtype=dt)
+        O1, O2 = einsums.asarray(np.zeros((i, j)), dtype=dt), einsums.asarray(np.zeros((i, j)), dtype=dt)
         with cg.capture(g):
             einsums.einsum("ij <- ik ; kj", O1, A1t, Bt, conj_a=f0, conj_b=f2)
             einsums.einsum("ij <- ik ; kj", O2, A2t, Bt, conj_a=f1, conj_b=f2)

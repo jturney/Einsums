@@ -23,21 +23,13 @@ import einsums.graph as cg
 _ctr = itertools.count()
 
 
-def _mk(a, dt):
-    a = np.asarray(a)
-    t = einsums.create_zero_tensor(f"cj{next(_ctr)}", list(a.shape), dtype=dt)
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
-
-
 def _mkv(arr, use_view, dt, rng):
     if not use_view or arr.ndim < 2:
-        return _mk(arr, dt)
+        return einsums.asarray(arr, dtype=dt)
     perm = list(rng.permutation(arr.ndim))
     if perm == list(range(arr.ndim)):
         perm = perm[::-1]
-    return _mk(np.ascontiguousarray(np.transpose(arr, perm)), dt).permute_view(list(np.argsort(perm)))
+    return einsums.asarray(np.ascontiguousarray(np.transpose(arr, perm)), dtype=dt).permute_view(list(np.argsort(perm)))
 
 
 def _rnd(shape, cplx, rng):
@@ -84,7 +76,7 @@ def test_hyp_conjugation(op, shape, cplx, view, graph, seed):
     else:
         oracle = np.abs(A0)
     At = _mkv(A0, view, cdt, rng)
-    out = _mk(np.zeros(shape), "float64")
+    out = einsums.asarray(np.zeros(shape), dtype="float64")
     fn = {"real": einsums.linalg.real, "imag": einsums.linalg.imag, "abs": einsums.linalg.abs}[op]
     if graph:
         g = cg.Graph(f"cj{next(_ctr)}")

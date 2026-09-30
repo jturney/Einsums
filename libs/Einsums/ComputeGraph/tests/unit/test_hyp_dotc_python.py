@@ -24,21 +24,13 @@ import einsums.graph as cg
 _ctr = itertools.count()
 
 
-def _mk(a, dt):
-    a = np.asarray(a)
-    t = einsums.create_zero_tensor(f"dc{next(_ctr)}", list(a.shape), dtype=dt)
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
-
-
 def _mkv(arr, use_view, dt, rng):
     if not use_view or arr.ndim < 2:
-        return _mk(arr, dt)
+        return einsums.asarray(arr, dtype=dt)
     perm = list(rng.permutation(arr.ndim))
     if perm == list(range(arr.ndim)):
         perm = perm[::-1]
-    return _mk(np.ascontiguousarray(np.transpose(arr, perm)), dt).permute_view(list(np.argsort(perm)))
+    return einsums.asarray(np.ascontiguousarray(np.transpose(arr, perm)), dtype=dt).permute_view(list(np.argsort(perm)))
 
 
 def _rnd(shape, cplx, rng):

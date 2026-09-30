@@ -45,13 +45,6 @@ def _nm() -> str:
     return f"pd{next(_ctr)}"
 
 
-def _mk(a):
-    t = einsums.create_zero_tensor(_nm(), list(a.shape), dtype=str(a.dtype))
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
-
-
 _SC = st.sampled_from([1.0, -2.0, 0.5, 0.5 - 0.75j])
 _BETA = st.sampled_from([0.0, 1.0])
 
@@ -179,7 +172,7 @@ def test_hyp_program_diff(prog, dtype):
     # overflow, not the graph, as the differential fuzz shards' cap says.
     assume(dtype not in ("float32", "complex64") or peak <= 1e4)
     rtol, atol = _tolerance(dtype, peak)
-    tens = [_mk(a) for a in init]
+    tens = [einsums.asarray(a) for a in init]
     g = cg.Graph(_nm())
     _build_graph(tens, steps, g)
     g.apply(cg.default_pass_manager())

@@ -41,13 +41,6 @@ def _nm():
     return f"cf{next(_ctr)}"
 
 
-def _mk(a):
-    t = einsums.create_zero_tensor(_nm(), list(a.shape), dtype=str(a.dtype))
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
-
-
 _SC = st.sampled_from([1.0, -0.5, 0.5, 0.5 + 0.25j])
 _BETA = st.sampled_from([0.0, 1.0])
 
@@ -156,7 +149,7 @@ def test_hyp_controlflow_diff(prog, dtype):
     wide = np.complex128 if np.dtype(dtype).kind == "c" else np.float64
     arrs = [a.astype(wide) for a in init]
     peak = _peak(arrs)
-    tens = [_mk(a) for a in init]
+    tens = [einsums.asarray(a) for a in init]
     g = cg.Graph(_nm())
     if mode == "loop":
         for _ in range(niters):

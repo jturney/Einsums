@@ -22,7 +22,6 @@ solve, invert and det, whose forward error carries it.
 """
 from __future__ import annotations
 
-import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, example, given, settings
@@ -32,14 +31,6 @@ from hypothesis import strategies as st
 import einsums
 from _dtype_draws import DTYPES, assert_rounding_close, is_complex, random_array, real_of, rounded, wide
 
-_ctr = itertools.count()
-
-
-def _mk(a, dt):
-    t = einsums.create_zero_tensor(f"ll{next(_ctr)}", list(a.shape), dtype=dt)
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
 
 
 def _rnd(shape, dt, rng):
@@ -69,13 +60,13 @@ def test_hyp_lapack_diff(op, n, m, nrhs, dt, seed):
         A0 = _dom(n, dt, rng)
         B0 = _rnd((n, nrhs), dt, rng)
         X = np.linalg.solve(A0, B0)
-        Bt = _mk(B0, dt)
-        einsums.linalg.gesv(_mk(A0, dt), Bt)
+        Bt = einsums.asarray(B0, dtype=dt)
+        einsums.linalg.gesv(einsums.asarray(A0, dtype=dt), Bt)
         assert_rounding_close(Bt, X, dt, np.abs(X).max(), factor=np.linalg.cond(A0),
                               err_msg=f"gesv n={n} nrhs={nrhs} {dt} s={seed}")
     elif op == "invert":
         A0 = _dom(n, dt, rng)
-        At = _mk(A0, dt)
+        At = einsums.asarray(A0, dtype=dt)
         einsums.linalg.invert(At)
         inv = np.linalg.inv(A0)
         assert_rounding_close(At, inv, dt, np.abs(inv).max(), factor=np.linalg.cond(A0),
@@ -92,30 +83,30 @@ def test_hyp_lapack_diff(op, n, m, nrhs, dt, seed):
         # A perturbation dA moves det(A) by det(A) tr(A^-1 dA), so the relative
         # error is bounded by n times the condition number times the rounding.
         want = np.abs(np.linalg.det(A0))
-        assert_rounding_close(np.abs(einsums.linalg.det(_mk(A0, dt))), want, dt, want, factor=n * np.linalg.cond(A0),
+        assert_rounding_close(np.abs(einsums.linalg.det(einsums.asarray(A0, dtype=dt))), want, dt, want, factor=n * np.linalg.cond(A0),
                               err_msg=f"det n={n} {dt} s={seed}")
     elif op == "trace":
         A0 = _rnd((n, n), dt, rng)
-        assert_rounding_close(einsums.linalg.trace(_mk(A0, dt)), np.trace(A0), dt, np.abs(np.diag(A0)).sum(),
+        assert_rounding_close(einsums.linalg.trace(einsums.asarray(A0, dtype=dt)), np.trace(A0), dt, np.abs(np.diag(A0)).sum(),
                               err_msg=f"trace n={n} {dt} s={seed}")
     elif op == "eig":
         mat = _rnd((n, n), dt, rng)
         A0 = rounded((mat + mat.conj().T) / 2.0, dt)
         w = np.linalg.eigvalsh(A0)
-        Wt = _mk(np.zeros(n), real_of(dt))
-        (einsums.linalg.heev if cplx else einsums.linalg.syev)(_mk(A0, dt), Wt)
+        Wt = einsums.asarray(np.zeros(n), dtype=real_of(dt))
+        (einsums.linalg.heev if cplx else einsums.linalg.syev)(einsums.asarray(A0, dtype=dt), Wt)
         # Each eigenvalue of a Hermitian matrix is good to a small multiple of eps * ||A||.
         assert_rounding_close(np.sort(np.asarray(Wt).astype(np.float64)), np.sort(w), dt, np.linalg.norm(A0, 2), factor=n,
                               err_msg=f"eig n={n} {dt} s={seed}")
     elif op == "svd":
         A0 = _rnd((m, n), dt, rng)
         s = np.linalg.svd(A0, compute_uv=False)
-        _, S, _ = einsums.linalg.svd(_mk(A0, dt))
+        _, S, _ = einsums.linalg.svd(einsums.asarray(A0, dtype=dt))
         assert_rounding_close(np.sort(np.asarray(S).astype(np.float64))[::-1], np.sort(s)[::-1], dt, s.max(), factor=max(m, n),
                               err_msg=f"svd m={m} n={n} {dt} s={seed}")
     else:  # qr -> A == Q @ R
         A0 = _rnd((m, n), dt, rng)
-        Q, R = einsums.linalg.qr(_mk(A0, dt))
+        Q, R = einsums.linalg.qr(einsums.asarray(A0, dtype=dt))
         QR = np.asarray(Q).astype(wide(dt)) @ np.asarray(R).astype(wide(dt))
         assert_rounding_close(QR, A0, dt, np.linalg.norm(A0, 2), factor=max(m, n),
                               err_msg=f"qr m={m} n={n} {dt} s={seed}")

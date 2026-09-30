@@ -30,21 +30,13 @@ _ctr = itertools.count()
 _LETTERS = "ijklmnpqrs"
 
 
-def _mk(a, dt):
-    a = np.asarray(a)
-    t = einsums.create_zero_tensor(f"lr{next(_ctr)}", list(a.shape), dtype=dt)
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
-
-
 def _mkview(arr, use_view, dt, rng):
     if not use_view or arr.ndim < 2:
-        return _mk(arr, dt)
+        return einsums.asarray(arr, dtype=dt)
     perm = list(rng.permutation(arr.ndim))
     if perm == list(range(arr.ndim)):
         perm = perm[::-1]
-    return _mk(np.ascontiguousarray(np.transpose(arr, perm)), dt).permute_view(list(np.argsort(perm)))
+    return einsums.asarray(np.ascontiguousarray(np.transpose(arr, perm)), dtype=dt).permute_view(list(np.argsort(perm)))
 
 
 @st.composite
@@ -106,7 +98,7 @@ def _run_largerank(prob, exact):
     es = f"{''.join(c_idx)} <- {''.join(a_idx)} ; {''.join(b_idx)}"
     At = _mkview(A0, va, dt, rng)
     Bt = _mkview(B0, vb, dt, rng)
-    Ct = _mk(C0, dt)
+    Ct = einsums.asarray(C0, dtype=dt)
     g = cg.Graph(f"lr{next(_ctr)}")
     with cg.capture(g):
         einsums.einsum(es, Ct, At, Bt, c_pf=c_pf, ab_pf=ab_pf)

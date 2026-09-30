@@ -32,13 +32,6 @@ def _rtol(dtype):
     return 2e-4 if dtype in ("float32", "complex64") else 1e-9
 
 
-def _mk(arr, dtype, name=None):
-    t = einsums.create_zero_tensor(name or _nm(), list(arr.shape), dtype=dtype)
-    if arr.size:
-        np.asarray(t)[...] = arr
-    return t
-
-
 def _rand(shape, dtype, rng):
     a = rng.standard_normal(shape)
     if dtype.startswith("complex"):
@@ -57,7 +50,7 @@ def test_heev_in_graph_capture(dtype):
     H0 = ((H0 + np.conj(H0.T)) / 2.0).astype(dtype)
     real_dtype = "float32" if dtype == "complex64" else "float64"
 
-    A = _mk(H0, dtype)
+    A = einsums.asarray(H0, dtype=dtype)
     W = einsums.create_zero_tensor(_nm(), [n], dtype=real_dtype)
 
     g = cg.Graph(_nm())
@@ -79,7 +72,7 @@ def test_heev_on_view_in_graph_capture(dtype):
     B0[1 : 1 + n, 1 : 1 + n] = (B0[1 : 1 + n, 1 : 1 + n] + np.conj(B0[1 : 1 + n, 1 : 1 + n].T)) / 2.0
     real_dtype = "float32" if dtype == "complex64" else "float64"
 
-    big_t = _mk(B0, dtype)
+    big_t = einsums.asarray(B0, dtype=dtype)
     W = einsums.create_zero_tensor(_nm(), [n], dtype=real_dtype)
 
     g = cg.Graph(_nm())
@@ -100,7 +93,7 @@ def test_direct_product_complex_in_capture(dtype):
     rng = np.random.default_rng(13)
     A0, B0, C0 = (_rand((3, 4), dtype, rng) for _ in range(3))
     alpha, beta = dtype_scalar(dtype, 1.5, -0.5), dtype_scalar(dtype, 2.0, 1.0)
-    A, B, C = _mk(A0, dtype), _mk(B0, dtype), _mk(C0, dtype)
+    A, B, C = einsums.asarray(A0, dtype=dtype), einsums.asarray(B0, dtype=dtype), einsums.asarray(C0, dtype=dtype)
 
     g = cg.Graph(_nm())
     with cg.capture(g):
@@ -117,7 +110,7 @@ def test_direct_division_complex_in_capture(dtype):
     B0 = _rand((3, 4), dtype, rng) + 3.0  # keep away from zero
     C0 = _rand((3, 4), dtype, rng)
     alpha, beta = dtype_scalar(dtype, 1.0, 1.0), dtype_scalar(dtype, 0.5, 0.0)
-    A, B, C = _mk(A0, dtype), _mk(B0, dtype), _mk(C0, dtype)
+    A, B, C = einsums.asarray(A0, dtype=dtype), einsums.asarray(B0, dtype=dtype), einsums.asarray(C0, dtype=dtype)
 
     g = cg.Graph(_nm())
     with cg.capture(g):
@@ -131,7 +124,7 @@ def test_direct_division_complex_in_capture(dtype):
 def test_outer_sum_complex_in_capture(dtype):
     rng = np.random.default_rng(15)
     x0, y0 = _rand((3,), dtype, rng), _rand((4,), dtype, rng)
-    x, y = _mk(x0, dtype), _mk(y0, dtype)
+    x, y = einsums.asarray(x0, dtype=dtype), einsums.asarray(y0, dtype=dtype)
     D = einsums.create_zero_tensor(_nm(), [3, 4], dtype=dtype)
 
     g = cg.Graph(_nm())
@@ -161,7 +154,7 @@ def test_symm_gemm_complex_in_capture(dtype, trans_a):
     A0 = _rand((4, 4), dtype, rng)
     A0 = ((A0 + np.conj(A0.T)) / 2.0).astype(dtype)  # Hermitian A
     B0 = _rand((4, 3), dtype, rng)
-    A, B = _mk(A0, dtype), _mk(B0, dtype)
+    A, B = einsums.asarray(A0, dtype=dtype), einsums.asarray(B0, dtype=dtype)
     C = einsums.create_zero_tensor(_nm(), [3, 3], dtype=dtype)
 
     g = cg.Graph(_nm())
@@ -180,7 +173,7 @@ def test_symm_gemm_complex_in_capture(dtype, trans_a):
 def test_dot_writer_complex_in_capture(dtype):
     rng = np.random.default_rng(17)
     A0, B0 = _rand((5,), dtype, rng), _rand((5,), dtype, rng)
-    A, B = _mk(A0, dtype), _mk(B0, dtype)
+    A, B = einsums.asarray(A0, dtype=dtype), einsums.asarray(B0, dtype=dtype)
     r = einsums.create_zero_tensor(_nm(), [1], dtype=dtype)
 
     g = cg.Graph(_nm())
@@ -196,7 +189,7 @@ def test_dot_writer_complex_in_capture(dtype):
 def test_trace_writer_complex_in_capture(dtype):
     rng = np.random.default_rng(18)
     A0 = _rand((4, 4), dtype, rng)
-    A = _mk(A0, dtype)
+    A = einsums.asarray(A0, dtype=dtype)
     r = einsums.create_zero_tensor(_nm(), [1], dtype=dtype)
 
     g = cg.Graph(_nm())
@@ -217,7 +210,7 @@ def test_gemv_on_permuted_view_in_capture(dtype):
     rng = np.random.default_rng(19)
     M0 = _rand((4, 6), dtype, rng)
     x0 = _rand((4,), dtype, rng)
-    M, x = _mk(M0, dtype), _mk(x0, dtype)
+    M, x = einsums.asarray(M0, dtype=dtype), einsums.asarray(x0, dtype=dtype)
     y = einsums.create_zero_tensor(_nm(), [6], dtype=dtype)
 
     Mt = M.permute_view([1, 0])  # 6x4 view, strides swapped
@@ -238,7 +231,7 @@ def test_syev_on_permuted_view_in_capture(dtype):
     rng = np.random.default_rng(20)
     S0 = _rand((4, 4), dtype, rng)
     S0 = ((S0 + S0.T) / 2.0).astype(dtype)
-    S = _mk(S0, dtype)
+    S = einsums.asarray(S0, dtype=dtype)
     W = einsums.create_zero_tensor(_nm(), [4], dtype=dtype)
 
     Sv = S.permute_view([1, 0])
@@ -259,7 +252,7 @@ def test_gesv_complex_in_capture(dtype):
     rng = np.random.default_rng(21)
     A0 = _rand((4, 4), dtype, rng) + 4.0 * np.eye(4, dtype=dtype)  # well-conditioned
     b0 = _rand((4, 1), dtype, rng)
-    A, b = _mk(A0, dtype), _mk(b0, dtype)
+    A, b = einsums.asarray(A0, dtype=dtype), einsums.asarray(b0, dtype=dtype)
 
     g = cg.Graph(_nm())
     with cg.capture(g):
@@ -273,7 +266,7 @@ def test_gesv_complex_in_capture(dtype):
 def test_invert_complex_in_capture(dtype):
     rng = np.random.default_rng(22)
     A0 = _rand((4, 4), dtype, rng) + 4.0 * np.eye(4, dtype=dtype)
-    A = _mk(A0, dtype)
+    A = einsums.asarray(A0, dtype=dtype)
 
     g = cg.Graph(_nm())
     with cg.capture(g):
@@ -289,7 +282,7 @@ def test_invert_complex_in_capture(dtype):
 def test_degenerate_n1_lapack_in_capture():
     # N=1: eigen/solve/invert reduce to scalar arithmetic; previously only
     # driven eagerly (hypothesis @example pins).
-    A = _mk(np.array([[3.0]]), "float64")
+    A = einsums.asarray(np.array([[3.0]]), dtype="float64")
     W = einsums.create_zero_tensor(_nm(), [1], dtype="float64")
     g = cg.Graph(_nm())
     with cg.capture(g):
@@ -297,15 +290,15 @@ def test_degenerate_n1_lapack_in_capture():
     g.execute()
     np.testing.assert_allclose(np.asarray(W), [3.0])
 
-    A2 = _mk(np.array([[2.0]]), "float64")
-    b = _mk(np.array([[8.0]]), "float64")
+    A2 = einsums.asarray(np.array([[2.0]]), dtype="float64")
+    b = einsums.asarray(np.array([[8.0]]), dtype="float64")
     g2 = cg.Graph(_nm())
     with cg.capture(g2):
         einsums.linalg.gesv(A2, b)
     g2.execute()
     np.testing.assert_allclose(np.asarray(b), [[4.0]])
 
-    A3 = _mk(np.array([[5.0]]), "float64")
+    A3 = einsums.asarray(np.array([[5.0]]), dtype="float64")
     g3 = cg.Graph(_nm())
     with cg.capture(g3):
         einsums.linalg.invert(A3)

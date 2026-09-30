@@ -29,14 +29,6 @@ _ctr = itertools.count()
 _CAP = 50000
 
 
-def _mk(a, dt):
-    a = np.asarray(a)
-    t = einsums.create_zero_tensor(f"ld{next(_ctr)}", list(a.shape), dtype=dt)
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
-
-
 # Sizes around MR(4)/NR(6) multiples +/- 1 and across KC=64 (capped for CI speed).
 _SZ = st.sampled_from([1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 16, 17, 23, 24, 31, 32, 33, 48, 64])
 _SZK = st.sampled_from([1, 4, 6, 7, 8, 16, 17, 32, 63, 64, 65, 96])
@@ -77,7 +69,7 @@ def _run_largedim(op, m, n, k, p, dt, seed, exact):
     if op == "gemm":
         assume(m * k + k * n + m * n <= _CAP)
         A0, B0 = gen((m, k)), gen((k, n))
-        At, Bt, Ct = _mk(A0, dt), _mk(B0, dt), _mk(np.zeros((m, n)), dt)
+        At, Bt, Ct = einsums.asarray(A0, dtype=dt), einsums.asarray(B0, dtype=dt), einsums.asarray(np.zeros((m, n)), dtype=dt)
         g = cg.Graph(f"ld{next(_ctr)}")
         with cg.capture(g):
             einsums.linalg.gemm(1.0, At, Bt, 0.0, Ct)
@@ -86,31 +78,31 @@ def _run_largedim(op, m, n, k, p, dt, seed, exact):
     elif op == "einsum_mm":
         assume(m * k + k * n + m * n <= _CAP)
         A0, B0 = gen((m, k)), gen((k, n))
-        At, Bt, Ct = _mk(A0, dt), _mk(B0, dt), _mk(np.zeros((m, n)), dt)
+        At, Bt, Ct = einsums.asarray(A0, dtype=dt), einsums.asarray(B0, dtype=dt), einsums.asarray(np.zeros((m, n)), dtype=dt)
         run("ij <- ik ; kj", Ct, At, Bt)
         check(Ct, "ik,kj->ij", A0, B0)
     elif op == "einsum_multiN":  # N = {j, p}
         assume(m * k + k * n * p + m * n * p <= _CAP)
         A0, B0 = gen((m, k)), gen((k, n, p))
-        At, Bt, Ct = _mk(A0, dt), _mk(B0, dt), _mk(np.zeros((m, n, p)), dt)
+        At, Bt, Ct = einsums.asarray(A0, dtype=dt), einsums.asarray(B0, dtype=dt), einsums.asarray(np.zeros((m, n, p)), dtype=dt)
         run("ijp <- ik ; kjp", Ct, At, Bt)
         check(Ct, "ik,kjp->ijp", A0, B0)
     elif op == "einsum_multiK":  # K = {k, p}
         assume(m * k * p + k * p * n + m * n <= _CAP)
         A0, B0 = gen((m, k, p)), gen((k, p, n))
-        At, Bt, Ct = _mk(A0, dt), _mk(B0, dt), _mk(np.zeros((m, n)), dt)
+        At, Bt, Ct = einsums.asarray(A0, dtype=dt), einsums.asarray(B0, dtype=dt), einsums.asarray(np.zeros((m, n)), dtype=dt)
         run("ij <- ikp ; kpj", Ct, At, Bt)
         check(Ct, "ikp,kpj->ij", A0, B0)
     elif op == "einsum_lone":  # link k + lone p (in B only): C_ij = sum_k sum_p A_ik B_pkj
         assume(m * k + p * k * n + m * n <= _CAP)
         A0, B0 = gen((m, k)), gen((p, k, n))
-        At, Bt, Ct = _mk(A0, dt), _mk(B0, dt), _mk(np.zeros((m, n)), dt)
+        At, Bt, Ct = einsums.asarray(A0, dtype=dt), einsums.asarray(B0, dtype=dt), einsums.asarray(np.zeros((m, n)), dtype=dt)
         run("ij <- ik ; pkj", Ct, At, Bt)
         check(Ct, "ik,pkj->ij", A0, B0)
     else:  # einsum_diag: diagonal over p in A, then contract p with B
         assume(m * k * k + k * n + m * n <= _CAP)
         A0, B0 = gen((m, k, k)), gen((k, n))
-        At, Bt, Ct = _mk(A0, dt), _mk(B0, dt), _mk(np.zeros((m, n)), dt)
+        At, Bt, Ct = einsums.asarray(A0, dtype=dt), einsums.asarray(B0, dtype=dt), einsums.asarray(np.zeros((m, n)), dtype=dt)
         run("ij <- ipp ; pj", Ct, At, Bt)
         check(Ct, "ipp,pj->ij", A0, B0)
 

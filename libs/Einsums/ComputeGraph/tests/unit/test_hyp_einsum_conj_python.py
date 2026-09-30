@@ -43,22 +43,14 @@ _SPECS = [
 _DTYPES = ["float32", "float64", "complex64", "complex128"]
 
 
-def _mk(a, dt):
-    a = np.asarray(a)
-    t = einsums.create_zero_tensor(f"ec{next(_ctr)}", list(a.shape), dtype=dt)
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
-
-
 def _mkv(arr, use_view, dt, rng):
     """A tensor holding ``arr``, optionally as a strided (permuted) view."""
     if not use_view or arr.ndim < 2:
-        return _mk(arr, dt)
+        return einsums.asarray(arr, dtype=dt)
     perm = list(rng.permutation(arr.ndim))
     if perm == list(range(arr.ndim)):
         perm = perm[::-1]
-    return _mk(np.ascontiguousarray(np.transpose(arr, perm)), dt).permute_view(list(np.argsort(perm)))
+    return einsums.asarray(np.ascontiguousarray(np.transpose(arr, perm)), dtype=dt).permute_view(list(np.argsort(perm)))
 
 
 def _rnd(shape, cplx, rng):
@@ -102,7 +94,7 @@ def test_hyp_einsum_conj(spec_pair, conj_a, conj_b, dt, mode, via, va, vb, seed)
     c_shape = _shape_for(c_idx, ext) if c_idx else (1,)
 
     At, Bt = _mkv(A0, va, dt, rng), _mkv(B0, vb, dt, rng)
-    C = _mk(np.zeros(c_shape), dt)
+    C = einsums.asarray(np.zeros(c_shape), dtype=dt)
     # Express conjugation either as conj_a/conj_b kwargs or as conj(...) wrappers
     # in the spec string; both must agree with the oracle.
     if via == "spec":

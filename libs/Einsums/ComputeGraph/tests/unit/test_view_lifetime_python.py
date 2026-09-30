@@ -29,18 +29,11 @@ import einsums.graph as cg
 _ctr = itertools.count()
 
 
-def _mk(arr):
-    t = einsums.create_zero_tensor(f"vl{next(_ctr)}", list(arr.shape), dtype="float64")
-    if arr.size:
-        np.asarray(t)[...] = arr
-    return t
-
-
 def _view(arr):
     # Non-contiguous view whose logical data equals ``arr`` (parent kept alive
     # by the storage tensor the view is taken from inside this helper only when
     # the caller keeps the return value).
-    return _mk(np.ascontiguousarray(arr.T)).permute_view([1, 0])
+    return einsums.asarray(np.ascontiguousarray(arr.T), dtype="float64").permute_view([1, 0])
 
 
 def test_2arg_dot_accepts_views():
@@ -48,7 +41,7 @@ def test_2arg_dot_accepts_views():
     A0 = rng.standard_normal((2, 3))
     B0 = rng.standard_normal((2, 3))
     oracle = float(np.sum(A0 * B0))
-    A, B = _mk(A0), _mk(B0)
+    A, B = einsums.asarray(A0, dtype="float64"), einsums.asarray(B0, dtype="float64")
     Av, Bv = _view(A0), _view(B0)
     assert np.isclose(einsums.linalg.dot(A, Bv), oracle)
     assert np.isclose(einsums.linalg.dot(Av, B), oracle)
@@ -61,7 +54,7 @@ def test_captured_view_kept_alive_executes():
     A0 = rng.standard_normal((2, 3))
     B0 = rng.standard_normal((2, 3))
     oracle = float(np.sum(A0 * B0))
-    res = _mk(np.zeros(1))
+    res = einsums.asarray(np.zeros(1), dtype="float64")
     Av, Bv = _view(A0), _view(B0)  # kept alive in locals
     g = cg.Graph(f"vl{next(_ctr)}")
     with cg.capture(g):
@@ -83,9 +76,9 @@ def test_captured_view_temp_executes():
     A0 = rng.standard_normal((2, 3))
     B0 = rng.standard_normal((2, 3))
     oracle = float(np.sum(A0.T * B0.T))
-    A = _mk(A0)
-    B = _mk(B0)
-    res = _mk(np.zeros(1))
+    A = einsums.asarray(A0, dtype="float64")
+    B = einsums.asarray(B0, dtype="float64")
+    res = einsums.asarray(np.zeros(1), dtype="float64")
     g = cg.Graph(f"vl{next(_ctr)}")
     with cg.capture(g):
         # permute_view temporaries: no Python reference survives the statement.

@@ -35,20 +35,13 @@ def _nm() -> str:
     return f"hew{next(_ctr)}"
 
 
-def _mk(arr, dt):
-    t = einsums.create_zero_tensor(_nm(), list(arr.shape), dtype=dt)
-    if arr.size:
-        np.asarray(t)[...] = arr
-    return t
-
-
 def _mkv(arr, use_view, dt, rng):
     if not use_view or arr.ndim < 2:
-        return _mk(arr, dt)
+        return einsums.asarray(arr, dtype=dt)
     perm = list(rng.permutation(arr.ndim))
     if perm == list(range(arr.ndim)):
         perm = perm[::-1]
-    t = _mk(np.ascontiguousarray(np.transpose(arr, perm)), dt)
+    t = einsums.asarray(np.ascontiguousarray(np.transpose(arr, perm)), dtype=dt)
     return t.permute_view(list(np.argsort(perm)))
 
 

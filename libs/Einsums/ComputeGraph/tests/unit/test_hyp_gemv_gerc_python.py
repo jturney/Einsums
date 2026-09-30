@@ -25,21 +25,13 @@ _T = einsums.linalg.Transpose
 _MODES = {"N": _T.N, "T": _T.T, "C": _T.C}
 
 
-def _mk(a, dt):
-    a = np.asarray(a)
-    t = einsums.create_zero_tensor(f"gg{next(_ctr)}", list(a.shape), dtype=dt)
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
-
-
 def _mkv(arr, use_view, dt, rng):
     if not use_view or arr.ndim < 2:
-        return _mk(arr, dt)
+        return einsums.asarray(arr, dtype=dt)
     perm = list(rng.permutation(arr.ndim))
     if perm == list(range(arr.ndim)):
         perm = perm[::-1]
-    return _mk(np.ascontiguousarray(np.transpose(arr, perm)), dt).permute_view(list(np.argsort(perm)))
+    return einsums.asarray(np.ascontiguousarray(np.transpose(arr, perm)), dtype=dt).permute_view(list(np.argsort(perm)))
 
 
 def _rnd(shape, cplx, rng):
@@ -67,8 +59,8 @@ def test_hyp_gemv_transpose(ta, p, q, cplx, va, graph, seed):
     z0 = _rnd((opA.shape[1],), cplx, rng)
     oracle = opA @ z0
     At = _mkv(A0, va, dt, rng)
-    zt = _mk(z0, dt)
-    y = _mk(np.zeros((opA.shape[0],)), dt)
+    zt = einsums.asarray(z0, dtype=dt)
+    y = einsums.asarray(np.zeros((opA.shape[0],)), dtype=dt)
     if graph:
         g = cg.Graph(f"gg{next(_ctr)}")
         with cg.capture(g):
@@ -91,7 +83,7 @@ def test_hyp_gerc(m, n, alpha_re, graph, seed):
     Y0 = _rnd((n,), True, rng)
     A0 = _rnd((m, n), True, rng)
     oracle = A0 + alpha * np.outer(X0, Y0.conj())
-    Xt, Yt, At = _mk(X0, "complex128"), _mk(Y0, "complex128"), _mk(A0, "complex128")
+    Xt, Yt, At = einsums.asarray(X0, dtype="complex128"), einsums.asarray(Y0, dtype="complex128"), einsums.asarray(A0, dtype="complex128")
     if graph:
         g = cg.Graph(f"gg{next(_ctr)}")
         with cg.capture(g):

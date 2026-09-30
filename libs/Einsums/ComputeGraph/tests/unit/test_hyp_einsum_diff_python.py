@@ -52,22 +52,15 @@ def _nm() -> str:
     return f"hed{next(_ctr)}"
 
 
-def _mk(arr, dt):
-    t = einsums.create_zero_tensor(_nm(), list(arr.shape), dtype=dt)
-    if arr.size:
-        np.asarray(t)[...] = arr
-    return t
-
-
 def _mk_maybe_view(arr, use_view, dt, rng):
     """Return a tensor whose logical data is ``arr``; optionally a permuted
     (non-contiguous) view so the einsum sees inflated/out-of-order strides."""
     if not use_view or arr.ndim < 2:
-        return _mk(arr, dt)
+        return einsums.asarray(arr, dtype=dt)
     perm = list(rng.permutation(arr.ndim))
     if perm == list(range(arr.ndim)):
         perm = perm[::-1]
-    t = _mk(np.ascontiguousarray(np.transpose(arr, perm)), dt)
+    t = einsums.asarray(np.ascontiguousarray(np.transpose(arr, perm)), dtype=dt)
     return t.permute_view(list(np.argsort(perm)))
 
 
@@ -341,7 +334,7 @@ def _run_einsum_diff(prob, exact):
     # Aliased operands: the SAME tensor object appears as both inputs, so
     # the capture sees one TensorId twice in a single einsum node.
     Bt = At if alias_ab else _mk_maybe_view(B0, view_b, dt, rng)
-    Ct = _mk(C0, dt)
+    Ct = einsums.asarray(C0, dtype=dt)
     if eager:
         # Eager: no graph capture. Runs immediately through the runtime
         # string-einsum dispatch, exercising that path directly instead of

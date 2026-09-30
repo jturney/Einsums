@@ -49,12 +49,6 @@ def _nm() -> str:
     return f"sm{next(_ctr)}"
 
 
-def _mk(arr):
-    t = einsums.create_zero_tensor(_nm(), list(arr.shape), dtype="float64")
-    np.asarray(t)[...] = arr
-    return t
-
-
 def _other(exclude: set[int]) -> int:
     """Lowest copy index not in `exclude` (COPIES=3 covers up to 2 prior operands)."""
     return next(c for c in range(COPIES) if c not in exclude)
@@ -66,9 +60,9 @@ class EinsumsMachine(RuleBasedStateMachine):
         rng = np.random.default_rng(1234)
         # Paired pools keyed by (shape, copy): numpy oracle + einsums tensor.
         self.npm = {(sh, c): rng.standard_normal(sh) for sh in MAT_SHAPES for c in range(COPIES)}
-        self.esm = {k: _mk(a) for k, a in self.npm.items()}
+        self.esm = {k: einsums.asarray(a, dtype="float64") for k, a in self.npm.items()}
         self.npv = {(L, c): rng.standard_normal((L,)) for L in VEC_LENS for c in range(COPIES)}
-        self.esv = {k: _mk(a) for k, a in self.npv.items()}
+        self.esv = {k: einsums.asarray(a, dtype="float64") for k, a in self.npv.items()}
 
     # ── helpers ────────────────────────────────────────────────────────────
     def _check_m(self, key):

@@ -13,7 +13,6 @@ coverage; this surface was clean when mined (1500 examples, 0 failures).
 """
 from __future__ import annotations
 
-import itertools
 
 import numpy as np
 from hypothesis import HealthCheck, given, settings
@@ -23,24 +22,15 @@ from hypothesis import strategies as st
 import einsums
 from _dtype_draws import DTYPES, assert_rounding_close, random_array
 
-_ctr = itertools.count()
-
-
-def _mk(a, dt):
-    a = np.asarray(a)
-    t = einsums.create_zero_tensor(f"sg{next(_ctr)}", list(a.shape), dtype=dt)
-    if a.size:
-        np.asarray(t)[...] = a
-    return t
 
 
 def _mkv(arr, use_view, dt, rng):
     if not use_view or arr.ndim < 2:
-        return _mk(arr, dt)
+        return einsums.asarray(arr, dtype=dt)
     perm = list(rng.permutation(arr.ndim))
     if perm == list(range(arr.ndim)):
         perm = perm[::-1]
-    return _mk(np.ascontiguousarray(np.transpose(arr, perm)), dt).permute_view(list(np.argsort(perm)))
+    return einsums.asarray(np.ascontiguousarray(np.transpose(arr, perm)), dtype=dt).permute_view(list(np.argsort(perm)))
 
 
 _SZ = st.sampled_from([1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 24])

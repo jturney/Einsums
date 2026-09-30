@@ -28,20 +28,13 @@ def _nm() -> str:
     return f"hld{next(_ctr)}"
 
 
-def _mk(arr, dt):
-    t = einsums.create_zero_tensor(_nm(), list(arr.shape), dtype=dt)
-    if arr.size:
-        np.asarray(t)[...] = arr
-    return t
-
-
 def _mkv(arr, use_view, dt, rng):
     if not use_view or arr.ndim < 2:
-        return _mk(arr, dt)
+        return einsums.asarray(arr, dtype=dt)
     perm = list(rng.permutation(arr.ndim))
     if perm == list(range(arr.ndim)):
         perm = perm[::-1]
-    t = _mk(np.ascontiguousarray(np.transpose(arr, perm)), dt)
+    t = einsums.asarray(np.ascontiguousarray(np.transpose(arr, perm)), dtype=dt)
     return t.permute_view(list(np.argsort(perm)))
 
 
@@ -71,7 +64,7 @@ def test_hyp_linalg_diff(op, m, n, k, alpha, beta, dt, ta, tb, va, vb, passes):
         opB = B0.T if tb else B0
         oracle = alpha * (opA @ opB) + beta * C0
         scale = abs(alpha) * (np.abs(opA) @ np.abs(opB)) + abs(beta) * np.abs(C0)
-        At, Bt, Ct = _mkv(A0, va, dt, rng), _mkv(B0, vb, dt, rng), _mk(C0, dt)
+        At, Bt, Ct = _mkv(A0, va, dt, rng), _mkv(B0, vb, dt, rng), einsums.asarray(C0, dtype=dt)
         with cg.capture(g):
             einsums.linalg.gemm(alpha, At, Bt, beta, Ct, trans_a=ta, trans_b=tb)
         out = Ct
@@ -82,7 +75,7 @@ def test_hyp_linalg_diff(op, m, n, k, alpha, beta, dt, ta, tb, va, vb, passes):
         opA = A0.T if ta else A0
         oracle = alpha * (opA @ z0) + beta * y0
         scale = abs(alpha) * (np.abs(opA) @ np.abs(z0)) + abs(beta) * np.abs(y0)
-        At, zt, yt = _mkv(A0, va, dt, rng), _mk(z0, dt), _mk(y0, dt)
+        At, zt, yt = _mkv(A0, va, dt, rng), einsums.asarray(z0, dtype=dt), einsums.asarray(y0, dtype=dt)
         with cg.capture(g):
             einsums.linalg.gemv(alpha, At, zt, beta, yt, trans_a=ta)
         out = yt
@@ -92,7 +85,7 @@ def test_hyp_linalg_diff(op, m, n, k, alpha, beta, dt, ta, tb, va, vb, passes):
         A0 = _rnd((m, n), dt, rng)
         oracle = A0 + alpha * np.outer(X0, Y0)
         scale = np.abs(A0) + abs(alpha) * np.outer(np.abs(X0), np.abs(Y0))
-        Xt, Yt, At = _mk(X0, dt), _mk(Y0, dt), _mkv(A0, va, dt, rng)
+        Xt, Yt, At = einsums.asarray(X0, dtype=dt), einsums.asarray(Y0, dtype=dt), _mkv(A0, va, dt, rng)
         with cg.capture(g):
             einsums.linalg.ger(alpha, Xt, Yt, At)
         out = At
