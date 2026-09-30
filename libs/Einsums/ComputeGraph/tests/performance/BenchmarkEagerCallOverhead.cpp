@@ -23,7 +23,10 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <chrono>
 #include <string>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -102,3 +105,63 @@ EINSUMS_TEST_CASE("Bench EagerCallOverhead: control, replay of 100 tiny einsums"
                  "replay 100 x gemm 4x4", ns);
     publish_benchmark_result("EagerCallOverhead replay 100 tiny", "t_replay", 100, t);
 }
+
+// NOLINTBEGIN(einsums-cg-call-outside-capture)
+EINSUMS_TEST_CASE("Bench EagerCallOverhead: what the profiler adds to one call", "[ComputeGraph][EagerCallOverhead][benchmark]") {
+    // Zones per call come from the profiler's own push counter. Annotations have no counter, so their
+    // share is what is left once the zones are paid for. On and off are interleaved batch by batch in
+    // one process, so load and ordering fall on both alike, and the consumer is drained between
+    // batches so the ring never fills.
+    auto      &profiler = profile::Profiler::instance();
+    bool const was      = profiler.enabled();
+
+    auto A = create_random_tensor<double>("A", 4, 4);
+    auto B = create_random_tensor<double>("B", 4, 4);
+    auto C = create_zero_tensor<double>("C", 4, 4);
+    auto s = create_zero_tensor<double>("s", 1);
+
+    auto const census = [&](std::string const &label, auto &&call) {
+        constexpr int kCalls = 200;
+        profiler.set_enabled(true);
+        profiler.flush();
+        auto const pushes0 = profiler.total_push_count();
+        for (int i = 0; i < kCalls; ++i) {
+            call();
+        }
+        double const zones = static_cast<double>(profiler.total_push_count() - pushes0) / kCalls;
+
+        std::vector<double> on, off;
+        for (int rep = 0; rep < 41; ++rep) {
+            for (bool const enabled : {true, false}) {
+                profiler.set_enabled(enabled);
+                profiler.flush();
+                auto const t0 = std::chrono::steady_clock::now();
+                for (int i = 0; i < kCalls; ++i) {
+                    call();
+                }
+                auto const t1 = std::chrono::steady_clock::now();
+                if (rep > 0) {
+                    (enabled ? on : off).push_back(std::chrono::duration<double, std::nano>(t1 - t0).count() / kCalls);
+                }
+            }
+        }
+        std::ranges::sort(on);
+        std::ranges::sort(off);
+        double const on_med = on[on.size() / 2], off_med = off[off.size() / 2];
+        fmt::println("[EagerCallOverhead census {:22s}] {:4.1f} zones/call   on {:7.1f} ns   off {:7.1f} ns   profiler {:7.1f} ns/call "
+                     "({:4.1f} ns per zone if zones were all of it)",
+                     label, zones, on_med, off_med, on_med - off_med, zones > 0 ? (on_med - off_med) / zones : 0.0);
+    };
+
+    census("gemm 4x4", [&] { cg::einsum("ij <- ik ; kj", &C, A, B); });
+    census("elementwise 4x4", [&] { cg::einsum("ij <- ij ; ij", &C, A, B); });
+    census("dot 4x4", [&] { cg::einsum("<- ij ; ij", &s, A, B); });
+    census("rank3 x rank1", [&] {
+        static auto A3 = create_random_tensor<double>("A3", 4, 4, 4);
+        static auto v4 = create_random_tensor<double>("v4", 4);
+        cg::einsum("ij <- ijk ; k", &C, A3, v4);
+    });
+
+    profiler.set_enabled(was);
+}
+// NOLINTEND(einsums-cg-call-outside-capture)
