@@ -277,6 +277,7 @@ set(ComputeGraphTests
     test_pass_space_propagation_python.py
     test_pass_symmetry_propagation_python.py
     test_permute_python.py
+    test_permute_views_python.py
     test_scalar_writers_python.py
     test_scf_python.py
     test_scale_python.py
