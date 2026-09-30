@@ -44,11 +44,8 @@ jobs:
     if: ${{ (contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src')) && (github.event_name != 'pull_request' || !startsWith(github.head_ref, 'stack/') || contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
     uses: ./.github/workflows/macos-build-and-test.yml
 
-  sanitizers:
-    name: Sanitizers
-    needs: [ detect_changes ]
-    if: ${{ (contains(needs.detect_changes.outputs.filters, 'ci') || contains(needs.detect_changes.outputs.filters, 'src')) && (github.event_name != 'pull_request' || !startsWith(github.head_ref, 'stack/') || contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
-    uses: ./.github/workflows/linux-build-and-test-sanitizer.yml
+  # The ThreadSanitizer leg runs in nightly.yml, not here: at two hours and more it was the longest
+  # leg on every push. Dispatch the Sanitizers workflow to run it on demand.
 
   documentation:
     name: Documentation
