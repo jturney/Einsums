@@ -29,6 +29,26 @@ def _run(pass_obj, g):
     return pm.run(g)
 
 
+def _wide(a):
+    """``a`` in double precision, so the oracle adds no rounding of its own."""
+    return np.asarray(a).astype(np.complex128 if np.iscomplexobj(a) else np.float64)
+
+
+def _sum_atol(dtype, *terms):
+    """An absolute tolerance for a sum of ``terms``, at the scale of the terms.
+
+    An element where the terms cancel has a true value far below the terms, so
+    the last-bit noise of adding them is an unbounded relative error there. The
+    dtype's default atol is sized for double precision and is not enough for
+    float32: a fused axpby whose terms reach ~70 carries ~3e-6 of rounding. That
+    failed the float32 case about one run in a few hundred on the Linux clang leg.
+    Sixteen ulp of the largest term covers the measured worst case (under one ulp)
+    with margin, and stays far below the error of a wrong fused factor.
+    """
+    eps = np.finfo(np.dtype(dtype)).eps
+    return 16 * eps * float(np.max(sum(np.abs(t) for t in terms)))
+
+
 def test_ewf_empty_graph():
     g = cg.Graph("ewf_empty")
     pass_inst = cg.ElementWiseFusion()
@@ -146,11 +166,12 @@ def test_ewf_fuses_consecutive_axpby(dtype):
     X = einsums.create_random_tensor("X", [4, 5], dtype=dtype)
     Y = einsums.create_random_tensor("Y", [4, 5], dtype=dtype)
 
-    X_np = np.asarray(X).copy()
-    Y_np = np.asarray(Y).copy()
+    X_np = _wide(X)
+    Y_np = _wide(Y)
     a1, b1 = _pf(dtype, 2.0, 0.5), _pf(dtype, 3.0, -1.5)
     a2, b2 = _pf(dtype, 5.0, -0.75), _pf(dtype, 7.0, 1.25)
     expected = a2 * X_np + b2 * (a1 * X_np + b1 * Y_np)
+    atol = _sum_atol(dtype, a2 * X_np, b2 * a1 * X_np, b2 * b1 * Y_np)
 
     g = cg.Graph("ewf_axpby")
     with cg.capture(g):
@@ -164,7 +185,7 @@ def test_ewf_fuses_consecutive_axpby(dtype):
     assert g.num_nodes() == 1
 
     g.execute()
-    assert_close(Y, expected)
+    assert_close(Y, expected, dtype=dtype, atol=atol)
 
 
 def test_ewf_axpby_on_a_different_source_does_not_fuse(dtype):
@@ -173,11 +194,13 @@ def test_ewf_axpby_on_a_different_source_does_not_fuse(dtype):
     X2 = einsums.create_random_tensor("X2", [4, 5], dtype=dtype)
     Y = einsums.create_random_tensor("Y", [4, 5], dtype=dtype)
 
-    x1 = np.asarray(X1).copy()
-    x2 = np.asarray(X2).copy()
+    x1 = _wide(X1)
+    x2 = _wide(X2)
+    y = _wide(Y)
     a1, b1 = _pf(dtype, 2.0, 0.5), _pf(dtype, 3.0, -1.5)
     a2, b2 = _pf(dtype, 5.0, -0.75), _pf(dtype, 7.0, 1.25)
-    expected = a2 * x2 + b2 * (a1 * x1 + b1 * np.asarray(Y).copy())
+    expected = a2 * x2 + b2 * (a1 * x1 + b1 * y)
+    atol = _sum_atol(dtype, a2 * x2, b2 * a1 * x1, b2 * b1 * y)
 
     g = cg.Graph("ewf_axpby_diff_src")
     with cg.capture(g):
@@ -188,4 +211,4 @@ def test_ewf_axpby_on_a_different_source_does_not_fuse(dtype):
     assert g.num_nodes() == 2
 
     g.execute()
-    assert_close(Y, expected)
+    assert_close(Y, expected, dtype=dtype, atol=atol)
