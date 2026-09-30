@@ -2137,17 +2137,6 @@ struct TensorView final : tensor_base::CoreTensor, design_pats::Lockable<std::re
         return _impl.data(index_list);
     }
 
-    /**
-     * Get a pointer to the data at a certain index in the tensor.
-     *
-     * @param index_list The index for the offset.
-     */
-    template <Container Index>
-    [[deprecated("The data_array method will be removed in the future. Its functionality will be taken by data.")]] auto
-    data_array(Index const &index_list) const -> Pointer {
-        return const_cast<Pointer>(data(index_list));
-    }
-
     Pointer full_data() noexcept { return _parent; }
 
     ConstPointer full_data() const noexcept { return _parent; }

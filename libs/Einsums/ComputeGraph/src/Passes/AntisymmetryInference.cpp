@@ -79,22 +79,6 @@ std::optional<OperatorSite> read_operator_site(Node const &node) {
     return site;
 }
 
-/// Whether every group of every operator names exactly one letter.
-///
-/// This is the whole of the rule's applicability. A group of two or more makes
-/// the expansion a coset sum rather than the full signed sum over a symmetric
-/// group, and a coset sum carries no antisymmetry of its own.
-bool all_groups_singleton(std::vector<PermutationOperator> const &operators) {
-    for (auto const &op : operators) {
-        for (auto const &group : op.groups) {
-            if (group.size() != 1) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
 /// The same permutation as @p op, asserted as an INVARIANCE rather than whatever
 /// @p op asserts. R2 asks of a divisor exactly what the numerator's generator
 /// permutes, with the opposite kind of claim.
