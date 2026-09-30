@@ -168,6 +168,18 @@ EINSUMS_EXPORT bool run_pass_tree(OptimizerPass &pass, Graph &graph);
  * @throws std::logic_error listing every problem @ref Graph::verify found.
  */
 EINSUMS_EXPORT void verify_after_pass(Graph const &graph, std::string_view pass_name);
+
+/**
+ * @brief Run @p pass, which the caller owns, over @p graph through a PassManager.
+ *
+ * The one way a single pass is applied, so it gets exactly what a pipeline gives each pass: view
+ * storage linked across the tree, settled and unique node ids, verification, and the checks that
+ * a read-only phase did not rewrite and that a changed node set was declared. Graph::apply<PassType>
+ * is built on it.
+ *
+ * @return Whether the pass changed the graph.
+ */
+EINSUMS_EXPORT bool apply_single_pass(OptimizerPass &pass, Graph &graph);
 struct ParsedEinsumSpec;
 
 /**
@@ -1568,8 +1580,10 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      *
      * Creates the pass, runs it, and returns a pair of (modified, pass).
      * Useful for single-pass application and retrieving analysis results.
-     * A pass that opts into sub-graph recursion reaches loop bodies and
-     * branches exactly as it does inside a PassManager (see @ref run_pass_tree).
+     * It runs through a PassManager (see @ref apply_single_pass), so it gets
+     * every preparation and check a pipeline gives its passes, and a pass that
+     * opts into sub-graph recursion reaches loop bodies and branches exactly as
+     * it does there.
      *
      * Constructor arguments are forwarded, mirroring PassManager::add, so a
      * cost-model pass can be priced against an explicit profile.
@@ -1586,12 +1600,8 @@ class APIARY_EXPOSE APIARY_MODULE("graph") APIARY_NOCOPY APIARY_NOMOVE EINSUMS_E
      */
     template <typename PassType, typename... Args>
     std::pair<bool, PassType> apply(Args &&...args) {
-        std::scoped_lock const lock(_content_mutex);
-        PassType               pass{std::forward<Args>(args)...};
-        bool                   modified = run_pass_tree(pass, *this);
-        assign_node_ids();
-        for_each_descendant(std::function<void(Graph &)>{[](Graph &sub) { sub.assign_node_ids(); }});
-        verify_after_pass(*this, pass.name());
+        PassType   pass{std::forward<Args>(args)...};
+        bool const modified = apply_single_pass(pass, *this);
         return {modified, std::move(pass)};
     }
 

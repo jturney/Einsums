@@ -445,6 +445,12 @@ void check_untouched(Graph const &graph, UntouchableMap const &before, std::stri
 /// from children into the parent in a single ``run()`` call on the
 /// parent). Returns ``true`` if any invocation of @p pass modified its
 /// graph.
+bool apply_single_pass(OptimizerPass &pass, Graph &graph) {
+    PassManager manager;
+    manager.add(std::shared_ptr<OptimizerPass>(&pass, [](OptimizerPass *) {}));
+    return graph.apply(manager);
+}
+
 bool run_pass_tree(OptimizerPass &pass, Graph &graph) {
     bool modified = pass.run(graph);
     if (pass.recurse_into_subgraphs()) {
