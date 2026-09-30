@@ -175,6 +175,7 @@ bool InputSlicing::run(Graph &graph) {
         _num_sliced += ins.slices.size();
     }
 
+    graph.note_structural_change();
     graph.mark_sorted();
     return sliced.moved();
 }

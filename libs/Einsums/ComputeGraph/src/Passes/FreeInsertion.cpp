@@ -292,6 +292,9 @@ bool FreeInsertion::run(Graph &graph) {
     for (auto &ins : insertions) {
         nodes.insert(nodes.begin() + static_cast<ptrdiff_t>(ins.index), std::move(ins.node));
     }
+    if (!insertions.empty()) {
+        graph.note_structural_change();
+    }
 
     if (freed.moved()) {
         graph.mark_sorted();

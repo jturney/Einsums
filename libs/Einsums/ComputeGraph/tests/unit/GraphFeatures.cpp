@@ -169,6 +169,25 @@ class CorruptingPass : public cg::OptimizerPass {
     }
 };
 
+/// A pass that drops the last node by editing nodes() directly, the way FreeInsertion,
+/// InplaceOptimization and InputSlicing spliced theirs, and declares the change only when asked to.
+class DroppingPass : public cg::OptimizerPass {
+  public:
+    explicit DroppingPass(bool declare) : _declare(declare) {}
+    [[nodiscard]] std::string name() const override { return "DroppingPass"; }
+    bool                      run(cg::Graph &graph) override {
+        graph.nodes().pop_back();
+        if (_declare) {
+            graph.note_structural_change();
+        }
+        graph.mark_sorted();
+        return true;
+    }
+
+  private:
+    bool _declare;
+};
+
 /// Sets einsums:pass:verify for one test and restores it.
 struct VerifyPasses {
     bool const previous = einsums::config::get(einsums::option::PassVerify);
@@ -201,6 +220,40 @@ TEST_CASE("Graph - verify names each structural problem and the pass that caused
         CHECK_THAT(message, Catch::Matchers::ContainsSubstring("pass 'CorruptingPass' left the graph malformed"));
         CHECK_THAT(message, Catch::Matchers::ContainsSubstring("input tensor #987654 is not registered"));
         CHECK_THAT(message, Catch::Matchers::ContainsSubstring("has no executor"));
+    }
+}
+
+// Defends: a pass that edits nodes() directly and never calls note_structural_change(). The node
+// set changed but structure_version did not, so the manager did not re-run analysis over the new
+// nodes and a read-only phase could have rewritten the graph unnoticed. FreeInsertion,
+// InplaceOptimization and InputSlicing all did this; the manager now names such a pass.
+TEST_CASE("PassManager - a pass that changes the node set must declare it", "[ComputeGraph][Verify]") {
+    auto A = create_random_tensor<double>("A", 3, 3);
+    auto B = create_random_tensor<double>("B", 3, 3);
+    auto C = create_zero_tensor<double>("C", 3, 3);
+    auto D = create_zero_tensor<double>("D", 3, 3);
+
+    cg::Graph graph("declared");
+    {
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("ik;kj->ij", &C, A, B);
+        cg::einsum("ik;kj->ij", &D, A, B);
+    }
+
+    VerifyPasses const verifying;
+
+    SECTION("undeclared") {
+        cg::PassManager manager;
+        manager.add<DroppingPass>(false);
+        CHECK_THROWS_WITH(manager.run(graph), Catch::Matchers::ContainsSubstring("pass 'DroppingPass' changed the node set") &&
+                                                  Catch::Matchers::ContainsSubstring("note_structural_change"));
+    }
+
+    SECTION("declared") {
+        cg::PassManager manager;
+        manager.add<DroppingPass>(true);
+        CHECK_NOTHROW(manager.run(graph));
+        CHECK(graph.num_nodes() == 1);
     }
 }
 

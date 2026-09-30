@@ -287,6 +287,61 @@ void check_read_only_phase(Graph const &graph, OptimizerPass const &pass, std::u
                             graph.name(), pass.name(), phase, before, graph.structure_version());
 }
 
+/// Every graph's node set, as the ids it holds, beside the counter that must move when it changes.
+/// Keyed by address, because a pass that creates a sub-graph gives it no baseline to compare.
+struct DeclaredStructure {
+    std::vector<NodeId> ids;
+    std::uint64_t       version{0};
+};
+
+std::unordered_map<Graph const *, DeclaredStructure> declared_structure(Graph &root) {
+    std::unordered_map<Graph const *, DeclaredStructure> out;
+    auto const                                           take = [&out](Graph &graph) {
+        // Nodes captured since the last pass have no id yet; settling them first keeps them from
+        // reading as nodes the next pass added. Numbering does not change the node set.
+        graph.assign_node_ids();
+        DeclaredStructure entry{.ids = {}, .version = graph.structure_version()};
+        entry.ids.reserve(graph.nodes().size());
+        for (auto const &node : graph.nodes()) {
+            entry.ids.push_back(node.id);
+        }
+        std::ranges::sort(entry.ids);
+        out.emplace(&graph, std::move(entry));
+    };
+    take(root);
+    root.for_each_descendant(std::function<void(Graph &)>{take});
+    return out;
+}
+
+/// A pass that added or removed nodes without moving ``Graph::structure_version`` hid its rewrite
+/// from the phase rule: the manager would not re-run analysis over the new nodes, and a read-only
+/// phase could rewrite unnoticed. add_node and the erase/replace/insert helpers declare it
+/// themselves; a pass that edits ``nodes()`` directly must call note_structural_change(). Checked
+/// against the node ids as a set, since a re-sort changes the order and is not structural.
+void check_structure_declared(Graph &root, std::unordered_map<Graph const *, DeclaredStructure> const &before,
+                              std::string const &pass_name) {
+    auto const check = [&](Graph &graph) {
+        auto const it = before.find(&graph);
+        if (it == before.end() || graph.structure_version() != it->second.version) {
+            return;
+        }
+        std::vector<NodeId> ids;
+        ids.reserve(graph.nodes().size());
+        for (auto const &node : graph.nodes()) {
+            ids.push_back(node.id);
+        }
+        std::ranges::sort(ids);
+        if (ids != it->second.ids) {
+            EINSUMS_THROW_EXCEPTION(std::logic_error,
+                                    "Graph '{}': pass '{}' changed the node set ({} -> {} nodes) without moving structure_version. A "
+                                    "pass that edits nodes() directly must call Graph::note_structural_change().",
+                                    graph.name(), pass_name, it->second.ids.size(), ids.size());
+        }
+    };
+    check(root);
+    root.for_each_descendant(std::function<void(Graph &)>{check});
+}
+
 } // namespace
 
 PassManager &PassManager::disable(std::string pass_name) {
@@ -518,9 +573,11 @@ bool PassManager::run(Graph &graph) {
             auto const baseline         = observed_writes(graph);
             auto const structure_before = graph.structure_version();
             auto const untouchable      = untouchable_before(graph, *pass);
-            bool const modified         = run_pass_tree(*pass, graph);
+            auto const declared = config::get(option::PassVerify) ? declared_structure(graph) : decltype(declared_structure(graph)){};
+            bool const modified = run_pass_tree(*pass, graph);
             settle_node_ids(graph, pass->name());
             verify_after_pass(graph, pass->name());
+            check_structure_declared(graph, declared, pass->name());
             check_untouched(graph, untouchable, pass->name());
             auto   t1 = std::chrono::high_resolution_clock::now();
             double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();

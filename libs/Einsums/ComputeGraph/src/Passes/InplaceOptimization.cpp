@@ -317,7 +317,9 @@ void apply_merge(Graph &graph, MergePlan const &plan, size_t &num_merged) {
     // the rewrite they are indistinguishable by id, so match by the tensor
     // their descriptor names.
     auto const &dst_name = graph.tensor(plan.dst).name;
-    std::erase_if(nodes, [&](Node const &n) { return lifecycle::lifecycle_tensor_name(n) == dst_name; });
+    if (std::erase_if(nodes, [&](Node const &n) { return lifecycle::lifecycle_tensor_name(n) == dst_name; }) > 0) {
+        graph.note_structural_change();
+    }
 
     graph.redirect_slot(plan.dst, plan.src);
     graph.mark_sorted(); // order-preserving rewrite; position-keyed deps are stale
