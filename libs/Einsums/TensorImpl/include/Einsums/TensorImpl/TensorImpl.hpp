@@ -1466,16 +1466,27 @@ struct TensorImpl final {
         // usable here: infer_row_major() calls any rank < 2 tensor row major,
         // having no evidence either way, so the rank-1 view produced by
         // flattening a column-major tensor claims to be row major and reshaping
-        // it back would transpose. When the strides say nothing either - rank
-        // below 2, or every stride equal - column major is the fallback, being
-        // this library's construction default, which makes flatten-then-restore
-        // an identity for tensors built that way.
-        bool reverse = false;
-        for (size_t k = 0; k + 1 < _rank; ++k) {
-            if (_strides[k] != _strides[k + 1]) {
-                reverse = _strides[k] > _strides[k + 1];
+        // it back would transpose. When the strides say nothing either - fewer
+        // than two axes stepped along, or every such stride equal - column major
+        // is the fallback, being this library's construction default, which
+        // makes flatten-then-restore an identity for tensors built that way.
+        //
+        // Only axes of extent above one are compared. An extent-1 axis keeps
+        // whatever stride it had in its parent, and read as evidence it flipped
+        // the order: the column-major block (1, 2, 3) with strides (6, 1, 2) was
+        // walked row major, its axes then failed to abut, and a reshape that is
+        // free was refused.
+        bool   reverse = false;
+        size_t prev    = _rank;
+        for (size_t k = 0; k < _rank; ++k) {
+            if (_dims[k] <= 1) {
+                continue;
+            }
+            if (prev != _rank && _strides[prev] != _strides[k]) {
+                reverse = _strides[prev] > _strides[k];
                 break;
             }
+            prev = k;
         }
         std::vector<size_t> old_d, old_s, new_d;
         std::vector<size_t> new_pos; // where each kept new axis sits in `out`

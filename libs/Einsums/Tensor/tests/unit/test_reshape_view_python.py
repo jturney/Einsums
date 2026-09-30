@@ -117,3 +117,23 @@ def test_row_major_view_merges_from_the_other_end():
     T = A.T  # dims (5, 4, 3), row major
     assert_close(np.asarray(T.reshape_view([5, 12])),
                  np.asarray(T).reshape(5, 12))
+
+
+def test_extent_one_axis_stride_does_not_decide_the_order():
+    """An extent-1 axis keeps whatever stride it had in its parent; the order comes from the rest.
+
+    A permute_view of a column-major (2, 3, 1) tensor is the (1, 2, 3) block with strides
+    (6, 1, 2): contiguous and column major, but the leading 6 against the 1 after it read as
+    row major, the axes then failed to abut, and this free reshape was refused.
+    """
+    rng = np.random.default_rng(10)
+    V = _filled("A", (2, 3, 1), "float64", rng).permute_view([2, 0, 1])
+    assert V.reshapable_as_view([6]) is True
+    assert_close(np.asarray(V.reshape_view([6])), np.asarray(V).reshape(6, order="F"))
+    assert_close(np.asarray(V.reshape_view([2, 3])), np.asarray(V).reshape(2, 3, order="F"))
+
+    # The row-major mirror: (1, 4, 3) with strides (1, 3, 1), which the leading 1 against the 3
+    # after it read as column major.
+    W = _filled("B", (1, 3, 4), "float64", rng).permute_view([0, 2, 1])
+    assert W.reshapable_as_view([12]) is True
+    assert_close(np.asarray(W.reshape_view([12])), np.asarray(W).reshape(12))
