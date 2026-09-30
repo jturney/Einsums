@@ -846,7 +846,9 @@ void string_einsum(ParsedEinsumSpec const &parsed, typename AType::ValueType c_p
         bool const conjugating = conj_a || conj_b;
         ProfileAnnotate("dispatch", conjugating ? "true_dot_runtime" : "dot_runtime");
         last_dispatch_route() = conjugating ? "true_dot_runtime" : "dot_runtime";
-        C->data()[0]          = c_pf * C->data()[0] + ab_pf * temp;
+        // A zero output prefactor assigns rather than multiplies, as on every other route: 0 * NaN is
+        // NaN, so a dot into a never-written output would keep whatever it held.
+        C->data()[0] = c_pf == T{0} ? ab_pf * temp : c_pf * C->data()[0] + ab_pf * temp;
         return;
     }
 

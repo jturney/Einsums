@@ -1341,21 +1341,23 @@ auto einsum(ValueTypeT<CType> const C_prefactor, std::tuple<CIndices...> const &
         // other side: no fast path looks at it, so only the generic loop sums it.
     } else if constexpr (einsum_is_dot_product(C_indices, A_indices, B_indices)) {
         if constexpr (!DryRun) {
+            CDataType temp;
             if constexpr (ConjA == ConjB || (!IsComplexV<ADataType> && !IsComplex<BDataType>)) {
-                CDataType temp = linear_algebra::dot(A, B);
+                temp = linear_algebra::dot(A, B);
                 if constexpr (ConjA && IsComplexV<CDataType>) {
                     temp = std::conj(temp);
                 }
-                (*C) *= C_prefactor;
-                (*C) += AB_prefactor * temp;
             } else {
-                CDataType temp = linear_algebra::true_dot(A, B);
+                temp = linear_algebra::true_dot(A, B);
                 if constexpr (ConjB && IsComplexV<CDataType>) {
                     temp = std::conj(temp);
                 }
-                (*C) *= C_prefactor;
-                (*C) += AB_prefactor * temp;
             }
+            // A zero output prefactor assigns rather than multiplies, as on every other route: 0 * NaN
+            // is NaN, so a dot into a never-written output would keep whatever it held. A rank-0 tensor
+            // converts to a reference to its element, and a scalar output is one.
+            CDataType &c = *C;
+            c            = C_prefactor == CDataType{0} ? AB_prefactor * temp : C_prefactor * c + AB_prefactor * temp;
         }
 
         has_performed_contraction = true;

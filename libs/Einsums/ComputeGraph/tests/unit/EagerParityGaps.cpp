@@ -1044,3 +1044,39 @@ TEST_CASE("cg parity - smart-pointer operands are eager-only", "[ComputeGraph][E
 
     require_close(C, C_ref);
 }
+
+// A zero output prefactor assigns rather than multiplies, as on every other route: 0 * NaN is NaN,
+// so the dot route, which computed c_pf * C + ab_pf * dot, kept whatever a never-written output held.
+TEMPLATE_TEST_CASE("String einsum - dot with a zero output prefactor discards what C held", "[einsum][dot]", float, double,
+                   std::complex<float>, std::complex<double>) {
+    using T            = TestType;
+    double const tol   = 100.0 * std::numeric_limits<RemoveComplexT<T>>::epsilon();
+    T const      nan   = T(std::numeric_limits<RemoveComplexT<T>>::quiet_NaN());
+    auto const   route = [] { return std::string{einsums::compute_graph::dispatch::last_dispatch_route()}; };
+
+    auto x = create_random_tensor<T>("x", 7);
+    auto y = create_random_tensor<T>("y", 7);
+    T    want{0};
+    for (size_t i = 0; i < 7; ++i) {
+        want += x(i) * y(i);
+    }
+
+    SECTION("typed operands") {
+        auto s = create_zero_tensor<T>("s", 1);
+        s(0)   = nan;
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("<- i ; i", T{0}, &s, T{1}, x, y);
+        CHECK(route() == "dot_runtime");
+        REQUIRE(std::abs(s(0) - want) <= tol * (1.0 + std::abs(want)));
+    }
+
+    SECTION("runtime-rank operands") {
+        auto             s_t = create_zero_tensor<T>("s", 1);
+        RuntimeTensor<T> s(s_t), xr(x), yr(y);
+        s = nan;
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("<- i ; i", T{0}, &s, T{1}, xr, yr);
+        CHECK(route() == "dot_runtime");
+        REQUIRE(std::abs(s.data()[0] - want) <= tol * (1.0 + std::abs(want)));
+    }
+}

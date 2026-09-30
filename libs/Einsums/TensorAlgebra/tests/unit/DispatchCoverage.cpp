@@ -80,6 +80,39 @@ TEMPLATE_LIST_TEST_CASE("dot_prefactors", "[dispatch][dot]", testing::AllScalarT
     REQUIRE_THAT((T)C, CheckWithinRel(ref));
 }
 
+// A zero output prefactor assigns rather than multiplies, as on every other route: 0 * NaN is NaN,
+// so a dot into a never-written output kept whatever it held. The DOT branch scaled C with
+// operator*=, whose rank-0 arm multiplies, and a plain scalar output multiplied directly.
+TEMPLATE_LIST_TEST_CASE("dot with a zero output prefactor discards what C held", "[dispatch][dot]", testing::AllScalarTypes) {
+    using T = TestType;
+    tensor_algebra::detail::AlgorithmChoice alg_choice;
+
+    size_t di = 7;
+    auto   A  = create_random_tensor<T>("A", di);
+    auto   B  = create_random_tensor<T>("B", di);
+
+    T ref{0};
+    for (size_t i0 = 0; i0 < di; i0++) {
+        ref += A(i0) * B(i0);
+    }
+    T const nan = testing::prefactor<T>(std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN());
+
+    SECTION("a rank-0 tensor output") {
+        Tensor<T, 0> C("C");
+        (T &)C = nan;
+        einsum(T{0}, Indices{}, &C, T{1}, Indices{i}, A, Indices{i}, B, &alg_choice);
+        REQUIRE(alg_choice == tensor_algebra::detail::DOT);
+        REQUIRE_THAT((T)C, CheckWithinRel(ref));
+    }
+
+    SECTION("a scalar output") {
+        T c = nan;
+        einsum(T{0}, Indices{}, &c, T{1}, Indices{i}, A, Indices{i}, B, &alg_choice);
+        REQUIRE(alg_choice == tensor_algebra::detail::DOT);
+        REQUIRE_THAT(c, CheckWithinRel(ref));
+    }
+}
+
 // ============================================================================
 // DIRECT path gaps: α≠1
 // ============================================================================
