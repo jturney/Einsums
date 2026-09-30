@@ -4,6 +4,7 @@
 //----------------------------------------------------------------------------------------------
 
 #include <Einsums/TensorImpl/TensorImpl.hpp>
+#include <Einsums/TensorImpl/TensorImplOperations.hpp>
 
 #include <Einsums/Testing.hpp>
 
@@ -250,4 +251,29 @@ TEST_CASE("TensorImpl leading dimension of a matrix with an extent-1 axis", "[te
         detail::TensorImpl<double> const impl(data.data(), std::vector<size_t>{2, 3}, std::vector<size_t>{1, 2});
         CHECK(impl.get_lda() == 2);
     }
+}
+
+TEMPLATE_TEST_CASE("TensorImpl rank-0 tensors take BLAS level-1 operations", "[tensor]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    // Rank 0 is one element (size() 1, is_contiguous() true), but the vectorization helpers called it
+    // empty: no increment, not vectorable, no elements per call. Every kernel that trusted them skipped
+    // the element, so scaling a scalar did nothing, and an einsum into a scalar through a folded
+    // diagonal scaled C through a rank-0 view and dropped its prefactor.
+    std::vector<TestType>        data{TestType{3}};
+    detail::TensorImpl<TestType> scalar(data.data(), std::vector<size_t>{}, std::vector<size_t>{});
+    REQUIRE(scalar.rank() == 0);
+    REQUIRE(scalar.size() == 1);
+    CHECK(scalar.is_contiguous());
+    CHECK(scalar.get_incx() == 1);
+    size_t incx = 0;
+    CHECK(scalar.is_totally_vectorable(&incx));
+    CHECK(incx == 1);
+    size_t easy_size = 0, hard_size = 0, easy_rank = 0;
+    scalar.query_vectorable_params(&easy_size, &hard_size, &easy_rank, &incx);
+    CHECK(easy_size == 1);
+    CHECK(hard_size == 1);
+    CHECK(incx == 1);
+
+    einsums::detail::impl_scal(TestType{2}, scalar);
+    CHECK(data[0] == TestType{6});
 }

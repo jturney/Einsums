@@ -789,6 +789,20 @@ TEMPLATE_LIST_TEST_CASE("cg dispatch route - every route in the cascade fires wh
         CHECK(std::abs(C.data()[0] - want.data()[0]) <= tol * (1.0 + std::abs(want.data()[0])));
     }
 
+    // A scalar output through a folded diagonal and a lone letter: the fold hands the rest of the cascade
+    // a rank-0 view of C, and scaling a rank-0 tensor was a silent no-op, so the C prefactor was dropped.
+    SECTION("scalar output through a folded diagonal keeps its prefactor") {
+        auto A    = create_random_tensor<T>("A", 2, 3);
+        auto B    = create_random_tensor<T>("B", 2, 2, 3, 2);
+        auto C    = create_random_tensor<T>("C", 1);
+        auto want = C;
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum(" <- ij ; llji", T{2.0}, &C, T{0.5}, A, B);
+        CHECK(route() == "diagonal:lone_reduced:generic_loop");
+        reference_einsum(" <- ij ; llji", T{2.0}, &want, T{0.5}, A, B);
+        CHECK(std::abs(C.data()[0] - want.data()[0]) <= tol * (1.0 + std::abs(want.data()[0])));
+    }
+
     SECTION("conjugated full contraction") {
         // The scalar-output route is the one BLAS shape with a conjugating
         // form, so it sits ahead of the conjugation gate. On a real type

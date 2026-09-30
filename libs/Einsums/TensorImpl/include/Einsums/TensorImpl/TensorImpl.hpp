@@ -660,14 +660,17 @@ struct TensorImpl final {
     /**
      * @brief Check if a tensor is able to be used as a vector argument to BLAS level 1 calls.
      *
+     * A rank-0 tensor is one element, and so a vector of length one with increment 1, as
+     * @ref size, @ref is_contiguous and @ref get_incx all have it.
+     *
      * @param[out] incx If not nullptr, this will be set to contain the spacing between items.
      */
     [[nodiscard]] bool is_totally_vectorable(size_t *incx = nullptr) const {
         if (_rank == 0) {
             if (incx != nullptr) {
-                *incx = 0;
+                *incx = 1;
             }
-            return false;
+            return true;
         }
         // Ignore size-1 dimensions, whose stride is irrelevant since a permuted
         // view can leave one at a boundary with an inflated stride. The tensor is
@@ -735,11 +738,21 @@ struct TensorImpl final {
     }
 
     /**
-     * @brief Get the smallest stride for the tensor.
+     * @brief The increment that walks this tensor's elements as a vector, as BLAS's incx.
+     *
+     * The smallest stride among the axes that are stepped along, those of extent above one: an
+     * extent-1 axis is never stepped, so its stride says nothing. With no such axis the tensor
+     * holds at most one element and any positive increment reaches it, so a rank-0 tensor answers
+     * 1. Never 0, which BLAS reads as "do nothing" (scal, nrm2, asum) or "repeat one element"
+     * (axpy, dot, copy).
      */
     [[nodiscard]] constexpr size_t get_incx() const {
+        // Rank 0 used to answer 0 here, and is_totally_vectorable and query_vectorable_params
+        // called it empty, though size() is 1 and is_contiguous() true. Every kernel that trusted
+        // them skipped the element: scaling a scalar was a silent no-op, which an einsum into a
+        // scalar output through a folded diagonal ("<- ij ; llji") hit with any C prefactor but 0 or 1.
         if (_rank == 0) {
-            return 0;
+            return 1;
         }
         // The vectorization increment is the smallest stride among dimensions
         // with extent > 1. A size-1 dimension is never traversed, so its stride
@@ -758,7 +771,8 @@ struct TensorImpl final {
     }
 
     /**
-     * @brief Get the smallest stride for the tensor. Equivalent to get_incx.
+     * @brief The increment that walks this tensor's elements as a vector, as BLAS's incy. Equivalent
+     * to @ref get_incx.
      */
     [[nodiscard]] constexpr size_t get_incy() const { return get_incx(); }
 
@@ -858,10 +872,11 @@ struct TensorImpl final {
      */
     void query_vectorable_params(size_t *easy_size, size_t *hard_size, size_t *easy_rank, size_t *incx) const {
         if (_rank == 0) {
-            *easy_size = 0;
-            *hard_size = 0;
+            // One element: one call over one element, with no dimensions to loop over.
+            *easy_size = 1;
+            *hard_size = 1;
             *easy_rank = 0;
-            *incx      = 0;
+            *incx      = 1;
         } else if (_rank == 1) {
             *easy_size = _size;
             *hard_size = 0;
