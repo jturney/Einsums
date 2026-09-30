@@ -125,40 +125,6 @@ concept ContainerOrInitializer = requires(T a, T b, T const ca, T const cb, T &r
 };
 
 /**
- * @concept ContiguousContainer
- *
- * Check to see if a type satisfies the Container requirement and stores its data contiguously.
- * This means that vectors and arrays should satisfy, but things like linked lists should not.
- *
- * @tparam T The type to check.
- *
- * @versionadded{2.0.0}
- */
-template <typename T>
-concept ContiguousContainer = requires(T a) {
-    requires Container<T>;
-    { a.data() } -> std::same_as<typename T::value_type *>;
-};
-
-/**
- * @concept ContiguousContainerOf
- *
- * Check to see if a type satisfies the Container requirement and stores its data contiguously.
- * Also, check that the container stores values of a specific type.
- * This means that vectors and arrays should satisfy, but things like linked lists should not.
- *
- * @tparam T The type to check.
- * @tparam Holds The type of objects the container should hold.
- *
- * @versionadded{2.0.0}
- */
-template <typename T, typename Holds>
-concept ContiguousContainerOf = requires {
-    requires ContiguousContainer<T>;
-    requires std::same_as<typename T::value_type, Holds>;
-};
-
-/**
  * @concept ContainerOf
  *
  * Check to see if a type satisfies the Container requirement and stores values of a certain type.
@@ -171,22 +137,6 @@ concept ContiguousContainerOf = requires {
 template <typename T, typename Holds>
 concept ContainerOf = requires {
     requires Container<T>;
-    requires std::same_as<typename T::value_type, Holds>;
-};
-
-/**
- * @concept ContainerOf
- *
- * Check to see if a type satisfies the Container requirement or is an initializer list and stores values of a certain type.
- *
- * @tparam T The type to check.
- * @tparam Holds The type of objects the container should hold.
- *
- * @versionadded{2.0.0}
- */
-template <typename T, typename Holds>
-concept ContainerOrInitializerOf = requires {
-    requires ContainerOrInitializer<T>;
     requires std::same_as<typename T::value_type, Holds>;
 };
 

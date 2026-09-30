@@ -221,22 +221,6 @@ template <typename D>
 constexpr inline bool IsTensorViewV = requires { typename D::underlying_type; };
 
 /**
- * @property IsViewOfV
- *
- * @brief Checks to see if the tensor is a view of another tensor with the kind of tensor specified.
- *
- * @tparam D The tensor type to check.
- * @tparam Viewed The type of tensor expected to be viewed.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, typename Viewed>
-constexpr inline bool IsViewOfV = requires {
-    requires IsTensorViewV<D>;
-    requires std::is_same_v<typename std::remove_cvref_t<D>::underlying_type, Viewed>;
-};
-
-/**
  * @property IsBasicTensorV
  *
  * @brief Checks to see if the tensor is a basic tensor.
@@ -456,34 +440,6 @@ template <typename D, size_t Rank, typename T>
 constexpr inline bool IsIncoreRankTensorV = IsIncoreTensorV<D> && IsTRTensorV<D, Rank, T>;
 
 /**
- * @property IsDeviceRankTensorV
- *
- * @brief Requires that a tensor is available to the graphics hardware, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-constexpr inline bool IsDeviceRankTensorV = IsDeviceTensorV<D> && IsTRTensorV<D, Rank, T>;
-
-/**
- * @property IsDiskRankTensorV
- *
- * @brief Requires that a tensor is stored on disk, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-constexpr inline bool IsDiskRankTensorV = IsDiskTensorV<D> && IsTRTensorV<D, Rank, T>;
-
-/**
  * @property IsRankBasicTensorV
  *
  * @brief Requires that a tensor is a basic tensor, stores the required type, and has the required rank.
@@ -496,20 +452,6 @@ constexpr inline bool IsDiskRankTensorV = IsDiskTensorV<D> && IsTRTensorV<D, Ran
  */
 template <typename D, size_t Rank, typename T>
 constexpr inline bool IsRankBasicTensorV = IsBasicTensorV<D> && IsTRTensorV<D, Rank, T>;
-
-/**
- * @property IsRankTiledTensorV
- *
- * @brief Requires that a tensor is a Tiled tensor, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-constexpr inline bool IsRankTiledTensorV = IsTiledTensorV<D> && IsTRTensorV<D, Rank, T>;
 
 /**
  * @property IsRankBlockTensorV
@@ -526,34 +468,6 @@ template <typename D, size_t Rank, typename T>
 constexpr inline bool IsRankBlockTensorV = IsBlockTensorV<D> && IsTRTensorV<D, Rank, T>;
 
 /**
- * @property IsIncoreRankBasicTensorV
- *
- * @brief Requires that a tensor is a basic tensor stored in-core, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-constexpr inline bool IsIncoreRankBasicTensorV = IsBasicTensorV<D> && IsTRTensorV<D, Rank, T> && IsIncoreTensorV<D>;
-
-/**
- * @property IsDeviceRankBasicTensorV
- *
- * @brief Requires that a tensor is a basic tensor available to graphics hardware, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-constexpr inline bool IsDeviceRankBasicTensorV = IsBasicTensorV<D> && IsTRTensorV<D, Rank, T> && IsDeviceTensorV<D>;
-
-/**
  * @property IsIncoreRankBlockTensorV
  *
  * @brief Requires that a tensor is a block tensor stored in-core, stores the required type, and has the required rank.
@@ -566,48 +480,6 @@ constexpr inline bool IsDeviceRankBasicTensorV = IsBasicTensorV<D> && IsTRTensor
  */
 template <typename D, size_t Rank, typename T>
 constexpr inline bool IsIncoreRankBlockTensorV = IsBlockTensorV<D> && IsTRTensorV<D, Rank, T> && IsIncoreTensorV<D>;
-
-/**
- * @property IsDeviceRankBlockTensorV
- *
- * @brief Requires that a tensor is a block tensor available to graphics hardware, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-constexpr inline bool IsDeviceRankBlockTensorV = IsBlockTensorV<D> && IsTRTensorV<D, Rank, T> && IsDeviceTensorV<D>;
-
-/**
- * @property IsIncoreRankTiledTensorV
- *
- * @brief Requires that a tensor is a tiled tensor stored in-core, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-constexpr inline bool IsIncoreRankTiledTensorV = IsTiledTensorV<D> && IsTRTensorV<D, Rank, T> && IsIncoreTensorV<D>;
-
-/**
- * @property IsDeviceRankTiledTensorV
- *
- * @brief Requires that a tensor is a tiled tensor available to graphics hardware, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-constexpr inline bool IsDeviceRankTiledTensorV = IsTiledTensorV<D> && IsTRTensorV<D, Rank, T> && IsDeviceTensorV<D>;
 
 /**
  * @property IsIncoreBasicTensorV
@@ -624,34 +496,6 @@ template <typename D>
 constexpr inline bool IsIncoreBasicTensorV = IsIncoreTensorV<D> && IsBasicTensorV<D>;
 
 /**
- * @property IsDeviceBasicTensorV
- *
- * @brief Checks to see if the tensor is available to graphics hardware and is a basic tensor.
- *
- * Checks the tensor against DeviceTensorBase and BasicTensorBase.
- *
- * @tparam D The tensor to check.
- *
- * @versionadded{1.0.0}
- */
-template <typename D>
-constexpr inline bool IsDeviceBasicTensorV = IsDeviceTensorV<D> && IsBasicTensorV<D>;
-
-/**
- * @property IsDiskBasicTensorV
- *
- * @brief Checks to see if the tensor is stored on-disk and is a basic tensor.
- *
- * Checks whether the tensor inherits DiskTensorBase and BasicTensorBase.
- *
- * @tparam D The tensor type to check.
- *
- * @versionadded{1.0.0}
- */
-template <typename D>
-constexpr inline bool IsDiskBasicTensorV = IsDiskTensorV<D> && IsBasicTensorV<D>;
-
-/**
  * @property IsIncoreTiledTensorV
  *
  * @brief Checks to see if the tensor is available in-core and is a basic tensor.
@@ -666,34 +510,6 @@ template <typename D>
 constexpr inline bool IsIncoreTiledTensorV = IsIncoreTensorV<D> && IsTiledTensorV<D>;
 
 /**
- * @property IsDeviceTiledTensorV
- *
- * @brief Checks to see if the tensor is available to graphics hardware and is a tiled tensor.
- *
- * Checks the tensor against DeviceTensorBase and TiledTensorBase.
- *
- * @tparam D The tensor to check.
- *
- * @versionadded{1.0.0}
- */
-template <typename D>
-constexpr inline bool IsDeviceTiledTensorV = IsDeviceTensorV<D> && IsTiledTensorV<D>;
-
-/**
- * @property IsDiskTiledTensorV
- *
- * @brief Checks to see if the tensor is stored on-disk and is a tiled tensor.
- *
- * Checks whether the tensor inherits DiskTensorBase and TiledTensorBase.
- *
- * @tparam D The tensor type to check.
- *
- * @versionadded{1.0.0}
- */
-template <typename D>
-constexpr inline bool IsDiskTiledTensorV = IsDiskTensorV<D> && IsTiledTensorV<D>;
-
-/**
  * @property IsIncoreBlockTensorV
  *
  * @brief Checks to see if the tensor is available in-core and is a block tensor.
@@ -706,37 +522,6 @@ constexpr inline bool IsDiskTiledTensorV = IsDiskTensorV<D> && IsTiledTensorV<D>
  */
 template <typename D>
 constexpr inline bool IsIncoreBlockTensorV = IsIncoreTensorV<D> && IsBlockTensorV<D>;
-
-/**
- * @property IsDeviceBlockTensorV
- *
- * @brief Checks to see if the tensor is available to graphics hardware and is a block tensor.
- *
- * Checks the tensor against DeviceTensorBase and BlockTensorBase.
- *
- * @tparam D The tensor to check.
- *
- * @versionadded{1.0.0}
- * @versionchangeddesc{2.0.0}
- *      Fixed a typo. Was @c IsDeviceBLockTensorV , now it is @c IsDeviceBlockTensorV .
- * @endversion
- */
-template <typename D>
-constexpr inline bool IsDeviceBlockTensorV = IsDeviceTensorV<D> && IsBlockTensorV<D>;
-
-/**
- * @property IsDiskBlockTensorV
- *
- * @brief Checks to see if the tensor is stored on-disk and is a block tensor.
- *
- * Checks whether the tensor inherits DiskTensorBase and BlockTensorBase.
- *
- * @tparam D The tensor type to check.
- *
- * @versionadded{1.0.0}
- */
-template <typename D>
-constexpr inline bool IsDiskBlockTensorV = IsDiskTensorV<D> && IsBlockTensorV<D>;
 
 /**
  * @property IsSameUnderlyingV
@@ -950,21 +735,6 @@ template <typename D>
 concept TensorViewConcept = IsTensorViewV<D>;
 
 /**
- * \concept ViewOfConcept
- *
- * @brief Checks to see if the tensor is a view of another tensor with the kind of tensor specified.
- *
- * Checks whether the tensor inherits the appropriate TensorViewBase.
- *
- * @tparam D The tensor type to check.
- * @tparam Viewed The type of tensor expected to be viewed.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, typename Viewed>
-concept ViewOfConcept = IsViewOfV<D, Viewed>;
-
-/**
  * \concept BasicTensorConcept
  *
  * @brief Checks to see if the tensor is a basic tensor.
@@ -1091,34 +861,6 @@ template <typename D, size_t Rank, typename T>
 concept CoreRankTensor = IsIncoreRankTensorV<D, Rank, T>;
 
 /**
- * \concept DeviceRankTensor
- *
- * @brief Requires that a tensor is available to the graphics hardware, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-concept DeviceRankTensor = IsDeviceRankTensorV<D, Rank, T>;
-
-/**
- * \concept DiskRankTensor
- *
- * @brief Requires that a tensor is stored on disk, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-concept DiskRankTensor = IsDiskRankTensorV<D, Rank, T>;
-
-/**
  * \concept RankBasicTensor
  *
  * @brief Requires that a tensor is a basic tensor, stores the required type, and has the required rank.
@@ -1131,20 +873,6 @@ concept DiskRankTensor = IsDiskRankTensorV<D, Rank, T>;
  */
 template <typename D, size_t Rank, typename T>
 concept RankBasicTensor = IsRankBasicTensorV<D, Rank, T>;
-
-/**
- * \concept RankTiledTensor
- *
- * @brief Requires that a tensor is a Tiled tensor, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-concept RankTiledTensor = IsRankTiledTensorV<D, Rank, T>;
 
 /**
  * \concept RankBlockTensor
@@ -1161,34 +889,6 @@ template <typename D, size_t Rank, typename T>
 concept RankBlockTensor = IsRankBlockTensorV<D, Rank, T>;
 
 /**
- * \concept CoreRankBasicTensor
- *
- * @brief Requires that a tensor is a basic tensor stored in-core, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-concept CoreRankBasicTensor = IsIncoreRankBasicTensorV<D, Rank, T>;
-
-/**
- * \concept DeviceRankBasicTensor
- *
- * @brief Requires that a tensor is a basic tensor available to graphics hardware, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-concept DeviceRankBasicTensor = IsDeviceRankBasicTensorV<D, Rank, T>;
-
-/**
  * \concept CoreRankBlockTensor
  *
  * @brief Requires that a tensor is a block tensor stored in-core, stores the required type, and has the required rank.
@@ -1203,48 +903,6 @@ template <typename D, size_t Rank, typename T>
 concept CoreRankBlockTensor = IsIncoreRankBlockTensorV<D, Rank, T>;
 
 /**
- * \concept DeviceRankBlockTensor
- *
- * @brief Requires that a tensor is a block tensor available to graphics hardware, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-concept DeviceRankBlockTensor = IsDeviceRankBlockTensorV<D, Rank, T>;
-
-/**
- * \concept CoreRankTiledTensor
- *
- * @brief Requires that a tensor is a tiled tensor stored in-core, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-concept CoreRankTiledTensor = IsIncoreRankTiledTensorV<D, Rank, T>;
-
-/**
- * \concept DeviceRankTiledTensor
- *
- * @brief Requires that a tensor is a tiled tensor available to graphics hardware, stores the required type, and has the required rank.
- *
- * @tparam D The tensor to check.
- * @tparam Rank The rank of the tensor.
- * @tparam T The type that should be stored.
- *
- * @versionadded{1.0.0}
- */
-template <typename D, size_t Rank, typename T>
-concept DeviceRankTiledTensor = IsDeviceRankTiledTensorV<D, Rank, T>;
-
-/**
  * \concept CoreBasicTensorConcept
  *
  * @brief Requires that a tensor is a basic tensor stored in-core.
@@ -1255,18 +913,6 @@ concept DeviceRankTiledTensor = IsDeviceRankTiledTensorV<D, Rank, T>;
  */
 template <typename D>
 concept CoreBasicTensorConcept = IsIncoreBasicTensorV<D>;
-
-/**
- * \concept DeviceBasicTensorConcept
- *
- * @brief Requires that a tensor is a basic tensor available to graphics hardware.
- *
- * @tparam D The tensor to check.
- *
- * @versionadded{1.0.0}
- */
-template <typename D>
-concept DeviceBasicTensorConcept = IsDeviceBasicTensorV<D>;
 
 /**
  * \concept CoreBlockTensorConcept
@@ -1281,18 +927,6 @@ template <typename D>
 concept CoreBlockTensorConcept = IsIncoreBlockTensorV<D>;
 
 /**
- * \concept DeviceBlockTensorConcept
- *
- * @brief Requires that a tensor is a block tensor available to graphics hardware.
- *
- * @tparam D The tensor to check.
- *
- * @versionadded{1.0.0}
- */
-template <typename D>
-concept DeviceBlockTensorConcept = IsDeviceBlockTensorV<D>;
-
-/**
  * \concept CoreTiledTensorConcept
  *
  * @brief Requires that a tensor is a tiled tensor stored in-core.
@@ -1303,18 +937,6 @@ concept DeviceBlockTensorConcept = IsDeviceBlockTensorV<D>;
  */
 template <typename D>
 concept CoreTiledTensorConcept = IsIncoreTiledTensorV<D>;
-
-/**
- * \concept DeviceTiledTensorConcept
- *
- * @brief Requires that a tensor is a tiled tensor available to graphics hardware.
- *
- * @tparam D The tensor to check.
- *
- * @versionadded{1.0.0}
- */
-template <typename D>
-concept DeviceTiledTensorConcept = IsDeviceTiledTensorV<D>;
 
 /**
  * \concept InSamePlace
@@ -1694,18 +1316,5 @@ concept AtLeastOneOfType = (std::is_same_v<T, std::remove_cvref_t<Args>> || ... 
  */
 template <typename T, size_t Num, typename... Args>
 concept NumOfType = detail::count_of_type<T, std::remove_cvref_t<Args>...>() == Num;
-
-/**
- * @concept AllOfType
- *
- * Checks each type against a key. If all types match, returns true.
- *
- * @tparam T The type to check against.
- * @tparam Args The list of types.
- *
- * @versionadded{1.0.0}
- */
-template <typename T, typename... Args>
-concept AllOfType = (std::is_same_v<T, std::remove_cvref_t<Args>> && ... && true);
 
 EINSUMS_NAMESPACE_END()
