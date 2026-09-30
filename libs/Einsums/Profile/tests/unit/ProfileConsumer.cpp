@@ -5,8 +5,10 @@
 
 #include <Einsums/Config.hpp>
 
+#include <Einsums/BLASVendor/Vendor.hpp>
 #include <Einsums/Profile/Profile.hpp>
 
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cmath>
@@ -340,4 +342,30 @@ TEST_CASE("Profiler - no counter rows without a counter backend", "[profiler][co
     auto const *node = find_node_any_thread(prof.consumer()->thread_data(), "counterless zone");
     REQUIRE(node != nullptr);
     CHECK(node->counters_total.empty());
+}
+
+TEST_CASE("Profiler - a zone opened in the library nests under the caller's zone", "[profiler][consumer]") {
+    // The per-thread channel was reached through an inline function holding a thread_local, and
+    // -fvisibility-inlines-hidden gives every shared object its own copy: this executable and the
+    // library each had a channel for the thread, with its own ring and depth, and the library's
+    // zones landed at the root instead of under the zone that called them. dgemv opens its zone in
+    // the library, not in anything inlined here.
+    auto &prof = Profiler::instance();
+    {
+        LabeledSection("caller zone across libraries");
+        std::array<double, 4> const a{1.0, 2.0, 3.0, 4.0};
+        std::array<double, 2> const x{1.0, 1.0};
+        std::array<double, 2>       y{};
+        einsums::blas::vendor::dgemv('n', 2, 2, 1.0, a.data(), 2, x.data(), 1, 0.0, y.data(), 1);
+    }
+    prof.flush();
+
+    auto        lock   = prof.consumer()->lock_shared();
+    auto const *caller = find_node_any_thread(prof.consumer()->thread_data(), "caller zone across libraries");
+    REQUIRE(caller != nullptr);
+    bool nested = false;
+    for (auto const &child : caller->children) {
+        nested = nested || child.second->name == "dgemv";
+    }
+    CHECK(nested);
 }

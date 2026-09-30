@@ -267,21 +267,17 @@ struct EINSUMS_EXPORT Profiler {
 
     /// The calling thread's channel, registered on first use.
     ///
-    /// A plain pointer in a constant-initialized thread_local, so the hot path reads it with no
-    /// initialization guard; registration is the cold path.
-    static auto thread_channel() -> ThreadChannel & {
-        static thread_local ThreadChannel *channel = nullptr;
-        if (channel == nullptr) [[unlikely]] {
-            channel = &instance().register_thread();
-        }
-        return *channel;
-    }
+    /// Defined out of line, in the library, so there is exactly one per thread. Every module is built
+    /// with -fvisibility-inlines-hidden, which gives each shared object its own copy of an inline
+    /// function and so of a thread_local inside it: defined here, a thread recording from the Python
+    /// bindings or a test executable as well as from the library had one channel in each, with its
+    /// own ring and its own depth, and a zone opened in one never nested under a zone opened in the
+    /// other.
+    static auto thread_channel() -> ThreadChannel &;
 
 #    ifdef EINSUMS_HAVE_TRACY
-    static auto thread_tracy_zones() -> std::vector<std::unique_ptr<tracy::ScopedZone>> & {
-        thread_local std::vector<std::unique_ptr<tracy::ScopedZone>> v;
-        return v;
-    }
+    /// The calling thread's open Tracy zones. Out of line for the same reason as @ref thread_channel.
+    static auto thread_tracy_zones() -> std::vector<std::unique_ptr<tracy::ScopedZone>> &;
 #    endif
 
     // Platform-specific thread ID

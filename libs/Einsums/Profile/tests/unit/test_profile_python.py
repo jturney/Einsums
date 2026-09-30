@@ -257,3 +257,54 @@ def test_disabled_build_records_nothing(tmp_path, capfd):
     prof.print_report(detailed=True)
     out, _ = capfd.readouterr()
     assert out == ""
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Zones opened by the library nest under zones opened from Python
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@recording
+def test_library_zones_nest_under_a_python_section(tmp_path):
+    """A section opened here and the zones cg::einsum opens inside libEinsums are one tree.
+
+    The per-thread channel used to be reached through an inline function holding a
+    thread_local, and every module is built with -fvisibility-inlines-hidden, so the
+    bindings and the library each had their own channel for the thread. Their zones
+    never nested: cg::einsum landed at the root of the report, beside the section
+    that called it rather than under it.
+    """
+    import numpy as np
+
+    import einsums
+
+    def tensor(name, shape):
+        t = einsums.create_zero_tensor(name, list(shape), dtype="float64")
+        np.asarray(t)[...] = 1.0
+        return t
+
+    A, B, C = tensor("A", (3, 4)), tensor("B", (4, 5)), tensor("C", (3, 5))
+    with prof.section("python section around einsum"):
+        einsums.einsum("ij <- ik ; kj", C, A, B)
+    prof.flush()
+
+    out = prof.export_json(str(tmp_path / "profile.json"))
+    tree = json.loads(open(out).read())
+
+    def find(node, name):
+        if node.get("name") == name:
+            return node
+        for child in node.get("children", []):
+            found = find(child, name)
+            if found is not None:
+                return found
+        return None
+
+    def names_below(node):
+        for child in node.get("children", []):
+            yield child["name"]
+            yield from names_below(child)
+
+    section = next(filter(None, (find(root, "python section around einsum") for root in tree.values())), None)
+    assert section is not None
+    assert any(name.startswith("cg::einsum:") for name in names_below(section))

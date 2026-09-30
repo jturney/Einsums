@@ -105,6 +105,23 @@ auto Profiler::instance() -> Profiler & {
     return p;
 }
 
+auto Profiler::thread_channel() -> ThreadChannel & {
+    // A plain pointer in a constant-initialized thread_local, so a zone reads it with no
+    // initialization guard; registration is the cold path.
+    static thread_local ThreadChannel *channel = nullptr;
+    if (channel == nullptr) [[unlikely]] {
+        channel = &instance().register_thread();
+    }
+    return *channel;
+}
+
+#    ifdef EINSUMS_HAVE_TRACY
+auto Profiler::thread_tracy_zones() -> std::vector<std::unique_ptr<tracy::ScopedZone>> & {
+    thread_local std::vector<std::unique_ptr<tracy::ScopedZone>> v;
+    return v;
+}
+#    endif
+
 auto Profiler::register_thread() -> ThreadChannel & {
     auto       channel = std::make_shared<ThreadChannel>();
     auto const tid     = thread_key();
