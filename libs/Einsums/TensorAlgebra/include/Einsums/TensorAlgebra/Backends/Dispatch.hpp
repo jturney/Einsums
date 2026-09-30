@@ -978,74 +978,45 @@ inline int permute_plan_team_size() {
 }
 
 /**
- * @brief Cached HPTT permute: reuses the plan when tensor dimensions/strides match.
+ * @brief Cached HPTT permute with explicit alpha/beta prefactors: reuses the plan when both
+ *        operands' dimensions and strides match the ones it was built for.
  *
  * Template parameters (including index types) make each call site a distinct instantiation,
- * so the thread_local cache is per-permutation-pattern per-thread.
- */
-template <bool ConjA, typename T, size_t SrcRank, typename SrcType, typename DstType, typename... DstIndices, typename... SrcIndices>
-void cached_permute(std::tuple<DstIndices...> const &dst_indices, DstType *dst, std::tuple<SrcIndices...> const &src_indices,
-                    SrcType const &src) {
-    thread_local Dim<SrcRank>                        prev_dims{};
-    thread_local Stride<SrcRank>                     prev_strides{};
-    thread_local int                                 prev_threads{0};
-    thread_local std::shared_ptr<hptt::Transpose<T>> plan{};
-
-    int const team = permute_plan_team_size();
-
-    bool hit = (plan != nullptr) && team == prev_threads;
-    if (hit) {
-        for (size_t d = 0; d < SrcRank; d++) {
-            if (src.dim(d) != prev_dims[d] || src.stride(d) != prev_strides[d]) {
-                hit = false;
-                break;
-            }
-        }
-    }
-
-    if (!hit) {
-        plan         = tensor_algebra::compile_permute<ConjA>(T{0}, dst_indices, dst, T{1}, src_indices, src, hptt_selection_method());
-        prev_threads = team;
-        for (size_t d = 0; d < SrcRank; d++) {
-            prev_dims[d]    = src.dim(d);
-            prev_strides[d] = src.stride(d);
-        }
-    } else {
-        plan->set_input_ptr(src.data());
-        plan->set_output_ptr(dst->data());
-    }
-    plan->execute();
-}
-
-/**
- * @brief Cached HPTT permute with explicit alpha/beta prefactors.
+ * so the thread_local cache is per-permutation-pattern per-thread. The key covers the
+ * destination as well as the source: a plan bakes in the destination's outer sizes, so a
+ * destination laid out differently needs a plan of its own.
  */
 template <bool ConjA, typename T, size_t SrcRank, typename SrcType, typename DstType, typename... DstIndices, typename... SrcIndices>
 void cached_permute(T beta, std::tuple<DstIndices...> const &dst_indices, DstType *dst, T alpha,
                     std::tuple<SrcIndices...> const &src_indices, SrcType const &src) {
-    thread_local Dim<SrcRank>                        prev_dims{};
-    thread_local Stride<SrcRank>                     prev_strides{};
+    thread_local Dim<SrcRank>                        prev_src_dims{}, prev_dst_dims{};
+    thread_local Stride<SrcRank>                     prev_src_strides{}, prev_dst_strides{};
     thread_local int                                 prev_threads{0};
     thread_local std::shared_ptr<hptt::Transpose<T>> plan{};
+
+    // An empty operand has nothing to permute and gets no plan, but is still checked for matching
+    // extents by asking for one. It never reaches the cache, which holds only runnable plans.
+    if (src.size() == 0 || dst->size() == 0) {
+        tensor_algebra::compile_permute<ConjA>(beta, dst_indices, dst, alpha, src_indices, src, hptt_selection_method());
+        return;
+    }
 
     int const team = permute_plan_team_size();
 
     bool hit = (plan != nullptr) && team == prev_threads;
-    if (hit) {
-        for (size_t d = 0; d < SrcRank; d++) {
-            if (src.dim(d) != prev_dims[d] || src.stride(d) != prev_strides[d]) {
-                hit = false;
-                break;
-            }
-        }
+    for (size_t d = 0; hit && d < SrcRank; d++) {
+        hit = src.dim(d) == prev_src_dims[d] && src.stride(d) == prev_src_strides[d] && dst->dim(d) == prev_dst_dims[d] &&
+              dst->stride(d) == prev_dst_strides[d];
     }
 
     if (!hit) {
         plan         = tensor_algebra::compile_permute<ConjA>(beta, dst_indices, dst, alpha, src_indices, src, hptt_selection_method());
         prev_threads = team;
         for (size_t d = 0; d < SrcRank; d++) {
-            prev_dims[d]    = src.dim(d);
-            prev_strides[d] = src.stride(d);
+            prev_src_dims[d]    = src.dim(d);
+            prev_src_strides[d] = src.stride(d);
+            prev_dst_dims[d]    = dst->dim(d);
+            prev_dst_strides[d] = dst->stride(d);
         }
     } else {
         plan->set_input_ptr(src.data());
@@ -1054,6 +1025,15 @@ void cached_permute(T beta, std::tuple<DstIndices...> const &dst_indices, DstTyp
         plan->set_beta(beta);
     }
     plan->execute();
+}
+
+/**
+ * @brief Cached HPTT permute that overwrites the destination.
+ */
+template <bool ConjA, typename T, size_t SrcRank, typename SrcType, typename DstType, typename... DstIndices, typename... SrcIndices>
+void cached_permute(std::tuple<DstIndices...> const &dst_indices, DstType *dst, std::tuple<SrcIndices...> const &src_indices,
+                    SrcType const &src) {
+    cached_permute<ConjA, T, SrcRank>(T{0}, dst_indices, dst, T{1}, src_indices, src);
 }
 
 /**

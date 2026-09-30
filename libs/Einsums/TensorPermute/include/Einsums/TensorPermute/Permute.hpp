@@ -48,6 +48,16 @@ namespace detail {
 template <bool ConjA, typename T>
 std::shared_ptr<hptt::Transpose<T>> build_permute_plan(T beta, std::span<int const> c_to_a, einsums::detail::TensorImpl<T> *C, T alpha,
                                                        einsums::detail::TensorImpl<T> const &A, hptt::SelectionMethod method) {
+    // C has A's extents, axis for axis. HPTT takes its sizes from A alone and C's only from its
+    // strides, so a C of any other shape is written wrong or out of bounds rather than refused.
+    // Checked before the empty return, so an empty operand against a non-empty one still throws.
+    for (std::size_t i = 0; i < c_to_a.size(); ++i) {
+        if (C->dim(static_cast<int>(i)) != A.dim(c_to_a[i])) {
+            EINSUMS_THROW_EXCEPTION(DimensionError, "permute: output axis {} has extent {}, but the input axis it takes has extent {}", i,
+                                    C->dim(static_cast<int>(i)), A.dim(c_to_a[i]));
+        }
+    }
+
     // An empty operand has nothing to permute, and HPTT rejects a zero extent. There is no plan.
     if (A.size() == 0 || C->size() == 0) {
         return nullptr;
@@ -297,6 +307,7 @@ inline std::pair<std::string, std::string> parse_permute_spec(std::string_view s
  *         the null plan through the three-argument ``permute`` does nothing.
  * @throws RankError when a side does not have one letter per axis of its operand, or the two sides
  *         do not name the same axes.
+ * @throws DimensionError when an axis of @p C does not have the extent of the axis of @p A it takes.
  *
  * @versionadded{2.0.0}
  */
@@ -338,6 +349,7 @@ void permute(einsums::detail::TensorImpl<T> *C, einsums::detail::TensorImpl<T> c
  * @tparam T The element type of both tensors.
  * @throws RankError when a side does not have one letter per axis of its operand, or the two sides
  *         do not name the same axes.
+ * @throws DimensionError when an axis of @p C does not have the extent of the axis of @p A it takes.
  *
  * @versionadded{2.0.0}
  */
@@ -351,7 +363,7 @@ void permute(std::string_view spec, T beta, einsums::detail::TensorImpl<T> *C, T
  * @brief Compute @f$ C = A^T @f$ for rank-2 tensors.
  *
  * @throws RankError when either operand is not rank 2.
- * @throws DimensionError when @p C is smaller than the transposed @p A.
+ * @throws DimensionError when @p C does not have the extents of the transposed @p A.
  *
  * @versionadded{2.0.0}
  */
@@ -360,8 +372,8 @@ void transpose(einsums::detail::TensorImpl<T> *C, einsums::detail::TensorImpl<T>
     if (C->rank() != 2 || A.rank() != 2) {
         EINSUMS_THROW_EXCEPTION(RankError, "transpose needs rank-2 tensors, got output rank {} and input rank {}", C->rank(), A.rank());
     }
-    if (C->dim(0) < A.dim(1) || C->dim(1) < A.dim(0)) {
-        EINSUMS_THROW_EXCEPTION(DimensionError, "transpose: the output tensor is smaller than the transposed input");
+    if (C->dim(0) != A.dim(1) || C->dim(1) != A.dim(0)) {
+        EINSUMS_THROW_EXCEPTION(DimensionError, "transpose: the output tensor does not have the extents of the transposed input");
     }
     detail::permute<ConjA>(T{0}, "ij", C, T{1}, "ji", A);
 }
@@ -392,6 +404,7 @@ concept HasTensorImpl = requires(T &t, T const &ct) {
  *
  * @throws RankError when a side does not have one letter per axis of its operand, or the two sides
  *         do not name the same axes.
+ * @throws DimensionError when an axis of @p C does not have the extent of the axis of @p A it takes.
  *
  * @versionadded{2.0.0}
  */
@@ -417,7 +430,7 @@ void permute(std::string_view spec, CType *C, AType const &A) {
  * @brief Compute @f$ C = A^T @f$ for rank-2 tensors.
  *
  * @throws RankError when either operand is not rank 2.
- * @throws DimensionError when @p C is smaller than the transposed @p A.
+ * @throws DimensionError when @p C does not have the extents of the transposed @p A.
  *
  * @versionadded{2.0.0}
  */

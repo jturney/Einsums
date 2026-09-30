@@ -9,7 +9,9 @@
 #include <Einsums/TensorUtilities/CreateIncrementedTensor.hpp>
 #include <Einsums/Utilities/TemporaryFilename.hpp>
 
+#include <complex>
 #include <cstdio>
+#include <vector>
 
 #include <Einsums/Testing.hpp>
 
@@ -323,5 +325,79 @@ TEST_CASE("Saving and loading permutes") {
                 REQUIRE_THAT(B(j, k, i), Catch::Matchers::WithinRel(A(i, j, k), 0.00001));
             }
         }
+    }
+}
+
+// The templated permute built its HPTT plan from its own copy of the plan builder, which never got
+// the fixes TensorPermute's has. Its empty-operand check was a `return` inside a for_sequence
+// lambda, which only ends that iteration, so a zero extent reached HPTT and was rejected.
+TEMPLATE_TEST_CASE("permute with empty operands does nothing", "[tensor]", float, double, std::complex<float>, std::complex<double>) {
+    using namespace einsums;
+    using namespace einsums::tensor_algebra;
+    using namespace einsums::index;
+
+    Tensor<TestType, 3> A{"A", 2, 0, 4};
+    Tensor<TestType, 3> C{"C", 4, 2, 0};
+
+    SECTION("permute") {
+        REQUIRE_NOTHROW(permute(Indices{k, i, j}, &C, Indices{i, j, k}, A));
+    }
+
+    SECTION("a compiled plan") {
+        auto plan = compile_permute(TestType{0}, Indices{k, i, j}, &C, TestType{1}, Indices{i, j, k}, A);
+        REQUIRE(plan == nullptr);
+        REQUIRE_NOTHROW(permute(&C, A, plan));
+    }
+}
+
+// An extent-1 axis is never stepped along, so a view may carry any stride for it. Reading the
+// outer sizes off such a stride made one smaller than its extent and HPTT rejected the plan.
+TEMPLATE_TEST_CASE("permute through an extent-1 axis whatever its stride", "[tensor]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    using namespace einsums;
+    using namespace einsums::tensor_algebra;
+    using namespace einsums::index;
+
+    // The six elements of a column-major (2, 3) block, with an extent-1 middle axis whose stride
+    // points past the end.
+    std::vector<TestType> a_data(6);
+    for (size_t n = 0; n < a_data.size(); n++) {
+        a_data[n] = TestType(static_cast<RemoveComplexT<TestType>>(n + 1));
+    }
+    TensorView<TestType, 3> A{a_data.data(), Dim<3>{2, 1, 3}, Stride<3>{1, 6, 2}};
+    Tensor<TestType, 3>     C{"C", 2, 3, 1};
+
+    permute(Indices{i, k, j}, &C, Indices{i, j, k}, A);
+
+    for (size_t x = 0; x < 2; x++) {
+        for (size_t z = 0; z < 3; z++) {
+            REQUIRE(C(x, z, 0) == A(x, 0, z));
+        }
+    }
+}
+
+// Both permutes require the output to have the input's extents, axis for axis. A larger output
+// used to be accepted: HPTT wrote its leading block, and the generic loop, walking the output's
+// index space, read the input out of bounds.
+TEMPLATE_TEST_CASE("permute rejects mismatched extents", "[tensor]", float, double) {
+    using namespace einsums;
+    using namespace einsums::tensor_algebra;
+    using namespace einsums::index;
+
+    Tensor<TestType, 2> A{"A", 3, 4};
+
+    SECTION("a larger output") {
+        Tensor<TestType, 2> C{"C", 5, 3};
+        REQUIRE_THROWS_AS(permute(Indices{j, i}, &C, Indices{i, j}, A), DimensionError);
+    }
+
+    SECTION("a smaller output") {
+        Tensor<TestType, 2> C{"C", 3, 3};
+        REQUIRE_THROWS_AS(permute(Indices{j, i}, &C, Indices{i, j}, A), DimensionError);
+    }
+
+    SECTION("the extents of the unpermuted layout") {
+        Tensor<TestType, 2> C{"C", 3, 4};
+        REQUIRE_THROWS_AS(permute(Indices{j, i}, &C, Indices{i, j}, A), DimensionError);
     }
 }

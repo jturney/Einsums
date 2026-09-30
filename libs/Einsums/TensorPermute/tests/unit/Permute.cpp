@@ -392,3 +392,27 @@ TEMPLATE_TEST_CASE("TensorPermute - an extent-1 axis whatever its stride says", 
         }
     }
 }
+
+TEMPLATE_TEST_CASE("TensorPermute - mismatched extents", "[TensorPermute]", float, double) {
+    // The output must have the input's extents, axis for axis. A larger output used to be accepted
+    // and only its leading block written, while the typed engine's generic loop walked the larger
+    // index space and read the input out of bounds. Both engines now reject it here.
+    Operand<TestType, 2> A({3, 4}, false);
+
+    SECTION("a larger output") {
+        Operand<TestType, 2> C({5, 3}, false);
+        CHECK_THROWS_AS(tp::permute("ji <- ij", TestType{0}, &C.impl, TestType{1}, A.impl), einsums::DimensionError);
+    }
+    SECTION("the extents of the unpermuted layout") {
+        Operand<TestType, 2> C({3, 4}, false);
+        CHECK_THROWS_AS(tp::permute("ji <- ij", TestType{0}, &C.impl, TestType{1}, A.impl), einsums::DimensionError);
+    }
+    SECTION("an empty output against a non-empty input") {
+        Operand<TestType, 2> C({0, 3}, false);
+        CHECK_THROWS_AS(tp::permute("ji <- ij", TestType{0}, &C.impl, TestType{1}, A.impl), einsums::DimensionError);
+    }
+    SECTION("transpose into a larger output") {
+        Operand<TestType, 2> C({5, 4}, false);
+        CHECK_THROWS_AS(tp::transpose(&C.impl, A.impl), einsums::DimensionError);
+    }
+}

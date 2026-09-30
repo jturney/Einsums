@@ -41,142 +41,28 @@ std::shared_ptr<hptt::Transpose<T>> compile_permute(T beta, std::tuple<CIndices.
                                                     T alpha, std::tuple<AIndices...> const &A_indices,
                                                     einsums::detail::TensorImpl<T> const &A,
                                                     hptt::SelectionMethod                 method = hptt::ESTIMATE) {
-    constexpr size_t ARank = sizeof...(AIndices);
-    constexpr size_t CRank = sizeof...(CIndices);
+    constexpr size_t Rank = sizeof...(CIndices);
 
     // Error check:  If there are any remaining indices then we cannot perform a permute
     constexpr auto check = DifferenceT<std::tuple<AIndices...>, std::tuple<CIndices...>>();
     static_assert(std::tuple_size_v<decltype(check)> == 0);
 
-    auto target_position_in_A = detail::find_type_with_position(C_indices, A_indices);
+    // The compile-time indices only name the permutation. The plan, with its extent check and its
+    // handling of empty operands and extent-1 strides, is the one the character-index permute uses.
+    auto const            target_position_in_A = detail::find_type_with_position(C_indices, A_indices);
+    std::array<int, Rank> c_to_a{};
+    einsums::for_sequence<Rank>([&](auto n) { c_to_a[n] = static_cast<int>(std::get<(2 * n) + 1>(target_position_in_A)); });
 
-    einsums::for_sequence<ARank>([&](auto n) {
-        if (C->dim((size_t)n) < A.dim(std::get<2 * (size_t)n + 1>(target_position_in_A))) {
-            EINSUMS_THROW_EXCEPTION(DimensionError, "The {} dimension of the output tensor is smaller than the input tensor!",
-                                    print::ordinal((size_t)n));
-        }
-
-        if (C->dim((size_t)n) == 0) {
-            return;
-        }
-    });
-    // Calculate reversed indices.
-    using ReverseC                   = ReverseT<CIndices...>;
-    constexpr auto reverse_C_indices = ReverseC();
-
-    std::array<int, ARank>    perms{};
-    std::array<size_t, ARank> size{};
-    std::array<size_t, ARank> outerSizeA{};
-    std::array<size_t, ARank> offsetA{};
-    std::array<size_t, ARank> outerSizeC{};
-    std::array<size_t, ARank> offsetC{};
-
-    if (A.is_row_major() && C->is_row_major()) {
-        auto   new_target_position_in_A = detail::find_type_with_position(C_indices, A_indices);
-        size_t innerStrideA             = A.stride(ARank - 1);
-        size_t innerStrideC             = C->stride(CRank - 1);
-        perms[0]                        = arguments::get_from_tuple<size_t>(new_target_position_in_A, 1);
-        size[0]                         = A.dim(0);
-        outerSizeA[0]                   = A.dim(0);
-        offsetA[0]                      = 0;
-        outerSizeC[0]                   = C->dim(0);
-        offsetC[0]                      = 0;
-        for (int i0 = 1; i0 < ARank; i0++) {
-            perms[i0]      = arguments::get_from_tuple<size_t>(new_target_position_in_A, (2 * i0) + 1);
-            size[i0]       = A.dim(i0);
-            outerSizeA[i0] = A.stride(i0 - 1) / (A.stride(i0) * innerStrideA);
-            offsetA[i0]    = 0;
-            outerSizeC[i0] = C->stride(i0 - 1) / (C->stride(i0) * innerStrideC);
-            offsetC[i0]    = 0;
-        }
-        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(),
-                                                       innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, true,
-                                                       method);
-        plan->set_conj_a(ConjA);
-
-        return plan;
-    } else if (A.is_row_major() && C->is_column_major()) {
-        auto   new_target_position_in_A = detail::find_type_with_position(reverse_C_indices, A_indices);
-        auto   C_swap                   = C->to_row_major();
-        size_t innerStrideA             = A.stride(ARank - 1);
-        size_t innerStrideC             = C_swap.stride(CRank - 1);
-        perms[0]                        = arguments::get_from_tuple<size_t>(new_target_position_in_A, 1);
-        size[0]                         = A.dim(0);
-        outerSizeA[0]                   = A.dim(0);
-        offsetA[0]                      = 0;
-        outerSizeC[0]                   = C_swap.dim(0);
-        offsetC[0]                      = 0;
-        for (int i0 = 1; i0 < ARank; i0++) {
-            perms[i0]      = arguments::get_from_tuple<size_t>(new_target_position_in_A, (2 * i0) + 1);
-            size[i0]       = A.dim(i0);
-            outerSizeA[i0] = A.stride(i0 - 1) / (A.stride(i0) * innerStrideA);
-            offsetA[i0]    = 0;
-            outerSizeC[i0] = C_swap.stride(i0 - 1) / (C_swap.stride(i0) * innerStrideC);
-            offsetC[i0]    = 0;
-        }
-        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(),
-                                                       innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(), innerStrideC, true,
-                                                       method);
-        plan->set_conj_a(ConjA);
-
-        return plan;
-    } else if (A.is_column_major() && C->is_column_major()) {
-        auto   new_target_position_in_A = detail::find_type_with_position(C_indices, A_indices);
-        size_t innerStrideA             = A.stride(0);
-        size_t innerStrideC             = C->stride(0);
-        perms[ARank - 1]                = arguments::get_from_tuple<size_t>(new_target_position_in_A, (2 * ARank) - 1);
-        size[ARank - 1]                 = A.dim(-1);
-        outerSizeA[ARank - 1]           = A.dim(-1);
-        offsetA[ARank - 1]              = 0;
-        outerSizeC[ARank - 1]           = C->dim(-1);
-        offsetC[ARank - 1]              = 0;
-        for (int i0 = 0; i0 < ARank - 1; i0++) {
-            perms[i0]      = arguments::get_from_tuple<size_t>(new_target_position_in_A, (2 * i0) + 1);
-            size[i0]       = A.dim(i0);
-            outerSizeA[i0] = A.stride(i0 + 1) / (A.stride(i0) * innerStrideA);
-            offsetA[i0]    = 0;
-            outerSizeC[i0] = C->stride(i0 + 1) / (C->stride(i0) * innerStrideC);
-            offsetC[i0]    = 0;
-        }
-        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(),
-                                                       innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(), innerStrideC,
-                                                       false, method);
-        plan->set_conj_a(ConjA);
-
-        return plan;
-    } else {
-        auto   new_target_position_in_A = detail::find_type_with_position(reverse_C_indices, A_indices);
-        auto   C_swap                   = C->to_column_major();
-        size_t innerStrideA             = A.stride(0);
-        size_t innerStrideC             = C_swap.stride(0);
-        perms[ARank - 1]                = arguments::get_from_tuple<size_t>(new_target_position_in_A, (2 * ARank) - 1);
-        size[ARank - 1]                 = A.dim(-1);
-        outerSizeA[ARank - 1]           = A.dim(-1);
-        offsetA[ARank - 1]              = 0;
-        outerSizeC[ARank - 1]           = C_swap.dim(-1);
-        offsetC[ARank - 1]              = 0;
-        for (int i0 = 0; i0 < ARank - 1; i0++) {
-            perms[i0]      = arguments::get_from_tuple<size_t>(new_target_position_in_A, (2 * i0) + 1);
-            size[i0]       = A.dim(i0);
-            outerSizeA[i0] = A.stride(i0 + 1) / (A.stride(i0) * innerStrideA);
-            offsetA[i0]    = 0;
-            outerSizeC[i0] = C_swap.stride(i0 + 1) / (C_swap.stride(i0) * innerStrideC);
-            offsetC[i0]    = 0;
-        }
-        auto plan = detail::get_or_create_hptt_plan<T>(perms.data(), ARank, alpha, A.data(), size.data(), outerSizeA.data(), offsetA.data(),
-                                                       innerStrideA, beta, C->data(), outerSizeC.data(), offsetC.data(), innerStrideC,
-                                                       false, method);
-        plan->set_conj_a(ConjA);
-
-        return plan;
-    }
+    return tensor_permute::detail::build_permute_plan<ConjA, T>(beta, c_to_a, C, alpha, A, method);
 }
 
 template <bool ConjA = false, typename T, typename... CIndices, typename... AIndices>
 void permute(T beta, std::tuple<CIndices...> const &C_indices, einsums::detail::TensorImpl<T> *C, T alpha,
              std::tuple<AIndices...> const &A_indices, einsums::detail::TensorImpl<T> const &A) {
     auto plan = compile_permute<ConjA>(beta, C_indices, C, alpha, A_indices, A);
-    plan->execute();
+    if (plan != nullptr) {
+        plan->execute();
+    }
 }
 
 } // namespace detail
@@ -241,18 +127,17 @@ void permute(U const UC_prefactor, std::tuple<CIndices...> const &C_indices, CTy
 
     auto target_position_in_A = detail::find_type_with_position(C_indices, A_indices);
 
+    // C has A's extents, axis for axis. The dense path's plan builder checks this itself; the
+    // generic loop below walks C's index space and reads A at the same positions, so it needs it
+    // before it starts.
     einsums::for_sequence<ARank>([&](auto n) {
-        if (C->dim((size_t)n) < A.dim(std::get<2 * (size_t)n + 1>(target_position_in_A))) {
-            EINSUMS_THROW_EXCEPTION(DimensionError, "The {} dimension of the output tensor is smaller than the input tensor!",
+        if (C->dim((size_t)n) != A.dim(std::get<2 * (size_t)n + 1>(target_position_in_A))) {
+            EINSUMS_THROW_EXCEPTION(DimensionError, "The {} dimension of the output tensor does not match the input axis it takes!",
                                     print::ordinal((size_t)n));
-        }
-
-        if (C->dim((size_t)n) == 0) {
-            return;
         }
     });
 
-    if (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<CType>) {
+    if constexpr (CoreBasicTensorConcept<AType> && CoreBasicTensorConcept<CType>) {
         detail::permute<ConjA>(C_prefactor, C_indices, &C->impl(), A_prefactor, A_indices, A.impl());
     } else if constexpr (std::is_same_v<decltype(A_indices), decltype(C_indices)> && !(ConjA && IsComplexV<T>)) {
         // If the prefactor is zero, set the tensor to zero. This avoids NaNs.
