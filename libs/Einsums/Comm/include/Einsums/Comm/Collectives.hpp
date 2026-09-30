@@ -65,7 +65,6 @@ concept Communicable = std::is_arithmetic_v<T> || requires {
  * @brief All-reduce: combine values from all ranks using @p op.
  *
  * Every rank contributes @p send and receives the reduced result in @p recv.
- * Runtime dispatches to NCCL when pointers are device memory and NCCL is available.
  *
  * @param send  Source buffer (one element per count entry).
  * @param recv  Destination buffer (same size as send). May alias send for in-place.

@@ -19,22 +19,6 @@ inline constexpr bool has_mpi =
     false;
 #endif
 
-/// True when NCCL (NVIDIA GPU-direct communication) is available.
-inline constexpr bool has_nccl =
-#if defined(EINSUMS_HAVE_NCCL)
-    true;
-#else
-    false;
-#endif
-
-/// True when RCCL (AMD GPU-direct communication) is available.
-inline constexpr bool has_rccl =
-#if defined(EINSUMS_HAVE_RCCL)
-    true;
-#else
-    false;
-#endif
-
 /// True when running without MPI (serial mock backend).
 inline constexpr bool is_mock = !has_mpi;
 

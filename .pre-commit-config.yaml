@@ -44,6 +44,17 @@ repos:
         pass_filenames: false
         always_run: true
 
+      # A condition on an EINSUMS_HAVE_* macro that nothing defines is false in
+      # every build, so its branch is dead and nothing reports it: the compiler
+      # never sees it and no configuration reaches it. The definition can live in
+      # CMake while the use is in C++, so this scans every tracked file.
+      - id: einsums-have-macros
+        name: Ensure every tested EINSUMS_HAVE_* macro is defined somewhere
+        entry: devtools/check_have_macros.py
+        language: python
+        pass_filenames: false
+        always_run: true
+
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v22.1.8
     hooks:

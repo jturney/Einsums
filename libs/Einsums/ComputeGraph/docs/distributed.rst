@@ -23,7 +23,7 @@ The ``Comm`` module (``libs/Einsums/Comm/``) provides the communication layer:
 
 - **Always compiles**: mock backend (serial stubs) when MPI is unavailable
 - **Runtime dispatch**: MPI for host tensors; NCCL support planned for GPU
-- **Platform detection**: ``comm::has_mpi``, ``comm::has_nccl``, ``comm::is_mock``
+- **Platform detection**: ``comm::has_mpi``, ``comm::is_mock``
 
 .. code-block:: cpp
 
