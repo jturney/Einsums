@@ -9,7 +9,7 @@
 
 using namespace einsums;
 
-TEMPLATE_TEST_CASE("TensorImlp Creation", "[tensor]", float, double, std::complex<float>, std::complex<double>) {
+TEMPLATE_TEST_CASE("TensorImpl Creation", "[tensor]", float, double, std::complex<float>, std::complex<double>) {
     SECTION("Default constructor") {
         detail::TensorImpl<TestType> impl;
 
@@ -172,5 +172,82 @@ TEMPLATE_TEST_CASE("TensorImpl view creation", "[tensor]", float, double, std::c
         REQUIRE(view.stride(1) == 9);
         REQUIRE(view.dim(0) == 2);
         REQUIRE(view.dim(1) == 3);
+    }
+}
+
+TEST_CASE("TensorImpl layout inferred from the axes stepped along", "[tensor]") {
+    // An extent-1 axis is never stepped along, so its stride is whatever a view inherited. The
+    // layout used to be read off the first and last strides regardless, so (6, 1, 2) over extents
+    // (1, 2, 3), a column-major block, was called row major.
+    std::vector<double> data(64);
+    auto const          layout = [&](std::vector<size_t> dims, std::vector<size_t> strides) {
+        return detail::TensorImpl<double>(data.data(), std::move(dims), std::move(strides)).is_row_major();
+    };
+
+    CHECK_FALSE(layout({1, 2, 3}, {6, 1, 2}));
+    CHECK_FALSE(layout({2, 3, 1}, {1, 2, 1}));
+    CHECK(layout({3, 2, 1}, {2, 1, 6}));
+    CHECK(layout({1, 3, 2}, {1, 2, 1}));
+
+    // With one axis stepped along, a unit stride makes it the minor axis and any other the major.
+    CHECK(layout({1, 3}, {2, 1}));
+    CHECK_FALSE(layout({3, 1}, {1, 2}));
+    CHECK_FALSE(layout({1, 3}, {1, 5}));
+    CHECK(layout({3, 1}, {4, 1}));
+
+    // Ordinary layouts are unchanged.
+    CHECK_FALSE(layout({2, 3}, {1, 2}));
+    CHECK(layout({2, 3}, {3, 1}));
+
+    // The layout views agree with the flag. They compared the first and last strides on their own,
+    // so the row-major vector (1, 1, 6) with strides (1, 1, 1) came back from to_column_major
+    // unreversed and still row major, and permute read its axes from the wrong end.
+    detail::TensorImpl<double> const vec(data.data(), std::vector<size_t>{1, 1, 6}, std::vector<size_t>{1, 1, 1});
+    REQUIRE(vec.is_row_major());
+    auto const col = vec.to_column_major();
+    CHECK(col.is_column_major());
+    CHECK(col.dim(0) == 6);
+    CHECK(vec.to_row_major().dim(2) == 6);
+}
+
+TEST_CASE("TensorImpl leading dimension of a matrix with an extent-1 axis", "[tensor]") {
+    // A diagonal folded out of an (i, i, j) operand with i of extent 1 is the (1, 3) matrix with
+    // strides (2, 1). Its major axis is never stepped along, so that 2 says nothing, but get_lda
+    // handed it to BLAS as the leading dimension, below the minor extent of 3, and gemv rejected
+    // the call: the string einsum "i <- j ; iij" failed this way.
+    std::vector<double> data(6);
+
+    SECTION("row-major, major axis of extent 1") {
+        detail::TensorImpl<double> const impl(data.data(), std::vector<size_t>{1, 3}, std::vector<size_t>{2, 1});
+        REQUIRE(impl.is_row_major());
+        CHECK(impl.get_lda() == 3);
+        size_t lda = 0;
+        REQUIRE(impl.is_gemmable(&lda));
+        CHECK(lda == 3);
+    }
+
+    SECTION("column-major, major axis of extent 1") {
+        detail::TensorImpl<double> const impl(data.data(), std::vector<size_t>{3, 1}, std::vector<size_t>{1, 2});
+        REQUIRE(impl.is_column_major());
+        CHECK(impl.get_lda() == 3);
+    }
+
+    SECTION("a minor axis of extent 1 keeps its stride, the step between the elements") {
+        detail::TensorImpl<double> const impl(data.data(), std::vector<size_t>{1, 3}, std::vector<size_t>{1, 2});
+        REQUIRE(impl.is_column_major());
+        CHECK(impl.get_lda() == 2);
+    }
+
+    SECTION("a major axis stepped with a stride other than one") {
+        // (2, 1) with strides (4, 1) is two elements four apart: row major, leading dimension 4,
+        // whatever the extent-1 axis's stride claims.
+        detail::TensorImpl<double> const impl(data.data(), std::vector<size_t>{2, 1}, std::vector<size_t>{4, 1});
+        REQUIRE(impl.is_row_major());
+        CHECK(impl.get_lda() == 4);
+    }
+
+    SECTION("an ordinary matrix") {
+        detail::TensorImpl<double> const impl(data.data(), std::vector<size_t>{2, 3}, std::vector<size_t>{1, 2});
+        CHECK(impl.get_lda() == 2);
     }
 }

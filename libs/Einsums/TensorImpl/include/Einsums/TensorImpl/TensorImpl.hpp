@@ -728,7 +728,7 @@ struct TensorImpl final {
             return false;
         } else {
             if (lda != nullptr) {
-                *lda = std::max(_strides[0], _strides[1]);
+                *lda = get_lda();
             }
             return true;
         }
@@ -763,12 +763,27 @@ struct TensorImpl final {
     [[nodiscard]] constexpr size_t get_incy() const { return get_incx(); }
 
     /**
-     * @brief Gets the largest stride for a rank-2 tensor only.
+     * @brief Gets the leading dimension of a rank-2 tensor only: the major axis's stride.
+     *
+     * An extent-1 axis is never stepped along, so its stride says nothing, and a view carries
+     * whatever the axis had in its parent: a diagonal folded out of an (i, i, j) operand is the
+     * (1, 3) matrix with strides (2, 1). When the major axis is that one, any leading dimension
+     * covering the minor axis will do and BLAS requires one, so the minor extent is returned. When
+     * the minor axis is, the major axis's stride is the step between the elements, whatever the
+     * other stride claims.
      */
     [[nodiscard]] constexpr size_t get_lda() const {
         if (_rank != 2) {
             EINSUMS_THROW_EXCEPTION(RankError, "Can not get the leading dimension of a tensor whose rank is not 2!");
         } else {
+            size_t const major = _row_major ? 0 : 1;
+            size_t const minor = 1 - major;
+            if (_dims[major] == 1) {
+                return std::max<size_t>(_dims[minor], 1);
+            }
+            if (_dims[minor] == 1) {
+                return _strides[major];
+            }
             return std::max(stride(0), stride(1));
         }
     }
@@ -1586,7 +1601,7 @@ struct TensorImpl final {
      * and only if the tensor is not already row major.
      */
     [[nodiscard]] constexpr TensorImpl<T> to_row_major() {
-        if (stride(0) >= stride(-1)) {
+        if (is_row_major()) {
             return *this;
         } else {
             return transpose_view();
@@ -1600,7 +1615,7 @@ struct TensorImpl final {
      * and only if the tensor is not already column major.
      */
     [[nodiscard]] constexpr TensorImpl<T> to_column_major() {
-        if (stride(0) <= stride(-1)) {
+        if (is_column_major()) {
             return *this;
         } else {
             return transpose_view();
@@ -1614,7 +1629,7 @@ struct TensorImpl final {
      * and only if the tensor is not already row major.
      */
     [[nodiscard]] constexpr TensorImpl<T> const to_row_major() const {
-        if (stride(0) >= stride(-1)) {
+        if (is_row_major()) {
             return *this;
         } else {
             return transpose_view();
@@ -1628,7 +1643,7 @@ struct TensorImpl final {
      * and only if the tensor is not already column major.
      */
     [[nodiscard]] constexpr TensorImpl<T> const to_column_major() const {
-        if (stride(0) <= stride(-1)) {
+        if (is_column_major()) {
             return *this;
         } else {
             return transpose_view();
@@ -1853,13 +1868,38 @@ struct TensorImpl final {
     }
 
     /// Infer _row_major from existing _strides and _dims.
+    ///
+    /// Only the axes stepped along, those of extent above one, carry evidence: an extent-1 axis is
+    /// never stepped along, and a view keeps whatever stride the axis had in its parent. Reading
+    /// the first and last strides regardless called the (1, 2, 3) block with strides (6, 1, 2)
+    /// row major, and permute handed HPTT a plan for the wrong layout.
+    ///
+    /// With one stepped axis the tensor is a vector in either layout, and the flag is chosen for
+    /// what BLAS will read off it as a matrix (see @ref get_lda): a unit-stride axis becomes the
+    /// minor one, any other stride the major one, whose stride is then the leading dimension.
     constexpr void infer_row_major() {
-        if (_rank < 2 || (stride(0) > stride(-1))) {
+        if (_rank < 2) {
             _row_major = true;
-        } else if (stride(0) == stride(-1)) {
-            _row_major = (dim(0) > dim(-1));
+            return;
+        }
+        size_t first = _rank, last = _rank;
+        for (size_t d = 0; d < _rank; d++) {
+            if (_dims[d] > 1) {
+                if (first == _rank) {
+                    first = d;
+                }
+                last = d;
+            }
+        }
+        if (first == _rank) {
+            // Nothing is stepped along; any layout describes it.
+            _row_major = stride(0) > stride(-1) || (stride(0) == stride(-1) && dim(0) > dim(-1));
+        } else if (first == last) {
+            _row_major = _strides[first] == 1 ? first == _rank - 1 : first == 0;
+        } else if (_strides[first] == _strides[last]) {
+            _row_major = _dims[first] > _dims[last];
         } else {
-            _row_major = false;
+            _row_major = _strides[first] > _strides[last];
         }
     }
 

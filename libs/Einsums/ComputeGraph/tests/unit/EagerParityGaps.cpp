@@ -743,6 +743,20 @@ TEMPLATE_LIST_TEST_CASE("cg dispatch route - every route in the cascade fires wh
         CHECK(route() == "direct_product_runtime");
     }
 
+    // A diagonal of extent 1 folds to a matrix whose major axis carries its parent's stride, which
+    // the GEMV route used to pass to BLAS as a leading dimension below the minor extent.
+    SECTION("diagonal of extent 1 feeding a GEMV") {
+        auto A    = create_random_tensor<T>("A", 3);
+        auto B    = create_random_tensor<T>("B", 1, 1, 3);
+        auto C    = create_random_tensor<T>("C", 1);
+        auto want = C;
+        // NOLINTNEXTLINE(einsums-cg-call-outside-capture)
+        cg::einsum("i <- j ; iij", T{0.5}, &C, T{2.0}, A, B);
+        CHECK(route() == "diagonal:gemv_vec_mat_runtime");
+        reference_einsum("i <- j ; iij", T{0.5}, &want, T{2.0}, A, B);
+        CHECK(std::abs(C.data()[0] - want.data()[0]) <= tol * (1.0 + std::abs(want.data()[0])));
+    }
+
     SECTION("conjugated full contraction") {
         // The scalar-output route is the one BLAS shape with a conjugating
         // form, so it sits ahead of the conjugation gate. On a real type
