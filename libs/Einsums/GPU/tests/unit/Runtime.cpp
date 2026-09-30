@@ -1224,3 +1224,45 @@ TEST_CASE("DeviceTensorConcept recognizes GPUTensor", "[gpu][tensor][concepts]")
 
     SUCCEED("All static_asserts passed");
 }
+
+// The GPU entry points take int64_t extents and used to static_cast them to int before calling the
+// backend routine, so an extent past the routine's integer range wrapped into a small one and the
+// routine ran on it. 2^32 + 3 wraps to 3: before the fix these calls silently worked on a 3-row
+// matrix. They now throw before touching memory, wherever the routine's integer is 32-bit.
+TEMPLATE_TEST_CASE("gpu backend routines reject extents their integer cannot hold", "[gpu][blas][solver]", float, double) {
+    EINSUMS_SKIP_WITHOUT_GPU();
+    using T = TestType;
+
+#if defined(EINSUMS_HAVE_CUDA) || defined(EINSUMS_HAVE_HIP)
+    constexpr bool narrows = true;
+#elif defined(EINSUMS_HAVE_MPS)
+    // MPS runs float32 GEMM itself and takes int; everything else falls back to the CPU vendor.
+    constexpr bool narrows = std::is_same_v<T, float> || sizeof(einsums::blas::int_t) == 4;
+#else
+    constexpr bool narrows = sizeof(einsums::blas::int_t) == 4;
+#endif
+    if constexpr (!narrows) {
+        SKIP("this build's backend routine takes 64-bit extents");
+    } else {
+        constexpr int64_t huge = (int64_t{1} << 32) + 3;
+
+        void *dA = test_malloc(8 * sizeof(T));
+        void *dB = test_malloc(8 * sizeof(T));
+        void *dC = test_malloc(8 * sizeof(T));
+
+        SECTION("gemm") {
+            REQUIRE_THROWS_AS(einsums::gpu::blas::gemm<T>('n', 'n', huge, 1, 1, T(1), static_cast<T const *>(dA), huge,
+                                                          static_cast<T const *>(dB), 1, T(0), static_cast<T *>(dC), huge),
+                              einsums::DimensionError);
+        }
+
+        SECTION("getrf") {
+            std::vector<int64_t> ipiv(1);
+            REQUIRE_THROWS_AS(einsums::gpu::solver::getrf<T>(huge, 1, static_cast<T *>(dA), huge, ipiv.data()), einsums::DimensionError);
+        }
+
+        device_free(dA);
+        device_free(dB);
+        device_free(dC);
+    }
+}
