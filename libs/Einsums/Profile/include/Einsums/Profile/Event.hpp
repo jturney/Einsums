@@ -20,6 +20,7 @@ using Clock     = std::chrono::steady_clock;
 using TimePoint = Clock::time_point;
 using ns        = std::chrono::nanoseconds; // NOLINT
 
+/// What an @ref Event records: a zone opening or closing, an annotation, a thread's name, or memory.
 enum class EventType : uint8_t {
     Push,
     Pop,
@@ -29,6 +30,7 @@ enum class EventType : uint8_t {
     MemFree,
 };
 
+/// Which member of an @ref AnnotationPayload's value an annotation filled.
 enum class AnnotateValueType : uint8_t {
     String,
     Int64,

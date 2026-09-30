@@ -106,6 +106,7 @@ EINSUMS_TEST_CASE("Bench EagerCallOverhead: control, replay of 100 tiny einsums"
     publish_benchmark_result("EagerCallOverhead replay 100 tiny", "t_replay", 100, t);
 }
 
+#if defined(EINSUMS_HAVE_PROFILER)
 // NOLINTBEGIN(einsums-cg-call-outside-capture)
 EINSUMS_TEST_CASE("Bench EagerCallOverhead: what the profiler adds to one call", "[ComputeGraph][EagerCallOverhead][benchmark]") {
     // Zones per call come from the profiler's own push counter. Annotations have no counter, so their
@@ -165,3 +166,4 @@ EINSUMS_TEST_CASE("Bench EagerCallOverhead: what the profiler adds to one call",
     profiler.set_enabled(was);
 }
 // NOLINTEND(einsums-cg-call-outside-capture)
+#endif
