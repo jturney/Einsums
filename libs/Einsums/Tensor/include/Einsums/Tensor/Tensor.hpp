@@ -1254,85 +1254,25 @@ struct GeneralTensor : tensor_base::CoreTensor, design_pats::Lockable<std::recur
     }
 
     GeneralTensor &operator+=(T const &b) {
-        detail::impl_scalar_add_contiguous(b, _impl);
+        detail::add_assign(b, _impl);
 
         return *this;
     }
 
     GeneralTensor &operator-=(T const &b) {
-        detail::impl_scalar_add_contiguous(-b, _impl);
+        detail::sub_assign(b, _impl);
 
         return *this;
     }
 
     GeneralTensor &operator*=(T const &b) {
-        detail::impl_scal_contiguous(b, _impl);
+        detail::mult_assign(b, _impl);
 
         return *this;
     }
 
     GeneralTensor &operator/=(T const &b) {
-        detail::impl_div_scalar_contiguous(b, _impl);
-
-        return *this;
-    }
-
-    template <typename TOther, typename Alloc2>
-    GeneralTensor &operator+=(GeneralTensor<TOther, rank, Alloc2> const &other) {
-        if (_impl.is_column_major() == other.impl().is_column_major()) {
-            if constexpr (std::is_integral_v<T>) {
-                detail::impl_axpy_contiguous(T{1}, other.impl(), _impl);
-            } else {
-                detail::impl_axpy_contiguous(T{1.0}, other.impl(), _impl);
-            }
-        } else {
-            if constexpr (std::is_integral_v<T>) {
-                detail::impl_axpy(T{1}, other.impl(), _impl);
-            } else {
-                detail::impl_axpy(T{1.0}, other.impl(), _impl);
-            }
-        }
-
-        return *this;
-    }
-
-    template <typename TOther, typename Alloc2>
-    GeneralTensor &operator-=(GeneralTensor<TOther, rank, Alloc2> const &other) {
-        if (_impl.is_column_major() == other.impl().is_column_major()) {
-            if constexpr (std::is_integral_v<T>) {
-                detail::impl_axpy_contiguous(T{-1}, other.impl(), _impl);
-            } else {
-                detail::impl_axpy_contiguous(T{-1.0}, other.impl(), _impl);
-            }
-        } else {
-            if constexpr (std::is_integral_v<T>) {
-                detail::impl_axpy(T{-1}, other.impl(), _impl);
-            } else {
-                detail::impl_axpy(T{-1.0}, other.impl(), _impl);
-            }
-        }
-
-        return *this;
-    }
-
-    template <typename TOther, typename Alloc2>
-    GeneralTensor &operator*=(GeneralTensor<TOther, rank, Alloc2> const &other) {
-        if (_impl.is_column_major() == other.impl().is_column_major()) {
-            detail::impl_mult_contiguous(other.impl(), _impl);
-        } else {
-            detail::impl_mult(other.impl(), _impl);
-        }
-
-        return *this;
-    }
-
-    template <typename TOther, typename Alloc2>
-    GeneralTensor &operator/=(GeneralTensor<TOther, rank, Alloc2> const &other) {
-        if (_impl.is_column_major() == other.impl().is_column_major()) {
-            detail::impl_div_contiguous(other.impl(), _impl);
-        } else {
-            detail::impl_div(other.impl(), _impl);
-        }
+        detail::div_assign(b, _impl);
 
         return *this;
     }

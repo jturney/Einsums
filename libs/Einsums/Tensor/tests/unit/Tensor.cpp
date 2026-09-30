@@ -11,6 +11,8 @@
 #include <Einsums/TensorUtilities/CreateIncrementedTensor.hpp>
 
 #include <atomic>
+#include <complex>
+#include <limits>
 
 #include <Einsums/Testing.hpp>
 
@@ -513,4 +515,72 @@ void arange_test() {
 TEST_CASE("arange") {
     arange_test<double>();
     arange_test<float>();
+}
+
+// Tensor's own compound operators used to call the unchecked contiguous kernels
+// directly, skipping the rank/dims checks every other tensor type gets through
+// add_assign and friends. The kernel loops over the INPUT's size, so a larger
+// input wrote past the end of the output and a smaller one silently updated a
+// prefix of it. The smaller case is used here so the pre-fix behaviour fails
+// the assertion instead of corrupting the heap.
+TEMPLATE_TEST_CASE("Tensor compound operators reject mismatched dimensions", "[tensor]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    using namespace einsums;
+
+    Tensor<TestType, 2> A("A", 4, 4);
+    Tensor<TestType, 2> B("B", 3, 4);
+    A = TestType{1};
+    B = TestType{2};
+
+    REQUIRE_THROWS_AS(A += B, DimensionError);
+    REQUIRE_THROWS_AS(A -= B, DimensionError);
+    REQUIRE_THROWS_AS(A *= B, DimensionError);
+    REQUIRE_THROWS_AS(A /= B, DimensionError);
+
+    for (size_t i = 0; i < 4; i++) {
+        for (size_t j = 0; j < 4; j++) {
+            REQUIRE(A(i, j) == TestType{1});
+        }
+    }
+}
+
+TEMPLATE_TEST_CASE("Tensor compound operators combine matching tensors", "[tensor]", float, double, std::complex<float>,
+                   std::complex<double>) {
+    using namespace einsums;
+
+    Tensor<TestType, 2> A("A", 3, 4);
+    Tensor<TestType, 2> B("B", 3, 4);
+    A = TestType{6};
+    B = TestType{2};
+
+    A += B;
+    REQUIRE(A(2, 3) == TestType{8});
+    A -= B;
+    REQUIRE(A(2, 3) == TestType{6});
+    A *= B;
+    REQUIRE(A(2, 3) == TestType{12});
+    A /= B;
+    REQUIRE(A(2, 3) == TestType{6});
+
+    // An operand that is its own destination.
+    A += A;
+    REQUIRE(A(1, 1) == TestType{12});
+}
+
+// Scaling by exactly zero assigns zero (impl_scal's discard convention), so a NaN
+// already in the buffer must not survive. Tensor's operator*= used to multiply
+// through impl_scal_contiguous and kept it, while TensorView's cleared it.
+TEMPLATE_TEST_CASE("Tensor scaled by zero discards a NaN", "[tensor]", float, double, std::complex<float>, std::complex<double>) {
+    using namespace einsums;
+
+    Tensor<TestType, 2> A("A", 3, 3);
+    A       = TestType{1};
+    A(1, 2) = TestType{std::numeric_limits<RemoveComplexT<TestType>>::quiet_NaN()};
+    A *= TestType{0};
+
+    for (size_t i = 0; i < 3; i++) {
+        for (size_t j = 0; j < 3; j++) {
+            REQUIRE(A(i, j) == TestType{0});
+        }
+    }
 }
