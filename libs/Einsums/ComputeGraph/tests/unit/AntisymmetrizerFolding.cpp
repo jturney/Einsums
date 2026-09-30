@@ -43,6 +43,26 @@ double run(cg::Graph &graph, RuntimeTensor<double> &result) {
     return result(std::vector<size_t>{0});
 }
 
+/// sum_ijk (P(i/j/k) w)_ijk (P(i/j/k) v)_ijk by loops, with the full antisymmetrizer written out
+/// as its six signed permutations: identity and the 3-cycles positive, the transpositions negative.
+/// It shares no code with the permute kernels or the operator expansion, so the unfolded run is
+/// checked against something other than the engine that also produces the folded one.
+double energy_oracle(RuntimeTensor<double> const &w, RuntimeTensor<double> const &v, size_t n) {
+    auto const antisym = [](RuntimeTensor<double> const &t, size_t i, size_t j, size_t k) {
+        auto const at = [&t](size_t a, size_t b, size_t c) { return t(std::vector<size_t>{a, b, c}); };
+        return at(i, j, k) - at(j, i, k) - at(k, j, i) - at(i, k, j) + at(j, k, i) + at(k, i, j);
+    };
+    double energy = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+            for (size_t k = 0; k < n; ++k) {
+                energy += antisym(w, i, j, k) * antisym(v, i, j, k);
+            }
+        }
+    }
+    return energy;
+}
+
 } // namespace
 
 // THE test. The fold discards N-1 of the operator's terms and multiplies by N,
@@ -83,6 +103,11 @@ TEST_CASE("AntisymmetrizerFolding - the folded contraction gives the same value"
     // arithmetic and merely close in floating point.
     REQUIRE_THAT(value, Catch::Matchers::WithinRel(unfolded, 1e-12));
     REQUIRE(std::abs(unfolded) > 1e-6); // the comparison is not two zeros
+
+    // Both runs share the engine, so both are also held to a value computed without it.
+    double const oracle = energy_oracle(wsrc, vsrc, n);
+    REQUIRE_THAT(unfolded, Catch::Matchers::WithinRel(oracle, 1e-12));
+    REQUIRE_THAT(value, Catch::Matchers::WithinRel(oracle, 1e-12));
 }
 
 // The coset operator the triples correction uses. Its output is antisymmetric

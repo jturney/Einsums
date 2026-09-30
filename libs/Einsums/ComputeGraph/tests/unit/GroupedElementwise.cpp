@@ -7,10 +7,13 @@
 // single-tensor call, once per member, in the same order. Their contract is
 // bit-identity rather than agreement to roundoff, because an element-wise
 // kernel's result cannot depend on how the run was divided, so every
-// comparison here is on the exact bytes.
+// comparison between the two is on the exact bytes. The per-member result is
+// checked against an independent oracle as well, since bit-identity with it
+// alone would pass if the single-tensor kernel were wrong.
 
 #include <Einsums/ComputeGraph.hpp>
 #include <Einsums/Tensor/RuntimeTensor.hpp>
+#include <Einsums/Testing/ReferenceEinsum.hpp>
 #include <Einsums/Testing/TensorCompare.hpp>
 
 #include <cstddef>
@@ -42,6 +45,22 @@ using einsums::testing::bytes_of;
 /// member is carried rather than special-cased.
 std::vector<std::vector<std::size_t>> const kShapes = {{4, 3, 5}, {2, 2, 2}, {0, 3, 4}, {7, 1, 2}, {3, 6, 1}, {5, 5, 5}};
 
+/// The per-member result is itself engine output, so bit-identity against it alone would pass if
+/// the single-tensor kernel were wrong too. Each test anchors it to an oracle that shares no code
+/// with either: reference_permute, or a plain loop over the elements.
+constexpr einsums::testing::Tolerance kOracleTol{.rtol = 1e-14, .atol = 1e-14};
+
+/// C = alpha * op(A, B) + beta * C element by element, beta == 0 assigning, for op a product or quotient.
+template <typename Op>
+RuntimeTensor<double> elementwise_oracle(double alpha, RuntimeTensor<double> const &A, RuntimeTensor<double> const &B, double beta,
+                                         RuntimeTensor<double> C, Op op) {
+    for (std::size_t n = 0; n < C.size(); n++) {
+        double const value = alpha * op(A.data()[n], B.data()[n]);
+        C.data()[n]        = beta == 0.0 ? value : value + beta * C.data()[n];
+    }
+    return C;
+}
+
 } // namespace
 
 TEST_CASE("GroupedPermute - matches the per-member permute bit for bit", "[ComputeGraph][GroupedElementwise]") {
@@ -60,7 +79,10 @@ TEST_CASE("GroupedPermute - matches the per-member permute bit for bit", "[Compu
     }
 
     for (std::size_t i = 0; i < a.size(); i++) {
+        RuntimeTensor<double> oracle = want[i];
+        einsums::testing::reference_permute("abc <- acb", c_pfs[i], &oracle, a_pfs[i], a[i]);
         cg::string_permute<RuntimeTensor<double>, RuntimeTensor<double>>("abc <- acb", &want[i], a[i], c_pfs[i], a_pfs[i]);
+        einsums::testing::require_tensors_close(want[i], oracle, kOracleTol);
     }
 
     std::vector<RuntimeTensor<double> *>       c_list;
@@ -96,7 +118,14 @@ TEST_CASE("GroupedPermute - capture replays match eager and each other", "[Compu
         g_list.push_back(&got[i]);
         a_list.push_back(&a[i]);
     }
+    std::vector<RuntimeTensor<double>> oracles = want;
+    for (std::size_t i = 0; i < a.size(); i++) {
+        einsums::testing::reference_permute("abc <- acb", c_pfs[i], &oracles[i], a_pfs[i], a[i]);
+    }
     cg::grouped_permute<RuntimeTensor<double>, RuntimeTensor<double>>("abc <- acb", w_list, a_list, c_pfs, a_pfs);
+    for (std::size_t i = 0; i < a.size(); i++) {
+        einsums::testing::require_tensors_close(want[i], oracles[i], kOracleTol);
+    }
 
     cg::Graph g("grouped permute");
     {
@@ -135,8 +164,10 @@ TEST_CASE("GroupedDirectProduct - matches the per-member product bit for bit", "
     }
 
     for (std::size_t i = 0; i < a.size(); i++) {
+        auto const oracle = elementwise_oracle(alphas[i], a[i], b[i], betas[i], want[i], [](double x, double y) { return x * y; });
         cg::direct_product<double, RuntimeTensor<double>, RuntimeTensor<double>, RuntimeTensor<double>>(alphas[i], a[i], b[i], betas[i],
                                                                                                         &want[i]);
+        einsums::testing::require_tensors_close(want[i], oracle, kOracleTol);
     }
 
     std::vector<RuntimeTensor<double> const *> a_list, b_list;
@@ -170,8 +201,10 @@ TEST_CASE("GroupedDirectDivision - matches the per-member division, eager and re
     }
 
     for (std::size_t i = 0; i < a.size(); i++) {
+        auto const oracle = elementwise_oracle(alphas[i], a[i], b[i], betas[i], want[i], [](double x, double y) { return x / y; });
         cg::direct_division<double, RuntimeTensor<double>, RuntimeTensor<double>, RuntimeTensor<double>>(alphas[i], a[i], b[i], betas[i],
                                                                                                          &want[i]);
+        einsums::testing::require_tensors_close(want[i], oracle, kOracleTol);
     }
 
     std::vector<RuntimeTensor<double> const *> a_list, b_list;

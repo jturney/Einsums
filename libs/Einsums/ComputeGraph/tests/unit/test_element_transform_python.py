@@ -88,13 +88,14 @@ def test_element_transform_captured_records_node(dtype):
 
 @pytest.mark.parametrize("dtype", REAL_DTYPES)
 def test_element_transform_captured_matches_eager(dtype):
-    """Eager and captured-then-executed produce the same result."""
+    """Eager and captured-then-executed each apply the function, checked against numpy."""
     eager = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
     capt = einsums.create_random_tensor("A", [4, 5], dtype=dtype)
     # Same starting data on both.
     np.asarray(capt)[...] = np.asarray(eager)
 
     fn = lambda x: x * x - 0.25  # noqa: E731, exercising an arbitrary nonlinear unary
+    expected = fn(np.asarray(eager).copy())
 
     # Eager
     einsums.linalg.element_transform(eager, fn)
@@ -105,7 +106,9 @@ def test_element_transform_captured_matches_eager(dtype):
         einsums.linalg.element_transform(capt, fn)
     g.execute()
 
-    np.testing.assert_allclose(np.asarray(eager), np.asarray(capt), rtol=1e-5)
+    assert_close(eager, expected)
+    assert_close(capt, expected)
+    assert_close(capt, eager)
 
 
 @pytest.mark.parametrize("dtype", REAL_DTYPES)

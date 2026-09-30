@@ -22,6 +22,7 @@ import pytest
 
 import einsums
 import einsums.graph as cg
+from einsums.testing import assert_close
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -187,20 +188,27 @@ def test_mixed_kinds_in_one_capture():
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def test_captured_result_matches_eager():
-    """Same operation, captured-then-executed vs eager, bit-for-bit (within tolerance)."""
-    A = einsums.create_random_tensor("A", [4, 4])
-    B = einsums.create_random_tensor("B", [4, 4])
+def test_captured_result_matches_eager(dtype):
+    """Same operation, captured-then-executed vs eager, each against numpy.
+
+    Eager and replay run the same engine, so agreeing with each other says nothing
+    about either being right; both are held to numpy's product as well.
+    """
+    A = einsums.create_random_tensor("A", [4, 4], dtype=dtype)
+    B = einsums.create_random_tensor("B", [4, 4], dtype=dtype)
+    expected = np.asarray(A) @ np.asarray(B)
 
     # Eager
-    C_eager = einsums.create_zero_tensor("C", [4, 4])
+    C_eager = einsums.create_zero_tensor("C", [4, 4], dtype=dtype)
     einsums.linalg.gemm(1.0, A, B, 0.0, C_eager)
 
     # Captured
-    C_capt = einsums.create_zero_tensor("C", [4, 4])
+    C_capt = einsums.create_zero_tensor("C", [4, 4], dtype=dtype)
     g = cg.Graph("vs-eager")
     with cg.capture(g):
         einsums.linalg.gemm(1.0, A, B, 0.0, C_capt)
     g.execute()
 
-    np.testing.assert_allclose(np.asarray(C_eager), np.asarray(C_capt), rtol=1e-5)
+    assert_close(C_eager, expected)
+    assert_close(C_capt, expected)
+    assert_close(C_capt, C_eager)
