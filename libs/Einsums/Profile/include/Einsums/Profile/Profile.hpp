@@ -184,9 +184,11 @@ struct EINSUMS_EXPORT Profiler {
 
     // Emit an event to the thread-local ring buffer. Used by annotation API.
     void emit_event(Event const &evt) {
-        if (!thread_channel().ring.try_push(evt)) {
+        auto &ch = thread_channel();
+        if (!ch.ring.try_push(evt)) {
             _consumer->increment_dropped();
         }
+        wake_consumer_if_filling(ch);
     }
 
   private:
@@ -259,6 +261,8 @@ struct EINSUMS_EXPORT Profiler {
         uint32_t depth{0};
         /// Whether a hardware counter backend is active, read once when the thread registers.
         bool counters{false};
+        /// Whether this thread has woken the consumer since its ring last passed half full.
+        bool woke_consumer{false};
     };
 
     /// The calling thread's channel, registered on first use.
@@ -358,6 +362,7 @@ struct EINSUMS_EXPORT Profiler {
         if (!ch.ring.try_push(evt)) {
             _consumer->increment_dropped();
         }
+        wake_consumer_if_filling(ch);
         ch.pushes.store(ch.pushes.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
     }
 
@@ -379,7 +384,22 @@ struct EINSUMS_EXPORT Profiler {
         if (!ch.ring.try_push(evt)) {
             _consumer->increment_dropped();
         }
+        wake_consumer_if_filling(ch);
         ch.pops.store(ch.pops.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    }
+
+    /// Wake the consumer once when @p ch's ring passes half full. The consumer naps longer the longer
+    /// nothing arrives, so a burst that starts during a nap would otherwise fill the ring and drop
+    /// events before it looked again.
+    void wake_consumer_if_filling(ThreadChannel &ch) {
+        if (ch.ring.past_half()) {
+            if (!ch.woke_consumer) {
+                ch.woke_consumer = true;
+                _consumer->notify();
+            }
+        } else {
+            ch.woke_consumer = false;
+        }
     }
 
     static void read_counters(Event &evt) {

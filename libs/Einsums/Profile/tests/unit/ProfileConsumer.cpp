@@ -293,3 +293,51 @@ TEST_CASE("Profiler - names past the distinct-children cap fold into one node", 
     REQUIRE(leaf != nullptr);
     CHECK(leaf->call_count == kNames - kCap + 1);
 }
+
+TEST_CASE("Profiler - the timeline keeps the latest zones, oldest first", "[profiler][consumer]") {
+    // The timeline used to be a vector trimmed with erase(begin()), so once full every closed zone
+    // shifted a thousand events down by one. It is now a ring; read back, it must still be the most
+    // recent zones in the order they closed.
+    auto &prof = Profiler::instance();
+    prof.flush();
+    size_t const total = Consumer::kMaxTimelineEvents + 250;
+    // Under a parent of their own: the tree caps the distinct names under one parent and folds the
+    // rest into "(other)", so this many names at the root would fold every later test's zones. The
+    // timeline records each zone's own name either way.
+    prof.push("timeline test parent");
+    for (size_t i = 0; i < total; ++i) {
+        auto const name = "timeline zone " + std::to_string(i);
+        prof.push(name);
+        prof.pop();
+    }
+    prof.pop();
+    prof.flush();
+
+    auto       lock   = prof.consumer()->lock_shared();
+    auto const events = prof.consumer()->timeline_events();
+    REQUIRE(events.size() == Consumer::kMaxTimelineEvents);
+    // The parent closes last, so it is the newest record.
+    CHECK(events.back().name == "timeline test parent");
+    CHECK(events[events.size() - 2].name == "timeline zone " + std::to_string(total - 1));
+    CHECK(events.front().name == "timeline zone " + std::to_string(total + 1 - Consumer::kMaxTimelineEvents));
+    for (size_t k = 1; k < events.size(); ++k) {
+        CHECK(events[k].end_ms >= events[k - 1].end_ms);
+    }
+}
+
+TEST_CASE("Profiler - no counter rows without a counter backend", "[profiler][consumer]") {
+    // Every closed zone merged four hardware counters into string-keyed maps, all zero when no
+    // backend is active, and every node of the report carried four rows of zeros.
+    if (get_counter_backend().available()) {
+        SKIP("a hardware counter backend is active on this machine");
+    }
+    auto &prof = Profiler::instance();
+    {
+        LabeledSection("counterless zone");
+    }
+    prof.flush();
+    auto        lock = prof.consumer()->lock_shared();
+    auto const *node = find_node_any_thread(prof.consumer()->thread_data(), "counterless zone");
+    REQUIRE(node != nullptr);
+    CHECK(node->counters_total.empty());
+}

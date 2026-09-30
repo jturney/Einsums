@@ -262,8 +262,9 @@ class EINSUMS_EXPORT Consumer {
         _tick_callback = std::move(cb);
     }
 
-    /// Get recent timeline events for Gantt chart. Caller must hold shared lock.
-    auto timeline_events() const -> std::vector<TimelineEvent> const & { return _timeline_events; }
+    /// The most recent zones for the Gantt chart, oldest first, with their names resolved. Caller must
+    /// hold the shared lock.
+    auto timeline_events() const -> std::vector<TimelineEvent>;
 
     /// Maximum number of timeline events to keep.
     static constexpr size_t kMaxTimelineEvents = 1000;
@@ -298,12 +299,13 @@ class EINSUMS_EXPORT Consumer {
 
   private:
     void consumer_loop();
-    void drain_all();
-    void process_event(uint32_t thread_id, Event const &evt);
-    void process_push(ThreadState &ts, Event const &evt);
-    void process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id);
-    void process_annotate(ThreadState &ts, Event const &evt);
-    void process_mem(ThreadState &ts, Event const &evt);
+    /// Drain every ring into the tree; returns how many events it processed.
+    size_t drain_all();
+    void   process_event(uint32_t thread_id, Event const &evt);
+    void   process_push(ThreadState &ts, Event const &evt);
+    void   process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id);
+    void   process_annotate(ThreadState &ts, Event const &evt);
+    void   process_mem(ThreadState &ts, Event const &evt);
 
     /// Close frames the producer is no longer inside, without recording them.
     ///
@@ -347,8 +349,23 @@ class EINSUMS_EXPORT Consumer {
     std::function<void()> _tick_callback;
 
     // Timeline events for Gantt chart (circular buffer, protected by tree_mutex_)
-    std::vector<TimelineEvent> _timeline_events;
-    TimePoint                  _program_start{std::chrono::steady_clock::now()};
+    /// The last kMaxTimelineEvents closed zones, a ring written at _timeline_next. A record holds the
+    /// name's id: the timeline used to be a vector of named events trimmed with erase(begin()), so
+    /// once full every closed zone copied its name and shifted a thousand events down by one.
+    struct TimelineRecord {
+        uint32_t thread_id;
+        uint32_t name_id;
+        double   start_ms;
+        double   end_ms;
+    };
+    std::vector<TimelineRecord> _timeline;
+    size_t                      _timeline_next{0};
+
+    /// The counter backend's slot names, read once, and whether it is active at all.
+    bool                                      _counters_checked{false};
+    bool                                      _counters_active{false};
+    std::array<std::string, kNumCounterSlots> _counter_names;
+    TimePoint                                 _program_start{std::chrono::steady_clock::now()};
 };
 
 EINSUMS_NAMESPACE_END(profile)

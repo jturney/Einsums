@@ -8,6 +8,7 @@
 #include <Einsums/Profile/Options.hpp>
 #include <Einsums/Profile/TickClock.hpp>
 
+#include <algorithm>
 #include <string>
 
 #if defined(EINSUMS_HAVE_PROFILER)
@@ -21,6 +22,18 @@ Consumer::Consumer(StringTable &strings) : _strings(strings), _other_id(strings.
 
 Consumer::~Consumer() {
     shutdown();
+}
+
+auto Consumer::timeline_events() const -> std::vector<TimelineEvent> {
+    std::vector<TimelineEvent> out;
+    out.reserve(_timeline.size());
+    // Oldest first: once the ring has wrapped, the oldest record is the one about to be overwritten.
+    size_t const start = _timeline.size() < kMaxTimelineEvents ? 0 : _timeline_next;
+    for (size_t k = 0; k < _timeline.size(); ++k) {
+        auto const &rec = _timeline[(start + k) % _timeline.size()];
+        out.push_back({.thread_id = rec.thread_id, .name = _strings.get(rec.name_id), .start_ms = rec.start_ms, .end_ms = rec.end_ms});
+    }
+    return out;
 }
 
 void Consumer::register_thread(uint32_t thread_id, std::shared_ptr<EventRingBuffer> rb) {
@@ -51,8 +64,16 @@ void Consumer::flush() {
 
 void Consumer::consumer_loop() {
     auto last_tick = std::chrono::steady_clock::now();
+    // How long to wait before looking again. It doubles, up to kMaxNap, each time a look finds
+    // nothing, and drops back to 1 ms when one finds events: a process that is not recording used to
+    // wake this thread a thousand times a second. A producer whose ring passes half full wakes it
+    // early, and flush() and shutdown() always do. The cap stays well under the 50 ms some callers
+    // wait for the tree to catch up without flushing.
+    constexpr auto kMinNap = std::chrono::milliseconds(1);
+    constexpr auto kMaxNap = std::chrono::milliseconds(10);
+    auto           nap     = kMinNap;
     while (_running.load(std::memory_order_relaxed)) {
-        drain_all();
+        nap = drain_all() > 0 ? kMinNap : std::min(2 * nap, kMaxNap);
         // Call tick callback every ~500ms. Snapshot it under the lock (the main
         // thread may install it after this loop has started) and invoke outside.
         auto now = std::chrono::steady_clock::now();
@@ -70,29 +91,38 @@ void Consumer::consumer_loop() {
         // Wait for notification from producers or timeout after 1ms.
         // If notified (e.g., by flush() or shutdown()), wake immediately.
         std::unique_lock lock(_wake_mutex);
-        _wake_cv.wait_for(lock, std::chrono::milliseconds(1));
+        _wake_cv.wait_for(lock, nap);
     }
 }
 
-void Consumer::drain_all() {
-    // Snapshot registrations
+size_t Consumer::drain_all() {
+    // Snapshot registrations, unless every ring is empty. The consumer thread comes through here
+    // every millisecond whether anything is recording or not, and the snapshot copies a shared_ptr
+    // per thread that ever recorded and the drain takes the tree's lock exclusively: an idle
+    // process paid both a thousand times a second.
     std::vector<ThreadRegistration> regs;
     {
         std::scoped_lock const lock(_reg_mutex);
+        if (std::ranges::all_of(_registrations, [](ThreadRegistration const &r) { return r.ring_buffer->empty(); })) {
+            return 0;
+        }
         regs = _registrations;
     }
 
     if (regs.empty())
-        return;
+        return 0;
 
     // Drain events from all ring buffers under a single exclusive lock
     std::unique_lock const lock(_tree_mutex);
+    size_t                 drained = 0;
     for (auto &reg : regs) {
         Event evt;
         while (reg.ring_buffer->try_pop(evt)) {
             process_event(reg.thread_id, evt);
+            ++drained;
         }
     }
+    return drained;
 }
 
 void Consumer::process_event(uint32_t thread_id, Event const &evt) {
@@ -253,11 +283,20 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
 
     cur->record_exclusive(exclusive);
 
-    // Merge hardware counter deltas
-    auto &counter_backend = get_counter_backend();
-    for (int i = 0; i < kNumCounterSlots; ++i) {
-        uint64_t const    counter_delta = evt.counters[i] - frame.counters[i];
-        std::string const cname         = counter_backend.slot_name(i);
+    // Merge hardware counter deltas, only when a counter backend is active: without one the values
+    // are all zero, and merging them cost four string allocations and a dozen string-keyed map
+    // lookups on every closed zone, and put four rows of zeros on every node of the report.
+    if (!_counters_checked) {
+        auto &backend    = get_counter_backend();
+        _counters_active = backend.available();
+        for (int i = 0; i < kNumCounterSlots; ++i) {
+            _counter_names[i] = backend.slot_name(i);
+        }
+        _counters_checked = true;
+    }
+    for (int i = 0; _counters_active && i < kNumCounterSlots; ++i) {
+        uint64_t const     counter_delta = evt.counters[i] - frame.counters[i];
+        std::string const &cname         = _counter_names[i];
         cur->counters_total[cname] += counter_delta;
         auto itmin = cur->counters_min.find(cname);
         if (itmin == cur->counters_min.end()) {
@@ -273,17 +312,17 @@ void Consumer::process_pop(ThreadState &ts, Event const &evt, uint32_t thread_id
 
     // Record timeline event for Gantt chart
     {
-        auto start_since_program = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(frame.start - _program_start);
-        auto end_since_program   = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(end - _program_start);
-        TimelineEvent te;
-        te.thread_id = thread_id;
-        te.name      = _strings.get(frame.name_id);
-        te.start_ms  = start_since_program.count();
-        te.end_ms    = end_since_program.count();
-        if (_timeline_events.size() >= kMaxTimelineEvents) {
-            _timeline_events.erase(_timeline_events.begin());
+        using ms = std::chrono::duration<double, std::milli>;
+        TimelineRecord const rec{.thread_id = thread_id,
+                                 .name_id   = frame.name_id,
+                                 .start_ms  = std::chrono::duration_cast<ms>(frame.start - _program_start).count(),
+                                 .end_ms    = std::chrono::duration_cast<ms>(end - _program_start).count()};
+        if (_timeline.size() < kMaxTimelineEvents) {
+            _timeline.push_back(rec);
+        } else {
+            _timeline[_timeline_next] = rec;
         }
-        _timeline_events.push_back(std::move(te));
+        _timeline_next = (_timeline_next + 1) % kMaxTimelineEvents;
     }
 
     // Add duration to parent's child_time

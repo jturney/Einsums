@@ -39,6 +39,10 @@
 #    include <x86intrin.h>
 #endif
 
+#if !defined(_WIN32)
+#    include <sys/resource.h>
+#endif
+
 #include <Einsums/Testing.hpp>
 
 /// An index list printed as fmt::join prints it, through a type the name cache cannot key on.
@@ -284,6 +288,11 @@ TEST_CASE("Bench ZoneCost: zones on several threads at once", "[Profile][ZoneCos
     Recording const on(true);
     for (int const threads : {1, 2, 4, 8}) {
         auto const label = [&](std::string_view what) { return fmt::format("{}, {} thread(s)", what, threads); };
+        show(label("empty loop"), team_per_op(threads, [](int i) { keep(i); }));
+        {
+            Recording const off(false);
+            show(label("zone, literal, recording OFF"), team_per_op(threads, [](int) { LabeledSection("bench zone"); }));
+        }
         show(label("zone, literal"), team_per_op(threads, [](int) { LabeledSection("bench zone"); }));
         show(label("4 x fetch_add, shared atomic"), team_per_op(threads, [](int) {
                  for (int k = 0; k < 4; ++k) {
@@ -304,4 +313,58 @@ TEST_CASE("Bench ZoneCost: zones on several threads at once", "[Profile][ZoneCos
                  }
              }));
     }
+}
+
+TEST_CASE("Bench ZoneCost: the consumer", "[Profile][ZoneCost][benchmark]") {
+    // The consumer aggregates every event into the report's tree on a thread of its own. What it
+    // spends per event bounds the rate a program can record at before the rings fill and events
+    // are dropped; what it spends while nothing records is paid by every program.
+    Recording const on(true);
+    auto           &profiler = prof::Profiler::instance();
+
+    // flush() drains on the calling thread, so timing it times the aggregation. A batch of 16384
+    // zones is half a ring and takes a fraction of the consumer thread's 1 ms nap to produce, so the
+    // consumer thread rarely takes part of it first; the median over batches is reported.
+    constexpr int kZones = 16384;
+    auto const    drain  = [&](std::string_view label, int events_per_zone, auto &&produce) {
+        std::vector<double> ns;
+        for (int rep = 0; rep <= 30; ++rep) {
+            profiler.flush();
+            for (int i = 0; i < kZones; ++i) {
+                produce(i);
+            }
+            auto const t0 = std::chrono::steady_clock::now();
+            profiler.flush();
+            auto const t1 = std::chrono::steady_clock::now();
+            if (rep > 0) {
+                ns.push_back(std::chrono::duration<double, std::nano>(t1 - t0).count() / (kZones * events_per_zone));
+            }
+        }
+        std::ranges::sort(ns);
+        fmt::println("[ZoneCost consumer: {:38s}] min {:7.1f} ns   median {:7.1f} ns   per event", label, ns.front(), ns[ns.size() / 2]);
+    };
+    drain("literal zones", 2, [](int) { LabeledSection("bench consumer zone"); });
+    drain("zones with an int annotation", 3, [](int i) {
+        LabeledSection("bench consumer zone");
+        ProfileAnnotate("bench key", static_cast<std::int64_t>(i));
+    });
+    drain("zones with a string annotation", 3, [](int) {
+        LabeledSection("bench consumer zone");
+        ProfileAnnotate("bench key", "bench value");
+    });
+
+    // CPU the whole process uses while nothing is recorded: the consumer's 1 ms naps and anything
+    // else the profiler runs in the background.
+    auto const cpu_seconds = [] {
+        rusage ru{};
+        getrusage(RUSAGE_SELF, &ru);
+        return static_cast<double>(ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) +
+               1e-6 * static_cast<double>(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec);
+    };
+    profiler.flush();
+    double const c0 = cpu_seconds();
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    double const c1 = cpu_seconds();
+    fmt::println("[ZoneCost consumer: idle process CPU over 2 s              ] {:.2f} ms of CPU per second ({:.3f}% of one core)",
+                 1000.0 * (c1 - c0) / 2.0, 100.0 * (c1 - c0) / 2.0);
 }
