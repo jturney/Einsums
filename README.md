@@ -38,7 +38,6 @@ Optional requirements:
 * CUDA or HIP for GPU support (work in progress).
 * MPI (Open MPI or MPICH) for distributed execution (work in progress).
 * cpptrace for backtraces.
-* LibreTT for GPU transposes.
 
 ## Building from source
 
