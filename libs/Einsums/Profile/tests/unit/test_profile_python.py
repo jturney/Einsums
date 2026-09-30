@@ -308,3 +308,107 @@ def test_library_zones_nest_under_a_python_section(tmp_path):
     section = next(filter(None, (find(root, "python section around einsum") for root in tree.values())), None)
     assert section is not None
     assert any(name.startswith("cg::einsum:") for name in names_below(section))
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The profile decorator
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _zone_calls(tmp_path, name):
+    """Calls of every zone called ``name``, across threads, from an exported report."""
+    prof.flush()
+    out = prof.export_json(str(tmp_path / "profile.json"))
+    tree = json.loads(open(out).read())
+
+    def total(node):
+        return (node.get("call_count", 0) if node.get("name") == name else 0) + sum(total(c) for c in node.get("children", []))
+
+    return sum(total(root) for root in tree.values())
+
+
+@recording
+def test_decorator_records_each_call_under_the_qualified_name(tmp_path):
+    @prof.profile
+    def decorated_bare(x):
+        return 2 * x
+
+    before = _zone_calls(tmp_path, decorated_bare.__qualname__)
+    assert decorated_bare(21) == 42
+    assert decorated_bare(1) == 2
+    assert _zone_calls(tmp_path, decorated_bare.__qualname__) == before + 2
+
+
+@recording
+def test_decorator_takes_a_zone_name(tmp_path):
+    @prof.profile(name="decorated with a name")
+    def decorated_named():
+        return "ok"
+
+    before = _zone_calls(tmp_path, "decorated with a name")
+    assert decorated_named() == "ok"
+    assert _zone_calls(tmp_path, "decorated with a name") == before + 1
+
+
+@recording
+def test_decorator_closes_its_zone_when_the_function_raises():
+    @prof.profile
+    def decorated_raises():
+        raise _Sentinel("boom")
+
+    push_before = prof.total_push_count()
+    pop_before = prof.total_pop_count()
+    with pytest.raises(_Sentinel):
+        decorated_raises()
+    assert prof.total_push_count() == push_before + 1
+    assert prof.total_pop_count() == pop_before + 1
+
+
+def test_decorator_keeps_the_function_s_identity():
+    def original(a, b=2):
+        """The docstring."""
+        return a + b
+
+    wrapped = prof.profile(original)
+    assert wrapped.__name__ == "original"
+    assert wrapped.__doc__ == "The docstring."
+    assert wrapped.__wrapped__ is original
+    assert wrapped(1) == 3
+
+
+def test_decorator_on_methods():
+    class Holder:
+        @prof.profile
+        def method(self, x):
+            return x + 1
+
+        @staticmethod
+        @prof.profile
+        def static(x):
+            return x + 2
+
+        @classmethod
+        @prof.profile
+        def klass(cls, x):
+            return x + 3
+
+    assert Holder().method(1) == 2
+    assert Holder.static(1) == 3
+    assert Holder.klass(1) == 4
+
+
+def test_decorator_refuses_coroutines_and_generators():
+    """A zone held open across an await or a yield would not close before zones opened after it."""
+
+    async def coroutine():
+        return 1
+
+    def generator():
+        yield 1
+
+    async def async_generator():
+        yield 1
+
+    for func in (coroutine, generator, async_generator):
+        with pytest.raises(TypeError, match="coroutine or generator"):
+            prof.profile(func)

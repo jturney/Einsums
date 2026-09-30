@@ -259,6 +259,22 @@ From Python
         transform(...)
         profile.annotate_dims("shape", [nocc, nvirt, naux])
 
+To time every call of a function, decorate it instead.
+The zone takes the function's qualified name unless you give it one, and records where the function is defined, so the report links to it:
+
+.. code-block:: python
+
+    @profile.profile
+    def build_fock(density):
+        ...
+
+    @profile.profile(name="SCF iteration")
+    def iterate(state):
+        ...
+
+The decorator refuses coroutine and generator functions.
+A zone has to close before any zone opened after it on the same thread, and one held open across an ``await`` or a ``yield`` would not; wrap their synchronous parts in ``section`` instead.
+
 The Live Viewer
 ---------------
 
