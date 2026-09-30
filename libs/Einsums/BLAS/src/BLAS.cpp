@@ -598,49 +598,13 @@ auto dtrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, double const *
 auto ctrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, std::complex<float> const *a, int_t lda, std::complex<float> const *b,
             int_t ldb, std::complex<float> *c, int_t ldc, float *scale) -> int_t {
     VendorWidthFence const fence;
-#if defined(EINSUMS_HAVE_MKL_LAPACKE_H)
-    return ::einsums::backend::linear_algebra::mkl::ctrsyl(trana, tranb, isgn, m, n, a, lda, b, ldb, c, ldc, scale);
-#elif defined(EINSUMS_HAVE_LAPACKE)
-    return ::einsums::backend::linear_algebra::cblas::ctrsyl(trana, tranb, isgn, m, n, a, lda, b, ldb, c, ldc, scale);
-#else
-    (void)trana;
-    (void)tranb;
-    (void)isgn;
-    (void)m;
-    (void)n;
-    (void)a;
-    (void)lda;
-    (void)b;
-    (void)ldb;
-    (void)c;
-    (void)ldc;
-    (void)scale;
-    EINSUMS_THROW_EXCEPTION(std::runtime_error, "ctrsyl not implemented.");
-#endif
+    return vendor::ctrsyl(trana, tranb, isgn, m, n, a, lda, b, ldb, c, ldc, scale);
 }
 
 auto ztrsyl(char trana, char tranb, int_t isgn, int_t m, int_t n, std::complex<double> const *a, int_t lda, std::complex<double> const *b,
             int_t ldb, std::complex<double> *c, int_t ldc, double *scale) -> int_t {
     VendorWidthFence const fence;
-#if defined(EINSUMS_HAVE_MKL_LAPACKE_H)
-    return ::einsums::backend::linear_algebra::mkl::ztrsyl(trana, tranb, isgn, m, n, a, lda, b, ldb, c, ldc, scale);
-#elif defined(EINSUMS_HAVE_LAPACKE)
-    return ::einsums::backend::linear_algebra::cblas::ztrsyl(trana, tranb, isgn, m, n, a, lda, b, ldb, c, ldc, scale);
-#else
-    (void)trana;
-    (void)tranb;
-    (void)isgn;
-    (void)m;
-    (void)n;
-    (void)a;
-    (void)lda;
-    (void)b;
-    (void)ldb;
-    (void)c;
-    (void)ldc;
-    (void)scale;
-    EINSUMS_THROW_EXCEPTION(std::runtime_error, "ztrsyl not implemented.");
-#endif
+    return vendor::ztrsyl(trana, tranb, isgn, m, n, a, lda, b, ldb, c, ldc, scale);
 }
 
 auto sgeqrf(int_t m, int_t n, float *a, int_t lda, float *tau) -> int_t {
