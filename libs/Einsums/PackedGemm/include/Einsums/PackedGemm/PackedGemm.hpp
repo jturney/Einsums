@@ -304,6 +304,18 @@ bool site_key_matches(ContractionKey const &key, ContractionSpec const &spec_in,
 /// Test introspection only, like @ref last_packed_engine.
 [[nodiscard]] EINSUMS_EXPORT int &last_team_size();
 
+/// The cache blocks a packed contraction ran with: MC rows of A, NC columns of B, KC of the
+/// contracted extent, after the C-temporary budget and the thread grid have had their say.
+struct PackedBlocking {
+    int64_t mc{0};
+    int64_t nc{0};
+    int64_t kc{0};
+};
+
+/// The blocks of the most recent "packed" contraction on this thread. Written only when the route
+/// is "packed". Test introspection only, like @ref last_packed_engine.
+[[nodiscard]] EINSUMS_EXPORT PackedBlocking &last_packed_blocking();
+
 /// The route pin the most recent route decision on this thread read. Adaptive means the thread
 /// regime decided (@ref einsums::blas::vendor_call_is_fenced). Test introspection only.
 [[nodiscard]] EINSUMS_EXPORT KernelRoute &last_route_pin();
@@ -1703,6 +1715,8 @@ void blis_contraction(PackingPlan const &plan, CType &C, AType const &A, BType c
         int64_t const nc_panels_max = (std::min(NC_blk, N) + NR - 1) / NR;
         auto const    ap_buf_elems  = static_cast<size_t>(mc_panels_max * MR * KC_blk);
         auto const    bp_buf_elems  = static_cast<size_t>(nc_panels_max * NR * KC_blk);
+
+        last_packed_blocking() = PackedBlocking{MC_blk, NC_blk, KC_blk};
 
         // What the plan and the blocking came out as, on request: the strides settle which loop
         // order won, and the blocks settle whether the write-back's runs form. Printed from out of

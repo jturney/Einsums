@@ -28,6 +28,11 @@ int &last_team_size() {
     return size;
 }
 
+PackedBlocking &last_packed_blocking() {
+    thread_local PackedBlocking blocking{};
+    return blocking;
+}
+
 KernelRoute &last_route_pin() {
     thread_local KernelRoute pin = KernelRoute::Adaptive;
     return pin;
