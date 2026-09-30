@@ -36,7 +36,6 @@ set(_Einsums_modules
   Print
   Profile
   Python
-  PythonDemo
   Runtime
   StringUtil
   TaskPool

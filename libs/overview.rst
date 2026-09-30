@@ -50,7 +50,6 @@ generated API reference for its public headers.
     /libs/Einsums/Print/docs/index.rst
     /libs/Einsums/Profile/docs/index.rst
     /libs/Einsums/Python/docs/index.rst
-    /libs/Einsums/PythonDemo/docs/index.rst
     /libs/Einsums/Runtime/docs/index.rst
     /libs/Einsums/SIMD/docs/index.rst
     /libs/Einsums/StringUtil/docs/index.rst

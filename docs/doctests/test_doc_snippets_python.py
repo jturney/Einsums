@@ -59,7 +59,7 @@ def test_arrow_left_spelling_is_equivalent(ab):
         pytest.param(lambda a, b, c: einsums.einsum("ik;kj->ij", c, a, b), id="einsum"),
         pytest.param(lambda a, b, c: einsums.permute("ij->ji", c, a), id="permute"),
         pytest.param(lambda a, b, c: linalg.dot(a, b), id="dot"),
-        pytest.param(lambda a, b, c: einsums.sum_of_squares(a), id="sum_of_squares"),
+        pytest.param(lambda a, b, c: linalg.sum(einsums.zeros([]), a), id="sum"),
     ],
 )
 def test_operations_reject_raw_numpy_arrays(call):
