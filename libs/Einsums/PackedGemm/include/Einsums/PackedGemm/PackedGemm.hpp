@@ -2686,12 +2686,6 @@ bool try_packed_gemm(ContractionSpec const &spec_in, einsums::ValueTypeT<CType> 
         }
     }
 
-    // Hashing the whole key only labels a profiler annotation, on a path tiled expansions drive
-    // thousands of times per replay, so it is paid only when recording.
-    if (profile::Profiler::instance().enabled()) {
-        profile::annotate("packed_gemm_hash", static_cast<int64_t>(std::hash<ContractionKey>{}(key)));
-    }
-
     // ------------------------------------------------------------------------- Classify target
     // indices. An empty M, N or link group is not a rejection: compute_packing_topology synthesizes
     // a unit dim so GEMV- and outer-product-shaped contractions run through the same machinery. The
