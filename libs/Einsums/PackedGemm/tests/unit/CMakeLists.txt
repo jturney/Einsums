@@ -70,3 +70,8 @@ einsums_add_simd_rung_tests("Modules.PackedGemm" EngineOptions)
 # The stream inner loop is compiled once per rung; pin it, and the route that uses it, on each.
 einsums_add_simd_rung_tests("Modules.PackedGemm" StreamKernel)
 einsums_add_simd_rung_tests("Modules.PackedGemm" Stream)
+
+# The per-rung kernel objects must keep their weak symbols to themselves; see
+# einsums_add_simd_rung_objects_test in cmake/Einsums_AddSIMDDispatch.cmake.
+include(Einsums_AddSIMDDispatch)
+einsums_add_simd_rung_objects_test("Modules.PackedGemm" Einsums_PackedGemm)

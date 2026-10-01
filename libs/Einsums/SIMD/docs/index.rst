@@ -472,7 +472,11 @@ Neither namespace covers templates from other libraries. A ``std::vector``
 member or an fmt formatter instantiated in the implementation file is emitted
 by every copy under one name, compiled at that copy's flags, and the program
 calls whichever copy the linker kept. Keep such code in an arch-neutral file
-and pass the kernel plain pointers and sizes.
+and pass the kernel plain pointers and sizes, as HPTT does: its planner is
+compiled once, and only its kernels (``TransposeKernels.cpp``) once per rung.
+On Linux, ``einsums_add_simd_rung_objects_test(<subcategory> <target>)``
+registers a test that fails when a per-rung object of ``<target>`` defines a
+weak symbol outside its rung's namespaces; HPTT and PackedGemm use it.
 
 The whole mechanism sits behind ``EINSUMS_WITH_SIMD_DISPATCH`` (default ON).
 When it is OFF, or when a compile-time pin is in effect (below), the helper

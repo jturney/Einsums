@@ -20,3 +20,8 @@ foreach(test ${HPTTTests})
   einsums_add_unit_test("Modules.HPTT" ${test})
   einsums_add_simd_rung_tests("Modules.HPTT" ${test})
 endforeach()
+
+# The per-rung kernel objects must keep their weak symbols to themselves; see
+# einsums_add_simd_rung_objects_test in cmake/Einsums_AddSIMDDispatch.cmake.
+include(Einsums_AddSIMDDispatch)
+einsums_add_simd_rung_objects_test("Modules.HPTT" Einsums_HPTT)

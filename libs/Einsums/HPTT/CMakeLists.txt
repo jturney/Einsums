@@ -17,7 +17,18 @@ set(HPTTHeaders
     Einsums/HPTT/Options.hpp
 )
 
-set(HPTTSources HPTT.cpp Options.cpp Plan.cpp TransposeFactory.cpp Utils.cpp Primes.hpp Files.cpp)
+set(HPTTSources
+    HPTT.cpp
+    Options.cpp
+    Plan.cpp
+    Transpose.cpp
+    TransposeFactory.cpp
+    TransposeImpl.hpp
+    TransposeKernels.hpp
+    Utils.cpp
+    Primes.hpp
+    Files.cpp
+)
 
 # Transpose.cpp is the arch-generic kernel implementation: it is compiled
 # once per SIMD-dispatch rung (each copy in its own namespace) rather than
@@ -25,7 +36,9 @@ set(HPTTSources HPTT.cpp Options.cpp Plan.cpp TransposeFactory.cpp Utils.cpp Pri
 # plan creation. See Einsums/SIMD/RuntimeFeatures.hpp and
 # Einsums_AddSIMDDispatch.cmake.
 include(Einsums_AddSIMDDispatch)
-einsums_add_simd_dispatch_sources(HPTTTransposeRungs IMPL src/Transpose.cpp)
+# Only the kernels are compiled per rung; the planner (Transpose.cpp) is compiled
+# once. See src/TransposeKernels.hpp for why nothing else may go in that file.
+einsums_add_simd_dispatch_sources(HPTTTransposeRungs IMPL src/TransposeKernels.cpp)
 
 include(Einsums_AddModule)
 einsums_add_module(

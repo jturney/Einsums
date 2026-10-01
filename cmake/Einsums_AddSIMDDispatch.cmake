@@ -415,6 +415,41 @@ endfunction()
 #:    ``v3`` and ``v4`` on x86, ``sme`` on aarch64. Rungs this toolchain
 #:    cannot spell are dropped, as everywhere else on the ladder. No-op when
 #:    the build is single-TU (dispatch OFF or a compile-time CPU pin).
+#:
+#: .. cmake:command:: einsums_add_simd_rung_objects_test
+#:
+#:    Register a test that every per-rung object of ``<target>`` keeps its
+#:    weak symbols to itself.
+#:
+#:    .. code-block:: cmake
+#:
+#:       einsums_add_simd_rung_objects_test(<subcategory> <target>)
+#:
+#:    Each rung's copy of an implementation file is compiled at that rung's
+#:    flags, and a weak symbol it defines under a name the other copies share
+#:    (a ``std::vector`` member, an fmt formatter) is merged at link time: one
+#:    copy, possibly the AVX-512 one, serves every caller. The test runs ``nm``
+#:    over the target's objects from ``einsums_add_simd_dispatch_sources`` and
+#:    fails on any weak symbol outside the rung's ``arch_<rung>`` namespace or
+#:    the SIMD headers' ``isa_<features>`` namespace. ``<target>`` must be an
+#:    OBJECT library, as every Einsums module is. The test is registered only
+#:    for ELF toolchains (GCC or Clang on Linux), where ``nm`` reports symbol
+#:    binding portably.
+function(einsums_add_simd_rung_objects_test subcategory target)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux"
+     OR NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"
+     OR NOT CMAKE_NM
+  )
+    return()
+  endif()
+  set(_test_name "Tests.Unit.${subcategory}.RungObjectsSelfContained")
+  add_test(NAME ${_test_name}
+           COMMAND ${CMAKE_COMMAND} -DNM=${CMAKE_NM} "-DOBJECTS=$<JOIN:$<TARGET_OBJECTS:${target}>,|>" -P
+                   ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/Einsums_CheckRungObjects.cmake
+  )
+  einsums_set_test_properties(${_test_name} "UNIT_ONLY")
+endfunction()
+
 function(einsums_add_simd_rung_compiled_tests subcategory name)
   if(NOT EINSUMS_WITH_SIMD_DISPATCH
      OR EINSUMS_SIMD_NATIVE_ARCH

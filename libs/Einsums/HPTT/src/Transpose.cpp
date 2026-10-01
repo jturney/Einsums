@@ -27,7 +27,8 @@
 
 /**
  * \file
- * Compute the tensor transposition
+ * Plan a tensor transposition: the planner, compiled once. The kernels it runs are in
+ * TransposeKernels.cpp, compiled once per SIMD dispatch rung.
  */
 
 #include <Einsums/Config/Namespace.hpp>
@@ -50,915 +51,29 @@
 #endif
 
 #include <Einsums/Assert.hpp>
-#include <Einsums/Config/ForceInline.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 #include <Einsums/HPTT/ComputeNode.hpp>
 #include <Einsums/HPTT/Files.hpp>
 #include <Einsums/HPTT/HPTTTypes.hpp>
-#include <Einsums/HPTT/Macros.hpp>
 #include <Einsums/HPTT/Plan.hpp>
 #include <Einsums/HPTT/Utils.hpp>
 #include <Einsums/Logging.hpp>
-#include <Einsums/SIMD/ComplexVec.hpp>
-#include <Einsums/SIMD/Convert.hpp>
-#include <Einsums/SIMD/Gather.hpp>
-#include <Einsums/SIMD/Operations.hpp>
-#include <Einsums/SIMD/Prefetch.hpp>
 #include <Einsums/SIMD/RuntimeFeatures.hpp>
-#include <Einsums/SIMD/Shuffle.hpp>
-#include <Einsums/SIMD/Vec.hpp>
 
 #include "TransposeImpl.hpp"
-
-// The rung this copy of the file is compiled for, as an einsums::simd::InstructionSet value.
-// The dispatch wrappers define EINSUMS_SIMD_DISPATCH_RUNG to the same ordinals.
-#if defined(EINSUMS_SIMD_DISPATCH_RUNG)
-#    define EINSUMS_HPTT_PLAN_RUNG EINSUMS_SIMD_DISPATCH_RUNG
-#else
-#    define EINSUMS_HPTT_PLAN_RUNG 0
-#endif
+#include "TransposeKernels.hpp"
 
 EINSUMS_NAMESPACE_BEGIN(hptt)
-namespace EINSUMS_SIMD_ARCH_NS {
-
-// std::abs has no overload for __fp16 / __bf16, so promote those to float
-// before calling. Real and complex types pass straight through.
-namespace detail_hptt {
-template <typename T>
-EINSUMS_FORCEINLINE auto abs_promoted(T x) {
-#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-    if constexpr (std::is_same_v<T, einsums::simd::half_t>) {
-        return std::abs(static_cast<float>(x));
-    } else
-#endif
-#if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-        if constexpr (std::is_same_v<T, einsums::simd::bfloat16_t>) {
-        return std::abs(static_cast<float>(x));
-    } else
-#endif
-    {
-        return std::abs(x);
-    }
-}
-} // namespace detail_hptt
-
-// ---------------------------------------------------------------------------
-// Generic scalar micro_kernel: used for complex types and as fallback.
-// ---------------------------------------------------------------------------
-template <typename floatType, bool betaIsZero, bool conjA>
-struct MicroKernel {
-    static void execute(floatType const *A, size_t const lda, size_t const innerStrideA, floatType *B, size_t const ldb,
-                        size_t const innerStrideB, floatType const alpha, floatType const beta) {
-        constexpr size_t n = einsums::simd::native_lanes<floatType>;
-
-        if constexpr (betaIsZero) {
-            for (size_t j = 0; j < n; ++j) {
-                for (size_t i = 0; i < n; ++i) {
-                    if constexpr (conjA)
-                        B[(i * innerStrideB) + (j * ldb)] = alpha * conj(A[(j * innerStrideA) + (lda * i)]);
-                    else
-                        B[(i * innerStrideB) + (j * ldb)] = alpha * A[(j * innerStrideA) + (lda * i)];
-                }
-            }
-        } else {
-            for (size_t j = 0; j < n; ++j) {
-                for (size_t i = 0; i < n; ++i) {
-                    if constexpr (conjA) {
-                        B[(i * innerStrideB) + (j * ldb)] =
-                            alpha * conj(A[(j * innerStrideA) + (lda * i)]) + beta * B[(i * innerStrideB) + (j * ldb)];
-                    } else {
-                        B[(i * innerStrideB) + (j * ldb)] =
-                            alpha * A[(j * innerStrideA) + (lda * i)] + beta * B[(i * innerStrideB) + (j * ldb)];
-                    }
-                }
-            }
-        }
-    }
-};
-
-// ---------------------------------------------------------------------------
-// SIMD micro_kernel implementation shared by float and double.
-// Factored as a helper to avoid duplicating the gather → transpose → scale →
-// fmadd → scatter pipeline for each type.
-//
-// When innerStride is 1 (the common case for contiguous data), we use
-// gather_fixed<1> / scatter_fixed<1> which compile down to a single
-// loadu/storeu with no branch overhead. For other strides, we fall back
-// to the runtime gather/scatter which selects the best available
-// instruction (AVX2 hardware gather, NEON structured loads, or scalar).
-// ---------------------------------------------------------------------------
-namespace detail_hptt {
-
-template <typename T, bool betaIsZero>
-static EINSUMS_FORCEINLINE void micro_kernel_simd(T const *A, size_t lda, size_t innerStrideA, T *B, size_t ldb, size_t innerStrideB,
-                                                  T alpha, T beta) {
-    using namespace einsums::simd;
-    constexpr int N = Vec<T>::lanes;
-
-    auto va = broadcast(alpha);
-
-    Vec<T> rows[N]; // NOLINT
-
-    // Load A rows: fast path for stride==1
-    if (innerStrideA == 1) {
-        for (int i = 0; i < N; ++i)
-            rows[i] = gather_fixed<1>(A + i * lda);
-    } else {
-        for (int i = 0; i < N; ++i)
-            rows[i] = gather(A + i * lda, static_cast<std::ptrdiff_t>(innerStrideA));
-    }
-
-    transpose_inplace(rows);
-
-    for (int i = 0; i < N; ++i)
-        rows[i] = rows[i] * va;
-
-    if constexpr (!betaIsZero) {
-        auto vb = broadcast(beta);
-        if (innerStrideB == 1) {
-            for (int i = 0; i < N; ++i) {
-                auto rowB = gather_fixed<1>(B + i * ldb);
-                rows[i]   = fmadd(rowB, vb, rows[i]);
-            }
-        } else {
-            for (int i = 0; i < N; ++i) {
-                auto rowB = gather(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB));
-                rows[i]   = fmadd(rowB, vb, rows[i]);
-            }
-        }
-    }
-
-    if (innerStrideB == 1) {
-        for (int i = 0; i < N; ++i)
-            scatter_fixed<1>(B + i * ldb, rows[i]);
-    } else {
-        for (int i = 0; i < N; ++i)
-            scatter(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB), rows[i]);
-    }
-}
-
-} // namespace detail_hptt
-
-// ---------------------------------------------------------------------------
-// SIMD-accelerated micro_kernel for float and double (non-complex).
-// Uses einsums::simd for portable SIMD across x86 (SSE2/AVX/AVX2/AVX-512)
-// and ARM NEON (including Apple Silicon).
-// ---------------------------------------------------------------------------
-template <bool betaIsZero, bool conjA>
-struct MicroKernel<float, betaIsZero, conjA> {
-    static void execute(float const *A, size_t const lda, size_t const innerStrideA, float *B, size_t const ldb, size_t const innerStrideB,
-                        float const alpha, float const beta) {
-        detail_hptt::micro_kernel_simd<float, betaIsZero>(A, lda, innerStrideA, B, ldb, innerStrideB, alpha, beta);
-    }
-};
-
-template <bool betaIsZero, bool conjA>
-struct MicroKernel<double, betaIsZero, conjA> {
-    static void execute(double const *A, size_t const lda, size_t const innerStrideA, double *B, size_t const ldb,
-                        size_t const innerStrideB, double const alpha, double const beta) {
-        detail_hptt::micro_kernel_simd<double, betaIsZero>(A, lda, innerStrideA, B, ldb, innerStrideB, alpha, beta);
-    }
-};
-
-// ---------------------------------------------------------------------------
-// SIMD-accelerated micro_kernel for half_t (FP16). Reuses the float/double
-// pipeline since Vec<half_t> has full broadcast/gather/transpose/multiply
-// support on NEON FP16 and AVX-512FP16.
-// ---------------------------------------------------------------------------
-#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-template <bool betaIsZero, bool conjA>
-struct MicroKernel<einsums::simd::half_t, betaIsZero, conjA> {
-    using half_t = einsums::simd::half_t;
-    static void execute(half_t const *A, size_t const lda, size_t const innerStrideA, half_t *B, size_t const ldb,
-                        size_t const innerStrideB, half_t const alpha, half_t const beta) {
-        detail_hptt::micro_kernel_simd<half_t, betaIsZero>(A, lda, innerStrideA, B, ldb, innerStrideB, alpha, beta);
-    }
-};
-#endif
-
-// ---------------------------------------------------------------------------
-// micro_kernel for bfloat16_t. BF16 has SIMD load/store but no Vec<bf16>×Vec<bf16>
-// multiply that returns BF16; its arithmetic lands in FP32. So we load BF16
-// vectors, transpose them in registers, then for each output row widen BF16 to
-// FP32 (two halves), do alpha·A (+ beta·B) in FP32, and round back to BF16.
-// Everything is the SIMD module's portable spelling; it needs a Vec<bf16>
-// transpose, which only the NEON backend has, so AVX-512 BF16 keeps the scalar
-// kernel below.
-// ---------------------------------------------------------------------------
-#if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC)
-template <bool betaIsZero, bool conjA>
-struct MicroKernel<einsums::simd::bfloat16_t, betaIsZero, conjA> {
-    using bf16_t = einsums::simd::bfloat16_t;
-    static void execute(bf16_t const *A, size_t const lda, size_t const innerStrideA, bf16_t *B, size_t const ldb,
-                        size_t const innerStrideB, bf16_t const alpha, bf16_t const beta) {
-        using namespace einsums::simd;
-        constexpr int N = Vec<bf16_t>::lanes;
-
-        Vec<bf16_t> rows[N]; // NOLINT
-        if (innerStrideA == 1) {
-            for (int i = 0; i < N; ++i)
-                rows[i] = loadu(A + i * lda);
-        } else {
-            for (int i = 0; i < N; ++i)
-                rows[i] = gather(A + i * lda, static_cast<std::ptrdiff_t>(innerStrideA));
-        }
-
-        transpose_inplace(rows);
-
-        Vec<float> const va = broadcast(static_cast<float>(alpha));
-        Vec<float>       vb{};
-        if constexpr (!betaIsZero) {
-            vb = broadcast(static_cast<float>(beta));
-        }
-
-        for (int i = 0; i < N; ++i) {
-            Vec<float> lo = mul(convert_low<float>(rows[i]), va);
-            Vec<float> hi = mul(convert_high<float>(rows[i]), va);
-
-            if constexpr (!betaIsZero) {
-                Vec<bf16_t> const b_row =
-                    innerStrideB == 1 ? loadu(B + i * ldb) : gather(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB));
-                lo = fmadd(convert_low<float>(b_row), vb, lo);
-                hi = fmadd(convert_high<float>(b_row), vb, hi);
-            }
-
-            Vec<bf16_t> const result = convert<bf16_t>(lo, hi);
-            if (innerStrideB == 1) {
-                storeu(B + i * ldb, result);
-            } else {
-                scatter(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB), result);
-            }
-        }
-    }
-};
-#elif defined(__AVX512BF16__)
-// AVX-512BF16 platforms keep the FP32-promoted scalar path; equivalent
-// SIMD work would use _mm512_cvtne2ps_pbh / _mm512_cvtpbh_ps but the
-// hardware isn't available in this dev env to validate.
-template <bool betaIsZero, bool conjA>
-struct MicroKernel<einsums::simd::bfloat16_t, betaIsZero, conjA> {
-    using bf16_t = einsums::simd::bfloat16_t;
-    static void execute(bf16_t const *A, size_t const lda, size_t const innerStrideA, bf16_t *B, size_t const ldb,
-                        size_t const innerStrideB, bf16_t const alpha, bf16_t const beta) {
-        constexpr size_t n     = einsums::simd::native_lanes<bf16_t>;
-        float const      a_f32 = static_cast<float>(alpha);
-        float const      b_f32 = betaIsZero ? 0.0f : static_cast<float>(beta);
-
-        for (size_t j = 0; j < n; ++j) {
-            for (size_t i = 0; i < n; ++i) {
-                float const a_val = static_cast<float>(A[(j * innerStrideA) + (lda * i)]);
-                float       out   = a_f32 * a_val;
-                if constexpr (!betaIsZero) {
-                    float const b_val = static_cast<float>(B[(i * innerStrideB) + (j * ldb)]);
-                    out += b_f32 * b_val;
-                }
-                B[(i * innerStrideB) + (j * ldb)] = static_cast<bf16_t>(out);
-            }
-        }
-    }
-};
-#endif
-
-// ---------------------------------------------------------------------------
-// SIMD-accelerated micro_kernel for complex<float>
-// ---------------------------------------------------------------------------
-template <bool betaIsZero, bool conjA>
-struct MicroKernel<std::complex<float>, betaIsZero, conjA> {
-    static void execute(std::complex<float> const *A, size_t const lda, size_t const innerStrideA, std::complex<float> *B, size_t const ldb,
-                        size_t const innerStrideB, std::complex<float> const alpha, std::complex<float> const beta) {
-        using namespace einsums::simd;
-        constexpr int N = CVec<float>::complex_lanes;
-
-        auto va = complex_broadcast(alpha);
-
-        CVec<float> rows[N]; // NOLINT
-        for (int i = 0; i < N; ++i)
-            rows[i] = complex_gather(A + i * lda, static_cast<std::ptrdiff_t>(innerStrideA));
-
-        complex_transpose_inplace(rows);
-
-        // Optionally conjugate A
-        if constexpr (conjA) {
-            for (int i = 0; i < N; ++i)
-                rows[i] = conjugate(rows[i]);
-        }
-
-        // Scale by alpha (complex multiply)
-        for (int i = 0; i < N; ++i)
-            rows[i] = complex_mul(va, rows[i]);
-
-        if constexpr (!betaIsZero) {
-            auto vb = complex_broadcast(beta);
-            for (int i = 0; i < N; ++i) {
-                auto rowB = complex_gather(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB));
-                rows[i]   = complex_add(complex_mul(vb, rowB), rows[i]);
-            }
-        }
-
-        for (int i = 0; i < N; ++i)
-            complex_scatter(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB), rows[i]);
-    }
-};
-
-// ---------------------------------------------------------------------------
-// SIMD-accelerated micro_kernel for complex<double>
-// ---------------------------------------------------------------------------
-template <bool betaIsZero, bool conjA>
-struct MicroKernel<std::complex<double>, betaIsZero, conjA> {
-    static void execute(std::complex<double> const *A, size_t const lda, size_t const innerStrideA, std::complex<double> *B,
-                        size_t const ldb, size_t const innerStrideB, std::complex<double> const alpha, std::complex<double> const beta) {
-        using namespace einsums::simd;
-        constexpr int N = CVec<double>::complex_lanes;
-
-        auto va = complex_broadcast(alpha);
-
-        CVec<double> rows[N]; // NOLINT
-        for (int i = 0; i < N; ++i)
-            rows[i] = complex_gather(A + i * lda, static_cast<std::ptrdiff_t>(innerStrideA));
-
-        complex_transpose_inplace(rows);
-
-        if constexpr (conjA) {
-            for (int i = 0; i < N; ++i)
-                rows[i] = conjugate(rows[i]);
-        }
-
-        for (int i = 0; i < N; ++i)
-            rows[i] = complex_mul(va, rows[i]);
-
-        if constexpr (!betaIsZero) {
-            auto vb = complex_broadcast(beta);
-            for (int i = 0; i < N; ++i) {
-                auto rowB = complex_gather(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB));
-                rows[i]   = complex_add(complex_mul(vb, rowB), rows[i]);
-            }
-        }
-
-        for (int i = 0; i < N; ++i)
-            complex_scatter(B + i * ldb, static_cast<std::ptrdiff_t>(innerStrideB), rows[i]);
-    }
-};
-
-// ---------------------------------------------------------------------------
-// streamingStore and prefetch: now use einsums::simd
-// ---------------------------------------------------------------------------
-template <typename floatType>
-static void streamingStore(floatType *out, floatType const *in) {
-    using namespace einsums::simd;
-    if constexpr (std::is_floating_point_v<floatType>) {
-        // Real f32/f64: native non-temporal store on x86, STNP on aarch64.
-        stream_store(out, loadu(in));
-    } else if constexpr (std::is_same_v<floatType, std::complex<float>> || std::is_same_v<floatType, std::complex<double>>) {
-        // Complex: SIMD load+store. (No non-temporal complex variant yet.)
-        complex_storeu(out, complex_loadu(in));
-    } else {
-        // half_t / bfloat16_t: non-temporal store on aarch64, regular SIMD store elsewhere.
-        stream_store(out, loadu(in));
-    }
-}
-
-template <typename floatType, einsums::simd::PrefetchHint Hint = einsums::simd::PrefetchHint::T2>
-static EINSUMS_FORCEINLINE void prefetch_block(floatType const *A, size_t const lda) {
-    constexpr int n = einsums::simd::native_bits / 8 / sizeof(floatType);
-    for (int i = 0; i < n; ++i)
-        einsums::simd::prefetch<Hint>(A + i * lda);
-}
-template <bool betaIsZero, typename floatType, bool conjA>
-static EINSUMS_FORCEINLINE void macro_kernel_scalar(floatType const *A, size_t const lda, int blockingA, size_t innerStrideA, floatType *B,
-                                                    size_t const ldb, int blockingB, size_t innerStrideB, floatType const alpha,
-                                                    floatType const beta) {
-    EINSUMS_ASSERT(blockingA > 0 && blockingB > 0);
-
-    if constexpr (betaIsZero) {
-        for (int j = 0; j < blockingA; ++j) {
-            for (int i = 0; i < blockingB; ++i) {
-                if (conjA)
-                    B[(i * innerStrideB) + (j * ldb)] = alpha * conj(A[(i * lda) + (j * innerStrideA)]);
-                else
-                    B[(i * innerStrideB) + (j * ldb)] = alpha * A[(i * lda) + (j * innerStrideA)];
-            }
-        }
-    } else {
-        for (int j = 0; j < blockingA; ++j) {
-            for (int i = 0; i < blockingB; ++i) {
-                if (conjA)
-                    B[(i * innerStrideB) + (j * ldb)] =
-                        alpha * conj(A[(i * lda) + (j * innerStrideA)]) + beta * B[(i * innerStrideB) + (j * ldb)];
-                else
-                    B[(i * innerStrideB) + (j * ldb)] =
-                        alpha * A[(i * lda) + (j * innerStrideA)] + beta * B[(i * innerStrideB) + (j * ldb)];
-            }
-        }
-    }
-}
-
-template <int blockingA, int blockingB, bool betaIsZero, typename floatType, bool useStreamingStores_, bool conjA>
-static EINSUMS_FORCEINLINE void macro_kernel(floatType const *A, floatType const *Anext, size_t const lda, size_t innerStrideA,
-                                             floatType *B, floatType const *Bnext, size_t const ldb, size_t innerStrideB,
-                                             floatType const alpha, floatType const beta) {
-    constexpr int blocking_micro_ = einsums::simd::native_bits / 8 / sizeof(floatType);
-    constexpr int blocking_       = blocking_micro_ * 4;
-
-    // A non-temporal store needs its destination aligned to the rung's vector width: 64 B for
-    // _mm512_stream_pd, 32 B for AVX, 16 B for SSE; aarch64's STNP needs none, and 16 B keeps it
-    // on whole vectors. The gate asks exactly that of B's base and row stride, and that each
-    // buffered tile row is whole vectors.
-    //
-    // It used to keep a 32 B floor on the 16 B rungs, from a July change whose message blamed a
-    // failing Einsum7 on streaming at 16 B. That change also removed a nested `omp for` from
-    // direct_prod, undefined behaviour reported against the same Einsum7 line, and it is what
-    // failed: Einsum7 streams no tile at all under the 16 B gate, and LargeTranspose, which
-    // streams 545 tiles only that gate allows, matches its reference on aarch64.
-    constexpr size_t stream_align       = einsums::simd::native_bits / 8;
-    bool const       useStreamingStores = useStreamingStores_ && betaIsZero && (blockingB * sizeof(floatType)) % stream_align == 0 &&
-                                          ((uint64_t)B) % stream_align == 0 && (ldb * sizeof(floatType)) % stream_align == 0;
-
-    floatType *Btmp    = B;
-    size_t     ldb_tmp = ldb;
-    floatType  buffer[blockingA * blockingB]; // __attribute__((aligned(64)));
-    if ((useStreamingStores_ && useStreamingStores && innerStrideB == 1)) {
-        Btmp    = buffer;
-        ldb_tmp = blockingB;
-    }
-
-    if constexpr (blockingA == blocking_ && blockingB == blocking_) {
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 0), ldb_tmp);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (0 * lda + 0), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 0)), lda, innerStrideA,
-                                                           Btmp + (0 * ldb_tmp + (innerStrideB * 0)), ldb_tmp, innerStrideB, alpha, beta);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (blocking_micro_ * lda + 0), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (blocking_micro_ * lda + (innerStrideA * 0)), lda, innerStrideA,
-                                                           Btmp + (0 * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB,
-                                                           alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 2 * blocking_micro_), ldb_tmp);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (2 * blocking_micro_ * lda + 0), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (2 * blocking_micro_ * lda + (innerStrideA * 0)), lda, innerStrideA,
-                                                           Btmp + (0 * ldb_tmp + (innerStrideB * 2 * blocking_micro_)), ldb_tmp,
-                                                           innerStrideB, alpha, beta);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (3 * blocking_micro_ * lda + 0), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (3 * blocking_micro_ * lda + (innerStrideA * 0)), lda, innerStrideA,
-                                                           Btmp + (0 * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp,
-                                                           innerStrideB, alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 0), ldb_tmp);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
-                                                           Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 0)), ldb_tmp, innerStrideB,
-                                                           alpha, beta);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
-            Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 2 * blocking_micro_),
-                                                                            ldb_tmp);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (2 * blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
-            Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 2 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (3 * blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
-            Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (2 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (0 * lda + 2 * blocking_micro_), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 2 * blocking_micro_)), lda, innerStrideA,
-                                                           Btmp + (2 * blocking_micro_ * ldb_tmp + (innerStrideB * 0)), ldb_tmp,
-                                                           innerStrideB, alpha, beta);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (blocking_micro_ * lda + 2 * blocking_micro_), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (blocking_micro_ * lda + (innerStrideA * 2 * blocking_micro_)), lda, innerStrideA,
-            Btmp + (2 * blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (2 * blocking_micro_ * ldb_tmp + 2 * blocking_micro_),
-                                                                            ldb_tmp);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (2 * blocking_micro_ * lda + 2 * blocking_micro_), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (2 * blocking_micro_ * lda + (innerStrideA * 2 * blocking_micro_)), lda, innerStrideA,
-            Btmp + (2 * blocking_micro_ * ldb_tmp + (innerStrideB * 2 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (3 * blocking_micro_ * lda + 2 * blocking_micro_), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (3 * blocking_micro_ * lda + (innerStrideA * 2 * blocking_micro_)), lda, innerStrideA,
-            Btmp + (2 * blocking_micro_ * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (3 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 3 * blocking_micro_)), lda, innerStrideA,
-                                                           Btmp + (3 * blocking_micro_ * ldb_tmp + (innerStrideB * 0)), ldb_tmp,
-                                                           innerStrideB, alpha, beta);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (blocking_micro_ * lda + (innerStrideA * 3 * blocking_micro_)), lda, innerStrideA,
-            Btmp + (3 * blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (3 * blocking_micro_ * ldb_tmp + 2 * blocking_micro_),
-                                                                            ldb_tmp);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (2 * blocking_micro_ * lda + (innerStrideA * 3 * blocking_micro_)), lda, innerStrideA,
-            Btmp + (3 * blocking_micro_ * ldb_tmp + (innerStrideB * 2 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (3 * blocking_micro_ * lda + (innerStrideA * 3 * blocking_micro_)), lda, innerStrideA,
-            Btmp + (3 * blocking_micro_ * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-    } else if constexpr (blockingA == 2 * blocking_micro_ && blockingB == blocking_) {
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 0), ldb_tmp);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (0 * lda + 0), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 0)), lda, innerStrideA,
-                                                           Btmp + (0 * ldb_tmp + (innerStrideB * 0)), ldb_tmp, innerStrideB, alpha, beta);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (blocking_micro_ * lda + 0), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (blocking_micro_ * lda + (innerStrideA * 0)), lda, innerStrideA,
-                                                           Btmp + (0 * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB,
-                                                           alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 2 * blocking_micro_), ldb_tmp);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (2 * blocking_micro_ * lda + 0), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (2 * blocking_micro_ * lda + (innerStrideA * 0)), lda, innerStrideA,
-                                                           Btmp + (0 * ldb_tmp + (innerStrideB * 2 * blocking_micro_)), ldb_tmp,
-                                                           innerStrideB, alpha, beta);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (3 * blocking_micro_ * lda + (innerStrideA * 0)), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (3 * blocking_micro_ * lda + (innerStrideA * 0)), lda, innerStrideA,
-                                                           Btmp + (0 * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp,
-                                                           innerStrideB, alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 0), ldb_tmp);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
-                                                           Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 0)), ldb_tmp, innerStrideB,
-                                                           alpha, beta);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
-            Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 2 * blocking_micro_),
-                                                                            ldb_tmp);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (2 * blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
-            Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 2 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (3 * blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
-            Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 3 * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-    } else if constexpr (blockingA == blocking_ && blockingB == 2 * blocking_micro_) {
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (0 * ldb_tmp + 0), ldb_tmp);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (0 * lda + 0), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 0)), lda, innerStrideA,
-                                                           Btmp + (0 * ldb_tmp + (innerStrideB * 0)), ldb_tmp, innerStrideB, alpha, beta);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (blocking_micro_ * lda + 0), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (blocking_micro_ * lda + (innerStrideA * 0)), lda, innerStrideA,
-                                                           Btmp + (0 * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB,
-                                                           alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (blocking_micro_ * ldb_tmp + 0), ldb_tmp);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
-                                                           Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * 0)), ldb_tmp, innerStrideB,
-                                                           alpha, beta);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (blocking_micro_ * lda + (innerStrideA * blocking_micro_)), lda, innerStrideA,
-            Btmp + (blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (2 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (0 * lda + 2 * blocking_micro_), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 2 * blocking_micro_)), lda, innerStrideA,
-                                                           Btmp + (2 * blocking_micro_ * ldb_tmp + (innerStrideB * 0)), ldb_tmp,
-                                                           innerStrideB, alpha, beta);
-        if (innerStrideA == 1)
-            prefetch_block<floatType>(Anext + (blocking_micro_ * lda + 2 * blocking_micro_), lda);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (blocking_micro_ * lda + (innerStrideA * 2 * blocking_micro_)), lda, innerStrideA,
-            Btmp + (2 * blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-        if (!(useStreamingStores_ && useStreamingStores) && innerStrideB == 1)
-            prefetch_block<floatType, einsums::simd::PrefetchHint::WriteT2>(Bnext + (3 * blocking_micro_ * ldb_tmp + 0), ldb_tmp);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(A + (0 * lda + (innerStrideA * 3 * blocking_micro_)), lda, innerStrideA,
-                                                           Btmp + (3 * blocking_micro_ * ldb_tmp + 0), ldb_tmp, innerStrideB, alpha, beta);
-        MicroKernel<floatType, betaIsZero, conjA>::execute(
-            A + (blocking_micro_ * lda + (innerStrideA * 3 * blocking_micro_)), lda, innerStrideA,
-            Btmp + (3 * blocking_micro_ * ldb_tmp + (innerStrideB * blocking_micro_)), ldb_tmp, innerStrideB, alpha, beta);
-    } else {
-        // invoke micro-transpose
-        if (blockingA > 0 && blockingB > 0)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(A, lda, innerStrideA, Btmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > 0 && blockingB > blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(A + blocking_micro_ * lda, lda, innerStrideA,
-                                                               Btmp + (innerStrideB * blocking_micro_), ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > 0 && blockingB > 2 * blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(A + 2 * blocking_micro_ * lda, lda, innerStrideA,
-                                                               Btmp + (innerStrideB * 2 * blocking_micro_), ldb_tmp, innerStrideB, alpha,
-                                                               beta);
-
-        // invoke micro-transpose
-        if (blockingA > 0 && blockingB > 3 * blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(A + 3 * blocking_micro_ * lda, lda, innerStrideA,
-                                                               Btmp + (innerStrideB * 3 * blocking_micro_), ldb_tmp, innerStrideB, alpha,
-                                                               beta);
-
-        // invoke micro-transpose
-        if (blockingA > blocking_micro_ && blockingB > 0)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(A + (innerStrideA * blocking_micro_), lda, innerStrideA,
-                                                               Btmp + blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > blocking_micro_ && blockingB > blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(
-                A + (innerStrideA * blocking_micro_) + blocking_micro_ * lda, lda, innerStrideA,
-                Btmp + (innerStrideB * blocking_micro_) + blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > blocking_micro_ && blockingB > 2 * blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(
-                A + (innerStrideA * blocking_micro_) + 2 * blocking_micro_ * lda, lda, innerStrideA,
-                Btmp + (innerStrideB * 2 * blocking_micro_) + blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > blocking_micro_ && blockingB > 3 * blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(
-                A + (innerStrideA * blocking_micro_) + 3 * blocking_micro_ * lda, lda, innerStrideA,
-                Btmp + (innerStrideB * 3 * blocking_micro_) + blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > 2 * blocking_micro_ && blockingB > 0)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(A + (innerStrideA * 2 * blocking_micro_), lda, innerStrideA,
-                                                               Btmp + 2 * blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > 2 * blocking_micro_ && blockingB > blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(
-                A + (innerStrideA * 2 * blocking_micro_) + blocking_micro_ * lda, lda, innerStrideA,
-                Btmp + (innerStrideB * blocking_micro_) + 2 * blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > 2 * blocking_micro_ && blockingB > 2 * blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(
-                A + (innerStrideA * 2 * blocking_micro_) + 2 * blocking_micro_ * lda, lda, innerStrideA,
-                Btmp + (innerStrideB * 2 * blocking_micro_) + 2 * blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > 2 * blocking_micro_ && blockingB > 3 * blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(
-                A + (innerStrideA * 2 * blocking_micro_) + 3 * blocking_micro_ * lda, lda, innerStrideA,
-                Btmp + (innerStrideB * 3 * blocking_micro_) + 2 * blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > 3 * blocking_micro_ && blockingB > 0)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(A + (innerStrideA * 3 * blocking_micro_), lda, innerStrideA,
-                                                               Btmp + 3 * blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > 3 * blocking_micro_ && blockingB > blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(
-                A + (innerStrideA * 3 * blocking_micro_) + blocking_micro_ * lda, lda, innerStrideA,
-                Btmp + (innerStrideB * blocking_micro_) + 3 * blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > 3 * blocking_micro_ && blockingB > 2 * blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(
-                A + (innerStrideA * 3 * blocking_micro_) + 2 * blocking_micro_ * lda, lda, innerStrideA,
-                Btmp + (innerStrideB * 2 * blocking_micro_) + 3 * blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-
-        // invoke micro-transpose
-        if (blockingA > 3 * blocking_micro_ && blockingB > 3 * blocking_micro_)
-            MicroKernel<floatType, betaIsZero, conjA>::execute(
-                A + (innerStrideA * 3 * blocking_micro_) + 3 * blocking_micro_ * lda, lda, innerStrideA,
-                Btmp + (innerStrideB * 3 * blocking_micro_) + 3 * blocking_micro_ * ldb_tmp, ldb_tmp, innerStrideB, alpha, beta);
-    }
-
-    // write buffer to main-memory via non-temporal stores
-    if ((useStreamingStores_ && useStreamingStores && innerStrideB == 1)) {
-        for (int i = 0; i < blockingA; i++) {
-            for (int j = 0; j < blockingB; j += blocking_micro_)
-                streamingStore<floatType>(B + i * ldb + j, buffer + i * ldb_tmp + j);
-        }
-    }
-}
-
-template <bool betaIsZero, typename floatType, bool conjA>
-void transpose_int_scalar(floatType const *A, size_t sizeStride1A, size_t innerStrideA, floatType *B, size_t sizeStride1B, // NOLINT
-                          size_t innerStrideB, floatType const alpha, floatType const beta, ComputeNode const *plan) {
-    ptrdiff_t const end       = plan->end;
-    size_t const    lda       = plan->lda;
-    size_t const    ldb       = plan->ldb;
-    ptrdiff_t const offDiffAB = plan->offDiffAB;
-    if (plan->next->next != nullptr) {
-        // recurse
-        ptrdiff_t i = plan->start;
-        if (plan->indexA)
-            transpose_int_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], end - plan->start, innerStrideA, &B[i * ldb],
-                                                               sizeStride1B, innerStrideB, alpha, beta, plan->next.get());
-        else if (plan->indexB)
-            transpose_int_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], sizeStride1A, innerStrideA, &B[i * ldb],
-                                                               end - plan->start, innerStrideB, alpha, beta, plan->next.get());
-        else
-            for (; i < end; i++)
-                transpose_int_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], sizeStride1A, innerStrideA, &B[i * ldb],
-                                                                   sizeStride1B, innerStrideB, alpha, beta, plan->next.get());
-    } else {
-        // macro-kernel
-        size_t const    lda_macro       = plan->next->lda;
-        size_t const    ldb_macro       = plan->next->ldb;
-        ptrdiff_t       i               = plan->start;
-        ptrdiff_t const scalarRemainder = plan->end - plan->start;
-        if (scalarRemainder > 0) {
-            if (lda == 1)
-                macro_kernel_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], lda_macro, scalarRemainder, innerStrideA,
-                                                                  &B[i * ldb], ldb_macro, sizeStride1B, innerStrideB, alpha, beta);
-            else if (ldb == 1)
-                macro_kernel_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], lda_macro, sizeStride1A, innerStrideA,
-                                                                  &B[i * ldb], ldb_macro, scalarRemainder, innerStrideB, alpha, beta);
-            else
-                for (; i < end; i++)
-                    macro_kernel_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], lda_macro, sizeStride1A, innerStrideA,
-                                                                      &B[i * ldb], ldb_macro, sizeStride1B, innerStrideB, alpha, beta);
-        }
-    }
-}
-template <int blockingA, int blockingB, bool betaIsZero, typename floatType, bool useStreamingStores, bool conjA>
-void transpose_int(floatType const *A, floatType const *Anext, size_t innerStrideA, floatType *B, floatType const *Bnext, // NOLINT
-                   size_t innerStrideB, floatType const alpha, floatType const beta, ComputeNode const *plan) {
-    ptrdiff_t const end       = plan->end - (plan->inc - 1);
-    ptrdiff_t const inc       = plan->inc;
-    size_t const    lda       = plan->lda;
-    size_t const    ldb       = plan->ldb;
-    int32_t const   offDiffAB = plan->offDiffAB;
-
-    constexpr int blocking_micro_ = einsums::simd::native_bits / 8 / sizeof(floatType);
-    constexpr int blocking_       = blocking_micro_ * 4;
-
-    if (plan->next->next != nullptr) {
-        // recurse
-        ptrdiff_t i;
-        for (i = plan->start; i < end; i += inc) {
-            if (i + inc < end)
-                transpose_int<blockingA, blockingB, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], &A[(i + 1 + offDiffAB) * lda], innerStrideA, &B[i * ldb], &B[(i + 1) * ldb], innerStrideB,
-                    alpha, beta, plan->next.get());
-            else if (i == plan->start || i + inc >= end)
-                transpose_int<blockingA, blockingB, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], &A[(i + offDiffAB) * lda], innerStrideA, &B[i * ldb], &B[i * ldb], innerStrideB, alpha, beta,
-                    plan->next.get());
-            else
-                transpose_int<blockingA, blockingB, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], Anext, innerStrideA, &B[i * ldb], Bnext, innerStrideB, alpha, beta, plan->next.get());
-        }
-        // remainder
-        if (blocking_ / 2 >= blocking_micro_ && (i + blocking_ / 2) <= plan->end) {
-            if (plan->indexA)
-                transpose_int<blocking_ / 2, blockingB, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], Anext, innerStrideA, &B[i * ldb], Bnext, innerStrideB, alpha, beta, plan->next.get());
-            else if (plan->indexB)
-                transpose_int<blockingA, blocking_ / 2, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], Anext, innerStrideA, &B[i * ldb], Bnext, innerStrideB, alpha, beta, plan->next.get());
-            i += blocking_ / 2;
-        }
-        if (blocking_ / 4 >= blocking_micro_ && (i + blocking_ / 4) <= plan->end) {
-            if (plan->indexA)
-                transpose_int<blocking_ / 4, blockingB, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], Anext, innerStrideA, &B[i * ldb], Bnext, innerStrideB, alpha, beta, plan->next.get());
-            else if (plan->indexB)
-                transpose_int<blockingA, blocking_ / 4, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], Anext, innerStrideA, &B[i * ldb], Bnext, innerStrideB, alpha, beta, plan->next.get());
-            i += blocking_ / 4;
-        }
-        ptrdiff_t const scalarRemainder = plan->end - i;
-        if (scalarRemainder > 0) {
-            if (plan->indexA)
-                transpose_int_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], scalarRemainder, innerStrideA, &B[i * ldb],
-                                                                   blockingB, innerStrideB, alpha, beta, plan->next.get());
-            else if (plan->indexB)
-                transpose_int_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], blockingA, innerStrideA, &B[i * ldb],
-                                                                   scalarRemainder, innerStrideB, alpha, beta, plan->next.get());
-            else
-                transpose_int_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], blockingA, innerStrideA, &B[i * ldb],
-                                                                   blockingB, innerStrideB, alpha, beta, plan->next.get());
-        }
-    } else {
-        size_t const lda_macro = plan->next->lda;
-        size_t const ldb_macro = plan->next->ldb;
-        // invoke macro-kernel
-
-        ptrdiff_t i;
-        for (i = plan->start; i < end; i += inc)
-            if (i + inc < end)
-                macro_kernel<blockingA, blockingB, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], &A[(i + 1) * lda], lda_macro, innerStrideA, &B[i * ldb], &B[(i + 1) * ldb], ldb_macro,
-                    innerStrideB, alpha, beta);
-            else
-                macro_kernel<blockingA, blockingB, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], Anext, lda_macro, innerStrideA, &B[i * ldb], Bnext, ldb_macro, innerStrideB, alpha, beta);
-        // remainder
-        if (blocking_ / 2 >= blocking_micro_ && (i + blocking_ / 2) <= plan->end) {
-            if (plan->indexA)
-                macro_kernel<blocking_ / 2, blockingB, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], Anext, lda_macro, innerStrideA, &B[i * ldb], Bnext, ldb_macro, innerStrideB, alpha, beta);
-            else if (plan->indexB)
-                macro_kernel<blockingA, blocking_ / 2, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], Anext, lda_macro, innerStrideA, &B[i * ldb], Bnext, ldb_macro, innerStrideB, alpha, beta);
-            i += blocking_ / 2;
-        }
-        if (blocking_ / 4 >= blocking_micro_ && (i + blocking_ / 4) <= plan->end) {
-            if (plan->indexA)
-                macro_kernel<blocking_ / 4, blockingB, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], Anext, lda_macro, innerStrideA, &B[i * ldb], Bnext, ldb_macro, innerStrideB, alpha, beta);
-            else if (plan->indexB)
-                macro_kernel<blockingA, blocking_ / 4, betaIsZero, floatType, useStreamingStores, conjA>(
-                    &A[(i + offDiffAB) * lda], Anext, lda_macro, innerStrideA, &B[i * ldb], Bnext, ldb_macro, innerStrideB, alpha, beta);
-            i += blocking_ / 4;
-        }
-        ptrdiff_t const scalarRemainder = plan->end - i;
-        if (scalarRemainder > 0) {
-            if (plan->indexA)
-                macro_kernel_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], lda_macro, scalarRemainder, innerStrideA,
-                                                                  &B[i * ldb], ldb_macro, blockingB, innerStrideB, alpha, beta);
-            else if (plan->indexB)
-                macro_kernel_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], lda_macro, blockingA, innerStrideA,
-                                                                  &B[i * ldb], ldb_macro, scalarRemainder, innerStrideB, alpha, beta);
-            else
-                macro_kernel_scalar<betaIsZero, floatType, conjA>(&A[(i + offDiffAB) * lda], lda_macro, blockingA, innerStrideA,
-                                                                  &B[i * ldb], ldb_macro, blockingB, innerStrideB, alpha, beta);
-        }
-    }
-}
-
-/// Element types the contiguous paths stream: those with a streaming store.
-template <typename floatType>
-inline constexpr bool streams_run_v = std::is_same_v<floatType, float> || std::is_same_v<floatType, double>;
-
-/// B[0 .. n) = alpha * A[0 .. n), streamed past the cache (einsums::simd::stream_store_span): a
-/// contiguous run of the paths that keep the fastest index, which a loop alone never streamed (the
-/// `vector nontemporal` pragma they relied on is Intel's, and GCC and Clang ignore it). Conjugation is
-/// the identity on the real types this takes. The caller fences once after its last run.
-template <typename floatType>
-static EINSUMS_FORCEINLINE void stream_scaled_run(floatType *B, floatType const *A, size_t n, floatType const alpha) {
-    using namespace einsums::simd;
-    constexpr size_t     L  = Vec<floatType>::lanes;
-    Vec<floatType> const va = broadcast(alpha);
-    stream_store_span(B, n, [A, va](size_t i, size_t count) { return mul(va, count == L ? loadu(A + i) : loadu_partial(A + i, count)); });
-}
-
-template <bool betaIsZero, typename floatType, bool useStreamingStores, bool conjA>
-void transpose_int_constStride1(floatType const *A, floatType *B, floatType const alpha, floatType const beta, // NOLINT
-                                ComputeNode const *plan) {
-    ptrdiff_t const end = plan->end - (plan->inc - 1);
-    /// @todo Fix code.
-    constexpr ptrdiff_t inc       = 1;
-    size_t const        lda       = plan->lda;
-    size_t const        ldb       = plan->ldb;
-    ptrdiff_t const     offDiffAB = plan->offDiffAB;
-
-    if (plan->next != nullptr) {
-        for (ptrdiff_t i = plan->start; i < end; i += inc) {
-            // recurse
-            transpose_int_constStride1<betaIsZero, floatType, useStreamingStores, conjA>(&A[(i + offDiffAB) * lda], &B[i * ldb], alpha,
-                                                                                         beta, plan->next.get());
-        }
-    } else if constexpr (!betaIsZero) {
-        for (ptrdiff_t i = plan->start; i < end; i += inc) {
-            if constexpr (conjA)
-                B[i * ldb] = alpha * conj(A[(i + offDiffAB) * lda]) + beta * B[i * ldb];
-            else
-                B[i * ldb] = alpha * A[(i + offDiffAB) * lda] + beta * B[i * ldb];
-        }
-    } else {
-        if constexpr (useStreamingStores && streams_run_v<floatType>) {
-            if (lda == 1 && ldb == 1 && end > plan->start) {
-                stream_scaled_run(&B[plan->start], &A[plan->start + offDiffAB], static_cast<size_t>(end - plan->start), alpha);
-                return;
-            }
-        }
-        if constexpr (conjA) {
-            for (ptrdiff_t i = plan->start; i < end; i += inc) {
-                B[i * ldb] = alpha * conj(A[(i + offDiffAB) * lda]);
-            }
-        } else {
-            for (ptrdiff_t i = plan->start; i < end; i += inc) {
-                B[i * ldb] = alpha * A[(i + offDiffAB) * lda];
-            }
-        }
-    }
-}
 
 template <typename floatType>
-TransposeImpl<floatType>::TransposeImpl(size_t const *sizeA, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB,
-                                        size_t const *offsetA, size_t const *offsetB, size_t const innerStrideA, size_t const innerStrideB,
-                                        int const dim, floatType const *A, floatType const alpha, floatType *B, floatType const beta,
-                                        SelectionMethod const selectionMethod, int const numThreads, int const *threadIds,
-                                        bool const useRowMajor)
-    : _A(A), _B(B), _alpha(alpha), _beta(beta), _dim(-1), _innerStrideA(0), _innerStrideB(0), _numThreads(numThreads), _masterPlan(nullptr),
-      _selectionMethod(selectionMethod), _maxAutotuningCandidates(-1), _selectedParallelStrategyId(-1), _selectedLoopOrderId(-1),
-      _conjA(false) {
+TransposeImpl<floatType>::TransposeImpl(TransposeKernels<floatType> const &kernels, size_t const *sizeA, int const *perm,
+                                        size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA, size_t const *offsetB,
+                                        size_t const innerStrideA, size_t const innerStrideB, int const dim, floatType const *A,
+                                        floatType const alpha, floatType *B, floatType const beta, SelectionMethod const selectionMethod,
+                                        int const numThreads, int const *threadIds, bool const useRowMajor)
+    : _kernels(&kernels), _A(A), _B(B), _alpha(alpha), _beta(beta), _dim(-1), _innerStrideA(0), _innerStrideB(0), _numThreads(numThreads),
+      _masterPlan(nullptr), _selectionMethod(selectionMethod), _maxAutotuningCandidates(-1), _selectedParallelStrategyId(-1),
+      _selectedLoopOrderId(-1), _conjA(false) {
     // The caller's permutation indexes the size and stride arrays below (account_for_row_major reads
     // sizeA[perm[i]]), so it is checked before anything uses it. A bad argument throws: this is a
     // library, and ending the caller's process, a Python interpreter included, is not its call.
@@ -1027,12 +142,13 @@ TransposeImpl<floatType>::TransposeImpl(size_t const *sizeA, int const *perm, si
 
 template <typename floatType>
 TransposeImpl<floatType>::TransposeImpl(TransposeImpl<floatType> const &other)
-    : _A(other._A), _B(other._B), _alpha(other._alpha), _beta(other._beta), _dim(other._dim), _numThreads(other._numThreads),
-      _callerManagedThreads(other._callerManagedThreads), _masterPlan(other._masterPlan), _selectionMethod(other._selectionMethod),
-      _selectedParallelStrategyId(other._selectedParallelStrategyId), _selectedLoopOrderId(other._selectedLoopOrderId),
-      _maxAutotuningCandidates(other._maxAutotuningCandidates), _sizeA(other._sizeA), _perm(other._perm), _outerSizeA(other._outerSizeA),
-      _outerSizeB(other._outerSizeB), _offsetA(other._offsetA), _offsetB(other._offsetB), _innerStrideA(other._innerStrideA),
-      _innerStrideB(other._innerStrideB), _lda(other._lda), _ldb(other._ldb), _threadIds(other._threadIds), _conjA(other._conjA) {
+    : _kernels(other._kernels), _A(other._A), _B(other._B), _alpha(other._alpha), _beta(other._beta), _dim(other._dim),
+      _numThreads(other._numThreads), _callerManagedThreads(other._callerManagedThreads), _masterPlan(other._masterPlan),
+      _selectionMethod(other._selectionMethod), _selectedParallelStrategyId(other._selectedParallelStrategyId),
+      _selectedLoopOrderId(other._selectedLoopOrderId), _maxAutotuningCandidates(other._maxAutotuningCandidates), _sizeA(other._sizeA),
+      _perm(other._perm), _outerSizeA(other._outerSizeA), _outerSizeB(other._outerSizeB), _offsetA(other._offsetA),
+      _offsetB(other._offsetB), _innerStrideA(other._innerStrideA), _innerStrideB(other._innerStrideB), _lda(other._lda), _ldb(other._ldb),
+      _threadIds(other._threadIds), _conjA(other._conjA) {
 #ifdef _OPENMP
     omp_init_lock(&_writelock);
 #endif
@@ -1046,274 +162,37 @@ TransposeImpl<floatType>::~TransposeImpl() {
 }
 
 template <typename floatType>
+KernelArgs<floatType> TransposeImpl<floatType>::kernel_args(Plan const *plan) const noexcept {
+    return KernelArgs<floatType>{.A                    = _A,
+                                 .B                    = _B,
+                                 .alpha                = _alpha,
+                                 .beta                 = _beta,
+                                 .dim                  = _dim,
+                                 .perm0                = _perm[0],
+                                 .conjA                = _conjA,
+                                 .innerStrideA         = _innerStrideA,
+                                 .innerStrideB         = _innerStrideB,
+                                 .sizeA                = _sizeA.data(),
+                                 .offsetA              = _offsetA.data(),
+                                 .offsetB              = _offsetB.data(),
+                                 .lda                  = _lda.data(),
+                                 .ldb                  = _ldb.data(),
+                                 .plan                 = plan,
+                                 .numThreads           = _numThreads,
+                                 .threadIds            = _threadIds.data(),
+                                 .callerManagedThreads = _callerManagedThreads};
+}
+
+template <typename floatType>
 void TransposeImpl<floatType>::execute_estimate(Plan const *plan) noexcept {
     EINSUMS_ASSERT_(plan != nullptr, "HPTT: plan has not yet been created.");
-
-    constexpr bool useStreamingStores = false;
-
-    int const numTasks = plan->get_num_tasks();
-#ifdef _OPENMP
-#    pragma omp parallel for num_threads(_numThreads) if (_numThreads > 1)
-#endif
-    for (int taskId = 0; taskId < numTasks; taskId++)
-        if (_perm[0] != 0) {
-            auto rootNode = plan->get_root_node(taskId);
-            if (detail_hptt::abs_promoted(_beta) < get_zero_threshold<floatType>()) {
-                if (_conjA)
-                    transpose_int<blocking_, blocking_, 1, floatType, useStreamingStores, true>(_A, _A, _innerStrideA, _B, _B,
-                                                                                                _innerStrideB, 0.0, 1.0, rootNode);
-                else
-                    transpose_int<blocking_, blocking_, 1, floatType, useStreamingStores, false>(_A, _A, _innerStrideA, _B, _B,
-                                                                                                 _innerStrideB, 0.0, 1.0, rootNode);
-            } else {
-                if (_conjA)
-                    transpose_int<blocking_, blocking_, 0, floatType, useStreamingStores, true>(_A, _A, _innerStrideA, _B, _B,
-                                                                                                _innerStrideB, 0.0, 1.0, rootNode);
-                else
-                    transpose_int<blocking_, blocking_, 0, floatType, useStreamingStores, false>(_A, _A, _innerStrideA, _B, _B,
-                                                                                                 _innerStrideB, 0.0, 1.0, rootNode);
-            }
-        } else {
-            auto rootNode = plan->get_root_node(taskId);
-            if (detail_hptt::abs_promoted(_beta) < get_zero_threshold<floatType>()) {
-                if (_conjA)
-                    transpose_int_constStride1<1, floatType, useStreamingStores, true>(_A, _B, 0.0, 1.0, rootNode);
-                else
-                    transpose_int_constStride1<1, floatType, useStreamingStores, false>(_A, _B, 0.0, 1.0, rootNode);
-            } else {
-                if (_conjA)
-                    transpose_int_constStride1<0, floatType, useStreamingStores, true>(_A, _B, 0.0, 1.0, rootNode);
-                else
-                    transpose_int_constStride1<0, floatType, useStreamingStores, false>(_A, _B, 0.0, 1.0, rootNode);
-            }
-        }
+    _kernels->execute_estimate(kernel_args(plan));
 }
 
-template <bool betaIsZero, typename floatType, bool useStreamingStores, bool spawnThreads, bool conjA>
-static void axpy_1D(floatType const *A, floatType *B, size_t const myStart, size_t const myEnd, ptrdiff_t const offDiffAB_,
-                    size_t const lda, size_t const ldb, floatType const alpha, floatType const beta, int numThreads) {
-    if constexpr (!betaIsZero) {
-        HPTT_DUPLICATE(spawnThreads, for (size_t i = myStart; i < myEnd; i++) if (conjA) B[i * ldb] =
-                                         alpha * conj(A[(i + offDiffAB_) * lda]) + beta * B[i * ldb];
-                       else B[i * ldb] = alpha * A[(i + offDiffAB_) * lda] + beta * B[i * ldb];)
-    } else {
-        if constexpr (useStreamingStores && streams_run_v<floatType>) {
-            if (lda == 1 && ldb == 1) {
-                // Each thread streams one contiguous share and drains it: with spawnThreads this call owns
-                // the whole range and opens the region, otherwise the caller's region already gave this
-                // thread [myStart, myEnd).
-                if constexpr (spawnThreads) {
-#ifdef _OPENMP
-#    pragma omp parallel num_threads(numThreads)
-#endif
-                    {
-#ifdef _OPENMP
-                        size_t const t = static_cast<size_t>(omp_get_thread_num()), nt = static_cast<size_t>(omp_get_num_threads());
-#else
-                        size_t const t = 0, nt = 1;
-#endif
-                        size_t const len = myEnd - myStart;
-                        size_t const b = myStart + len * t / nt, e = myStart + len * (t + 1) / nt;
-                        stream_scaled_run(B + b, A + b + offDiffAB_, e - b, alpha);
-                        einsums::simd::stream_fence();
-                    }
-                } else {
-                    stream_scaled_run(B + myStart, A + myStart + offDiffAB_, myEnd - myStart, alpha);
-                    einsums::simd::stream_fence();
-                }
-                return;
-            }
-        }
-        HPTT_DUPLICATE(spawnThreads,
-                       for (size_t i = myStart; i < myEnd; i++) if constexpr (conjA) B[i * ldb] = alpha * conj(A[(i + offDiffAB_) * lda]);
-                       else B[i * ldb]                                                          = alpha * A[(i + offDiffAB_) * lda];)
-    }
-}
-
-template <bool betaIsZero, typename floatType, bool useStreamingStores, bool spawnThreads, bool conjA>
-static void axpy_2D(floatType const *A, size_t const (&lda)[2], floatType *B, size_t const (&ldb)[2], size_t const n0, size_t const myStart,
-                    size_t const myEnd, ptrdiff_t const offDiffAB_[2], size_t const offsetB_, floatType const alpha, floatType const beta,
-                    int numThreads) {
-    if constexpr (!betaIsZero) {
-        HPTT_DUPLICATE(spawnThreads,
-                       for (size_t j = myStart; j < myEnd; j++) for (size_t i = offsetB_; i < n0 + offsetB_; i++) if constexpr (conjA)
-                           B[(i * ldb[0]) + j * ldb[1]] = alpha * conj(A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]]) +
-                                                          beta * B[(i * ldb[0]) + j * ldb[1]];
-                       else B[(i * ldb[0]) + j * ldb[1]] =
-                           alpha * A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]] + beta * B[(i * ldb[0]) + j * ldb[1]];)
-    } else {
-        if constexpr (useStreamingStores && streams_run_v<floatType>) {
-            if (lda[0] == 1 && ldb[0] == 1) {
-                // Every column is one contiguous run. Each thread streams its columns and drains once,
-                // after the last of them, instead of once per column.
-                auto const column = [&](size_t j) {
-                    stream_scaled_run(B + offsetB_ + j * ldb[1], A + (offsetB_ + offDiffAB_[0]) + (j + offDiffAB_[1]) * lda[1], n0, alpha);
-                };
-                if constexpr (spawnThreads) {
-#ifdef _OPENMP
-#    pragma omp parallel num_threads(numThreads)
-#endif
-                    {
-#ifdef _OPENMP
-#    pragma omp for schedule(static) nowait
-#endif
-                        for (size_t j = myStart; j < myEnd; j++) {
-                            column(j);
-                        }
-                        einsums::simd::stream_fence();
-                    }
-                } else {
-                    for (size_t j = myStart; j < myEnd; j++) {
-                        column(j);
-                    }
-                    einsums::simd::stream_fence();
-                }
-                return;
-            }
-        }
-        HPTT_DUPLICATE(spawnThreads, for (size_t j = myStart; j < myEnd; j++) for (size_t i = offsetB_; i < n0 + offsetB_; i++) if (conjA)
-                                         B[(i * ldb[0]) + j * ldb[1]] =
-                                             alpha * conj(A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]]);
-                       else B[(i * ldb[0]) + j * ldb[1]] = alpha * A[((i + offDiffAB_[0]) * lda[0]) + (j + offDiffAB_[1]) * lda[1]];)
-    }
-}
-
-template <typename floatType>
-template <bool spawnThreads>
-void TransposeImpl<floatType>::get_start_end(size_t n, size_t &myStart, size_t &myEnd) const {
-#ifdef _OPENMP
-    int myLocalThreadId = get_local_thread_id(omp_get_thread_num());
-#else
-    int myLocalThreadId = 0;
-#endif
-
-    // A single-threaded plan whose thread ids were filled in by DEFAULT has
-    // exactly one participant: whoever called it. Matching omp_get_thread_num()
-    // against _threadIds is an execute_expert() concept - it means "the caller
-    // spawned this team and told us which of its threads take part" - and a
-    // default {0} says nothing of the kind.
-    //
-    // execute() routes _numThreads == 1 through the no-spawnThreads path, so
-    // without this a 1-thread plan called from inside somebody ELSE's parallel
-    // region saw a thread id that is not 0, decided it was not a participant,
-    // and silently transposed NOTHING. Two concurrent permutes then left one
-    // output untouched, with no error and no crash.
-    if (!_callerManagedThreads && _numThreads == 1) {
-        myStart = 0;
-        myEnd   = n;
-        return;
-    }
-
-    if (myLocalThreadId == -1) // skip those threads which do not participate in this plan
-    {
-        myStart = n;
-        myEnd   = n;
-        return;
-    }
-    if constexpr (spawnThreads) { // worksharing will be handled by the OpenMP runtime
-        myStart = 0;
-        myEnd   = n;
-        return;
-    }
-
-    size_t const workPerThread = (n + _numThreads - 1) / _numThreads;
-    myStart                    = std::min(n, myLocalThreadId * workPerThread);
-    myEnd                      = std::min(n, (myLocalThreadId + 1) * workPerThread);
-}
-
-template <typename floatType>
-int TransposeImpl<floatType>::get_local_thread_id(int myThreadId) const {
-    int myLocalId = -1;
-    for (int i = 0; i < _numThreads; ++i)
-        if (myThreadId == _threadIds[i])
-            myLocalId = i;
-    return myLocalId;
-}
-
-template <typename floatType>
-template <bool useStreamingStores, bool spawnThreads, bool betaIsZero>
-void TransposeImpl<floatType>::execute_expert() noexcept {
-    EINSUMS_ASSERT_(_masterPlan != nullptr, "HPTT: master plan has not yet been created.");
-
-    size_t myStart = 0;
-    size_t myEnd   = 0;
-
-    if (_dim == 1) {
-        get_start_end<spawnThreads>(_sizeA[0], myStart, myEnd);
-        ptrdiff_t const offDiffAB_ = (ptrdiff_t)_offsetA[0] - (ptrdiff_t)_offsetB[0];
-        if (_conjA)
-            axpy_1D<betaIsZero, floatType, useStreamingStores, spawnThreads, true>(
-                _A, _B, myStart + _offsetB[0], myEnd + _offsetB[0], offDiffAB_, _lda[0], _ldb[0], _alpha, _beta, _numThreads);
-        else
-            axpy_1D<betaIsZero, floatType, useStreamingStores, spawnThreads, false>(
-                _A, _B, myStart + _offsetB[0], myEnd + _offsetB[0], offDiffAB_, _lda[0], _ldb[0], _alpha, _beta, _numThreads);
-        return;
-    } else if (_dim == 2 && _perm[0] == 0) {
-        get_start_end<spawnThreads>(_sizeA[1], myStart, myEnd);
-        ptrdiff_t const offDiffAB_[2] = {((ptrdiff_t)_offsetA[0] - (ptrdiff_t)_offsetB[0]),
-                                         ((ptrdiff_t)_offsetA[1] - (ptrdiff_t)_offsetB[1])};
-        if (_conjA)
-            axpy_2D<betaIsZero, floatType, useStreamingStores, spawnThreads, true>(_A, {_lda[0], _lda[1]}, _B, {_ldb[0], _ldb[1]},
-                                                                                   _sizeA[0], myStart + _offsetB[1], myEnd + _offsetB[1],
-                                                                                   offDiffAB_, _offsetB[0], _alpha, _beta, _numThreads);
-        else
-            axpy_2D<betaIsZero, floatType, useStreamingStores, spawnThreads, false>(_A, {_lda[0], _lda[1]}, _B, {_ldb[0], _ldb[1]},
-                                                                                    _sizeA[0], myStart + _offsetB[1], myEnd + _offsetB[1],
-                                                                                    offDiffAB_, _offsetB[0], _alpha, _beta, _numThreads);
-        return;
-    }
-
-    int const numTasks   = _masterPlan->get_num_tasks();
-    int const numThreads = _numThreads;
-    get_start_end<spawnThreads>(numTasks, myStart, myEnd);
-
-    HPTT_DUPLICATE(
-        spawnThreads,
-        for (int taskId = myStart; taskId < myEnd; taskId++) if (_perm[0] != 0) {
-            auto rootNode = _masterPlan->get_root_node(taskId);
-            if (_conjA)
-                transpose_int<blocking_, blocking_, betaIsZero, floatType, useStreamingStores, true>(
-                    _A, _A, _innerStrideA, _B, _B, _innerStrideB, _alpha, _beta, rootNode);
-            else
-                transpose_int<blocking_, blocking_, betaIsZero, floatType, useStreamingStores, false>(
-                    _A, _A, _innerStrideA, _B, _B, _innerStrideB, _alpha, _beta, rootNode);
-            // The macro-kernel streams B when beta is zero, and streamed stores are weakly
-            // ordered: the caller, or another thread past the region's barrier, can read the
-            // old contents of a line this thread already wrote. Drain them once per task, on
-            // the thread that issued them.
-            if constexpr (useStreamingStores && betaIsZero)
-                einsums::simd::stream_fence();
-        } else {
-            auto rootNode = _masterPlan->get_root_node(taskId);
-            if (_conjA)
-                transpose_int_constStride1<betaIsZero, floatType, useStreamingStores, true>(_A, _B, _alpha, _beta, rootNode);
-            else
-                transpose_int_constStride1<betaIsZero, floatType, useStreamingStores, false>(_A, _B, _alpha, _beta, rootNode);
-            // Its runs stream as the tiled path's tiles do, so the same drain once per task.
-            if constexpr (useStreamingStores && betaIsZero)
-                einsums::simd::stream_fence();
-        })
-}
 template <typename floatType>
 void TransposeImpl<floatType>::execute() noexcept {
     EINSUMS_ASSERT_(_masterPlan != nullptr, "HPTT: master plan has not yet been created.");
-
-    bool           spawnThreads       = _numThreads > 1;
-    bool           betaIsZero         = (_beta == (floatType)0.0);
-    constexpr bool useStreamingStores = true;
-    if (spawnThreads) {
-        if (betaIsZero) {
-            this->execute_expert<useStreamingStores, true, true>();
-        } else {
-            this->execute_expert<useStreamingStores, true, false>();
-        }
-    } else {
-        if (betaIsZero) {
-            this->execute_expert<useStreamingStores, false, true>();
-        } else {
-            this->execute_expert<useStreamingStores, false, false>();
-        }
-    }
+    _kernels->execute(kernel_args(_masterPlan.get()));
 }
 
 template <typename floatType>
@@ -1326,7 +205,7 @@ size_t TransposeImpl<floatType>::get_increment(int loopIdx) const {
     size_t inc = 1;
     if (_perm[0] != 0) {
         if (loopIdx == 0 || loopIdx == _perm[0])
-            inc = blocking_;
+            inc = _kernels->blocking;
     }
     return inc;
 }
@@ -2328,10 +1207,10 @@ std::shared_ptr<Plan> TransposeImpl<floatType>::select_plan(std::vector<std::sha
 
 // The geometry this rung's plans are built for; see PlanTarget.
 template <typename FloatType>
-static PlanTarget this_plan_target() {
-    return PlanTarget{.vector_bits  = static_cast<uint16_t>(einsums::simd::native_bits),
+static PlanTarget plan_target(TransposeKernels<FloatType> const &kernels) {
+    return PlanTarget{.vector_bits  = static_cast<uint16_t>(kernels.vector_bits),
                       .element_size = static_cast<uint8_t>(sizeof(FloatType)),
-                      .rung         = static_cast<uint8_t>(EINSUMS_HPTT_PLAN_RUNG),
+                      .rung         = static_cast<uint8_t>(kernels.rung),
                       .pad          = 0};
 }
 
@@ -2369,7 +1248,7 @@ void TransposeImpl<FloatType>::write_to_file(std::FILE *fp) const {
         goto write_to_file_error;
     }
 
-    target = this_plan_target<FloatType>();
+    target = plan_target(*_kernels);
 
     error2 = fwrite(&target, sizeof(PlanTarget), 1, fp);
 
@@ -2484,7 +1363,9 @@ write_to_file_error:
 }
 
 template <typename FloatType>
-TransposeImpl<FloatType>::TransposeImpl(std::FILE *fp, FloatType alpha, FloatType const *A, FloatType beta, FloatType *B) {
+TransposeImpl<FloatType>::TransposeImpl(TransposeKernels<FloatType> const &kernels, std::FILE *fp, FloatType alpha, FloatType const *A,
+                                        FloatType beta, FloatType *B)
+    : _kernels(&kernels) {
 #ifdef _OPENMP
     omp_init_lock(&_writelock);
 #endif
@@ -2531,7 +1412,7 @@ TransposeImpl<FloatType>::TransposeImpl(std::FILE *fp, FloatType alpha, FloatTyp
     }
 
     {
-        PlanTarget const mine = this_plan_target<FloatType>();
+        PlanTarget const mine = plan_target(*_kernels);
         if (endian_char() != header.version[3]) {
             target.vector_bits = byteswap(target.vector_bits);
         }
@@ -2664,110 +1545,14 @@ template class TransposeImpl<double>;
 template class TransposeImpl<FloatComplex>;
 template class TransposeImpl<DoubleComplex>;
 
-template void TransposeImpl<float>::execute_expert<true, true, true>();
-template void TransposeImpl<float>::execute_expert<true, false, true>();
-template void TransposeImpl<float>::execute_expert<false, true, true>();
-template void TransposeImpl<float>::execute_expert<false, false, true>();
-template void TransposeImpl<float>::execute_expert<true, true, false>();
-template void TransposeImpl<float>::execute_expert<true, false, false>();
-template void TransposeImpl<float>::execute_expert<false, true, false>();
-template void TransposeImpl<float>::execute_expert<false, false, false>();
-
-template void TransposeImpl<double>::execute_expert<true, true, true>();
-template void TransposeImpl<double>::execute_expert<false, true, true>();
-template void TransposeImpl<double>::execute_expert<true, false, true>();
-template void TransposeImpl<double>::execute_expert<false, false, true>();
-template void TransposeImpl<double>::execute_expert<true, true, false>();
-template void TransposeImpl<double>::execute_expert<false, true, false>();
-template void TransposeImpl<double>::execute_expert<true, false, false>();
-template void TransposeImpl<double>::execute_expert<false, false, false>();
-
-template void TransposeImpl<FloatComplex>::execute_expert<true, true, true>();
-template void TransposeImpl<FloatComplex>::execute_expert<false, true, true>();
-template void TransposeImpl<FloatComplex>::execute_expert<true, false, true>();
-template void TransposeImpl<FloatComplex>::execute_expert<false, false, true>();
-template void TransposeImpl<FloatComplex>::execute_expert<true, true, false>();
-template void TransposeImpl<FloatComplex>::execute_expert<false, true, false>();
-template void TransposeImpl<FloatComplex>::execute_expert<true, false, false>();
-template void TransposeImpl<FloatComplex>::execute_expert<false, false, false>();
-
-template void TransposeImpl<DoubleComplex>::execute_expert<true, true, true>();
-template void TransposeImpl<DoubleComplex>::execute_expert<false, true, true>();
-template void TransposeImpl<DoubleComplex>::execute_expert<true, false, true>();
-template void TransposeImpl<DoubleComplex>::execute_expert<false, false, true>();
-template void TransposeImpl<DoubleComplex>::execute_expert<true, true, false>();
-template void TransposeImpl<DoubleComplex>::execute_expert<false, true, false>();
-template void TransposeImpl<DoubleComplex>::execute_expert<true, false, false>();
-template void TransposeImpl<DoubleComplex>::execute_expert<false, false, false>();
-
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
 template class TransposeImpl<einsums::simd::half_t>;
 
-template void TransposeImpl<einsums::simd::half_t>::execute_expert<true, true, true>();
-template void TransposeImpl<einsums::simd::half_t>::execute_expert<false, true, true>();
-template void TransposeImpl<einsums::simd::half_t>::execute_expert<true, false, true>();
-template void TransposeImpl<einsums::simd::half_t>::execute_expert<false, false, true>();
-template void TransposeImpl<einsums::simd::half_t>::execute_expert<true, true, false>();
-template void TransposeImpl<einsums::simd::half_t>::execute_expert<false, true, false>();
-template void TransposeImpl<einsums::simd::half_t>::execute_expert<true, false, false>();
-template void TransposeImpl<einsums::simd::half_t>::execute_expert<false, false, false>();
 #endif
 
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
 template class TransposeImpl<einsums::simd::bfloat16_t>;
 
-template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<true, true, true>();
-template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<false, true, true>();
-template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<true, false, true>();
-template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<false, false, true>();
-template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<true, true, false>();
-template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<false, true, false>();
-template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<true, false, false>();
-template void TransposeImpl<einsums::simd::bfloat16_t>::execute_expert<false, false, false>();
 #endif
 
-// ---------------------------------------------------------------------------
-// Per-rung factory entry points. The arch-neutral factory in
-// TransposeFactory.cpp selects among these at plan creation; explicit
-// instantiations below give it symbols to link against.
-// ---------------------------------------------------------------------------
-
-template <typename floatType>
-std::shared_ptr<hptt::Transpose<floatType>>
-make_transpose(size_t const *sizeA, int const *perm, size_t const *outerSizeA, size_t const *outerSizeB, size_t const *offsetA,
-               size_t const *offsetB, size_t const innerStrideA, size_t const innerStrideB, int const dim, floatType const *A,
-               floatType const alpha, floatType *B, floatType const beta, SelectionMethod const selectionMethod, int const numThreads,
-               int const *threadIds, bool const useRowMajor) {
-    return std::make_shared<TransposeImpl<floatType>>(sizeA, perm, outerSizeA, outerSizeB, offsetA, offsetB, innerStrideA, innerStrideB,
-                                                      dim, A, alpha, B, beta, selectionMethod, numThreads, threadIds, useRowMajor);
-}
-
-template <typename floatType>
-std::shared_ptr<hptt::Transpose<floatType>> make_transpose_from_file(std::FILE *fp, floatType alpha, floatType const *A, floatType beta,
-                                                                     floatType *B) {
-    return std::make_shared<TransposeImpl<floatType>>(fp, alpha, A, beta, B);
-}
-
-#define EINSUMS_HPTT_INSTANTIATE_FACTORIES(T)                                                                                              \
-    template std::shared_ptr<hptt::Transpose<T>> make_transpose<T>(                                                                        \
-        size_t const *, int const *, size_t const *, size_t const *, size_t const *, size_t const *, size_t const, size_t const,           \
-        int const, T const *, T const, T *, T const, SelectionMethod const, int const, int const *, bool const);                           \
-    template std::shared_ptr<hptt::Transpose<T>> make_transpose_from_file<T>(std::FILE *, T, T const *, T, T *);
-
-EINSUMS_HPTT_INSTANTIATE_FACTORIES(float)
-EINSUMS_HPTT_INSTANTIATE_FACTORIES(double)
-EINSUMS_HPTT_INSTANTIATE_FACTORIES(FloatComplex)
-EINSUMS_HPTT_INSTANTIATE_FACTORIES(DoubleComplex)
-
-#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) || defined(__AVX512FP16__)
-EINSUMS_HPTT_INSTANTIATE_FACTORIES(einsums::simd::half_t)
-#endif
-
-#if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC) || defined(__AVX512BF16__)
-EINSUMS_HPTT_INSTANTIATE_FACTORIES(einsums::simd::bfloat16_t)
-#endif
-
-#undef EINSUMS_HPTT_INSTANTIATE_FACTORIES
-
-} // namespace EINSUMS_SIMD_ARCH_NS
 EINSUMS_NAMESPACE_END(hptt)
