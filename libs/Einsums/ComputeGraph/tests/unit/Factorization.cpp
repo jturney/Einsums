@@ -1387,6 +1387,92 @@ TEST_CASE("Factorization - the cone is re-associated, not just the tagged contra
     }
 }
 
+// Defends: the check that nothing rewrites a flattened intermediate's operands between its
+// definition and its use. It compares statement targets with the operands by TensorId, so a write
+// through a view of an operand, a different id over the same buffer, would not be seen, and the
+// rewrite would read the operand after the write where the program read it before. Today the
+// pass's feature gate declines regions with views first; this keeps it so.
+TEST_CASE("Factorization - a write through a view of a flattened operand keeps the program's value",
+          "[ComputeGraph][Factorization][Chain]") {
+    std::size_t const n    = 6;
+    std::size_t const left = 2;
+    std::size_t const rght = 2;
+
+    auto A  = create_random_tensor<double>("A", left, n, n);
+    auto D  = create_random_tensor<double>("D", left, rght);
+    auto B  = create_random_tensor<double>("B", rght, n, n);
+    auto t1 = create_random_tensor<double>("t1", n);
+    auto t2 = create_random_tensor<double>("t2", n);
+    auto M  = create_zero_tensor<double>("M", n, n, n, n);
+    for (std::size_t m = 0; m < n; ++m) {
+        for (std::size_t nn = 0; nn < n; ++nn) {
+            for (std::size_t p = 0; p < n; ++p) {
+                for (std::size_t q = 0; q < n; ++q) {
+                    double sum = 0.0;
+                    for (std::size_t Q = 0; Q < left; ++Q) {
+                        for (std::size_t R = 0; R < rght; ++R) {
+                            sum += A(Q, m, nn) * D(Q, R) * B(R, p, q);
+                        }
+                    }
+                    M(m, nn, p, q) = sum;
+                }
+            }
+        }
+    }
+
+    // The program reads t1 into U before the view write, so C sees the original t1.
+    auto const t1_before = Tensor<double, 1>(t1);
+    auto       expected  = create_zero_tensor<double>("expected", n, n);
+    for (std::size_t m = 0; m < n; ++m) {
+        for (std::size_t nn = 0; nn < n; ++nn) {
+            double sum = 0.0;
+            for (std::size_t p = 0; p < n; ++p) {
+                for (std::size_t q = 0; q < n; ++q) {
+                    sum += M(m, nn, p, q) * t1_before(p) * t2(q);
+                }
+            }
+            expected(m, nn) = sum;
+        }
+    }
+
+    auto                  X = create_random_tensor<double>("X", n - 1, n);
+    auto                  y = create_random_tensor<double>("y", n);
+    auto                  C = create_zero_tensor<double>("C", n, n);
+    TensorView<double, 1> t1_tail{t1, Dim<1>{n - 1}, Offset<1>{1}};
+    cg::Graph             graph("cone_view_write");
+    {
+        auto                  &U = graph.scratch<double, 2>("U", n, n);
+        cg::CaptureGuard const guard(graph);
+        cg::einsum("p ; q -> p,q", &U, t1, t2);
+        // A contraction, not a scale: a scale is not raised into the expression, so it would split
+        // the region and nothing would be flattened past it.
+        cg::einsum("i,j ; j -> i", &t1_tail, X, y);
+        cg::einsum("m,n,p,q ; p,q -> m,n", &C, M, U);
+    }
+    graph.annotate_tag(M, cg::ProvenanceTag{.name = "test_chain"});
+
+    cg::FactorizationRegistry registry;
+    registry.add(std::make_shared<ExactChain>(A, D, B));
+    cg::passes::FactorizationPass factorization(registry);
+    cg::apply_single_pass(factorization, graph);
+    INFO("factorized " << factorization.num_factorized() << ", dissolved " << factorization.num_dissolved());
+    // The operand is rewritten between the definition and the use, so flattening is never right.
+    // Today the pass's feature gate declines a region with a view write; the interference check by
+    // id would not have.
+    CHECK(factorization.num_dissolved() == 0);
+
+    auto defaults = cg::PassManager::create_default();
+    graph.apply(defaults);
+    graph.execute();
+
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+            CAPTURE(i, j);
+            REQUIRE(std::abs(C(i, j) - expected(i, j)) < 1e-10);
+        }
+    }
+}
+
 // ── Two tagged operands in one cone ────────────────────────────────────────
 
 namespace {

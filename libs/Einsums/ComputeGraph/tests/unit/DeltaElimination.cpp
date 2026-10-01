@@ -166,6 +166,62 @@ TEMPLATE_LIST_TEST_CASE("a delta contraction feeding another contraction disappe
     CHECK(after.num_nodes() < before_nodes);
 }
 
+// Defends: dissolving a delta copy needs the copy to be its target's only writer, and the pass counts
+// writers by TensorId. A second write through a view of the target is a different id over the same
+// buffer, so that count would miss it and a dissolve would hand the readers the copied operand
+// without the view's write. Today the escape classification declines first; this keeps it so.
+TEMPLATE_LIST_TEST_CASE("a delta copy written again through a view keeps the program's value", "[ComputeGraph][DeltaElimination]",
+                        testing::AllScalarTypes) {
+    using T    = TestType;
+    auto A     = create_random_tensor<T>("A", 4, 5);
+    auto delta = create_identity_tensor<T>("delta", 5, 5);
+    auto X     = create_random_tensor<T>("X", 2, 5);
+    auto D     = create_random_tensor<T>("D", 5, 3);
+    auto C     = create_zero_tensor<T>("C", 4, 3);
+
+    auto const build = [&](cg::Graph &graph) {
+        graph.annotate_tag(delta, cg::ProvenanceTag{.name = std::string(cg::provenance_identity)});
+        auto &tmp = graph.create_zero_runtime_tensor<T>("tmp", {4, 5}, true);
+        {
+            cg::CaptureGuard const guard(graph);
+            // The view is made first, so its View node sits ahead of the three statements and does
+            // not split them into separate regions.
+            auto &rows = cg::view_runtime(tmp, {cg::ViewAxis::range(0, 2), cg::ViewAxis::full()});
+            cg::einsum("ik;kj->ij", &tmp, A, delta);
+            cg::permute(cg::PermuteFormatString{"ij <- ij"}, T{0}, &rows, T{1}, X);
+            cg::einsum("ij;jl->il", &C, tmp, D);
+        }
+    };
+
+    C.zero();
+    cg::Graph plain("plain");
+    build(plain);
+    plain.execute();
+    auto const expected = flatten(C);
+
+    C.zero();
+    cg::Graph rewritten("rewritten");
+    build(rewritten);
+    auto            pass = std::make_shared<cg::passes::DeltaElimination>();
+    cg::PassManager pm;
+    pm.add(pass);
+    pm.run(rewritten);
+    INFO("dissolved " << pass->num_dissolved() << ", eliminated " << pass->num_eliminated() << "\n" << pm.explain());
+    // tmp is written twice, so dissolving it is never right. Today EscapeAnalysis declines it,
+    // because the View node making the slice is an alias of tmp outside the region; the writer
+    // count by id would not have.
+    CHECK(pass->num_dissolved() == 0);
+    rewritten.execute();
+    auto const actual = flatten(C);
+
+    using Real = RemoveComplexT<T>;
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        INFO("element " << i);
+        double const bound = 8.0 * std::numeric_limits<Real>::epsilon() * std::max(1.0, static_cast<double>(std::abs(expected[i])));
+        CHECK(std::abs(actual[i] - expected[i]) <= bound);
+    }
+}
+
 TEMPLATE_LIST_TEST_CASE("a delta on the left of the contraction is eliminated too", "[ComputeGraph][DeltaElimination]",
                         testing::AllScalarTypes) {
     using T = TestType;
