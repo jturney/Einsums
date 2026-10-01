@@ -11,6 +11,7 @@
 
 #include <bit>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -859,9 +860,23 @@ EINSUMS_FORCEINLINE Vec<double> fnmsub(Vec<double> a, Vec<double> b, Vec<double>
 
 // ===========================================================================
 // Operator overloads (opt-out via EINSUMS_SIMD_NO_OPERATORS)
+//
+// + - * / between two Vec<T>, or a Vec<T> and a scalar on either side, and the
+// compound assignments += -= *= /= with either on the right. The scalar must be
+// exactly T or an integer, which converts to T: v * 2 compiles, but
+// Vec<float> * 2.0 does not. That is deliberate. In a kernel written once for
+// Vec<float> and for float, float * 2.0 computes in double, so the two would
+// round differently; the error in the vector instantiation catches it. Write
+// typed constants, T(2.0).
 // ===========================================================================
 
 #if !defined(EINSUMS_SIMD_NO_OPERATORS)
+namespace detail {
+/// A scalar that may stand beside a Vec<T> in an operator: T itself, or any integer but bool.
+template <typename S, typename T>
+concept scalar_operand_for = std::same_as<S, T> || (std::integral<S> && !std::same_as<S, bool>);
+} // namespace detail
+
 template <typename T>
 EINSUMS_FORCEINLINE Vec<T> operator+(Vec<T> a, Vec<T> b) {
     return add(a, b);
@@ -882,6 +897,29 @@ template <typename T>
 EINSUMS_FORCEINLINE Vec<T> operator-(Vec<T> a) {
     return neg(a);
 }
+
+#    define EINSUMS_SIMD_MIXED_OPERATOR(op, fn)                                                                                            \
+        template <typename T, detail::scalar_operand_for<T> S>                                                                             \
+        EINSUMS_FORCEINLINE Vec<T> operator op(Vec<T> a, S b) {                                                                            \
+            return fn(a, broadcast(static_cast<T>(b)));                                                                                    \
+        }                                                                                                                                  \
+        template <typename T, detail::scalar_operand_for<T> S>                                                                             \
+        EINSUMS_FORCEINLINE Vec<T> operator op(S a, Vec<T> b) {                                                                            \
+            return fn(broadcast(static_cast<T>(a)), b);                                                                                    \
+        }                                                                                                                                  \
+        template <typename T>                                                                                                              \
+        EINSUMS_FORCEINLINE Vec<T> &operator op## = (Vec<T> & a, Vec<T> b) {                                                               \
+            return a = fn(a, b);                                                                                                           \
+        }                                                                                                                                  \
+        template <typename T, detail::scalar_operand_for<T> S>                                                                             \
+        EINSUMS_FORCEINLINE Vec<T> &operator op## = (Vec<T> & a, S b) {                                                                    \
+            return a = fn(a, broadcast(static_cast<T>(b)));                                                                                \
+        }
+EINSUMS_SIMD_MIXED_OPERATOR(+, add)
+EINSUMS_SIMD_MIXED_OPERATOR(-, sub)
+EINSUMS_SIMD_MIXED_OPERATOR(*, mul)
+EINSUMS_SIMD_MIXED_OPERATOR(/, div)
+#    undef EINSUMS_SIMD_MIXED_OPERATOR
 #endif
 
 // ===========================================================================

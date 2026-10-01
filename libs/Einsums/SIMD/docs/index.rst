@@ -196,6 +196,56 @@ width, ``Vec<float>`` as ``Vec<int32_t>`` or ``Vec<double>`` as
 ``Vec<uint64_t>`` and back. It compiles to nothing, and with the integer
 operations it reaches the exponent and mantissa bits of a float.
 
+One Kernel for Vectors and Scalars
+==================================
+
+``Generic.hpp`` lets a kernel be written once as a template over its value
+type and instantiated with ``Vec<double>``, a problem per lane, or with
+``double``, one problem at a time: on a GPU thread, or on the CPU as a
+reference.
+
+.. code-block:: cpp
+
+    #include <Einsums/SIMD/Generic.hpp>
+
+    namespace simd = einsums::simd;
+
+    template <typename V>
+    V step(V x, V y, simd::scalar_t<V> const *table) {
+        using S = simd::scalar_t<V>;
+        V t = simd::fmadd(x, y, simd::splat<V>(S(0.5)));
+        t *= 2;
+        auto const k = simd::convert<simd::gather_index_t<S>>(simd::floor(t));
+        return simd::select(simd::cmp_lt(t, x), simd::lookup(table, k), simd::sqrt(t));
+    }
+
+The header adds scalar overloads of the operations above (the fused forms,
+``div``, ``sqrt``, ``min``, ``max``, ``abs``, ``neg``, the rounding functions,
+the comparisons, ``select``, ``any``, ``all``, the mask combinations and
+``convert``), and the generic operations a scalar has no other spelling for:
+``scalar_t<V>``, ``lanes_v<V>`` and ``is_vec_v<V>``; ``splat<V>(x)``;
+``load<V>(p)`` and ``store(p, v)``; and ``lookup(base, idx)``, an index
+gather that reads ``base[idx]`` for a scalar index. ``lookup`` exists because
+``gather(base, n)`` with an integer is a strided load and would silently
+accept a scalar index.
+
+Each scalar overload matches one lane of the vector operation bit for bit, so
+the scalar instantiation is an exact reference for the vector one: ``min`` is
+``a < b ? a : b``, the fused forms round once exactly where the vector forms
+do, and a comparison returns ``bool``. Call them qualified, as
+``simd::fmadd``: argument-dependent lookup finds nothing for ``double``. They
+are constrained templates, so under ``using namespace einsums::simd`` an
+unqualified ``sqrt(2.0)`` still calls the C library. ``std::min`` and
+``std::max`` are templates too, so code with both ``using namespace std`` and
+``using namespace einsums::simd`` must qualify ``min`` and ``max`` on scalars.
+
+A ``Vec<T>`` mixes with a scalar in ``+ - * /`` and in ``+= -= *= /=`` when
+the scalar is ``T`` or an integer: ``v * 2`` compiles, ``Vec<float> * 2.0``
+does not. In the scalar instantiation ``float * 2.0`` would compute in
+``double``, so the two instantiations would round differently; write
+``S(2.0)``. The scalar fallback build, where ``Vec<T>`` is a single ``T``
+that converts implicitly, cannot enforce this.
+
 Examples
 ========
 

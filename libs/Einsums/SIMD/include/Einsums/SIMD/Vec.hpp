@@ -459,8 +459,9 @@ struct Vec {
     // (e.g. int8_t, char, std::complex) gives an "incomplete type"
     // error pointing here, the cleanest signal short of a `requires`
     // clause that doesn't tie us to a specific compile-time concept.
-    using traits   = VecTraits<T>;
-    using reg_type = typename traits::reg_type;
+    using traits     = VecTraits<T>;
+    using reg_type   = typename traits::reg_type;
+    using value_type = T; ///< The element type, as einsums::simd::scalar_t<Vec<T>> reads it.
 
     static constexpr int lanes = traits::lanes;
     static constexpr int bits  = traits::bits;

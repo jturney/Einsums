@@ -17,6 +17,7 @@ set(SIMDTests
     Shuffle
     GatherScatter
     ComplexVec
+    GenericKernel
     RuntimeFeatures
 )
 
@@ -39,6 +40,7 @@ set(SIMDWidthDependentTests
     Shuffle
     GatherScatter
     ComplexVec
+    GenericKernel
 )
 
 include(Einsums_AddSIMDDispatch)
