@@ -189,11 +189,10 @@ std::optional<MergePlan> find_merge(Graph &graph, Accepts const &accepts) {
         // a single buffer; a tiled tensor is a map of per-tile buffers, and two
         // tiled tensors with different grids are not interchangeable at all.
         //
-        // Today this is unreachable -- tiled ops record as OpKind::Custom, and the
-        // whitelist below only admits element-aligned kinds -- but that is
-        // incidental. Binding axpby for tiled operands (currently unimplemented,
-        // and on the roadmap) would make a tiled node land in the whitelist with
-        // nothing else stopping it.
+        // This check is the only thing that refuses one. A tiled direct_division records as
+        // OpKind::DirectDivision with a tiled descriptor, so it reaches the element-aligned
+        // whitelist below; without this test the pass merges it ("InplaceOptimization leaves a
+        // tiled division chain unmerged" pins it).
         return it != tensors.end() && it->second.is_intermediate && it->second.aliases == 0 && !it->second.is_tensor_view &&
                !it->second.is_tiled && !view_targets.contains(tid);
     };

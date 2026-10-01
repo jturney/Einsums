@@ -289,3 +289,41 @@ TEST_CASE("TiledRuntimeTensor - tiled direct_division rejects a missing denomina
     B.tile({0, 0}).materialize();
     REQUIRE_THROWS(cg::direct_division(1.0, A, B, 0.0, &C));
 }
+
+// Defends: InplaceOptimization finds candidates by kind, and a tiled division records as
+// OpKind::DirectDivision with a tiled descriptor, so it reaches the pass's element-aligned
+// whitelist. A merge redirects one tensor id at another's storage, which a tiled tensor, a map of
+// per-tile buffers, cannot share. The pass refuses any tiled tensor explicitly; this is the shape a
+// dense chain merges on (X dies at the second division, whose output Y is fresh).
+TEST_CASE("TiledRuntimeTensor - InplaceOptimization leaves a tiled division chain unmerged", "[ComputeGraph][TiledRuntime]") {
+    auto af = [](int r, int c) { return 1.0 + r - 0.5 * c; };
+    auto bf = [](int r, int c) { return 2.5 + 0.5 * r + c; }; // never zero
+
+    TiledRuntimeTensor<double> A("A", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<double> B("B", Grid{{2, 3}, {4, 5}});
+    TiledRuntimeTensor<double> C("C", Grid{{2, 3}, {4, 5}});
+    fill_tiled(A, af);
+    fill_tiled(B, bf);
+
+    cg::Graph g("tiled_division_chain");
+    auto     &X = g.declare_zero_tiled_tensor<double>("X", {{2, 3}, {4, 5}}, true);
+    auto     &Y = g.declare_zero_tiled_tensor<double>("Y", {{2, 3}, {4, 5}}, true);
+    {
+        cg::CaptureGuard const guard(g);
+        cg::direct_division(1.0, A, B, 0.0, &X);
+        cg::direct_division(2.0, X, B, 0.0, &Y);
+        cg::direct_division(1.0, Y, B, 0.0, &C);
+    }
+
+    auto [modified, pass] = g.apply<cg::passes::InplaceOptimization>();
+    CHECK(pass.num_merged() == 0);
+
+    g.execute();
+    auto Cg = gather(C, 5, 9);
+    for (int i = 0; i < 5; ++i) {
+        for (int j = 0; j < 9; ++j) {
+            double const b = bf(i, j);
+            REQUIRE(std::abs(Cg[i][j] - 2.0 * af(i, j) / (b * b * b)) <= 1e-13 * (1.0 + std::abs(Cg[i][j])));
+        }
+    }
+}
