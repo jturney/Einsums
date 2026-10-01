@@ -52,14 +52,15 @@ auto impl_infinity_norm_gemmable(einsums::detail::TensorImpl<T> const &A) -> Rem
     }
 }
 
+/// Through blas::lassq rather than the vendor's lange('F'), which Apple Accelerate builds on a
+/// zlassq that is only accurate to about 2.5e-9 relative for complex<double>. blas::lassq keeps the
+/// sum of squares through nrm2 instead (see BLAS.cpp).
 template <typename T>
     requires(blas::IsBlasableV<T>)
 auto impl_frobenius_norm_gemmable(einsums::detail::TensorImpl<T> const &A) -> RemoveComplexT<T> {
-    if (A.is_column_major()) {
-        return blas::lange('F', A.dim(0), A.dim(1), A.data(), A.get_lda(), nullptr);
-    } else {
-        return blas::lange('F', A.dim(1), A.dim(0), A.data(), A.get_lda(), nullptr);
-    }
+    RemoveComplexT<T> scale{1}, sumsq{0};
+    impl_sum_square(A, &scale, &sumsq);
+    return scale * std::sqrt(sumsq);
 }
 
 template <typename T>

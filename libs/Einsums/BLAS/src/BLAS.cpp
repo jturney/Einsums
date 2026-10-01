@@ -9,6 +9,9 @@
 #include <Einsums/Config/Namespace.hpp>
 #include <Einsums/Errors/ThrowException.hpp>
 
+#include <cmath>
+#include <complex>
+
 #ifdef _OPENMP
 #    include <omp.h>
 #endif
@@ -475,24 +478,44 @@ auto zlange(char norm_type, int_t m, int_t n, std::complex<double> const *A, int
     return vendor::zlange(norm_type, m, n, A, lda, work);
 }
 
+namespace {
+
+/// LAPACK's lassq contract, scale_out^2 * sumsq_out = scale^2 * sumsq + sum |x_i|^2, kept through
+/// nrm2 instead of the vendor's lassq. Apple Accelerate's zlassq misses that sum by about 2.5e-9
+/// relative for complex<double>, ten million times the type's epsilon, while its dznrm2 is exact,
+/// and zlange('F') inherits the error from zlassq. The two norms are combined with hypot, so the
+/// result keeps lassq's guard against overflow and underflow.
+template <typename T, typename Real, typename Nrm2>
+void lassq_via_nrm2(int_t n, T const *x, int_t incx, Real *scale, Real *sumsq, Nrm2 nrm2) {
+    Real const added = n > 0 ? nrm2(n, x, incx) : Real{0};
+    if (added == Real{0}) {
+        return;
+    }
+    Real const prior = *scale * std::sqrt(*sumsq);
+    *scale           = std::hypot(prior, added);
+    *sumsq           = Real{1};
+}
+
+} // namespace
+
 void slassq(int_t n, float const *x, int_t incx, float *scale, float *sumsq) {
     VendorWidthFence const fence;
-    return vendor::slassq(n, x, incx, scale, sumsq);
+    lassq_via_nrm2(n, x, incx, scale, sumsq, vendor::snrm2);
 }
 
 void dlassq(int_t n, double const *x, int_t incx, double *scale, double *sumsq) {
     VendorWidthFence const fence;
-    return vendor::dlassq(n, x, incx, scale, sumsq);
+    lassq_via_nrm2(n, x, incx, scale, sumsq, vendor::dnrm2);
 }
 
 void classq(int_t n, std::complex<float> const *x, int_t incx, float *scale, float *sumsq) {
     VendorWidthFence const fence;
-    return vendor::classq(n, x, incx, scale, sumsq);
+    lassq_via_nrm2(n, x, incx, scale, sumsq, vendor::scnrm2);
 }
 
 void zlassq(int_t n, std::complex<double> const *x, int_t incx, double *scale, double *sumsq) {
     VendorWidthFence const fence;
-    return vendor::zlassq(n, x, incx, scale, sumsq);
+    lassq_via_nrm2(n, x, incx, scale, sumsq, vendor::dznrm2);
 }
 
 float snrm2(int_t n, float const *x, int_t incx) {
