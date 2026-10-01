@@ -364,6 +364,21 @@ The rows are transposed in registers and written with full-width stores that
 overlap, each later store rewriting the lanes the one before it spilled; only
 the last one or two columns need a partial store.
 
+``loadu_deinterleaved<R>(src, rows)`` is its inverse, ``rows[r][k] = src[k * R + r]``,
+reading exactly ``R * L`` elements. It turns an array of structures of ``R``
+fields into ``R`` vectors of one field each, as NEON's ``vld2``, ``vld3`` and
+``vld4`` do, for any ``R`` up to the lane count:
+
+.. code-block:: cpp
+
+    struct Shell { double x, y, z; };       // an array of these
+    Vec<double> xyz[3];
+    loadu_deinterleaved<3>(&shells[i].x, xyz);  // xyz[0] holds L x's, and so on
+
+Columns that end inside the input are read with full-width loads whose spill
+into the next elements is dropped by the transpose; only the last one or two
+use a partial load.
+
 Gather and Scatter
 ==================
 

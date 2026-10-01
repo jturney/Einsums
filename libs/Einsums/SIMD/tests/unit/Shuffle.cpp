@@ -14,6 +14,11 @@
 
 #include <catch2/catch_all.hpp>
 
+#if defined(__linux__)
+#    include <sys/mman.h>
+#    include <unistd.h>
+#endif
+
 using namespace einsums::simd;
 
 TEMPLATE_TEST_CASE("transpose_inplace correctness", "[simd]", float, double) {
@@ -135,13 +140,75 @@ void check_interleaved() {
     }
 }
 
+// loadu_deinterleaved<R> against its definition, rows[r][k] = src[k * R + r]: from an allocation of
+// exactly R * lanes elements, so a read past it is a heap overflow the sanitizer legs report, and as
+// the inverse of storeu_interleaved.
+template <typename T, int R>
+void check_deinterleaved() {
+    constexpr int L = Vec<T>::lanes;
+    INFO("R = " << R << " of " << L << " lanes");
+    auto const src = std::make_unique<T[]>(static_cast<std::size_t>(R * L));
+    for (int i = 0; i < R * L; ++i) {
+        src[i] = static_cast<T>(3 * i + 1);
+    }
+    Vec<T> rows[R];
+    loadu_deinterleaved<R>(src.get(), rows);
+    for (int r = 0; r < R; ++r) {
+        T out[L];
+        storeu(out, rows[r]);
+        for (int k = 0; k < L; ++k) {
+            CHECK(out[k] == src[k * R + r]);
+        }
+    }
+
+    auto const back = std::make_unique<T[]>(static_cast<std::size_t>(R * L));
+    storeu_interleaved<R>(back.get(), rows);
+    for (int i = 0; i < R * L; ++i) {
+        CHECK(back[i] == src[i]);
+    }
+}
+
+#if defined(__linux__)
+/// The same read with the input ending at an inaccessible page: a read past it faults.
+template <typename T, int R>
+void check_deinterleaved_at_page_end() {
+    constexpr int     L    = Vec<T>::lanes;
+    std::size_t const page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+    void *const       base = mmap(nullptr, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    REQUIRE(base != MAP_FAILED);
+    REQUIRE(mprotect(static_cast<char *>(base) + page, page, PROT_NONE) == 0);
+    T *const src = reinterpret_cast<T *>(static_cast<char *>(base) + page) - R * L;
+    for (int i = 0; i < R * L; ++i) {
+        src[i] = static_cast<T>(i);
+    }
+    Vec<T> rows[R];
+    loadu_deinterleaved<R>(src, rows);
+    T out[L];
+    storeu(out, rows[R - 1]);
+    CHECK(out[L - 1] == static_cast<T>(R * L - 1));
+    munmap(base, 2 * page);
+}
+#endif
+
 template <typename T, int... Rm1>
 void check_every_row_count(std::integer_sequence<int, Rm1...>) {
     (check_interleaved<T, Rm1 + 1>(), ...);
+}
+
+template <typename T, int... Rm1>
+void check_every_deinterleave(std::integer_sequence<int, Rm1...>) {
+    (check_deinterleaved<T, Rm1 + 1>(), ...);
+#if defined(__linux__)
+    (check_deinterleaved_at_page_end<T, Rm1 + 1>(), ...);
+#endif
 }
 
 } // namespace
 
 TEMPLATE_TEST_CASE("storeu_interleaved writes every row count exactly", "[simd][shuffle]", float, double) {
     check_every_row_count<TestType>(std::make_integer_sequence<int, Vec<TestType>::lanes>{});
+}
+
+TEMPLATE_TEST_CASE("loadu_deinterleaved reads every row count exactly", "[simd][shuffle]", float, double) {
+    check_every_deinterleave<TestType>(std::make_integer_sequence<int, Vec<TestType>::lanes>{});
 }

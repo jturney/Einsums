@@ -418,5 +418,46 @@ EINSUMS_FORCEINLINE void storeu_interleaved(T *dst, Vec<T> const *rows) {
     }
 }
 
+// ===========================================================================
+// Deinterleaving load: loadu_deinterleaved<R>(src, rows)
+//
+// The inverse of storeu_interleaved: reads R * lanes elements, row index
+// fastest, into R rows,
+//
+//     rows[r][k] = src[k * R + r]      for k < lanes, r < R
+//
+// and nothing past them. It turns an array of structures of R fields into R
+// vectors of one field each, the AoS-to-SoA step at the edge of a kernel that
+// works on structure-of-arrays data. It is NEON's vld2/vld3/vld4 for any R up
+// to the lane count.
+//
+// Column k, the R fields of element k, is loaded from src + k * R into a tile
+// and the tile is transposed in registers. A full-width load there also reads
+// the first fields of the next elements, which land in lanes the transpose
+// sends to rows past R and are dropped, so every column that ends inside the
+// input is read whole and only the last ceil(lanes / R) columns, which would
+// end past it, use a partial load, as storeu_interleaved does for its stores.
+// ===========================================================================
+
+template <int R, typename T>
+EINSUMS_FORCEINLINE void loadu_deinterleaved(T const *src, Vec<T> *rows) {
+    constexpr int L = Vec<T>::lanes;
+    static_assert(R >= 1 && R <= L, "loadu_deinterleaved: between one row and a full register's lanes");
+
+    // Column k's full load ends at k * R + L, inside the input while k * R + L <= R * L.
+    constexpr int full = L - (L + R - 1) / R + 1;
+    Vec<T>        tile[L];
+    for (int k = 0; k < full; ++k) {
+        tile[k] = loadu(src + k * R);
+    }
+    for (int k = full; k < L; ++k) {
+        tile[k] = loadu_partial(src + k * R, static_cast<std::size_t>(R));
+    }
+    transpose_inplace(tile);
+    for (int r = 0; r < R; ++r) {
+        rows[r] = tile[r];
+    }
+}
+
 EINSUMS_SIMD_ISA_NAMESPACE_END()
 EINSUMS_NAMESPACE_END(simd)

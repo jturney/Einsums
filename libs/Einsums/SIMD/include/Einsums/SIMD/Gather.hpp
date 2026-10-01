@@ -305,6 +305,24 @@ template <>
 EINSUMS_FORCEINLINE Vec<double> gather(double const *base, Vec<int64_t> idx) {
     return _mm256_i64gather_pd(base, idx.reg, sizeof(double));
 }
+#elif !defined(__AVX__) && (defined(__x86_64__) || defined(_M_X64))
+// SSE has no gather. Take the indices out of the register and build the result from scalar loads
+// in registers: a round trip of the indices and the results through a stack buffer stalls on store
+// forwarding, which made a float gather four times slower per element than a double one.
+template <>
+EINSUMS_FORCEINLINE Vec<float> gather(float const *base, Vec<int32_t> idx) {
+    int const i0 = _mm_cvtsi128_si32(idx.reg);
+    int const i1 = _mm_cvtsi128_si32(_mm_shuffle_epi32(idx.reg, _MM_SHUFFLE(1, 1, 1, 1)));
+    int const i2 = _mm_cvtsi128_si32(_mm_shuffle_epi32(idx.reg, _MM_SHUFFLE(2, 2, 2, 2)));
+    int const i3 = _mm_cvtsi128_si32(_mm_shuffle_epi32(idx.reg, _MM_SHUFFLE(3, 3, 3, 3)));
+    return _mm_setr_ps(base[i0], base[i1], base[i2], base[i3]);
+}
+template <>
+EINSUMS_FORCEINLINE Vec<double> gather(double const *base, Vec<int64_t> idx) {
+    long long const i0 = _mm_cvtsi128_si64(idx.reg);
+    long long const i1 = _mm_cvtsi128_si64(_mm_unpackhi_epi64(idx.reg, idx.reg));
+    return _mm_setr_pd(base[i0], base[i1]);
+}
 #else
 template <>
 EINSUMS_FORCEINLINE Vec<float> gather(float const *base, Vec<int32_t> idx) {

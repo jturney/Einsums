@@ -41,8 +41,9 @@ PLATFORM = HEADERS / "Platform.hpp"
 RUNTIME = {"RuntimeFeatures.hpp", "RungLadder.hpp", "Options.hpp"}
 
 # Compiler and platform identities: one link is built by one compiler for one
-# platform, so they never distinguish two translation units in it.
-IDENTITY = {"__clang__", "__GNUC__", "_MSC_VER", "__APPLE__", "__NVCC__", "__CUDACC__"}
+# platform, so they never distinguish two translation units in it. __x86_64__
+# separates 64-bit from 32-bit x86, whose objects cannot be linked together.
+IDENTITY = {"__clang__", "__GNUC__", "_MSC_VER", "__APPLE__", "__NVCC__", "__CUDACC__", "__x86_64__"}
 
 CONDITION = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef|elif|elifdef|elifndef)\b(.*)$")
 FEATURE = re.compile(r"\b(__[A-Za-z0-9_]+__|_M_[A-Z0-9_]+)\b")

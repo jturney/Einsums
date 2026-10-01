@@ -173,8 +173,8 @@ EINSUMS_FORCEINLINE T lookup(T const *base, I idx, bool m) {
 // one index vector: the FP32 tier computes convert<int32_t>(floor(x)) and the
 // FP64 tier, Vec<double, N>, gathers its doubles with the same register. AVX2
 // and AVX-512 gather doubles at 32-bit indices directly, half an index register
-// per double register; every other build reads lane by lane, as every gather
-// there does.
+// per double register; SSE takes the indices out of the register and loads the
+// doubles one by one; every other build reads lane by lane through memory.
 // ---------------------------------------------------------------------------
 
 namespace detail {
@@ -206,6 +206,23 @@ EINSUMS_FORCEINLINE Vec<double> gather_pd_i32(double const *base, Vec<int32_t> i
     __m128i const half = h == 0 ? _mm256_castsi256_si128(idx.reg) : _mm256_extracti128_si256(idx.reg, 1);
     return _mm256_mask_i32gather_pd(_mm256_setzero_pd(), base, half, m.reg, sizeof(double));
 #    endif
+}
+#elif !defined(__AVX__) && (defined(__x86_64__) || defined(_M_X64))
+#    define EINSUMS_SIMD_HAVE_GATHER_PD_I32 1
+// SSE has no gather: the two indices of half h come out of the register and the doubles are loaded
+// into one, with no round trip through memory, which stalls on store forwarding.
+EINSUMS_FORCEINLINE Vec<double> gather_pd_i32(double const *base, Vec<int32_t> idx, int h) {
+    __m128i const pair = h == 0 ? idx.reg : _mm_unpackhi_epi64(idx.reg, idx.reg);
+    int const     i0   = _mm_cvtsi128_si32(pair);
+    int const     i1   = _mm_cvtsi128_si32(_mm_shuffle_epi32(pair, _MM_SHUFFLE(1, 1, 1, 1)));
+    return _mm_setr_pd(base[i0], base[i1]);
+}
+EINSUMS_FORCEINLINE Vec<double> gather_pd_i32(double const *base, Vec<int32_t> idx, int h, Mask<double> m) {
+    __m128i const pair = h == 0 ? idx.reg : _mm_unpackhi_epi64(idx.reg, idx.reg);
+    int const     set  = _mm_movemask_pd(m.reg);
+    double const  d0   = (set & 1) ? base[_mm_cvtsi128_si32(pair)] : 0.0;
+    double const  d1   = (set & 2) ? base[_mm_cvtsi128_si32(_mm_shuffle_epi32(pair, _MM_SHUFFLE(1, 1, 1, 1)))] : 0.0;
+    return _mm_setr_pd(d0, d1);
 }
 #endif
 
