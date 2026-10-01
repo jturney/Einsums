@@ -129,6 +129,9 @@ TEMPLATE_TEST_CASE("math, fused forms and rounding match the scalar instantiatio
     check_matches_scalar<V>([](auto x, auto) { return simd::round(x); }, "round");
     check_matches_scalar<V>([](auto x, auto) { return simd::round_even(x); }, "round_even");
     check_matches_scalar<V>([](auto x, auto) { return simd::exp(x); }, "exp");
+    check_matches_scalar<V>([](auto x, auto) { return simd::erf(x); }, "erf");
+    check_matches_scalar<V>([](auto x, auto) { return simd::erfc(x); }, "erfc");
+    check_matches_scalar<V>([](auto x, auto) { return simd::rsqrt(x); }, "rsqrt");
     check_matches_scalar<V>([](auto x, auto y) { return simd::exp(simd::fnmadd(x, y, x)); }, "exp of an expression");
 }
 

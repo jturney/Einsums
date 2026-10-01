@@ -272,27 +272,45 @@ does not. In the scalar instantiation ``float * 2.0`` would compute in
 ``S(2.0)``. The scalar fallback build, where ``Vec<T>`` is a single ``T``
 that converts implicitly, cannot enforce this.
 
-Exponential
-===========
+Special Functions
+=================
 
-``Math.hpp`` provides ``exp`` for ``float`` and ``double``, on ``Vec<T>``,
-wide ``Vec<T, N>`` and plain ``T``, written once over the generic operations so
-every instantiation gives the same bits. It reduces the argument by multiples
-of ``ln 2``, evaluates the Taylor series of the remainder, and scales by a
-power of two built from exponent bits, in two halves so that a subnormal
-result rounds once. Against a correctly rounded ``exp`` its worst error over
-the whole range, subnormal results included, is 0.9 ulp with FMA and 1.03 ulp
-without, and it returns exactly 1 at zero, ``inf`` and 0 past the range, and
-NaN for NaN. It needs the integer shifts, which AVX without AVX2 lacks.
+``Math.hpp`` provides ``exp``, ``erf``, ``erfc`` and ``rsqrt`` for ``float``
+and ``double``, on ``Vec<T>``, wide ``Vec<T, N>`` and plain ``T``. Each is one
+algorithm written over the generic operations, so every instantiation gives the
+same bits, and a kernel's scalar reference matches its vector lanes.
 
 .. code-block:: cpp
 
     #include <Einsums/SIMD/Math.hpp>
 
-    Vec<double> const e = simd::exp(-t);   // e^-T for the Boys downward recursion
+    Vec<double> const e  = simd::exp(-t);                 // e^-T, the Boys downward recursion
+    Vec<double> const f0 = half_sqrt_pi * simd::rsqrt(t) * simd::erf(simd::sqrt(t)); // F_0(T), T > 0
+    Vec<double> const s  = simd::erfc(omega * r);         // an attenuated Coulomb factor
 
-Under ``using namespace einsums::simd``, an unqualified ``exp(2.0)`` still
-calls the C library; call ``simd::exp`` for the vector algorithm on scalars.
+``exp`` reduces its argument by multiples of ``ln 2``, evaluates the Taylor
+series of the remainder, and scales by a power of two built from exponent bits,
+in two halves so that a subnormal result rounds once. ``erf`` and ``erfc`` use
+a polynomial in ``x^2`` below ``|x| = 0.5`` and ``e^(-x^2)`` times a polynomial
+above, with ``x^2`` split exactly so the exponential loses nothing to its
+rounding. ``rsqrt`` is ``1 / sqrt(x)`` correctly rounded twice rather than the
+hardware estimate, whose bits differ between CPU vendors.
+
+Worst error against a correctly rounded function, over the whole range with
+subnormal results included:
+
+==========  ===========================================
+``exp``     0.9 ulp with FMA, 1.03 ulp without
+``erf``     0.75 ulp below ``|x| = 0.5``, 1.8 ulp above
+``erfc``    1.1 ulp below ``x = 0.5``, 4 ulp above
+``rsqrt``   1.5 ulp
+==========  ===========================================
+
+Each returns the exact result at its special values (``exp(0) = 1``,
+``erf(-0) = -0``, ``erfc(-inf) = 2``, ``rsqrt(-0) = -inf``, and so on) and
+passes NaN through. They need the integer shifts, which AVX without AVX2
+lacks. Under ``using namespace einsums::simd``, an unqualified ``exp(2.0)``
+still calls the C library; call ``simd::exp`` for these algorithms on scalars.
 
 Mixed Precision at Equal Width
 ==============================

@@ -20,6 +20,7 @@ set(SIMDTests
     GenericKernel
     VecWide
     VecExp
+    VecErf
     RuntimeFeatures
 )
 
@@ -45,6 +46,7 @@ set(SIMDWidthDependentTests
     GenericKernel
     VecWide
     VecExp
+    VecErf
 )
 
 include(Einsums_AddSIMDDispatch)

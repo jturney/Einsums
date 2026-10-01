@@ -69,6 +69,53 @@ void exp_kernel(simd::scalar_t<V> const *x, simd::scalar_t<V> *out, std::size_t 
     }
 }
 
+template <typename V, typename F>
+void map_kernel(simd::scalar_t<V> const *x, simd::scalar_t<V> *out, std::size_t n, F f) {
+    constexpr int L = simd::lanes_v<V>;
+    for (std::size_t i = 0; i < n; i += L) {
+        simd::store(out + i, f(simd::load<V>(x + i)));
+    }
+}
+
+void erf_f64(double const *x, double *out, std::size_t n) {
+    map_kernel<simd::Vec<double>>(x, out, n, [](auto v) { return simd::erf(v); });
+}
+void erfc_f64(double const *x, double *out, std::size_t n) {
+    map_kernel<simd::Vec<double>>(x, out, n, [](auto v) { return simd::erfc(v); });
+}
+void erfc_f32(float const *x, float *out, std::size_t n) {
+    map_kernel<simd::Vec<float>>(x, out, n, [](auto v) { return simd::erfc(v); });
+}
+void rsqrt_f64(double const *x, double *out, std::size_t n) {
+    map_kernel<simd::Vec<double>>(x, out, n, [](auto v) { return simd::rsqrt(v); });
+}
+
+/// The hardware reciprocal square root estimate refined by Newton steps y (1.5 - 0.5 x y^2), for
+/// comparison with rsqrt only: the estimate's bits differ between CPU vendors.
+simd::Vec<double> rsqrt_estimate(simd::Vec<double> x) {
+#if defined(__AVX512F__) && defined(__AVX512VL__)
+    simd::Vec<double> y = _mm512_rsqrt14_pd(x.reg); // 14 bits: two steps reach double
+    int constexpr steps = 2;
+#elif defined(__AVX__)
+    simd::Vec<double> y = _mm256_cvtps_pd(_mm_rsqrt_ps(_mm256_cvtpd_ps(x.reg))); // 12 bits
+    int constexpr steps = 3;
+#elif defined(__SSE2__)
+    simd::Vec<double> y = _mm_cvtps_pd(_mm_rsqrt_ps(_mm_cvtpd_ps(x.reg)));
+    int constexpr steps = 3;
+#else
+    simd::Vec<double> y = simd::rsqrt(x);
+    int constexpr steps = 0;
+#endif
+    simd::Vec<double> const half_x = x * 0.5;
+    for (int k = 0; k < steps; ++k) {
+        y = y * simd::fnmadd(half_x * y, y, simd::splat<simd::Vec<double>>(1.5));
+    }
+    return y;
+}
+void rsqrt_f64_estimate(double const *x, double *out, std::size_t n) {
+    map_kernel<simd::Vec<double>>(x, out, n, [](auto v) { return rsqrt_estimate(v); });
+}
+
 constexpr int LF = simd::lanes<float>;
 
 } // namespace
@@ -92,6 +139,11 @@ Kernels const &kernels() noexcept {
         .exp_f64             = &exp_kernel<simd::Vec<double>>,
         .exp_f64_wide        = &exp_kernel<simd::Vec<double, LF>>,
         .exp_f64_scalar      = &exp_kernel<double>,
+        .erf_f64             = &erf_f64,
+        .erfc_f64            = &erfc_f64,
+        .erfc_f32            = &erfc_f32,
+        .rsqrt_f64           = &rsqrt_f64,
+        .rsqrt_f64_estimate  = &rsqrt_f64_estimate,
     };
     return table;
 }

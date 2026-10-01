@@ -61,6 +61,16 @@ struct Kernels {
     void (*exp_f64)(double const *x, double *out, std::size_t n);
     void (*exp_f64_wide)(double const *x, double *out, std::size_t n);
     void (*exp_f64_scalar)(double const *x, double *out, std::size_t n);
+
+    // erf and erfc, for a direct F_0(T) and for attenuated Coulomb integrals.
+    void (*erf_f64)(double const *x, double *out, std::size_t n);
+    void (*erfc_f64)(double const *x, double *out, std::size_t n);
+    void (*erfc_f32)(float const *x, float *out, std::size_t n);
+
+    // rsqrt as the library computes it, 1 / sqrt(x) correctly rounded twice, and, for comparison only,
+    // the hardware estimate refined by two Newton steps, whose bits differ between CPU vendors.
+    void (*rsqrt_f64)(double const *x, double *out, std::size_t n);
+    void (*rsqrt_f64_estimate)(double const *x, double *out, std::size_t n);
 };
 
 #define EINSUMS_SIMD_BENCH_DECLARE_RUNG(ns)                                                                                                \

@@ -169,4 +169,23 @@ EINSUMS_TEST_CASE("SIMD gather, conversion and interpolation on every supported 
             bench("exp f64 scalar body", r.set, [&] { r.kernels->exp_f64_scalar(xd.data(), od.data(), n); });
         }
     }
+
+    {
+        std::uniform_real_distribution<double> arg(-6.0, 6.0);
+        std::uniform_real_distribution<double> pos(0.01, 100.0);
+        std::vector<float>                     xf(n), of(n);
+        std::vector<double>                    xd(n), od(n), pd(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            xd[i] = arg(rng);
+            xf[i] = static_cast<float>(xd[i]);
+            pd[i] = pos(rng);
+        }
+        for (simd_bench::Rung const &r : simd_bench::runnable_rungs()) {
+            bench("erf f64", r.set, [&] { r.kernels->erf_f64(xd.data(), od.data(), n); });
+            bench("erfc f64", r.set, [&] { r.kernels->erfc_f64(xd.data(), od.data(), n); });
+            bench("erfc f32", r.set, [&] { r.kernels->erfc_f32(xf.data(), of.data(), n); });
+            bench("rsqrt f64", r.set, [&] { r.kernels->rsqrt_f64(pd.data(), od.data(), n); });
+            bench("rsqrt f64, hardware estimate + Newton", r.set, [&] { r.kernels->rsqrt_f64_estimate(pd.data(), od.data(), n); });
+        }
+    }
 }
