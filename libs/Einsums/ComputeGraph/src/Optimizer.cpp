@@ -190,15 +190,17 @@ std::set<std::string> parse_disabled_passes() {
 /// Pairs created by the pass (new nodes, redirected inputs) have no baseline
 /// and are skipped, as is the reverse transition (a pass may legitimately
 /// insert a writer, e.g. Materialization's Initialize, in front of a read of
-/// a deferred tensor). Top-level graph only; sub-graph bodies are not walked.
-std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> observed_writes(Graph const &graph) {
+/// a deferred tensor). Top-level graph only; sub-graph bodies are not walked, but what a
+/// control-flow node's body writes counts as that node's write, so a pass that moves a writer
+/// into a loop it places ahead of the reader keeps the read observed.
+std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> observed_writes(Graph &graph) {
     std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> seen;
     std::unordered_set<TensorId>                                   written;
     for (auto const &node : graph.nodes()) {
         for (auto const tid : node.inputs) {
             seen[node.id][tid] = written.contains(graph.resolve_alias(tid));
         }
-        for (auto const tid : node.outputs) {
+        for (auto const tid : graph.effective_io(node).second) {
             written.insert(graph.resolve_alias(tid));
         }
     }
@@ -226,7 +228,7 @@ void settle_node_ids(Graph &root, std::string const &pass_name) {
     root.for_each_descendant(std::function<void(Graph &)>{settle});
 }
 
-void check_observed_writes(Graph const &graph, std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> const &before,
+void check_observed_writes(Graph &graph, std::unordered_map<NodeId, std::unordered_map<TensorId, bool>> const &before,
                            std::string const &pass_name, std::vector<std::pair<NodeId, TensorId>> const &compensated) {
     auto const after = observed_writes(graph);
     for (auto const &[nid, per_tid] : after) {
@@ -582,6 +584,7 @@ bool PassManager::run(Graph &graph) {
             auto const declared = config::get(option::PassVerify) ? declared_structure(graph) : decltype(declared_structure(graph)){};
             bool const modified = run_pass_tree(*pass, graph);
             settle_node_ids(graph, pass->name());
+            graph.sync_destination_inputs();
             verify_after_pass(graph, pass->name());
             check_structure_declared(graph, declared, pass->name());
             check_untouched(graph, untouchable, pass->name());
